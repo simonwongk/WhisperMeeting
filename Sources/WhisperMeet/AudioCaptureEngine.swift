@@ -111,7 +111,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             throw AudioCaptureError.noAudioCaptured
         }
 
-        try await stream.stopCapture()
+        do {
+            try await stream.stopCapture()
+        } catch {
+            await captureQueue.flush()
+            systemWriter?.cancel()
+            microphoneWriter?.cancel()
+            reset()
+            throw error
+        }
         await captureQueue.flush()
 
         if let streamError {
@@ -126,8 +134,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             reset()
             throw AudioCaptureError.noAudioCaptured
         }
+        defer { reset() }
         guard systemTrack.frameCount > 0 || microphoneTrack.frameCount > 0 else {
-            reset()
             throw AudioCaptureError.noAudioCaptured
         }
 
@@ -138,13 +146,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             sampleRate: Self.targetSampleRate,
             outputURL: mixedURL
         )
+        try SourceTrackManifest.write(
+            system: systemTrack,
+            microphone: microphoneTrack,
+            sampleRate: Self.targetSampleRate,
+            to: directory.appendingPathComponent("source-tracks.json")
+        )
         let artifact = RecordingArtifact(
             mixedRecordingURL: mixedURL,
             systemTrackURL: systemTrack.url,
             microphoneTrackURL: microphoneTrack.url,
             duration: duration
         )
-        reset()
         return artifact
     }
 
@@ -216,6 +229,68 @@ private struct FloatTrack {
     let url: URL
     let firstPresentationTime: Double?
     let frameCount: Int64
+}
+
+private struct SourceTrackManifest: Codable {
+    struct Track: Codable {
+        let file: String
+        let format: String
+        let sampleRate: Double
+        let channels: Int
+        let frameCount: Int64
+        let startOffsetSeconds: Double
+    }
+
+    let systemAudio: Track
+    let microphoneAudio: Track
+
+    static func write(
+        system: FloatTrack,
+        microphone: FloatTrack,
+        sampleRate: Double,
+        to outputURL: URL
+    ) throws {
+        let starts = [
+            system.firstPresentationTime,
+            microphone.firstPresentationTime
+        ].compactMap { $0 }
+        guard let earliestStart = starts.min() else {
+            throw AudioCaptureError.noAudioCaptured
+        }
+        let manifest = Self(
+            systemAudio: track(
+                system,
+                sampleRate: sampleRate,
+                earliestStart: earliestStart
+            ),
+            microphoneAudio: track(
+                microphone,
+                sampleRate: sampleRate,
+                earliestStart: earliestStart
+            )
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: outputURL, options: .atomic)
+    }
+
+    private static func track(
+        _ track: FloatTrack,
+        sampleRate: Double,
+        earliestStart: Double
+    ) -> Track {
+        Track(
+            file: track.url.lastPathComponent,
+            format: "float32-little-endian",
+            sampleRate: sampleRate,
+            channels: 1,
+            frameCount: track.frameCount,
+            startOffsetSeconds: max(
+                0,
+                (track.firstPresentationTime ?? earliestStart) - earliestStart
+            )
+        )
+    }
 }
 
 private final class FloatTrackWriter {
@@ -382,9 +457,13 @@ private enum FloatTrackMixer {
             let microphoneSamples = microphoneReader.read(frameCount: Int(count))
             var pcm = [Int16](repeating: 0, count: Int(count))
             for index in pcm.indices {
-                let mixed = (systemSamples[index] * 0.9) + microphoneSamples[index]
-                let limited = max(-1, min(1, mixed))
-                pcm[index] = Int16(limited * Float(Int16.max))
+                let systemSample = systemSamples[index]
+                let microphoneSample = microphoneSamples[index]
+                let bothActive = abs(systemSample) > 0.01 && abs(microphoneSample) > 0.01
+                let mixed = bothActive
+                    ? (systemSample + microphoneSample) * 0.5
+                    : (systemSample + microphoneSample) * 0.95
+                pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
             }
             pcm.withUnsafeBytes { output.write(Data($0)) }
             writtenFrames += count

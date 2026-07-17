@@ -1,12 +1,15 @@
 # WhisperMeet
 
-WhisperMeet is a native macOS meeting recorder focused on producing an accurate final transcript after the meeting. It captures microphone and system audio separately, prepares a clean WAV recording, submits it to WhisperAI asynchronously, and preserves the original English or Mandarin transcript with speaker labels.
+WhisperMeet is a native macOS meeting recorder focused on producing an accurate transcript after the meeting. It records microphone and Mac system audio, prepares a clean WAV file, and transcribes the meeting entirely on this Mac with the open-source [OpenAI Whisper repository](https://github.com/openai/whisper).
+
+No API key, account, cloud upload, or per-minute fee is required. The transcript remains in the meeting’s original English or Mandarin.
 
 ## Requirements
 
 - Apple silicon or Intel Mac running macOS 15 or later
-- Swift 6.1 command-line tools or Xcode
-- A WhisperAI API key from <https://whisperai.com/developer#keys>
+- Swift 6.1 command-line tools or Xcode to build the app
+- Homebrew for the one-time local Whisper installation
+- Enough free memory for the chosen model: the official repository lists about 10 GB for `large` and 6 GB for `turbo`
 
 ## Build and run
 
@@ -17,15 +20,35 @@ open .build/WhisperMeet.app
 
 The build script creates and ad-hoc signs `.build/WhisperMeet.app`. On first recording, macOS asks for Microphone and Screen & System Audio Recording permissions. If system audio is silent after granting permission, quit and reopen the app.
 
+## First-time setup
+
+Open **Settings** and choose **Install Local Whisper**. The bundled installer uses Homebrew to install FFmpeg and Python 3.11, then creates an isolated Python environment under:
+
+```text
+~/Library/Application Support/WhisperMeet/Runtime
+```
+
+Whisper downloads the selected speech model once, on its first transcription, and stores it under `~/Library/Application Support/WhisperMeet/Models`.
+
+For a manual installation from this checkout:
+
+```bash
+Scripts/setup-local-whisper.sh
+```
+
 ## Workflow
 
-1. Open **Settings**, enter the `wai_…` key, and save it to Keychain.
-2. Optionally import business documents under **Business Vocabulary**. Review the extracted terms; only those terms are sent to WhisperAI.
+1. In **Settings**, choose `Large` for maximum English/Mandarin accuracy or `Turbo` for a much faster result with a small accuracy tradeoff. Leave the language on automatic detection or select English/Mandarin explicitly for a single-language meeting.
+2. Optionally import business documents under **Business Vocabulary**. Review the extracted terms; only those terms become a local initial prompt for Whisper.
 3. Start a meeting recording. Headphones are recommended to prevent remote voices from leaking into the microphone track.
-4. Stop the recording. WhisperMeet uploads the raw WAV body to `POST /v1/upload`, submits an asynchronous job to `POST /v1/transcript`, and polls `GET /v1/transcript/{id}` until completion.
-5. Rename speaker labels, correct the editable transcript, copy it, or export it as UTF-8 text.
+4. Stop the recording. Local Whisper transcribes the finished WAV with `task=transcribe`, preserving the original language.
+5. Correct the timestamped transcript, copy it, or export it as UTF-8 text.
 
-Recordings, source tracks, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. The API key is stored in macOS Keychain and is sent as the raw `Authorization` value without a `Bearer` prefix.
+Recordings, separate microphone/system source tracks, models, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`, which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so the sources remain reusable.
+
+## Speaker limitation
+
+OpenAI Whisper transcribes speech and produces timestamped segments, but it does not perform speaker diarization. This version therefore does not claim to identify different people. The separate microphone and system-audio source files are retained so a local diarization model can be added later without rerecording meetings.
 
 ## Verification
 
@@ -34,4 +57,4 @@ swift test
 swift build
 ```
 
-The tests cover the upload-submit-poll workflow, exact accuracy parameters, raw-key authentication, rate-limit backoff, preservation of completed text, and speaker-attributed utterances.
+Tests exercise the local process interface, verified CLI options, original-language output, timestamp parsing, executable discovery, and failure handling without downloading a speech model.

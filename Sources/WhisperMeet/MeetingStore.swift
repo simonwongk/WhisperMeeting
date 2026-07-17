@@ -3,17 +3,24 @@ import WhisperCore
 
 enum MeetingStatus: String, Codable, Sendable {
     case recorded
-    case uploading
-    case queued
     case processing
     case completed
     case failed
 
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "recorded": self = .recorded
+        case "uploading", "queued", "processing": self = .processing
+        case "completed": self = .completed
+        case "failed": self = .failed
+        default: self = .recorded
+        }
+    }
+
     var title: String {
         switch self {
         case .recorded: "Ready to transcribe"
-        case .uploading: "Uploading"
-        case .queued: "Queued"
         case .processing: "Transcribing"
         case .completed: "Completed"
         case .failed: "Needs attention"
@@ -28,12 +35,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     var duration: TimeInterval
     var recordingPath: String
     var status: MeetingStatus
-    var transcriptID: String?
     var transcriptText: String
     var languageCode: String?
     var confidence: Double?
     var segments: [TranscriptSegment]
-    var speakerNames: [String: String]
     var errorMessage: String?
 
     init(
@@ -43,12 +48,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         duration: TimeInterval = 0,
         recordingPath: String = "",
         status: MeetingStatus = .recorded,
-        transcriptID: String? = nil,
         transcriptText: String = "",
         languageCode: String? = nil,
         confidence: Double? = nil,
         segments: [TranscriptSegment] = [],
-        speakerNames: [String: String] = [:],
         errorMessage: String? = nil
     ) {
         self.id = id
@@ -57,12 +60,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.duration = duration
         self.recordingPath = recordingPath
         self.status = status
-        self.transcriptID = transcriptID
         self.transcriptText = transcriptText
         self.languageCode = languageCode
         self.confidence = confidence
         self.segments = segments
-        self.speakerNames = speakerNames
         self.errorMessage = errorMessage
     }
 }
@@ -104,7 +105,9 @@ final class MeetingStore: ObservableObject {
                     .sorted { $0.createdAt > $1.createdAt }
             }
             if let data = try? Data(contentsOf: vocabularyURL) {
-                vocabulary = try decoder.decode([String].self, from: data)
+                vocabulary = Self.promptSafeTerms(
+                    try decoder.decode([String].self, from: data)
+                )
             }
         } catch {
             assertionFailure("Could not initialize meeting storage: \(error)")
@@ -152,9 +155,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func addVocabulary(_ terms: [String]) {
-        let combined = vocabulary + terms
-        vocabulary = Array(Set(combined.map(Self.normalizeTerm).filter { !$0.isEmpty }))
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        vocabulary = Self.promptSafeTerms(vocabulary + terms)
         persistVocabulary()
     }
 
@@ -165,6 +166,20 @@ final class MeetingStore: ObservableObject {
 
     private static func normalizeTerm(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func promptSafeTerms(_ values: [String]) -> [String] {
+        let candidates = Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        var result: [String] = []
+        var characterCount = 0
+        for term in candidates where result.count < 100 {
+            let separatorCount = result.isEmpty ? 0 : 2
+            guard characterCount + separatorCount + term.count <= 1_000 else { continue }
+            result.append(term)
+            characterCount += separatorCount + term.count
+        }
+        return result
     }
 
     private func persistMeetings() {

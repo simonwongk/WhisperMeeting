@@ -1,25 +1,56 @@
 import Foundation
 
-public struct TranscriptionOptions: Sendable, Equatable {
-    public let keyterms: [String]
-    public let expectedSpeakers: Int?
+public enum WhisperModel: String, Codable, CaseIterable, Sendable, Hashable {
+    case large
+    case turbo
 
-    public static func accuracyFirst(
-        keyterms: [String] = [],
-        expectedSpeakers: Int? = nil
-    ) -> Self {
-        Self(
-            keyterms: keyterms,
-            expectedSpeakers: expectedSpeakers
-        )
+    public var displayName: String {
+        switch self {
+        case .large: "Large — best accuracy"
+        case .turbo: "Turbo — much faster"
+        }
     }
 }
 
-public enum TranscriptionProgress: Sendable, Equatable {
-    case uploading
-    case queued
-    case processing
-    case fetchingTranscript
+public enum WhisperLanguage: String, Codable, CaseIterable, Sendable, Hashable {
+    case automatic
+    case english
+    case chinese
+
+    public var displayName: String {
+        switch self {
+        case .automatic: "Detect automatically"
+        case .english: "English"
+        case .chinese: "Chinese (Mandarin)"
+        }
+    }
+
+    var commandLineValue: String? {
+        switch self {
+        case .automatic: nil
+        case .english: "English"
+        case .chinese: "Chinese"
+        }
+    }
+}
+
+public struct LocalTranscriptionOptions: Sendable, Equatable {
+    public let model: WhisperModel
+    public let language: WhisperLanguage
+    public let keyterms: [String]
+
+    public static func accuracyFirst(
+        model: WhisperModel = .large,
+        language: WhisperLanguage = .automatic,
+        keyterms: [String] = []
+    ) -> Self {
+        Self(model: model, language: language, keyterms: keyterms)
+    }
+}
+
+public enum LocalTranscriptionProgress: Sendable, Equatable {
+    case loadingModel
+    case transcribing
 }
 
 public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
@@ -27,10 +58,10 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
         "\(speaker ?? "")-\(start ?? -1)-\(end ?? -1)-\(text)"
     }
 
-    public let speaker: String?
-    public let start: Double?
-    public let end: Double?
-    public let text: String
+    public var speaker: String?
+    public var start: Double?
+    public var end: Double?
+    public var text: String
 
     public init(
         speaker: String?,

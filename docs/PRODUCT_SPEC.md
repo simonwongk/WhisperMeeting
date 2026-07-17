@@ -2,29 +2,33 @@
 
 ## Goal
 
-Build an easy-to-use native Mac application whose primary outcome is the most accurate possible post-meeting transcript in the meeting's original language.
+Build an easy-to-use native Mac application whose primary outcome is the most accurate possible post-meeting transcript in the meeting’s original language, with all speech processing kept local.
 
 ## Requirements
 
 - Record both microphone and Mac system audio.
-- Preserve separate source tracks and prepare a combined speech-focused recording after the meeting.
+- Preserve separate source tracks and prepare a combined speech-focused WAV after the meeting.
 - Do not require realtime transcription.
-- Submit the completed recording through WhisperAI's asynchronous transcription API.
-- Automatically detect English or Mandarin; a meeting normally uses one consistent language.
-- Preserve the original spoken language without automatic translation.
-- Enable speaker diarization and allow generic speaker labels to be renamed.
-- Produce a cleaned, punctuated transcript without filler words.
-- Allow PDF, DOCX, TXT, and Markdown documents to supply a reviewable business-vocabulary list for transcription accuracy.
+- Run the open-source `openai/whisper` package locally; do not require an API key or upload meeting audio.
+- Automatically detect English or Mandarin, with an option to select either language for a normally single-language meeting.
+- Preserve the original spoken language by using the `transcribe` task, never automatic translation.
+- Default to the multilingual `large` model for accuracy and offer `turbo` as a faster option.
+- Produce editable timestamped transcript segments.
+- Allow PDF, DOCX, TXT, Markdown, and CSV documents to supply a reviewable business-vocabulary list used as Whisper’s `initial_prompt`.
 - Do not add AI summarization in v1.
-- Store a user-provided `wai_…` key in macOS Keychain. Never hard-code it, log it, add `Bearer`, or put it in a URL.
-- Store recordings and transcripts locally, provide meeting history, transcript editing, copying, and text export.
-- Handle asynchronous job states, cancellation, API errors, rate limiting, and temporary server failures.
+- Store recordings and transcripts locally and provide meeting history, editing, copying, export, cancellation, and recovery after interruption.
+- On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python 3.11, and `openai-whisper`; explain the prerequisite in Settings and the README.
 
-## Verified WhisperAI contract
+## Verified local Whisper contract
 
-- `POST /v1/upload` with a raw binary body returns `upload_url`.
-- `POST /v1/transcript` submits an asynchronous job.
-- `GET /v1/transcript/{id}` reports `queued`, `processing`, `completed`, or `error`.
-- `GET /v1/transcript/{id}/paragraphs` supplies a structured readable view when available.
-- Parameters: `language_detection`, `speaker_labels`, `punctuate`, `format_text`, `disfluencies`, `keyterms_prompt`, and optional `speakers_expected`.
-- Authentication is the raw key in `Authorization`.
+- The official package is installed with `pip install -U openai-whisper` and requires FFmpeg.
+- Current multilingual model choices include `large` and `turbo`; `large` is the accuracy-first default.
+- `--task transcribe` returns the original spoken language.
+- Omitting `--language` enables language detection; `--language English` and `--language Chinese` select a known meeting language.
+- `--output_format json` writes text, detected language, and timestamped segments.
+- `--initial_prompt` supports custom vocabulary and proper nouns; `--carry_initial_prompt True` applies it across decode windows.
+- `--model_dir` keeps downloaded model files under the app’s local data directory.
+
+## Explicit limitation
+
+The official OpenAI Whisper repository does not perform speaker diarization. v1 must not present timestamped Whisper segments as identified speakers. The app preserves microphone and system-audio source tracks for a future, separately approved local diarization module.

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WhisperCore
 
 private enum SidebarItem: Hashable {
     case record
@@ -119,7 +120,7 @@ private struct MeetingRow: View {
         case .completed: .green
         case .failed: .red
         case .recorded: .orange
-        case .uploading, .queued, .processing: .blue
+        case .processing: .blue
         }
     }
 }
@@ -128,8 +129,6 @@ private struct RecordMeetingView: View {
     @ObservedObject var model: AppModel
     let onMeetingSaved: (UUID) -> Void
     @State private var title = ""
-    @State private var knowsSpeakerCount = false
-    @State private var expectedSpeakers = 2
 
     var body: some View {
         VStack(spacing: 28) {
@@ -157,10 +156,6 @@ private struct RecordMeetingView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     TextField("Meeting title (optional)", text: $title)
                         .textFieldStyle(.roundedBorder)
-                    Toggle("I know the number of speakers", isOn: $knowsSpeakerCount)
-                    if knowsSpeakerCount {
-                        Stepper("Expected speakers: \(expectedSpeakers)", value: $expectedSpeakers, in: 1...20)
-                    }
                 }
                 .frame(maxWidth: 440)
             }
@@ -251,10 +246,7 @@ private struct RecordMeetingView: View {
             Task { await model.startRecording() }
         case .recording:
             Task {
-                if let id = await model.stopRecording(
-                    title: title,
-                    expectedSpeakers: knowsSpeakerCount ? expectedSpeakers : nil
-                ) {
+                if let id = await model.stopRecording(title: title) {
                     onMeetingSaved(id)
                     title = ""
                 }
@@ -272,31 +264,53 @@ private struct RecordMeetingView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var didSave = false
 
     var body: some View {
         Form {
-            Section("WhisperAI API Key") {
-                SecureField("wai_…", text: $model.apiKey)
-                    .textContentType(.password)
-                Text("Create your key at whisperai.com/developer#keys. It is stored only in this Mac’s Keychain and sent as the raw Authorization header.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Local Whisper") {
                 HStack {
-                    Button("Save to Keychain") {
-                        model.saveAPIKey()
-                        didSave = model.hasValidAPIKey
+                    Label(
+                        model.isRuntimeInstalled ? "Ready on this Mac" : "Not installed",
+                        systemImage: model.isRuntimeInstalled
+                            ? "checkmark.circle.fill"
+                            : "arrow.down.circle"
+                    )
+                    .foregroundStyle(model.isRuntimeInstalled ? .green : .orange)
+                    Spacer()
+                    Button(model.isRuntimeInstalled ? "Repair or Update" : "Install Local Whisper") {
+                        model.installLocalWhisper()
                     }
                     .buttonStyle(.borderedProminent)
-                    if didSave {
-                        Label("Saved", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
+                    .disabled(model.isInstallingRuntime || model.hasActiveTranscription)
                 }
+                if model.isInstallingRuntime {
+                    ProgressView("Installing. This can take several minutes…")
+                } else if let message = model.installationMessage {
+                    Text(message)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Audio and transcripts stay on this Mac. No account, API key, or usage payment is required.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("The installer uses an existing Homebrew installation to add FFmpeg and an isolated Python environment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Section("Accuracy") {
-                Text("WhisperMeet automatically detects the meeting language, labels speakers, adds punctuation, and uses your reviewed business vocabulary.")
+            Section("Transcription") {
+                Picker("Model", selection: $model.selectedModel) {
+                    ForEach(WhisperModel.allCases, id: \.self) { model in
+                        Text(model.displayName).tag(model)
+                    }
+                }
+                Picker("Meeting language", selection: $model.selectedLanguage) {
+                    ForEach(WhisperLanguage.allCases, id: \.self) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                Text("Large is the accuracy-first multilingual choice for English and Mandarin. Turbo is much faster with a small accuracy tradeoff. A model downloads once on first use.")
+                    .foregroundStyle(.secondary)
+                Text("OpenAI Whisper produces timestamps but does not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -316,7 +330,7 @@ private struct VocabularyView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Business Vocabulary")
                     .font(.largeTitle.bold())
-                Text("Only the reviewed terms below—not your full documents—are sent to WhisperAI to improve names, products, acronyms, and specialist language.")
+                Text("Every term shown below stays on this Mac and is included in Whisper’s local prompt. Up to 100 reviewed terms are kept.")
                     .foregroundStyle(.secondary)
             }
 
@@ -386,7 +400,12 @@ private struct VocabularyView: View {
 
     private func addManualTerms() {
         let terms = manualTerms.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+        let before = Set(store.vocabulary)
         store.addVocabulary(terms)
+        let added = Set(store.vocabulary).subtracting(before).count
+        importMessage = added == 0
+            ? "No terms were added. The prompt may already be at its 100-term limit."
+            : "Added \(added) term\(added == 1 ? "" : "s") to the local prompt."
         manualTerms = ""
     }
 
@@ -397,8 +416,10 @@ private struct VocabularyView: View {
                 let extracted = try await Task.detached(priority: .userInitiated) {
                     try urls.flatMap(VocabularyExtractor.extract(from:))
                 }.value
+                let before = Set(store.vocabulary)
                 store.addVocabulary(extracted)
-                importMessage = "Added \(Set(extracted).count) candidate terms. Remove anything that should not influence transcription."
+                let added = Set(store.vocabulary).subtracting(before).count
+                importMessage = "Added \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
             } catch {
                 importMessage = error.localizedDescription
             }
@@ -421,10 +442,10 @@ private struct TranscriptDetailView: View {
 
                     if meeting.status == .completed {
                         if !meeting.segments.isEmpty {
-                            speakerNames(meeting)
                             transcriptSegments(meeting)
+                        } else {
+                            transcriptEditor(meeting)
                         }
-                        transcriptEditor(meeting)
                     }
                 }
                 .frame(maxWidth: 860, alignment: .leading)
@@ -463,7 +484,7 @@ private struct TranscriptDetailView: View {
     private func statusCard(_ meeting: MeetingRecord) -> some View {
         if meeting.status != .completed {
             HStack(spacing: 14) {
-                if [.uploading, .queued, .processing].contains(meeting.status) {
+                if meeting.status == .processing {
                     ProgressView()
                         .controlSize(.small)
                 } else {
@@ -479,9 +500,13 @@ private struct TranscriptDetailView: View {
                     }
                 }
                 Spacer()
-                if meeting.status == .recorded || meeting.status == .failed {
+                if meeting.status == .processing {
+                    Button("Cancel", role: .destructive) {
+                        model.cancelTranscription(id: meeting.id)
+                    }
+                } else if meeting.status == .recorded || meeting.status == .failed {
                     Button("Transcribe") {
-                        Task { await model.transcribe(id: meeting.id) }
+                        model.beginTranscription(id: meeting.id)
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -491,51 +516,44 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func speakerNames(_ meeting: MeetingRecord) -> some View {
-        let speakers = Array(Set(meeting.segments.compactMap(\.speaker))).sorted()
-        if !speakers.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Speakers").font(.headline)
-                HStack {
-                    ForEach(speakers, id: \.self) { speaker in
-                        TextField(
-                            speaker,
-                            text: Binding(
-                                get: { store.meeting(id: meeting.id)?.speakerNames[speaker] ?? "" },
-                                set: { value in
-                                    store.update(id: meeting.id) { $0.speakerNames[speaker] = value }
-                                }
-                            )
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 180)
-                    }
+    private func transcriptSegments(_ meeting: MeetingRecord) -> some View {
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Timestamped Transcript").font(.headline)
+                Spacer()
+                Button("Copy") { copy(meeting.transcriptText) }
+                Button("Export…") {
+                    export(meeting: meeting, text: meeting.transcriptText)
                 }
             }
-        }
-    }
-
-    private func transcriptSegments(_ meeting: MeetingRecord) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Speaker Transcript")
-                .font(.headline)
-                .padding(.bottom, 10)
-            ForEach(meeting.segments) { segment in
+            .padding(.bottom, 10)
+            ForEach(meeting.segments.indices, id: \.self) { index in
+                let segment = meeting.segments[index]
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .trailing, spacing: 3) {
-                        Text(displayName(for: segment.speaker, meeting: meeting))
-                            .fontWeight(.semibold)
                         if let start = segment.start {
                             Text(timestamp(start))
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .frame(width: 120, alignment: .trailing)
-                    Text(segment.text)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(width: 64, alignment: .trailing)
+                    TextEditor(text: Binding(
+                        get: {
+                            guard let current = store.meeting(id: meeting.id),
+                                  current.segments.indices.contains(index) else { return "" }
+                            return current.segments[index].text
+                        },
+                        set: { value in updateSegmentText(value, meetingID: meeting.id, index: index) }
+                    ))
+                    .scrollContentBackground(.hidden)
+                    .frame(maxWidth: .infinity, minHeight: 52, maxHeight: 130)
+                    .padding(6)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(.separator, lineWidth: 1)
+                    }
                 }
                 .padding(.vertical, 11)
                 Divider()
@@ -548,11 +566,8 @@ private struct TranscriptDetailView: View {
             HStack {
                 Text("Editable Transcript").font(.headline)
                 Spacer()
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(draft, forType: .string)
-                }
-                Button("Export…") { export(meeting: meeting) }
+                Button("Copy") { copy(draft) }
+                Button("Export…") { export(meeting: meeting, text: draft) }
                 Button("Save Changes") {
                     store.update(id: meeting.id) { $0.transcriptText = draft }
                 }
@@ -572,19 +587,26 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    private func displayName(for speaker: String?, meeting: MeetingRecord) -> String {
-        guard let speaker else { return "Speaker" }
-        let name = meeting.speakerNames[speaker]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name?.isEmpty == false ? name! : "Speaker \(speaker)"
+    private func updateSegmentText(_ text: String, meetingID: UUID, index: Int) {
+        store.update(id: meetingID) { meeting in
+            guard meeting.segments.indices.contains(index) else { return }
+            meeting.segments[index].text = text
+            meeting.transcriptText = meeting.segments.map(\.text).joined(separator: "\n")
+        }
     }
 
-    private func export(meeting: MeetingRecord) {
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func export(meeting: MeetingRecord, text: String) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = meeting.title.replacingOccurrences(of: "/", with: "-") + ".txt"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try draft.write(to: url, atomically: true, encoding: .utf8)
+            try text.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             model.alertMessage = error.localizedDescription
         }

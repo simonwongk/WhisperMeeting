@@ -25,7 +25,6 @@ let package = Package(
                 .linkedFramework("NaturalLanguage"),
                 .linkedFramework("PDFKit"),
                 .linkedFramework("ScreenCaptureKit"),
-                .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
