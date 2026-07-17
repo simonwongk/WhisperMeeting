@@ -40,6 +40,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     var confidence: Double?
     var segments: [TranscriptSegment]
     var errorMessage: String?
+    var summary: MeetingSummary?
 
     init(
         id: UUID = UUID(),
@@ -52,7 +53,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         languageCode: String? = nil,
         confidence: Double? = nil,
         segments: [TranscriptSegment] = [],
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        summary: MeetingSummary? = nil
     ) {
         self.id = id
         self.title = title
@@ -65,19 +67,27 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.confidence = confidence
         self.segments = segments
         self.errorMessage = errorMessage
+        self.summary = summary
     }
+}
+
+struct OrphanedRecording: Sendable, Equatable {
+    let id: UUID
+    let directory: URL
+    let createdAt: Date
 }
 
 @MainActor
 final class MeetingStore: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
     @Published var vocabulary: [String] = []
+    @Published private(set) var storageErrorMessage: String?
+
+    private(set) var startupRecoveryMessages: [String] = []
 
     let rootDirectory: URL
-    private let indexURL: URL
-    private let vocabularyURL: URL
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    private let meetingFiles: BackupJSONStore<[MeetingRecord]>
+    private let vocabularyFiles: BackupJSONStore<[String]>
 
     init(rootDirectory: URL? = nil) {
         let appSupport = FileManager.default.urls(
@@ -86,44 +96,81 @@ final class MeetingStore: ObservableObject {
         ).first!
         self.rootDirectory = rootDirectory
             ?? appSupport.appendingPathComponent("WhisperMeet", isDirectory: true)
-        indexURL = self.rootDirectory.appendingPathComponent("meetings.json")
-        vocabularyURL = self.rootDirectory.appendingPathComponent("vocabulary.json")
-
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        meetingFiles = BackupJSONStore(
+            primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
+            backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json")
+        )
+        vocabularyFiles = BackupJSONStore(
+            primaryURL: self.rootDirectory.appendingPathComponent("vocabulary.json"),
+            backupURL: self.rootDirectory.appendingPathComponent("vocabulary.backup.json")
+        )
 
         do {
             try FileManager.default.createDirectory(
                 at: self.rootDirectory,
                 withIntermediateDirectories: true
             )
-            if let data = try? Data(contentsOf: indexURL) {
-                meetings = try decoder.decode([MeetingRecord].self, from: data)
-                    .sorted { $0.createdAt > $1.createdAt }
-            }
-            if let data = try? Data(contentsOf: vocabularyURL) {
-                vocabulary = Self.promptSafeTerms(
-                    try decoder.decode([String].self, from: data)
-                )
-            }
         } catch {
-            assertionFailure("Could not initialize meeting storage: \(error)")
+            startupRecoveryMessages.append(
+                "WhisperMeet could not open its storage folder: \(error.localizedDescription)"
+            )
+            return
         }
+        loadMeetings()
+        loadVocabulary()
     }
 
     func recordingDirectory(for id: UUID) throws -> URL {
-        let directory = rootDirectory
-            .appendingPathComponent("Recordings", isDirectory: true)
-            .appendingPathComponent(id.uuidString, isDirectory: true)
+        let directory = recordingDirectoryURL(for: id)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
+    func recordingDirectoryURL(for id: UUID) -> URL {
+        rootDirectory
+            .appendingPathComponent("Recordings", isDirectory: true)
+            .appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
     func recordingURL(for meeting: MeetingRecord) -> URL {
         rootDirectory.appendingPathComponent(meeting.recordingPath)
+    }
+
+    func relativeRecordingPath(for url: URL) -> String {
+        url.standardizedFileURL.path.replacingOccurrences(
+            of: rootDirectory.standardizedFileURL.path + "/",
+            with: ""
+        )
+    }
+
+    func orphanedRecordings() throws -> [OrphanedRecording] {
+        let recordingsDirectory = rootDirectory
+            .appendingPathComponent("Recordings", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else {
+            return []
+        }
+        let indexedDirectories = Set(meetings.map {
+            recordingURL(for: $0).deletingLastPathComponent().standardizedFileURL.path
+        })
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: recordingsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey, .creationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+        return urls.compactMap { url in
+            guard !indexedDirectories.contains(url.standardizedFileURL.path),
+                  let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .creationDateKey]),
+                  values.isDirectory == true,
+                  let id = UUID(uuidString: url.lastPathComponent) else {
+                return nil
+            }
+            return OrphanedRecording(
+                id: id,
+                directory: url,
+                createdAt: values.creationDate ?? .now
+            )
+        }
+        .sorted { $0.createdAt < $1.createdAt }
     }
 
     func upsert(_ meeting: MeetingRecord) {
@@ -164,6 +211,10 @@ final class MeetingStore: ObservableObject {
         persistVocabulary()
     }
 
+    func clearStorageError() {
+        storageErrorMessage = nil
+    }
+
     private static func normalizeTerm(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -184,17 +235,49 @@ final class MeetingStore: ObservableObject {
 
     private func persistMeetings() {
         do {
-            try encoder.encode(meetings).write(to: indexURL, options: .atomic)
+            try meetingFiles.save(meetings)
+            storageErrorMessage = nil
         } catch {
-            assertionFailure("Could not save meetings: \(error)")
+            storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(error.localizedDescription)"
         }
     }
 
     private func persistVocabulary() {
         do {
-            try encoder.encode(vocabulary).write(to: vocabularyURL, options: .atomic)
+            try vocabularyFiles.save(vocabulary)
+            storageErrorMessage = nil
         } catch {
-            assertionFailure("Could not save vocabulary: \(error)")
+            storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+        }
+    }
+
+    private func loadMeetings() {
+        do {
+            guard let result = try meetingFiles.load() else { return }
+            meetings = result.value.sorted { $0.createdAt > $1.createdAt }
+            if result.source == .backup {
+                startupRecoveryMessages.append(
+                    "The meeting index was damaged, so WhisperMeet restored the previous readable backup. No recording folders were deleted."
+                )
+                try meetingFiles.save(meetings)
+            }
+        } catch {
+            startupRecoveryMessages.append(error.localizedDescription)
+        }
+    }
+
+    private func loadVocabulary() {
+        do {
+            guard let result = try vocabularyFiles.load() else { return }
+            vocabulary = Self.promptSafeTerms(result.value)
+            if result.source == .backup {
+                startupRecoveryMessages.append(
+                    "The vocabulary index was damaged, so WhisperMeet restored the previous readable backup."
+                )
+                try vocabularyFiles.save(vocabulary)
+            }
+        } catch {
+            startupRecoveryMessages.append(error.localizedDescription)
         }
     }
 }

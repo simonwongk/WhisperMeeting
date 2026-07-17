@@ -76,6 +76,38 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+public enum TranscriptFormatter {
+    /// Renders segments as one line per segment, each prefixed with an `MM:SS` timestamp.
+    public static func timestamped(_ segments: [TranscriptSegment]) -> String {
+        segments
+            .map { segment -> String in
+                let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let start = segment.start else { return text }
+                return "\(timestamp(start))  \(text)"
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    /// Whether the text already begins (on its first non-empty line) with an `MM:SS` prefix.
+    public static func isTimestamped(_ text: String) -> Bool {
+        guard let firstLine = text
+            .split(whereSeparator: \.isNewline)
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+            return false
+        }
+        return String(firstLine).range(
+            of: #"^\s*\d{1,2}:\d{2}(:\d{2})?\s"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    static func timestamp(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
 public struct TranscriptionResult: Sendable, Equatable {
     public let id: String
     public let text: String

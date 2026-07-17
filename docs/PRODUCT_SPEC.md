@@ -17,6 +17,10 @@ Build an easy-to-use native Mac application whose primary outcome is the most ac
 - Allow PDF, DOCX, TXT, Markdown, and CSV documents to supply a reviewable business-vocabulary list used as Whisper’s `initial_prompt`.
 - Do not add AI summarization in v1.
 - Store recordings and transcripts locally and provide meeting history, editing, copying, export, cancellation, and recovery after interruption.
+- Treat recorded audio as the source of truth: transcription failures and transcription cancellation must never modify or delete the recording.
+- Preserve partial raw tracks when recording shutdown or finalization fails, and recover unindexed recording folders on the next launch.
+- Keep a previous-readable backup of meeting and vocabulary indexes. If neither index copy is readable, preserve both files and reconstruct history from usable recording folders without deleting audio.
+- Surface recovery and storage failures in plain language, state whether the recording is safe, and let the user reveal a meeting's recording in Finder.
 - On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python 3.11, and `openai-whisper`; explain the prerequisite in Settings and the README.
 
 ## Verified local Whisper contract
@@ -32,3 +36,7 @@ Build an easy-to-use native Mac application whose primary outcome is the most ac
 ## Explicit limitation
 
 The official OpenAI Whisper repository does not perform speaker diarization. v1 must not present timestamped Whisper segments as identified speakers. The app preserves microphone and system-audio source tracks for a future, separately approved local diarization module.
+
+## Recovery boundary
+
+Automatic recovery protects against process failures, app interruption, corrupt indexes, and incomplete recording finalization. It preserves all audio files it finds. **Cancel Recording** and **Delete Meeting** are explicit user deletion actions and remain intentionally destructive; the interface and recovery documentation must state that boundary clearly.

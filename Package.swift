@@ -21,10 +21,12 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("AVFoundation"),
+                .linkedFramework("AVKit"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("NaturalLanguage"),
                 .linkedFramework("PDFKit"),
                 .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]

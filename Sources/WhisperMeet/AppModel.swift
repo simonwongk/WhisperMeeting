@@ -14,6 +14,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeMeetingID: UUID?
     @Published private(set) var activeTranscriptionID: UUID?
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
+    @Published private(set) var activeSummarizationID: UUID?
+    @Published private(set) var hasClaudeAPIKey: Bool = false
     @Published private(set) var runtimeExecutableURL: URL?
     @Published private(set) var isInstallingRuntime = false
     @Published private(set) var installationMessage: String?
@@ -29,9 +31,12 @@ final class AppModel: ObservableObject {
     private let recorder: AudioCaptureEngine
     private let defaults: UserDefaults
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
+    private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
+    private var didPerformStartupRecovery = false
 
     private static let modelKey = "localWhisperModel"
     private static let languageKey = "localWhisperLanguage"
+    private static let claudeAPIKeyAccount = "claudeAPIKey"
 
     convenience init() {
         self.init(
@@ -56,10 +61,20 @@ final class AppModel: ObservableObject {
             rawValue: defaults.string(forKey: Self.languageKey) ?? ""
         ) ?? .automatic
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+        hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
     }
 
     var isRuntimeInstalled: Bool {
         runtimeExecutableURL != nil
+    }
+
+    var isSummarizing: Bool {
+        activeSummarizationID != nil
+    }
+
+    func setClaudeAPIKey(_ key: String?) {
+        KeychainStore.set(key, for: Self.claudeAPIKeyAccount)
+        hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
     }
 
     var hasActiveTranscription: Bool {
@@ -68,6 +83,47 @@ final class AppModel: ObservableObject {
 
     func refreshRuntime() {
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+    }
+
+    func performStartupRecovery() async {
+        guard !didPerformStartupRecovery else { return }
+        didPerformStartupRecovery = true
+        refreshRuntime()
+        var messages = store.startupRecoveryMessages
+
+        do {
+            for orphan in try store.orphanedRecordings() {
+                let recovered = try await Task.detached(priority: .utility) {
+                    try InterruptedRecordingRecovery.recover(in: orphan.directory)
+                }.value
+                guard let recovered else {
+                    messages.append(
+                        "An interrupted recording folder was kept at \(orphan.directory.path), but it did not contain enough audio to rebuild a WAV."
+                    )
+                    continue
+                }
+                let title = "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                store.upsert(MeetingRecord(
+                    id: orphan.id,
+                    title: title,
+                    createdAt: orphan.createdAt,
+                    duration: recovered.duration,
+                    recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                    errorMessage: recovered.wasRebuiltFromRawTracks
+                        ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
+                        : "Recovered after an interruption. The original recording and source tracks were preserved."
+                ))
+                messages.append("Recovered \(title) and added it back to meeting history.")
+            }
+        } catch {
+            messages.append(
+                "WhisperMeet could not finish scanning interrupted recordings. Existing recording folders were not changed. \(error.localizedDescription)"
+            )
+        }
+        recoverInterruptedTranscriptions()
+        if !messages.isEmpty {
+            alertMessage = messages.joined(separator: "\n\n")
+        }
     }
 
     func installLocalWhisper() {
@@ -121,17 +177,16 @@ final class AppModel: ObservableObject {
     func stopRecording(title: String) async -> UUID? {
         guard let id = activeMeetingID else { return nil }
         recordingState = .stopping
+        let directory = store.recordingDirectoryURL(for: id)
         do {
             let artifact = try await recorder.stop()
-            let relativePath = artifact.mixedRecordingURL.path
-                .replacingOccurrences(of: store.rootDirectory.path + "/", with: "")
             let fallbackTitle = "Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let meeting = MeetingRecord(
                 id: id,
                 title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
                 duration: artifact.duration,
-                recordingPath: relativePath
+                recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL)
             )
             store.upsert(meeting)
             recordingState = .idle
@@ -144,10 +199,31 @@ final class AppModel: ObservableObject {
                 alertMessage = "Recording saved on this Mac. Install Local Whisper in Settings, then choose Transcribe."
             }
             return id
-        } catch {
+        } catch let recordingError {
             recordingState = .idle
             activeMeetingID = nil
-            alertMessage = error.localizedDescription
+            do {
+                let recovered = try await Task.detached(priority: .userInitiated) {
+                    try InterruptedRecordingRecovery.recover(in: directory)
+                }.value
+                if let recovered {
+                    let fallbackTitle = "Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+                    let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    store.upsert(MeetingRecord(
+                        id: id,
+                        title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
+                        duration: recovered.duration,
+                        recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                        errorMessage: "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again."
+                    ))
+                    alertMessage = "The meeting could not finish normally, but its recording was recovered and added to history. \(recordingError.localizedDescription)"
+                    return id
+                }
+            } catch {
+                alertMessage = "The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(recordingError.localizedDescription) Recovery error: \(error.localizedDescription)"
+                return nil
+            }
+            alertMessage = "No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(recordingError.localizedDescription)"
             return nil
         }
     }
@@ -180,6 +256,44 @@ final class AppModel: ObservableObject {
 
     func cancelTranscription(id: UUID) {
         transcriptionTasks[id]?.cancel()
+    }
+
+    func summarize(id: UUID) {
+        guard summarizationTasks[id] == nil else { return }
+        guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
+            alertMessage = SummarizerError.missingAPIKey.localizedDescription
+            return
+        }
+        guard activeSummarizationID == nil else {
+            alertMessage = "Another meeting is being summarized. Try again when it finishes."
+            return
+        }
+        guard let meeting = store.meeting(id: id) else { return }
+
+        activeSummarizationID = id
+        let transcript = meeting.transcriptText
+        let language = meeting.languageCode
+        let task = Task {
+            await performSummarization(id: id, apiKey: key, transcript: transcript, language: language)
+            summarizationTasks[id] = nil
+            activeSummarizationID = nil
+        }
+        summarizationTasks[id] = task
+    }
+
+    private func performSummarization(
+        id: UUID,
+        apiKey: String,
+        transcript: String,
+        language: String?
+    ) async {
+        let summarizer = ClaudeSummarizer(apiKey: apiKey)
+        do {
+            let summary = try await summarizer.summarize(transcript: transcript, language: language)
+            store.update(id: id) { $0.summary = summary }
+        } catch {
+            alertMessage = error.localizedDescription
+        }
     }
 
     func recoverInterruptedTranscriptions() {
@@ -233,7 +347,9 @@ final class AppModel: ObservableObject {
     private func apply(result: TranscriptionResult, to id: UUID) {
         store.update(id: id) {
             $0.status = .completed
-            $0.transcriptText = result.text
+            $0.transcriptText = result.segments.isEmpty
+                ? result.text
+                : TranscriptFormatter.timestamped(result.segments)
             $0.languageCode = result.languageCode
             $0.confidence = nil
             $0.segments = result.segments
@@ -251,12 +367,18 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(error: Error, id: UUID) {
+        let recordingIsSafe = store.meeting(id: id).map {
+            FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
+        } ?? false
+        let message = recordingIsSafe
+            ? "\(error.localizedDescription) The recording is safe on this Mac; choose Transcribe to try again."
+            : error.localizedDescription
         store.update(id: id) {
             $0.status = .failed
-            $0.errorMessage = error.localizedDescription
+            $0.errorMessage = message
         }
         transcriptionProgress[id] = nil
-        alertMessage = error.localizedDescription
+        alertMessage = message
     }
 
     private func runInstaller(scriptURL: URL, runtimeDirectory: URL) async throws {

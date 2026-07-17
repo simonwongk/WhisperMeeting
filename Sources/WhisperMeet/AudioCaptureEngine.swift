@@ -115,16 +115,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             try await stream.stopCapture()
         } catch {
             await captureQueue.flush()
-            systemWriter?.cancel()
-            microphoneWriter?.cancel()
+            preservePartialTracks()
             reset()
             throw error
         }
         await captureQueue.flush()
 
         if let streamError {
-            systemWriter?.cancel()
-            microphoneWriter?.cancel()
+            preservePartialTracks()
             reset()
             throw streamError
         }
@@ -222,6 +220,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         sessionDirectory = nil
         startedAt = nil
         streamError = nil
+    }
+
+    private func preservePartialTracks() {
+        _ = try? systemWriter?.finish()
+        _ = try? microphoneWriter?.finish()
     }
 }
 

@@ -46,6 +46,12 @@ Scripts/setup-local-whisper.sh
 
 Recordings, separate microphone/system source tracks, models, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`, which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so the sources remain reusable.
 
+## Recording safety and recovery
+
+The recording is the source of truth. Local Whisper only reads the finished WAV, so a failed or cancelled transcription leaves the audio untouched and can be retried. The app also keeps previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when recording finalization fails, and scans for interrupted recording folders on its next launch.
+
+Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual recovery steps, and the intentionally destructive **Cancel Recording** and **Delete Meeting** actions.
+
 ## Speaker limitation
 
 OpenAI Whisper transcribes speech and produces timestamped segments, but it does not perform speaker diarization. This version therefore does not claim to identify different people. The separate microphone and system-audio source files are retained so a local diarization model can be added later without rerecording meetings.
@@ -57,4 +63,4 @@ swift test
 swift build
 ```
 
-Tests exercise the local process interface, verified CLI options, original-language output, timestamp parsing, executable discovery, and failure handling without downloading a speech model.
+Tests exercise the local process interface, verified CLI options, original-language output, timestamp parsing, executable discovery, failure handling, index backup recovery, and rebuilding an interrupted recording without deleting its source tracks. They do not download a speech model.

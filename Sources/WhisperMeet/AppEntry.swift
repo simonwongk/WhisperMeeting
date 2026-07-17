@@ -9,8 +9,7 @@ struct WhisperMeetApp: App {
             ContentView(model: model)
                 .frame(minWidth: 900, minHeight: 620)
                 .task {
-                    model.refreshRuntime()
-                    model.recoverInterruptedTranscriptions()
+                    await model.performStartupRecovery()
                 }
         }
         .defaultSize(width: 1_100, height: 760)

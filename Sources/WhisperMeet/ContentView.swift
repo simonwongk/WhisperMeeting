@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import AVKit
 import SwiftUI
 import UniformTypeIdentifiers
 import WhisperCore
@@ -14,6 +16,7 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var store: MeetingStore
     @State private var selection: SidebarItem? = .record
+    @State private var pendingDeletion: MeetingRecord?
 
     init(model: AppModel) {
         self.model = model
@@ -44,10 +47,7 @@ struct ContentView: View {
                             .tag(SidebarItem.meeting(meeting.id))
                             .contextMenu {
                                 Button("Delete Meeting", role: .destructive) {
-                                    store.delete(id: meeting.id)
-                                    if selection == .meeting(meeting.id) {
-                                        selection = .record
-                                    }
+                                    pendingDeletion = meeting
                                 }
                             }
                     }
@@ -61,13 +61,47 @@ struct ContentView: View {
         .alert(
             "WhisperMeet",
             isPresented: Binding(
-                get: { model.alertMessage != nil },
-                set: { if !$0 { model.alertMessage = nil } }
+                get: {
+                    model.alertMessage != nil || store.storageErrorMessage != nil
+                },
+                set: {
+                    if !$0 {
+                        model.alertMessage = nil
+                        store.clearStorageError()
+                    }
+                }
             )
         ) {
-            Button("OK") { model.alertMessage = nil }
+            Button("OK") {
+                model.alertMessage = nil
+                store.clearStorageError()
+            }
         } message: {
-            Text(model.alertMessage ?? "")
+            Text([model.alertMessage, store.storageErrorMessage]
+                .compactMap { $0 }
+                .joined(separator: "\n\n"))
+        }
+        .confirmationDialog(
+            "Permanently delete this meeting?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Recording and Transcript", role: .destructive) {
+                guard let meeting = pendingDeletion else { return }
+                store.delete(id: meeting.id)
+                if selection == .meeting(meeting.id) {
+                    selection = .record
+                }
+                pendingDeletion = nil
+            }
+            Button("Keep Meeting", role: .cancel) {
+                pendingDeletion = nil
+            }
+        } message: {
+            Text("This removes the local recording, its source tracks, and its transcript. This action cannot be undone by WhisperMeet.")
         }
     }
 
@@ -129,6 +163,7 @@ private struct RecordMeetingView: View {
     @ObservedObject var model: AppModel
     let onMeetingSaved: (UUID) -> Void
     @State private var title = ""
+    @State private var isConfirmingCancellation = false
 
     var body: some View {
         VStack(spacing: 28) {
@@ -174,7 +209,7 @@ private struct RecordMeetingView: View {
 
             if isRecording {
                 Button("Cancel Recording", role: .destructive) {
-                    Task { await model.cancelRecording() }
+                    isConfirmingCancellation = true
                 }
                 .buttonStyle(.plain)
             }
@@ -190,6 +225,18 @@ private struct RecordMeetingView: View {
         }
         .padding(40)
         .navigationTitle("New Meeting")
+        .confirmationDialog(
+            "Discard this recording?",
+            isPresented: $isConfirmingCancellation,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Recording", role: .destructive) {
+                Task { await model.cancelRecording() }
+            }
+            Button("Keep Recording", role: .cancel) {}
+        } message: {
+            Text("The unfinished recording and its source tracks will be permanently removed. Choose Stop Meeting if you want to keep the audio.")
+        }
     }
 
     private var isRecording: Bool {
@@ -264,6 +311,7 @@ private struct RecordMeetingView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @State private var apiKeyDraft = ""
 
     var body: some View {
         Form {
@@ -311,6 +359,33 @@ struct SettingsView: View {
                 Text("Large is the accuracy-first multilingual choice for English and Mandarin. Turbo is much faster with a small accuracy tradeoff. A model downloads once on first use.")
                     .foregroundStyle(.secondary)
                 Text("OpenAI Whisper produces timestamps but does not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Claude Summaries (optional)") {
+                HStack {
+                    Label(
+                        model.hasClaudeAPIKey ? "API key saved" : "No API key",
+                        systemImage: model.hasClaudeAPIKey ? "checkmark.circle.fill" : "key"
+                    )
+                    .foregroundStyle(model.hasClaudeAPIKey ? .green : .secondary)
+                    Spacer()
+                    if model.hasClaudeAPIKey {
+                        Button("Remove", role: .destructive) {
+                            model.setClaudeAPIKey(nil)
+                            apiKeyDraft = ""
+                        }
+                    }
+                }
+                SecureField("sk-ant-…", text: $apiKeyDraft)
+                Button("Save API Key") {
+                    model.setClaudeAPIKey(apiKeyDraft)
+                    apiKeyDraft = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Text("Summaries are the one feature that leaves this Mac: the transcript is sent to Anthropic's Claude API, which requires your own paid API key. Recording and transcription stay fully local.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -431,7 +506,7 @@ private struct TranscriptDetailView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: MeetingStore
     let meetingID: UUID
-    @State private var draft = ""
+    @State private var confirmSummarize = false
 
     var body: some View {
         if let meeting = store.meeting(id: meetingID) {
@@ -441,11 +516,9 @@ private struct TranscriptDetailView: View {
                     statusCard(meeting)
 
                     if meeting.status == .completed {
-                        if !meeting.segments.isEmpty {
-                            transcriptSegments(meeting)
-                        } else {
-                            transcriptEditor(meeting)
-                        }
+                        recordingPlayer(meeting)
+                        summarySection(meeting)
+                        transcriptEditor(meeting)
                     }
                 }
                 .frame(maxWidth: 860, alignment: .leading)
@@ -453,11 +526,86 @@ private struct TranscriptDetailView: View {
                 .frame(maxWidth: .infinity)
             }
             .navigationTitle(meeting.title)
-            .onAppear { draft = meeting.transcriptText }
-            .onChange(of: meeting.transcriptText) { _, value in
-                if draft != value { draft = value }
+            .onAppear { normalizeTranscriptIfNeeded(meeting) }
+            .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
+                Button("Cancel", role: .cancel) {}
+                Button("Send to Claude") { model.summarize(id: meetingID) }
+            } message: {
+                Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
             }
         }
+    }
+
+    @ViewBuilder
+    private func summarySection(_ meeting: MeetingRecord) -> some View {
+        let isSummarizing = model.activeSummarizationID == meeting.id
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Summary").font(.headline)
+                Spacer()
+                if let summary = meeting.summary {
+                    Button("Copy") { copy(Self.summaryText(summary)) }
+                    Button("Export…") { export(meeting: meeting, text: Self.summaryText(summary)) }
+                }
+                Button(meeting.summary == nil ? "Summarize with Claude" : "Re-summarize") {
+                    if model.hasClaudeAPIKey {
+                        confirmSummarize = true
+                    } else {
+                        model.alertMessage = "Add a Claude API key in Settings to create summaries."
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSummarizing || meeting.transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if isSummarizing {
+                ProgressView("Summarizing with Claude…").controlSize(.small)
+            } else if let summary = meeting.summary {
+                summaryBody(summary)
+            } else if !model.hasClaudeAPIKey {
+                Text("Add a Claude API key in Settings to turn this transcript into a summary, key points, and action items.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func summaryBody(_ summary: MeetingSummary) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(summary.summary)
+            if !summary.keyPoints.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Key points").font(.subheadline.bold())
+                    ForEach(summary.keyPoints.indices, id: \.self) { index in
+                        Text("• \(summary.keyPoints[index])")
+                    }
+                }
+            }
+            if !summary.actionItems.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Action items").font(.subheadline.bold())
+                    ForEach(summary.actionItems.indices, id: \.self) { index in
+                        Label(summary.actionItems[index], systemImage: "checkmark.square")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private static func summaryText(_ summary: MeetingSummary) -> String {
+        var lines = ["Summary", summary.summary]
+        if !summary.keyPoints.isEmpty {
+            lines.append("\nKey points")
+            lines.append(contentsOf: summary.keyPoints.map { "• \($0)" })
+        }
+        if !summary.actionItems.isEmpty {
+            lines.append("\nAction items")
+            lines.append(contentsOf: summary.actionItems.map { "- [ ] \($0)" })
+        }
+        return lines.joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -474,6 +622,15 @@ private struct TranscriptDetailView: View {
                 if let confidence = meeting.confidence {
                     Label(confidence.formatted(.percent.precision(.fractionLength(0))), systemImage: "checkmark.seal")
                 }
+                Spacer()
+                Button("Show Recording in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([
+                        store.recordingURL(for: meeting)
+                    ])
+                }
+                .disabled(!FileManager.default.fileExists(
+                    atPath: store.recordingURL(for: meeting).path
+                ))
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -516,47 +673,22 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    private func transcriptSegments(_ meeting: MeetingRecord) -> some View {
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Timestamped Transcript").font(.headline)
-                Spacer()
-                Button("Copy") { copy(meeting.transcriptText) }
-                Button("Export…") {
-                    export(meeting: meeting, text: meeting.transcriptText)
-                }
-            }
-            .padding(.bottom, 10)
-            ForEach(meeting.segments.indices, id: \.self) { index in
-                let segment = meeting.segments[index]
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        if let start = segment.start {
-                            Text(timestamp(start))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(width: 64, alignment: .trailing)
-                    TextEditor(text: Binding(
-                        get: {
-                            guard let current = store.meeting(id: meeting.id),
-                                  current.segments.indices.contains(index) else { return "" }
-                            return current.segments[index].text
-                        },
-                        set: { value in updateSegmentText(value, meetingID: meeting.id, index: index) }
-                    ))
-                    .scrollContentBackground(.hidden)
-                    .frame(maxWidth: .infinity, minHeight: 52, maxHeight: 130)
-                    .padding(6)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 7))
+    @ViewBuilder
+    private func recordingPlayer(_ meeting: MeetingRecord) -> some View {
+        let recordingURL = store.recordingURL(for: meeting)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recording").font(.headline)
+            if FileManager.default.fileExists(atPath: recordingURL.path) {
+                AudioPlayerView(url: recordingURL)
+                    .frame(height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 7)
+                        RoundedRectangle(cornerRadius: 10)
                             .stroke(.separator, lineWidth: 1)
                     }
-                }
-                .padding(.vertical, 11)
-                Divider()
+            } else {
+                Text("Recording unavailable on this Mac.")
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -564,35 +696,40 @@ private struct TranscriptDetailView: View {
     private func transcriptEditor(_ meeting: MeetingRecord) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Editable Transcript").font(.headline)
+                Text("Transcript").font(.headline)
                 Spacer()
-                Button("Copy") { copy(draft) }
-                Button("Export…") { export(meeting: meeting, text: draft) }
-                Button("Save Changes") {
-                    store.update(id: meeting.id) { $0.transcriptText = draft }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(draft == meeting.transcriptText)
+                Button("Copy") { copy(currentTranscript()) }
+                Button("Export…") { export(meeting: meeting, text: currentTranscript()) }
             }
-            TextEditor(text: $draft)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(12)
-                .frame(minHeight: 320)
-                .background(.background, in: RoundedRectangle(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(.separator, lineWidth: 1)
-                }
+            TextEditor(text: Binding(
+                get: { store.meeting(id: meeting.id)?.transcriptText ?? "" },
+                set: { value in store.update(id: meeting.id) { $0.transcriptText = value } }
+            ))
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            .padding(12)
+            .frame(minHeight: 360)
+            .background(.background, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.separator, lineWidth: 1)
+            }
         }
     }
 
-    private func updateSegmentText(_ text: String, meetingID: UUID, index: Int) {
-        store.update(id: meetingID) { meeting in
-            guard meeting.segments.indices.contains(index) else { return }
-            meeting.segments[index].text = text
-            meeting.transcriptText = meeting.segments.map(\.text).joined(separator: "\n")
-        }
+    /// Upgrades meetings transcribed before the unified-transcript change: if a completed
+    /// meeting still has plain text plus segments, rebuild its transcript with inline
+    /// timestamps once. Freeform edits (already timestamped) are left untouched.
+    private func normalizeTranscriptIfNeeded(_ meeting: MeetingRecord) {
+        guard meeting.status == .completed, !meeting.segments.isEmpty,
+              !TranscriptFormatter.isTimestamped(meeting.transcriptText) else { return }
+        let rebuilt = TranscriptFormatter.timestamped(meeting.segments)
+        guard !rebuilt.isEmpty else { return }
+        store.update(id: meeting.id) { $0.transcriptText = rebuilt }
+    }
+
+    private func currentTranscript() -> String {
+        store.meeting(id: meetingID)?.transcriptText ?? ""
     }
 
     private func copy(_ text: String) {
@@ -618,9 +755,22 @@ private struct TranscriptDetailView: View {
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: duration) ?? "0m"
     }
+}
 
-    private func timestamp(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds))
-        return String(format: "%02d:%02d", total / 60, total % 60)
+private struct AudioPlayerView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.player = AVPlayer(url: url)
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        let currentURL = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url
+        if currentURL != url {
+            nsView.player = AVPlayer(url: url)
+        }
     }
 }
