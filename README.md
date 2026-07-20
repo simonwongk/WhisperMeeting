@@ -20,6 +20,8 @@ open .build/WhisperMeet.app
 
 The build script creates and ad-hoc signs `.build/WhisperMeet.app`. On first recording, macOS asks for Microphone and Screen & System Audio Recording permissions. If system audio is silent after granting permission, quit and reopen the app.
 
+Because the local build is ad-hoc signed, rebuilding changes its code identity. macOS may leave the old **Screen & System Audio Recording** switch visibly enabled even though it belongs to the previous binary. After a rebuild, switch WhisperMeet **off and back on**, quit the app completely with **⌘Q**, and open the newly built app. A stable Apple Development or distribution signature avoids this repeated development-only permission step.
+
 ## First-time setup
 
 Open **Settings** and choose **Install Local Whisper**. The bundled installer uses Homebrew to install FFmpeg and Python 3.11, then creates an isolated Python environment under:

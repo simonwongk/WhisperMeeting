@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 import WhisperCore
@@ -13,6 +14,7 @@ struct RecordingArtifact: Sendable {
 
 enum AudioCaptureError: LocalizedError {
     case microphonePermissionDenied
+    case systemAudioPermissionDenied
     case noDisplayAvailable
     case noAudioCaptured
     case conversionFailed(String)
@@ -21,6 +23,8 @@ enum AudioCaptureError: LocalizedError {
         switch self {
         case .microphonePermissionDenied:
             return "Microphone access is required. Enable it in System Settings → Privacy & Security → Microphone."
+        case .systemAudioPermissionDenied:
+            return "Screen & System Audio Recording access is required. Enable WhisperMeet in System Settings, then quit WhisperMeet completely with ⌘Q and open it again."
         case .noDisplayAvailable:
             return "No display is available for system-audio capture."
         case .noAudioCaptured:
@@ -53,6 +57,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard stream == nil else { return }
         guard await requestMicrophoneAccess() else {
             throw AudioCaptureError.microphonePermissionDenied
+        }
+        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+            throw AudioCaptureError.systemAudioPermissionDenied
         }
 
         try FileManager.default.createDirectory(
@@ -113,9 +120,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             beginRecordingActivity()
             startHealthTimer()
         } catch {
-            systemWriter?.cancel()
-            microphoneWriter?.cancel()
+            if (systemWriter?.frameCount ?? 0) > 0
+                || (microphoneWriter?.frameCount ?? 0) > 0 {
+                preservePartialTracks()
+            } else {
+                systemWriter?.cancel()
+                microphoneWriter?.cancel()
+            }
             reset()
+            _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
             throw error
         }
     }

@@ -157,6 +157,11 @@ final class AppModel: ObservableObject {
                     try InterruptedRecordingRecovery.recover(in: orphan.directory)
                 }.value
                 guard let recovered else {
+                    if (try? InterruptedRecordingRecovery.removeIfEmpty(
+                        in: orphan.directory
+                    )) == true {
+                        continue
+                    }
                     messages.append(
                         "An interrupted recording folder was kept at \(orphan.directory.path), but it did not contain enough audio to rebuild a WAV."
                     )
@@ -234,8 +239,9 @@ final class AppModel: ObservableObject {
         recordingHealth = nil
         let id = UUID()
         activeMeetingID = id
+        let directory = store.recordingDirectoryURL(for: id)
         do {
-            let directory = try store.recordingDirectory(for: id)
+            _ = try store.recordingDirectory(for: id)
             try await recorder.start(in: directory) { [weak self] snapshot in
                 Task { @MainActor [weak self] in
                     guard let self,
@@ -253,6 +259,7 @@ final class AppModel: ObservableObject {
             activeMeetingID = nil
             recordingHealth = nil
             refreshRecordingPreflight()
+            _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
             alertMessage = error.localizedDescription
         }
     }

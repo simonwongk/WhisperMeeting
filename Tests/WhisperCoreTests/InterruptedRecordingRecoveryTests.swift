@@ -30,6 +30,23 @@ func rebuildsInterruptedRecording() throws {
     ))
 }
 
+@Test("An empty failed-start folder is removed without touching non-empty folders")
+func removesOnlyEmptyFailedStartFolders() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetEmptyRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+    let emptyDirectory = root.appendingPathComponent("empty", isDirectory: true)
+    let nonEmptyDirectory = root.appendingPathComponent("non-empty", isDirectory: true)
+    try FileManager.default.createDirectory(at: emptyDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: nonEmptyDirectory, withIntermediateDirectories: true)
+    try Data("keep".utf8).write(to: nonEmptyDirectory.appendingPathComponent("unknown-data"))
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    #expect(try InterruptedRecordingRecovery.removeIfEmpty(in: emptyDirectory))
+    #expect(!FileManager.default.fileExists(atPath: emptyDirectory.path))
+    #expect(try !InterruptedRecordingRecovery.removeIfEmpty(in: nonEmptyDirectory))
+    #expect(FileManager.default.fileExists(atPath: nonEmptyDirectory.path))
+}
+
 private func writeFloatSamples(_ samples: [Float], to url: URL) throws {
     let data = samples.withUnsafeBytes { Data($0) }
     try data.write(to: url)

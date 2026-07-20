@@ -10,6 +10,20 @@ public enum InterruptedRecordingRecovery {
     private static let systemFile = "system-audio.f32"
     private static let microphoneFile = "microphone-audio.f32"
 
+    /// Removes a recording directory only when it contains no entries at all.
+    @discardableResult
+    public static func removeIfEmpty(in directory: URL) throws -> Bool {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: directory.path) else { return false }
+        let contents = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        guard contents.isEmpty else { return false }
+        try fileManager.removeItem(at: directory)
+        return true
+    }
+
     public static func recover(
         in directory: URL,
         sampleRate: Double = 48_000

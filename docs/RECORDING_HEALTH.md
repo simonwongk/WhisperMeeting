@@ -10,7 +10,7 @@ The New Meeting screen shows:
 - Mac system-audio capture permission.
 - Storage available on the volume containing the recording library.
 
-macOS requests undecided microphone permission when recording starts. Recording is blocked when no microphone input is available. Screen/system-audio capture has only a granted/not-granted preflight signal; when it is not granted, the app directs the user to check System Settings because macOS may not show the prompt again after a denial. Recording is also blocked when less than 500 MB is available because beginning a meeting in that condition puts the audio at immediate risk.
+macOS requests undecided microphone and screen/system-audio permission before any recording files are created. Recording is blocked when no microphone input is available. Screen/system-audio capture has only a granted/not-granted preflight signal; after enabling it in System Settings, the user must quit WhisperMeet completely with **⌘Q** and open it again. Closing and reopening the window is not sufficient because the app process remains active. Recording is also blocked when less than 500 MB is available because beginning a meeting in that condition puts the audio at immediate risk.
 
 ## During recording
 

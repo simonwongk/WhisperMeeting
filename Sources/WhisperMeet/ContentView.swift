@@ -336,7 +336,7 @@ private struct RecordMeetingView: View {
                 Text("Permission requested at start")
                     .foregroundStyle(.orange)
             case .notGranted:
-                Label("Not granted — check System Settings", systemImage: "exclamationmark.circle.fill")
+                Label("Enable, then quit with ⌘Q", systemImage: "exclamationmark.circle.fill")
                     .foregroundStyle(.orange)
             case .denied:
                 Label("Permission denied", systemImage: "xmark.circle.fill")
