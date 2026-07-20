@@ -14,17 +14,32 @@ macOS requests undecided microphone and screen/system-audio permission before an
 
 ## During recording
 
-The app displays separate level meters for the microphone and Mac system audio. These levels are calculated from the same converted samples being written into `microphone-audio.f32` and `system-audio.f32`, rather than from an unrelated preview path.
+The record screen shows, from top to bottom, the elapsed time, the **estimated recording size**,
+a **live volume bar**, and the **recording-health panel**.
 
-The health panel checks once per second and reports:
+- **Estimated recording size** is computed by `RecordingSizeEstimator` from elapsed time and the
+  fixed capture format (16-bit mono at 48 kHz = 96 KB/s for `meeting.wav`). It is an exact
+  constant-bitrate projection, not a disk measurement.
+- **Live volume bar** reacts to whoever is currently speaking. It is driven by a fast (~15 Hz)
+  level stream taken from the same converted samples being written to disk, so it feels
+  responsive; it shows a "Someone is speaking" cue when either channel crosses a small threshold.
 
-| Condition | Behavior |
-|---|---|
-| A previously active channel delivers no samples for more than 3 seconds | Warn that capture stopped. |
-| No microphone samples arrive during the initial 4-second grace period | Warn that microphone capture stopped. |
-| No system-audio samples have ever arrived after 15 seconds | Ask the user to play meeting audio to verify the channel. Silence alone is not described as a capture failure. |
-| A channel reaches 98% of full scale | Keep a clipping warning visible for 3 seconds. |
-| Available storage falls below 2 GB | Warn the user to stop soon to protect the recording. |
+The **health panel** leads with a one-word status — **healthy**, **worth a quick check**, or
+**needs attention** — derived from the warnings below (`RecordingHealthSnapshot.overallStatus`).
+Under it, each channel has a meter and a plain-language state chip, followed by the storage line
+and a collapsible **"How this is measured"** explainer. The meters and warnings are calculated
+from the same converted samples written into `microphone-audio.f32` and `system-audio.f32`, not
+from an unrelated preview path.
+
+The panel checks once per second and reports:
+
+| Condition | Behavior | Status |
+|---|---|---|
+| A previously active channel delivers no samples for more than 3 seconds | Warn that capture stopped. | needs attention |
+| No microphone samples arrive during the initial 4-second grace period | Warn that microphone capture stopped. | needs attention |
+| No system-audio samples have ever arrived after 15 seconds | Ask the user to play meeting audio to verify the channel. Silence alone is not described as a capture failure. | worth a check |
+| A channel reaches 98% of full scale | Keep a clipping warning visible for 3 seconds. | worth a check |
+| Available storage falls below 2 GB | Warn the user to stop soon to protect the recording. | needs attention |
 
 Warnings do not stop the meeting automatically. Stopping safely is normally preferable to abruptly ending capture, and the existing interruption recovery remains available if capture subsequently fails.
 

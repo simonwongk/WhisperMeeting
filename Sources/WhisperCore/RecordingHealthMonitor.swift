@@ -17,6 +17,38 @@ public struct RecordingAudioLevel: Sendable, Equatable {
     public static let silent = RecordingAudioLevel(rms: 0, peak: 0)
 }
 
+/// A high-frequency snapshot of both channels' loudness, pushed to the UI faster than the
+/// once-per-second health snapshot so the live volume bar feels responsive. Pure data only —
+/// warnings and storage checks stay on the health-snapshot path.
+public struct RecordingLevels: Sendable, Equatable {
+    public let microphone: RecordingAudioLevel
+    public let systemAudio: RecordingAudioLevel
+
+    public init(microphone: RecordingAudioLevel, systemAudio: RecordingAudioLevel) {
+        self.microphone = microphone
+        self.systemAudio = systemAudio
+    }
+
+    public static let silent = RecordingLevels(microphone: .silent, systemAudio: .silent)
+
+    /// Loudness of whichever channel is currently loudest — drives the combined "someone is
+    /// talking" volume bar.
+    public var combinedPeak: Float { max(microphone.peak, systemAudio.peak) }
+    public var combinedRMS: Float { max(microphone.rms, systemAudio.rms) }
+}
+
+/// A plain-language rollup of the health snapshot so the UI can state, in one word, whether the
+/// recording is fine — instead of leaving the user to interpret a list of warnings.
+public enum RecordingHealthStatus: Sendable, Equatable {
+    /// Both channels are being captured and nothing needs attention.
+    case good
+    /// Something is worth a glance but the recording is not in danger (clipping, or system audio
+    /// not detected yet).
+    case caution
+    /// The recording is at risk right now (a channel stopped delivering audio, or storage is low).
+    case atRisk
+}
+
 public enum RecordingHealthWarning: Sendable, Equatable, Hashable {
     case microphoneCaptureStopped
     case systemAudioCaptureStopped
@@ -42,6 +74,21 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
         self.systemAudioLevel = systemAudioLevel
         self.availableStorageBytes = availableStorageBytes
         self.warnings = warnings
+    }
+
+    /// One-word health rollup derived purely from `warnings`, so the UI does not have to
+    /// re-implement the severity logic. A stopped channel or low storage puts the recording at
+    /// risk; clipping or not-yet-detected system audio is a caution; anything else is good.
+    public var overallStatus: RecordingHealthStatus {
+        let atRisk: Set<RecordingHealthWarning> = [
+            .microphoneCaptureStopped,
+            .systemAudioCaptureStopped,
+            .lowStorage
+        ]
+        if warnings.contains(where: atRisk.contains) {
+            return .atRisk
+        }
+        return warnings.isEmpty ? .good : .caution
     }
 }
 

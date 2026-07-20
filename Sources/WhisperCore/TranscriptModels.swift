@@ -48,9 +48,38 @@ public struct LocalTranscriptionOptions: Sendable, Equatable {
     }
 }
 
-public enum LocalTranscriptionProgress: Sendable, Equatable {
-    case loadingModel
-    case transcribing
+/// Live progress of a local Whisper run, derived from the CLI's own output. `fractionCompleted`
+/// and `estimatedSecondsRemaining` are populated once the CLI starts reporting a progress bar;
+/// before that they are `nil` and the UI shows an indeterminate indicator.
+public struct LocalTranscriptionProgress: Sendable, Equatable {
+    public enum Phase: Sendable, Equatable {
+        /// The app has spawned the process but Whisper has not reported anything yet.
+        case preparing
+        /// Whisper is loading a model that already exists on disk.
+        case loadingModel
+        /// Whisper is downloading a model for the first time (only on first use of a model).
+        case downloadingModel
+        /// Whisper is transcribing audio.
+        case transcribing
+    }
+
+    public var phase: Phase
+    public var fractionCompleted: Double?
+    public var estimatedSecondsRemaining: TimeInterval?
+
+    public init(
+        phase: Phase,
+        fractionCompleted: Double? = nil,
+        estimatedSecondsRemaining: TimeInterval? = nil
+    ) {
+        self.phase = phase
+        self.fractionCompleted = fractionCompleted.map { min(1, max(0, $0)) }
+        self.estimatedSecondsRemaining = estimatedSecondsRemaining.map { max(0, $0) }
+    }
+
+    public static let preparing = LocalTranscriptionProgress(phase: .preparing)
+    public static let loadingModel = LocalTranscriptionProgress(phase: .loadingModel)
+    public static let transcribing = LocalTranscriptionProgress(phase: .transcribing)
 }
 
 public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
@@ -97,14 +126,39 @@ public enum TranscriptFormatter {
             return false
         }
         return String(firstLine).range(
-            of: #"^\s*\d{1,2}:\d{2}(:\d{2})?\s"#,
+            of: #"^\s*\d{1,3}:\d{2}(:\d{2})?\s"#,
             options: .regularExpression
         ) != nil
     }
 
-    static func timestamp(_ seconds: Double) -> String {
+    public static func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds))
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    /// A duration as `M:SS`, or `H:MM:SS` once it reaches an hour.
+    public static func clock(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let secs = total % 60
+        let minutes = (total / 60) % 60
+        let hours = total / 3600
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
+    }
+
+    /// Removes a leading `MM:SS`/`H:MM:SS` timestamp from each line, for a clean plain-text export.
+    public static func stripTimestamps(_ text: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                String(line).replacingOccurrences(
+                    of: #"^\s*\d{1,3}:\d{2}(:\d{2})?\s+"#,
+                    with: "",
+                    options: .regularExpression
+                )
+            }
+            .joined(separator: "\n")
     }
 }
 

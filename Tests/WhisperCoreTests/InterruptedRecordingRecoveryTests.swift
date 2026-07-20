@@ -47,6 +47,26 @@ func removesOnlyEmptyFailedStartFolders() throws {
     #expect(FileManager.default.fileExists(atPath: nonEmptyDirectory.path))
 }
 
+@Test("An imported recording folder with no source tracks is recognized, not discarded")
+func recoversImportedRecording() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetImportRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let importedURL = directory.appendingPathComponent("recording.m4a")
+    try Data("fake compressed audio".utf8).write(to: importedURL)
+
+    let recovered = try #require(try InterruptedRecordingRecovery.recover(in: directory))
+
+    #expect(!recovered.wasRebuiltFromRawTracks)
+    #expect(recovered.recordingURL.lastPathComponent == "recording.m4a")
+    #expect(
+        recovered.recordingURL.resolvingSymlinksInPath().path
+            == importedURL.resolvingSymlinksInPath().path
+    )
+    #expect(FileManager.default.fileExists(atPath: importedURL.path))
+}
+
 private func writeFloatSamples(_ samples: [Float], to url: URL) throws {
     let data = samples.withUnsafeBytes { Data($0) }
     try data.write(to: url)

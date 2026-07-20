@@ -45,6 +45,17 @@ public enum InterruptedRecordingRecovery {
             }
         }
 
+        // An imported recording keeps a single `recording.<ext>` file and no raw source tracks, so
+        // it cannot be rebuilt from `.f32` data — recognize it directly instead of reporting that
+        // there was not enough audio.
+        if let imported = importedRecording(in: directory) {
+            return RecoveredRecording(
+                recordingURL: imported,
+                duration: wavDuration(at: imported) ?? 0,
+                wasRebuiltFromRawTracks: false
+            )
+        }
+
         let systemURL = directory.appendingPathComponent(systemFile)
         let microphoneURL = directory.appendingPathComponent(microphoneFile)
         let systemFrames = frameCount(at: systemURL)
@@ -99,6 +110,21 @@ public enum InterruptedRecordingRecovery {
             duration: Double(writtenFrames) / sampleRate,
             wasRebuiltFromRawTracks: true
         )
+    }
+
+    /// Finds an imported recording file (`recording.<ext>`) in a folder that has no live-capture
+    /// artifacts, so an imported meeting that fell out of the index can be re-indexed on launch.
+    private static func importedRecording(in directory: URL) -> URL? {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return nil
+        }
+        return contents.first { url in
+            url.deletingPathExtension().lastPathComponent == "recording"
+                && !url.pathExtension.isEmpty
+        }
     }
 
     private static func frameCount(at url: URL) -> Int64 {

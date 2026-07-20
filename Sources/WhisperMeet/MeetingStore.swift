@@ -41,6 +41,11 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     var segments: [TranscriptSegment]
     var errorMessage: String?
     var summary: MeetingSummary?
+    /// Whether the transcript text has been finalized (either freshly produced with inline
+    /// timestamps, or migrated once from an older plain-text transcript). Optional so meeting
+    /// indexes written before this field still decode. Once true, `transcriptText` is never
+    /// rebuilt from `segments`, so user edits are safe.
+    var transcriptNormalized: Bool?
 
     init(
         id: UUID = UUID(),
@@ -54,7 +59,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         confidence: Double? = nil,
         segments: [TranscriptSegment] = [],
         errorMessage: String? = nil,
-        summary: MeetingSummary? = nil
+        summary: MeetingSummary? = nil,
+        transcriptNormalized: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -68,6 +74,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.segments = segments
         self.errorMessage = errorMessage
         self.summary = summary
+        self.transcriptNormalized = transcriptNormalized
     }
 }
 

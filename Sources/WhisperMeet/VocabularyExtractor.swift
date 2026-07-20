@@ -45,7 +45,11 @@ enum VocabularyExtractor {
         return candidates(in: text)
     }
 
-    static func candidates(in text: String) -> [String] {
+    /// Extracts candidate proper nouns / key terms from free text.
+    /// - Parameter includeLineHeuristic: when true (documents), whole short lines are treated as
+    ///   candidate terms — useful for glossaries and bullet lists, but wrong for transcripts, where
+    ///   each spoken line would become a bogus term. Transcript suggestions pass `false`.
+    static func candidates(in text: String, includeLineHeuristic: Bool = true) -> [String] {
         guard !text.isEmpty else { return [] }
         var terms = Set<String>()
 
@@ -74,13 +78,15 @@ enum VocabularyExtractor {
             to: &terms
         )
 
-        for rawLine in text.split(whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "#•*-–—"))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.count >= 2, line.count <= 48,
-               !line.contains("."), !line.contains(","), !line.contains("，") {
-                terms.insert(line)
+        if includeLineHeuristic {
+            for rawLine in text.split(whereSeparator: \.isNewline) {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "#•*-–—"))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.count >= 2, line.count <= 48,
+                   !line.contains("."), !line.contains(","), !line.contains("，") {
+                    terms.insert(line)
+                }
             }
         }
 

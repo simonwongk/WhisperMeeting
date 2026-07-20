@@ -102,14 +102,20 @@ public struct LocalWhisperClient: Sendable {
         )
         defer { try? FileManager.default.removeItem(at: workingDirectory) }
 
-        await onProgress(.loadingModel)
+        await onProgress(.preparing)
         let arguments = commandArguments(
             recordingAt: fileURL,
             outputDirectory: workingDirectory,
             options: options
         )
-        await onProgress(.transcribing)
-        let log = try await run(arguments: arguments, workingDirectory: workingDirectory)
+        // Whisper loads (and on first use downloads) the model before it transcribes; the parser
+        // upgrades the phase as soon as the CLI starts reporting a progress bar.
+        await onProgress(.loadingModel)
+        let log = try await run(
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            onProgress: onProgress
+        )
         try Task.checkCancellation()
 
         let outputURL = workingDirectory
@@ -186,52 +192,82 @@ public struct LocalWhisperClient: Sendable {
         return String(prompt.prefix(1_000))
     }
 
-    private func run(arguments: [String], workingDirectory: URL) async throws -> String {
-        let logURL = workingDirectory.appendingPathComponent("whisper.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        let logHandle = try FileHandle(forWritingTo: logURL)
+    /// Runs the CLI, streaming its merged stdout+stderr so `tqdm` progress bars can be parsed live,
+    /// while still accumulating the full output for error diagnostics. Both streams share one pipe
+    /// to avoid the classic two-pipe fill-buffer deadlock.
+    private func run(
+        arguments: [String],
+        workingDirectory: URL,
+        onProgress: @escaping ProgressHandler
+    ) async throws -> String {
+        let pipe = Pipe()
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
-        process.standardOutput = logHandle
-        process.standardError = logHandle
+        process.standardOutput = pipe
+        process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
         let existingPath = environment["PATH"] ?? "/usr/bin:/bin"
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
         environment["PYTHONUNBUFFERED"] = "1"
         process.environment = environment
 
-        let status = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Int32, Error>) in
-                guard !Task<Never, Never>.isCancelled else {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                process.terminationHandler = { completed in
-                    continuation.resume(returning: completed.terminationStatus)
-                }
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
+        let handle = pipe.fileHandleForReading
+        let dataStream = AsyncStream<Data> { continuation in
+            handle.readabilityHandler = { fileHandle in
+                let data = fileHandle.availableData
+                if data.isEmpty {
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
                 }
             }
+            continuation.onTermination = { _ in
+                handle.readabilityHandler = nil
+            }
+        }
+
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try process.run()
+
+            var parser = WhisperProgressParser()
+            var logData = Data()
+            for await data in dataStream {
+                logData.append(data)
+                if logData.count > 200_000 {
+                    logData = logData.suffix(100_000)
+                }
+                if let progress = parser.consume(String(decoding: data, as: UTF8.self)) {
+                    await onProgress(progress)
+                }
+            }
+            // If cancellation landed in the tiny window between the checkCancellation above and
+            // process.run() marking the process running, onCancel's isRunning guard may have
+            // skipped terminate(). Terminate here so waitUntilExit() cannot stall on a live child.
+            if Task.isCancelled, process.isRunning {
+                process.terminate()
+            }
+            // The pipe reached EOF, so the process has closed its handles; make sure it has fully
+            // exited before reading its termination status.
+            process.waitUntilExit()
+            handle.readabilityHandler = nil
+
+            let log = String(decoding: logData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            try Task.checkCancellation()
+            let status = process.terminationStatus
+            guard status == 0 else {
+                let diagnostic = String(log.suffix(4_000))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw LocalWhisperError.processFailed(
+                    diagnostic.isEmpty ? "Whisper exited with status \(status)." : diagnostic
+                )
+            }
+            return log
         } onCancel: {
             if process.isRunning { process.terminate() }
         }
-        try? logHandle.close()
-        let log = (try? String(contentsOf: logURL, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        try Task.checkCancellation()
-        guard status == 0 else {
-            let diagnostic = String(log.suffix(4_000))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw LocalWhisperError.processFailed(
-                diagnostic.isEmpty ? "Whisper exited with status \(status)." : diagnostic
-            )
-        }
-        return log
     }
 }
 

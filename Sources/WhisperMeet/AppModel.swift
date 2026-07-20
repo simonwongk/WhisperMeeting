@@ -64,7 +64,7 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var recordingState: RecordingState = .idle
     @Published private(set) var activeMeetingID: UUID?
-    @Published private(set) var activeTranscriptionID: UUID?
+    @Published private(set) var transcription = TranscriptionQueue()
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
     @Published private(set) var activeSummarizationID: UUID?
     @Published private(set) var hasClaudeAPIKey: Bool = false
@@ -73,6 +73,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var installationMessage: String?
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
+    @Published private(set) var recordingLevels: RecordingLevels?
+    @Published private(set) var isImporting = false
     @Published var selectedModel: WhisperModel {
         didSet { defaults.set(selectedModel.rawValue, forKey: Self.modelKey) }
     }
@@ -132,8 +134,14 @@ final class AppModel: ObservableObject {
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
     }
 
+    var activeTranscriptionID: UUID? { transcription.activeID }
+
     var hasActiveTranscription: Bool {
-        activeTranscriptionID != nil
+        transcription.activeID != nil
+    }
+
+    func isQueuedForTranscription(_ id: UUID) -> Bool {
+        transcription.isPending(id)
     }
 
     func refreshRuntime() {
@@ -168,11 +176,16 @@ final class AppModel: ObservableObject {
                     continue
                 }
                 let title = "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                // A recovered imported (non-WAV) file has no readable duration in the core WAV
+                // parser; recompute it here where AVFoundation is available.
+                let duration = recovered.duration > 0
+                    ? recovered.duration
+                    : await Self.loadDuration(of: recovered.recordingURL)
                 store.upsert(MeetingRecord(
                     id: orphan.id,
                     title: title,
                     createdAt: orphan.createdAt,
-                    duration: recovered.duration,
+                    duration: duration,
                     recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                     errorMessage: recovered.wasRebuiltFromRawTracks
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
@@ -224,7 +237,7 @@ final class AppModel: ObservableObject {
     }
 
     func startRecording() async {
-        guard recordingState == .idle else { return }
+        guard recordingState == .idle, !isImporting else { return }
         refreshRecordingPreflight()
         if recordingPreflight.microphoneAccess == .unavailable {
             alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."
@@ -237,6 +250,7 @@ final class AppModel: ObservableObject {
         }
         recordingState = .starting
         recordingHealth = nil
+        recordingLevels = nil
         let id = UUID()
         activeMeetingID = id
         let directory = store.recordingDirectoryURL(for: id)
@@ -251,6 +265,15 @@ final class AppModel: ObservableObject {
                     }
                     self.recordingHealth = snapshot
                 }
+            } onLevels: { [weak self] levels in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.activeMeetingID == id,
+                          case .recording = self.recordingState else {
+                        return
+                    }
+                    self.recordingLevels = levels
+                }
             }
             recordingState = .recording(startedAt: Date())
             refreshRecordingPreflight()
@@ -258,6 +281,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
+            recordingLevels = nil
             refreshRecordingPreflight()
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
             alertMessage = error.localizedDescription
@@ -282,6 +306,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
+            recordingLevels = nil
             refreshRecordingPreflight()
 
             refreshRuntime()
@@ -295,6 +320,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
+            recordingLevels = nil
             refreshRecordingPreflight()
             do {
                 let recovered = try await Task.detached(priority: .userInitiated) {
@@ -327,31 +353,147 @@ final class AppModel: ObservableObject {
         recordingState = .idle
         activeMeetingID = nil
         recordingHealth = nil
+        recordingLevels = nil
         refreshRecordingPreflight()
     }
 
-    func beginTranscription(id: UUID) {
-        guard transcriptionTasks[id] == nil else { return }
-        guard activeTranscriptionID == nil else {
-            alertMessage = "Another meeting is being transcribed. Start this one after it finishes."
-            return
+    /// Imports an existing audio or video file as a new meeting and transcribes it. The file is
+    /// copied into the recording library so the imported audio becomes the source of truth, exactly
+    /// like a live recording. Whisper (via FFmpeg) decodes any supported container directly, so no
+    /// conversion is needed here.
+    func importRecording(from sourceURL: URL, title: String) async -> UUID? {
+        guard recordingState == .idle, !isImporting else { return nil }
+        refreshRecordingPreflight()
+        if let available = recordingPreflight.availableStorageBytes {
+            // The file is copied into the library, so require room for it plus a safety margin.
+            let sourceSize = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            let needed = Int64(sourceSize) + 500_000_000
+            if available < needed {
+                alertMessage = "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
+                return nil
+            }
         }
+        isImporting = true
+        let id = UUID()
+        let directory = store.recordingDirectoryURL(for: id)
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let copiedURL = try await Task.detached(priority: .userInitiated) {
+                try Self.copyImportedRecording(from: sourceURL, into: directory)
+            }.value
+            let duration = await Self.loadDuration(of: copiedURL)
+            let fallbackTitle = sourceURL.deletingPathExtension().lastPathComponent
+            let displayTitle = cleanTitle.isEmpty
+                ? (fallbackTitle.isEmpty ? "Imported Recording" : fallbackTitle)
+                : cleanTitle
+            store.upsert(MeetingRecord(
+                id: id,
+                title: displayTitle,
+                duration: duration,
+                recordingPath: store.relativeRecordingPath(for: copiedURL),
+                status: .recorded
+            ))
+            isImporting = false
+            refreshRuntime()
+            if isRuntimeInstalled {
+                beginTranscription(id: id)
+            } else {
+                alertMessage = "Recording imported and saved on this Mac. Install Local Whisper in Settings, then choose Transcribe."
+            }
+            return id
+        } catch {
+            isImporting = false
+            try? FileManager.default.removeItem(at: directory)
+            alertMessage = "The recording could not be imported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
+    /// the UI can navigate to it. Only a single-file import adopts the typed title.
+    func importRecordings(from urls: [URL], title: String) async -> UUID? {
+        var firstID: UUID?
+        for url in urls {
+            let itemTitle = urls.count == 1 ? title : ""
+            if let id = await importRecording(from: url, title: itemTitle), firstID == nil {
+                firstID = id
+            }
+        }
+        return firstID
+    }
+
+    nonisolated private static func copyImportedRecording(
+        from sourceURL: URL,
+        into directory: URL
+    ) throws -> URL {
+        let didAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let ext = sourceURL.pathExtension.isEmpty ? "wav" : sourceURL.pathExtension.lowercased()
+        let destination = directory.appendingPathComponent("recording").appendingPathExtension(ext)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        return destination
+    }
+
+    nonisolated private static func loadDuration(of url: URL) async -> TimeInterval {
+        let asset = AVURLAsset(url: url)
+        guard let duration = try? await asset.load(.duration) else { return 0 }
+        let seconds = duration.seconds
+        return seconds.isFinite && seconds > 0 ? seconds : 0
+    }
+
+    /// Requests transcription for a meeting. If another transcription is already running, this one
+    /// waits in the queue and starts automatically when the active one finishes.
+    func beginTranscription(id: UUID) {
         refreshRuntime()
         guard runtimeExecutableURL != nil else {
             alertMessage = LocalWhisperError.runtimeNotInstalled.localizedDescription
             return
         }
-        activeTranscriptionID = id
+        guard transcription.enqueue(id) else { return }
+        pumpTranscriptionQueue()
+    }
+
+    /// Starts the next queued transcription if nothing is currently running.
+    private func pumpTranscriptionQueue() {
+        guard let next = transcription.startNext() else { return }
+        // A pending id never has a live task (tasks exist only for the active job and are cleared
+        // before finishActive), so this holds by construction — asserted rather than guarded, so a
+        // future regression can never strand the active slot with no task.
+        assert(transcriptionTasks[next] == nil, "pending transcription unexpectedly had a task")
         let task = Task {
-            await performTranscription(id: id)
-            transcriptionTasks[id] = nil
-            activeTranscriptionID = nil
+            await performTranscription(id: next)
+            transcriptionTasks[next] = nil
+            transcription.finishActive()
+            pumpTranscriptionQueue()
         }
-        transcriptionTasks[id] = task
+        transcriptionTasks[next] = task
     }
 
     func cancelTranscription(id: UUID) {
-        transcriptionTasks[id]?.cancel()
+        // A waiting job is just dropped; an active job is cancelled and its task completion frees
+        // the slot and starts the next one.
+        if transcription.isPending(id) {
+            transcription.remove(id)
+            return
+        }
+        if transcription.activeID == id {
+            transcriptionTasks[id]?.cancel()
+        }
+    }
+
+    /// Deletes a meeting, first removing it from the transcription queue (dropping a pending job or
+    /// cancelling an active one) so no ghost remains to run against a deleted recording.
+    func deleteMeeting(id: UUID) {
+        cancelTranscription(id: id)
+        store.delete(id: id)
     }
 
     func summarize(id: UUID) {
@@ -402,8 +544,9 @@ final class AppModel: ObservableObject {
     }
 
     private func performTranscription(id: UUID) async {
-        guard let meeting = store.meeting(id: id),
-              let executableURL = runtimeExecutableURL else {
+        // The meeting may have been deleted while queued; that is not an error.
+        guard let meeting = store.meeting(id: id) else { return }
+        guard let executableURL = runtimeExecutableURL else {
             alertMessage = LocalWhisperError.runtimeNotInstalled.localizedDescription
             return
         }
@@ -450,6 +593,8 @@ final class AppModel: ObservableObject {
             $0.confidence = nil
             $0.segments = result.segments
             $0.errorMessage = nil
+            // Freshly produced text is already final; never rebuild it from segments later.
+            $0.transcriptNormalized = true
         }
         transcriptionProgress[id] = nil
     }

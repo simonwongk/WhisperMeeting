@@ -50,9 +50,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var healthTimer: DispatchSourceTimer?
     private var recordingActivity: NSObjectProtocol?
 
+    // Fast, throttled level stream that drives the live volume bar, separate from the 1 Hz health
+    // snapshot used for warnings.
+    private var levelsUpdate: (@Sendable (RecordingLevels) -> Void)?
+    private var latestMicrophoneLevel: RecordingAudioLevel = .silent
+    private var latestSystemLevel: RecordingAudioLevel = .silent
+    private var lastLevelsEmittedAt: TimeInterval = 0
+    private static let levelsEmitInterval: TimeInterval = 1.0 / 15.0
+
     func start(
         in directory: URL,
-        onHealthUpdate: @escaping @Sendable (RecordingHealthSnapshot) -> Void
+        onHealthUpdate: @escaping @Sendable (RecordingHealthSnapshot) -> Void,
+        onLevels: @escaping @Sendable (RecordingLevels) -> Void
     ) async throws {
         guard stream == nil else { return }
         guard await requestMicrophoneAccess() else {
@@ -112,11 +121,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             sessionDirectory = directory
             streamError = nil
             startedAt = Date()
-            try await stream.startCapture()
+            // Establish the monitor, callbacks, and level fields BEFORE capture begins so the
+            // capture queue never reads or writes them concurrently with this setup. No sample
+            // buffers are delivered until startCapture() returns.
             healthMonitor = RecordingHealthMonitor(
                 startedAt: ProcessInfo.processInfo.systemUptime
             )
             healthUpdate = onHealthUpdate
+            levelsUpdate = onLevels
+            latestMicrophoneLevel = .silent
+            latestSystemLevel = .silent
+            lastLevelsEmittedAt = 0
+            try await stream.startCapture()
             beginRecordingActivity()
             startHealthTimer()
         } catch {
@@ -209,22 +225,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     ) {
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
         do {
+            let now = ProcessInfo.processInfo.systemUptime
             switch outputType {
             case .audio:
                 if let level = try systemWriter?.append(sampleBuffer) {
-                    healthMonitor?.receive(
-                        .systemAudio,
-                        level: level,
-                        at: ProcessInfo.processInfo.systemUptime
-                    )
+                    healthMonitor?.receive(.systemAudio, level: level, at: now)
+                    latestSystemLevel = level
+                    emitLevelsIfNeeded(at: now)
                 }
             case .microphone:
                 if let level = try microphoneWriter?.append(sampleBuffer) {
-                    healthMonitor?.receive(
-                        .microphone,
-                        level: level,
-                        at: ProcessInfo.processInfo.systemUptime
-                    )
+                    healthMonitor?.receive(.microphone, level: level, at: now)
+                    latestMicrophoneLevel = level
+                    emitLevelsIfNeeded(at: now)
                 }
             case .screen:
                 break
@@ -234,6 +247,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         } catch {
             streamError = error
         }
+    }
+
+    /// Emits combined levels no more often than `levelsEmitInterval` so the volume bar updates
+    /// smoothly without flooding the main actor.
+    private func emitLevelsIfNeeded(at time: TimeInterval) {
+        guard let levelsUpdate else { return }
+        guard time - lastLevelsEmittedAt >= Self.levelsEmitInterval else { return }
+        lastLevelsEmittedAt = time
+        levelsUpdate(RecordingLevels(
+            microphone: latestMicrophoneLevel,
+            systemAudio: latestSystemLevel
+        ))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -268,6 +293,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         streamError = nil
         healthMonitor = nil
         healthUpdate = nil
+        levelsUpdate = nil
+        latestMicrophoneLevel = .silent
+        latestSystemLevel = .silent
+        lastLevelsEmittedAt = 0
     }
 
     private func preservePartialTracks() {
