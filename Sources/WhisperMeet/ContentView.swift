@@ -187,12 +187,14 @@ private struct RecordMeetingView: View {
                         .font(.system(.title, design: .monospaced).weight(.medium))
                         .contentTransition(.numericText())
                 }
+                recordingHealthPanel
             } else if model.recordingState == .idle {
                 VStack(alignment: .leading, spacing: 16) {
                     TextField("Meeting title (optional)", text: $title)
                         .textFieldStyle(.roundedBorder)
+                    preflightPanel
                 }
-                .frame(maxWidth: 440)
+                .frame(maxWidth: 560)
             }
 
             Button {
@@ -225,6 +227,7 @@ private struct RecordMeetingView: View {
         }
         .padding(40)
         .navigationTitle("New Meeting")
+        .onAppear { model.refreshRecordingPreflight() }
         .confirmationDialog(
             "Discard this recording?",
             isPresented: $isConfirmingCancellation,
@@ -242,6 +245,148 @@ private struct RecordMeetingView: View {
     private var isRecording: Bool {
         if case .recording = model.recordingState { return true }
         return false
+    }
+
+    private var preflightPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Before recording")
+                    .font(.headline)
+                Spacer()
+                Button("Check Again") { model.refreshRecordingPreflight() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+            }
+            preflightRow(
+                title: model.recordingPreflight.microphoneName,
+                systemImage: "mic.fill",
+                access: model.recordingPreflight.microphoneAccess
+            )
+            preflightRow(
+                title: "Mac system audio",
+                systemImage: "speaker.wave.2.fill",
+                access: model.recordingPreflight.systemAudioAccess
+            )
+            HStack(spacing: 9) {
+                Image(systemName: "internaldrive.fill")
+                    .frame(width: 18)
+                Text("Recording storage")
+                Spacer()
+                Text(storageDescription(model.recordingPreflight.availableStorageBytes))
+                    .foregroundStyle(storageColor(model.recordingPreflight.availableStorageBytes))
+            }
+        }
+        .font(.callout)
+        .padding(16)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var recordingHealthPanel: some View {
+        if let health = model.recordingHealth {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Recording health")
+                    .font(.headline)
+                levelRow(
+                    title: "Microphone",
+                    systemImage: "mic.fill",
+                    level: health.microphoneLevel.rms
+                )
+                levelRow(
+                    title: "System audio",
+                    systemImage: "speaker.wave.2.fill",
+                    level: health.systemAudioLevel.rms
+                )
+                HStack(spacing: 9) {
+                    Image(systemName: "internaldrive.fill")
+                        .frame(width: 18)
+                    Text(storageDescription(health.availableStorageBytes) + " available")
+                        .foregroundStyle(storageColor(health.availableStorageBytes))
+                }
+                ForEach(health.warnings, id: \.self) { warning in
+                    Label(warningMessage(warning), systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.callout)
+            .padding(16)
+            .frame(maxWidth: 560)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        } else {
+            ProgressView("Checking both audio channels…")
+                .frame(maxWidth: 560)
+        }
+    }
+
+    private func preflightRow(
+        title: String,
+        systemImage: String,
+        access: RecordingPreflightStatus.Access
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .frame(width: 18)
+            Text(title)
+            Spacer()
+            switch access {
+            case .granted:
+                Label("Ready", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .permissionNeeded:
+                Text("Permission requested at start")
+                    .foregroundStyle(.orange)
+            case .notGranted:
+                Label("Not granted — check System Settings", systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+            case .denied:
+                Label("Permission denied", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            case .unavailable:
+                Label("No input device", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func levelRow(
+        title: String,
+        systemImage: String,
+        level: Float
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .frame(width: 18)
+            Text(title)
+                .frame(width: 96, alignment: .leading)
+            ProgressView(value: min(1, Double(level) * 4))
+        }
+    }
+
+    private func warningMessage(_ warning: RecordingHealthWarning) -> String {
+        switch warning {
+        case .microphoneCaptureStopped:
+            "Microphone audio stopped arriving. Check the microphone connection."
+        case .systemAudioCaptureStopped:
+            "System audio stopped arriving. The other participants may not be recorded."
+        case .systemAudioNotDetected:
+            "No system audio has been detected yet. Play meeting audio to verify this channel."
+        case .microphoneClipping:
+            "The microphone is too loud and may sound distorted."
+        case .systemAudioClipping:
+            "System audio is clipping and may sound distorted."
+        case .lowStorage:
+            "Storage is running low. Stop soon to protect the recording."
+        }
+    }
+
+    private func storageDescription(_ bytes: Int64?) -> String {
+        guard let bytes else { return "Storage unavailable" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func storageColor(_ bytes: Int64?) -> Color {
+        guard let bytes else { return .secondary }
+        return bytes < 2_000_000_000 ? .orange : .secondary
     }
 
     private var recordingIcon: String {

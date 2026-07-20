@@ -41,8 +41,9 @@ Scripts/setup-local-whisper.sh
 1. In **Settings**, choose `Large` for maximum English/Mandarin accuracy or `Turbo` for a much faster result with a small accuracy tradeoff. Leave the language on automatic detection or select English/Mandarin explicitly for a single-language meeting.
 2. Optionally import business documents under **Business Vocabulary**. Review the extracted terms; only those terms become a local initial prompt for Whisper.
 3. Start a meeting recording. Headphones are recommended to prevent remote voices from leaking into the microphone track.
-4. Stop the recording. Local Whisper transcribes the finished WAV with `task=transcribe`, preserving the original language.
-5. Correct the timestamped transcript, copy it, or export it as UTF-8 text.
+4. Watch the separate microphone and system-audio meters. WhisperMeet warns about a disconnected capture channel, clipping, or low storage while keeping the source tracks on disk.
+5. Stop the recording. Local Whisper transcribes the finished WAV with `task=transcribe`, preserving the original language.
+6. Correct the timestamped transcript, copy it, or export it as UTF-8 text.
 
 Recordings, separate microphone/system source tracks, models, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`, which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so the sources remain reusable.
 
@@ -51,6 +52,8 @@ Recordings, separate microphone/system source tracks, models, and transcripts ar
 The recording is the source of truth. Local Whisper only reads the finished WAV, so a failed or cancelled transcription leaves the audio untouched and can be retried. The app also keeps previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when recording finalization fails, and scans for interrupted recording folders on its next launch.
 
 Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual recovery steps, and the intentionally destructive **Cancel Recording** and **Delete Meeting** actions.
+
+Before capture, the app checks permissions, the default microphone, and available storage. During capture, it monitors the exact microphone and system-audio samples being saved, warns about interruptions and clipping, and prevents idle system sleep. See [Recording Health Monitoring](docs/RECORDING_HEALTH.md) for thresholds and interpretation.
 
 ## Speaker limitation
 

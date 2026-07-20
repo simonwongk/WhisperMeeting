@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
+import WhisperCore
 
 struct RecordingArtifact: Sendable {
     let mixedRecordingURL: URL
@@ -40,8 +41,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var sessionDirectory: URL?
     private var startedAt: Date?
     private var streamError: Error?
+    private var healthMonitor: RecordingHealthMonitor?
+    private var healthUpdate: (@Sendable (RecordingHealthSnapshot) -> Void)?
+    private var healthTimer: DispatchSourceTimer?
+    private var recordingActivity: NSObjectProtocol?
 
-    func start(in directory: URL) async throws {
+    func start(
+        in directory: URL,
+        onHealthUpdate: @escaping @Sendable (RecordingHealthSnapshot) -> Void
+    ) async throws {
         guard stream == nil else { return }
         guard await requestMicrophoneAccess() else {
             throw AudioCaptureError.microphonePermissionDenied
@@ -98,6 +106,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             streamError = nil
             startedAt = Date()
             try await stream.startCapture()
+            healthMonitor = RecordingHealthMonitor(
+                startedAt: ProcessInfo.processInfo.systemUptime
+            )
+            healthUpdate = onHealthUpdate
+            beginRecordingActivity()
+            startHealthTimer()
         } catch {
             systemWriter?.cancel()
             microphoneWriter?.cancel()
@@ -114,11 +128,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         do {
             try await stream.stopCapture()
         } catch {
+            stopHealthTimer()
             await captureQueue.flush()
             preservePartialTracks()
             reset()
             throw error
         }
+        stopHealthTimer()
         await captureQueue.flush()
 
         if let streamError {
@@ -163,6 +179,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         if let stream {
             try? await stream.stopCapture()
         }
+        stopHealthTimer()
         await captureQueue.flush()
         systemWriter?.cancel()
         microphoneWriter?.cancel()
@@ -181,9 +198,21 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         do {
             switch outputType {
             case .audio:
-                try systemWriter?.append(sampleBuffer)
+                if let level = try systemWriter?.append(sampleBuffer) {
+                    healthMonitor?.receive(
+                        .systemAudio,
+                        level: level,
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                }
             case .microphone:
-                try microphoneWriter?.append(sampleBuffer)
+                if let level = try microphoneWriter?.append(sampleBuffer) {
+                    healthMonitor?.receive(
+                        .microphone,
+                        level: level,
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                }
             case .screen:
                 break
             @unknown default:
@@ -196,7 +225,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         captureQueue.async { [weak self] in
-            self?.streamError = error
+            guard let self, self.stream === stream else { return }
+            self.streamError = error
+            self.endRecordingActivity()
         }
     }
 
@@ -214,17 +245,65 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 
     private func reset() {
+        stopHealthTimer()
+        endRecordingActivity()
         stream = nil
         systemWriter = nil
         microphoneWriter = nil
         sessionDirectory = nil
         startedAt = nil
         streamError = nil
+        healthMonitor = nil
+        healthUpdate = nil
     }
 
     private func preservePartialTracks() {
         _ = try? systemWriter?.finish()
         _ = try? microphoneWriter?.finish()
+    }
+
+    private func beginRecordingActivity() {
+        recordingActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .suddenTerminationDisabled],
+            reason: "Recording meeting audio"
+        )
+    }
+
+    private func endRecordingActivity() {
+        guard let recordingActivity else { return }
+        ProcessInfo.processInfo.endActivity(recordingActivity)
+        self.recordingActivity = nil
+    }
+
+    private func startHealthTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now(), repeating: 1)
+        timer.setEventHandler { [weak self] in
+            self?.emitHealthSnapshot()
+        }
+        healthTimer = timer
+        timer.resume()
+    }
+
+    private func stopHealthTimer() {
+        healthTimer?.cancel()
+        healthTimer = nil
+    }
+
+    private func emitHealthSnapshot() {
+        guard let healthMonitor, let healthUpdate else { return }
+        let availableBytes = sessionDirectory.flatMap(Self.availableStorageBytes)
+        healthUpdate(healthMonitor.snapshot(
+            at: ProcessInfo.processInfo.systemUptime,
+            availableStorageBytes: availableBytes
+        ))
+    }
+
+    private static func availableStorageBytes(at directory: URL) -> Int64? {
+        let values = try? directory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey
+        ])
+        return values?.volumeAvailableCapacityForImportantUsage
     }
 }
 
@@ -321,10 +400,10 @@ private final class FloatTrackWriter {
         handle = try FileHandle(forWritingTo: outputURL)
     }
 
-    func append(_ sampleBuffer: CMSampleBuffer) throws {
+    func append(_ sampleBuffer: CMSampleBuffer) throws -> RecordingAudioLevel? {
         guard !isFinished,
               let description = sampleBuffer.formatDescription else {
-            return
+            return nil
         }
         let inputFormat = AVAudioFormat(cmAudioFormatDescription: description)
 
@@ -397,6 +476,19 @@ private final class FloatTrackWriter {
         let byteCount = Int(outputBuffer.frameLength) * MemoryLayout<Float>.size
         handle.write(Data(bytes: samples, count: byteCount))
         frameCount += Int64(outputBuffer.frameLength)
+        let sampleCount = Int(outputBuffer.frameLength)
+        guard sampleCount > 0 else { return .silent }
+        var squaredSum: Float = 0
+        var peak: Float = 0
+        for index in 0..<sampleCount {
+            let magnitude = abs(samples[index])
+            squaredSum += magnitude * magnitude
+            peak = max(peak, magnitude)
+        }
+        return RecordingAudioLevel(
+            rms: sqrt(squaredSum / Float(sampleCount)),
+            peak: peak
+        )
     }
 
     func finish() throws -> FloatTrack {

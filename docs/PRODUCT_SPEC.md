@@ -19,6 +19,8 @@ Build an easy-to-use native Mac application whose primary outcome is the most ac
 - Store recordings and transcripts locally and provide meeting history, editing, copying, export, cancellation, and recovery after interruption.
 - Treat recorded audio as the source of truth: transcription failures and transcription cancellation must never modify or delete the recording.
 - Preserve partial raw tracks when recording shutdown or finalization fails, and recover unindexed recording folders on the next launch.
+- Before recording, show microphone and system-audio permission state, the current default microphone, and available storage; refuse to begin when storage is critically low.
+- During recording, show independent microphone/system meters derived from the samples written to the source tracks, warn about missing capture, clipping, and low storage, and prevent idle system sleep.
 - Keep a previous-readable backup of meeting and vocabulary indexes. If neither index copy is readable, preserve both files and reconstruct history from usable recording folders without deleting audio.
 - Surface recovery and storage failures in plain language, state whether the recording is safe, and let the user reveal a meeting's recording in Finder.
 - On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python 3.11, and `openai-whisper`; explain the prerequisite in Settings and the README.

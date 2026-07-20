@@ -1,5 +1,57 @@
+import AVFoundation
+import CoreGraphics
 import Foundation
 import WhisperCore
+
+struct RecordingPreflightStatus: Equatable {
+    enum Access: Equatable {
+        case granted
+        case permissionNeeded
+        case notGranted
+        case denied
+        case unavailable
+    }
+
+    let microphoneAccess: Access
+    let systemAudioAccess: Access
+    let microphoneName: String
+    let availableStorageBytes: Int64?
+
+    static let checking = RecordingPreflightStatus(
+        microphoneAccess: .permissionNeeded,
+        systemAudioAccess: .permissionNeeded,
+        microphoneName: "Default microphone",
+        availableStorageBytes: nil
+    )
+
+    static func inspect(storageDirectory: URL) -> RecordingPreflightStatus {
+        let microphone = AVCaptureDevice.default(for: .audio)
+        let microphoneAccess: Access
+        if microphone == nil {
+            microphoneAccess = .unavailable
+        } else {
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized:
+                microphoneAccess = .granted
+            case .notDetermined:
+                microphoneAccess = .permissionNeeded
+            case .denied, .restricted:
+                microphoneAccess = .denied
+            @unknown default:
+                microphoneAccess = .denied
+            }
+        }
+        let values = try? storageDirectory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey
+        ])
+        return RecordingPreflightStatus(
+            microphoneAccess: microphoneAccess,
+            systemAudioAccess: CGPreflightScreenCaptureAccess() ? .granted : .notGranted,
+            microphoneName: microphone?.localizedName ?? "No microphone available",
+            availableStorageBytes: values?.volumeAvailableCapacityForImportantUsage
+        )
+    }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -19,6 +71,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeExecutableURL: URL?
     @Published private(set) var isInstallingRuntime = false
     @Published private(set) var installationMessage: String?
+    @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
+    @Published private(set) var recordingHealth: RecordingHealthSnapshot?
     @Published var selectedModel: WhisperModel {
         didSet { defaults.set(selectedModel.rawValue, forKey: Self.modelKey) }
     }
@@ -62,6 +116,7 @@ final class AppModel: ObservableObject {
         ) ?? .automatic
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
+        refreshRecordingPreflight()
     }
 
     var isRuntimeInstalled: Bool {
@@ -85,10 +140,15 @@ final class AppModel: ObservableObject {
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
     }
 
+    func refreshRecordingPreflight() {
+        recordingPreflight = .inspect(storageDirectory: store.rootDirectory)
+    }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
         refreshRuntime()
+        refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
 
         do {
@@ -160,16 +220,39 @@ final class AppModel: ObservableObject {
 
     func startRecording() async {
         guard recordingState == .idle else { return }
+        refreshRecordingPreflight()
+        if recordingPreflight.microphoneAccess == .unavailable {
+            alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."
+            return
+        }
+        if let available = recordingPreflight.availableStorageBytes,
+           available < 500_000_000 {
+            alertMessage = "Recording cannot start because this Mac has less than 500 MB available. Free some storage so the meeting audio is not put at risk."
+            return
+        }
         recordingState = .starting
+        recordingHealth = nil
         let id = UUID()
+        activeMeetingID = id
         do {
             let directory = try store.recordingDirectory(for: id)
-            try await recorder.start(in: directory)
-            activeMeetingID = id
+            try await recorder.start(in: directory) { [weak self] snapshot in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.activeMeetingID == id,
+                          case .recording = self.recordingState else {
+                        return
+                    }
+                    self.recordingHealth = snapshot
+                }
+            }
             recordingState = .recording(startedAt: Date())
+            refreshRecordingPreflight()
         } catch {
             recordingState = .idle
             activeMeetingID = nil
+            recordingHealth = nil
+            refreshRecordingPreflight()
             alertMessage = error.localizedDescription
         }
     }
@@ -191,6 +274,8 @@ final class AppModel: ObservableObject {
             store.upsert(meeting)
             recordingState = .idle
             activeMeetingID = nil
+            recordingHealth = nil
+            refreshRecordingPreflight()
 
             refreshRuntime()
             if isRuntimeInstalled {
@@ -202,6 +287,8 @@ final class AppModel: ObservableObject {
         } catch let recordingError {
             recordingState = .idle
             activeMeetingID = nil
+            recordingHealth = nil
+            refreshRecordingPreflight()
             do {
                 let recovered = try await Task.detached(priority: .userInitiated) {
                     try InterruptedRecordingRecovery.recover(in: directory)
@@ -232,6 +319,8 @@ final class AppModel: ObservableObject {
         await recorder.cancel()
         recordingState = .idle
         activeMeetingID = nil
+        recordingHealth = nil
+        refreshRecordingPreflight()
     }
 
     func beginTranscription(id: UUID) {

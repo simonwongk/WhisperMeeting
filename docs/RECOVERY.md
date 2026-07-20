@@ -41,6 +41,8 @@ The backup is deliberately one version behind after an ordinary save. Audio fold
 | Both an index and its backup are unreadable | Both damaged files are left untouched. Recording folders are scanned and usable recordings are added back to history. | The damaged files for manual inspection and every recording folder. Transcript text present only in the damaged index may require manual recovery or retranscription. |
 | An index save fails, including a full disk | The app shows an error and keeps the last readable index copy. | Existing recording files and the last readable index. New unsaved metadata may need to be entered again after storage is available. |
 
+Before a new meeting, WhisperMeet refuses to start when less than 500 MB is available. During a meeting it warns when available storage falls below 2 GB, while leaving the user in control of when to stop. These checks reduce risk but do not replace the recovery behavior above.
+
 When recovery must mix raw tracks without the original timing manifest, the two tracks are aligned from their beginnings. The app labels that meeting as recovered because precise start-time alignment cannot be guaranteed. The raw tracks are retained so a more exact manual recovery remains possible.
 
 ## Finding and recovering files manually
