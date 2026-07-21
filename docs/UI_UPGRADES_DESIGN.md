@@ -33,14 +33,14 @@ Problem: levels only update once per second (the health timer) — too coarse to
 and there is no single "someone is talking" indicator.
 
 Design:
-- `AudioCaptureEngine` already computes an `RecordingAudioLevel` (rms+peak) for every captured
-  buffer of each channel. Add a second, **throttled (~15 Hz)** callback `onLevels` that pushes a
-  `RecordingLevels { microphone, systemAudio }` (new `Sendable` `WhisperCore` type) to the main
-  actor, independent of the 1 Hz health snapshot used for warnings.
-- `AppModel` gains `@Published recordingLevels`. The record screen shows a prominent **combined
-  volume bar** driven by `max(mic.peak, system.peak)` with a "Speaking" highlight when it
-  crosses a threshold, plus the two per-channel meters (now fed by the fast stream for
-  smoothness). Warnings/status still come from the 1 Hz health snapshot.
+- `AudioCaptureEngine` already computes a `RecordingAudioLevel` (RMS + peak) for every captured
+  buffer. Its second, **throttled (~15 Hz)** callback feeds one `RecordingLevelMeter`, which owns
+  perceptual dBFS calibration, attack/release smoothing, per-channel speaking hysteresis, and stale
+  channel decay.
+- Fast snapshots publish through a nested `RecordingMeterViewModel`, not the root `AppModel`, so
+  meter animation does not invalidate the sidebar and full meeting-detail tree. The combined meter,
+  channel meters, and channel activity labels all use this one calibrated snapshot. Capture-stopped,
+  clipping, and storage warnings still come from the authoritative 1 Hz health snapshot.
 
 ## 3. Predicted recording size while recording
 
@@ -83,13 +83,15 @@ types; on success it navigates to the new meeting. A transient `isImporting` fla
 
 ## Build & deploy
 
-`Scripts/build-app.sh` (release build + ad-hoc sign) then replace `/Applications/WhisperMeet.app`
-with the freshly built bundle so the installed app reflects the changes.
+`Scripts/quality-check.sh` validates the candidate diff, runs all tests, performs a warnings-as-errors
+release build, and packages/signs the app. `Scripts/install-app.sh` then stages and verifies the new
+bundle, refuses to proceed while WhisperMeet is running, and swaps it into `/Applications` with
+rollback on failure.
 
 ## Verification
 
-- `swift test` — new unit tests for `WhisperProgressParser`, `RecordingSizeEstimator`, and
-  `RecordingHealthSnapshot.overallStatus`; existing suites unchanged and green.
-- `swift build` clean.
+- `Scripts/quality-check.sh` — 67 tests spanning progress, metering, cancellation races, recovery,
+  edited exports, search navigation, playback boundaries, queueing, storage, and summaries.
+- Warnings-as-errors production build, packaging, and signature verification clean.
 - Adversarial multi-lens code review over the diff (correctness/concurrency, Whisper-CLI
   contract, SwiftUI, invariant preservation) before deploy.

@@ -95,3 +95,40 @@ func mapsWarningSeverityToStatus() {
     )
     #expect(lowStorage.overallStatus == .atRisk)
 }
+
+@Test("Conversational microphone audio uses a calibrated perceptual meter scale")
+func calibratesConversationalMicrophoneLevel() {
+    var meter = RecordingLevelMeter()
+    meter.receive(
+        .microphone,
+        level: RecordingAudioLevel(rms: 0.04, peak: 0.17),
+        at: 100
+    )
+
+    let snapshot = meter.snapshot(at: 100)
+
+    #expect(snapshot.microphone > 0.4)
+    #expect(snapshot.microphone < 0.9)
+    #expect(snapshot.combined == snapshot.microphone)
+    #expect(snapshot.isSpeaking)
+    #expect(snapshot.microphoneActive)
+    #expect(!snapshot.systemAudioActive)
+}
+
+@Test("A channel that stops producing samples decays to silence")
+func expiresStaleRecordingLevel() {
+    var meter = RecordingLevelMeter()
+    meter.receive(
+        .microphone,
+        level: RecordingAudioLevel(rms: 0.08, peak: 0.3),
+        at: 100
+    )
+    _ = meter.snapshot(at: 100)
+    _ = meter.snapshot(at: 100.4)
+
+    let expired = meter.snapshot(at: 102)
+
+    #expect(expired.microphone < 0.01)
+    #expect(!expired.isSpeaking)
+    #expect(!expired.microphoneActive)
+}

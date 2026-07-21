@@ -211,6 +211,7 @@ public struct LocalWhisperClient: Sendable {
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
         environment["PYTHONUNBUFFERED"] = "1"
         process.environment = environment
+        let cancellation = ProcessCancellationController(process: process)
 
         let handle = pipe.fileHandleForReading
         let dataStream = AsyncStream<Data> { continuation in
@@ -228,8 +229,7 @@ public struct LocalWhisperClient: Sendable {
         }
 
         return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            try process.run()
+            try cancellation.runUnlessCancelled()
 
             var parser = WhisperProgressParser()
             var logData = Data()
@@ -241,12 +241,6 @@ public struct LocalWhisperClient: Sendable {
                 if let progress = parser.consume(String(decoding: data, as: UTF8.self)) {
                     await onProgress(progress)
                 }
-            }
-            // If cancellation landed in the tiny window between the checkCancellation above and
-            // process.run() marking the process running, onCancel's isRunning guard may have
-            // skipped terminate(). Terminate here so waitUntilExit() cannot stall on a live child.
-            if Task.isCancelled, process.isRunning {
-                process.terminate()
             }
             // The pipe reached EOF, so the process has closed its handles; make sure it has fully
             // exited before reading its termination status.
@@ -266,8 +260,43 @@ public struct LocalWhisperClient: Sendable {
             }
             return log
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            cancellation.cancel()
         }
+    }
+}
+
+/// Makes process launch and cancellation one atomic decision. Without this handshake, cancellation
+/// can land after a task's cancellation check but before `Process.run()`: the cancellation handler
+/// sees a process that is not running yet, then the operation launches it anyway.
+final class ProcessCancellationController: @unchecked Sendable {
+    private let process: Process
+    private let willRun: () -> Void
+    private let lock = NSLock()
+    private var cancellationRequested = false
+
+    init(process: Process, willRun: @escaping () -> Void = {}) {
+        self.process = process
+        self.willRun = willRun
+    }
+
+    func runUnlessCancelled() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancellationRequested,
+              !Task<Never, Never>.isCancelled else {
+            throw CancellationError()
+        }
+        willRun()
+        try process.run()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancellationRequested = true
+        if process.isRunning {
+            process.terminate()
+        }
+        lock.unlock()
     }
 }
 

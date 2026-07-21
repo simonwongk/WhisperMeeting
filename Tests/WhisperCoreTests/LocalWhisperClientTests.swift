@@ -136,6 +136,55 @@ func cancelsLocalProcess() async throws {
     }
 }
 
+@Test("Cancellation before launch prevents the process from spawning")
+func cancellationBeforeLaunch() throws {
+    let process = Process()
+    let launchProbe = LaunchProbe()
+    let controller = ProcessCancellationController(
+        process: process,
+        willRun: { launchProbe.recordLaunchAttempt() }
+    )
+
+    controller.cancel()
+
+    #expect(throws: CancellationError.self) {
+        try controller.runUnlessCancelled()
+    }
+    #expect(launchProbe.launchAttempts == 0)
+}
+
+@Test("Cancellation during the launch handoff terminates the spawned process")
+func cancellationDuringLaunchHandoff() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetLaunchRaceTests-\(UUID().uuidString)", isDirectory: true)
+    let executableURL = directory.appendingPathComponent("worker")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try makeExecutable(at: executableURL, script: "#!/bin/zsh\nwhile true; do :; done\n")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let process = Process()
+    process.executableURL = executableURL
+    let barrier = LaunchBarrier()
+    let controller = ProcessCancellationController(
+        process: process,
+        willRun: { barrier.pauseInsideLaunchLock() }
+    )
+    let launchTask = Task.detached { try controller.runUnlessCancelled() }
+    barrier.waitUntilLaunchLockEntered()
+    let cancelTask = Task.detached {
+        barrier.recordCancellationAttempt()
+        controller.cancel()
+    }
+    barrier.waitUntilCancellationAttempted()
+    barrier.allowLaunch()
+
+    try await launchTask.value
+    await cancelTask.value
+    process.waitUntilExit()
+
+    #expect(!process.isRunning)
+}
+
 private struct LocalWhisperFixture {
     let directory: URL
     let executableURL: URL
@@ -184,6 +233,33 @@ private func makeExecutable(at url: URL, script: String) throws {
         [.posixPermissions: 0o755],
         ofItemAtPath: url.path
     )
+}
+
+private final class LaunchProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+
+    var launchAttempts: Int { lock.withLock { attempts } }
+
+    func recordLaunchAttempt() {
+        lock.withLock { attempts += 1 }
+    }
+}
+
+private final class LaunchBarrier: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let cancellationAttempted = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+
+    func pauseInsideLaunchLock() {
+        entered.signal()
+        proceed.wait()
+    }
+
+    func waitUntilLaunchLockEntered() { entered.wait() }
+    func recordCancellationAttempt() { cancellationAttempted.signal() }
+    func waitUntilCancellationAttempted() { cancellationAttempted.wait() }
+    func allowLaunch() { proceed.signal() }
 }
 
 private extension Array where Element: Equatable {

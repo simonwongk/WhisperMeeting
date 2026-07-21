@@ -64,8 +64,21 @@ OpenAI Whisper transcribes speech and produces timestamped segments, but it does
 ## Verification
 
 ```bash
-swift test
-swift build
+Scripts/quality-check.sh
 ```
 
-Tests exercise the local process interface, verified CLI options, original-language output, timestamp parsing, executable discovery, failure handling, index backup recovery, and rebuilding an interrupted recording without deleting its source tracks. They do not download a speech model.
+Stage the candidate changes first so newly created files are included. The quality script checks the
+complete staged/unstaged diff, runs every test, treats production-build warnings as errors,
+and packages a signed app. GitHub Actions runs the same gate on every pull request and push to
+`main`. Tests exercise the local process interface, verified CLI options, original-language output,
+timestamp parsing, executable discovery, failure handling, index backup recovery, and rebuilding an
+interrupted recording without deleting its source tracks. They do not download a speech model.
+
+To build and replace the installed app after quitting WhisperMeet:
+
+```bash
+Scripts/install-app.sh
+```
+
+The installer refuses to continue while WhisperMeet is running, preventing an update from
+interrupting or corrupting an active recording.

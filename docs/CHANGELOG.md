@@ -2,7 +2,7 @@
 
 Autonomous improvement work on WhisperMeet. Every round: design → implement (TDD for pure logic)
 → `swift test` + `swift build` → adversarial multi-agent review → fix confirmed findings → build
-and deploy `/Applications/WhisperMeet.app`. Test count grew 28 → 53. Non-negotiable invariants
+and deploy `/Applications/WhisperMeet.app`. Test count grew 28 → 67. Non-negotiable invariants
 (local-only except Claude summaries; recording is the source of truth; no diarization; original
 language only) preserved throughout.
 
@@ -48,6 +48,34 @@ language only) preserved throughout.
   (`MeetingNotesExporter`).
 
 ## New tested WhisperCore modules
-`WhisperProgressParser`, `RecordingSizeEstimator`, `RecordingLevels` / `RecordingHealthStatus`,
+`WhisperProgressParser`, `RecordingSizeEstimator`, `RecordingLevelMeter` / `RecordingHealthStatus`,
 `TranscriptExporter`, `TextSearch`, `TranscriptPlayback`, `TranscriptionQueue`,
 `MeetingNotesExporter`, plus `TranscriptFormatter.clock`/`stripTimestamps`.
+
+## Review follow-up — recording performance and correctness
+- Replaced raw-linear meters with one tested `RecordingLevelMeter`: perceptual dBFS calibration,
+  consistent mic/system/combined scaling, attack/release smoothing, speaking hysteresis, and stale
+  channel decay.
+- Isolated the ~15 Hz meter stream in a nested observable model so it no longer republishes through
+  the root `AppModel` and invalidates the full sidebar/detail hierarchy while recording.
+- Closed the local Whisper launch/cancel race with an atomic process-launch handshake; cancellation
+  cannot miss a child process that has not quite entered `isRunning` yet.
+- Empty interrupted imports are never promoted as recordings. Compressed imports are verified with
+  AVFoundation before successful recovery; unverified files remain intact and appear as **Needs
+  attention** instead of causing repeated recovery attempts or silent data loss.
+- Subtitle and JSON exports now treat the visible, possibly edited transcript as authoritative.
+  Precise Whisper timings are retained when lines align; restructured and text-only transcripts get
+  safe derived cues instead of stale or empty output. JSON also includes the full transcript text.
+- Find-in-transcript now highlights matches and provides match counts plus Previous/Next navigation.
+- Playback highlighting now respects segment end times and turns off during silence gaps and after
+  the final segment.
+- Added 14 regression tests across meter calibration/decay, launch/cancellation races, truncated
+  recovery validation, edited/text-only/retimed exports, per-occurrence search, and playback gaps.
+- Added one-command quality automation (`Scripts/quality-check.sh`) for diff validation, the full
+  test suite, a warnings-as-errors release build, packaging, and signing. The identical gate now runs
+  in GitHub Actions for every pull request and `main` push.
+- Added a guarded installed-app updater (`Scripts/install-app.sh`) that refuses to replace the app
+  while WhisperMeet is running, stages and verifies the replacement, and rolls back if the swap
+  fails—protecting active recordings during development updates.
+- Recording startup now writes phase timings for ScreenCaptureKit content discovery and stream start
+  to the unified macOS log, so any remaining launch lag can be measured instead of guessed.

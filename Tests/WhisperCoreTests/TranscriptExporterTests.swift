@@ -48,6 +48,7 @@ func exportsJSON() throws {
     let json = TranscriptExporter.render(.json, sampleRequest())
     let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
     #expect(decoded?["title"] as? String == "Weekly Sync")
+    #expect(decoded?["transcriptText"] as? String == "00:00  Hello everyone.\n00:03  Let's begin.")
     let segments = decoded?["segments"] as? [[String: Any]]
     #expect(segments?.count == 2)
     #expect(segments?.first?["text"] as? String == "Hello everyone.")
@@ -69,4 +70,81 @@ func stripsThreeDigitMinuteTimestamps() {
 func formatsSubtitleTimestamps() {
     #expect(TranscriptExporter.subtitleTimestamp(3661.5, millisecondSeparator: ",") == "01:01:01,500")
     #expect(TranscriptExporter.subtitleTimestamp(0, millisecondSeparator: ".") == "00:00:00.000")
+}
+
+@Test("Subtitle exports use the edited transcript text while preserving segment timing")
+func exportsEditedTranscriptText() {
+    let request = TranscriptExportRequest(
+        title: "Edited",
+        languageCode: "en",
+        durationSeconds: 10,
+        transcriptText: "00:00  Corrected opening.\n00:03  Corrected ending.",
+        segments: [
+            TranscriptSegment(speaker: nil, start: 0.25, end: 2.5, text: "Old opening."),
+            TranscriptSegment(speaker: nil, start: 3, end: 5, text: "Old ending."),
+        ]
+    )
+
+    let srt = TranscriptExporter.render(.srt, request)
+
+    #expect(srt.contains("00:00:00,250 --> 00:00:02,500\nCorrected opening."))
+    #expect(srt.contains("00:00:03,000 --> 00:00:05,000\nCorrected ending."))
+    #expect(!srt.contains("Old opening."))
+}
+
+@Test("Text-only transcripts still produce a complete subtitle export")
+func exportsTextOnlyTranscriptAsSubtitle() {
+    let request = TranscriptExportRequest(
+        title: "Text only",
+        languageCode: "zh",
+        durationSeconds: 12,
+        transcriptText: "这是完整的文字记录。",
+        segments: []
+    )
+
+    let srt = TranscriptExporter.render(.srt, request)
+
+    #expect(srt.contains("00:00:00,000 --> 00:00:12,000"))
+    #expect(srt.contains("这是完整的文字记录。"))
+}
+
+@Test("Deleting transcript lines never resurrects stale segment text in exports")
+func exportsChangedTranscriptStructure() {
+    let request = TranscriptExportRequest(
+        title: "Restructured",
+        languageCode: "en",
+        durationSeconds: 10,
+        transcriptText: "00:03  Only this corrected line remains.",
+        segments: [
+            TranscriptSegment(speaker: nil, start: 0, end: 2, text: "Deleted old line."),
+            TranscriptSegment(speaker: nil, start: 3, end: 5, text: "Old wording."),
+        ]
+    )
+
+    let vtt = TranscriptExporter.render(.vtt, request)
+
+    #expect(vtt.contains("00:00:03.000 --> 00:00:10.000"))
+    #expect(vtt.contains("Only this corrected line remains."))
+    #expect(!vtt.contains("Deleted old line."))
+    #expect(!vtt.contains("Old wording."))
+}
+
+@Test("Changing visible timestamps replaces stale Whisper timings even when line counts match")
+func exportsEditedTranscriptTimestamps() {
+    let request = TranscriptExportRequest(
+        title: "Retimed",
+        languageCode: "en",
+        durationSeconds: 20,
+        transcriptText: "00:05  Moved opening.\n00:12  Moved ending.",
+        segments: [
+            TranscriptSegment(speaker: nil, start: 0.25, end: 2.5, text: "Old opening."),
+            TranscriptSegment(speaker: nil, start: 3, end: 5, text: "Old ending."),
+        ]
+    )
+
+    let srt = TranscriptExporter.render(.srt, request)
+
+    #expect(srt.contains("00:00:05,000 --> 00:00:12,000\nMoved opening."))
+    #expect(srt.contains("00:00:12,000 --> 00:00:20,000\nMoved ending."))
+    #expect(!srt.contains("00:00:00,250"))
 }

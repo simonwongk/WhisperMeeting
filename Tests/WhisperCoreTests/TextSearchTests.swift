@@ -24,3 +24,27 @@ func requiresAllTerms() {
 func noMatch() {
     #expect(!TextSearch.matches("invoice", in: ["Weekly Sync", "standup notes"]))
 }
+
+@Test("Search returns every case- and diacritic-insensitive occurrence for highlighting")
+func findsHighlightRanges() {
+    let text = "Café owners discussed CAFE pricing at another cafe."
+
+    let ranges = TextSearch.occurrenceRanges("cafe", in: text)
+
+    #expect(ranges.map { String(text[$0]) } == ["Café", "CAFE", "cafe"])
+}
+
+@Test("Search indexes every occurrence across matching transcript lines")
+func indexesEveryOccurrence() {
+    let occurrences = TextSearch.occurrences(
+        "budget",
+        in: ["Budget, budget, BUDGET", "No match", "Final budget"]
+    )
+
+    #expect(occurrences == [
+        TextSearchOccurrence(fieldIndex: 0, occurrenceIndex: 0),
+        TextSearchOccurrence(fieldIndex: 0, occurrenceIndex: 1),
+        TextSearchOccurrence(fieldIndex: 0, occurrenceIndex: 2),
+        TextSearchOccurrence(fieldIndex: 2, occurrenceIndex: 0),
+    ])
+}

@@ -2,7 +2,15 @@
 set -euo pipefail
 
 cd "${0:A:h}/.."
-swift build -c release
+
+cache_root="${TMPDIR:-/tmp}/whispermeet-build"
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$cache_root/clang}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$cache_root/xdg}"
+
+# The app is already built inside the caller's security boundary. Disabling
+# SwiftPM's nested sandbox also makes this script work in managed CI/agent
+# environments where sandbox-exec cannot create another profile.
+swift build --disable-sandbox -c release
 
 app_dir=".build/WhisperMeet.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"

@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CoreGraphics
 import Foundation
+import OSLog
 import ScreenCaptureKit
 import WhisperCore
 
@@ -37,6 +38,10 @@ enum AudioCaptureError: LocalizedError {
 
 final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private static let targetSampleRate = 48_000.0
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
+        category: "RecordingStartup"
+    )
 
     private let captureQueue = DispatchQueue(label: "com.whispermeet.audio-capture", qos: .userInitiated)
     private var stream: SCStream?
@@ -52,17 +57,17 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     // Fast, throttled level stream that drives the live volume bar, separate from the 1 Hz health
     // snapshot used for warnings.
-    private var levelsUpdate: (@Sendable (RecordingLevels) -> Void)?
-    private var latestMicrophoneLevel: RecordingAudioLevel = .silent
-    private var latestSystemLevel: RecordingAudioLevel = .silent
+    private var levelsUpdate: (@Sendable (RecordingMeterSnapshot) -> Void)?
+    private var levelMeter = RecordingLevelMeter()
     private var lastLevelsEmittedAt: TimeInterval = 0
     private static let levelsEmitInterval: TimeInterval = 1.0 / 15.0
 
     func start(
         in directory: URL,
         onHealthUpdate: @escaping @Sendable (RecordingHealthSnapshot) -> Void,
-        onLevels: @escaping @Sendable (RecordingLevels) -> Void
+        onLevels: @escaping @Sendable (RecordingMeterSnapshot) -> Void
     ) async throws {
+        let startBeganAt = ProcessInfo.processInfo.systemUptime
         guard stream == nil else { return }
         guard await requestMicrophoneAccess() else {
             throw AudioCaptureError.microphonePermissionDenied
@@ -87,10 +92,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         )
 
         do {
+            let contentRequestBeganAt = ProcessInfo.processInfo.systemUptime
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
+            let contentReadyAt = ProcessInfo.processInfo.systemUptime
             guard let display = content.displays.first else {
                 throw AudioCaptureError.noDisplayAvailable
             }
@@ -129,13 +136,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             )
             healthUpdate = onHealthUpdate
             levelsUpdate = onLevels
-            latestMicrophoneLevel = .silent
-            latestSystemLevel = .silent
+            levelMeter = RecordingLevelMeter()
             lastLevelsEmittedAt = 0
             try await stream.startCapture()
+            let captureReadyAt = ProcessInfo.processInfo.systemUptime
+            Self.logger.info(
+                "Recording capture started: shareable-content=\(contentReadyAt - contentRequestBeganAt, format: .fixed(precision: 3))s, stream-start=\(captureReadyAt - contentReadyAt, format: .fixed(precision: 3))s, total=\(captureReadyAt - startBeganAt, format: .fixed(precision: 3))s"
+            )
             beginRecordingActivity()
             startHealthTimer()
         } catch {
+            Self.logger.error(
+                "Recording capture failed after \(ProcessInfo.processInfo.systemUptime - startBeganAt, format: .fixed(precision: 3))s: \(error.localizedDescription, privacy: .public)"
+            )
             if (systemWriter?.frameCount ?? 0) > 0
                 || (microphoneWriter?.frameCount ?? 0) > 0 {
                 preservePartialTracks()
@@ -230,13 +243,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             case .audio:
                 if let level = try systemWriter?.append(sampleBuffer) {
                     healthMonitor?.receive(.systemAudio, level: level, at: now)
-                    latestSystemLevel = level
+                    levelMeter.receive(.systemAudio, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
                 }
             case .microphone:
                 if let level = try microphoneWriter?.append(sampleBuffer) {
                     healthMonitor?.receive(.microphone, level: level, at: now)
-                    latestMicrophoneLevel = level
+                    levelMeter.receive(.microphone, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
                 }
             case .screen:
@@ -251,14 +264,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// Emits combined levels no more often than `levelsEmitInterval` so the volume bar updates
     /// smoothly without flooding the main actor.
-    private func emitLevelsIfNeeded(at time: TimeInterval) {
+    private func emitLevelsIfNeeded(at time: TimeInterval, force: Bool = false) {
         guard let levelsUpdate else { return }
-        guard time - lastLevelsEmittedAt >= Self.levelsEmitInterval else { return }
+        guard force || time - lastLevelsEmittedAt >= Self.levelsEmitInterval else { return }
         lastLevelsEmittedAt = time
-        levelsUpdate(RecordingLevels(
-            microphone: latestMicrophoneLevel,
-            systemAudio: latestSystemLevel
-        ))
+        levelsUpdate(levelMeter.snapshot(at: time))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -294,8 +304,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         healthMonitor = nil
         healthUpdate = nil
         levelsUpdate = nil
-        latestMicrophoneLevel = .silent
-        latestSystemLevel = .silent
+        levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
 
@@ -334,9 +343,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private func emitHealthSnapshot() {
         guard let healthMonitor, let healthUpdate else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        // Force a low-frequency meter snapshot as a fallback so stale levels decay even if both
+        // capture channels stop producing buffers entirely.
+        emitLevelsIfNeeded(at: now, force: true)
         let availableBytes = sessionDirectory.flatMap(Self.availableStorageBytes)
         healthUpdate(healthMonitor.snapshot(
-            at: ProcessInfo.processInfo.systemUptime,
+            at: now,
             availableStorageBytes: availableBytes
         ))
     }

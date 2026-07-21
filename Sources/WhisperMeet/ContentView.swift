@@ -341,7 +341,7 @@ private struct RecordMeetingView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            LiveVolumeBar(levels: model.recordingLevels)
+            LiveVolumeBar(meter: model.recordingMeter)
                 .frame(maxWidth: 560)
         }
     }
@@ -370,17 +370,19 @@ private struct RecordMeetingView: View {
             VStack(alignment: .leading, spacing: 14) {
                 healthStatusBanner(health)
                 Divider()
-                channelHealthRow(
+                RecordingChannelHealthRow(
                     title: "Microphone (you)",
                     systemImage: "mic.fill",
-                    level: liveMicrophoneLevel,
-                    state: microphoneState(health)
+                    meter: model.recordingMeter,
+                    channel: .microphone,
+                    health: health
                 )
-                channelHealthRow(
+                RecordingChannelHealthRow(
                     title: "System audio (others)",
                     systemImage: "speaker.wave.2.fill",
-                    level: liveSystemLevel,
-                    state: systemAudioState(health)
+                    meter: model.recordingMeter,
+                    channel: .systemAudio,
+                    health: health
                 )
                 storageRow(health)
                 healthExplainer
@@ -393,14 +395,6 @@ private struct RecordMeetingView: View {
             ProgressView("Checking both audio channels…")
                 .frame(maxWidth: 560)
         }
-    }
-
-    private var liveMicrophoneLevel: Float {
-        model.recordingLevels?.microphone.rms ?? model.recordingHealth?.microphoneLevel.rms ?? 0
-    }
-
-    private var liveSystemLevel: Float {
-        model.recordingLevels?.systemAudio.rms ?? model.recordingHealth?.systemAudioLevel.rms ?? 0
     }
 
     private func healthStatusBanner(_ health: RecordingHealthSnapshot) -> some View {
@@ -416,30 +410,6 @@ private struct RecordMeetingView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-        }
-    }
-
-    private struct ChannelState {
-        let text: String
-        let color: Color
-    }
-
-    private func channelHealthRow(
-        title: String,
-        systemImage: String,
-        level: Float,
-        state: ChannelState
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 9) {
-                Image(systemName: systemImage).frame(width: 18)
-                Text(title)
-                Spacer()
-                Text(state.text)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(state.color)
-            }
-            ProgressView(value: min(1, Double(level) * 4))
         }
     }
 
@@ -466,33 +436,6 @@ private struct RecordMeetingView: View {
             .padding(.top, 4)
         }
         .font(.callout)
-    }
-
-    private func microphoneState(_ health: RecordingHealthSnapshot) -> ChannelState {
-        if health.warnings.contains(.microphoneCaptureStopped) {
-            return ChannelState(text: "No audio for 3s+", color: .red)
-        }
-        if health.warnings.contains(.microphoneClipping) {
-            return ChannelState(text: "Too loud", color: .orange)
-        }
-        return liveMicrophoneLevel > 0.02
-            ? ChannelState(text: "Receiving audio", color: .green)
-            : ChannelState(text: "Silent", color: .secondary)
-    }
-
-    private func systemAudioState(_ health: RecordingHealthSnapshot) -> ChannelState {
-        if health.warnings.contains(.systemAudioCaptureStopped) {
-            return ChannelState(text: "No audio for 3s+", color: .red)
-        }
-        if health.warnings.contains(.systemAudioNotDetected) {
-            return ChannelState(text: "Not detected yet", color: .orange)
-        }
-        if health.warnings.contains(.systemAudioClipping) {
-            return ChannelState(text: "Too loud", color: .orange)
-        }
-        return liveSystemLevel > 0.02
-            ? ChannelState(text: "Receiving audio", color: .green)
-            : ChannelState(text: "Silent (normal until others speak)", color: .secondary)
     }
 
     private func statusIcon(_ status: RecordingHealthStatus) -> String {
@@ -665,13 +608,10 @@ private struct RecordMeetingView: View {
 /// A prominent live meter that reacts to whoever is currently speaking (microphone or system
 /// audio), driven by the fast ~15 Hz level stream.
 private struct LiveVolumeBar: View {
-    let levels: RecordingLevels?
+    @ObservedObject var meter: RecordingMeterViewModel
 
-    private var level: Double { Double(min(1, (levels?.combinedPeak ?? 0))) }
-    private var isSpeaking: Bool {
-        guard let levels else { return false }
-        return levels.combinedRMS > 0.02 || levels.combinedPeak > 0.08
-    }
+    private var level: Double { Double(meter.snapshot.combined) }
+    private var isSpeaking: Bool { meter.snapshot.isSpeaking }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -700,6 +640,82 @@ private struct LiveVolumeBar: View {
             .frame(height: 14)
             .accessibilityLabel("Live input volume")
             .accessibilityValue("\(Int(level * 100)) percent")
+        }
+    }
+}
+
+private struct RecordingChannelMeter: View {
+    @ObservedObject var meter: RecordingMeterViewModel
+    let channel: RecordingChannel
+
+    private var level: Double {
+        switch channel {
+        case .microphone:
+            Double(meter.snapshot.microphone)
+        case .systemAudio:
+            Double(meter.snapshot.systemAudio)
+        }
+    }
+
+    var body: some View {
+        ProgressView(value: level)
+            .accessibilityValue("\(Int(level * 100)) percent")
+    }
+}
+
+/// Keeps the fast channel activity label and meter inside one narrowly observed subtree. Capture
+/// warnings still come from the slower health monitor and always take precedence over activity.
+private struct RecordingChannelHealthRow: View {
+    private struct State {
+        let text: String
+        let color: Color
+    }
+
+    let title: String
+    let systemImage: String
+    @ObservedObject var meter: RecordingMeterViewModel
+    let channel: RecordingChannel
+    let health: RecordingHealthSnapshot
+
+    private var state: State {
+        switch channel {
+        case .microphone:
+            if health.warnings.contains(.microphoneCaptureStopped) {
+                return State(text: "No audio for 3s+", color: .red)
+            }
+            if health.warnings.contains(.microphoneClipping) {
+                return State(text: "Too loud", color: .orange)
+            }
+            return meter.snapshot.microphoneActive
+                ? State(text: "Receiving audio", color: .green)
+                : State(text: "Silent", color: .secondary)
+        case .systemAudio:
+            if health.warnings.contains(.systemAudioCaptureStopped) {
+                return State(text: "No audio for 3s+", color: .red)
+            }
+            if health.warnings.contains(.systemAudioNotDetected) {
+                return State(text: "Not detected yet", color: .orange)
+            }
+            if health.warnings.contains(.systemAudioClipping) {
+                return State(text: "Too loud", color: .orange)
+            }
+            return meter.snapshot.systemAudioActive
+                ? State(text: "Receiving audio", color: .green)
+                : State(text: "Silent (normal until others speak)", color: .secondary)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 9) {
+                Image(systemName: systemImage).frame(width: 18)
+                Text(title)
+                Spacer()
+                Text(state.text)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(state.color)
+            }
+            RecordingChannelMeter(meter: meter, channel: channel)
         }
     }
 }
@@ -1448,6 +1464,7 @@ private struct EditableMeetingTitle: View {
 private final class TranscriptPlaybackController: ObservableObject {
     let player: AVPlayer
     @Published var currentTime: Double = 0
+    @Published var duration: Double?
     private var timeObserver: Any?
 
     init(url: URL) {
@@ -1459,7 +1476,13 @@ private final class TranscriptPlaybackController: ObservableObject {
         ) { [weak self] time in
             // The observer is scheduled on the main queue, so this is genuinely main-actor work.
             MainActor.assumeIsolated {
-                self?.currentTime = time.seconds
+                guard let self else { return }
+                self.currentTime = time.seconds
+                if let itemDuration = self.player.currentItem?.duration.seconds,
+                   itemDuration.isFinite,
+                   itemDuration > 0 {
+                    self.duration = itemDuration
+                }
             }
         }
     }
@@ -1498,6 +1521,8 @@ private struct PlayableTranscriptView: View {
     // playback tick, which only drives the active-segment highlight.
     @State private var visible: [IndexedSegment]
     @State private var followPlayback = true
+    @State private var selectedSearchPosition = 0
+    @State private var searchOccurrences: [TextSearchOccurrence] = []
 
     init(
         store: MeetingStore,
@@ -1516,19 +1541,44 @@ private struct PlayableTranscriptView: View {
     }
 
     private var activeIndex: Int? {
-        TranscriptPlayback.activeIndex(at: playback.currentTime, in: segments)
+        TranscriptPlayback.activeIndex(
+            at: playback.currentTime,
+            in: segments,
+            recordingDuration: playback.duration
+        )
     }
 
     private var isSearching: Bool {
         !findText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var selectedSearchID: Int? {
+        selectedSearchOccurrence?.fieldIndex
+    }
+
+    private var selectedSearchOccurrence: TextSearchOccurrence? {
+        guard isSearching, !searchOccurrences.isEmpty else { return nil }
+        return searchOccurrences[min(selectedSearchPosition, searchOccurrences.count - 1)]
+    }
+
     private func recomputeVisible() {
         let query = findText.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchOccurrences = query.isEmpty
+            ? []
+            : TextSearch.occurrences(query, in: segments.map(\.text))
+        let matchingSegmentIDs = Set(searchOccurrences.map(\.fieldIndex))
         visible = segments.enumerated().compactMap { index, segment in
-            guard query.isEmpty || TextSearch.matches(query, in: [segment.text]) else { return nil }
+            guard query.isEmpty || matchingSegmentIDs.contains(index) else { return nil }
             return IndexedSegment(id: index, segment: segment)
         }
+        selectedSearchPosition = 0
+    }
+
+    private func moveSearchSelection(by offset: Int) {
+        guard !searchOccurrences.isEmpty else { return }
+        selectedSearchPosition = (
+            selectedSearchPosition + offset + searchOccurrences.count
+        ) % searchOccurrences.count
     }
 
     var body: some View {
@@ -1554,6 +1604,23 @@ private struct PlayableTranscriptView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.tertiary)
                     .accessibilityLabel("Clear search")
+                }
+                if isSearching {
+                    Text(searchOccurrences.isEmpty ? "0 of 0" : "\(selectedSearchPosition + 1) of \(searchOccurrences.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button { moveSearchSelection(by: -1) } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(searchOccurrences.isEmpty)
+                    .accessibilityLabel("Previous transcript match")
+                    Button { moveSearchSelection(by: 1) } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(searchOccurrences.isEmpty)
+                    .accessibilityLabel("Next transcript match")
                 }
                 Divider().frame(height: 16)
                 Toggle(isOn: $followPlayback) {
@@ -1593,6 +1660,12 @@ private struct PlayableTranscriptView: View {
                         proxy.scrollTo(newValue, anchor: .center)
                     }
                 }
+                .onChange(of: selectedSearchID) { _, newValue in
+                    guard isSearching, let newValue else { return }
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
+                }
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
@@ -1601,6 +1674,7 @@ private struct PlayableTranscriptView: View {
     @ViewBuilder
     private func segmentRow(index: Int, segment: TranscriptSegment) -> some View {
         let isActive = index == activeIndex
+        let isSelectedMatch = index == selectedSearchID
         Button {
             if let start = segment.start { playback.seek(to: start) }
         } label: {
@@ -1609,14 +1683,16 @@ private struct PlayableTranscriptView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(isActive ? Color.accentColor : .secondary)
                     .frame(width: 52, alignment: .leading)
-                Text(segment.text)
+                highlightedText(segment.text, segmentIndex: index)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 10)
             .background(
-                isActive ? Color.accentColor.opacity(0.15) : Color.clear,
+                isSelectedMatch
+                    ? Color.accentColor.opacity(0.22)
+                    : (isActive ? Color.accentColor.opacity(0.15) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 6)
             )
             .contentShape(Rectangle())
@@ -1630,6 +1706,21 @@ private struct PlayableTranscriptView: View {
                 }
             }
         }
+    }
+
+    private func highlightedText(_ text: String, segmentIndex: Int) -> Text {
+        guard isSearching else { return Text(text) }
+        var highlighted = AttributedString(text)
+        for (occurrenceIndex, range) in TextSearch.occurrenceRanges(findText, in: text).enumerated() {
+            if let attributedRange = Range(range, in: highlighted) {
+                let isSelected = selectedSearchOccurrence?.fieldIndex == segmentIndex
+                    && selectedSearchOccurrence?.occurrenceIndex == occurrenceIndex
+                highlighted[attributedRange].backgroundColor = isSelected
+                    ? Color.orange.opacity(0.65)
+                    : Color.yellow.opacity(0.45)
+            }
+        }
+        return Text(highlighted)
     }
 
     private func copyToPasteboard(_ text: String) {

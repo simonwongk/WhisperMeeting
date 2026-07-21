@@ -22,7 +22,13 @@ a **live volume bar**, and the **recording-health panel**.
   constant-bitrate projection, not a disk measurement.
 - **Live volume bar** reacts to whoever is currently speaking. It is driven by a fast (~15 Hz)
   level stream taken from the same converted samples being written to disk, so it feels
-  responsive; it shows a "Someone is speaking" cue when either channel crosses a small threshold.
+  responsive; it shows a "Someone is speaking" cue when either channel crosses a calibrated
+  threshold. Raw PCM amplitudes are converted to a perceptual dBFS scale, then given short
+  attack/release smoothing and speaking hysteresis. A channel that stops delivering buffers decays
+  to silence instead of leaving a stale level on screen.
+
+The fast stream updates a dedicated nested meter model. It does not publish through the root app
+model, so the meeting list and detail hierarchy are not re-laid out ~15 times per second.
 
 The **health panel** leads with a one-word status — **healthy**, **worth a quick check**, or
 **needs attention** — derived from the warnings below (`RecordingHealthSnapshot.overallStatus`).

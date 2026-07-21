@@ -38,7 +38,7 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - **Segment-synced playback** — H/M/M. A read mode that lists timestamped segments; clicking one
   seeks the audio player, and the current segment highlights during playback. Segments already
   carry start/end times; no diarization implied.
-- **Find-in-transcript** — M/M/L. In-detail search with match highlighting and next/prev.
+- **Find-in-transcript** — M/M/L. In-detail search with match highlighting and next/prev. — DONE
 - **Copy a single segment / copy with timestamps toggle** — M/L/L.
 
 ## Round 3 — Throughput & automation
@@ -52,6 +52,23 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - Accessibility: VoiceOver labels, Dynamic Type, keyboard shortcuts.
 - Reliability: clearer errors, retry ergonomics, short/empty-audio handling.
 - Recording: input-level peak-hold / short history sparkline.
+
+## Next candidates — ordered
+1. **Preflight test recording + playback** — verify both channels with a disposable 10-second sample
+   before a critical meeting; keep it separate from the permanent meeting library.
+2. **Recording markers** — add a timestamped marker with one click/shortcut during a meeting, then
+   surface those moments in playback and exports without touching the audio.
+3. **Transcript quality review** — identify likely low-confidence or no-speech segments from the
+   local Whisper result and provide a focused correction queue; verify current upstream JSON fields
+   before implementation.
+4. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
+   while another meeting app is frontmost, with explicit confirmation before destructive cancel.
+5. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
+   transcripts to a user-selected folder, with verification and retention controls.
+6. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
+   support, including the recording-start timings and recovery decisions.
+7. **Signed release updates** — add a signed update feed only after an Apple signing identity and
+   release channel exist; keep the guarded local installer for development builds.
 
 ## Explicitly deferred (cost/risk vs. identity)
 - Pause/resume recording (SCStream complexity/risk to the source-of-truth audio).

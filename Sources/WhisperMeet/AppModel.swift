@@ -54,6 +54,20 @@ struct RecordingPreflightStatus: Equatable {
 }
 
 @MainActor
+final class RecordingMeterViewModel: ObservableObject {
+    @Published private(set) var snapshot = RecordingMeterSnapshot.silent
+
+    func update(_ snapshot: RecordingMeterSnapshot) {
+        guard self.snapshot != snapshot else { return }
+        self.snapshot = snapshot
+    }
+
+    func reset() {
+        update(.silent)
+    }
+}
+
+@MainActor
 final class AppModel: ObservableObject {
     enum RecordingState: Equatable {
         case idle
@@ -73,7 +87,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var installationMessage: String?
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
-    @Published private(set) var recordingLevels: RecordingLevels?
     @Published private(set) var isImporting = false
     @Published var selectedModel: WhisperModel {
         didSet { defaults.set(selectedModel.rawValue, forKey: Self.modelKey) }
@@ -84,6 +97,7 @@ final class AppModel: ObservableObject {
     @Published var alertMessage: String?
 
     let store: MeetingStore
+    let recordingMeter = RecordingMeterViewModel()
     private let recorder: AudioCaptureEngine
     private let defaults: UserDefaults
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
@@ -165,6 +179,22 @@ final class AppModel: ObservableObject {
                     try InterruptedRecordingRecovery.recover(in: orphan.directory)
                 }.value
                 guard let recovered else {
+                    if let imported = InterruptedRecordingRecovery.importedRecordingCandidate(
+                        in: orphan.directory
+                    ) {
+                        let failedTitle = "Unverified Import \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                        let message = "WhisperMeet preserved this interrupted import, but it was empty or macOS could not verify it as playable audio or video. The original file remains on this Mac; replace it with a valid recording or delete this entry."
+                        store.upsert(MeetingRecord(
+                            id: orphan.id,
+                            title: failedTitle,
+                            createdAt: orphan.createdAt,
+                            recordingPath: store.relativeRecordingPath(for: imported),
+                            status: .failed,
+                            errorMessage: message
+                        ))
+                        messages.append("\(failedTitle) needs attention. \(message)")
+                        continue
+                    }
                     if (try? InterruptedRecordingRecovery.removeIfEmpty(
                         in: orphan.directory
                     )) == true {
@@ -176,11 +206,23 @@ final class AppModel: ObservableObject {
                     continue
                 }
                 let title = "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
-                // A recovered imported (non-WAV) file has no readable duration in the core WAV
-                // parser; recompute it here where AVFoundation is available.
                 let duration = recovered.duration > 0
                     ? recovered.duration
                     : await Self.loadDuration(of: recovered.recordingURL)
+                if recovered.source == .importedRecording, duration <= 0 {
+                    let failedTitle = "Unverified Import \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                    let message = "WhisperMeet preserved this interrupted import, but macOS could not verify it as playable audio or video. The original file remains on this Mac; replace it with a valid recording or delete this entry."
+                    store.upsert(MeetingRecord(
+                        id: orphan.id,
+                        title: failedTitle,
+                        createdAt: orphan.createdAt,
+                        recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                        status: .failed,
+                        errorMessage: message
+                    ))
+                    messages.append("\(failedTitle) needs attention. \(message)")
+                    continue
+                }
                 store.upsert(MeetingRecord(
                     id: orphan.id,
                     title: title,
@@ -250,7 +292,7 @@ final class AppModel: ObservableObject {
         }
         recordingState = .starting
         recordingHealth = nil
-        recordingLevels = nil
+        recordingMeter.reset()
         let id = UUID()
         activeMeetingID = id
         let directory = store.recordingDirectoryURL(for: id)
@@ -265,14 +307,14 @@ final class AppModel: ObservableObject {
                     }
                     self.recordingHealth = snapshot
                 }
-            } onLevels: { [weak self] levels in
+            } onLevels: { [weak self] snapshot in
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.activeMeetingID == id,
                           case .recording = self.recordingState else {
                         return
                     }
-                    self.recordingLevels = levels
+                    self.recordingMeter.update(snapshot)
                 }
             }
             recordingState = .recording(startedAt: Date())
@@ -281,7 +323,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
-            recordingLevels = nil
+            recordingMeter.reset()
             refreshRecordingPreflight()
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
             alertMessage = error.localizedDescription
@@ -306,7 +348,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
-            recordingLevels = nil
+            recordingMeter.reset()
             refreshRecordingPreflight()
 
             refreshRuntime()
@@ -320,7 +362,7 @@ final class AppModel: ObservableObject {
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
-            recordingLevels = nil
+            recordingMeter.reset()
             refreshRecordingPreflight()
             do {
                 let recovered = try await Task.detached(priority: .userInitiated) {
@@ -353,7 +395,7 @@ final class AppModel: ObservableObject {
         recordingState = .idle
         activeMeetingID = nil
         recordingHealth = nil
-        recordingLevels = nil
+        recordingMeter.reset()
         refreshRecordingPreflight()
     }
 

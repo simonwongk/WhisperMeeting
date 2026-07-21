@@ -1,0 +1,23 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify, test, build, and package
+        run: Scripts/quality-check.sh
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

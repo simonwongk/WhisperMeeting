@@ -17,26 +17,6 @@ public struct RecordingAudioLevel: Sendable, Equatable {
     public static let silent = RecordingAudioLevel(rms: 0, peak: 0)
 }
 
-/// A high-frequency snapshot of both channels' loudness, pushed to the UI faster than the
-/// once-per-second health snapshot so the live volume bar feels responsive. Pure data only —
-/// warnings and storage checks stay on the health-snapshot path.
-public struct RecordingLevels: Sendable, Equatable {
-    public let microphone: RecordingAudioLevel
-    public let systemAudio: RecordingAudioLevel
-
-    public init(microphone: RecordingAudioLevel, systemAudio: RecordingAudioLevel) {
-        self.microphone = microphone
-        self.systemAudio = systemAudio
-    }
-
-    public static let silent = RecordingLevels(microphone: .silent, systemAudio: .silent)
-
-    /// Loudness of whichever channel is currently loudest — drives the combined "someone is
-    /// talking" volume bar.
-    public var combinedPeak: Float { max(microphone.peak, systemAudio.peak) }
-    public var combinedRMS: Float { max(microphone.rms, systemAudio.rms) }
-}
-
 /// A plain-language rollup of the health snapshot so the UI can state, in one word, whether the
 /// recording is fine — instead of leaving the user to interpret a list of warnings.
 public enum RecordingHealthStatus: Sendable, Equatable {

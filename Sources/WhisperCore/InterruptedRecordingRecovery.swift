@@ -1,9 +1,17 @@
 import Foundation
 
 public struct RecoveredRecording: Sendable, Equatable {
+    public enum Source: Sendable, Equatable {
+        case existingCapture
+        case importedRecording
+        case rebuiltSourceTracks
+    }
+
     public let recordingURL: URL
     public let duration: TimeInterval
-    public let wasRebuiltFromRawTracks: Bool
+    public let source: Source
+
+    public var wasRebuiltFromRawTracks: Bool { source == .rebuiltSourceTracks }
 }
 
 public enum InterruptedRecordingRecovery {
@@ -40,7 +48,7 @@ public enum InterruptedRecordingRecovery {
                 return RecoveredRecording(
                     recordingURL: url,
                     duration: duration,
-                    wasRebuiltFromRawTracks: false
+                    source: .existingCapture
                 )
             }
         }
@@ -49,10 +57,11 @@ public enum InterruptedRecordingRecovery {
         // it cannot be rebuilt from `.f32` data — recognize it directly instead of reporting that
         // there was not enough audio.
         if let imported = importedRecording(in: directory) {
+            let duration = wavDuration(at: imported)
             return RecoveredRecording(
                 recordingURL: imported,
-                duration: wavDuration(at: imported) ?? 0,
-                wasRebuiltFromRawTracks: false
+                duration: duration ?? 0,
+                source: .importedRecording
             )
         }
 
@@ -108,22 +117,38 @@ public enum InterruptedRecordingRecovery {
         return RecoveredRecording(
             recordingURL: outputURL,
             duration: Double(writtenFrames) / sampleRate,
-            wasRebuiltFromRawTracks: true
+            source: .rebuiltSourceTracks
         )
     }
 
     /// Finds an imported recording file (`recording.<ext>`) in a folder that has no live-capture
     /// artifacts, so an imported meeting that fell out of the index can be re-indexed on launch.
     private static func importedRecording(in directory: URL) -> URL? {
+        guard let candidate = importedRecordingCandidate(in: directory),
+              let values = try? candidate.resourceValues(forKeys: [.fileSizeKey]),
+              (values.fileSize ?? 0) > 0 else {
+            return nil
+        }
+        return candidate
+    }
+
+    /// Returns the protected imported file even when it is empty or otherwise not recoverable. The
+    /// app uses this to create one persistent "Needs attention" entry instead of repeating a
+    /// startup warning while still preserving the file for inspection.
+    public static func importedRecordingCandidate(in directory: URL) -> URL? {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: [.isRegularFileKey]
         ) else {
             return nil
         }
         return contents.first { url in
-            url.deletingPathExtension().lastPathComponent == "recording"
-                && !url.pathExtension.isEmpty
+            guard url.deletingPathExtension().lastPathComponent == "recording",
+                  !url.pathExtension.isEmpty,
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else {
+                return false
+            }
+            return values.isRegularFile == true
         }
     }
 
@@ -136,6 +161,10 @@ public enum InterruptedRecordingRecovery {
     }
 
     private static func wavDuration(at url: URL) -> TimeInterval? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value else {
+            return nil
+        }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let header = try? handle.read(upToCount: 44),
@@ -149,7 +178,12 @@ public enum InterruptedRecordingRecovery {
         let bitsPerSample = UInt32(littleEndianUInt16(in: header, at: 34))
         let dataByteCount = littleEndianUInt32(in: header, at: 40)
         let bytesPerSecond = sampleRate * channels * bitsPerSample / 8
-        guard bytesPerSecond > 0, dataByteCount > 0 else { return nil }
+        let requiredFileSize = UInt64(44) + UInt64(dataByteCount)
+        guard bytesPerSecond > 0,
+              dataByteCount > 0,
+              requiredFileSize <= fileSize else {
+            return nil
+        }
         return Double(dataByteCount) / Double(bytesPerSecond)
     }
 

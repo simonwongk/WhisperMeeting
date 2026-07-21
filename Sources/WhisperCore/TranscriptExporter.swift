@@ -32,8 +32,9 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
         }
     }
 
-    /// Formats built from timestamped `segments` do not reflect freeform transcript edits; text and
-    /// Markdown formats use the (possibly edited) transcript text as shown to the user.
+    /// Formats that require timed cues. Their cue text and any visibly edited timestamps are derived
+    /// from the current transcript; original subsecond timings are retained only when lines still
+    /// align with the displayed Whisper timestamps.
     public var usesSegments: Bool {
         switch self {
         case .srt, .vtt, .json: true
@@ -65,6 +66,11 @@ public struct TranscriptExportRequest: Sendable {
 }
 
 public enum TranscriptExporter {
+    private struct TranscriptLine {
+        let start: TimeInterval?
+        let text: String
+    }
+
     public static func render(
         _ format: TranscriptExportFormat,
         _ request: TranscriptExportRequest
@@ -77,13 +83,94 @@ public enum TranscriptExporter {
         case .markdown:
             return markdown(request)
         case .srt:
-            return srt(request.segments)
+            return srt(effectiveSegments(request))
         case .vtt:
-            return vtt(request.segments)
+            return vtt(effectiveSegments(request))
         case .json:
             return json(request)
         }
     }
+
+    /// The editable transcript is the user-facing source of truth. When its non-empty lines still
+    /// align one-for-one with Whisper's segments, preserve the precise original timings while
+    /// replacing segment text with the current edited text.
+    private static func effectiveSegments(_ request: TranscriptExportRequest) -> [TranscriptSegment] {
+        let editedLines = transcriptLines(request.transcriptText)
+        if linesStillAlignWithOriginalTimings(editedLines, request.segments) {
+            return zip(request.segments, editedLines).map { segment, line in
+                TranscriptSegment(
+                    speaker: segment.speaker,
+                    start: segment.start,
+                    end: segment.end,
+                    text: line.text
+                )
+            }
+        }
+        if !editedLines.isEmpty, editedLines.allSatisfy({ $0.start != nil }) {
+            return editedLines.enumerated().map { index, line in
+                let start = line.start ?? 0
+                let nextStart = editedLines.indices.contains(index + 1)
+                    ? editedLines[index + 1].start
+                    : nil
+                return TranscriptSegment(
+                    speaker: nil,
+                    start: start,
+                    end: max(start, nextStart ?? request.durationSeconds),
+                    text: line.text
+                )
+            }
+        }
+        let text = editedLines.map(\.text).joined(separator: "\n")
+        guard !text.isEmpty else { return [] }
+        return [TranscriptSegment(
+            speaker: nil,
+            start: 0,
+            end: max(0, request.durationSeconds),
+            text: text
+        )]
+    }
+
+    private static func linesStillAlignWithOriginalTimings(
+        _ lines: [TranscriptLine],
+        _ segments: [TranscriptSegment]
+    ) -> Bool {
+        guard !lines.isEmpty, lines.count == segments.count else { return false }
+        return zip(lines, segments).allSatisfy { line, segment in
+            guard let editedStart = line.start, let originalStart = segment.start else {
+                return false
+            }
+            // The editable transcript displays whole seconds while Whisper retains subsecond cue
+            // precision. Preserve that precision only when the visible whole-second timestamp was
+            // not changed by the user.
+            return Int(editedStart.rounded(.down)) == Int(originalStart.rounded(.down))
+        }
+    }
+
+    private static func transcriptLines(_ text: String) -> [TranscriptLine] {
+        text.split(whereSeparator: \.isNewline).compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return nil }
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            guard let match = timestampedLineRegex.firstMatch(in: line, range: range),
+                  let clockRange = Range(match.range(at: 1), in: line),
+                  let textRange = Range(match.range(at: 2), in: line) else {
+                return TranscriptLine(start: nil, text: line)
+            }
+            let clock = line[clockRange].split(separator: ":").compactMap { Double($0) }
+            guard clock.count == 2 || clock.count == 3 else {
+                return TranscriptLine(start: nil, text: line)
+            }
+            let start = clock.reduce(0) { $0 * 60 + $1 }
+            return TranscriptLine(
+                start: start,
+                text: line[textRange].trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    private static let timestampedLineRegex = try! NSRegularExpression(
+        pattern: #"^\s*((?:\d{1,3}:)?\d{1,3}:\d{2})\s+(.+?)\s*$"#
+    )
 
     private static func markdown(_ request: TranscriptExportRequest) -> String {
         var lines = ["# \(request.title)", ""]
@@ -133,11 +220,13 @@ public enum TranscriptExporter {
     }
 
     private static func json(_ request: TranscriptExportRequest) -> String {
+        let segments = effectiveSegments(request)
         let payload = ExportPayload(
             title: request.title,
             language: request.languageCode,
             durationSeconds: request.durationSeconds,
-            segments: request.segments.map {
+            transcriptText: request.transcriptText,
+            segments: segments.map {
                 ExportPayload.Segment(start: $0.start, end: $0.end, text: $0.text)
             }
         )
@@ -173,5 +262,6 @@ private struct ExportPayload: Codable {
     let title: String
     let language: String?
     let durationSeconds: TimeInterval
+    let transcriptText: String
     let segments: [Segment]
 }
