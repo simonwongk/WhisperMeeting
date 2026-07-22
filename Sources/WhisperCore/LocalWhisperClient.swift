@@ -64,6 +64,16 @@ public struct LocalWhisperRuntime: Sendable {
             FileManager.default.isExecutableFile(atPath: $0.path)
         }
     }
+
+    public static func pythonExecutable(applicationSupport: URL? = nil) -> URL {
+        managedDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("venv/bin/python")
+    }
+
+    public static func dictationServerScript(applicationSupport: URL? = nil) -> URL {
+        managedDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("whisper_dictate_server.py")
+    }
 }
 
 public struct LocalWhisperClient: Sendable {

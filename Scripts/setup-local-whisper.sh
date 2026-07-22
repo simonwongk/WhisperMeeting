@@ -27,4 +27,9 @@ mkdir -p "$runtime_directory"
 "$runtime_directory/venv/bin/python" -m pip install --upgrade openai-whisper
 "$runtime_directory/venv/bin/whisper" --help >/dev/null
 
+script_source="${0:A:h}/whisper_dictate_server.py"
+if [[ -f "$script_source" ]]; then
+  cp "$script_source" "$runtime_directory/whisper_dictate_server.py"
+fi
+
 print "Local Whisper is ready at $runtime_directory/venv/bin/whisper"

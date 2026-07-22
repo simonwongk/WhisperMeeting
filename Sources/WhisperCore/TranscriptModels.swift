@@ -25,7 +25,7 @@ public enum WhisperLanguage: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 
-    var commandLineValue: String? {
+    public var commandLineValue: String? {
         switch self {
         case .automatic: nil
         case .english: "English"

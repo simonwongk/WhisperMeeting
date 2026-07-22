@@ -19,6 +19,7 @@ cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 cp "Scripts/setup-local-whisper.sh" "$app_dir/Contents/Resources/setup-local-whisper.sh"
 chmod +x "$app_dir/Contents/Resources/setup-local-whisper.sh"
+cp "Scripts/whisper_dictate_server.py" "$app_dir/Contents/Resources/whisper_dictate_server.py"
 codesign --force --deep --sign - "$app_dir"
 
 print -r -- "$PWD/$app_dir"
