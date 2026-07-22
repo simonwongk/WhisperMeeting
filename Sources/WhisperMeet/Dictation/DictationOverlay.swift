@@ -2,6 +2,14 @@
 import AppKit
 import SwiftUI
 
+/// An NSPanel that can never become key or main, so it never steals keyboard focus from the app the
+/// user is dictating into. (`.nonactivatingPanel` only suppresses app activation; `NSPanel` still
+/// defaults `canBecomeKey` to true, so the override is required.)
+private final class NonActivatingPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 /// A borderless, non-activating panel pinned near the bottom-center of the active screen. It never
 /// becomes key, so it never steals focus from the app you are dictating into.
 @MainActor
@@ -31,8 +39,8 @@ final class DictationOverlay {
     private func ensurePanel() {
         guard panel == nil else { return }
         let hosting = NSHostingView(rootView: DictationPill(model: model))
-        hosting.frame = NSRect(x: 0, y: 0, width: 220, height: 56)
-        let panel = NSPanel(
+        hosting.frame = NSRect(x: 0, y: 0, width: 220, height: 44)
+        let panel = NonActivatingPanel(
             contentRect: hosting.frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
