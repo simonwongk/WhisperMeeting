@@ -24,10 +24,17 @@ python_executable="$($brew_executable --prefix python@3.11)/bin/python3.11"
 mkdir -p "$runtime_directory"
 "$python_executable" -m venv "$runtime_directory/venv"
 "$runtime_directory/venv/bin/python" -m pip install --upgrade pip
-# openai-whisper drives meetings (LocalWhisperClient); mlx-whisper drives quick dictation
-# (Apple-Silicon warm helper). Both are installed so a fresh setup gets both paths.
-"$runtime_directory/venv/bin/python" -m pip install --upgrade openai-whisper mlx-whisper
+# openai-whisper drives meetings (LocalWhisperClient) and MUST succeed — install and verify it
+# first so the meetings runtime is never left unverified by a later, optional dependency.
+"$runtime_directory/venv/bin/python" -m pip install --upgrade openai-whisper
 "$runtime_directory/venv/bin/whisper" --help >/dev/null
+
+# mlx-whisper drives quick dictation (Apple-Silicon warm helper). It is arm64-only with a larger
+# dependency tree, so install it best-effort: a failure here must NOT abort the meetings runtime.
+# (Commands in an `if` condition are exempt from `set -e`, so a failure won't kill the script.)
+if ! "$runtime_directory/venv/bin/python" -m pip install --upgrade mlx-whisper; then
+  print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
+fi
 
 script_source="${0:A:h}/whisper_dictate_server.py"
 if [[ -f "$script_source" ]]; then

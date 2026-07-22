@@ -87,7 +87,7 @@ final class DictationController: ObservableObject {
         let python = LocalWhisperRuntime.pythonExecutable()
         let script = LocalWhisperRuntime.dictationServerScript()
         let models = LocalWhisperRuntime.modelDirectory()
-        return WarmWhisperDictationEngine(python: python, script: script, modelDirectory: models, model: .turbo)
+        return WarmWhisperDictationEngine(python: python, script: script, modelDirectory: models)
     }
 
     func configure(isMeetingActive: @escaping () -> Bool) {
@@ -145,32 +145,32 @@ final class DictationController: ObservableObject {
         }
     }
 
-    /// Self-heal: if the managed Python venv exists but the bundled dictation helper script is
-    /// missing from the runtime directory (e.g. wiped, or installed before this feature shipped),
-    /// re-copy it from the app bundle instead of leaving dictation permanently broken.
+    /// Keep the installed dictation helper in sync with the version shipped in THIS app build: if the
+    /// managed Python venv exists, (re-)copy the bundled `whisper_dictate_server.py` into the runtime
+    /// whenever it's missing OR differs. This self-heals a wiped helper AND applies updates whose arg
+    /// contract changed (e.g. the openai→MLX switch) — a stale helper would otherwise break dictation.
     private func ensureHelperInstalled() {
         let python = LocalWhisperRuntime.pythonExecutable()
         let script = LocalWhisperRuntime.dictationServerScript()
-        guard FileManager.default.fileExists(atPath: python.path),
-              !FileManager.default.fileExists(atPath: script.path) else { return }
-        guard let bundled = Bundle.main.url(forResource: "whisper_dictate_server", withExtension: "py") else {
-            log.error("dictation helper missing and no bundled copy found to self-heal from")
+        guard FileManager.default.fileExists(atPath: python.path) else { return } // no runtime installed yet
+        guard let bundled = Bundle.main.url(forResource: "whisper_dictate_server", withExtension: "py"),
+              let bundledData = try? Data(contentsOf: bundled) else {
+            if !FileManager.default.fileExists(atPath: script.path) {
+                log.error("dictation helper missing and no bundled copy found to self-heal from")
+            }
             return
         }
+        let installedData = try? Data(contentsOf: script)
+        guard bundledData != installedData else { return } // already the current version
         do {
             try FileManager.default.createDirectory(
                 at: script.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            try bundledData.write(to: script)
+            log.notice("dictation helper synced from app bundle into runtime")
         } catch {
-            log.error("could not create runtime directory for helper self-heal: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        do {
-            try FileManager.default.copyItem(at: bundled, to: script)
-            log.notice("dictation helper self-healed: copied bundled whisper_dictate_server.py into runtime directory")
-        } catch {
-            log.error("failed to self-heal dictation helper: \(error.localizedDescription, privacy: .public)")
+            log.error("failed to install dictation helper: \(error.localizedDescription, privacy: .public)")
         }
     }
 

@@ -8,7 +8,6 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private let python: URL
     private let script: URL
     private let modelDirectory: URL
-    private let model: WhisperModel
     private let mlxRepo: String
     private let queue = DispatchQueue(label: "com.whispermeet.dictation.engine")
 
@@ -21,13 +20,11 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         python: URL,
         script: URL,
         modelDirectory: URL,
-        model: WhisperModel = .turbo,
         mlxRepo: String = "mlx-community/whisper-large-v3-turbo"
     ) {
         self.python = python
         self.script = script
         self.modelDirectory = modelDirectory
-        self.model = model
         self.mlxRepo = mlxRepo
     }
 
@@ -111,15 +108,20 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         self.stdoutBuffer.removeAll()
 
         // Block until the helper reports the model is resident.
-        // First enable may download the turbo model (~1.6 GB); give the one-time download+load room
+        // First enable may download the model (~1.6 GB); give the one-time download+load room
         // before the watchdog kills the helper. Subsequent warm-ups (model cached) return in seconds.
         let readyLine = try readLine(timeout: 1_800)
-        guard
-            let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
-            ready["ready"] == true
-        else {
-            throw LocalWhisperError.processFailed("Dictation helper failed to start.")
+        if let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
+           ready["ready"] == true {
+            return
         }
+        // Not ready: the helper emits {"error": …} on warm-up failure. Surface that specific text
+        // (not a generic message) so the self-test / diagnostics show WHY it failed.
+        if let response = try? DictationWireProtocol.decodeResponse(line: readyLine),
+           let error = response.error {
+            throw LocalWhisperError.processFailed(error)
+        }
+        throw LocalWhisperError.processFailed("Dictation helper failed to start.")
     }
 
     private func readLine(timeout: TimeInterval) throws -> Data {

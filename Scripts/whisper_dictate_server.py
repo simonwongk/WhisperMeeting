@@ -28,6 +28,15 @@ def main() -> int:
     os.makedirs(hf_home, exist_ok=True)
     os.environ["HF_HOME"] = hf_home
 
+    # Once the model is cached locally, forbid ALL network access — huggingface_hub otherwise
+    # issues a metadata/HEAD request to huggingface.co on every start even when fully cached.
+    # The meeting path never phones home once its model exists; match that. On the very first
+    # run the model isn't cached yet, so we allow that one-time download, after which every
+    # subsequent start is fully offline (and works air-gapped).
+    repo_cache = os.path.join(hf_home, "hub", "models--" + args.mlx_repo.replace("/", "--"))
+    if os.path.isdir(repo_cache):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
     import mlx.core as mx
     import mlx_whisper  # imported after arg parse so --help is instant
 
