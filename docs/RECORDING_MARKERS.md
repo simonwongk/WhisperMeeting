@@ -27,11 +27,23 @@ feature still decode, exactly like `transcriptNormalized`).
 
 ## Capture and playback (`WhisperMeet`)
 
-While recording, an "Add Marker" button (and the `⌘M` shortcut) records `now − startedAt` as the
-offset; pending markers are held on `AppModel` and persisted into the `MeetingRecord` when the meeting
-is saved. Cancelling a recording discards them with the rest of the disposable state. In the transcript
-detail, markers appear as a list you can click to seek the player, and they're written into the Meeting
+While recording, an "Add Marker" button (and the `⇧⌘M` shortcut — `⌘M` is left to the system Minimize)
+records `now − startedAt` as the offset; pending markers are held on `AppModel` and persisted into the
+`MeetingRecord` when the meeting is saved (and through crash recovery). Cancelling a recording discards
+them with the rest of the disposable state. In the transcript detail, markers appear as a strip you can
+click to seek the player, add at the current position, or rename/delete; a meeting without a transcript
+yet still shows its markers so they can be reviewed or removed. Markers are written into the Meeting
 Notes export.
+
+### Known limitations
+
+- **Offset reference.** A live marker's offset is measured from `startedAt`, the same clock the on-screen
+  recording timer uses — so a marker lands where the timer read when you pressed it. That clock can differ
+  from the mixed WAV's t=0 by the capture spin-up (typically sub-second when permissions are already
+  granted). Markers added later from playback use the exact audio position.
+- **Crash before save.** Live markers live in memory until the meeting is saved. A hard crash mid-recording
+  loses markers dropped before the crash (the audio itself is still recovered); markers already written to
+  `meetings.json` always survive.
 
 ## Invariants respected
 

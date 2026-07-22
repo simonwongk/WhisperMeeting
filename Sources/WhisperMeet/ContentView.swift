@@ -379,10 +379,10 @@ private struct RecordMeetingView: View {
                     .frame(minWidth: 150)
             }
             .buttonStyle(.bordered)
-            .keyboardShortcut("m", modifiers: .command)
-            .help("Flag this moment (⌘M). Markers are timestamps only — they never change the recording.")
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .help("Flag this moment (⇧⌘M). Markers are timestamps only — they never change the recording.")
             Text(model.pendingMarkers.isEmpty
-                ? "No markers yet — press ⌘M to flag an important moment."
+                ? "No markers yet — press ⇧⌘M to flag an important moment."
                 : "\(model.pendingMarkers.count) marker\(model.pendingMarkers.count == 1 ? "" : "s") dropped")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -646,6 +646,67 @@ private struct RecordMeetingView: View {
     private func duration(_ interval: TimeInterval) -> String {
         let total = max(0, Int(interval))
         return String(format: "%02d:%02d:%02d", total / 3_600, (total / 60) % 60, total % 60)
+    }
+}
+
+/// Markers shown before a transcript exists (e.g. recorded-but-not-yet-transcribed, or transcription
+/// failed) so they can always be reviewed, renamed, or removed. Seeking lives in the richer playback
+/// strip that appears once there are segments.
+private struct SimpleMarkersList: View {
+    @ObservedObject var model: AppModel
+    let meetingID: UUID
+    let markers: [RecordingMarker]
+    @State private var renamingMarker: RecordingMarker?
+    @State private var renameText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Markers", systemImage: "bookmark.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(Array(markers.enumerated()), id: \.element.id) { index, marker in
+                HStack(spacing: 8) {
+                    Text(TranscriptFormatter.timestamp(marker.offset))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 48, alignment: .leading)
+                    Text(RecordingMarkers.displayLabel(for: marker, at: index + 1))
+                        .font(.callout)
+                    Spacer()
+                    Button("Rename") {
+                        renameText = marker.label ?? ""
+                        renamingMarker = marker
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    Button(role: .destructive) {
+                        model.removeMarker(marker.id, from: meetingID)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .alert("Rename Marker", isPresented: Binding(
+            get: { renamingMarker != nil },
+            set: { if !$0 { renamingMarker = nil } }
+        )) {
+            TextField("Label", text: $renameText)
+            Button("Save") {
+                if let marker = renamingMarker {
+                    model.renameMarker(marker.id, to: renameText, in: meetingID)
+                }
+                renamingMarker = nil
+            }
+            Button("Cancel", role: .cancel) { renamingMarker = nil }
+        } message: {
+            Text("Give this moment a name, or clear it to revert to a numbered marker.")
+        }
     }
 }
 
@@ -1540,6 +1601,9 @@ private struct TranscriptDetailView: View {
                 .id(meetingID)
             } else {
                 recordingPlayer(meeting)
+                if !meeting.orderedMarkers.isEmpty {
+                    SimpleMarkersList(model: model, meetingID: meetingID, markers: meeting.orderedMarkers)
+                }
                 transcriptTextEditor(meeting)
             }
         }

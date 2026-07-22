@@ -42,8 +42,11 @@ public enum RecordingMarkers {
         at offset: TimeInterval,
         in segments: [TranscriptSegment]
     ) -> String? {
+        // Sort by start so the "last segment starting before the offset" fallback is correct even
+        // if the input is out of order (Whisper output is chronological, but don't rely on it).
+        let ordered = segments.sorted { ($0.start ?? -1) < ($1.start ?? -1) }
         var best: TranscriptSegment?
-        for segment in segments {
+        for segment in ordered {
             guard let start = segment.start, start <= offset else { continue }
             best = segment
             if let end = segment.end, offset < end { break }

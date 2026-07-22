@@ -56,6 +56,16 @@ func segmentTextNil() {
     #expect(RecordingMarkers.segmentText(at: 5, in: []) == nil)
 }
 
+@Test("segmentText is robust to out-of-order segments")
+func segmentTextOutOfOrder() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 8, end: 12, text: "later"),
+        TranscriptSegment(speaker: nil, start: 0, end: 5, text: "earlier")
+    ]
+    // Offset 15 is past both ends → the segment with the greatest start before it ("later").
+    #expect(RecordingMarkers.segmentText(at: 15, in: segments) == "later")
+}
+
 @Test("The markdown section lists markers with timestamps, labels, and context")
 func markdownSection() {
     let segments = [
