@@ -165,3 +165,23 @@ reviews a handful instead of re-reading everything. See `docs/TRANSCRIPT_QUALITY
   ever auto-changed; the audio is never touched.
 - Adversarially reviewed (no Critical/Important findings); Minor consistency fix applied. Suite
   97 → 110 tests.
+
+## Round 10 — Preflight test recording
+Answers the single biggest anxiety of any recorder — *will it actually capture when it matters?*
+WhisperMeet records two independent tracks (your mic + the Mac's system audio) and either can fail
+silently. Before a critical meeting you can now run a short, **disposable** test that records a few
+seconds of both channels, analyzes each for real signal, and tells you plainly whether both are
+captured — with specific guidance when one isn't. See `docs/PREFLIGHT_TEST.md`.
+- New pure, tested `WhisperCore` modules: `PreflightSignalAnalyzer` (peak/rms → `silent`/`faint`/
+  `ok`/`hot`, plus a little-endian Float32 `.f32` decoder) and `PreflightAssessment` (per-channel
+  verdict + headline). The two channels are judged differently on purpose: a silent **microphone**
+  is a firm failure; silent **system audio** is informational (it's only captured while another app
+  is playing sound). 15 tests.
+- `AppModel` drives the capture via a **dedicated** `AudioCaptureEngine` into a temp directory —
+  never the meeting library, never a `MeetingRecord` — with an 8-second countdown, cancellation, and
+  playback of the sample. The Record view gains a "Test Recording…" control opening a
+  countdown → analyzing → per-channel result sheet.
+- Adversarially reviewed; fixed one Critical + two Important concurrency/lifecycle findings before
+  ship: the capture task is now the single owner of the engine (a Cancel during the
+  non-cancellation-aware `start()` can no longer orphan a live stream), the error path can't
+  resurrect a dismissed sheet, and import is blocked while a test is active. Suite 110 → 125.

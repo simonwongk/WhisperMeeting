@@ -28,6 +28,10 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
   per-segment confidence metrics (previously discarded) and flag likely low-confidence / silence-
   hallucination / repetitive segments using Whisper's own default thresholds, with an unobtrusive
   banner + prev/next step-through in the transcript detail. Read-only; audio untouched.
+- **Round 10** — Preflight test recording (`PreflightSignalAnalyzer` + `PreflightAssessment`,
+  pure/tested): a disposable test that records a few seconds of both channels and reports whether
+  mic + system audio are actually capturing, with per-channel guidance. Dedicated engine + temp
+  dir; never becomes a meeting.
 
 ## Round 1 — Extract & organize (mostly pure logic, low risk) — DONE
 - **Subtitle & document export (SRT, VTT, Markdown, JSON)** — H/L/L. Pure `TranscriptExporter` in
@@ -60,17 +64,15 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - Recording: input-level peak-hold / short history sparkline.
 
 ## Next candidates — ordered
-1. **Preflight test recording + playback** — verify both channels with a disposable 10-second sample
-   before a critical meeting; keep it separate from the permanent meeting library.
-2. **Recording markers** — add a timestamped marker with one click/shortcut during a meeting, then
+1. **Recording markers** — add a timestamped marker with one click/shortcut during a meeting, then
    surface those moments in playback and exports without touching the audio.
-3. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
+2. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
    while another meeting app is frontmost, with explicit confirmation before destructive cancel.
-5. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
+3. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
    transcripts to a user-selected folder, with verification and retention controls.
-6. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
+4. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
    support, including the recording-start timings and recovery decisions.
-7. **Signed release updates** — add a signed update feed only after an Apple signing identity and
+5. **Signed release updates** — add a signed update feed only after an Apple signing identity and
    release channel exist; keep the guarded local installer for development builds.
 
 ## Explicitly deferred (cost/risk vs. identity)
