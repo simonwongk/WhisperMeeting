@@ -185,3 +185,23 @@ captured — with specific guidance when one isn't. See `docs/PREFLIGHT_TEST.md`
   ship: the capture task is now the single owner of the engine (a Cancel during the
   non-cancellation-aware `start()` can no longer orphan a live stream), the error path can't
   resurrect a dismissed sheet, and import is blocked while a test is active. Suite 110 → 125.
+
+## Round 11 — Recording markers
+In a long meeting, the moments that matter are a handful of points in an hour of audio. Markers let
+you flag them *as they happen* (a button or **⇧⌘M**) — or later from playback — then jump straight
+back and see them in your exported notes, without scrubbing the whole recording. A marker is pure
+metadata (just a timestamp); the audio is **never touched**. See `docs/RECORDING_MARKERS.md`.
+- New pure, tested `WhisperCore` modules: `RecordingMarker` (Codable) and `RecordingMarkers` helpers
+  — sorted insert with negative-offset clamp, 1-based display labels, active-segment lookup (robust
+  to out-of-order segments), and a `## Markers` Markdown section for Meeting Notes.
+- `MeetingRecord` gains an optional `markers` field (backward-compatible, like `transcriptNormalized`)
+  and an `orderedMarkers` convenience.
+- `AppModel` holds `pendingMarkers` during a live recording (⇧⌘M → offset from the recording timer),
+  persists them on stop **and through crash recovery**, discards them on cancel; plus add/remove/
+  rename for saved meetings.
+- UI: an "Add Marker" control + live count in the recording panel; a markers strip in playback
+  (click a chip to seek, add at the current position, rename/delete); markers are also viewable and
+  manageable before a transcript exists; Meeting Notes export includes the Markers section.
+- Adversarially reviewed; fixed the Important "markers invisible until transcribed" gap and two Minor
+  issues (out-of-order segment context, the ⌘M/Minimize shortcut clash) before ship; documented the
+  bounded live-offset clock and crash-before-save behavior. Suite 125 → 138.
