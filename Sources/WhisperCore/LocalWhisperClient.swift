@@ -151,7 +151,10 @@ public struct LocalWhisperClient: Sendable {
                 speaker: nil,
                 start: segment.start,
                 end: segment.end,
-                text: segmentText
+                text: segmentText,
+                avgLogprob: segment.avgLogprob,
+                noSpeechProb: segment.noSpeechProb,
+                compressionRatio: segment.compressionRatio
             )
         }
         return TranscriptionResult(
@@ -310,4 +313,14 @@ private struct WhisperSegment: Decodable {
     let start: Double?
     let end: Double?
     let text: String
+    let avgLogprob: Double?
+    let noSpeechProb: Double?
+    let compressionRatio: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case start, end, text
+        case avgLogprob = "avg_logprob"
+        case noSpeechProb = "no_speech_prob"
+        case compressionRatio = "compression_ratio"
+    }
 }

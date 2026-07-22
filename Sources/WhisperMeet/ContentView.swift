@@ -1614,6 +1614,13 @@ private struct PlayableTranscriptView: View {
     @State private var followPlayback = true
     @State private var selectedSearchPosition = 0
     @State private var searchOccurrences: [TextSearchOccurrence] = []
+    // Quality review: step through the segments Whisper was least sure about.
+    @State private var reviewPosition = 0
+    @State private var reviewNudge = 0
+
+    // Computed once — segments are fixed for the life of this view.
+    private let qualityReport: TranscriptQualityReport
+    private let flagsByIndex: [Int: [SegmentQualityFlag]]
 
     init(
         store: MeetingStore,
@@ -1625,6 +1632,11 @@ private struct PlayableTranscriptView: View {
         self.meetingID = meetingID
         self.recordingURL = recordingURL
         self.segments = segments
+        let report = TranscriptQuality.review(segments)
+        self.qualityReport = report
+        self.flagsByIndex = Dictionary(
+            uniqueKeysWithValues: report.flagged.map { ($0.index, $0.flags) }
+        )
         _playback = StateObject(wrappedValue: TranscriptPlaybackController(url: recordingURL))
         _visible = State(initialValue: segments.enumerated().map {
             IndexedSegment(id: $0.offset, segment: $0.element)
@@ -1670,6 +1682,22 @@ private struct PlayableTranscriptView: View {
         selectedSearchPosition = (
             selectedSearchPosition + offset + searchOccurrences.count
         ) % searchOccurrences.count
+    }
+
+    private var flaggedCount: Int { qualityReport.flagged.count }
+
+    /// The transcript index of the flagged segment currently being reviewed.
+    private var reviewTargetID: Int? {
+        guard flaggedCount > 0 else { return nil }
+        return qualityReport.flagged[min(reviewPosition, flaggedCount - 1)].index
+    }
+
+    /// Move to another flagged segment and scroll to it (bumping the nudge so re-selecting the same
+    /// position still triggers a scroll).
+    private func moveReview(by offset: Int) {
+        guard flaggedCount > 0 else { return }
+        reviewPosition = (reviewPosition + offset + flaggedCount) % flaggedCount
+        reviewNudge += 1
     }
 
     var body: some View {
@@ -1724,6 +1752,10 @@ private struct PlayableTranscriptView: View {
             .padding(8)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
 
+            if flaggedCount > 0 && !isSearching {
+                qualityReviewBanner
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
@@ -1757,19 +1789,65 @@ private struct PlayableTranscriptView: View {
                         proxy.scrollTo(newValue, anchor: .center)
                     }
                 }
+                .onChange(of: reviewNudge) { _, _ in
+                    guard let target = reviewTargetID else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                }
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
+    }
+
+    private var qualityReviewBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.bubble")
+                .foregroundStyle(.orange)
+            Button {
+                reviewNudge += 1
+            } label: {
+                Text(flaggedCount == 1
+                    ? "1 segment may need a look"
+                    : "\(flaggedCount) segments may need a look")
+                    .font(.callout)
+            }
+            .buttonStyle(.plain)
+            .help("Whisper flagged these as low-confidence, likely-silence, or repetitive. Tap to review; this never changes your transcript.")
+            Spacer(minLength: 8)
+            Text("\(min(reviewPosition, flaggedCount - 1) + 1) of \(flaggedCount)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Button { moveReview(by: -1) } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Previous flagged segment")
+            Button { moveReview(by: 1) } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Next flagged segment")
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
     private func segmentRow(index: Int, segment: TranscriptSegment) -> some View {
         let isActive = index == activeIndex
         let isSelectedMatch = index == selectedSearchID
+        let flags = flagsByIndex[index]
+        let isReviewTarget = index == reviewTargetID && !isSearching
         Button {
             if let start = segment.start { playback.seek(to: start) }
         } label: {
             HStack(alignment: .top, spacing: 10) {
+                Capsule()
+                    .fill(flags == nil ? Color.clear : Color.orange)
+                    .frame(width: 3)
+                    .frame(maxHeight: .infinity)
+                    .opacity(isReviewTarget ? 1 : (flags == nil ? 0 : 0.5))
                 Text(segment.start.map(TranscriptFormatter.timestamp) ?? "--:--")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(isActive ? Color.accentColor : .secondary)
@@ -1778,17 +1856,21 @@ private struct PlayableTranscriptView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
             }
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 6)
             .padding(.horizontal, 10)
             .background(
                 isSelectedMatch
                     ? Color.accentColor.opacity(0.22)
-                    : (isActive ? Color.accentColor.opacity(0.15) : Color.clear),
+                    : (isReviewTarget
+                        ? Color.orange.opacity(0.18)
+                        : (isActive ? Color.accentColor.opacity(0.15) : Color.clear)),
                 in: RoundedRectangle(cornerRadius: 6)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(flags.map(qualityHelp) ?? "")
         .contextMenu {
             Button("Copy Text") { copyToPasteboard(segment.text) }
             if let start = segment.start {
@@ -1797,6 +1879,10 @@ private struct PlayableTranscriptView: View {
                 }
             }
         }
+    }
+
+    private func qualityHelp(_ flags: [SegmentQualityFlag]) -> String {
+        flags.map(\.reason).joined(separator: "\n")
     }
 
     private func highlightedText(_ text: String, segmentIndex: Int) -> Text {

@@ -92,16 +92,29 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var end: Double?
     public var text: String
 
+    /// Whisper per-segment confidence metrics, retained for quality review.
+    /// `nil` on transcripts produced before this feature (and on the dictation path);
+    /// consumers treat a segment without metrics as *unscored*, never as flagged.
+    public var avgLogprob: Double?
+    public var noSpeechProb: Double?
+    public var compressionRatio: Double?
+
     public init(
         speaker: String?,
         start: Double?,
         end: Double?,
-        text: String
+        text: String,
+        avgLogprob: Double? = nil,
+        noSpeechProb: Double? = nil,
+        compressionRatio: Double? = nil
     ) {
         self.speaker = speaker
         self.start = start
         self.end = end
         self.text = text
+        self.avgLogprob = avgLogprob
+        self.noSpeechProb = noSpeechProb
+        self.compressionRatio = compressionRatio
     }
 }
 
