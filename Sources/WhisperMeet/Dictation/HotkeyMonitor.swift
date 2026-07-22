@@ -86,10 +86,10 @@ final class HotkeyMonitor {
         let nowDown: Bool
         switch type {
         case .flagsChanged:
-            // A flagsChanged carrying our keyCode is a transition of THAT specific key. Its direction
-            // can't be read reliably from the side-agnostic modifier mask when another same-type
-            // modifier is held, so track this key's own state by toggling on each matching event.
-            nowDown = !keyDown
+            // Absolute, per-side read: the device-dependent modifier bit reflects THIS specific key's
+            // true current state (unlike the side-agnostic .maskAlternate etc.), so `keyDown` cannot
+            // desync the way a relative toggle would.
+            nowDown = modifierIsDown(event)
         case .keyDown:
             nowDown = true
         case .keyUp:
@@ -100,6 +100,24 @@ final class HotkeyMonitor {
         guard nowDown != keyDown else { return } // ignore autorepeat / duplicate transitions
         keyDown = nowDown
         dispatch(pressed: nowDown)
+    }
+
+    /// Whether the configured modifier hotkey key is currently physically down, read from the
+    /// device-dependent modifier bits in the event flags (which encode left vs right separately).
+    private func modifierIsDown(_ event: CGEvent) -> Bool {
+        let deviceMask: UInt64
+        switch hotkey.keyCode {
+        case 58: deviceMask = 0x0000_0020 // left Option
+        case 61: deviceMask = 0x0000_0040 // right Option
+        case 59: deviceMask = 0x0000_0001 // left Control
+        case 62: deviceMask = 0x0000_2000 // right Control
+        case 56: deviceMask = 0x0000_0002 // left Shift
+        case 60: deviceMask = 0x0000_0004 // right Shift
+        case 55: deviceMask = 0x0000_0008 // left Command
+        case 54: deviceMask = 0x0000_0010 // right Command
+        default: deviceMask = 0
+        }
+        return (event.flags.rawValue & deviceMask) != 0
     }
 
     private func dispatch(pressed: Bool) {
