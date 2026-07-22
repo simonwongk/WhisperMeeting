@@ -461,11 +461,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The task owns the engine's *entire* lifecycle. `AudioCaptureEngine.start()` is not
+    /// cancellation-aware, so we always let it finish and then re-check cancellation — that way a
+    /// Cancel tapped during `start()` still results in the just-created stream being torn down here
+    /// (rather than orphaned). `teardownPreflight()` only cancels this task; it never touches the
+    /// engine while the task is live, so `engine.cancel()` is called from exactly one place.
     private func runPreflightTest(engine: AudioCaptureEngine, directory: URL) async {
         do {
             try await engine.start(in: directory, onHealthUpdate: { _ in }, onLevels: { _ in })
-            // Count down the capture window. If the user cancels, the task is cancelled and we bail
-            // before touching @Published state.
+            try Task.checkCancellation()  // Cancel during start() → stop the stream we just created.
             for remaining in stride(from: Self.preflightDurationSeconds - 1, through: 0, by: -1) {
                 try await Task.sleep(for: .seconds(1))
                 try Task.checkCancellation()
@@ -481,14 +485,21 @@ final class AppModel: ObservableObject {
                 ? artifact.mixedRecordingURL
                 : nil
             preflightRecorder = nil
+            preflightTask = nil
             preflightTest = .result(report, playbackURL: playbackURL)
         } catch is CancellationError {
-            // teardownPreflight() (the only canceller) owns stopping the engine and cleanup.
-            return
+            await engine.cancel()  // stops the stream and removes the temp session directory
+            preflightRecorder = nil
+            preflightTask = nil
+            // teardownPreflight() already set the phase to .idle; don't disturb it.
         } catch {
             await engine.cancel()
             preflightRecorder = nil
-            preflightTest = .failed(error.localizedDescription)
+            preflightTask = nil
+            // A Cancel that landed alongside a real error must not resurrect a dismissed sheet.
+            if !Task.isCancelled {
+                preflightTest = .failed(error.localizedDescription)
+            }
         }
     }
 
@@ -509,19 +520,24 @@ final class AppModel: ObservableObject {
     /// Dismisses a finished (result/failed) test and discards its temp files.
     func dismissPreflightTest() { teardownPreflight() }
 
-    /// Ends any preflight test — cancels the task, stops the engine, and removes the temp directory.
-    /// The engine is stopped *before* the directory is removed so no partial track is orphaned.
+    /// Ends any preflight test.
+    ///
+    /// - If the capture task is still running, we only cancel it and set `.idle`; the task's
+    ///   cancellation path (the single owner of the engine) stops the stream and `engine.cancel()`
+    ///   removes the temp directory. This avoids a second, concurrent `engine.cancel()`.
+    /// - If the task has already finished (a result/failed sheet), the engine is gone and the temp
+    ///   files were retained for playback, so we remove the directory directly.
     private func teardownPreflight() {
-        preflightTask?.cancel()
-        preflightTask = nil
-        let engine = preflightRecorder
+        if let task = preflightTask {
+            task.cancel()
+            preflightTest = .idle
+            return
+        }
         let directory = preflightDirectory
-        preflightRecorder = nil
         preflightDirectory = nil
         preflightTest = .idle
-        Task.detached(priority: .utility) {
-            await engine?.cancel()
-            if let directory {
+        if let directory {
+            Task.detached(priority: .utility) {
                 try? FileManager.default.removeItem(at: directory)
             }
         }
@@ -532,7 +548,7 @@ final class AppModel: ObservableObject {
     /// like a live recording. Whisper (via FFmpeg) decodes any supported container directly, so no
     /// conversion is needed here.
     func importRecording(from sourceURL: URL, title: String) async -> UUID? {
-        guard recordingState == .idle, !isImporting else { return nil }
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return nil }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin.
