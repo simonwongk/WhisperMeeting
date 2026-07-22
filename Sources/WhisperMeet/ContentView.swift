@@ -19,13 +19,15 @@ private enum TranscriptMode: Hashable {
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var dictation: DictationController
     @ObservedObject private var store: MeetingStore
     @State private var selection: SidebarItem? = .record
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
 
-    init(model: AppModel) {
+    init(model: AppModel, dictation: DictationController) {
         self.model = model
+        self.dictation = dictation
         store = model.store
     }
 
@@ -135,7 +137,7 @@ struct ContentView: View {
         case .vocabulary:
             VocabularyView(store: store)
         case .settings:
-            SettingsView(model: model)
+            SettingsView(model: model, dictation: dictation)
                 .padding(32)
         case let .meeting(id):
             if store.meeting(id: id) != nil {
@@ -722,6 +724,7 @@ private struct RecordingChannelHealthRow: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var dictation: DictationController
     @State private var apiKeyDraft = ""
 
     var body: some View {

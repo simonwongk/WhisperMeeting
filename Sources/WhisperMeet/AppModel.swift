@@ -139,6 +139,13 @@ final class AppModel: ObservableObject {
         runtimeExecutableURL != nil
     }
 
+    var isRecordingActive: Bool {
+        switch recordingState {
+        case .idle: return false
+        default: return true
+        }
+    }
+
     var isSummarizing: Bool {
         activeSummarizationID != nil
     }

@@ -28,7 +28,9 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
-                .linkedFramework("UniformTypeIdentifiers")
+                .linkedFramework("UniformTypeIdentifiers"),
+                .linkedFramework("ServiceManagement"),
+                .linkedFramework("UserNotifications")
             ]
         ),
         .testTarget(
