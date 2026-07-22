@@ -12,6 +12,7 @@ struct WhisperMeetApp: App {
                 .frame(minWidth: 900, minHeight: 620)
                 .task {
                     dictation.configure(isMeetingActive: { [weak model] in model?.isRecordingActive ?? false })
+                    dictation.configureVocabulary { [weak model] in model?.store.vocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
                     await model.performStartupRecovery()
                 }

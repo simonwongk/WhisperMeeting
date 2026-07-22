@@ -182,7 +182,7 @@ public struct LocalWhisperClient: Sendable {
         if let language = options.language.commandLineValue {
             arguments += ["--language", language]
         }
-        let prompt = vocabularyPrompt(options.keyterms)
+        let prompt = VocabularyPrompt.build(options.keyterms)
         if !prompt.isEmpty {
             arguments += [
                 "--initial_prompt", prompt,
@@ -190,16 +190,6 @@ public struct LocalWhisperClient: Sendable {
             ]
         }
         return arguments
-    }
-
-    private func vocabularyPrompt(_ keyterms: [String]) -> String {
-        let prompt = keyterms
-            .lazy
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .prefix(100)
-            .joined(separator: ", ")
-        return String(prompt.prefix(1_000))
     }
 
     /// Runs the CLI, streaming its merged stdout+stderr so `tqdm` progress bars can be parsed live,

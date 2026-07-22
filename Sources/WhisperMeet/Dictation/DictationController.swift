@@ -55,6 +55,7 @@ final class DictationController: ObservableObject {
     private let engine: DictationEngine
     private var session = DictationSession()
     private var isMeetingActive: () -> Bool = { false }
+    private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
     private var idleEvictWorkItem: DispatchWorkItem?
@@ -91,6 +92,12 @@ final class DictationController: ObservableObject {
 
     func configure(isMeetingActive: @escaping () -> Bool) {
         self.isMeetingActive = isMeetingActive
+    }
+
+    /// Supplies the business vocabulary (same source meetings already feed into their
+    /// `initial_prompt`) so Quick Dictation gets the same spelling nudge for proper nouns/jargon.
+    func configureVocabulary(_ provider: @escaping () -> [String]) {
+        self.vocabularyProvider = provider
     }
 
     func setEnabled(_ on: Bool) { enabled = on }
@@ -258,12 +265,24 @@ final class DictationController: ObservableObject {
 
     private func transcribe(clip: (url: URL, duration: TimeInterval)) {
         let language = self.language
+        // Same business vocabulary the meeting pipeline already feeds into Whisper's
+        // `initial_prompt`, capped/formatted identically via the shared `VocabularyPrompt` helper.
+        let prompt = VocabularyPrompt.build(vocabularyProvider())
+        let initialPrompt = prompt.isEmpty ? nil : prompt
         Task { [engine, log] in
             let started = Date()
             do {
-                let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: nil)
+                let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
                 try? FileManager.default.removeItem(at: clip.url)
-                let cleaned = DictationTextCleanup.clean(result.text)
+                var cleaned = DictationTextCleanup.clean(result.text)
+                // Phantom-on-silence guard: with an initial_prompt present, Whisper can echo the
+                // prompt text back verbatim (or a truncated fragment of it) on a clip that was
+                // actually silence/noise. If the entire cleaned transcript is just contained
+                // within the prompt, there is no real speech in it — drop it to "" so it routes
+                // to the existing empty-transcript path instead of pasting the vocabulary list.
+                if let initialPrompt, Self.isPhantomPromptEcho(cleanedText: cleaned, prompt: initialPrompt) {
+                    cleaned = ""
+                }
                 log.notice("transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
                 await MainActor.run { self.finish(text: cleaned) }
             } catch {
@@ -352,6 +371,26 @@ final class DictationController: ObservableObject {
         }
         idleEvictWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleEvictSeconds, execute: item)
+    }
+
+    // MARK: - Phantom-echo guard
+
+    /// True when `cleanedText` carries no speech of its own — every character of it (once
+    /// normalized) already appears, in order, inside the `initial_prompt` that was fed to Whisper.
+    /// That pattern is prompt echo (a known Whisper behavior on silence/noise), not a transcript.
+    private static func isPhantomPromptEcho(cleanedText: String, prompt: String) -> Bool {
+        guard !prompt.isEmpty else { return false }
+        let normalizedCleaned = normalizedForEchoComparison(cleanedText)
+        guard !normalizedCleaned.isEmpty else { return false }
+        let normalizedPrompt = normalizedForEchoComparison(prompt)
+        return normalizedPrompt.contains(normalizedCleaned)
+    }
+
+    /// Lowercases and strips everything but letters/digits so punctuation/whitespace differences
+    /// between the prompt and Whisper's echo of it (e.g. "Acme, Q3" vs "acme q3.") don't defeat
+    /// the containment check above.
+    private static func normalizedForEchoComparison(_ text: String) -> String {
+        String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(Character.init))
     }
 
     private func notifyClipboard() {
