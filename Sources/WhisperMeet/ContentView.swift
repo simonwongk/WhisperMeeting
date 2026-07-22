@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import AVKit
+import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 import WhisperCore
@@ -726,6 +727,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
     @State private var apiKeyDraft = ""
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         Form {
@@ -773,6 +775,50 @@ struct SettingsView: View {
                 Text("Large is the accuracy-first multilingual choice for English and Mandarin. Turbo is much faster with a small accuracy tradeoff. A model downloads once on first use.")
                     .foregroundStyle(.secondary)
                 Text("OpenAI Whisper produces timestamps but does not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Quick Dictation") {
+                Toggle("Enable push-to-talk dictation", isOn: Binding(
+                    get: { dictation.enabled },
+                    set: { dictation.setEnabled($0) }
+                ))
+                Picker("Trigger mode", selection: Binding(
+                    get: { dictation.hotkey.mode },
+                    set: { dictation.hotkey = DictationHotkey(keyCode: dictation.hotkey.keyCode, mode: $0) }
+                )) {
+                    Text("Hold to talk").tag(DictationHotkey.Mode.hold)
+                    Text("Toggle on/off").tag(DictationHotkey.Mode.toggle)
+                }
+                Picker("Language", selection: $dictation.language) {
+                    ForEach(WhisperLanguage.allCases, id: \.self) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                Toggle("Paste into the focused field (else copy to clipboard)", isOn: $dictation.autoPaste)
+                Toggle("Launch at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        do {
+                            if enabled { try SMAppService.mainApp.register() }
+                            else { try SMAppService.mainApp.unregister() }
+                        } catch {
+                            model.alertMessage = "Could not update launch-at-login: \(error.localizedDescription)"
+                            launchAtLogin = (SMAppService.mainApp.status == .enabled)
+                        }
+                    }
+                HStack {
+                    Label(
+                        dictation.isAccessibilityTrusted ? "Accessibility granted" : "Accessibility needed",
+                        systemImage: dictation.isAccessibilityTrusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(dictation.isAccessibilityTrusted ? .green : .orange)
+                    Spacer()
+                    if !dictation.isAccessibilityTrusted {
+                        Button("Grant…") { dictation.requestAccessibility() }
+                    }
+                }
+                Text("Hold Right Option anywhere to dictate. Transcription is 100% local (Whisper turbo). Accessibility is required to paste and to detect the hold key.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
