@@ -9,7 +9,8 @@ independent of the meeting recorder. Hold a customizable key (default **Right �
 speak, release — the spoken text is transcribed locally by Whisper and **pasted into the
 currently focused text field** (falling back to the clipboard). Always-on via a menu-bar
 presence; launches at login. Target feel: the same "hold, talk, release, it's there" loop as
-Wispr Flow, but **100% local** (no cloud, no API key, no upload).
+Wispr Flow, but **fully local**: your audio never leaves this Mac and no API key is used. (Setup
+does download open-source dependencies and the Whisper model files, like the meeting pipeline.)
 
 This is a *separate* function from the meeting record/transcribe pipeline. It shares only the
 local Whisper runtime and pure helpers in `WhisperCore`.
@@ -19,7 +20,9 @@ local Whisper runtime and pure helpers in `WhisperCore`.
 - No cloud/streaming ASR. (Wispr Flow feels instant because it streams to its cloud; we stay local.)
 - No live word-by-word streaming — Whisper is batch; we transcribe the finished clip.
 - No AI/Claude text cleanup of dictated text (adds latency + network; breaks the local-instant feel).
-- No dictation history, no multiple hotkey profiles, no per-app rules.
+- No multiple hotkey profiles, no per-app rules. (**Superseded in Round 7:** a persistent local
+  dictation history *was* added as a reliability fallback — see `docs/CHANGELOG.md`. It stays
+  on-device; retention controls / an off switch are tracked as follow-ups.)
 - No speaker diarization (project invariant — never present segments as identified speakers).
 
 ## Relationship to project invariants

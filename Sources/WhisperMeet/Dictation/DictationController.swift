@@ -98,8 +98,13 @@ final class DictationController: ObservableObject {
     func warmUpIfNeeded() {
         guard enabled else { return }
         log.notice("warm-up starting")
-        Task.detached { [engine, log] in
-            do { try await engine.warmUp() } catch { log.error("warm-up failed: \(error.localizedDescription, privacy: .public)") }
+        Task { [engine, log] in
+            do {
+                try await engine.warmUp()
+                await MainActor.run { self.scheduleIdleEviction() } // warmed but no dictation yet — still evict if unused
+            } catch {
+                log.error("warm-up failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -237,6 +242,7 @@ final class DictationController: ObservableObject {
         case .discard:
             try? FileManager.default.removeItem(at: clip.url)
             status = .idle
+            scheduleIdleEviction() // a too-short tap still leaves the model warm — re-arm eviction
             overlay.hide()
             return true
         case .transcribe:
@@ -375,6 +381,7 @@ final class DictationController: ObservableObject {
         guard !isSelfTesting else { return }
         isSelfTesting = true
         selfTestResult = nil
+        idleEvictWorkItem?.cancel() // self-test is activity — don't let a stale timer evict mid-test
         ensureHelperInstalled()
         Task { [engine] in
             let samples = [Float](repeating: 0, count: 16_000) // 1s of silence @16kHz
@@ -392,7 +399,7 @@ final class DictationController: ObservableObject {
             await MainActor.run {
                 self.selfTestResult = message
                 self.isSelfTesting = false
-                if !self.enabled { self.engine.shutdown() }
+                if self.enabled { self.scheduleIdleEviction() } else { self.engine.shutdown() }
             }
         }
     }
