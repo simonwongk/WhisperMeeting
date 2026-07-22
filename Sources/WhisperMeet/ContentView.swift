@@ -1176,12 +1176,25 @@ private struct VocabularyView: View {
     @State private var manualTerms = ""
     @State private var showsImporter = false
     @State private var importMessage: String?
+    @State private var didCopyPrompt = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Business Vocabulary")
-                    .font(.largeTitle.bold())
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Business Vocabulary")
+                        .font(.largeTitle.bold())
+                    Spacer()
+                    Button {
+                        copyGenerationPrompt()
+                    } label: {
+                        Label(
+                            didCopyPrompt ? "Prompt Copied" : "Copy AI Prompt",
+                            systemImage: didCopyPrompt ? "checkmark" : "sparkles"
+                        )
+                    }
+                    .help("Copy a ready-made prompt to paste into any AI chat, then paste the terms it lists back into the Add box.")
+                }
                 Text("Every term shown below stays on this Mac and is included in Whisper’s local prompt. Up to 100 reviewed terms are kept.")
                     .foregroundStyle(.secondary)
             }
@@ -1248,6 +1261,17 @@ private struct VocabularyView: View {
         if let docx = UTType(filenameExtension: "docx") { types.append(docx) }
         if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
         return types
+    }
+
+    private func copyGenerationPrompt() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(VocabularyPrompt.generationPrompt, forType: .string)
+        didCopyPrompt = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            didCopyPrompt = false
+        }
     }
 
     private func addManualTerms() {

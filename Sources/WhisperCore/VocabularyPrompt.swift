@@ -10,6 +10,28 @@ public enum VocabularyPrompt {
     private static let maxTerms = 100
     private static let maxCharacters = 1_000
 
+    /// A ready-to-paste prompt the user can hand to any AI chat to generate a clean vocabulary
+    /// list. Mirrors the format the Vocabulary screen expects (one term per line, original
+    /// script, proper nouns/jargon only) so the chat's output pastes straight into the Add box.
+    public static let generationPrompt = """
+    I use a local Whisper speech-to-text tool for meetings and dictation. I can give it a \
+    "vocabulary" list that biases it toward spelling names and jargon correctly. Help me build \
+    that list.
+
+    Rules for your output:
+    - Output ONLY the terms, one per line. No numbering, no bullets, no definitions, no headers.
+    - Include proper nouns and jargon that speech-to-text tends to get wrong: people's names, \
+    company/product/project names, acronyms, technical terms, and any recurring domain words.
+    - Keep each term in its original language/script (English terms in English, Chinese in 中文). \
+    Do NOT romanize or translate.
+    - No ordinary everyday words — only terms a transcriber would likely misspell.
+    - Keep it to at most 80 terms, most important first.
+    - No punctuation inside a term.
+
+    Here is the context to pull terms from: [paste your meeting notes, agenda, team roster, \
+    project docs, or just describe your work, team, and the topics you talk about].
+    """
+
     /// The trimmed, non-empty, term-capped vocabulary list (before character-capping / joining).
     public static func terms(_ raw: [String]) -> [String] {
         Array(raw

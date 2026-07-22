@@ -39,6 +39,18 @@ func vocabularyPromptTermsList() {
     #expect(VocabularyPrompt.terms((1...150).map { "t\($0)" }).count == 100)
 }
 
+@Test("generationPrompt is a non-empty, definition-free instruction the user can paste to an AI")
+func vocabularyGenerationPrompt() {
+    let prompt = VocabularyPrompt.generationPrompt
+    #expect(!prompt.isEmpty)
+    // Must instruct one-term-per-line output so the result pastes cleanly into the Add box.
+    #expect(prompt.contains("one per line"))
+    // Must preserve original script (English + Chinese), never translate.
+    #expect(prompt.contains("Do NOT romanize or translate"))
+    // Must respect the vocabulary budget (<= 100 terms kept).
+    #expect(prompt.contains("at most 80 terms"))
+}
+
 @Test("isPromptEcho flags a multi-term regurgitation, never a single dictated term")
 func vocabularyPromptEchoDetection() {
     let vocab = ["Acme", "Kubernetes", "客户成功"]
