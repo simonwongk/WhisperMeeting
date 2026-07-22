@@ -103,3 +103,21 @@ section (enable, hold/toggle mode, language, delivery, Accessibility status). 10
   override (no focus theft); controller coherence (no transcript loss on re-tap, no stuck-listening);
   and — from the whole-branch review — stopping the mic + resetting state when dictation is disabled
   mid-capture (no hot mic after disable), an honest paste result, and a longer first-run warm-up.
+
+## Round 7 — Dictation reliability & observability
+Driven by a real failure: the dictation helper wasn't installed on a runtime that predated the
+feature, so transcription failed with only a "failed" toast. Fixes + a debug surface:
+- **Self-healing install**: on enable/launch the app copies the bundled `whisper_dictate_server.py`
+  into the runtime if the venv exists but the helper is missing — the "helper not installed" failure
+  can no longer happen silently.
+- **Customizable trigger key**: a "Change" control in Settings captures whatever key you press
+  (validated to modifiers/F-keys, which don't emit text), for keyboards without a Right Option key.
+- **Dictation pane** (new sidebar item): a Status/diagnostics panel (runtime, helper, turbo model,
+  Microphone, Accessibility, hotkey — each ✓/✗) with a **Run self-test** button that pushes a clip
+  through the whole pipeline and reports exactly where it breaks; plus a **persistent local history**
+  of every dictation (time, text, outcome: pasted / clipboard / empty / failed-with-reason) with Copy
+  and Clear — the fallback for recovering text if a paste misses.
+- New tested `WhisperCore` modules `DictationLog` + `DictationKeyName` (suite 78 → 89).
+- Review-caught fixes before ship: key-capture event-monitor leak (was hijacking the next keystroke
+  app-wide if you left Settings mid-capture), duplicate log entry on a mic-start failure, and a warm
+  Whisper process left resident after a self-test while dictation is disabled.
