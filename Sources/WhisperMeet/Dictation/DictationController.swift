@@ -86,8 +86,12 @@ final class DictationController: ObservableObject {
             warmUpIfNeeded()
         } else {
             hotkeyMonitor.stop()
+            recorder.cancel()             // never leave the mic hot after the user disables dictation
+            dismissWorkItem?.cancel()
+            busyHideWorkItem?.cancel()
+            session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
             overlay.hide()
-            engine.shutdown() // release the resident Whisper model/subprocess when disabled
+            engine.shutdown()             // release the resident Whisper model/subprocess when disabled
             status = .disabled
         }
     }
@@ -189,6 +193,7 @@ final class DictationController: ObservableObject {
                 try? FileManager.default.removeItem(at: clip.url)
                 log.error("transcription failed: \(error.localizedDescription, privacy: .public)")
                 await MainActor.run {
+                    guard self.enabled else { return }
                     _ = self.session.handle(.engineFailed(error.localizedDescription))
                     self.fail(error.localizedDescription)
                 }
@@ -197,6 +202,7 @@ final class DictationController: ObservableObject {
     }
 
     private func finish(text: String) {
+        guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
             status = .delivering

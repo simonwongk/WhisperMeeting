@@ -103,7 +103,9 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         self.stdoutBuffer.removeAll()
 
         // Block until the helper reports the model is resident.
-        let readyLine = try readLine(timeout: 180)
+        // First enable may download the turbo model (~1.6 GB); give the one-time download+load room
+        // before the watchdog kills the helper. Subsequent warm-ups (model cached) return in seconds.
+        let readyLine = try readLine(timeout: 1_800)
         guard
             let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
             ready["ready"] == true
