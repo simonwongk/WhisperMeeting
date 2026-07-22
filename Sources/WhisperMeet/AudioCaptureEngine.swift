@@ -621,7 +621,7 @@ private enum FloatTrackMixer {
 
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
-        output.write(wavHeader(
+        output.write(WAVWriter.header(
             sampleRate: UInt32(sampleRate),
             dataByteCount: dataByteCount
         ))
@@ -637,23 +637,6 @@ private enum FloatTrackMixer {
         return max(0, Int64((firstPresentationTime - earliestStart) * sampleRate))
     }
 
-    private static func wavHeader(sampleRate: UInt32, dataByteCount: UInt32) -> Data {
-        var data = Data()
-        data.appendASCII("RIFF")
-        data.appendLittleEndian(36 &+ dataByteCount)
-        data.appendASCII("WAVE")
-        data.appendASCII("fmt ")
-        data.appendLittleEndian(UInt32(16))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(sampleRate)
-        data.appendLittleEndian(sampleRate * 2)
-        data.appendLittleEndian(UInt16(2))
-        data.appendLittleEndian(UInt16(16))
-        data.appendASCII("data")
-        data.appendLittleEndian(dataByteCount)
-        return data
-    }
 }
 
 private final class PaddedFloatReader {
@@ -701,13 +684,3 @@ private extension DispatchQueue {
     }
 }
 
-private extension Data {
-    mutating func appendASCII(_ value: String) {
-        append(contentsOf: value.utf8)
-    }
-
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var value = value.littleEndian
-        Swift.withUnsafeBytes(of: &value) { append(contentsOf: $0) }
-    }
-}

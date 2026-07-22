@@ -1,0 +1,32 @@
+import Testing
+import Foundation
+@testable import WhisperCore
+
+@Test("WAV header is the canonical 44-byte 16-bit mono PCM header")
+func wavHeaderBytes() {
+    let header = WAVWriter.header(sampleRate: 16_000, dataByteCount: 8)
+    #expect(header.count == 44)
+    #expect(Array(header) == [
+        0x52,0x49,0x46,0x46, 0x2C,0x00,0x00,0x00, 0x57,0x41,0x56,0x45, // RIFF, 44, WAVE
+        0x66,0x6D,0x74,0x20, 0x10,0x00,0x00,0x00, 0x01,0x00, 0x01,0x00, // "fmt ", 16, PCM, mono
+        0x80,0x3E,0x00,0x00, 0x00,0x7D,0x00,0x00, 0x02,0x00, 0x10,0x00, // 16000, 32000, align 2, 16 bits
+        0x64,0x61,0x74,0x61, 0x08,0x00,0x00,0x00                        // "data", 8
+    ])
+}
+
+@Test("PCM16 encoding clamps and scales to little-endian Int16")
+func pcm16Encoding() {
+    let data = WAVWriter.pcm16Data(from: [0, 1, -1, 0.5, 2])
+    #expect(Array(data) == [
+        0x00,0x00, 0xFF,0x7F, 0x01,0x80, 0xFF,0x3F, 0xFF,0x7F // 0, 32767, -32767, 16383, clamped→32767
+    ])
+}
+
+@Test("wavData concatenates a header sized to the sample payload")
+func wavDataAssembly() {
+    let wav = WAVWriter.wavData(from: [0, 1, -1], sampleRate: 16_000)
+    #expect(wav.count == 44 + 6)
+    #expect(Array(wav.prefix(4)) == [0x52,0x49,0x46,0x46]) // RIFF
+    // data chunk length field (bytes 40..44) == 6
+    #expect(Array(wav[40..<44]) == [0x06,0x00,0x00,0x00])
+}
