@@ -135,6 +135,7 @@ final class DictationController: ObservableObject {
             )
         } catch {
             log.error("could not create runtime directory for helper self-heal: \(error.localizedDescription, privacy: .public)")
+            return
         }
         do {
             try FileManager.default.copyItem(at: bundled, to: script)
@@ -193,6 +194,7 @@ final class DictationController: ObservableObject {
     }
 
     private func beginTranscriptionIfNeeded() -> Bool {
+        guard recorder.isRecording else { return false }
         let clip: (url: URL, duration: TimeInterval)
         do {
             clip = try recorder.stop()
@@ -353,7 +355,11 @@ final class DictationController: ObservableObject {
                 message = "✗ \(error.localizedDescription)"
             }
             try? FileManager.default.removeItem(at: url)
-            await MainActor.run { self.selfTestResult = message; self.isSelfTesting = false }
+            await MainActor.run {
+                self.selfTestResult = message
+                self.isSelfTesting = false
+                if !self.enabled { self.engine.shutdown() }
+            }
         }
     }
 

@@ -3,8 +3,8 @@ import Foundation
 import WhisperCore
 
 /// Persists the dictation history (`DictationLog`) to disk with the same crash-safe double-write
-/// pattern used for `meetings.json`/`vocabulary.json`. No UI reads this yet — it exists so outcomes
-/// are captured now and a future history view can simply observe `log`.
+/// pattern used for `meetings.json`/`vocabulary.json`. `DictationView` observes `log` to show
+/// dictation history in the UI.
 @MainActor final class DictationLogStore: ObservableObject {
     @Published private(set) var log = DictationLog()
     private let store: BackupJSONStore<DictationLog>

@@ -735,6 +735,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var capturingKey = false
     @State private var keyMonitor: Any?
+    @State private var keyCaptureHint: String?
 
     var body: some View {
         Form {
@@ -807,6 +808,9 @@ struct SettingsView: View {
                 Text("Hold this key to talk. A Command/Control key or an F-key works best — they don't type text while held.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let keyCaptureHint {
+                    Text(keyCaptureHint).font(.caption).foregroundStyle(.orange)
+                }
                 Picker("Language", selection: $dictation.language) {
                     ForEach(WhisperLanguage.allCases, id: \.self) { language in
                         Text(language.displayName).tag(language)
@@ -868,18 +872,24 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .onDisappear { endKeyCapture() }
     }
 
     private func toggleKeyCapture() {
         if capturingKey { endKeyCapture(); return }
         capturingKey = true
+        keyCaptureHint = nil
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            dictation.hotkey = DictationHotkey(keyCode: UInt16(event.keyCode), mode: dictation.hotkey.mode)
-            endKeyCapture()
-            return nil // swallow the captured key so it doesn't type/act
+            let code = UInt16(event.keyCode)
+            if DictationKeyName.isTriggerCandidate(code) {
+                dictation.hotkey = DictationHotkey(keyCode: code, mode: dictation.hotkey.mode)
+                endKeyCapture()
+            } else {
+                keyCaptureHint = "That key can’t be a trigger — pick a modifier (⌘ ⌃ ⌥ ⇧) or an F-key."
+            }
+            return nil // swallow so nothing types while capturing
         }
     }
-
     private func endKeyCapture() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         capturingKey = false

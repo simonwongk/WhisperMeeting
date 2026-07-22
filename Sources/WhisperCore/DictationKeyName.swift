@@ -18,4 +18,13 @@ public enum DictationKeyName {
     public static func display(for keyCode: UInt16) -> String {
         names[keyCode] ?? "Key #\(keyCode)"
     }
+
+    /// Keycodes suitable as a push-to-talk trigger — modifiers and function keys, which don't emit
+    /// text and are recognized by HotkeyMonitor. (Typing keys would both type and trigger; other
+    /// modifiers like Caps Lock aren't detected.)
+    public static let triggerCandidates: Set<UInt16> = [
+        54, 55, 56, 58, 59, 60, 61, 62,                 // ⌘ ⇧ ⌥ ⌃ (left/right)
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113 // F1–F15
+    ]
+    public static func isTriggerCandidate(_ keyCode: UInt16) -> Bool { triggerCandidates.contains(keyCode) }
 }

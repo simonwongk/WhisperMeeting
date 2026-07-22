@@ -25,3 +25,11 @@ func keyNameSpace() {
 func keyNameUnmapped() {
     #expect(DictationKeyName.display(for: 0) == "Key #0")
 }
+
+@Test("trigger candidates accept modifiers and F-keys, reject letters and Caps Lock")
+func keyNameTriggerCandidates() {
+    #expect(DictationKeyName.isTriggerCandidate(61) == true)
+    #expect(DictationKeyName.isTriggerCandidate(96) == true)
+    #expect(DictationKeyName.isTriggerCandidate(0) == false)
+    #expect(DictationKeyName.isTriggerCandidate(57) == false)
+}
