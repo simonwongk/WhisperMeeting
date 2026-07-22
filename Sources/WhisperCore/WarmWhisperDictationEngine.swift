@@ -113,18 +113,26 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 
     private func readLine(timeout: TimeInterval) throws -> Data {
-        let deadline = Date().addingTimeInterval(timeout)
+        // `availableData` blocks until data or EOF. A silent-but-alive helper would otherwise hang
+        // this read (and, since all work is serialized on `queue`, the whole engine) forever. An
+        // off-queue watchdog terminates the process after `timeout`; termination closes stdout, so
+        // the read returns EOF and we fail cleanly instead of hanging. (Same terminate-from-another-
+        // thread pattern LocalWhisperClient's ProcessCancellationController already relies on.)
+        let watchdogProcess = process
+        let watchdog = DispatchWorkItem { watchdogProcess?.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        defer { watchdog.cancel() }
+
         while true {
             if let line = DictationWireProtocol.takeLine(&stdoutBuffer) { return line }
-            guard let stdout else { throw LocalWhisperError.processFailed("Dictation helper is not running.") }
+            guard let stdout else {
+                throw LocalWhisperError.processFailed("Dictation helper is not running.")
+            }
             let chunk = stdout.availableData
             if chunk.isEmpty {
                 throw LocalWhisperError.processFailed("Dictation helper stopped unexpectedly.")
             }
             stdoutBuffer.append(chunk)
-            if Date() > deadline {
-                throw LocalWhisperError.processFailed("Dictation helper timed out.")
-            }
         }
     }
 }
