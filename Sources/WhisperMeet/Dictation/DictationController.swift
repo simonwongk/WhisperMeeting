@@ -31,6 +31,7 @@ final class DictationController: ObservableObject {
     private var session = DictationSession()
     private var isMeetingActive: () -> Bool = { false }
     private var dismissWorkItem: DispatchWorkItem?
+    private var busyHideWorkItem: DispatchWorkItem?
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
 
     private static let enabledKey = "dictationEnabled"
@@ -126,6 +127,7 @@ final class DictationController: ObservableObject {
     private func startCapture() {
         do {
             dismissWorkItem?.cancel()
+            busyHideWorkItem?.cancel()
             try recorder.start { [weak self] level in
                 Task { @MainActor [weak self] in self?.overlay.update(level: level) }
             }
@@ -223,19 +225,15 @@ final class DictationController: ObservableObject {
     }
 
     private func flashBusy() {
-        // Transient overlay only. The session is idle here (this is the meeting-active guard path),
-        // so we must NOT send `.dismiss` to the state machine — just auto-hide the flash.
+        // Meeting-active guard path. Only flash when idle — never disrupt an in-flight or
+        // still-settling session. Uses its OWN work item so it can never cancel a pending
+        // session-resetting dismiss (which would leave the session wedged outside .idle).
+        guard session.state == .idle else { return }
         overlay.show(.busy)
-        scheduleOverlayHide(after: 0.8)
-    }
-
-    /// Hides the overlay after a delay WITHOUT touching the session state machine (unlike
-    /// `scheduleDismiss`, which also resets the session on terminal states).
-    private func scheduleOverlayHide(after seconds: TimeInterval) {
-        dismissWorkItem?.cancel()
+        busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.overlay.hide() }
-        dismissWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+        busyHideWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
     }
 
     private func fail(_ message: String) {
@@ -246,6 +244,7 @@ final class DictationController: ObservableObject {
 
     private func scheduleDismiss(after seconds: TimeInterval) {
         dismissWorkItem?.cancel()
+        busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.overlay.hide()
             _ = self?.session.handle(.dismiss)
