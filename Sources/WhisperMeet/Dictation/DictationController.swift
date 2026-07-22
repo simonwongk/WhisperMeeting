@@ -34,6 +34,16 @@ final class DictationController: ObservableObject {
     var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
     func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
 
+    /// True while dictation owns the microphone (listening/transcribing) or is about to deliver its
+    /// result — used by `AppModel` to refuse starting a meeting recording that would fight it for
+    /// the mic. `.idle`, `.disabled`, and `.error` are all safe for a meeting to start.
+    var isActive: Bool {
+        switch status {
+        case .listening, .transcribing, .delivering: return true
+        case .disabled, .idle, .error: return false
+        }
+    }
+
     let logStore = DictationLogStore()
     @Published var selfTestResult: String?
     @Published private(set) var isSelfTesting = false
@@ -47,8 +57,11 @@ final class DictationController: ObservableObject {
     private var isMeetingActive: () -> Bool = { false }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
+    private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
+
+    private static let idleEvictSeconds: TimeInterval = 300 // 5 min; configurable later
 
     private static let enabledKey = "dictationEnabled"
     private static let hotkeyKey = "dictationHotkey"
@@ -84,6 +97,7 @@ final class DictationController: ObservableObject {
 
     func warmUpIfNeeded() {
         guard enabled else { return }
+        log.notice("warm-up starting")
         Task.detached { [engine, log] in
             do { try await engine.warmUp() } catch { log.error("warm-up failed: \(error.localizedDescription, privacy: .public)") }
         }
@@ -97,9 +111,10 @@ final class DictationController: ObservableObject {
             let started = hotkeyMonitor.start(hotkey: hotkey)
             hotkeyActive = started
             status = .idle
+            log.notice("dictation enabled (hotkey \(self.hotkey.keyCode, privacy: .public) mode \(self.hotkey.mode.rawValue, privacy: .public))")
             if !started {
                 log.error("event tap could not be created — Accessibility/Input Monitoring off")
-                status = .error("Enable Accessibility for WhisperMeet in System Settings.")
+                status = .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
             }
             Task { await requestMicIfNeeded() }
             warmUpIfNeeded()
@@ -109,10 +124,12 @@ final class DictationController: ObservableObject {
             recorder.cancel()             // never leave the mic hot after the user disables dictation
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
+            idleEvictWorkItem?.cancel()
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
             overlay.hide()
             engine.shutdown()             // release the resident Whisper model/subprocess when disabled
             status = .disabled
+            log.notice("dictation disabled")
         }
     }
 
@@ -181,6 +198,7 @@ final class DictationController: ObservableObject {
         do {
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
+            idleEvictWorkItem?.cancel() // fresh activity resets the idle-eviction clock
             try recorder.start { [weak self] level in
                 Task { @MainActor [weak self] in self?.overlay.update(level: level) }
             }
@@ -206,11 +224,13 @@ final class DictationController: ObservableObject {
             recorder.cancel()
             _ = session.handle(.dismiss)
             status = .idle
+            scheduleIdleEviction()
             overlay.show(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.2)
             return false
         }
+        log.notice("clip \(clip.duration, format: .fixed(precision: 2))s")
 
         let action = session.handle(.endPressed(clipDuration: clip.duration))
         switch action {
@@ -309,9 +329,23 @@ final class DictationController: ObservableObject {
             self?.overlay.hide()
             _ = self?.session.handle(.dismiss)
             self?.status = .idle
+            self?.scheduleIdleEviction()
         }
         dismissWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    /// Frees the resident ~1.6 GB warm turbo model after dictation has sat idle for a while. Any
+    /// fresh activity (a new capture) cancels this before it fires; it never fires while `isActive`.
+    private func scheduleIdleEviction() {
+        idleEvictWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.enabled, !self.isActive else { return }
+            self.log.notice("evicting idle warm dictation model")
+            self.engine.shutdown()
+        }
+        idleEvictWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleEvictSeconds, execute: item)
     }
 
     private func notifyClipboard() {

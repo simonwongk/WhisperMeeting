@@ -103,6 +103,7 @@ final class AppModel: ObservableObject {
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
     private var didPerformStartupRecovery = false
+    private var isDictationActive: () -> Bool = { false }
 
     private static let modelKey = "localWhisperModel"
     private static let languageKey = "localWhisperLanguage"
@@ -137,6 +138,12 @@ final class AppModel: ObservableObject {
 
     var isRuntimeInstalled: Bool {
         runtimeExecutableURL != nil
+    }
+
+    /// Wires the reverse of dictation's own meeting-active guard: lets `startRecording()` refuse to
+    /// start while dictation currently owns the microphone. See `AppEntry`'s `.task` for the call site.
+    func configureDictationGuard(_ isActive: @escaping () -> Bool) {
+        isDictationActive = isActive
     }
 
     var isRecordingActive: Bool {
@@ -287,6 +294,10 @@ final class AppModel: ObservableObject {
 
     func startRecording() async {
         guard recordingState == .idle, !isImporting else { return }
+        guard !isDictationActive() else {
+            alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
+            return
+        }
         refreshRecordingPreflight()
         if recordingPreflight.microphoneAccess == .unavailable {
             alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."

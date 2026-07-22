@@ -51,7 +51,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 
     public func shutdown() {
-        queue.sync {
+        queue.async {
             try? self.stdin?.close()
             self.process?.terminate()
             self.process = nil
