@@ -76,7 +76,18 @@ final class AppModel: ObservableObject {
         case stopping
     }
 
+    /// The lifecycle of a disposable "test recording" that verifies both channels before a real
+    /// meeting. Kept entirely separate from the recording state machine and the meeting library.
+    enum PreflightTestPhase: Equatable {
+        case idle
+        case recording(secondsRemaining: Int)
+        case analyzing
+        case result(PreflightReport, playbackURL: URL?)
+        case failed(String)
+    }
+
     @Published private(set) var recordingState: RecordingState = .idle
+    @Published private(set) var preflightTest: PreflightTestPhase = .idle
     @Published private(set) var activeMeetingID: UUID?
     @Published private(set) var transcription = TranscriptionQueue()
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
@@ -99,6 +110,10 @@ final class AppModel: ObservableObject {
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()
     private let recorder: AudioCaptureEngine
+    private var preflightRecorder: AudioCaptureEngine?
+    private var preflightDirectory: URL?
+    private var preflightTask: Task<Void, Never>?
+    private static let preflightDurationSeconds = 8
     private let defaults: UserDefaults
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
@@ -148,6 +163,13 @@ final class AppModel: ObservableObject {
 
     var isRecordingActive: Bool {
         switch recordingState {
+        case .idle: return false
+        default: return true
+        }
+    }
+
+    var isPreflightTestActive: Bool {
+        switch preflightTest {
         case .idle: return false
         default: return true
         }
@@ -293,7 +315,7 @@ final class AppModel: ObservableObject {
     }
 
     func startRecording() async {
-        guard recordingState == .idle, !isImporting else { return }
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
             return
@@ -415,6 +437,94 @@ final class AppModel: ObservableObject {
         recordingHealth = nil
         recordingMeter.reset()
         refreshRecordingPreflight()
+    }
+
+    // MARK: - Preflight test recording
+
+    /// Records a short, disposable sample of both channels and reports whether each is capturing.
+    /// Uses a dedicated engine and a temp directory — never the meeting library — and never becomes
+    /// a meeting. See `docs/PREFLIGHT_TEST.md`.
+    func startPreflightTest() {
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return }
+        guard !isDictationActive() else {
+            alertMessage = "Finish Quick Dictation before running a test recording — they can't share the microphone at the same time."
+            return
+        }
+        let engine = AudioCaptureEngine()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-Preflight-\(UUID().uuidString)", isDirectory: true)
+        preflightRecorder = engine
+        preflightDirectory = directory
+        preflightTest = .recording(secondsRemaining: Self.preflightDurationSeconds)
+        preflightTask = Task { [weak self] in
+            await self?.runPreflightTest(engine: engine, directory: directory)
+        }
+    }
+
+    private func runPreflightTest(engine: AudioCaptureEngine, directory: URL) async {
+        do {
+            try await engine.start(in: directory, onHealthUpdate: { _ in }, onLevels: { _ in })
+            // Count down the capture window. If the user cancels, the task is cancelled and we bail
+            // before touching @Published state.
+            for remaining in stride(from: Self.preflightDurationSeconds - 1, through: 0, by: -1) {
+                try await Task.sleep(for: .seconds(1))
+                try Task.checkCancellation()
+                preflightTest = .recording(secondsRemaining: remaining)
+            }
+            try Task.checkCancellation()
+            preflightTest = .analyzing
+            let artifact = try await engine.stop()
+            try Task.checkCancellation()
+            let report = await Self.analyzePreflight(artifact: artifact)
+            try Task.checkCancellation()
+            let playbackURL = FileManager.default.fileExists(atPath: artifact.mixedRecordingURL.path)
+                ? artifact.mixedRecordingURL
+                : nil
+            preflightRecorder = nil
+            preflightTest = .result(report, playbackURL: playbackURL)
+        } catch is CancellationError {
+            // teardownPreflight() (the only canceller) owns stopping the engine and cleanup.
+            return
+        } catch {
+            await engine.cancel()
+            preflightRecorder = nil
+            preflightTest = .failed(error.localizedDescription)
+        }
+    }
+
+    private static func analyzePreflight(artifact: RecordingArtifact) async -> PreflightReport {
+        await Task.detached(priority: .utility) {
+            let micData = (try? Data(contentsOf: artifact.microphoneTrackURL)) ?? Data()
+            let systemData = (try? Data(contentsOf: artifact.systemTrackURL)) ?? Data()
+            return PreflightAssessment.evaluate(
+                microphone: PreflightSignalAnalyzer.analyze(float32LittleEndian: micData),
+                system: PreflightSignalAnalyzer.analyze(float32LittleEndian: systemData)
+            )
+        }.value
+    }
+
+    /// Cancels an in-progress test and discards its temp files.
+    func cancelPreflightTest() { teardownPreflight() }
+
+    /// Dismisses a finished (result/failed) test and discards its temp files.
+    func dismissPreflightTest() { teardownPreflight() }
+
+    /// Ends any preflight test — cancels the task, stops the engine, and removes the temp directory.
+    /// The engine is stopped *before* the directory is removed so no partial track is orphaned.
+    private func teardownPreflight() {
+        preflightTask?.cancel()
+        preflightTask = nil
+        let engine = preflightRecorder
+        let directory = preflightDirectory
+        preflightRecorder = nil
+        preflightDirectory = nil
+        preflightTest = .idle
+        Task.detached(priority: .utility) {
+            await engine?.cancel()
+            if let directory {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
     }
 
     /// Imports an existing audio or video file as a new meeting and transcribes it. The file is

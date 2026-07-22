@@ -292,6 +292,12 @@ private struct RecordMeetingView: View {
                 model.alertMessage = error.localizedDescription
             }
         }
+        .sheet(isPresented: Binding(
+            get: { model.isPreflightTestActive },
+            set: { if !$0 { model.dismissPreflightTest() } }
+        )) {
+            PreflightTestSheet(model: model)
+        }
     }
 
     private var isRecording: Bool {
@@ -327,6 +333,15 @@ private struct RecordMeetingView: View {
                 Text(storageDescription(model.recordingPreflight.availableStorageBytes))
                     .foregroundStyle(storageColor(model.recordingPreflight.availableStorageBytes))
             }
+            Divider()
+            Button {
+                model.startPreflightTest()
+            } label: {
+                Label("Test Recording…", systemImage: "waveform.badge.mic")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .help("Record a few disposable seconds and check that both your microphone and Mac system audio are actually captured.")
         }
         .font(.callout)
         .padding(16)
@@ -610,6 +625,184 @@ private struct RecordMeetingView: View {
     private func duration(_ interval: TimeInterval) -> String {
         let total = max(0, Int(interval))
         return String(format: "%02d:%02d:%02d", total / 3_600, (total / 60) % 60, total % 60)
+    }
+}
+
+/// A disposable "does my recording actually work?" check: records a few seconds, then reports
+/// whether the microphone and Mac system audio were each captured. Never becomes a meeting.
+private struct PreflightTestSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+            switch model.preflightTest {
+            case .idle:
+                // The sheet is dismissing; render nothing.
+                Color.clear.frame(height: 1)
+            case let .recording(secondsRemaining):
+                recordingView(secondsRemaining)
+            case .analyzing:
+                analyzingView
+            case let .result(report, playbackURL):
+                resultView(report, playbackURL: playbackURL)
+            case let .failed(message):
+                failedView(message)
+            }
+        }
+        .padding(28)
+        .frame(width: 470)
+    }
+
+    private func recordingView(_ secondsRemaining: Int) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "waveform.badge.mic")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(.tint)
+                .symbolEffect(.pulse)
+            Text("Testing your recording")
+                .font(.title2.bold())
+            Text("Speak normally. If your meeting will share audio — a video, call, or music — play some now so both channels are exercised.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("\(secondsRemaining)")
+                .font(.system(size: 48, design: .monospaced).weight(.semibold))
+                .contentTransition(.numericText())
+                .frame(minWidth: 70)
+            Button("Cancel", role: .cancel) { model.cancelPreflightTest() }
+                .controlSize(.large)
+        }
+    }
+
+    private var analyzingView: some View {
+        VStack(spacing: 18) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Analyzing both channels…")
+                .font(.title3.weight(.medium))
+        }
+        .frame(minHeight: 160)
+    }
+
+    private func resultView(_ report: PreflightReport, playbackURL: URL?) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: headlineIcon(report))
+                    .font(.system(size: 30))
+                    .foregroundStyle(headlineColor(report))
+                Text(report.headline)
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            channelRow(
+                title: "Microphone (you)",
+                systemImage: "mic.fill",
+                channel: report.microphone
+            )
+            channelRow(
+                title: "Mac system audio (others)",
+                systemImage: "speaker.wave.2.fill",
+                channel: report.system
+            )
+
+            if let playbackURL {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Play back the test").font(.caption).foregroundStyle(.secondary)
+                    AudioPlayerView(url: playbackURL)
+                        .frame(height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+
+            HStack {
+                Button("Test Again") {
+                    model.dismissPreflightTest()
+                    model.startPreflightTest()
+                }
+                Spacer()
+                Button("Done") { model.dismissPreflightTest() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func failedView(_ message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(.orange)
+            Text("The test could not complete")
+                .font(.title3.bold())
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack {
+                Button("Try Again") {
+                    model.dismissPreflightTest()
+                    model.startPreflightTest()
+                }
+                Button("Close", role: .cancel) { model.dismissPreflightTest() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func channelRow(
+        title: String,
+        systemImage: String,
+        channel: PreflightChannelReport
+    ) -> some View {
+        let style = levelStyle(channel.signal.level)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 20)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                Spacer()
+                Label(style.label, systemImage: style.icon)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(style.color)
+            }
+            if let note = channel.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 30)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func levelStyle(
+        _ level: ChannelSignalLevel
+    ) -> (label: String, icon: String, color: Color) {
+        switch level {
+        case .silent: return ("No signal", "xmark.circle.fill", .red)
+        case .faint: return ("Very quiet", "exclamationmark.triangle.fill", .yellow)
+        case .ok: return ("Good", "checkmark.circle.fill", .green)
+        case .hot: return ("Too loud", "exclamationmark.triangle.fill", .orange)
+        }
+    }
+
+    private func headlineIcon(_ report: PreflightReport) -> String {
+        if !report.isReady { return "xmark.octagon.fill" }
+        if report.microphone.note != nil || report.system.note != nil {
+            return "exclamationmark.triangle.fill"
+        }
+        return "checkmark.seal.fill"
+    }
+
+    private func headlineColor(_ report: PreflightReport) -> Color {
+        if !report.isReady { return .red }
+        if report.microphone.note != nil || report.system.note != nil { return .orange }
+        return .green
     }
 }
 
