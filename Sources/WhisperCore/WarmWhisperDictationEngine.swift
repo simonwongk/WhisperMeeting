@@ -9,6 +9,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private let script: URL
     private let modelDirectory: URL
     private let model: WhisperModel
+    private let mlxRepo: String
     private let queue = DispatchQueue(label: "com.whispermeet.dictation.engine")
 
     private var process: Process?
@@ -16,11 +17,18 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private var stdout: FileHandle?
     private var stdoutBuffer = Data()
 
-    public init(python: URL, script: URL, modelDirectory: URL, model: WhisperModel = .turbo) {
+    public init(
+        python: URL,
+        script: URL,
+        modelDirectory: URL,
+        model: WhisperModel = .turbo,
+        mlxRepo: String = "mlx-community/whisper-large-v3-turbo"
+    ) {
         self.python = python
         self.script = script
         self.modelDirectory = modelDirectory
         self.model = model
+        self.mlxRepo = mlxRepo
     }
 
     public func warmUp() async throws {
@@ -84,7 +92,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
         let process = Process()
         process.executableURL = python
-        process.arguments = [script.path, "--model", model.rawValue, "--model-dir", modelDirectory.path]
+        process.arguments = [script.path, "--mlx-repo", mlxRepo, "--model-dir", modelDirectory.path]
         let inPipe = Pipe()
         let outPipe = Pipe()
         process.standardInput = inPipe

@@ -24,7 +24,9 @@ python_executable="$($brew_executable --prefix python@3.11)/bin/python3.11"
 mkdir -p "$runtime_directory"
 "$python_executable" -m venv "$runtime_directory/venv"
 "$runtime_directory/venv/bin/python" -m pip install --upgrade pip
-"$runtime_directory/venv/bin/python" -m pip install --upgrade openai-whisper
+# openai-whisper drives meetings (LocalWhisperClient); mlx-whisper drives quick dictation
+# (Apple-Silicon warm helper). Both are installed so a fresh setup gets both paths.
+"$runtime_directory/venv/bin/python" -m pip install --upgrade openai-whisper mlx-whisper
 "$runtime_directory/venv/bin/whisper" --help >/dev/null
 
 script_source="${0:A:h}/whisper_dictate_server.py"

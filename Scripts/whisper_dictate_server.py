@@ -1,23 +1,50 @@
 # Scripts/whisper_dictate_server.py
-"""Resident Whisper helper for WhisperMeet quick dictation.
+"""Resident MLX-Whisper helper for WhisperMeet quick dictation.
 
-Loads the model once, then serves newline-delimited JSON requests on stdin and
-writes newline-delimited JSON responses on stdout. Local-only; no network.
+Loads an Apple-Silicon MLX Whisper model once, then serves newline-delimited JSON
+requests on stdin and writes newline-delimited JSON responses on stdout. Local-only;
+no network at request time (model weights are cached under the app's support dir).
 Exits cleanly when stdin closes (the app terminates it to evict the model).
+
+Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dictation-only.
 """
 import argparse
 import json
+import os
 import sys
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="turbo")
+    parser.add_argument("--mlx-repo", default="mlx-community/whisper-large-v3-turbo")
     parser.add_argument("--model-dir", required=True)
+    # Legacy openai-whisper arg: accepted but ignored so older callers don't crash.
+    parser.add_argument("--model", default=None)
     args = parser.parse_args()
 
-    import whisper  # imported after arg parse so --help is instant
-    model = whisper.load_model(args.model, download_root=args.model_dir)
+    # Cache MLX/HF model weights under the app's local support dir (stays 100% local).
+    # Must be set BEFORE importing mlx_whisper / huggingface_hub.
+    hf_home = os.path.join(args.model_dir, "hf")
+    os.makedirs(hf_home, exist_ok=True)
+    os.environ["HF_HOME"] = hf_home
+
+    import mlx.core as mx
+    import mlx_whisper  # imported after arg parse so --help is instant
+
+    # Pre-warm: run one throwaway transcribe on a short silent buffer. This is the exact
+    # request code path, so it loads the model into mlx_whisper's ModelHolder cache (fp16
+    # by default, matching real requests) and compiles the MLX kernels. Only after this
+    # returns is {"ready": true} genuinely resident.
+    try:
+        mlx_whisper.transcribe(
+            mx.zeros(1600, dtype=mx.float32),  # 0.1s of silence at 16 kHz
+            path_or_hf_repo=args.mlx_repo,
+            task="transcribe",
+        )
+    except Exception as error:  # pragma: no cover - warm failure is fatal to the helper
+        sys.stdout.write(json.dumps({"error": "warm-up failed: " + str(error)}) + "\n")
+        sys.stdout.flush()
+        return 1
 
     # Signal readiness only after the model is resident.
     sys.stdout.write(json.dumps({"ready": True}) + "\n")
@@ -29,14 +56,14 @@ def main() -> int:
             continue
         try:
             request = json.loads(line)
-            result = model.transcribe(
+            result = mlx_whisper.transcribe(
                 request["wavPath"],
-                task="transcribe",
+                path_or_hf_repo=args.mlx_repo,
+                task="transcribe",  # never translate
                 language=request.get("language"),
                 initial_prompt=request.get("initialPrompt"),
-                fp16=False,
             )
-            response = {"text": result.get("text", ""), "language": result.get("language")}
+            response = {"text": result.get("text", "").strip(), "language": result.get("language")}
         except Exception as error:  # never crash the daemon on one bad request
             response = {"error": str(error)}
         sys.stdout.write(json.dumps(response) + "\n")
