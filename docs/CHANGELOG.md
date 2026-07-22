@@ -121,3 +121,27 @@ feature, so transcription failed with only a "failed" toast. Fixes + a debug sur
 - Review-caught fixes before ship: key-capture event-monitor leak (was hijacking the next keystroke
   app-wide if you left Settings mid-capture), duplicate log entry on a mic-start failure, and a warm
   Whisper process left resident after a self-test while dictation is disabled.
+
+## Round 8 — Quick Dictation runs on MLX (Apple-Silicon), ~3.3× faster
+Benchmark-driven engine swap for dictation only. A reproducible local benchmark
+(`Scripts/bench/`, 10 EN/中文/code-switch clips) compared the current `openai/whisper` turbo
+(PyTorch, CPU/fp32) against Apple-native `mlx-whisper` turbo fp16 on this M3 Pro:
+
+| engine | avg release→text | EN WER | 中文 CER | code-switch CER |
+|---|---|---|---|---|
+| openai/whisper turbo (baseline) | 4.76 s | 0.023 | 0.049 | 0.000 |
+| mlx-whisper turbo fp16 | **1.42 s** | 0.023 | 0.049 | 0.000 |
+
+Same `large-v3-turbo` weights → **byte-identical transcripts**, so zero accuracy risk; MLX is
+purely a faster (Metal/GPU) runtime. Adopted for dictation; **meetings stay on `openai/whisper`
+large, untouched**. Verified the numbers hold in the production stdin/stdout helper path
+(avg 1.412 s) and adversarially reviewed. Not "instant like Wispr" (that needs streaming — a
+separate, deferred bet), but a real, perceptible win with no downside.
+- Dictation helper (`whisper_dictate_server.py`) rewritten to `mlx_whisper`, pre-warmed before
+  `{"ready":true}`, weights cached locally under app support; `HF_HUB_OFFLINE=1` once cached so
+  warm-up never phones home (steady-state 100% local). fp16 (never q4 — protects Mandarin CER).
+- Review-hardened before ship: meetings-first setup install (a dictation-only, arm64-only
+  package can't abort the meetings runtime), helper auto-syncs into the runtime on version change,
+  warm-up errors surfaced to diagnostics, conservative multi-term phantom-echo guard.
+- Also this round: business vocabulary now feeds dictation's `initial_prompt` (shared, tested
+  `VocabularyPrompt`). Suite grew 89 → 97 tests.
