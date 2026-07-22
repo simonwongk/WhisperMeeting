@@ -489,18 +489,30 @@ final class AppModel: ObservableObject {
             preflightTest = .result(report, playbackURL: playbackURL)
         } catch is CancellationError {
             await engine.cancel()  // stops the stream and removes the temp session directory
-            preflightRecorder = nil
-            preflightTask = nil
+            releasePreflightOwnership(of: engine)
             // teardownPreflight() already set the phase to .idle; don't disturb it.
         } catch {
             await engine.cancel()
-            preflightRecorder = nil
-            preflightTask = nil
-            // A Cancel that landed alongside a real error must not resurrect a dismissed sheet.
-            if !Task.isCancelled {
+            let owned = releasePreflightOwnership(of: engine)
+            // A Cancel that landed alongside a real error must not resurrect a dismissed sheet, and
+            // a newer test that took ownership during engine.cancel() must not be clobbered either.
+            if owned, !Task.isCancelled {
                 preflightTest = .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// Clears the engine/task/temp-directory references for a finished run — but only if they still
+    /// describe *this* engine. `engine.cancel()` above is a suspension point during which a new test
+    /// (e.g. "Test Again") can install its own engine/task; the resuming old task must not nil those.
+    /// Returns whether this run still owned the state.
+    @discardableResult
+    private func releasePreflightOwnership(of engine: AudioCaptureEngine) -> Bool {
+        guard preflightRecorder === engine else { return false }
+        preflightRecorder = nil
+        preflightTask = nil
+        preflightDirectory = nil
+        return true
     }
 
     private static func analyzePreflight(artifact: RecordingArtifact) async -> PreflightReport {
