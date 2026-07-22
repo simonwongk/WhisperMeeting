@@ -1,0 +1,186 @@
+{
+  "pytorch-turbo (fp32/CPU baseline)": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 5.477,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的deadline是这个星期五"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 4.612,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我schedule一个meeting明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 4.594,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个bug已经fix了,可以merge了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 4.653,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon?"
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 4.634,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.091,
+      "hyp": "Let's schedule the design review for next Tuesday at 10."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 4.606,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "the build is failing on the release step, please take a look"
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 4.648,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 4.662,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.071,
+      "hyp": "帮我把今天的会议记要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 4.691,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 5.025,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.077,
+      "hyp": "请提醒我下午3点跟客户开会。"
+    }
+  ],
+  "mlx-turbo-fp16": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 1.51,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的deadline是这个星期五"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 1.43,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我schedule一个meeting明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 1.39,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个bug已经fix了,可以merge了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 1.403,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon?"
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 1.388,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.091,
+      "hyp": "Let's schedule the design review for next Tuesday at 10."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 1.388,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "the build is failing on the release step, please take a look"
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 1.393,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 1.415,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.071,
+      "hyp": "帮我把今天的会议记要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 1.435,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 1.409,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.077,
+      "hyp": "请提醒我下午3点跟客户开会。"
+    }
+  ]
+}
