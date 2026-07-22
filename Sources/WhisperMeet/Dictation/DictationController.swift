@@ -1,9 +1,20 @@
 // Sources/WhisperMeet/Dictation/DictationController.swift
 import AppKit
+import AVFoundation
 import Foundation
 import UserNotifications
 import WhisperCore
 import os
+
+/// Snapshot of the dictation feature's health, gathered on demand for a future diagnostics UI.
+struct DictationDiagnostics: Equatable {
+    var runtimeInstalled: Bool
+    var helperInstalled: Bool
+    var turboCached: Bool
+    var microphoneGranted: Bool
+    var accessibilityGranted: Bool
+    var hotkeyActive: Bool
+}
 
 /// Owns the quick-dictation feature end to end: hotkey → capture → warm Whisper → paste, driven by
 /// the pure `DictationSession`. Independent of the meeting pipeline; disabled while a meeting records.
@@ -23,6 +34,10 @@ final class DictationController: ObservableObject {
     var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
     func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
 
+    let logStore = DictationLogStore()
+    @Published var selfTestResult: String?
+    @Published private(set) var isSelfTesting = false
+
     private let defaults: UserDefaults
     private let hotkeyMonitor = HotkeyMonitor()
     private let recorder = MicDictationRecorder()
@@ -32,6 +47,7 @@ final class DictationController: ObservableObject {
     private var isMeetingActive: () -> Bool = { false }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
+    private var hotkeyActive = false
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
 
     private static let enabledKey = "dictationEnabled"
@@ -49,6 +65,7 @@ final class DictationController: ObservableObject {
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
+        ensureHelperInstalled()
         apply()
     }
 
@@ -76,7 +93,9 @@ final class DictationController: ObservableObject {
 
     private func apply() {
         if enabled {
+            ensureHelperInstalled()
             let started = hotkeyMonitor.start(hotkey: hotkey)
+            hotkeyActive = started
             status = .idle
             if !started {
                 log.error("event tap could not be created — Accessibility/Input Monitoring off")
@@ -86,6 +105,7 @@ final class DictationController: ObservableObject {
             warmUpIfNeeded()
         } else {
             hotkeyMonitor.stop()
+            hotkeyActive = false
             recorder.cancel()             // never leave the mic hot after the user disables dictation
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
@@ -93,6 +113,34 @@ final class DictationController: ObservableObject {
             overlay.hide()
             engine.shutdown()             // release the resident Whisper model/subprocess when disabled
             status = .disabled
+        }
+    }
+
+    /// Self-heal: if the managed Python venv exists but the bundled dictation helper script is
+    /// missing from the runtime directory (e.g. wiped, or installed before this feature shipped),
+    /// re-copy it from the app bundle instead of leaving dictation permanently broken.
+    private func ensureHelperInstalled() {
+        let python = LocalWhisperRuntime.pythonExecutable()
+        let script = LocalWhisperRuntime.dictationServerScript()
+        guard FileManager.default.fileExists(atPath: python.path),
+              !FileManager.default.fileExists(atPath: script.path) else { return }
+        guard let bundled = Bundle.main.url(forResource: "whisper_dictate_server", withExtension: "py") else {
+            log.error("dictation helper missing and no bundled copy found to self-heal from")
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: script.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            log.error("could not create runtime directory for helper self-heal: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try FileManager.default.copyItem(at: bundled, to: script)
+            log.notice("dictation helper self-healed: copied bundled whisper_dictate_server.py into runtime directory")
+        } catch {
+            log.error("failed to self-heal dictation helper: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -157,6 +205,7 @@ final class DictationController: ObservableObject {
             _ = session.handle(.dismiss)
             status = .idle
             overlay.show(.empty)
+            logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.2)
             return false
         }
@@ -213,9 +262,11 @@ final class DictationController: ObservableObject {
             case .clipboard: overlay.show(.copied); notifyClipboard()
             }
             log.notice("delivered via \(delivery == .pasted ? "paste" : "clipboard", privacy: .public)")
+            logStore.record(text: payload, outcome: delivery == .pasted ? .pasted : .clipboard)
             scheduleDismiss(after: 1.1)
         case .none where session.state == .failed(.emptyTranscript):
             overlay.show(.empty)
+            logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.3)
             status = .idle
         default:
@@ -245,6 +296,7 @@ final class DictationController: ObservableObject {
     private func fail(_ message: String) {
         status = .error(message)
         overlay.show(.error)
+        logStore.record(text: "", outcome: .failed(message))
         scheduleDismiss(after: 1.6)
     }
 
@@ -266,6 +318,43 @@ final class DictationController: ObservableObject {
         content.body = "Transcript is on the clipboard — press ⌘V to paste."
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - Diagnostics / self-test
+
+    func diagnostics() -> DictationDiagnostics {
+        DictationDiagnostics(
+            runtimeInstalled: FileManager.default.isExecutableFile(atPath: LocalWhisperRuntime.pythonExecutable().path),
+            helperInstalled: FileManager.default.fileExists(atPath: LocalWhisperRuntime.dictationServerScript().path),
+            turboCached: FileManager.default.fileExists(
+                atPath: LocalWhisperRuntime.modelDirectory().appendingPathComponent("large-v3-turbo.pt").path
+            ),
+            microphoneGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+            accessibilityGranted: HotkeyMonitor.isAccessibilityTrusted,
+            hotkeyActive: hotkeyActive
+        )
+    }
+
+    func runSelfTest() {
+        guard !isSelfTesting else { return }
+        isSelfTesting = true
+        selfTestResult = nil
+        ensureHelperInstalled()
+        Task { [engine] in
+            let samples = [Float](repeating: 0, count: 16_000) // 1s of silence @16kHz
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dictation-selftest-\(UUID().uuidString).wav")
+            var message: String
+            do {
+                try WhisperCore.WAVWriter.wavData(from: samples, sampleRate: 16_000).write(to: url)
+                _ = try await engine.transcribe(wavAt: url, language: .automatic, initialPrompt: nil)
+                message = "✓ Whisper helper responded — dictation pipeline is working."
+            } catch {
+                message = "✗ \(error.localizedDescription)"
+            }
+            try? FileManager.default.removeItem(at: url)
+            await MainActor.run { self.selfTestResult = message; self.isSelfTesting = false }
+        }
     }
 
     private func persist() {
