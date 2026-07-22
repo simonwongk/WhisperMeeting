@@ -10,7 +10,9 @@ public enum MeetingNotesExporter {
         durationSeconds: TimeInterval,
         languageCode: String?,
         summary: MeetingSummary?,
-        transcriptText: String
+        transcriptText: String,
+        markers: [RecordingMarker] = [],
+        segments: [TranscriptSegment] = []
     ) -> String {
         var lines = ["# \(title)", ""]
 
@@ -41,6 +43,12 @@ public enum MeetingNotesExporter {
                 lines.append(contentsOf: summary.actionItems.map { "- [ ] \($0)" })
                 lines.append("")
             }
+        }
+
+        let markersSection = RecordingMarkers.markdownSection(markers: markers, segments: segments)
+        if !markersSection.isEmpty {
+            lines.append(markersSection)
+            lines.append("")
         }
 
         lines.append("## Transcript")

@@ -88,6 +88,9 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var recordingState: RecordingState = .idle
     @Published private(set) var preflightTest: PreflightTestPhase = .idle
+    /// Markers dropped during the current recording (offsets from its start). Persisted into the
+    /// `MeetingRecord` on stop; discarded on cancel. See `docs/RECORDING_MARKERS.md`.
+    @Published private(set) var pendingMarkers: [RecordingMarker] = []
     @Published private(set) var activeMeetingID: UUID?
     @Published private(set) var transcription = TranscriptionQueue()
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
@@ -333,6 +336,7 @@ final class AppModel: ObservableObject {
         recordingState = .starting
         recordingHealth = nil
         recordingMeter.reset()
+        pendingMarkers = []
         let id = UUID()
         activeMeetingID = id
         let directory = store.recordingDirectoryURL(for: id)
@@ -382,9 +386,11 @@ final class AppModel: ObservableObject {
                 id: id,
                 title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
                 duration: artifact.duration,
-                recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL)
+                recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL),
+                markers: pendingMarkers.isEmpty ? nil : pendingMarkers
             )
             store.upsert(meeting)
+            pendingMarkers = []
             recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
@@ -411,12 +417,15 @@ final class AppModel: ObservableObject {
                 if let recovered {
                     let fallbackTitle = "Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
                     let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let recoveredMarkers = pendingMarkers.isEmpty ? nil : pendingMarkers
+                    pendingMarkers = []
                     store.upsert(MeetingRecord(
                         id: id,
                         title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
                         duration: recovered.duration,
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
-                        errorMessage: "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again."
+                        errorMessage: "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again.",
+                        markers: recoveredMarkers
                     ))
                     alertMessage = "The meeting could not finish normally, but its recording was recovered and added to history. \(recordingError.localizedDescription)"
                     return id
@@ -436,7 +445,50 @@ final class AppModel: ObservableObject {
         activeMeetingID = nil
         recordingHealth = nil
         recordingMeter.reset()
+        pendingMarkers = []
         refreshRecordingPreflight()
+    }
+
+    // MARK: - Recording markers
+
+    /// Drops a marker at the current point in the live recording. No-op unless recording. The audio
+    /// is never touched — this only records an offset. See `docs/RECORDING_MARKERS.md`.
+    func addLiveMarker(label: String? = nil) {
+        guard case let .recording(startedAt) = recordingState else { return }
+        let offset = max(0, Date().timeIntervalSince(startedAt))
+        pendingMarkers = RecordingMarkers.inserting(
+            RecordingMarker(offset: offset, label: label),
+            into: pendingMarkers
+        )
+    }
+
+    /// Adds a marker to an already-saved meeting (e.g. from playback at the current time).
+    func addMarker(to meetingID: UUID, offset: TimeInterval, label: String? = nil) {
+        store.update(id: meetingID) { meeting in
+            meeting.markers = RecordingMarkers.inserting(
+                RecordingMarker(offset: offset, label: label),
+                into: meeting.markers ?? []
+            )
+        }
+    }
+
+    /// Removes a marker from a saved meeting.
+    func removeMarker(_ markerID: UUID, from meetingID: UUID) {
+        store.update(id: meetingID) { meeting in
+            meeting.markers = (meeting.markers ?? []).filter { $0.id != markerID }
+        }
+    }
+
+    /// Renames a marker on a saved meeting (a blank label clears it, reverting to "Marker N").
+    func renameMarker(_ markerID: UUID, to label: String, in meetingID: UUID) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.update(id: meetingID) { meeting in
+            guard var markers = meeting.markers else { return }
+            for index in markers.indices where markers[index].id == markerID {
+                markers[index].label = trimmed.isEmpty ? nil : trimmed
+            }
+            meeting.markers = markers
+        }
     }
 
     // MARK: - Preflight test recording

@@ -366,6 +366,27 @@ private struct RecordMeetingView: View {
             }
             LiveVolumeBar(meter: model.recordingMeter)
                 .frame(maxWidth: 560)
+            markerControls
+        }
+    }
+
+    private var markerControls: some View {
+        VStack(spacing: 6) {
+            Button {
+                model.addLiveMarker()
+            } label: {
+                Label("Add Marker", systemImage: "bookmark.fill")
+                    .frame(minWidth: 150)
+            }
+            .buttonStyle(.bordered)
+            .keyboardShortcut("m", modifiers: .command)
+            .help("Flag this moment (⌘M). Markers are timestamps only — they never change the recording.")
+            Text(model.pendingMarkers.isEmpty
+                ? "No markers yet — press ⌘M to flag an important moment."
+                : "\(model.pendingMarkers.count) marker\(model.pendingMarkers.count == 1 ? "" : "s") dropped")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
         }
     }
 
@@ -1511,6 +1532,7 @@ private struct TranscriptDetailView: View {
             if hasSegments && transcriptMode == .read {
                 PlayableTranscriptView(
                     store: store,
+                    model: model,
                     meetingID: meetingID,
                     recordingURL: store.recordingURL(for: meeting),
                     segments: meeting.segments
@@ -1618,7 +1640,9 @@ private struct TranscriptDetailView: View {
             durationSeconds: current.duration,
             languageCode: current.languageCode,
             summary: current.summary,
-            transcriptText: current.transcriptText
+            transcriptText: current.transcriptText,
+            markers: current.orderedMarkers,
+            segments: current.segments
         )
         saveExport(notes, suggestedName: "\(current.title) Notes", fileExtension: "md")
     }
@@ -1796,6 +1820,7 @@ private struct PlayableTranscriptView: View {
     }
 
     @ObservedObject var store: MeetingStore
+    @ObservedObject var model: AppModel
     let meetingID: UUID
     let recordingURL: URL
     let segments: [TranscriptSegment]
@@ -1810,6 +1835,9 @@ private struct PlayableTranscriptView: View {
     // Quality review: step through the segments Whisper was least sure about.
     @State private var reviewPosition = 0
     @State private var reviewNudge = 0
+    // Marker rename.
+    @State private var renamingMarker: RecordingMarker?
+    @State private var renameText = ""
 
     // Computed once — segments are fixed for the life of this view.
     private let qualityReport: TranscriptQualityReport
@@ -1817,11 +1845,13 @@ private struct PlayableTranscriptView: View {
 
     init(
         store: MeetingStore,
+        model: AppModel,
         meetingID: UUID,
         recordingURL: URL,
         segments: [TranscriptSegment]
     ) {
         self.store = store
+        self.model = model
         self.meetingID = meetingID
         self.recordingURL = recordingURL
         self.segments = segments
@@ -1905,6 +1935,8 @@ private struct PlayableTranscriptView: View {
             } else {
                 Text("Recording unavailable on this Mac.").foregroundStyle(.secondary)
             }
+
+            markersStrip
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -1991,6 +2023,82 @@ private struct PlayableTranscriptView: View {
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
+        .alert("Rename Marker", isPresented: Binding(
+            get: { renamingMarker != nil },
+            set: { if !$0 { renamingMarker = nil } }
+        )) {
+            TextField("Label", text: $renameText)
+            Button("Save") {
+                if let marker = renamingMarker {
+                    model.renameMarker(marker.id, to: renameText, in: meetingID)
+                }
+                renamingMarker = nil
+            }
+            Button("Cancel", role: .cancel) { renamingMarker = nil }
+        } message: {
+            Text("Give this moment a name, or clear it to revert to a numbered marker.")
+        }
+    }
+
+    private var markers: [RecordingMarker] {
+        store.meeting(id: meetingID)?.orderedMarkers ?? []
+    }
+
+    @ViewBuilder
+    private var markersStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bookmark.fill")
+                .foregroundStyle(.orange)
+                .help("Markers you flagged during (or after) recording")
+            if markers.isEmpty {
+                Text("No markers")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(markers.enumerated()), id: \.element.id) { index, marker in
+                            markerChip(marker, index: index)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 6)
+            Button {
+                model.addMarker(to: meetingID, offset: playback.currentTime)
+            } label: {
+                Label("Add at \(TranscriptFormatter.timestamp(playback.currentTime))", systemImage: "bookmark.badge.plus")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .help("Add a marker at the current playback position")
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func markerChip(_ marker: RecordingMarker, index: Int) -> some View {
+        Button {
+            playback.seek(to: marker.offset)
+        } label: {
+            Text("\(TranscriptFormatter.timestamp(marker.offset))  \(RecordingMarkers.displayLabel(for: marker, at: index + 1))")
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.orange.opacity(0.15), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Rename…") {
+                renameText = marker.label ?? ""
+                renamingMarker = marker
+            }
+            Button("Delete", role: .destructive) {
+                model.removeMarker(marker.id, from: meetingID)
+            }
+        }
     }
 
     private var qualityReviewBanner: some View {

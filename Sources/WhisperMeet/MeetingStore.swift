@@ -46,6 +46,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// indexes written before this field still decode. Once true, `transcriptText` is never
     /// rebuilt from `segments`, so user edits are safe.
     var transcriptNormalized: Bool?
+    /// User-dropped markers (timestamps only). Optional so meeting indexes written before this
+    /// feature still decode. The audio is never modified — see `docs/RECORDING_MARKERS.md`.
+    var markers: [RecordingMarker]?
 
     init(
         id: UUID = UUID(),
@@ -60,7 +63,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         segments: [TranscriptSegment] = [],
         errorMessage: String? = nil,
         summary: MeetingSummary? = nil,
-        transcriptNormalized: Bool? = nil
+        transcriptNormalized: Bool? = nil,
+        markers: [RecordingMarker]? = nil
     ) {
         self.id = id
         self.title = title
@@ -75,6 +79,12 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.errorMessage = errorMessage
         self.summary = summary
         self.transcriptNormalized = transcriptNormalized
+        self.markers = markers
+    }
+
+    /// Markers sorted by offset (empty when none). Convenience for the UI and exports.
+    var orderedMarkers: [RecordingMarker] {
+        (markers ?? []).sorted { $0.offset < $1.offset }
     }
 }
 
