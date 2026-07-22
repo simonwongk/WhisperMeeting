@@ -1,4 +1,3 @@
-// Sources/WhisperMeet/Dictation/HotkeyMonitor.swift
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -14,7 +13,8 @@ final class HotkeyMonitor {
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var hotkey: DictationHotkey = .rightOption
-    private var isKeyDown = false
+    private var keyDown = false       // physical down-state of the configured hotkey key
+    private var toggledOn = false     // (toggle mode) whether dictation is currently on
 
     static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
 
@@ -23,10 +23,14 @@ final class HotkeyMonitor {
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 
+    deinit { stop() }
+
     @discardableResult
     func start(hotkey: DictationHotkey) -> Bool {
         stop()
         self.hotkey = hotkey
+        keyDown = false
+        toggledOn = false
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue) |
@@ -34,6 +38,11 @@ final class HotkeyMonitor {
 
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo!).takeUnretainedValue()
+            // The OS disables a tap on timeout / heavy input; re-enable so the always-on hotkey survives.
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = monitor.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
             monitor.handle(type: type, event: event)
             return Unmanaged.passUnretained(event)
         }
@@ -62,50 +71,47 @@ final class HotkeyMonitor {
         }
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
         }
         tap = nil
         runLoopSource = nil
-        isKeyDown = false
-    }
-
-    private var flagMask: CGEventFlags {
-        switch hotkey.keyCode {
-        case 61, 58: return .maskAlternate   // right/left Option
-        case 59, 62: return .maskControl     // left/right Control
-        case 55, 54: return .maskCommand     // left/right Command
-        case 56, 60: return .maskShift       // left/right Shift
-        default: return .maskAlternate
-        }
+        keyDown = false
+        toggledOn = false
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         guard keyCode == hotkey.keyCode else { return }
 
-        let pressed: Bool
+        let nowDown: Bool
         switch type {
-        case .flagsChanged: pressed = event.flags.contains(flagMask)
-        case .keyDown: pressed = true
-        case .keyUp: pressed = false
-        default: return
+        case .flagsChanged:
+            // A flagsChanged carrying our keyCode is a transition of THAT specific key. Its direction
+            // can't be read reliably from the side-agnostic modifier mask when another same-type
+            // modifier is held, so track this key's own state by toggling on each matching event.
+            nowDown = !keyDown
+        case .keyDown:
+            nowDown = true
+        case .keyUp:
+            nowDown = false
+        default:
+            return
         }
-        dispatch(pressed: pressed)
+        guard nowDown != keyDown else { return } // ignore autorepeat / duplicate transitions
+        keyDown = nowDown
+        dispatch(pressed: nowDown)
     }
 
     private func dispatch(pressed: Bool) {
         switch hotkey.mode {
         case .hold:
-            if pressed, !isKeyDown {
-                isKeyDown = true
-                DispatchQueue.main.async { self.onPressStart?() }
-            } else if !pressed, isKeyDown {
-                isKeyDown = false
-                DispatchQueue.main.async { self.onPressEnd?() }
+            DispatchQueue.main.async {
+                pressed ? self.onPressStart?() : self.onPressEnd?()
             }
         case .toggle:
-            guard pressed else { return } // act on key-down edge only
-            isKeyDown.toggle()
-            let starting = isKeyDown
+            guard pressed else { return } // act on the down edge only
+            toggledOn.toggle()
+            let starting = toggledOn
             DispatchQueue.main.async {
                 starting ? self.onPressStart?() : self.onPressEnd?()
             }
