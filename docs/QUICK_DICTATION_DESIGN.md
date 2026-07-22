@@ -74,11 +74,11 @@ DictationController  (@MainActor, WhisperMeet)                 ← feature orche
  ├── DictationOverlay      (non-activating NSPanel — WhisperMeet)  the pill (never steals focus)
  ├── TextInjector          (NSPasteboard + CGEvent ⌘V — WhisperMeet)  deliver text
  └── DictationEngine       (protocol — WhisperCore)
-        ├── WarmWhisperDictationEngine  (WhisperCore)          talks to resident helper over socket
+        ├── WarmWhisperDictationEngine  (WhisperCore)          drives resident helper over stdin/stdout
         └── BatchWhisperDictationEngine (WhisperCore)          CLI fallback (wraps LocalWhisperClient)
 
 DictationSession  (pure state machine — WhisperCore, TESTED)   drives the controller's transitions
-whisper_dictate_server.py  (Python, installed in the venv)     loads turbo once; serves over AF_UNIX
+whisper_dictate_server.py  (Python, installed in the venv)     loads turbo once; serves over stdin/stdout
 ```
 
 The controller is created alongside `recorder`/`store` in `AppModel.init(store:recorder:defaults:)`
@@ -113,19 +113,20 @@ Pure state machine.
 - Tests: leading-space strip, newline collapse, whitespace-only → empty, CJK text untouched.
 
 ### `DictationWireProtocol`
-Codable request/response + framing (length-prefixed JSON) for the helper socket.
+Codable request/response + **newline-delimited JSON** framing for the helper's stdin/stdout.
 - `DictationRequest { wavPath: String, language: String?, initialPrompt: String? }`
 - `DictationResponse { text: String?, language: String?, error: String? }`
-- `static func encode(_ req) -> Data` / `static func decode(_ data) throws -> DictationResponse`.
-- Tests: round-trip encode/decode, framing, error-field decode. Transport is injectable
-  (`DictationTransport` protocol) so this is tested without a real socket.
+- `static func encodeLine(_ value) -> Data` (JSON + `\n`) / `decodeResponse(line:)` / `takeLine(_ buffer:)`.
+- Tests: round-trip encode/decode, newline framing, partial + multi-line splitting, error-field decode —
+  pure, so tested without spawning the helper.
 
 ### `DictationEngine` protocol + implementations
 - `protocol DictationEngine: Sendable { func transcribe(wavAt: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult }`
 - `WarmWhisperDictationEngine`: owns the helper lifecycle — locate the venv python via
-  `LocalWhisperRuntime`, spawn `whisper_dictate_server.py` with `--model turbo --model-dir … --socket …
-  --idle-timeout …`, connect over `AF_UNIX`, health-check, restart on crash, and request a warm-up.
-  Uses `DictationWireProtocol` (pure/tested) over a real socket transport (side-effecting, thin).
+  `LocalWhisperRuntime`, spawn `whisper_dictate_server.py` with `--model turbo --model-dir …`, and
+  drive it over the child process's **stdin/stdout** using `DictationWireProtocol` (newline-delimited
+  JSON). Waits for a `{"ready": true}` line before use; serializes requests on a private queue with a
+  watchdog that bounds each read (terminating a hung helper); `shutdown()` evicts the model.
 - `BatchWhisperDictationEngine`: wraps the existing `LocalWhisperClient` (CLI per clip) as a
   correctness fallback if the helper can't start; also handy for tests. ~2–4 s per clip.
 
@@ -136,7 +137,7 @@ Codable request/response + framing (length-prefixed JSON) for the helper socket.
   for non-modifier custom keys, `.keyDown`/`.keyUp`.
 - Detect **Right Option**: keyCode `0x3D`, disambiguated from left Option via the device-dependent
   right-alt flag. Emits `onPressStart` / `onPressEnd` on the main actor.
-- Config `DictationHotkey { keyCode, modifiers, mode: .hold | .toggle }`; hold vs toggle handled here.
+- Config `DictationHotkey { keyCode, mode: .hold | .toggle }`; hold vs toggle handled here.
 - Exposes `isTrusted` (`AXIsProcessTrusted`) and `requestPermission()`
   (`AXIsProcessTrustedWithOptions` with prompt). If tap creation fails while trusted, surfaces a
   hint to also enable **Input Monitoring**.
@@ -186,18 +187,20 @@ Settings" buttons · warm-model status + idle-evict minutes.
 
 ## Python helper — `whisper_dictate_server.py`
 
-- Args: `--model turbo`, `--model-dir <cache>`, `--socket <path>`, `--idle-timeout <sec>`.
-- Loads the Whisper model **once**; listens on an `AF_UNIX` socket. Per request: read length-prefixed
-  JSON `{wav_path, language?, initial_prompt?}`, run `model.transcribe(wav_path, task="transcribe",
-  language=…, initial_prompt=…, fp16=False)`, reply `{text, language}` or `{error}`.
-- Idle timeout → exit (frees RAM); controller re-warms on demand. Single-client, robust error →
-  `error` field. **No extra Python deps** (Whisper already decodes audio via FFmpeg).
+- Args: `--model turbo`, `--model-dir <cache>`.
+- Loads the Whisper model **once**, then prints `{"ready": true}` on stdout. Reads newline-delimited
+  JSON requests `{wavPath, language?, initialPrompt?}` on stdin, runs `model.transcribe(wavPath,
+  task="transcribe", language=…, initial_prompt=…, fp16=False)`, and replies with one JSON line
+  `{text, language}` or `{error}` on stdout.
+- Exits when stdin closes (the controller terminates it to evict the model / free RAM); re-warmed on
+  demand. Wraps each request in try/except so one bad request can't kill the daemon. **No extra Python
+  deps** (Whisper already decodes audio via FFmpeg).
 - Installed by `Scripts/setup-local-whisper.sh` into the venv and bundled into the `.app` by
   `Scripts/build-app.sh` (mirrors how the setup script is already bundled).
 
 ## Data, config, storage
 
-- Socket: `~/Library/Application Support/WhisperMeet/Runtime/dictation.sock`.
+- No socket or port: the helper is a child process driven over its stdin/stdout pipes.
 - Scratch WAVs: system temp dir, deleted after use. Nothing under `Recordings/`.
 - Model reused from the existing `…/WhisperMeet/Models` cache (no second download).
 - `UserDefaults` keys: `dictationEnabled`, `dictationHotkeyKeyCode`, `dictationHotkeyMode`,
@@ -228,7 +231,7 @@ not the target feel).
 
 ## Concurrency
 
-`DictationController` and UI are `@MainActor`. Recorder capture, engine socket I/O, and helper
+`DictationController` and UI are `@MainActor`. Recorder capture, engine stdin/stdout I/O, and helper
 process management run off the main actor (`Task.detached` / async). `DictationSession` guarantees a
 single in-flight dictation. Warm engine serializes requests.
 
