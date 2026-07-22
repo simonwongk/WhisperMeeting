@@ -145,3 +145,23 @@ separate, deferred bet), but a real, perceptible win with no downside.
   warm-up errors surfaced to diagnostics, conservative multi-term phantom-echo guard.
 - Also this round: business vocabulary now feeds dictation's `initial_prompt` (shared, tested
   `VocabularyPrompt`). Suite grew 89 → 97 tests.
+
+## Round 9 — Transcript quality review
+Whisper computes per-segment confidence metrics — `avg_logprob`, `no_speech_prob`,
+`compression_ratio` — and uses them internally to reject bad decodes, but the CLI only *reports*
+them and WhisperMeet was throwing them away. This round keeps them and turns them into a focused,
+**read-only** proofreading aid: the segments Whisper was least sure about are surfaced so the user
+reviews a handful instead of re-reading everything. See `docs/TRANSCRIPT_QUALITY.md`.
+- `TranscriptSegment` gains optional `avgLogprob`/`noSpeechProb`/`compressionRatio`
+  (backward-compatible `Codable` — transcripts stored before this feature decode with `nil` metrics
+  and are treated as *unscored*, never flagged). `LocalWhisperClient` parses the fields; the JSON
+  schema and thresholds were verified against the installed `openai/whisper` `transcribe.py`.
+- New pure, tested `TranscriptQuality` module classifies each scored segment using Whisper's **own**
+  default thresholds — `logprob < -1.0`, `no_speech > 0.6`, `compression > 2.4` — so a flag means
+  the same thing Whisper's internal quality gate means: `lowConfidence`, `likelySilence` (the classic
+  silence hallucination — high no-speech *and* low confidence), or `repetitive`.
+- Transcript detail shows an unobtrusive banner ("N segments may need a look") with prev/next
+  step-through and a margin marker on flagged rows (suppressed during find-in-transcript). Nothing is
+  ever auto-changed; the audio is never touched.
+- Adversarially reviewed (no Critical/Important findings); Minor consistency fix applied. Suite
+  97 → 110 tests.

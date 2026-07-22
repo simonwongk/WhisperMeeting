@@ -22,6 +22,12 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
   sheet); fresh per-meeting detail identity so state never leaks across selection.
 - **Round 5** — Meeting Notes export (`MeetingNotesExporter`, pure/tested): one Markdown document
   combining the Claude summary and full transcript.
+- **Rounds 6–8** — Quick Dictation (global hotkey → local Whisper → paste), reliability/observability
+  hardening, and an MLX (Apple-Silicon) dictation engine (~3.3× faster, byte-identical transcripts).
+- **Round 9** — Transcript quality review (`TranscriptQuality`, pure/tested): retain Whisper's
+  per-segment confidence metrics (previously discarded) and flag likely low-confidence / silence-
+  hallucination / repetitive segments using Whisper's own default thresholds, with an unobtrusive
+  banner + prev/next step-through in the transcript detail. Read-only; audio untouched.
 
 ## Round 1 — Extract & organize (mostly pure logic, low risk) — DONE
 - **Subtitle & document export (SRT, VTT, Markdown, JSON)** — H/L/L. Pure `TranscriptExporter` in
@@ -58,10 +64,7 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
    before a critical meeting; keep it separate from the permanent meeting library.
 2. **Recording markers** — add a timestamped marker with one click/shortcut during a meeting, then
    surface those moments in playback and exports without touching the audio.
-3. **Transcript quality review** — identify likely low-confidence or no-speech segments from the
-   local Whisper result and provide a focused correction queue; verify current upstream JSON fields
-   before implementation.
-4. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
+3. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
    while another meeting app is frontmost, with explicit confirmation before destructive cancel.
 5. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
    transcripts to a user-selected folder, with verification and retention controls.

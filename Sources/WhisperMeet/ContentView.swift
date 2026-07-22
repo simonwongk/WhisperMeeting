@@ -1837,7 +1837,8 @@ private struct PlayableTranscriptView: View {
     private func segmentRow(index: Int, segment: TranscriptSegment) -> some View {
         let isActive = index == activeIndex
         let isSelectedMatch = index == selectedSearchID
-        let flags = flagsByIndex[index]
+        // Quality markers are suppressed during search, when the explaining banner is hidden.
+        let flags = isSearching ? nil : flagsByIndex[index]
         let isReviewTarget = index == reviewTargetID && !isSearching
         Button {
             if let start = segment.start { playback.seek(to: start) }
