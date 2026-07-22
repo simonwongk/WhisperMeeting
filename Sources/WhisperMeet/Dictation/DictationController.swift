@@ -86,8 +86,14 @@ final class DictationController: ObservableObject {
         } else {
             hotkeyMonitor.stop()
             overlay.hide()
+            engine.shutdown() // release the resident Whisper model/subprocess when disabled
             status = .disabled
         }
+    }
+
+    deinit {
+        hotkeyMonitor.stop()
+        engine.shutdown()
     }
 
     private func requestMicIfNeeded() async {
@@ -105,21 +111,17 @@ final class DictationController: ObservableObject {
         }
         switch session.handle(.startPressed) {
         case .startCapture: startCapture()
-        case .busy: flashBusy()
+        case .busy:
+            // A press arrived while a dictation is still in flight — leave the in-flight session and
+            // its overlay untouched. Never reset it here; that would drop the pending transcript.
+            log.notice("dictation press ignored — busy")
         default: break
         }
     }
 
     private func handlePressEnd() {
-        guard case .listening = statusMirror() else {
-            // still handle to keep the machine honest
-            _ = beginTranscriptionIfNeeded()
-            return
-        }
         _ = beginTranscriptionIfNeeded()
     }
-
-    private func statusMirror() -> DictationSession.State { session.state }
 
     private func startCapture() {
         do {
@@ -138,8 +140,20 @@ final class DictationController: ObservableObject {
 
     private func beginTranscriptionIfNeeded() -> Bool {
         let clip: (url: URL, duration: TimeInterval)
-        do { clip = try recorder.stop() }
-        catch { return false }
+        do {
+            clip = try recorder.stop()
+        } catch {
+            // Capture produced no usable audio (or wasn't recording). Drive the machine out of
+            // .listening and release the mic instead of wedging there forever; treat it as "nothing
+            // heard" rather than a hard error.
+            log.notice("dictation capture yielded no audio: \(error.localizedDescription, privacy: .public)")
+            recorder.cancel()
+            _ = session.handle(.dismiss)
+            status = .idle
+            overlay.show(.empty)
+            scheduleDismiss(after: 1.2)
+            return false
+        }
 
         let action = session.handle(.endPressed(clipDuration: clip.duration))
         switch action {
@@ -209,8 +223,19 @@ final class DictationController: ObservableObject {
     }
 
     private func flashBusy() {
+        // Transient overlay only. The session is idle here (this is the meeting-active guard path),
+        // so we must NOT send `.dismiss` to the state machine — just auto-hide the flash.
         overlay.show(.busy)
-        scheduleDismiss(after: 0.8)
+        scheduleOverlayHide(after: 0.8)
+    }
+
+    /// Hides the overlay after a delay WITHOUT touching the session state machine (unlike
+    /// `scheduleDismiss`, which also resets the session on terminal states).
+    private func scheduleOverlayHide(after seconds: TimeInterval) {
+        dismissWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.overlay.hide() }
+        dismissWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
     }
 
     private func fail(_ message: String) {
