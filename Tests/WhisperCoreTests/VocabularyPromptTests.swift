@@ -32,3 +32,25 @@ func vocabularyPromptTruncatesAtThousandCharacters() {
     let prompt = VocabularyPrompt.build(terms)
     #expect(prompt.count == 1_000)
 }
+
+@Test("terms() trims, drops empties, and caps at 100")
+func vocabularyPromptTermsList() {
+    #expect(VocabularyPrompt.terms(["  Acme ", "", "Q3"]) == ["Acme", "Q3"])
+    #expect(VocabularyPrompt.terms((1...150).map { "t\($0)" }).count == 100)
+}
+
+@Test("isPromptEcho flags a multi-term regurgitation, never a single dictated term")
+func vocabularyPromptEchoDetection() {
+    let vocab = ["Acme", "Kubernetes", "客户成功"]
+    // A real single-term dictation must NOT be treated as an echo.
+    #expect(!VocabularyPrompt.isPromptEcho("Kubernetes", terms: vocab))
+    #expect(!VocabularyPrompt.isPromptEcho("客户成功", terms: vocab))
+    // Two+ consecutive terms echoed back (punctuation/case/space-insensitive) IS an echo.
+    #expect(VocabularyPrompt.isPromptEcho("Acme, Kubernetes", terms: vocab))
+    #expect(VocabularyPrompt.isPromptEcho("kubernetes 客户成功", terms: vocab))
+    // Real speech that isn't the vocab list is not an echo.
+    #expect(!VocabularyPrompt.isPromptEcho("send me the report", terms: vocab))
+    // Fewer than two usable terms can't be distinguished from real dictation → never an echo.
+    #expect(!VocabularyPrompt.isPromptEcho("Acme", terms: ["Acme"]))
+    #expect(!VocabularyPrompt.isPromptEcho("anything", terms: []))
+}

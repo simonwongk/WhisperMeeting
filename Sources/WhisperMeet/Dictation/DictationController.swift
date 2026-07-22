@@ -267,7 +267,8 @@ final class DictationController: ObservableObject {
         let language = self.language
         // Same business vocabulary the meeting pipeline already feeds into Whisper's
         // `initial_prompt`, capped/formatted identically via the shared `VocabularyPrompt` helper.
-        let prompt = VocabularyPrompt.build(vocabularyProvider())
+        let vocab = vocabularyProvider()
+        let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
         Task { [engine, log] in
             let started = Date()
@@ -275,12 +276,10 @@ final class DictationController: ObservableObject {
                 let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
                 try? FileManager.default.removeItem(at: clip.url)
                 var cleaned = DictationTextCleanup.clean(result.text)
-                // Phantom-on-silence guard: with an initial_prompt present, Whisper can echo the
-                // prompt text back verbatim (or a truncated fragment of it) on a clip that was
-                // actually silence/noise. If the entire cleaned transcript is just contained
-                // within the prompt, there is no real speech in it — drop it to "" so it routes
-                // to the existing empty-transcript path instead of pasting the vocabulary list.
-                if let initialPrompt, Self.isPhantomPromptEcho(cleanedText: cleaned, prompt: initialPrompt) {
+                // Phantom-on-silence guard: with an initial_prompt present, Whisper can regurgitate
+                // the vocabulary list on a silence/noise clip. Drop ONLY a multi-term echo — never a
+                // single real vocab term the user actually dictated (see VocabularyPrompt.isPromptEcho).
+                if initialPrompt != nil, VocabularyPrompt.isPromptEcho(cleaned, terms: vocab) {
                     cleaned = ""
                 }
                 log.notice("transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
@@ -373,25 +372,6 @@ final class DictationController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleEvictSeconds, execute: item)
     }
 
-    // MARK: - Phantom-echo guard
-
-    /// True when `cleanedText` carries no speech of its own — every character of it (once
-    /// normalized) already appears, in order, inside the `initial_prompt` that was fed to Whisper.
-    /// That pattern is prompt echo (a known Whisper behavior on silence/noise), not a transcript.
-    private static func isPhantomPromptEcho(cleanedText: String, prompt: String) -> Bool {
-        guard !prompt.isEmpty else { return false }
-        let normalizedCleaned = normalizedForEchoComparison(cleanedText)
-        guard !normalizedCleaned.isEmpty else { return false }
-        let normalizedPrompt = normalizedForEchoComparison(prompt)
-        return normalizedPrompt.contains(normalizedCleaned)
-    }
-
-    /// Lowercases and strips everything but letters/digits so punctuation/whitespace differences
-    /// between the prompt and Whisper's echo of it (e.g. "Acme, Q3" vs "acme q3.") don't defeat
-    /// the containment check above.
-    private static func normalizedForEchoComparison(_ text: String) -> String {
-        String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(Character.init))
-    }
 
     private func notifyClipboard() {
         let content = UNMutableNotificationContent()

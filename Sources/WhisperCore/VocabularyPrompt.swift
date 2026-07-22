@@ -10,13 +10,46 @@ public enum VocabularyPrompt {
     private static let maxTerms = 100
     private static let maxCharacters = 1_000
 
-    public static func build(_ terms: [String]) -> String {
-        let prompt = terms
-            .lazy
+    /// The trimmed, non-empty, term-capped vocabulary list (before character-capping / joining).
+    public static func terms(_ raw: [String]) -> [String] {
+        Array(raw
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .prefix(maxTerms)
-            .joined(separator: ", ")
-        return String(prompt.prefix(maxCharacters))
+            .prefix(maxTerms))
+    }
+
+    public static func build(_ raw: [String]) -> String {
+        String(terms(raw).joined(separator: ", ").prefix(maxCharacters))
+    }
+
+    /// Whether `transcript` is just Whisper echoing the vocabulary prompt back — a known
+    /// `initial_prompt` behavior on silence/noise — rather than real speech.
+    ///
+    /// Deliberately conservative: a single dictated vocabulary term (e.g. the user actually says
+    /// "Kubernetes") is REAL and must never be dropped. So this only fires when the transcript
+    /// reproduces a contiguous run of **two or more** prompt terms — the signature of prompt
+    /// regurgitation, not of someone dictating one term. Comparison is punctuation/space
+    /// insensitive and CJK-safe.
+    public static func isPromptEcho(_ transcript: String, terms rawTerms: [String]) -> Bool {
+        let cleaned = normalizedForEcho(transcript)
+        guard !cleaned.isEmpty else { return false }
+        let normalized = terms(rawTerms).map(normalizedForEcho).filter { !$0.isEmpty }
+        guard normalized.count >= 2 else { return false }
+        for start in normalized.indices {
+            var joined = ""
+            for end in start..<normalized.count {
+                joined += normalized[end]
+                if end > start, joined == cleaned { return true } // matched >= 2 consecutive terms
+            }
+        }
+        return false
+    }
+
+    /// Lowercased, alphanumerics-only (punctuation/spaces removed; CJK letters kept), so
+    /// "Acme, Q3" and "acme q3." compare equal.
+    private static func normalizedForEcho(_ text: String) -> String {
+        String(text.lowercased().unicodeScalars
+            .filter(CharacterSet.alphanumerics.contains)
+            .map(Character.init))
     }
 }
