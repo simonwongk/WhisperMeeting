@@ -79,3 +79,27 @@ language only) preserved throughout.
   fails—protecting active recordings during development updates.
 - Recording startup now writes phase timings for ScreenCaptureKit content discovery and stream start
   to the unified macOS log, so any remaining launch lag can be measured instead of guessed.
+
+## Round 6 — Quick Dictation (push-to-talk, any app)
+A second, independent feature alongside the meeting recorder: hold **Right Option** anywhere → speak →
+release → local Whisper (`turbo`) transcribes → the text is auto-pasted into the focused field
+(clipboard + notification fallback). Menu-bar presence, launch-at-login, and a Quick Dictation settings
+section (enable, hold/toggle mode, language, delivery, Accessibility status). 100% local — no network.
+- **Near-instant repeats via a resident "warm" helper** (`whisper_dictate_server.py`): loads the model
+  once and serves clips over the child process's stdin/stdout as newline-delimited JSON
+  (`DictationProtocol`), so only the first dictation pays the model-load/download cost.
+- **Mic-only capture** (`MicDictationRecorder`, AVAudioEngine) — dictation never needs Screen Recording
+  permission; clips are ephemeral temp WAVs, never touching `Recordings/` or the meetings index.
+- **Global push-to-talk** (`HotkeyMonitor`, listen-only CGEventTap) with absolute per-side modifier
+  detection; **auto-paste** (`TextInjector`, clipboard + synthesized ⌘V) with an honest clipboard
+  fallback; a non-activating floating overlay pill (`DictationOverlay`) that never steals focus.
+- Orchestrated by `DictationController` off a pure, tested `DictationSession` state machine; disabled
+  while a meeting records (and vice-versa) so the two never contend for the mic.
+- New tested `WhisperCore` modules: `WAVWriter` (now the single WAV path, shared with the meeting
+  mixer), `DictationSession`, `DictationTextCleanup`, `DictationProtocol`. Suite grew 67 → 78.
+- Built subagent-driven with per-task + final adversarial review. Fixes that review caught before
+  ship: warm-helper read watchdog (no silent hang); recorder thread-safety + fail-loud empty capture;
+  hotkey tap re-enable on OS-disable + correct dual-modifier release; overlay panel `canBecomeKey`
+  override (no focus theft); controller coherence (no transcript loss on re-tap, no stuck-listening);
+  and — from the whole-branch review — stopping the mic + resetting state when dictation is disabled
+  mid-capture (no hot mic after disable), an honest paste result, and a longer first-run warm-up.
