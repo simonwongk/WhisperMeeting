@@ -9,6 +9,7 @@ import WhisperCore
 private enum SidebarItem: Hashable {
     case record
     case vocabulary
+    case dictation
     case settings
     case meeting(UUID)
 }
@@ -48,6 +49,8 @@ struct ContentView: View {
                         .tag(SidebarItem.record)
                     Label("Business Vocabulary", systemImage: "text.book.closed")
                         .tag(SidebarItem.vocabulary)
+                    Label("Dictation", systemImage: "mic.fill")
+                        .tag(SidebarItem.dictation)
                     Label("Settings", systemImage: "gearshape")
                         .tag(SidebarItem.settings)
                 }
@@ -137,6 +140,8 @@ struct ContentView: View {
             }
         case .vocabulary:
             VocabularyView(store: store)
+        case .dictation:
+            DictationView(dictation: dictation, log: dictation.logStore, model: model)
         case .settings:
             SettingsView(model: model, dictation: dictation)
                 .padding(32)
@@ -728,6 +733,8 @@ struct SettingsView: View {
     @ObservedObject var dictation: DictationController
     @State private var apiKeyDraft = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var capturingKey = false
+    @State private var keyMonitor: Any?
 
     var body: some View {
         Form {
@@ -790,6 +797,16 @@ struct SettingsView: View {
                     Text("Hold to talk").tag(DictationHotkey.Mode.hold)
                     Text("Toggle on/off").tag(DictationHotkey.Mode.toggle)
                 }
+                HStack {
+                    Text("Trigger key")
+                    Spacer()
+                    Text(DictationKeyName.display(for: dictation.hotkey.keyCode))
+                        .foregroundStyle(.secondary)
+                    Button(capturingKey ? "Press a key…" : "Change") { toggleKeyCapture() }
+                }
+                Text("Hold this key to talk. A Command/Control key or an F-key works best — they don't type text while held.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("Language", selection: $dictation.language) {
                     ForEach(WhisperLanguage.allCases, id: \.self) { language in
                         Text(language.displayName).tag(language)
@@ -851,6 +868,21 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+    }
+
+    private func toggleKeyCapture() {
+        if capturingKey { endKeyCapture(); return }
+        capturingKey = true
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            dictation.hotkey = DictationHotkey(keyCode: UInt16(event.keyCode), mode: dictation.hotkey.mode)
+            endKeyCapture()
+            return nil // swallow the captured key so it doesn't type/act
+        }
+    }
+
+    private func endKeyCapture() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        capturingKey = false
     }
 }
 
