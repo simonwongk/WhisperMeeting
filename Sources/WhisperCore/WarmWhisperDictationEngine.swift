@@ -181,6 +181,56 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 }
 
+/// Prefers a primary dictation engine (the warm MLX helper) and falls back to a secondary (the
+/// batch `openai/whisper` CLI) when the primary can't run on this machine — an Intel Mac, a runtime
+/// without MLX, or a broken MLX install. The choice is made at warm-up: if the primary's `warmUp()`
+/// throws, the fallback is used for the rest of the session. Without this, those machines lose Quick
+/// Dictation entirely even though a working (slower) engine is available.
+public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable {
+    private let primary: DictationEngine
+    private let fallback: DictationEngine
+    private let lock = NSLock()
+    private var chosen: DictationEngine?
+
+    public init(primary: DictationEngine, fallback: DictationEngine) {
+        self.primary = primary
+        self.fallback = fallback
+    }
+
+    public func warmUp() async throws {
+        do {
+            try await primary.warmUp()
+            setChosen(primary)
+        } catch {
+            try await fallback.warmUp()
+            setChosen(fallback)
+        }
+    }
+
+    public func transcribe(
+        wavAt url: URL,
+        language: WhisperLanguage,
+        initialPrompt: String?
+    ) async throws -> DictationResult {
+        if currentChoice == nil { try await warmUp() }
+        let engine = currentChoice ?? fallback
+        return try await engine.transcribe(wavAt: url, language: language, initialPrompt: initialPrompt)
+    }
+
+    public func shutdown() {
+        primary.shutdown()
+        fallback.shutdown()
+    }
+
+    private func setChosen(_ engine: DictationEngine) {
+        lock.lock(); chosen = engine; lock.unlock()
+    }
+
+    private var currentChoice: DictationEngine? {
+        lock.lock(); defer { lock.unlock() }; return chosen
+    }
+}
+
 /// Cold fallback: one `whisper` CLI run per clip. No warm model — used only when the helper
 /// cannot start. Reuses the existing, battle-tested `LocalWhisperClient`.
 public struct BatchWhisperDictationEngine: DictationEngine {

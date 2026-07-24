@@ -87,7 +87,16 @@ final class DictationController: ObservableObject {
         let python = LocalWhisperRuntime.pythonExecutable()
         let script = LocalWhisperRuntime.dictationServerScript()
         let models = LocalWhisperRuntime.modelDirectory()
-        return WarmWhisperDictationEngine(python: python, script: script, modelDirectory: models)
+        let warm = WarmWhisperDictationEngine(python: python, script: script, modelDirectory: models)
+        // Fall back to the batch openai/whisper CLI when the warm MLX helper can't run (Intel Mac,
+        // runtime without MLX, or a broken MLX install) so dictation still works there instead of
+        // failing outright. Meetings are unaffected — this only backs Quick Dictation.
+        let whisperExecutable = LocalWhisperRuntime.findExecutable() ?? LocalWhisperRuntime.managedExecutable()
+        let batch = BatchWhisperDictationEngine(
+            client: LocalWhisperClient(executableURL: whisperExecutable, modelDirectory: models),
+            model: .turbo
+        )
+        return FallbackDictationEngine(primary: warm, fallback: batch)
     }
 
     func configure(isMicrophoneBusy: @escaping () -> Bool) {
