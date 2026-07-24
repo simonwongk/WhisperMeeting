@@ -70,6 +70,31 @@ public struct LocalWhisperRuntime: Sendable {
             .appendingPathComponent("venv/bin/python")
     }
 
+    /// Whether the MLX dictation model's weights are actually present in the local Hugging Face
+    /// cache. huggingface_hub creates the `models--org--repo` tree at the START of a download, so
+    /// the directory existing doesn't mean the model is usable — we require a snapshot that carries
+    /// both `weights.safetensors` and `config.json` (matching the helper's completeness check).
+    public static func mlxModelCached(
+        applicationSupport: URL? = nil,
+        mlxRepo: String = "mlx-community/whisper-large-v3-turbo"
+    ) -> Bool {
+        let repoFolder = "models--" + mlxRepo.replacingOccurrences(of: "/", with: "--")
+        let snapshots = modelDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("hf/hub", isDirectory: true)
+            .appendingPathComponent(repoFolder, isDirectory: true)
+            .appendingPathComponent("snapshots", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: snapshots,
+            includingPropertiesForKeys: nil
+        ) else {
+            return false
+        }
+        return entries.contains { snapshot in
+            FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("weights.safetensors").path)
+                && FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("config.json").path)
+        }
+    }
+
     public static func dictationServerScript(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("whisper_dictate_server.py")

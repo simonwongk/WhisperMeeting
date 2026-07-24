@@ -390,9 +390,7 @@ final class DictationController: ObservableObject {
         DictationDiagnostics(
             runtimeInstalled: FileManager.default.isExecutableFile(atPath: LocalWhisperRuntime.pythonExecutable().path),
             helperInstalled: FileManager.default.fileExists(atPath: LocalWhisperRuntime.dictationServerScript().path),
-            turboCached: FileManager.default.fileExists(
-                atPath: LocalWhisperRuntime.modelDirectory().appendingPathComponent("large-v3-turbo.pt").path
-            ),
+            turboCached: LocalWhisperRuntime.mlxModelCached(),
             microphoneGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibilityGranted: HotkeyMonitor.isAccessibilityTrusted,
             hotkeyActive: hotkeyActive
