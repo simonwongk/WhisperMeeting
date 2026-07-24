@@ -686,6 +686,7 @@ private struct SimpleMarkersList: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Delete marker")
                 }
                 .font(.callout)
             }
@@ -1193,9 +1194,12 @@ private struct VocabularyView: View {
                             systemImage: didCopyPrompt ? "checkmark" : "sparkles"
                         )
                     }
-                    .help("Copy a ready-made prompt to paste into any AI chat, then paste the terms it lists back into the Add box.")
+                    .help("Copy a ready-made prompt to paste into any AI chat, then paste the terms it lists back into the Add box. Note: whatever you paste into that external chat (notes, rosters, docs) leaves this Mac and goes to that provider.")
                 }
                 Text("Every term shown below stays on this Mac and is included in Whisper’s local prompt. Up to 100 reviewed terms are kept.")
+                    .foregroundStyle(.secondary)
+                Text("“Copy AI Prompt” is for an external AI chat: anything you paste there leaves this Mac. Don’t include confidential material.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
