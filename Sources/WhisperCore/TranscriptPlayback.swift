@@ -17,8 +17,13 @@ public enum TranscriptPlayback {
         for (index, segment) in segments.enumerated() {
             guard let start = segment.start else { continue }
             if start > seconds { break }
-            let nextStart = segments.dropFirst(index + 1).compactMap(\.start).first
-            let effectiveEnd = segment.end ?? nextStart ?? recordingDuration
+            // Only resolve the next start when this segment is open-ended. `.lazy` stops at the
+            // first following segment that has a start (the common case: the very next one) instead
+            // of eagerly materializing every remaining start on each iteration — that eager scan
+            // made the whole lookup O(n²) per playback tick on long transcripts.
+            let effectiveEnd = segment.end
+                ?? segments[(index + 1)...].lazy.compactMap(\.start).first
+                ?? recordingDuration
             guard let effectiveEnd else { continue }
             if seconds < effectiveEnd { result = index }
         }
