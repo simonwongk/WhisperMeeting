@@ -36,8 +36,15 @@ public enum RecordingMarkers {
         return "Marker \(index)"
     }
 
-    /// The transcript segment active at `offset`: the segment whose `[start, end)` contains it, or
-    /// failing that the last segment that started at or before it. `nil` if none applies.
+    /// How long after a segment ends a marker can still borrow that segment as its context. A
+    /// marker dropped in a brief pause keeps the utterance that just ended; one dropped deep into
+    /// silence gets no context (rather than a stale, unrelated line from minutes earlier).
+    static let contextGapTolerance: TimeInterval = 5
+
+    /// The transcript segment to show as a marker's context: the segment whose `[start, end)`
+    /// contains `offset`, or — if the marker landed in a short pause — the segment that just ended
+    /// (within `contextGapTolerance`). `nil` when the marker is deep in silence with no nearby
+    /// speech, or when no segment applies.
     public static func segmentText(
         at offset: TimeInterval,
         in segments: [TranscriptSegment]
@@ -46,13 +53,24 @@ public enum RecordingMarkers {
         // if the input is out of order (Whisper output is chronological, but don't rely on it).
         let ordered = segments.sorted { ($0.start ?? -1) < ($1.start ?? -1) }
         var best: TranscriptSegment?
+        var containsOffset = false
         for segment in ordered {
             guard let start = segment.start, start <= offset else { continue }
             best = segment
-            if let end = segment.end, offset < end { break }
+            if let end = segment.end, offset < end {
+                containsOffset = true
+                break
+            }
+            containsOffset = false
         }
-        let text = best?.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text?.isEmpty == false) ? text : nil
+        guard let best else { return nil }
+        // Marker fell after this segment ended (a pause). Only borrow it as context if the marker
+        // is close after the end; a marker far into silence has no relevant nearby speech to show.
+        if !containsOffset, let end = best.end, offset - end > contextGapTolerance {
+            return nil
+        }
+        let text = best.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     /// A `## Markers` section for exported notes; empty when there are no markers.

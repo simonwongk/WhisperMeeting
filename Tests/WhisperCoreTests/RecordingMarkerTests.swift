@@ -45,8 +45,21 @@ func segmentTextBeforeOffset() {
         TranscriptSegment(speaker: nil, start: 0, end: 5, text: "intro"),
         TranscriptSegment(speaker: nil, start: 5, end: 8, text: "middle")
     ]
-    // Offset 12 is past every segment end → the last segment that started before it.
+    // Offset 12 is in a brief pause just after "middle" ends (8) → still that segment's context.
     #expect(RecordingMarkers.segmentText(at: 12, in: segments) == "middle")
+}
+
+@Test("segmentText omits context for a marker dropped deep into silence")
+func segmentTextBeyondToleranceIsNil() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 5, text: "intro"),
+        TranscriptSegment(speaker: nil, start: 5, end: 8, text: "middle")
+    ]
+    // Far past the last segment's end (>5s of silence) → no relevant nearby context, so omit it
+    // rather than attach a stale line from earlier.
+    #expect(RecordingMarkers.segmentText(at: 30, in: segments) == nil)
+    // But a marker in a brief pause right after speech still gets that segment.
+    #expect(RecordingMarkers.segmentText(at: 9, in: segments) == "middle")
 }
 
 @Test("segmentText is nil when no segment starts before the offset or none exist")

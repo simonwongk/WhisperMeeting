@@ -18,7 +18,10 @@ recording. `RecordingMarkers` provides the pure helpers:
 - `inserting(_:into:)` — adds a marker, clamps a negative offset to 0, and keeps the list sorted by
   offset.
 - `displayLabel(for:at:)` — the marker's own label if it has one, else `"Marker N"` (1-based).
-- `segmentText(at:in:)` — the transcript segment active at a marker's offset, for context.
+- `segmentText(at:in:)` — the transcript segment active at a marker's offset, for context: the
+  segment containing the offset, or (if the marker landed in a brief pause) the segment that just
+  ended, within a few seconds. A marker dropped deep into silence gets no context rather than a
+  stale line from minutes earlier.
 - `markdownSection(markers:segments:)` — a `## Markers` section for exported notes: one line per
   marker, `- **MM:SS** label — <transcript at that moment>`.
 
