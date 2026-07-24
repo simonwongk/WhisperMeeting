@@ -51,7 +51,11 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
                 throw LocalWhisperError.processFailed(error)
             }
             let text = (response.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return DictationResult(text: text, languageCode: response.language)
+            return DictationResult(
+                text: text,
+                languageCode: response.language,
+                noSpeechProb: response.noSpeechProb
+            )
         }
     }
 
@@ -173,7 +177,11 @@ public struct BatchWhisperDictationEngine: DictationEngine {
             keyterms: initialPrompt.map { [$0] } ?? []
         )
         let result = try await client.transcribe(recordingAt: url, options: options)
-        return DictationResult(text: result.text, languageCode: result.languageCode)
+        return DictationResult(
+            text: result.text,
+            languageCode: result.languageCode,
+            noSpeechProb: result.segments.compactMap(\.noSpeechProb).min()
+        )
     }
 
     public func shutdown() {}

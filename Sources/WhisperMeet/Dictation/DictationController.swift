@@ -277,9 +277,12 @@ final class DictationController: ObservableObject {
                 try? FileManager.default.removeItem(at: clip.url)
                 var cleaned = DictationTextCleanup.clean(result.text)
                 // Phantom-on-silence guard: with an initial_prompt present, Whisper can regurgitate
-                // the vocabulary list on a silence/noise clip. Drop ONLY a multi-term echo — never a
-                // single real vocab term the user actually dictated (see VocabularyPrompt.isPromptEcho).
-                if initialPrompt != nil, VocabularyPrompt.isPromptEcho(cleaned, terms: vocab) {
+                // the vocabulary list on a silence/noise clip. Only drop it when the audio actually
+                // scored as silence — otherwise a genuinely dictated run of vocab terms (e.g. two
+                // adjacent product names) would be silently deleted (see shouldDropAsPromptEcho).
+                if initialPrompt != nil,
+                   VocabularyPrompt.shouldDropAsPromptEcho(
+                    cleaned, terms: vocab, noSpeechProb: result.noSpeechProb) {
                     cleaned = ""
                 }
                 log.notice("transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")

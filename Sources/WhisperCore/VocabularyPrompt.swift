@@ -67,6 +67,27 @@ public enum VocabularyPrompt {
         return false
     }
 
+    /// A no-speech probability at or above which a clip is treated as silence/noise rather than
+    /// speech. Mirrors `TranscriptQuality`'s silence gate and Whisper's own `no_speech_threshold`.
+    private static let echoSilenceNoSpeechThreshold = 0.6
+
+    /// Whether a dictation result should be discarded as a prompt echo.
+    ///
+    /// Text shape alone (`isPromptEcho`) can't distinguish "the user genuinely dictated two
+    /// adjacent vocabulary terms" from "Whisper regurgitated the prompt on a silent clip" — so
+    /// dropping on text alone silently deletes real speech. Prompt echoes are a *silence/noise*
+    /// artifact, so we require acoustic corroboration: drop only when the text has the echo shape
+    /// **and** Whisper reports the clip was likely non-speech. When no acoustic signal is available
+    /// (`nil`), fail safe and keep the text — never silently delete what might be real speech.
+    public static func shouldDropAsPromptEcho(
+        _ transcript: String,
+        terms rawTerms: [String],
+        noSpeechProb: Double?
+    ) -> Bool {
+        guard let noSpeechProb, noSpeechProb >= echoSilenceNoSpeechThreshold else { return false }
+        return isPromptEcho(transcript, terms: rawTerms)
+    }
+
     /// Lowercased, alphanumerics-only (punctuation/spaces removed; CJK letters kept), so
     /// "Acme, Q3" and "acme q3." compare equal.
     private static func normalizedForEcho(_ text: String) -> String {

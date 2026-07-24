@@ -15,10 +15,14 @@ public struct DictationResponse: Codable, Equatable, Sendable {
     public var text: String?
     public var language: String?
     public var error: String?
-    public init(text: String?, language: String?, error: String?) {
+    /// Lowest per-segment `no_speech_prob` the helper saw (most speech-like segment). Used to tell a
+    /// real dictation from a silence-driven prompt echo. Absent from older helpers → decodes to nil.
+    public var noSpeechProb: Double?
+    public init(text: String?, language: String?, error: String?, noSpeechProb: Double? = nil) {
         self.text = text
         self.language = language
         self.error = error
+        self.noSpeechProb = noSpeechProb
     }
 }
 
@@ -47,9 +51,14 @@ public enum DictationWireProtocol {
 public struct DictationResult: Sendable, Equatable {
     public let text: String
     public let languageCode: String?
-    public init(text: String, languageCode: String?) {
+    /// Lowest per-segment `no_speech_prob` for the clip (nil if the engine can't report it). A high
+    /// value means the clip was likely silence/noise — used to gate prompt-echo suppression so a
+    /// confident real dictation is never silently discarded.
+    public let noSpeechProb: Double?
+    public init(text: String, languageCode: String?, noSpeechProb: Double? = nil) {
         self.text = text
         self.languageCode = languageCode
+        self.noSpeechProb = noSpeechProb
     }
 }
 

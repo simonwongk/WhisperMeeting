@@ -72,7 +72,16 @@ def main() -> int:
                 language=request.get("language"),
                 initial_prompt=request.get("initialPrompt"),
             )
-            response = {"text": result.get("text", "").strip(), "language": result.get("language")}
+            # Report the lowest per-segment no_speech_prob (the most speech-like segment). The app
+            # uses it to tell a real dictation from a silence-driven prompt echo; taking the min
+            # biases toward keeping — a clip is only "silence" if EVERY segment looks like silence.
+            segments = result.get("segments") or []
+            probs = [s.get("no_speech_prob") for s in segments if s.get("no_speech_prob") is not None]
+            response = {
+                "text": result.get("text", "").strip(),
+                "language": result.get("language"),
+                "noSpeechProb": min(probs) if probs else None,
+            }
         except Exception as error:  # never crash the daemon on one bad request
             response = {"error": str(error)}
         sys.stdout.write(json.dumps(response) + "\n")

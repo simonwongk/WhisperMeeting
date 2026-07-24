@@ -66,3 +66,37 @@ func vocabularyPromptEchoDetection() {
     #expect(!VocabularyPrompt.isPromptEcho("Acme", terms: ["Acme"]))
     #expect(!VocabularyPrompt.isPromptEcho("anything", terms: []))
 }
+
+@Test("shouldDropAsPromptEcho drops a silence echo but never confident real speech")
+func vocabularyPromptEchoAcousticGate() {
+    let vocab = ["Acme", "Kubernetes", "客户成功"]
+
+    // The regression this fixes: the user genuinely dictates two adjacent vocab terms.
+    // The clip is confident speech (low no-speech probability), so it must be KEPT even
+    // though its text has the echo *shape*.
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(
+        "Acme, Kubernetes", terms: vocab, noSpeechProb: 0.03))
+
+    // A true prompt regurgitation happens on silence/noise: high no-speech probability +
+    // echo-shaped text → still dropped, so the original guard's purpose is preserved.
+    #expect(VocabularyPrompt.shouldDropAsPromptEcho(
+        "Acme, Kubernetes", terms: vocab, noSpeechProb: 0.85))
+
+    // Boundary: at/above the silence threshold it drops; just below it keeps.
+    #expect(VocabularyPrompt.shouldDropAsPromptEcho(
+        "kubernetes 客户成功", terms: vocab, noSpeechProb: 0.6))
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(
+        "kubernetes 客户成功", terms: vocab, noSpeechProb: 0.59))
+
+    // Non-echo real speech is never dropped, no matter how silent the clip scores.
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(
+        "send me the report", terms: vocab, noSpeechProb: 0.99))
+
+    // A single dictated term is never an echo, even on a silent-scoring clip.
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(
+        "Kubernetes", terms: vocab, noSpeechProb: 0.99))
+
+    // No acoustic evidence available (nil) → fail safe: never silently delete speech.
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(
+        "Acme, Kubernetes", terms: vocab, noSpeechProb: nil))
+}
