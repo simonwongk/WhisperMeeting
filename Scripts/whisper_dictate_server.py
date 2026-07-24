@@ -11,7 +11,24 @@ Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dicta
 import argparse
 import json
 import os
+import shutil
 import sys
+
+
+def model_fully_cached(hub_dir: str, mlx_repo: str) -> bool:
+    """Whether the MLX model's required files are actually present in the local HF cache.
+
+    huggingface_hub creates the `models--org--repo` directory tree at the START of a download
+    (before any weights finish), so directory existence does NOT mean the model is usable. We
+    check that the files mlx_whisper needs — config.json and weights.safetensors — resolve to
+    real cached paths. `try_to_load_from_cache` returns a str path on a hit, and None or a
+    sentinel object otherwise, so a plain isinstance(str) check is decisive.
+    """
+    from huggingface_hub import try_to_load_from_cache
+    for filename in ("config.json", "weights.safetensors"):
+        if not isinstance(try_to_load_from_cache(mlx_repo, filename, cache_dir=hub_dir), str):
+            return False
+    return True
 
 
 def main() -> int:
@@ -33,9 +50,18 @@ def main() -> int:
     # The meeting path never phones home once its model exists; match that. On the very first
     # run the model isn't cached yet, so we allow that one-time download, after which every
     # subsequent start is fully offline (and works air-gapped).
-    repo_cache = os.path.join(hf_home, "hub", "models--" + args.mlx_repo.replace("/", "--"))
+    hub_dir = os.path.join(hf_home, "hub")
+    repo_cache = os.path.join(hub_dir, "models--" + args.mlx_repo.replace("/", "--"))
     if os.path.isdir(repo_cache):
-        os.environ["HF_HUB_OFFLINE"] = "1"
+        if model_fully_cached(hub_dir, args.mlx_repo):
+            os.environ["HF_HUB_OFFLINE"] = "1"
+        else:
+            # The cache dir exists but its snapshot is incomplete — a download that was
+            # interrupted (watchdog kill, quit/disable mid-download, network drop, sleep,
+            # disk-full). Forcing HF_HUB_OFFLINE here would wedge dictation permanently, since
+            # offline mode blocks the very HTTP the partial cache needs to repair itself. Wipe
+            # the partial cache so THIS run re-downloads cleanly with network allowed.
+            shutil.rmtree(repo_cache, ignore_errors=True)
 
     import mlx.core as mx
     import mlx_whisper  # imported after arg parse so --help is instant
