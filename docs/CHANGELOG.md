@@ -132,11 +132,15 @@ Benchmark-driven engine swap for dictation only. A reproducible local benchmark
 | openai/whisper turbo (baseline) | 4.76 s | 0.023 | 0.049 | 0.000 |
 | mlx-whisper turbo fp16 | **1.42 s** | 0.023 | 0.049 | 0.000 |
 
-Same `large-v3-turbo` weights → **byte-identical transcripts**, so zero accuracy risk; MLX is
-purely a faster (Metal/GPU) runtime. Adopted for dictation; **meetings stay on `openai/whisper`
-large, untouched**. Verified the numbers hold in the production stdin/stdout helper path
-(avg 1.412 s) and adversarially reviewed. Not "instant like Wispr" (that needs streaming — a
-separate, deferred bet), but a real, perceptible win with no downside.
+Same `large-v3-turbo` weights and **matched WER/CER on the clips above**, so the accuracy risk is
+low — but this is a *synthetic* benchmark (10 TTS clips, one timed pass, fixed engine order, no
+noise, accents, long clips, real microphones, vocabulary, or p95/energy measurements), so it shows
+"no measured regression here", not "identical output": MLX (Metal fp16) and openai/whisper (CPU
+fp32) are different numeric runtimes and are not guaranteed bit-for-bit equal. MLX is purely a
+faster (Metal/GPU) runtime. Adopted for dictation; **meetings stay on `openai/whisper` large,
+untouched**. Verified the numbers hold in the production stdin/stdout helper path (avg 1.412 s) and
+adversarially reviewed. Not "instant like Wispr" (that needs streaming — a separate, deferred bet),
+but a real, perceptible win with no downside observed in this benchmark.
 - Dictation helper (`whisper_dictate_server.py`) rewritten to `mlx_whisper`, pre-warmed before
   `{"ready":true}`, weights cached locally under app support; `HF_HUB_OFFLINE=1` once cached so
   warm-up never phones home (steady-state 100% local). fp16 (never q4 — protects Mandarin CER).
@@ -197,11 +201,41 @@ metadata (just a timestamp); the audio is **never touched**. See `docs/RECORDING
 - `MeetingRecord` gains an optional `markers` field (backward-compatible, like `transcriptNormalized`)
   and an `orderedMarkers` convenience.
 - `AppModel` holds `pendingMarkers` during a live recording (⇧⌘M → offset from the recording timer),
-  persists them on stop **and through crash recovery**, discards them on cancel; plus add/remove/
-  rename for saved meetings.
+  persists them on stop and through **in-process finalization recovery**, discards them on cancel.
+  (A hard crash before Stop still loses markers dropped pre-crash — the audio is always recovered;
+  live markers are disposable metadata, see `RECORDING_MARKERS.md`.) Plus add/remove/rename for
+  saved meetings.
 - UI: an "Add Marker" control + live count in the recording panel; a markers strip in playback
   (click a chip to seek, add at the current position, rename/delete); markers are also viewable and
   manageable before a transcript exists; Meeting Notes export includes the Markers section.
 - Adversarially reviewed; fixed the Important "markers invisible until transcribed" gap and two Minor
   issues (out-of-order segment context, the ⌘M/Minimize shortcut clash) before ship; documented the
   bounded live-offset clock and crash-before-save behavior. Suite 125 → 138.
+
+## Round 11.5 — one-click "Copy AI Prompt" for vocabulary
+- A button on the Business Vocabulary screen copies a ready-made prompt (`VocabularyPrompt.
+  generationPrompt`) to paste into any AI chat; the chat's one-term-per-line output pastes straight
+  back into the Add box. Keeps the original script (English/中文), never translates, caps at ~80 terms.
+- Privacy caution added (Round 12): the prompt is for an *external* chat, so anything pasted there
+  leaves this Mac — surfaced in the UI and tooltip so business docs aren't shared unknowingly.
+
+## Round 12 — external-review follow-ups
+Independently verified all 23 findings of a code review (0 refuted; 19 confirmed, 4 partial), then
+fixed, each with tests where the logic is pure `WhisperCore`. Non-negotiable invariants preserved.
+- **Dictation accuracy (F6):** prompt-echo suppression now requires acoustic corroboration
+  (`no_speech_prob ≥ 0.6`) before blanking, so genuinely dictated adjacent vocab terms
+  ("Acme Kubernetes") are no longer silently deleted.
+- **Dictation reliability (F4, F1):** an interrupted MLX download no longer poisons the cache into
+  permanent offline mode (gate on snapshot completeness + self-repair); `shutdown()` now interrupts
+  in-flight helper work off-queue instead of waiting out the 120s/1800s read timeout.
+- **Capture ownership (F2, F5):** one `isMicrophoneBusy` guard closes the preflight↔dictation
+  double-capture hole and the preflight-cancel teardown race.
+- **Preflight honesty (F17):** readiness needs *sustained* signal (crest factor), so a single click
+  can't report "ready".
+- **Quality review (F12, F22):** `likely-silence` now catches the confident hallucinations Whisper
+  actually emits (was an unreachable subset of Whisper's own skip rule); review steps through
+  worst-first by severity (no hidden cap), banner shows "% clean".
+- **Diagnostics/perf/a11y/docs (F8, F21, F15, F13, F11/F14, F7):** diagnostics check the MLX cache
+  not the old `.pt`; playback active-segment lookup is linear not O(n²); marker-delete a11y label;
+  benchmark "zero accuracy risk / no downside" claims softened to match the synthetic evidence;
+  marker crash-recovery wording corrected.

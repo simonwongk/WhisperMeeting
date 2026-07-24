@@ -49,6 +49,18 @@ Scripts/setup-local-whisper.sh
 
 Recordings, separate microphone/system source tracks, models, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`, which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so the sources remain reusable.
 
+## More features
+
+Beyond the core record → transcribe flow:
+
+- **Quick Dictation** — a push-to-talk hotkey (default Right Option) transcribes a short clip and pastes it into any app. On Apple Silicon it uses a Metal-accelerated `mlx-whisper` helper that keeps the model warm for fast repeat dictations; it shares your Business Vocabulary. Meetings are unaffected — they stay on `openai/whisper`. See [docs/QUICK_DICTATION_DESIGN.md](docs/QUICK_DICTATION_DESIGN.md).
+- **Preflight test recording** — an ~8-second check that confirms your microphone (and system audio) are actually capturing *sustained* signal before you rely on a real meeting. See [docs/PREFLIGHT_TEST.md](docs/PREFLIGHT_TEST.md).
+- **Recording markers** — flag key moments live (⇧⌘M) or in playback; jump back to them and include them in exported notes. See [docs/RECORDING_MARKERS.md](docs/RECORDING_MARKERS.md).
+- **Transcript quality review** — flags low-confidence, likely-silence, and repetitive segments (using Whisper’s own metrics), ordered worst-first, so you can spot-check the shakiest parts. It never changes your transcript. See [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
+- **Claude meeting summaries (opt-in)** — the one non-local feature: paste a Claude API key in Settings and press Summarize to send the transcript to Anthropic’s API for a summary, key points, and action items. Nothing is uploaded without a saved key and an explicit, confirmed press. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+
+Development history is tracked in [docs/CHANGELOG.md](docs/CHANGELOG.md).
+
 ## Recording safety and recovery
 
 The recording is the source of truth. Local Whisper only reads the finished WAV, so a failed or cancelled transcription leaves the audio untouched and can be retried. The app also keeps previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when recording finalization fails, and scans for interrupted recording folders on its next launch.
