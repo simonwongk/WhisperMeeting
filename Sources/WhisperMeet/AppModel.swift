@@ -840,7 +840,12 @@ final class AppModel: ObservableObject {
 
     private func apply(progress: LocalTranscriptionProgress, to id: UUID) {
         transcriptionProgress[id] = progress
-        store.update(id: id) { $0.status = .processing }
+        // Persist the .processing transition once. Later progress ticks only move the in-memory
+        // progress bar (transcriptionProgress isn't stored), so re-running the meeting index's
+        // backup-validate + two atomic writes on every tick is pure waste.
+        if store.meeting(id: id)?.status != .processing {
+            store.update(id: id) { $0.status = .processing }
+        }
     }
 
     private func apply(result: TranscriptionResult, to id: UUID) {
