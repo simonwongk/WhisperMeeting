@@ -69,6 +69,19 @@ public enum PreflightSignalAnalyzer {
         if peak < faintCeiling { return .faint }
         return .ok
     }
+
+    /// A lone click/tap/cable pop spikes the peak but carries almost no energy across the window,
+    /// so peak alone would wrongly pass preflight. Real speech is *sustained*: its peak-to-RMS
+    /// crest factor stays modest even when quiet. Anything spikier than this — a huge peak over a
+    /// near-silent RMS — is a transient, not a captured voice.
+    static let transientCrestFactor: Float = 20
+
+    /// Whether a channel carried sustained audio (a real voice/stream) rather than nothing or a
+    /// lone transient. Used to gate readiness, so a single notification blip can't report "ready".
+    public static func isSustained(_ signal: ChannelSignal) -> Bool {
+        guard signal.peak >= silentCeiling else { return false }
+        return signal.peak / max(signal.rms, 1e-6) <= transientCrestFactor
+    }
 }
 
 /// The verdict for one channel of a preflight test.
@@ -119,13 +132,13 @@ public enum PreflightAssessment {
     public static func evaluate(microphone: ChannelSignal, system: ChannelSignal) -> PreflightReport {
         let mic = PreflightChannelReport(
             signal: microphone,
-            isCapturing: microphone.level != .silent,
-            note: micNote(microphone.level)
+            isCapturing: PreflightSignalAnalyzer.isSustained(microphone),
+            note: micNote(microphone)
         )
         let sys = PreflightChannelReport(
             signal: system,
-            isCapturing: system.level != .silent,
-            note: systemNote(system.level)
+            isCapturing: PreflightSignalAnalyzer.isSustained(system),
+            note: systemNote(system)
         )
 
         let isReady = mic.isCapturing
@@ -143,8 +156,17 @@ public enum PreflightAssessment {
         return PreflightReport(microphone: mic, system: sys, headline: headline, isReady: isReady)
     }
 
-    private static func micNote(_ level: ChannelSignalLevel) -> String? {
-        switch level {
+    /// A channel that registered a peak but wasn't sustained — a lone click/tap rather than audio.
+    private static func isTransientOnly(_ signal: ChannelSignal) -> Bool {
+        signal.peak >= PreflightSignalAnalyzer.silentCeiling
+            && !PreflightSignalAnalyzer.isSustained(signal)
+    }
+
+    private static func micNote(_ signal: ChannelSignal) -> String? {
+        if isTransientOnly(signal) {
+            return "Only a brief sound (a click or tap) was detected, not sustained speech. Speak normally for the whole test."
+        }
+        switch signal.level {
         case .silent:
             return "No microphone signal was detected. Check that the right input device is selected and that you aren't muted."
         case .faint:
@@ -156,8 +178,11 @@ public enum PreflightAssessment {
         }
     }
 
-    private static func systemNote(_ level: ChannelSignalLevel) -> String? {
-        switch level {
+    private static func systemNote(_ signal: ChannelSignal) -> String? {
+        if isTransientOnly(signal) {
+            return "Only a brief sound was detected on the system channel, not sustained audio."
+        }
+        switch signal.level {
         case .silent:
             return "No system audio was detected. System audio is only captured while another app is playing sound — make sure something was playing during the test."
         case .faint:

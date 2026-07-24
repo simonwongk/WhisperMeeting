@@ -28,11 +28,18 @@ and classify by peak into a `ChannelSignalLevel`:
 | `ok` | `0.05 – 0.98` | healthy |
 | `hot` | `≥ 0.98` | very loud; may clip/distort |
 
+Peak alone isn't enough to declare a channel healthy: a single notification blip, tap, or cable
+click spikes the peak without any sustained audio. So readiness uses **`isSustained`**, which
+requires a modest peak-to-RMS *crest factor* (≤ 20). Real speech — even quiet speech — stays well
+under that; a lone transient (huge peak over a near-silent RMS) is far above it and is reported as
+"only a brief sound … not sustained speech", not as ready.
+
 ## The verdict (`PreflightAssessment`, pure `WhisperCore`, tested)
 
 `evaluate(microphone:system:)` combines the two channel signals into a `PreflightReport`: per-channel
-`isCapturing` (any level above `silent`), a headline, and specific, actionable notes. The two channels
-are treated differently on purpose:
+`isCapturing` (the channel carried *sustained* audio — see `isSustained`, not merely a peak above
+`silent`), a headline, and specific, actionable notes. The two channels are treated differently on
+purpose:
 
 - **A silent microphone is a real problem** — you almost always want your own voice. It's flagged
   firmly ("check your input device / that you're not muted").
