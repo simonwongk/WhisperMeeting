@@ -178,6 +178,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// True while any capture path owns the microphone — a meeting recording, an active preflight
+    /// phase, OR a preflight engine still tearing down after Cancel. That last case matters because
+    /// `teardownPreflight()` publishes `.idle` immediately, but the `SCStream` isn't released until
+    /// the cancelled task's `engine.cancel()` finishes; guarding only on the published phase would
+    /// let a new capture (meeting, another test, or dictation) start on top of a still-closing
+    /// stream. All capture-start guards and the dictation hotkey consult this.
+    var isMicrophoneBusy: Bool {
+        isRecordingActive || isPreflightTestActive || preflightRecorder != nil
+    }
+
     var isSummarizing: Bool {
         activeSummarizationID != nil
     }
@@ -318,7 +328,7 @@ final class AppModel: ObservableObject {
     }
 
     func startRecording() async {
-        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return }
+        guard recordingState == .idle, !isImporting, !isMicrophoneBusy else { return }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
             return
@@ -497,7 +507,7 @@ final class AppModel: ObservableObject {
     /// Uses a dedicated engine and a temp directory — never the meeting library — and never becomes
     /// a meeting. See `docs/PREFLIGHT_TEST.md`.
     func startPreflightTest() {
-        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return }
+        guard recordingState == .idle, !isImporting, !isMicrophoneBusy else { return }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before running a test recording — they can't share the microphone at the same time."
             return

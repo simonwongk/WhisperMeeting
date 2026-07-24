@@ -54,7 +54,7 @@ final class DictationController: ObservableObject {
     private let overlay = DictationOverlay()
     private let engine: DictationEngine
     private var session = DictationSession()
-    private var isMeetingActive: () -> Bool = { false }
+    private var isMicrophoneBusy: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
@@ -90,8 +90,8 @@ final class DictationController: ObservableObject {
         return WarmWhisperDictationEngine(python: python, script: script, modelDirectory: models)
     }
 
-    func configure(isMeetingActive: @escaping () -> Bool) {
-        self.isMeetingActive = isMeetingActive
+    func configure(isMicrophoneBusy: @escaping () -> Bool) {
+        self.isMicrophoneBusy = isMicrophoneBusy
     }
 
     /// Supplies the business vocabulary (same source meetings already feed into their
@@ -187,8 +187,8 @@ final class DictationController: ObservableObject {
 
     private func handlePressStart() {
         guard enabled else { return }
-        if isMeetingActive() {
-            log.notice("dictation press ignored — meeting recording active")
+        if isMicrophoneBusy() {
+            log.notice("dictation press ignored — microphone busy (meeting or mic test)")
             flashBusy()
             return
         }
