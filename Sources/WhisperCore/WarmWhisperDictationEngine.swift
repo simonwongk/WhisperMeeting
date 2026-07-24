@@ -16,6 +16,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private var stdout: FileHandle?
     private var stdoutBuffer = Data()
 
+    // Live handles for the running child, guarded by their own lock so `shutdown()` can terminate
+    // it from ANY thread without waiting for the serial queue (which may be parked in a blocking
+    // read). Written when the process starts, cleared when it's torn down.
+    private let liveLock = NSLock()
+    private var liveProcess: Process?
+    private var liveStdin: FileHandle?
+
     public init(
         python: URL,
         script: URL,
@@ -60,6 +67,18 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 
     public func shutdown() {
+        // Interrupt in-flight work IMMEDIATELY and off the serial queue. Terminating the child
+        // closes its stdout, which unblocks any `readLine` currently parked in `availableData` so
+        // the queued operation returns at once — instead of the state-cleanup below (queued behind
+        // it) having to wait out the read's 120s/1800s timeout. Mirrors the off-queue terminate the
+        // readLine watchdog and LocalWhisperClient's ProcessCancellationController already rely on.
+        liveLock.lock()
+        let process = liveProcess
+        let input = liveStdin
+        liveLock.unlock()
+        try? input?.close()
+        process?.terminate()
+
         queue.async {
             try? self.stdin?.close()
             self.process?.terminate()
@@ -67,6 +86,10 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             self.stdin = nil
             self.stdout = nil
             self.stdoutBuffer.removeAll()
+            self.liveLock.lock()
+            self.liveProcess = nil
+            self.liveStdin = nil
+            self.liveLock.unlock()
         }
     }
 
@@ -110,6 +133,11 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         self.stdin = inPipe.fileHandleForWriting
         self.stdout = outPipe.fileHandleForReading
         self.stdoutBuffer.removeAll()
+        // Expose the live handles so shutdown() can terminate this child off-queue.
+        liveLock.lock()
+        liveProcess = process
+        liveStdin = self.stdin
+        liveLock.unlock()
 
         // Block until the helper reports the model is resident.
         // First enable may download the model (~1.6 GB); give the one-time download+load room
