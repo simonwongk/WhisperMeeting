@@ -1997,10 +1997,11 @@ private struct PlayableTranscriptView: View {
 
     private var flaggedCount: Int { qualityReport.flagged.count }
 
-    /// The transcript index of the flagged segment currently being reviewed.
+    /// The transcript index of the flagged segment currently being reviewed. Steps through the
+    /// worst segments first (severity-ranked), not transcript order, so the riskiest get seen first.
     private var reviewTargetID: Int? {
         guard flaggedCount > 0 else { return nil }
-        return qualityReport.flagged[min(reviewPosition, flaggedCount - 1)].index
+        return qualityReport.flaggedBySeverity[min(reviewPosition, flaggedCount - 1)].index
     }
 
     /// Move to another flagged segment and scroll to it (bumping the nudge so re-selecting the same
@@ -2202,7 +2203,10 @@ private struct PlayableTranscriptView: View {
                     .font(.callout)
             }
             .buttonStyle(.plain)
-            .help("Whisper flagged these as low-confidence, likely-silence, or repetitive. Tap to review; this never changes your transcript.")
+            .help("Whisper flagged these as low-confidence, likely-silence (text over near-silent audio), or repetitive, worst first. Tap to review; this never changes your transcript.")
+            Text("· \(Int((qualityReport.confidence * 100).rounded()))% clean")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text("\(min(reviewPosition, flaggedCount - 1) + 1) of \(flaggedCount)")
                 .font(.caption.monospacedDigit())

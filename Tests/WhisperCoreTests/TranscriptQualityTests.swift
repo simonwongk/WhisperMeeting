@@ -40,21 +40,23 @@ func lowConfidenceFlagged() {
     #expect(report.flagged.first?.flags == [.lowConfidence])
 }
 
-@Test("High no-speech probability with low confidence flags likely silence")
+@Test("A confident hallucination over dead air (high no-speech, high confidence) flags likely silence")
 func likelySilenceFlagged() {
-    // The classic silence hallucination: high no_speech_prob AND low logprob.
+    // This is exactly the case Whisper EMITS — it only skips high-no-speech windows when they're
+    // also low-confidence, so the hallucinations that survive are confident. The flag must catch it.
     let report = TranscriptQuality.review([
-        seg("Thank you for watching.", logprob: -1.2, noSpeech: 0.85, compression: 1.1)
+        seg("Thank you for watching.", logprob: -0.4, noSpeech: 0.9, compression: 1.1)
     ])
     #expect(report.flagged.count == 1)
     #expect(report.flagged.first?.flags == [.likelySilence])
 }
 
-@Test("High no-speech probability but confident text is NOT silence")
-func confidentDespiteNoSpeechProb() {
-    // Whisper's own rule: don't treat as silent if the logprob is high enough.
+@Test("Moderately elevated no-speech with confidence is not flagged (below the 0.8 bar)")
+func moderateNoSpeechConfidentNotFlagged() {
+    // no_speech in Whisper's 0.6 skip zone but below our stricter 0.8 flag bar, and confident: a
+    // brief real utterance, not a hallucination — must stay unflagged so we don't cry wolf.
     let report = TranscriptQuality.review([
-        seg("Okay.", logprob: -0.3, noSpeech: 0.9, compression: 1.0)
+        seg("Okay.", logprob: -0.3, noSpeech: 0.7, compression: 1.0)
     ])
     #expect(report.flagged.isEmpty)
 }
@@ -70,14 +72,28 @@ func repetitiveFlagged() {
 
 @Test("Silence and repetition can both flag the same segment")
 func multipleFlags() {
+    // A repetitive, confident hallucination over quiet audio: high no_speech + high compression,
+    // but emitted confidently (so not low-confidence).
     let report = TranscriptQuality.review([
-        seg("you you you you you", logprob: -1.5, noSpeech: 0.8, compression: 2.6)
+        seg("thank you thank you thank you thank you", logprob: -0.5, noSpeech: 0.9, compression: 2.7)
     ])
     let flags = report.flagged.first?.flags ?? []
     #expect(flags.contains(.likelySilence))
     #expect(flags.contains(.repetitive))
-    // lowConfidence is subsumed by likelySilence (same logprob signal), not double-reported.
     #expect(!flags.contains(.lowConfidence))
+}
+
+@Test("flaggedBySeverity orders the worst segments first and hides nothing")
+func severityOrdering() {
+    let report = TranscriptQuality.review([
+        seg("mild", logprob: -1.1, noSpeech: 0.02, compression: 1.2),        // idx0: barely low-confidence
+        seg("clean", logprob: -0.2, noSpeech: 0.01, compression: 1.1),       // idx1: unflagged
+        seg("severe loop", logprob: -3.0, noSpeech: 0.05, compression: 3.0), // idx2: deep low-conf + repetitive
+    ])
+    // Nothing hidden — the full flagged set is present, just reordered.
+    #expect(report.flaggedBySeverity.count == 2)
+    #expect(report.flaggedBySeverity.map(\.index) == [2, 0])  // worst first
+    #expect(report.flagged.map(\.index) == [0, 2])            // plain list stays in transcript order
 }
 
 @Test("Boundary values exactly at Whisper's thresholds are not flagged")
