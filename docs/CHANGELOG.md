@@ -221,21 +221,31 @@ metadata (just a timestamp); the audio is **never touched**. See `docs/RECORDING
 
 ## Round 12 — external-review follow-ups
 Independently verified all 23 findings of a code review (0 refuted; 19 confirmed, 4 partial), then
-fixed, each with tests where the logic is pure `WhisperCore`. Non-negotiable invariants preserved.
+fixed **all 23**, each with tests where the logic is pure `WhisperCore`. Non-negotiable invariants
+preserved. Suite 139 → 156.
 - **Dictation accuracy (F6):** prompt-echo suppression now requires acoustic corroboration
   (`no_speech_prob ≥ 0.6`) before blanking, so genuinely dictated adjacent vocab terms
   ("Acme Kubernetes") are no longer silently deleted.
-- **Dictation reliability (F4, F1):** an interrupted MLX download no longer poisons the cache into
-  permanent offline mode (gate on snapshot completeness + self-repair); `shutdown()` now interrupts
-  in-flight helper work off-queue instead of waiting out the 120s/1800s read timeout.
+- **Dictation reliability (F4, F1, F3, F9):** an interrupted MLX download no longer poisons the cache
+  into permanent offline mode (gate on snapshot completeness + self-repair); `shutdown()` interrupts
+  in-flight helper work off-queue instead of waiting out the 120s/1800s read timeout;
+  `FallbackDictationEngine` wires the batch openai/whisper engine so Intel / no-MLX / broken-install
+  machines keep dictation; helper stderr is captured and surfaced in errors (was discarded).
 - **Capture ownership (F2, F5):** one `isMicrophoneBusy` guard closes the preflight↔dictation
   double-capture hole and the preflight-cancel teardown race.
 - **Preflight honesty (F17):** readiness needs *sustained* signal (crest factor), so a single click
   can't report "ready".
-- **Quality review (F12, F22):** `likely-silence` now catches the confident hallucinations Whisper
-  actually emits (was an unreachable subset of Whisper's own skip rule); review steps through
-  worst-first by severity (no hidden cap), banner shows "% clean".
-- **Diagnostics/perf/a11y/docs (F8, F21, F15, F13, F11/F14, F7):** diagnostics check the MLX cache
-  not the old `.pt`; playback active-segment lookup is linear not O(n²); marker-delete a11y label;
+- **Quality review (F12, F22, F18):** `likely-silence` now catches the confident hallucinations
+  Whisper actually emits (was an unreachable subset of Whisper's own skip rule); review steps through
+  worst-first by severity (no hidden cap), banner shows "% clean"; once a transcript is edited its
+  segment-derived quality flags are hidden (they no longer describe the shown text).
+- **Markers (F16, F19):** marker-context fallback is bounded to nearby speech (no stale line from
+  minutes earlier); export drops segment-derived context once the transcript is edited.
+- **Dictation vocabulary (F10):** an optional "use business vocabulary for dictation" toggle
+  (default on).
+- **Perf (F21, F20):** playback active-segment lookup is linear not O(n²); transcription progress
+  persists the `.processing` transition once instead of rewriting the index every tick.
+- **Diagnostics / a11y / privacy / docs (F8, F15, F13, F11/F14, F7, F23):** diagnostics check the
+  MLX cache not the old `.pt`; marker-delete a11y label; a privacy caution on "Copy AI Prompt";
   benchmark "zero accuracy risk / no downside" claims softened to match the synthetic evidence;
-  marker crash-recovery wording corrected.
+  marker crash-recovery wording corrected; README gained a features section.

@@ -131,6 +131,17 @@ public enum TranscriptFormatter {
             .joined(separator: "\n")
     }
 
+    /// Whether `transcriptText` has diverged from what the Whisper `segments` render to — i.e. the
+    /// user edited it. Once true, segment-derived overlays (quality flags, marker context) no longer
+    /// describe the shown text and should be dropped. False when there are no segments to compare
+    /// against or the text is empty.
+    public static func isEdited(transcriptText: String, segments: [TranscriptSegment]) -> Bool {
+        guard !segments.isEmpty else { return false }
+        let shown = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !shown.isEmpty else { return false }
+        return shown != timestamped(segments).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Whether the text already begins (on its first non-empty line) with an `MM:SS` prefix.
     public static func isTimestamped(_ text: String) -> Bool {
         guard let firstLine = text

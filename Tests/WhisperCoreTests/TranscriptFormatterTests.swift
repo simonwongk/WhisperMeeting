@@ -28,3 +28,20 @@ func detectsTimestampedText() {
     #expect(!TranscriptFormatter.isTimestamped("just some plain text\nno stamps"))
     #expect(!TranscriptFormatter.isTimestamped(""))
 }
+
+@Test("isEdited is false for the canonical segment rendering and true after an edit")
+func transcriptIsEditedDetection() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 2, text: "hello world"),
+        TranscriptSegment(speaker: nil, start: 2, end: 4, text: "second line"),
+    ]
+    let canonical = TranscriptFormatter.timestamped(segments)
+    // The freshly-produced transcript equals the segment rendering → not edited.
+    #expect(!TranscriptFormatter.isEdited(transcriptText: canonical, segments: segments))
+    // A user edit diverges from the segments → edited.
+    #expect(TranscriptFormatter.isEdited(transcriptText: canonical + " (fixed)", segments: segments))
+    // No segments to compare against (e.g. dictation-style) → never "edited".
+    #expect(!TranscriptFormatter.isEdited(transcriptText: "anything", segments: []))
+    // Whitespace-only text isn't an edit.
+    #expect(!TranscriptFormatter.isEdited(transcriptText: "   ", segments: segments))
+}

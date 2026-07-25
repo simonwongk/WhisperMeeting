@@ -45,7 +45,13 @@ public enum MeetingNotesExporter {
             }
         }
 
-        let markersSection = RecordingMarkers.markdownSection(markers: markers, segments: segments)
+        // Once the transcript is edited, the original segments no longer match the exported body, so
+        // drop segment-derived marker context (the markers themselves still list). Keeps notes from
+        // showing a "context" line that contradicts the transcript beneath it.
+        let contextSegments = TranscriptFormatter.isEdited(transcriptText: transcriptText, segments: segments)
+            ? []
+            : segments
+        let markersSection = RecordingMarkers.markdownSection(markers: markers, segments: contextSegments)
         if !markersSection.isEmpty {
             lines.append(markersSection)
             lines.append("")

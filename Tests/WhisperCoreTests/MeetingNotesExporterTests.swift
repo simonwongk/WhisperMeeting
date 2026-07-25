@@ -40,3 +40,25 @@ func exportsWithoutSummary() {
     #expect(!notes.contains("## Summary"))
     #expect(notes.contains("## Transcript\n\nJust some talk."))
 }
+
+@Test("Marker context is dropped once the transcript has been edited")
+func markerContextDroppedWhenEdited() {
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 5, text: "the plan")]
+    let markers = [RecordingMarker(id: UUID(), offset: 2, label: "Decision")]
+    let canonical = TranscriptFormatter.timestamped(segments)
+
+    // Unedited transcript: the marker gets its segment as context.
+    let unedited = MeetingNotesExporter.markdown(
+        title: "M", dateText: "", durationSeconds: 0, languageCode: nil, summary: nil,
+        transcriptText: canonical, markers: markers, segments: segments)
+    #expect(unedited.contains("— the plan"))
+
+    // Edited transcript: segment-derived context would contradict the edited body, so it's omitted
+    // (the marker line still appears, just without a stale context clause).
+    let edited = MeetingNotesExporter.markdown(
+        title: "M", dateText: "", durationSeconds: 0, languageCode: nil, summary: nil,
+        transcriptText: "an entirely rewritten transcript", markers: markers, segments: segments)
+    #expect(edited.contains("## Markers"))
+    #expect(edited.contains("Decision"))
+    #expect(!edited.contains("— the plan"))
+}

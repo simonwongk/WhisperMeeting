@@ -126,7 +126,9 @@ func notesIncludeMarkers() {
         durationSeconds: 130,
         languageCode: "en",
         summary: nil,
-        transcriptText: "00:10  hello",
+        // transcriptText matches the segment rendering (an unedited transcript), so marker context
+        // is attached.
+        transcriptText: "01:00  ship Friday",
         markers: [marker(65, "Decision")],
         segments: [TranscriptSegment(speaker: nil, start: 60, end: 120, text: "ship Friday")]
     )

@@ -49,6 +49,11 @@ The transcript detail shows an unobtrusive banner only when there is something t
 ("N segments may need a look"), with a control to step through the flagged segments (reusing the
 find-in-transcript navigation). Flagged segments get a subtle margin marker. Nothing is auto-changed.
 
+The flags describe Whisper's original segments. Once you edit the transcript (its text diverges from
+the segment rendering — `TranscriptFormatter.isEdited`), the review banner and per-line markers are
+hidden, because they no longer describe the text you're looking at. Read view then notes that it
+shows the original transcription and that your edits live in Edit view.
+
 ## Invariants respected
 
 Local-only (metrics come from the local run), recording is the source of truth (read-only; audio

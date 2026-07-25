@@ -86,6 +86,12 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     var orderedMarkers: [RecordingMarker] {
         (markers ?? []).sorted { $0.offset < $1.offset }
     }
+
+    /// Whether the user has edited the transcript away from Whisper's segment rendering. When true,
+    /// segment-derived overlays (quality flags, marker context) no longer match the shown text.
+    var isTranscriptEdited: Bool {
+        TranscriptFormatter.isEdited(transcriptText: transcriptText, segments: segments)
+    }
 }
 
 struct OrphanedRecording: Sendable, Equatable {

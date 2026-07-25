@@ -1620,12 +1620,18 @@ private struct TranscriptDetailView: View {
             }
 
             if hasSegments && transcriptMode == .read {
+                if meeting.isTranscriptEdited {
+                    Text("Read view shows the original timestamped transcription; your edits are in Edit view. Quality flags are hidden here because they describe the original text.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 PlayableTranscriptView(
                     store: store,
                     model: model,
                     meetingID: meetingID,
                     recordingURL: store.recordingURL(for: meeting),
-                    segments: meeting.segments
+                    segments: meeting.segments,
+                    isEdited: meeting.isTranscriptEdited
                 )
                 .id(meetingID)
             } else {
@@ -1936,19 +1942,27 @@ private struct PlayableTranscriptView: View {
     private let qualityReport: TranscriptQualityReport
     private let flagsByIndex: [Int: [SegmentQualityFlag]]
 
+    /// When the transcript has been edited, the segment-derived quality flags no longer describe the
+    /// shown text, so they're suppressed (see MeetingRecord.isTranscriptEdited).
+    private let isEdited: Bool
+
     init(
         store: MeetingStore,
         model: AppModel,
         meetingID: UUID,
         recordingURL: URL,
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        isEdited: Bool = false
     ) {
         self.store = store
         self.model = model
         self.meetingID = meetingID
         self.recordingURL = recordingURL
         self.segments = segments
-        let report = TranscriptQuality.review(segments)
+        self.isEdited = isEdited
+        // Edited transcript → the flags describe the original segments, not what's shown, so drop
+        // them (no banner, no per-line markers) rather than present stale review state.
+        let report = isEdited ? TranscriptQualityReport(flagged: [], scoredCount: 0) : TranscriptQuality.review(segments)
         self.qualityReport = report
         self.flagsByIndex = Dictionary(
             uniqueKeysWithValues: report.flagged.map { ($0.index, $0.flags) }
