@@ -30,6 +30,9 @@ final class DictationController: ObservableObject {
     @Published var hotkey: DictationHotkey { didSet { persist(); if enabled { _ = hotkeyMonitor.start(hotkey: hotkey) } } }
     @Published var language: WhisperLanguage { didSet { persist() } }
     @Published var autoPaste: Bool { didSet { persist() } }
+    /// Whether Quick Dictation feeds the business vocabulary into Whisper's initial prompt. On by
+    /// default (same spelling nudge meetings get); can be turned off for plain dictation.
+    @Published var useVocabulary: Bool { didSet { persist() } }
 
     var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
     func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
@@ -68,6 +71,7 @@ final class DictationController: ObservableObject {
     private static let hotkeyKey = "dictationHotkey"
     private static let languageKey = "dictationLanguage"
     private static let autoPasteKey = "dictationAutoPaste"
+    private static let useVocabularyKey = "dictationUseVocabulary"
 
     init(defaults: UserDefaults = .standard, engine: DictationEngine? = nil) {
         self.defaults = defaults
@@ -76,6 +80,7 @@ final class DictationController: ObservableObject {
         hotkey = (try? JSONDecoder().decode(DictationHotkey.self, from: defaults.data(forKey: Self.hotkeyKey) ?? Data())) ?? .rightOption
         language = WhisperLanguage(rawValue: defaults.string(forKey: Self.languageKey) ?? "") ?? .automatic
         autoPaste = defaults.object(forKey: Self.autoPasteKey) as? Bool ?? true
+        useVocabulary = defaults.object(forKey: Self.useVocabularyKey) as? Bool ?? true
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
@@ -276,7 +281,7 @@ final class DictationController: ObservableObject {
         let language = self.language
         // Same business vocabulary the meeting pipeline already feeds into Whisper's
         // `initial_prompt`, capped/formatted identically via the shared `VocabularyPrompt` helper.
-        let vocab = vocabularyProvider()
+        let vocab = useVocabulary ? vocabularyProvider() : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
         Task { [engine, log] in
@@ -438,5 +443,6 @@ final class DictationController: ObservableObject {
         defaults.set(try? JSONEncoder().encode(hotkey), forKey: Self.hotkeyKey)
         defaults.set(language.rawValue, forKey: Self.languageKey)
         defaults.set(autoPaste, forKey: Self.autoPasteKey)
+        defaults.set(useVocabulary, forKey: Self.useVocabularyKey)
     }
 }

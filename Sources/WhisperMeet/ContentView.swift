@@ -1093,6 +1093,7 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Paste into the focused field (else copy to clipboard)", isOn: $dictation.autoPaste)
+                Toggle("Use business vocabulary for dictation", isOn: $dictation.useVocabulary)
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {
