@@ -23,6 +23,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private var liveProcess: Process?
     private var liveStdin: FileHandle?
 
+    // Continuously-drained stderr, so an early failure (e.g. an MLX import traceback) shows WHY the
+    // helper died instead of a generic "stopped unexpectedly". Draining on a background handler
+    // means stderr can never fill its pipe and deadlock the child, whatever the volume.
+    private let stderrLock = NSLock()
+    private var stderrText = ""
+    private var stderrHandle: FileHandle?
+
     public init(
         python: URL,
         script: URL,
@@ -86,11 +93,30 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             self.stdin = nil
             self.stdout = nil
             self.stdoutBuffer.removeAll()
+            self.stderrHandle?.readabilityHandler = nil
+            self.stderrHandle = nil
             self.liveLock.lock()
             self.liveProcess = nil
             self.liveStdin = nil
             self.liveLock.unlock()
         }
+    }
+
+    private func appendStderr(_ text: String) {
+        stderrLock.lock(); stderrText += text; stderrLock.unlock()
+    }
+
+    private func resetStderr() {
+        stderrLock.lock(); stderrText = ""; stderrLock.unlock()
+    }
+
+    /// The helper's captured stderr as a message suffix, or "" if it wrote nothing. Trailing bytes
+    /// (last ~2000 chars) so a long traceback stays readable without flooding the error.
+    private func stderrSuffix() -> String {
+        stderrLock.lock()
+        let text = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+        stderrLock.unlock()
+        return text.isEmpty ? "" : "\n\(text.suffix(2_000))"
     }
 
     // MARK: - Serialized helpers (always run on `queue`)
@@ -119,20 +145,34 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         process.arguments = [script.path, "--mlx-repo", mlxRepo, "--model-dir", modelDirectory.path]
         let inPipe = Pipe()
         let outPipe = Pipe()
+        let errPipe = Pipe()
         process.standardInput = inPipe
         process.standardOutput = outPipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errPipe
         var environment = ProcessInfo.processInfo.environment
         let existingPath = environment["PATH"] ?? "/usr/bin:/bin"
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" // keep the model download off stderr
         process.environment = environment
+        resetStderr()
         try process.run()
 
         self.process = process
         self.stdin = inPipe.fileHandleForWriting
         self.stdout = outPipe.fileHandleForReading
         self.stdoutBuffer.removeAll()
+        // Drain stderr continuously into a buffer so failures carry the helper's own diagnostics.
+        let errHandle = errPipe.fileHandleForReading
+        self.stderrHandle = errHandle
+        errHandle.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            } else if let text = String(data: data, encoding: .utf8) {
+                self?.appendStderr(text)
+            }
+        }
         // Expose the live handles so shutdown() can terminate this child off-queue.
         liveLock.lock()
         liveProcess = process
@@ -153,7 +193,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
            let error = response.error {
             throw LocalWhisperError.processFailed(error)
         }
-        throw LocalWhisperError.processFailed("Dictation helper failed to start.")
+        throw LocalWhisperError.processFailed("Dictation helper failed to start.\(stderrSuffix())")
     }
 
     private func readLine(timeout: TimeInterval) throws -> Data {
@@ -174,7 +214,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             }
             let chunk = stdout.availableData
             if chunk.isEmpty {
-                throw LocalWhisperError.processFailed("Dictation helper stopped unexpectedly.")
+                throw LocalWhisperError.processFailed("Dictation helper stopped unexpectedly.\(stderrSuffix())")
             }
             stdoutBuffer.append(chunk)
         }

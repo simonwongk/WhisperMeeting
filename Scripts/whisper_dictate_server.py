@@ -75,6 +75,7 @@ def main() -> int:
             mx.zeros(1600, dtype=mx.float32),  # 0.1s of silence at 16 kHz
             path_or_hf_repo=args.mlx_repo,
             task="transcribe",
+            verbose=False,
         )
     except Exception as error:  # pragma: no cover - warm failure is fatal to the helper
         sys.stdout.write(json.dumps({"error": "warm-up failed: " + str(error)}) + "\n")
@@ -97,6 +98,7 @@ def main() -> int:
                 task="transcribe",  # never translate
                 language=request.get("language"),
                 initial_prompt=request.get("initialPrompt"),
+                verbose=False,
             )
             # Report the lowest per-segment no_speech_prob (the most speech-like segment). The app
             # uses it to tell a real dictation from a silence-driven prompt echo; taking the min

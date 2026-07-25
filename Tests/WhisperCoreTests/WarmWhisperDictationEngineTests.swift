@@ -33,3 +33,30 @@ func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
     // the blocking operation) would not return until the stub exited on its own ~20s later.
     #expect(elapsed < 8)
 }
+
+@Test("A helper that dies during start surfaces its stderr in the error")
+func warmDictationEngineSurfacesStderrOnFailure() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineStderr-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    // Emit a recognizable line to stderr, pause so the drain captures it, then exit (closing stdout
+    // so warmUp's readLine sees EOF and reports a failure). Mimics an early MLX import traceback.
+    let script = tmp.appendingPathComponent("boom.sh")
+    try "echo MLX-IMPORT-BOOM 1>&2\nsleep 0.3\nexit 1\n".write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+
+    do {
+        try await engine.warmUp()
+        Issue.record("expected warmUp to throw")
+    } catch {
+        #expect("\(error)".contains("MLX-IMPORT-BOOM"))
+    }
+}
