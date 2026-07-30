@@ -4,8 +4,8 @@ Append-only record of every ticket closed. Newest first. Open work lives in
 [`TICKETS.md`](TICKETS.md).
 
 **Write real evidence, not intent.** Paste actual command output. "Tests pass" is not a log entry;
-`✔ Test run with 178 tests passed` is. If a fix could not be verified the usual way, say exactly what
-was skipped and why — an honest gap is useful, a glossed one is a trap for the next agent.
+`✔ Test run with 178 tests passed` is. If a fix could not be verified the usual way, say exactly
+what was skipped and why — an honest gap is useful, a glossed one is a trap for the next agent.
 
 Never edit or delete an existing entry. If an entry turns out to be wrong, append a new one that
 corrects it and say which entry it supersedes.
@@ -56,10 +56,10 @@ why it went unnoticed for so long. Qwen was never affected; its helper only writ
 
 **Fix.** Two layers, because either alone leaves the failure class open:
 1. The helper passes `verbose=None`, the only value Whisper treats as silent.
-2. `WarmWhisperDictationEngine.readLine` skips stdout lines that are not JSON objects, recording them
-   as diagnostics. The skip happens inside the watchdog window on purpose, so chatter cannot buy a
-   stalled helper extra time. Without this, one stray line desyncs the stream permanently — every
-   later response answers the previous request.
+2. `WarmWhisperDictationEngine.readLine` skips stdout lines that are not JSON objects, recording
+   them as diagnostics. The skip happens inside the watchdog window on purpose, so chatter cannot
+   buy a stalled helper extra time. Without this, one stray line desyncs the stream permanently —
+   every later response answers the previous request.
 
 **Evidence.**
 
@@ -108,11 +108,11 @@ Build complete! (10.82s)          # swift build -c release -Xswiftc -warnings-as
 whisper_dictate_server.py  app=a1d671e3e6da repo=a1d671e3e6da
 ```
 
-**Gaps.** Turbo's non-zero error rates are mostly formatting rather than misrecognition
-(`ten`→`10`, `三点`→`3点`); the single true error was `纪要`→`记要`. The corpus is small and synthetic,
-so treat the table as a smoke test of the wire path, not a general accuracy claim — the real
-microphone comparison is filed as F27. The installed `Runtime/whisper_dictate_server.py` was still
-the pre-fix copy after install because only the selected engine's helper is synced; filed as F25.
+**Gaps.** Turbo's non-zero error rates are mostly formatting rather than misrecognition (`ten`→`10`,
+`三点`→`3点`); the single true error was `纪要`→`记要`. The corpus is small and synthetic, so treat the
+table as a smoke test of the wire path, not a general accuracy claim — the real microphone
+comparison is filed as F27. The installed `Runtime/whisper_dictate_server.py` was still the pre-fix
+copy after install because only the selected engine's helper is synced; filed as F25.
 
 ---
 

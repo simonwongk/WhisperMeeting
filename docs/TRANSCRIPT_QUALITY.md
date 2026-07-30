@@ -45,9 +45,10 @@ transcript with no metrics returns an empty, `unscored` report and the UI stays 
 
 ## UI
 
-The transcript detail shows an unobtrusive banner only when there is something to review
-("N segments may need a look"), with a control to step through the flagged segments (reusing the
-find-in-transcript navigation). Flagged segments get a subtle margin marker. Nothing is auto-changed.
+The transcript detail shows an unobtrusive banner only when there is something to review ("N
+segments may need a look"), with a control to step through the flagged segments (reusing the
+find-in-transcript navigation). Flagged segments get a subtle margin marker. Nothing is
+auto-changed.
 
 The flags describe Whisper's original segments. Once you edit the transcript (its text diverges from
 the segment rendering — `TranscriptFormatter.isEdited`), the review banner and per-line markers are

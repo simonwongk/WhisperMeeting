@@ -4,22 +4,23 @@ Status: **approved for planning** (2026-07-21). Feeds `writing-plans` next.
 
 ## Goal
 
-Add a **push-to-talk quick-dictation** feature to WhisperMeet that works in *any* app,
-independent of the meeting recorder. Hold a customizable key (default **Right ⌥ Option**),
-speak, release — the spoken text is transcribed locally by Whisper and **pasted into the
-currently focused text field** (falling back to the clipboard). Always-on via a menu-bar
-presence; launches at login. Target feel: the same "hold, talk, release, it's there" loop as
-Wispr Flow, but **fully local**: your audio never leaves this Mac and no API key is used. (Setup
-does download open-source dependencies and the Whisper model files, like the meeting pipeline.)
+Add a **push-to-talk quick-dictation** feature to WhisperMeet that works in *any* app, independent
+of the meeting recorder. Hold a customizable key (default **Right ⌥ Option**), speak, release — the
+spoken text is transcribed locally by Whisper and **pasted into the currently focused text field**
+(falling back to the clipboard). Always-on via a menu-bar presence; launches at login. Target feel:
+the same "hold, talk, release, it's there" loop as Wispr Flow, but **fully local**: your audio never
+leaves this Mac and no API key is used. (Setup does download open-source dependencies and the
+Whisper model files, like the meeting pipeline.)
 
-This is a *separate* function from the meeting record/transcribe pipeline. It shares only the
-local Whisper runtime and pure helpers in `WhisperCore`.
+This is a *separate* function from the meeting record/transcribe pipeline. It shares only the local
+Whisper runtime and pure helpers in `WhisperCore`.
 
 ## Non-goals (v1)
 
 - No cloud/streaming ASR. (Wispr Flow feels instant because it streams to its cloud; we stay local.)
 - No live word-by-word streaming — Whisper is batch; we transcribe the finished clip.
-- No AI/Claude text cleanup of dictated text (adds latency + network; breaks the local-instant feel).
+- No AI/Claude text cleanup of dictated text (adds latency + network; breaks the local-instant
+  feel).
 - No multiple hotkey profiles, no per-app rules. (**Superseded in Round 7:** a persistent local
   dictation history *was* added as a reliability fallback — see `docs/CHANGELOG.md`. It stays
   on-device; retention controls / an off switch are tracked as follow-ups.)
@@ -27,8 +28,8 @@ local Whisper runtime and pure helpers in `WhisperCore`.
 
 ## Relationship to project invariants
 
-- **Local-only preserved.** Dictation never touches the network. The lone existing network
-  exception (opt-in Claude summaries) is untouched and does not apply here.
+- **Local-only preserved.** Dictation never touches the network. The lone existing network exception
+  (opt-in Claude summaries) is untouched and does not apply here.
 - **Original language only.** Always `--task transcribe`; language auto-detect or a pinned
   English/Mandarin, reusing `WhisperLanguage`. Never translate.
 - **`WhisperCore` stays framework-free and `Sendable`.** All AppKit/AVFoundation/CoreGraphics code
@@ -59,8 +60,8 @@ local Whisper runtime and pure helpers in `WhisperCore`.
 ```
 
 Fallback / edge branches:
-- **No Accessibility permission or no focused field** → text left on clipboard + a user
-  notification ("Transcript copied — press ⌘V"). Pill shows "Copied to clipboard".
+- **No Accessibility permission or no focused field** → text left on clipboard + a user notification
+  ("Transcript copied — press ⌘V"). Pill shows "Copied to clipboard".
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
@@ -96,15 +97,16 @@ little-endian `Data` helpers) into a reusable, tested type.
 - API: `WAVWriter(sampleRate: Int, channels: Int = 1)`, `append(_ samples: [Float])`,
   `finalize() -> Data`; plus `static func wavData(fromFloatSamples:sampleRate:) -> Data`.
 - 16-bit PCM, mono; clamps samples to [-1, 1].
-- **Refactor:** `AudioCaptureEngine`/`FloatTrackMixer` switch to `WAVWriter` so there's one WAV path.
-  Meeting output must stay byte-identical (48 kHz, 16-bit mono) — covered by a regression test.
+- **Refactor:** `AudioCaptureEngine`/`FloatTrackMixer` switch to `WAVWriter` so there's one WAV
+  path. Meeting output must stay byte-identical (48 kHz, 16-bit mono) — covered by a regression
+  test.
 - Tests: RIFF/fmt/data chunk sizes, byte-rate/block-align, sample count, duration, clamping.
 
 ### `DictationSession`
 Pure state machine.
 - States: `idle`, `listening(startedAt)`, `transcribing`, `delivering`, `done`, `failed(Reason)`.
-- Events: `startPressed`, `endPressed(clipDuration)`, `transcriptReady(String)`, `delivered(Method)`,
-  `failed(Reason)`, `dismiss`.
+- Events: `startPressed`, `endPressed(clipDuration)`, `transcriptReady(String)`,
+  `delivered(Method)`, `failed(Reason)`, `dismiss`.
 - Guards: reject `startPressed` unless `idle`; on `endPressed`, if `clipDuration < minClipDuration`
   → back to `idle` (discard); empty transcript → `failed(.emptyTranscript)`.
 - Emits the next action for the controller (start recorder / begin transcription / deliver / reset).
@@ -119,25 +121,27 @@ Pure state machine.
 Codable request/response + **newline-delimited JSON** framing for the helper's stdin/stdout.
 - `DictationRequest { wavPath: String, language: String?, initialPrompt: String? }`
 - `DictationResponse { text: String?, language: String?, error: String? }`
-- `static func encodeLine(_ value) -> Data` (JSON + `\n`) / `decodeResponse(line:)` / `takeLine(_ buffer:)`.
-- Tests: round-trip encode/decode, newline framing, partial + multi-line splitting, error-field decode —
-  pure, so tested without spawning the helper.
+- `static func encodeLine(_ value) -> Data` (JSON + `\n`) / `decodeResponse(line:)` /
+  `takeLine(_ buffer:)`.
+- Tests: round-trip encode/decode, newline framing, partial + multi-line splitting, error-field
+  decode — pure, so tested without spawning the helper.
 
 ### `DictationEngine` protocol + implementations
 - `protocol DictationEngine: Sendable { func transcribe(wavAt: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult }`
 - `WarmWhisperDictationEngine`: owns the helper lifecycle — locate the venv python via
   `LocalWhisperRuntime`, spawn `whisper_dictate_server.py` with `--model turbo --model-dir …`, and
-  drive it over the child process's **stdin/stdout** using `DictationWireProtocol` (newline-delimited
-  JSON). Waits for a `{"ready": true}` line before use; serializes requests on a private queue with a
-  watchdog that bounds each read (terminating a hung helper); `shutdown()` evicts the model.
+  drive it over the child process's **stdin/stdout** using `DictationWireProtocol`
+  (newline-delimited JSON). Waits for a `{"ready": true}` line before use; serializes requests on a
+  private queue with a watchdog that bounds each read (terminating a hung helper); `shutdown()`
+  evicts the model.
 - `BatchWhisperDictationEngine`: wraps the existing `LocalWhisperClient` (CLI per clip) as a
   correctness fallback if the helper can't start; also handy for tests. ~2–4 s per clip.
 
 ## Components — `WhisperMeet` (framework code, not headlessly tested)
 
 ### `HotkeyMonitor`
-- `CGEventTap` at `.cgSessionEventTap` listening for `.flagsChanged` (modifier keys) and,
-  for non-modifier custom keys, `.keyDown`/`.keyUp`.
+- `CGEventTap` at `.cgSessionEventTap` listening for `.flagsChanged` (modifier keys) and, for
+  non-modifier custom keys, `.keyDown`/`.keyUp`.
 - Detect **Right Option**: keyCode `0x3D`, disambiguated from left Option via the device-dependent
   right-alt flag. Emits `onPressStart` / `onPressEnd` on the main actor.
 - Config `DictationHotkey { keyCode, mode: .hold | .toggle }`; hold vs toggle handled here.
@@ -149,29 +153,31 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
 - `AVAudioEngine` input-node tap → `AVAudioConverter` to **16 kHz mono Float32** → `WAVWriter` →
   scratch WAV in the temp dir (not `Recordings/`).
 - Emits RMS level (~15 Hz) for the pill. Deletes the WAV after transcription.
-- Mic permission via `AVCaptureDevice.authorizationStatus/requestAccess(for: .audio)`
-  (same pattern as `AudioCaptureEngine.requestMicrophoneAccess`). **No ScreenCaptureKit → no Screen
-  Recording permission.**
+- Mic permission via `AVCaptureDevice.authorizationStatus/requestAccess(for: .audio)` (same pattern
+  as `AudioCaptureEngine.requestMicrophoneAccess`). **No ScreenCaptureKit → no Screen Recording
+  permission.**
 
 ### `DictationOverlay`
 - Borderless `NSPanel`, `.nonactivatingPanel`; `canBecomeKey = false`; level `.statusBar`;
   `collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]`. Positioned
   bottom-center of the active screen. Hosts a small SwiftUI pill via `NSHostingView`.
 - Pill states: Listening (mic-level meter), Transcribing (spinner), Done ✓, Copied-to-clipboard,
-  Didn't-catch-that, Error. Fade in/out. **Never becomes key — never steals focus from the target app.**
+  Didn't-catch-that, Error. Fade in/out. **Never becomes key — never steals focus from the target
+  app.**
 
 ### `TextInjector`
-- `NSPasteboard.general` `clearContents` + `setString`; then synthesize ⌘V via `CGEvent`
-  (keyCode `9` with `.maskCommand`, keyDown+keyUp) posted to `.cgSessionEventTap`, with a small
-  settle delay after setting the clipboard.
+- `NSPasteboard.general` `clearContents` + `setString`; then synthesize ⌘V via `CGEvent` (keyCode
+  `9` with `.maskCommand`, keyDown+keyUp) posted to `.cgSessionEventTap`, with a small settle delay
+  after setting the clipboard.
 - If `!AXIsProcessTrusted` → skip ⌘V, post a `UNUserNotification` ("Transcript copied — press ⌘V").
-- v1 leaves the transcript on the clipboard (matches "…or go to clipboard"); prior-clipboard
-  restore is deferred.
+- v1 leaves the transcript on the clipboard (matches "…or go to clipboard"); prior-clipboard restore
+  is deferred.
 
 ### `DictationController` (`@MainActor ObservableObject`)
-- Wires `HotkeyMonitor → DictationSession → MicDictationRecorder → DictationEngine → TextInjector →
-  DictationOverlay`. Owns enable/disable, permission state, warm-up trigger, idle-evict timer, and
-  the **mic-contention guard** (observes `AppModel.recordingState`; inert while a meeting records).
+- Wires
+  `HotkeyMonitor → DictationSession → MicDictationRecorder → DictationEngine → TextInjector → DictationOverlay`.
+  Owns enable/disable, permission state, warm-up trigger, idle-evict timer, and the **mic-contention
+  guard** (observes `AppModel.recordingState`; inert while a meeting records).
 - Publishes state for the menu bar and settings; background work via `Task.detached`. Exactly one
   dictation at a time (enforced by `DictationSession`).
 
@@ -181,23 +187,23 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
 - `SMAppService.mainApp.register()/unregister()` behind a "Launch at login" toggle.
 
 ### Settings
-New **"Quick Dictation"** `Section` in the existing `SettingsView` `Form` (same
-`@Published` + `UserDefaults { didSet }` pattern as `selectedEngine`/`selectedLanguage`):
-Enable toggle · trigger key recorder + Hold/Toggle · language (Auto/English/Mandarin) ·
-delivery (Auto-paste/Clipboard-only) · use business vocabulary as `initial_prompt` (optional) ·
-Launch-at-login · live permission rows (Microphone ✓/✗, Accessibility ✓/✗) with "Open System
-Settings" buttons · warm-model status + idle-evict minutes.
+New **"Quick Dictation"** `Section` in the existing `SettingsView` `Form` (same `@Published` +
+`UserDefaults { didSet }` pattern as `selectedEngine`/`selectedLanguage`): Enable toggle · trigger
+key recorder + Hold/Toggle · language (Auto/English/Mandarin) · delivery (Auto-paste/Clipboard-only)
+· use business vocabulary as `initial_prompt` (optional) · Launch-at-login · live permission rows
+(Microphone ✓/✗, Accessibility ✓/✗) with "Open System Settings" buttons · warm-model status +
+idle-evict minutes.
 
 ## Python helper — `whisper_dictate_server.py`
 
 - Args: `--model turbo`, `--model-dir <cache>`.
 - Loads the Whisper model **once**, then prints `{"ready": true}` on stdout. Reads newline-delimited
-  JSON requests `{wavPath, language?, initialPrompt?}` on stdin, runs `model.transcribe(wavPath,
-  task="transcribe", language=…, initial_prompt=…, fp16=False)`, and replies with one JSON line
-  `{text, language}` or `{error}` on stdout.
+  JSON requests `{wavPath, language?, initialPrompt?}` on stdin, runs
+  `model.transcribe(wavPath, task="transcribe", language=…, initial_prompt=…, fp16=False)`, and
+  replies with one JSON line `{text, language}` or `{error}` on stdout.
 - Exits when stdin closes (the controller terminates it to evict the model / free RAM); re-warmed on
-  demand. Wraps each request in try/except so one bad request can't kill the daemon. **No extra Python
-  deps** (Whisper already decodes audio via FFmpeg).
+  demand. Wraps each request in try/except so one bad request can't kill the daemon. **No extra
+  Python deps** (Whisper already decodes audio via FFmpeg).
 - Installed by `Scripts/setup-local-whisper.sh` into the venv and bundled into the `.app` by
   `Scripts/build-app.sh` (mirrors how the setup script is already bundled).
 

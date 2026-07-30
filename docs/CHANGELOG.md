@@ -1,10 +1,10 @@
 # Changelog
 
-Improvement work on WhisperMeet. The earlier autonomous rounds followed design → implementation
-(TDD for pure logic) → `swift test` + `swift build` → adversarial multi-agent review → confirmed
-fixes → build and deploy. Later maintenance cycles record their own verification and deployment
-status explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude
-summaries; recording is the source of truth; no diarization; original language only) are preserved.
+Improvement work on WhisperMeet. The earlier autonomous rounds followed design → implementation (TDD
+for pure logic) → `swift test` + `swift build` → adversarial multi-agent review → confirmed fixes →
+build and deploy. Later maintenance cycles record their own verification and deployment status
+explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude summaries;
+recording is the source of truth; no diarization; original language only) are preserved.
 
 ## Maintenance cycle — warm Whisper dictation never actually warmed
 
@@ -17,18 +17,18 @@ summaries; recording is the source of truth; no diarization; original language o
 - Effect: the warm-up handshake read `Detected language: English` instead of `{"ready": true}` and
   threw "Dictation helper failed to start.", so `FallbackDictationEngine` quietly dropped to the
   batch Whisper CLI on every dictation. The feature still produced text, which is why it went
-  unnoticed — it just never delivered the low-latency warm-model behaviour it exists for. Auto-detect
-  is the default language, so this fired on warm-up and on every automatic request.
+  unnoticed — it just never delivered the low-latency warm-model behaviour it exists for.
+  Auto-detect is the default language, so this fired on warm-up and on every automatic request.
 - Fix is two layers: the helper now passes `verbose=None` (the only silent value), and
-  `WarmWhisperDictationEngine.readLine` skips any stdout line that is not a JSON object, recording it
-  as diagnostics instead. A single stray line would otherwise desync the stream permanently, with
+  `WarmWhisperDictationEngine.readLine` skips any stdout line that is not a JSON object, recording
+  it as diagnostics instead. A single stray line would otherwise desync the stream permanently, with
   every later response answering the previous request. Qwen was never affected — its helper only
   writes JSON.
-- Verification: two new tests (real helper script driven with a stubbed `mlx_whisper` that reproduces
-  the library's exact print guard; and the engine fed a deliberately chatty helper) fail before the
-  fix and pass after. Complete suite **178/178**. Re-ran the real installed models over all ten
-  `Scripts/bench/clips` with `language: null`, which is the comparison the previous cycle could not
-  complete because Turbo never reached readiness.
+- Verification: two new tests (real helper script driven with a stubbed `mlx_whisper` that
+  reproduces the library's exact print guard; and the engine fed a deliberately chatty helper) fail
+  before the fix and pass after. Complete suite **178/178**. Re-ran the real installed models over
+  all ten `Scripts/bench/clips` with `language: null`, which is the comparison the previous cycle
+  could not complete because Turbo never reached readiness.
 
   | engine | cold start | warm per clip | en | zh | code-switch |
   |---|---|---|---|---|---|
@@ -53,20 +53,21 @@ summaries; recording is the source of truth; no diarization; original language o
   explained whenever Qwen is selected rather than silently promising unsupported behavior.
 - Added selected-model diagnostics, self-test wording, helper self-healing, installer packaging, and
   per-engine timing/model-change log entries.
-- Verification: focused dictation/Qwen tests passed **10/10**; the complete suite passed **176/176**;
-  shell syntax, Python compilation, and diff validation passed; the warnings-as-errors release build
-  passed; the packaged app contains `qwen_dictate_server.py`, is ad-hoc signed, and passed strict
-  signature verification. The installed pinned Qwen runtime also transcribed the repository's
-  synthetic English clip exactly. Full command/output history and limitations are recorded in
+- Verification: focused dictation/Qwen tests passed **10/10**; the complete suite passed
+  **176/176**; shell syntax, Python compilation, and diff validation passed; the warnings-as-errors
+  release build passed; the packaged app contains `qwen_dictate_server.py`, is ad-hoc signed, and
+  passed strict signature verification. The installed pinned Qwen runtime also transcribed the
+  repository's synthetic English clip exactly. Full command/output history and limitations are
+  recorded in
   [`DICTATION_MODEL_SELECTION_LOG_2026-07-30.md`](DICTATION_MODEL_SELECTION_LOG_2026-07-30.md).
 - Installed the verified build at `/Applications/WhisperMeet.app` through the guarded updater, which
   refuses to replace the application while WhisperMeet is running and rolls back a failed swap.
 
 ## Maintenance cycle — crash-safe recording writes and ASR alternatives
 
-- Replaced every legacy `FileHandle.write(_:)` call in live source-track capture, final WAV
-  mixing, interrupted-recording recovery, and the warm dictation helper. That Foundation API raises
-  an uncaught `NSFileHandleOperationException` on an I/O failure; all writes now use one throwing
+- Replaced every legacy `FileHandle.write(_:)` call in live source-track capture, final WAV mixing,
+  interrupted-recording recovery, and the warm dictation helper. That Foundation API raises an
+  uncaught `NSFileHandleOperationException` on an I/O failure; all writes now use one throwing
   boundary (`ThrowingFileHandleIO`) so existing recording-preservation and recovery paths receive a
   normal Swift error instead of the app terminating.
 - Added a regression test that closes a file handle and proves the failed write throws without
@@ -75,8 +76,8 @@ summaries; recording is the source of truth; no diarization; original language o
   `codesign --verify --deep --strict`.
 - Researched and, after explicit approval, isolated and benchmarked current open-source ASR
   alternatives for local English/Mandarin meetings. Qwen3-ASR 1.7B 8-bit was selected over
-  SenseVoiceSmall because it combined a 0.38-second warm synthetic result with zero measured
-  English WER, Mandarin CER, and code-switch CER. SenseVoice was faster at 0.19 seconds but made a
+  SenseVoiceSmall because it combined a 0.38-second warm synthetic result with zero measured English
+  WER, Mandarin CER, and code-switch CER. SenseVoice was faster at 0.19 seconds but made a
   code-switch error. Full evidence, versions, hashes, failed/corrected checks, and limitations are
   in [`ASR_EVALUATION_LOG_2026-07-29.md`](ASR_EVALUATION_LOG_2026-07-29.md).
 - Added Qwen3-ASR as an opt-in meeting model while keeping Whisper Large as the default. The app
@@ -85,8 +86,8 @@ summaries; recording is the source of truth; no diarization; original language o
   updating a meeting, safely falls back to complete text if timestamp alignment cannot be mapped,
   and leaves the recording untouched on failure or cancellation.
 - Added a pinned, hash-verifying, staged Qwen installer and installed its 4.2 GB managed runtime
-  after approval. Installation/repair cannot run during recording or transcription. The packaged
-  app includes both the installer and production helper.
+  after approval. Installation/repair cannot run during recording or transcription. The packaged app
+  includes both the installer and production helper.
 - Final review hardened queued jobs (engine/language snapshots), aligner-failure text preservation,
   Intel availability, installer mutual exclusion, interruption rollback, stale multi-gigabyte
   artifact cleanup, and documentation. Both standards and specification re-reviews reported no
@@ -104,9 +105,9 @@ summaries; recording is the source of truth; no diarization; original language o
 - Transcription progress bar + ETA, parsed live from the `whisper` CLI's tqdm output
   (`WhisperProgressParser`) — no CLI-contract change; distinguishes model-download from transcribe.
 - Import (upload) an existing audio/video file and transcribe it.
-- Review: 7 findings fixed (cancellation/termination race, capture-init data race, parser
-  de-dup, indeterminate progress bar, import-vs-record state race, size undercount, imported-file
-  recovery gap).
+- Review: 7 findings fixed (cancellation/termination race, capture-init data race, parser de-dup,
+  indeterminate progress bar, import-vs-record state race, size undercount, imported-file recovery
+  gap).
 
 ## Round 1 — Extract & organize
 - Multi-format export: SRT, WebVTT, Markdown, plain, timestamped, JSON (`TranscriptExporter`).
@@ -116,8 +117,8 @@ summaries; recording is the source of truth; no diarization; original language o
   size-aware import guard, recovered-import duration).
 
 ## Round 2 — Read & navigate
-- Segment-synced playback: tap a line to seek, live highlight of the playing segment, and a
-  "Follow" toggle for auto-scroll (`TranscriptPlayback`).
+- Segment-synced playback: tap a line to seek, live highlight of the playing segment, and a "Follow"
+  toggle for auto-scroll (`TranscriptPlayback`).
 - Find-in-transcript with live filtering; per-segment copy (with/without timestamp).
 - Read/Edit toggle for the transcript.
 - Review: 3 findings fixed, incl. a latent transcript-edit data-loss bug (normalization now runs
@@ -130,8 +131,8 @@ summaries; recording is the source of truth; no diarization; original language o
 - Delete now dequeues/cancels first (no queue ghosts); safer missing-meeting handling.
 
 ## Round 4 — Suggest vocabulary
-- "Suggest Vocab" finds names/key terms in a transcript and offers them in a review sheet;
-  nothing is added without explicit confirmation.
+- "Suggest Vocab" finds names/key terms in a transcript and offers them in a review sheet; nothing
+  is added without explicit confirmation.
 
 ## Round 5 — Meeting Notes export
 - One-click Markdown "Meeting Notes" combining the Claude summary and the full transcript
@@ -162,8 +163,8 @@ summaries; recording is the source of truth; no diarization; original language o
 - Added 14 regression tests across meter calibration/decay, launch/cancellation races, truncated
   recovery validation, edited/text-only/retimed exports, per-occurrence search, and playback gaps.
 - Added one-command quality automation (`Scripts/quality-check.sh`) for diff validation, the full
-  test suite, a warnings-as-errors release build, packaging, and signing. The identical gate now runs
-  in GitHub Actions for every pull request and `main` push.
+  test suite, a warnings-as-errors release build, packaging, and signing. The identical gate now
+  runs in GitHub Actions for every pull request and `main` push.
 - Added a guarded installed-app updater (`Scripts/install-app.sh`) that refuses to replace the app
   while WhisperMeet is running, stages and verifies the replacement, and rolls back if the swap
   fails—protecting active recordings during development updates.
@@ -171,28 +172,31 @@ summaries; recording is the source of truth; no diarization; original language o
   to the unified macOS log, so any remaining launch lag can be measured instead of guessed.
 
 ## Round 6 — Quick Dictation (push-to-talk, any app)
-A second, independent feature alongside the meeting recorder: hold **Right Option** anywhere → speak →
-release → local Whisper (`turbo`) transcribes → the text is auto-pasted into the focused field
-(clipboard + notification fallback). Menu-bar presence, launch-at-login, and a Quick Dictation settings
-section (enable, hold/toggle mode, language, delivery, Accessibility status). 100% local — no network.
-- **Near-instant repeats via a resident "warm" helper** (`whisper_dictate_server.py`): loads the model
-  once and serves clips over the child process's stdin/stdout as newline-delimited JSON
+A second, independent feature alongside the meeting recorder: hold **Right Option** anywhere → speak
+→ release → local Whisper (`turbo`) transcribes → the text is auto-pasted into the focused field
+(clipboard + notification fallback). Menu-bar presence, launch-at-login, and a Quick Dictation
+settings section (enable, hold/toggle mode, language, delivery, Accessibility status). 100% local —
+no network.
+- **Near-instant repeats via a resident "warm" helper** (`whisper_dictate_server.py`): loads the
+  model once and serves clips over the child process's stdin/stdout as newline-delimited JSON
   (`DictationProtocol`), so only the first dictation pays the model-load/download cost.
-- **Mic-only capture** (`MicDictationRecorder`, AVAudioEngine) — dictation never needs Screen Recording
-  permission; clips are ephemeral temp WAVs, never touching `Recordings/` or the meetings index.
+- **Mic-only capture** (`MicDictationRecorder`, AVAudioEngine) — dictation never needs Screen
+  Recording permission; clips are ephemeral temp WAVs, never touching `Recordings/` or the meetings
+  index.
 - **Global push-to-talk** (`HotkeyMonitor`, listen-only CGEventTap) with absolute per-side modifier
   detection; **auto-paste** (`TextInjector`, clipboard + synthesized ⌘V) with an honest clipboard
   fallback; a non-activating floating overlay pill (`DictationOverlay`) that never steals focus.
-- Orchestrated by `DictationController` off a pure, tested `DictationSession` state machine; disabled
-  while a meeting records (and vice-versa) so the two never contend for the mic.
+- Orchestrated by `DictationController` off a pure, tested `DictationSession` state machine;
+  disabled while a meeting records (and vice-versa) so the two never contend for the mic.
 - New tested `WhisperCore` modules: `WAVWriter` (now the single WAV path, shared with the meeting
   mixer), `DictationSession`, `DictationTextCleanup`, `DictationProtocol`. Suite grew 67 → 78.
 - Built subagent-driven with per-task + final adversarial review. Fixes that review caught before
-  ship: warm-helper read watchdog (no silent hang); recorder thread-safety + fail-loud empty capture;
-  hotkey tap re-enable on OS-disable + correct dual-modifier release; overlay panel `canBecomeKey`
-  override (no focus theft); controller coherence (no transcript loss on re-tap, no stuck-listening);
-  and — from the whole-branch review — stopping the mic + resetting state when dictation is disabled
-  mid-capture (no hot mic after disable), an honest paste result, and a longer first-run warm-up.
+  ship: warm-helper read watchdog (no silent hang); recorder thread-safety + fail-loud empty
+  capture; hotkey tap re-enable on OS-disable + correct dual-modifier release; overlay panel
+  `canBecomeKey` override (no focus theft); controller coherence (no transcript loss on re-tap, no
+  stuck-listening); and — from the whole-branch review — stopping the mic + resetting state when
+  dictation is disabled mid-capture (no hot mic after disable), an honest paste result, and a longer
+  first-run warm-up.
 
 ## Round 7 — Dictation reliability & observability
 Driven by a real failure: the dictation helper wasn't installed on a runtime that predated the
@@ -204,18 +208,18 @@ feature, so transcription failed with only a "failed" toast. Fixes + a debug sur
   (validated to modifiers/F-keys, which don't emit text), for keyboards without a Right Option key.
 - **Dictation pane** (new sidebar item): a Status/diagnostics panel (runtime, helper, turbo model,
   Microphone, Accessibility, hotkey — each ✓/✗) with a **Run self-test** button that pushes a clip
-  through the whole pipeline and reports exactly where it breaks; plus a **persistent local history**
-  of every dictation (time, text, outcome: pasted / clipboard / empty / failed-with-reason) with Copy
-  and Clear — the fallback for recovering text if a paste misses.
+  through the whole pipeline and reports exactly where it breaks; plus a **persistent local
+  history** of every dictation (time, text, outcome: pasted / clipboard / empty /
+  failed-with-reason) with Copy and Clear — the fallback for recovering text if a paste misses.
 - New tested `WhisperCore` modules `DictationLog` + `DictationKeyName` (suite 78 → 89).
 - Review-caught fixes before ship: key-capture event-monitor leak (was hijacking the next keystroke
   app-wide if you left Settings mid-capture), duplicate log entry on a mic-start failure, and a warm
   Whisper process left resident after a self-test while dictation is disabled.
 
 ## Round 8 — Quick Dictation runs on MLX (Apple-Silicon), ~3.3× faster
-Benchmark-driven engine swap for dictation only. A reproducible local benchmark
-(`Scripts/bench/`, 10 EN/中文/code-switch clips) compared the current `openai/whisper` turbo
-(PyTorch, CPU/fp32) against Apple-native `mlx-whisper` turbo fp16 on this M3 Pro:
+Benchmark-driven engine swap for dictation only. A reproducible local benchmark (`Scripts/bench/`,
+10 EN/中文/code-switch clips) compared the current `openai/whisper` turbo (PyTorch, CPU/fp32) against
+Apple-native `mlx-whisper` turbo fp16 on this M3 Pro:
 
 | engine | avg release→text | EN WER | 中文 CER | code-switch CER |
 |---|---|---|---|---|
@@ -234,9 +238,9 @@ but a real, perceptible win with no downside observed in this benchmark.
 - Dictation helper (`whisper_dictate_server.py`) rewritten to `mlx_whisper`, pre-warmed before
   `{"ready":true}`, weights cached locally under app support; `HF_HUB_OFFLINE=1` once cached so
   warm-up never phones home (steady-state 100% local). fp16 (never q4 — protects Mandarin CER).
-- Review-hardened before ship: meetings-first setup install (a dictation-only, arm64-only
-  package can't abort the meetings runtime), helper auto-syncs into the runtime on version change,
-  warm-up errors surfaced to diagnostics, conservative multi-term phantom-echo guard.
+- Review-hardened before ship: meetings-first setup install (a dictation-only, arm64-only package
+  can't abort the meetings runtime), helper auto-syncs into the runtime on version change, warm-up
+  errors surfaced to diagnostics, conservative multi-term phantom-echo guard.
 - Also this round: business vocabulary now feeds dictation's `initial_prompt` (shared, tested
   `VocabularyPrompt`). Suite grew 89 → 97 tests.
 
@@ -252,13 +256,13 @@ reviews a handful instead of re-reading everything. See `docs/TRANSCRIPT_QUALITY
   schema and thresholds were verified against the installed `openai/whisper` `transcribe.py`.
 - New pure, tested `TranscriptQuality` module classifies each scored segment using Whisper's **own**
   default thresholds — `logprob < -1.0`, `no_speech > 0.6`, `compression > 2.4` — so a flag means
-  the same thing Whisper's internal quality gate means: `lowConfidence`, `likelySilence` (the classic
-  silence hallucination — high no-speech *and* low confidence), or `repetitive`.
+  the same thing Whisper's internal quality gate means: `lowConfidence`, `likelySilence` (the
+  classic silence hallucination — high no-speech *and* low confidence), or `repetitive`.
 - Transcript detail shows an unobtrusive banner ("N segments may need a look") with prev/next
-  step-through and a margin marker on flagged rows (suppressed during find-in-transcript). Nothing is
-  ever auto-changed; the audio is never touched.
-- Adversarially reviewed (no Critical/Important findings); Minor consistency fix applied. Suite
-  97 → 110 tests.
+  step-through and a margin marker on flagged rows (suppressed during find-in-transcript). Nothing
+  is ever auto-changed; the audio is never touched.
+- Adversarially reviewed (no Critical/Important findings); Minor consistency fix applied. Suite 97 →
+  110 tests.
 
 ## Round 10 — Preflight test recording
 Answers the single biggest anxiety of any recorder — *will it actually capture when it matters?*
@@ -273,8 +277,8 @@ captured — with specific guidance when one isn't. See `docs/PREFLIGHT_TEST.md`
   is playing sound). 15 tests.
 - `AppModel` drives the capture via a **dedicated** `AudioCaptureEngine` into a temp directory —
   never the meeting library, never a `MeetingRecord` — with an 8-second countdown, cancellation, and
-  playback of the sample. The Record view gains a "Test Recording…" control opening a
-  countdown → analyzing → per-channel result sheet.
+  playback of the sample. The Record view gains a "Test Recording…" control opening a countdown →
+  analyzing → per-channel result sheet.
 - Adversarially reviewed; fixed one Critical + two Important concurrency/lifecycle findings before
   ship: the capture task is now the single owner of the engine (a Cancel during the
   non-cancellation-aware `start()` can no longer orphan a live stream), the error path can't
@@ -288,8 +292,8 @@ metadata (just a timestamp); the audio is **never touched**. See `docs/RECORDING
 - New pure, tested `WhisperCore` modules: `RecordingMarker` (Codable) and `RecordingMarkers` helpers
   — sorted insert with negative-offset clamp, 1-based display labels, active-segment lookup (robust
   to out-of-order segments), and a `## Markers` Markdown section for Meeting Notes.
-- `MeetingRecord` gains an optional `markers` field (backward-compatible, like `transcriptNormalized`)
-  and an `orderedMarkers` convenience.
+- `MeetingRecord` gains an optional `markers` field (backward-compatible, like
+  `transcriptNormalized`) and an `orderedMarkers` convenience.
 - `AppModel` holds `pendingMarkers` during a live recording (⇧⌘M → offset from the recording timer),
   persists them on stop and through **in-process finalization recovery**, discards them on cancel.
   (A hard crash before Stop still loses markers dropped pre-crash — the audio is always recovered;
@@ -298,14 +302,15 @@ metadata (just a timestamp); the audio is **never touched**. See `docs/RECORDING
 - UI: an "Add Marker" control + live count in the recording panel; a markers strip in playback
   (click a chip to seek, add at the current position, rename/delete); markers are also viewable and
   manageable before a transcript exists; Meeting Notes export includes the Markers section.
-- Adversarially reviewed; fixed the Important "markers invisible until transcribed" gap and two Minor
-  issues (out-of-order segment context, the ⌘M/Minimize shortcut clash) before ship; documented the
-  bounded live-offset clock and crash-before-save behavior. Suite 125 → 138.
+- Adversarially reviewed; fixed the Important "markers invisible until transcribed" gap and two
+  Minor issues (out-of-order segment context, the ⌘M/Minimize shortcut clash) before ship;
+  documented the bounded live-offset clock and crash-before-save behavior. Suite 125 → 138.
 
 ## Round 11.5 — one-click "Copy AI Prompt" for vocabulary
-- A button on the Business Vocabulary screen copies a ready-made prompt (`VocabularyPrompt.
-  generationPrompt`) to paste into any AI chat; the chat's one-term-per-line output pastes straight
-  back into the Add box. Keeps the original script (English/中文), never translates, caps at ~80 terms.
+- A button on the Business Vocabulary screen copies a ready-made prompt
+  (`VocabularyPrompt. generationPrompt`) to paste into any AI chat; the chat's one-term-per-line
+  output pastes straight back into the Add box. Keeps the original script (English/中文), never
+  translates, caps at ~80 terms.
 - Privacy caution added (Round 12): the prompt is for an *external* chat, so anything pasted there
   leaves this Mac — surfaced in the UI and tooltip so business docs aren't shared unknowingly.
 
@@ -314,11 +319,11 @@ Independently verified all 23 findings of a code review (0 refuted; 19 confirmed
 fixed **all 23**, each with tests where the logic is pure `WhisperCore`. Non-negotiable invariants
 preserved. Suite 139 → 156.
 - **Dictation accuracy (F6):** prompt-echo suppression now requires acoustic corroboration
-  (`no_speech_prob ≥ 0.6`) before blanking, so genuinely dictated adjacent vocab terms
-  ("Acme Kubernetes") are no longer silently deleted.
-- **Dictation reliability (F4, F1, F3, F9):** an interrupted MLX download no longer poisons the cache
-  into permanent offline mode (gate on snapshot completeness + self-repair); `shutdown()` interrupts
-  in-flight helper work off-queue instead of waiting out the 120s/1800s read timeout;
+  (`no_speech_prob ≥ 0.6`) before blanking, so genuinely dictated adjacent vocab terms ("Acme
+  Kubernetes") are no longer silently deleted.
+- **Dictation reliability (F4, F1, F3, F9):** an interrupted MLX download no longer poisons the
+  cache into permanent offline mode (gate on snapshot completeness + self-repair); `shutdown()`
+  interrupts in-flight helper work off-queue instead of waiting out the 120s/1800s read timeout;
   `FallbackDictationEngine` wires the batch openai/whisper engine so Intel / no-MLX / broken-install
   machines keep dictation; helper stderr is captured and surfaced in errors (was discarded).
 - **Capture ownership (F2, F5):** one `isMicrophoneBusy` guard closes the preflight↔dictation
@@ -326,9 +331,9 @@ preserved. Suite 139 → 156.
 - **Preflight honesty (F17):** readiness needs *sustained* signal (crest factor), so a single click
   can't report "ready".
 - **Quality review (F12, F22, F18):** `likely-silence` now catches the confident hallucinations
-  Whisper actually emits (was an unreachable subset of Whisper's own skip rule); review steps through
-  worst-first by severity (no hidden cap), banner shows "% clean"; once a transcript is edited its
-  segment-derived quality flags are hidden (they no longer describe the shown text).
+  Whisper actually emits (was an unreachable subset of Whisper's own skip rule); review steps
+  through worst-first by severity (no hidden cap), banner shows "% clean"; once a transcript is
+  edited its segment-derived quality flags are hidden (they no longer describe the shown text).
 - **Markers (F16, F19):** marker-context fallback is bounded to nearby speech (no stale line from
   minutes earlier); export drops segment-derived context once the transcript is edited.
 - **Dictation vocabulary (F10):** an optional "use business vocabulary for dictation" toggle

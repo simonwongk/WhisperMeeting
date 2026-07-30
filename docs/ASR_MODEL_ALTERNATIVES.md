@@ -4,17 +4,17 @@ Research date: 2026-07-29
 
 ## Decision
 
-**Selected for an opt-in app trial: Qwen3-ASR-1.7B MLX 8-bit plus the Qwen3 ForcedAligner
-0.6B MLX 8-bit. Whisper Large remains the default.** On the existing 10-clip synthetic
+**Selected for an opt-in app trial: Qwen3-ASR-1.7B MLX 8-bit plus the Qwen3 ForcedAligner 0.6B MLX
+8-bit. Whisper Large remains the default.** On the existing 10-clip synthetic
 English/Mandarin/code-switch benchmark, automatic-language Qwen averaged 0.38 seconds and scored
-0.000 English WER, 0.000 Mandarin CER, and 0.000 code-switch CER. SenseVoiceSmall was faster at
-0.19 seconds, but regressed code-switch CER to 0.018 by recognizing “bug” as “bg”. The measured
-results are in [`../Scripts/bench/results.md`](../Scripts/bench/results.md).
+0.000 English WER, 0.000 Mandarin CER, and 0.000 code-switch CER. SenseVoiceSmall was faster at 0.19
+seconds, but regressed code-switch CER to 0.018 by recognizing “bug” as “bg”. The measured results
+are in [`../Scripts/bench/results.md`](../Scripts/bench/results.md).
 
 This proves the short local path, not long-meeting superiority. Qwen is therefore available as an
 explicit model choice, but is not the default and is clearly labeled as needing validation on real,
-long meetings. The app keeps every recording unchanged if Qwen is missing, cancelled, or fails.
-Its complete transcript text remains authoritative if timestamp alignment cannot be mapped safely.
+long meetings. The app keeps every recording unchanged if Qwen is missing, cancelled, or fails. Its
+complete transcript text remains authoritative if timestamp alignment cannot be mapped safely.
 
 The production helper was also exercised directly with the Qwen aligner on synthetic English and
 English/Mandarin code-switch clips. It returned the expected text plus 10 aligned items for each
@@ -53,9 +53,9 @@ audio, chunking, normalization, and decoding settings differ across the publishe
 
 ## Current download sizes
 
-These are repository download sizes as of 2026-07-29, not peak unified-memory measurements. The
-Qwen totals include the separate aligner needed for timestamps. Runtime memory can be higher than
-the weight files and must be measured on the target 18 GB Mac.
+These are repository download sizes as of 2026-07-29, not peak unified-memory measurements. The Qwen
+totals include the separate aligner needed for timestamps. Runtime memory can be higher than the
+weight files and must be measured on the target 18 GB Mac.
 
 | Candidate configuration | Parameters | Download |
 |---|---:|---:|
@@ -80,8 +80,8 @@ downloads are about 4.70 GB for ASR 1.7B, 1.88 GB for ASR 0.6B, and 1.84 GB for 
 
 ## Proposed benchmark
 
-Use a separate benchmark environment and never point experimental code at the user's meeting
-index or recording folders. Read copies of audio; write all outputs under `Scripts/bench/`.
+Use a separate benchmark environment and never point experimental code at the user's meeting index
+or recording folders. Read copies of audio; write all outputs under `Scripts/bench/`.
 
 ### Test order
 
@@ -125,8 +125,8 @@ the multilingual replacement gate.
 A candidate advances only if it:
 
 - passes every privacy, language, timestamp, long-audio, licensing, and recording-safety gate;
-- improves WER/CER in both English and Mandarin without regressing business-term recall, **or**
-  is at least 2× faster with no material accuracy regression;
+- improves WER/CER in both English and Mandarin without regressing business-term recall, **or** is
+  at least 2× faster with no material accuracy regression;
 - stays within the target Mac's memory budget; and
 - produces stable output on all long recordings across three runs.
 
@@ -137,21 +137,29 @@ above.
 ## Primary sources
 
 - [OpenAI Whisper repository and current model/CLI documentation](https://github.com/openai/whisper)
-- [Qwen3-ASR official repository, license, languages, evaluations, and forced aligner](https://github.com/QwenLM/Qwen3-ASR)
+- [Qwen3-ASR official repository, license, languages, evaluations, and forced
+  aligner](https://github.com/QwenLM/Qwen3-ASR)
 - [Qwen3-ASR 0.6B official model card](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)
-- [Qwen3-ASR 1.7B MLX 8-bit files](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit/tree/main)
-- [Qwen3-ASR 0.6B MLX 8-bit files](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit/tree/main)
-- [Qwen3 ForcedAligner 0.6B MLX 8-bit files](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit/tree/main)
+- [Qwen3-ASR 1.7B MLX 8-bit
+  files](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit/tree/main)
+- [Qwen3-ASR 0.6B MLX 8-bit
+  files](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit/tree/main)
+- [Qwen3 ForcedAligner 0.6B MLX 8-bit
+  files](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit/tree/main)
 - [MLX-Audio Apple-Silicon runtime and Qwen3-ASR support](https://github.com/Blaizzy/mlx-audio)
 - [MLX-Audio Swift SDK](https://github.com/Blaizzy/mlx-audio-swift)
 - [SenseVoice official repository and benchmarks](https://github.com/QwenAudio/SenseVoice)
 - [SenseVoice official macOS-arm64/GGUF releases](https://github.com/QwenAudio/SenseVoice/releases)
 - [SenseVoiceSmall model card](https://huggingface.co/FunAudioLLM/SenseVoiceSmall)
-- [SenseVoiceSmall official GGUF files](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/tree/main)
+- [SenseVoiceSmall official GGUF
+  files](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/tree/main)
 - [FSMN VAD official GGUF files](https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/tree/main)
-- [SenseVoice commercial-use clarification from its maintainers](https://github.com/FunAudioLLM/SenseVoice/issues/286)
-- [Moonshine official repository, macOS support, benchmarks, and licensing](https://github.com/moonshine-ai/moonshine)
-- [Moonshine Streaming Medium model card and files](https://huggingface.co/UsefulSensors/moonshine-streaming-medium)
+- [SenseVoice commercial-use clarification from its
+  maintainers](https://github.com/FunAudioLLM/SenseVoice/issues/286)
+- [Moonshine official repository, macOS support, benchmarks, and
+  licensing](https://github.com/moonshine-ai/moonshine)
+- [Moonshine Streaming Medium model card and
+  files](https://huggingface.co/UsefulSensors/moonshine-streaming-medium)
 - [MLX Whisper large-v3 files](https://huggingface.co/mlx-community/whisper-large-v3-mlx/tree/main)
 - [Microsoft VibeVoice-ASR model card](https://huggingface.co/microsoft/VibeVoice-ASR)
 - [VibeVoice-ASR MLX 4-bit files](https://huggingface.co/mlx-community/VibeVoice-ASR-4bit)

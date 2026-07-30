@@ -18,17 +18,17 @@ unit of work with an owner-independent definition of done.
 
 1. **Read this file first.** If you are about to do work that is not on the board, file it as a
    ticket before you start, so parallel agents can see it.
-2. **File what you find.** Any defect, regression, unverified claim, or follow-up you discover during
-   other work gets a ticket — even if you are not going to fix it. Do not leave findings only in a
-   chat reply; that context dies with the session.
+2. **File what you find.** Any defect, regression, unverified claim, or follow-up you discover
+   during other work gets a ticket — even if you are not going to fix it. Do not leave findings only
+   in a chat reply; that context dies with the session.
 3. **Claim before you work.** Set `Status: in-progress` and put your agent/session identifier in
    `Owner` in the same commit that starts the work. Never take a ticket already `in-progress`.
 4. **Never delete a ticket.** Close it by moving the entry to `TICKET_LOG.md` with an outcome — that
    includes `wontfix` and `invalid`. Deleting loses the reasoning.
-5. **One ticket, one commit trail.** Reference the ID in every commit message that touches it, in the
-   existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
-6. **Log on close.** Append to `TICKET_LOG.md` with real command output, not a summary of intent. The
-   repo's culture is evidence over assertion — see the existing entries.
+5. **One ticket, one commit trail.** Reference the ID in every commit message that touches it, in
+   the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
+6. **Log on close.** Append to `TICKET_LOG.md` with real command output, not a summary of intent.
+   The repo's culture is evidence over assertion — see the existing entries.
 
 ## ID allocation
 
@@ -61,9 +61,9 @@ A ticket may only be closed `fixed` when all of these hold:
   and checked per [`../AGENTS.md`](../AGENTS.md) — flags and model names are never guessed.
 - If the change touches a runtime helper or model adapter, it was exercised against the **real
   installed model**, not only a stub. Stubs cannot catch upstream API drift.
-- The non-negotiable invariants in [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) are intact: local-only except
-  opt-in Claude summaries, the recording is the source of truth, no diarization, original language
-  only.
+- The non-negotiable invariants in [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) are intact: local-only
+  except opt-in Claude summaries, the recording is the source of truth, no diarization, original
+  language only.
 - No user meeting, recording, index, or transcript was read or modified for testing. Use
   `Scripts/bench/clips`.
 
@@ -133,7 +133,8 @@ self-test finishes (`Sources/WhisperMeet/DictationView.swift:38,60,90`) — but 
 engine's rows — including the `"\(diag.engineName) runtime"` label and an Install/Repair button that
 targets the wrong runtime — until the user presses Refresh.
 
-**Proposed fix.** `.onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }`.
+**Proposed fix.**
+`.onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }`.
 
 **Verification.** Not unit-testable (SwiftUI view; the `WhisperMeet` target has no test suite).
 Verify manually with both windows open, and say so explicitly in the log.
@@ -147,8 +148,9 @@ Verify manually with both windows open, and say so explicitly in the log.
 - **Filed:** 2026-07-30 by Claude Code
 
 **Problem.** The two engines have only been compared on the synthetic `Scripts/bench/clips` corpus,
-fed to the helpers as files. Real push-to-talk adds microphone capture, room noise, accents, variable
-clip length, and end-to-end release-to-text latency, none of which the file-fed comparison exercises.
+fed to the helpers as files. Real push-to-talk adds microphone capture, room noise, accents,
+variable clip length, and end-to-end release-to-text latency, none of which the file-fed comparison
+exercises.
 
 **Impact.** Any recommendation to prefer Qwen for dictation rests on clean synthetic audio and a
 zero-error result that is almost certainly optimistic. The 0.36 s vs 1.43 s per-clip gap is the more
@@ -174,17 +176,18 @@ files now break that. 29 of 31 WhisperCore files import Foundation only; these a
 - `Sources/WhisperCore/QwenASRClient.swift:2` — `import os`, and `:144` constructs
   `Logger(subsystem: "com.whispermeet.app", …)` inside the library. This also breaks *pure*: the
   alignment-failure warning becomes an OSLog side effect instead of being surfaced in
-  `TranscriptionResult`, so neither callers nor tests can observe it. The app-identity string belongs
-  in the `WhisperMeet` target.
-- `Sources/WhisperCore/WarmWhisperDictationEngine.swift:2` — `import Darwin`, for `SIGKILL` at `:344`.
-  Same rule, weaker case: there is no Foundation equivalent.
+  `TranscriptionResult`, so neither callers nor tests can observe it. The app-identity string
+  belongs in the `WhisperMeet` target.
+- `Sources/WhisperCore/WarmWhisperDictationEngine.swift:2` — `import Darwin`, for `SIGKILL` at
+  `:344`. Same rule, weaker case: there is no Foundation equivalent.
 
-**Impact.** Erodes the split that makes `WhisperCore` unit-testable without a GUI. The `QwenASRClient`
-case additionally hides a real diagnostic from tests, which is how the F24 class of bug survives.
+**Impact.** Erodes the split that makes `WhisperCore` unit-testable without a GUI. The
+`QwenASRClient` case additionally hides a real diagnostic from tests, which is how the F24 class of
+bug survives.
 
-**Proposed fix.** Return the alignment warning through `TranscriptionResult` and let `WhisperMeet` log
-it. For `SIGKILL`, either accept `import Darwin` with a documented exception in `CLAUDE.md`, or move
-the force-stop into the app target.
+**Proposed fix.** Return the alignment warning through `TranscriptionResult` and let `WhisperMeet`
+log it. For `SIGKILL`, either accept `import Darwin` with a documented exception in `CLAUDE.md`, or
+move the force-stop into the app target.
 
 **Verification.** `grep -rn "^import " Sources/WhisperCore/*.swift` shows Foundation only (plus any
 exception `CLAUDE.md` explicitly sanctions); a test asserts the alignment warning is observable.
@@ -197,8 +200,8 @@ exception `CLAUDE.md` explicitly sanctions); a test asserts the alignment warnin
 - **Area:** docs
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec) — **self-inflicted, see note**
 
-**Problem.** `docs/CHANGELOG.md` (F24 entry) publishes cold-start 2.8 s / 8.6 s, warm-per-clip
-0.36 s / 1.43 s, and per-language error rates. Those numbers came from a driver script written in a
+**Problem.** `docs/CHANGELOG.md` (F24 entry) publishes cold-start 2.8 s / 8.6 s, warm-per-clip 0.36
+s / 1.43 s, and per-language error rates. Those numbers came from a driver script written in a
 session scratchpad and **never committed**, so nothing in the repo reproduces them.
 `Scripts/bench/benchmark.py` is a different tool measuring a different configuration (its committed
 `results.json` is a pytorch-turbo fp32/CPU baseline at ~5–6 s per clip) and does not drive the
@@ -212,9 +215,9 @@ verification result that no one else can re-run or falsify.
 that part is misattributed; the driver did speak the production protocol to both production helpers.
 The reproducibility criticism stands regardless and is the reason this ticket exists.
 
-**Proposed fix.** Commit the driver under `Scripts/bench/` (it spawns both production helpers with the
-exact argv the Swift engines use and speaks the `wavPath` wire protocol), and have the CHANGELOG cite
-the command that produces the table. Or delete the table.
+**Proposed fix.** Commit the driver under `Scripts/bench/` (it spawns both production helpers with
+the exact argv the Swift engines use and speaks the `wavPath` wire protocol), and have the CHANGELOG
+cite the command that produces the table. Or delete the table.
 
 **Verification.** A fresh checkout reproduces the published numbers with one documented command.
 
@@ -229,15 +232,16 @@ the command that produces the table. Or delete the table.
 **Problem.** `PRODUCT_SPEC.md:18` requires "editable **timestamped** transcript segments", and `:27`
 requires failures surfaced "in plain language". `QwenAlignedTranscript.swift` returns `[]` at five
 guard sites (`:24,30,36,39,51`) — mapping is all-or-nothing, so a single mismatch anywhere drops
-*every* timestamp. `AppModel.apply(result:to:)` (`AppModel.swift:965`) then stores untimestamped plain
-text. The only trace is an `os.Logger` line (`QwenASRClient.swift:143-148`), which the user never sees.
-`PRODUCT_SPEC.md` was edited in this same range but line 18 was left untouched.
+*every* timestamp. `AppModel.apply(result:to:)` (`AppModel.swift:965`) then stores untimestamped
+plain text. The only trace is an `os.Logger` line (`QwenASRClient.swift:143-148`), which the user
+never sees. `PRODUCT_SPEC.md` was edited in this same range but line 18 was left untouched.
 
 **Impact.** A Qwen meeting can silently produce a transcript with no timestamps — no seek, no
 playback sync — and the user is given no reason why.
 
 **Proposed fix.** Surface the warning in the UI, and consider partial alignment (keep the sentences
-that did map) instead of all-or-nothing. Amend `PRODUCT_SPEC.md:18` to state the documented fallback.
+that did map) instead of all-or-nothing. Amend `PRODUCT_SPEC.md:18` to state the documented
+fallback.
 
 **Verification.** Force an alignment mismatch; assert the user-visible explanation appears and that
 `PRODUCT_SPEC.md` matches actual behaviour.
@@ -290,12 +294,12 @@ synthetic.
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
 
 **Problem.** `Scripts/setup-qwen-asr.sh` gates its recovery branch on `QWEN_INSTALL_RECOVERY_ONLY`
-(`:23`, `:99`). The only caller is `Tests/WhisperCoreTests/QwenInstallerRecoveryTests.swift:76` — the
-app never invokes it.
+(`:23`, `:99`). The only caller is `Tests/WhisperCoreTests/QwenInstallerRecoveryTests.swift:76` —
+the app never invokes it.
 
-**Impact.** `PRODUCT_SPEC.md:29-30` promises the previous runtime is preserved on failure. That holds
-only within a single install process. After a force-quit mid-install, a ~4 GB backup directory is
-orphaned and Qwen reports "not installed" until the user manually reinstalls.
+**Impact.** `PRODUCT_SPEC.md:29-30` promises the previous runtime is preserved on failure. That
+holds only within a single install process. After a force-quit mid-install, a ~4 GB backup directory
+is orphaned and Qwen reports "not installed" until the user manually reinstalls.
 
 **Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
 user action.
@@ -309,8 +313,9 @@ user action.
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
 
 **Problem.** `docs/QUICK_DICTATION_DESIGN.md:44` still records "Transcription engine | Local Whisper
-`turbo`" and `:16` "shares only the local Whisper runtime", while `DictationController.swift:109-116`
-now offers Qwen. The only authorization for the change is the same cycle's own work log.
+`turbo`" and `:16` "shares only the local Whisper runtime", while
+`DictationController.swift:109-116` now offers Qwen. The only authorization for the change is the
+same cycle's own work log.
 
 **Impact.** The design doc contradicts shipped behaviour, so it can no longer be trusted as the spec
 for this feature — which is what the Spec review axis judges against.
@@ -325,9 +330,9 @@ for this feature — which is what the Spec review axis judges against.
 - **Area:** dictation
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, standards)
 
-**Problem.** `DictationProtocol.swift:83-95`. The `NSLock` makes each accessor safe, but `replace` reads
-`current`, awaits `retire()`, then installs — so two concurrent replaces can both retire the same
-engine. Safety today comes only from the `@MainActor` `isActive` / `isSwitchingModel` guard in
+**Problem.** `DictationProtocol.swift:83-95`. The `NSLock` makes each accessor safe, but `replace`
+reads `current`, awaits `retire()`, then installs — so two concurrent replaces can both retire the
+same engine. Safety today comes only from the `@MainActor` `isActive` / `isSwitchingModel` guard in
 `DictationController.setSelectedEngine`, which lives in the *other* target.
 
 **Impact.** No data race; a logical one. The class advertises `@unchecked Sendable`, implying it is
@@ -345,9 +350,9 @@ self-sufficient, but its correctness depends on a caller in another module.
 - **Area:** docs
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, standards)
 
-**Problem.** `docs/TICKETS.md:61` requires live-doc verification "per `../AGENTS.md`" for the Whisper
-**or Qwen** contract, but `AGENTS.md` names only whisperai.com and github.com/openai/whisper. There is
-no Qwen / `mlx-audio` source listed, so the Qwen call contract
+**Problem.** `docs/TICKETS.md:61` requires live-doc verification "per `../AGENTS.md`" for the
+Whisper **or Qwen** contract, but `AGENTS.md` names only whisperai.com and
+github.com/openai/whisper. There is no Qwen / `mlx-audio` source listed, so the Qwen call contract
 (`Scripts/qwen_transcribe.py:70-75`, `Scripts/qwen_dictate_server.py:24-29` —
 `generate(language=, chunk_duration=, min_chunk_duration=)`) is unanchored.
 `docs/ASR_EVALUATION_LOG_2026-07-29.md:9-13` claims docs "were checked" but cites no URL or version,
@@ -367,8 +372,8 @@ package source (as F24 did) when no upstream doc exists.
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
 
 **Problem.** `AppEntry.swift:14-17` folds `model.isInstallingRecognitionRuntime` into dictation's
-`isMicrophoneBusy`. The spec only required the reverse (a meeting must not start while dictation owns
-the mic).
+`isMicrophoneBusy`. The spec only required the reverse (a meeting must not start while dictation
+owns the mic).
 
 **Impact.** Probably desirable — a multi-GB install contends for CPU and memory — but it is
 undocumented, and it is not a microphone conflict, so expressing it as "microphone busy" makes the
@@ -379,5 +384,5 @@ user-facing reason.
 
 ---
 
-*Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.*
-*F28–F37 added 2026-07-30 from the two-axis review of `7e048ff...HEAD`.*
+*Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.* *F28–F37 added
+2026-07-30 from the two-axis review of `7e048ff...HEAD`.*

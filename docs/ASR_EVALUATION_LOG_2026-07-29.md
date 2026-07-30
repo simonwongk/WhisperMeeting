@@ -24,26 +24,21 @@ All candidates were first downloaded under `/private/tmp/whispermeet-asr-bench-2
 - Runtime: `mlx-audio==0.3.1`, installed in an isolated virtual environment.
 - ASR: `mlx-community/Qwen3-ASR-1.7B-8bit`
   - revision `a8379a2e2f9e313c9292cdf1af4055ab56d50d55`
-  - `model.safetensors` SHA-256
-    `bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c`
+  - `model.safetensors` SHA-256 `bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c`
 - Aligner: `mlx-community/Qwen3-ForcedAligner-0.6B-8bit`
   - revision `0e1a68e91d815300c7c9754b2a7639378b23db15`
-  - `model.safetensors` SHA-256
-    `be19ef8ac4326d032e7673342930b14c2df30bd68c1632493b0f563e30829f91`
-- Measured download: 2.46 GB ASR + 1.28 GB aligner. The complete installed runtime, including
-  Python packages, is 4.2 GB on this Mac.
+  - `model.safetensors` SHA-256 `be19ef8ac4326d032e7673342930b14c2df30bd68c1632493b0f563e30829f91`
+- Measured download: 2.46 GB ASR + 1.28 GB aligner. The complete installed runtime, including Python
+  packages, is 4.2 GB on this Mac.
 
 ### SenseVoice
 
 - Official macOS arm64 runtime: v0.1.9, 7 MB.
-  - archive SHA-256
-    `2d5786784ad09d8f4def1d942f678728638fe601d00acf0dad7cf094a9328363`
+  - archive SHA-256 `2d5786784ad09d8f4def1d942f678728638fe601d00acf0dad7cf094a9328363`
 - SenseVoiceSmall q8: 254,208,320 bytes.
-  - SHA-256
-    `4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5`
+  - SHA-256 `4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5`
 - FSMN VAD: 1,720,512 bytes.
-  - SHA-256
-    `1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479`
+  - SHA-256 `1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479`
 - SenseVoice was benchmarked but not installed into the app's managed runtime.
 
 The Mac had 226 GiB available before these downloads.
@@ -51,11 +46,11 @@ The Mac had 226 GiB available before these downloads.
 ## Benchmark
 
 The benchmark was extended to run named engines separately and append results. Qwen uses one
-persistent local process so the reported value is warm release-to-text latency. Each engine was
-run in its own process after an initial combined run incorrectly made Qwen appear to take 12.3
-seconds because several large models were simultaneously resident in 18 GB unified memory. That
-contention result was discarded, the procedure was corrected, and the corrected outputs were saved
-to `Scripts/bench/results.json` and `Scripts/bench/results.md`.
+persistent local process so the reported value is warm release-to-text latency. Each engine was run
+in its own process after an initial combined run incorrectly made Qwen appear to take 12.3 seconds
+because several large models were simultaneously resident in 18 GB unified memory. That contention
+result was discarded, the procedure was corrected, and the corrected outputs were saved to
+`Scripts/bench/results.json` and `Scripts/bench/results.md`.
 
 | engine | average seconds | English WER | Mandarin CER | code-switch CER |
 |---|---:|---:|---:|---:|
@@ -73,27 +68,26 @@ overlapping speech, peak memory, or business vocabulary, so Whisper remains the 
 ## Production-path checks
 
 - The new helper transcribed `en1.wav` as:
-  `Can you send me the quarterly report by Friday afternoon?`
-  It returned language `en` and 10 aligned words.
+  `Can you send me the quarterly report by Friday afternoon?` It returned language `en` and 10
+  aligned words.
 - A first mixed-language command referenced nonexistent `mix1.wav` and failed with
   `FileNotFoundError`. The actual benchmark clip name was found and the command was corrected.
-- The helper transcribed `cs1.wav` as:
-  `我们的 deadline 是这个星期五。`
-  It returned language `zh`, preserved the English word `deadline`, and returned 10 aligned items.
+- The helper transcribed `cs1.wav` as: `我们的 deadline 是这个星期五。` It returned language `zh`, preserved
+  the English word `deadline`, and returned 10 aligned items.
 - The permanent managed installation was then run through the same English smoke test and produced
   the same text, language, and aligned-item count.
 
 ## App and safety changes
 
-- Added a meeting transcription engine preference while preserving the existing `large` and
-  `turbo` preference values. This is not a transcript or recording format change.
+- Added a meeting transcription engine preference while preserving the existing `large` and `turbo`
+  preference values. This is not a transcript or recording format change.
 - Added “Qwen3-ASR 1.7B — fast + accurate” to Settings. Whisper Large remains selected for existing
   and new users unless they opt in.
 - Added an app-bundled installer that requires 6 GB free, installs into a sibling staging directory,
   pins the runtime and model revisions, verifies both multi-gigabyte model hashes, validates the
   helper, and only then performs a rollback-safe runtime swap. Its exit/signal trap restores the
-  prior runtime if activation does not complete, and a later run recovers an orphaned backup left
-  by a force-quit or power loss.
+  prior runtime if activation does not complete, and a later run recovers an orphaned backup left by
+  a force-quit or power loss.
 - Installer recovery is serialized with a stale-PID-aware lock. Before checking free space, a new
   run removes abandoned staging directories and obsolete backups only after confirming a complete
   canonical runtime (or restoring a complete backup), preventing multi-gigabyte orphans from
@@ -150,8 +144,9 @@ optional prompt support, and error behavior differ.
 - Made vocabulary support an explicit capability. Whisper continues receiving the existing
   `initial_prompt`; Qwen never receives it because the current local Qwen API has no corresponding
   parameter. Settings disables and explains the vocabulary toggle for Qwen.
-- Added selected-model diagnostics, a model-specific repair action, self-test text, bundle packaging,
-  fresh-install copying, and self-healing copying for runtimes installed before this helper existed.
+- Added selected-model diagnostics, a model-specific repair action, self-test text, bundle
+  packaging, fresh-install copying, and self-healing copying for runtimes installed before this
+  helper existed.
 - Added local logs for model changes, warm-up model, per-engine transcription duration, helper
   synchronization, failures, and the pre-existing delivery/capture outcomes.
 
@@ -169,13 +164,11 @@ optional prompt support, and error behavior differ.
 - A first real-model smoke attempt inside the managed sandbox failed with
   `No Metal device available`, as expected for a GPU-restricted process. It was rerun outside that
   restriction with the approved installed runtime.
-- The production helper loaded
-  `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR/model` and transcribed the repository
-  clip `Scripts/bench/clips/en1.wav` as:
-  `Can you send me the quarterly report by Friday afternoon?`
-  The response contained `language: English` and no error. No user recording or transcript was read
-  or changed. After the silent prewarm, the complete response arrived inside the first one-second
-  output polling window.
+- The production helper loaded `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR/model`
+  and transcribed the repository clip `Scripts/bench/clips/en1.wav` as:
+  `Can you send me the quarterly report by Friday afternoon?` The response contained
+  `language: English` and no error. No user recording or transcript was read or changed. After the
+  silent prewarm, the complete response arrived inside the first one-second output polling window.
 - Python compilation, zsh syntax checks, and `git diff --check` passed with no output.
 - Complete Swift suite: **176 tests passed**.
 - Warnings-as-errors release build: `Build complete!`.

@@ -54,9 +54,10 @@ Test run with 1 test failed ... with 6 issues.
 ```
 
 Implemented coverage now proves model capabilities/default ordering, previous-engine retirement,
-retirement of both in-flight and idle-ready helpers, confirmed child-process exit before replacement,
-local Qwen launch arguments, shared request/response framing, unchanged WAV-path forwarding,
-automatic-language mapping, omission of Whisper-only vocabulary, and prewarm audio shape/options.
+retirement of both in-flight and idle-ready helpers, confirmed child-process exit before
+replacement, local Qwen launch arguments, shared request/response framing, unchanged WAV-path
+forwarding, automatic-language mapping, omission of Whisper-only vocabulary, and prewarm audio
+shape/options.
 
 Focused verification command:
 
@@ -80,7 +81,8 @@ Actual result:
 - Added an independent, persisted dictation model preference. Whisper Turbo remains the default;
   Qwen is opt-in and hidden on unsupported Intel Macs.
 - Added a selector to Quick Dictation settings and selected-model diagnostics/repair/self-test text.
-- Disabled and explained Business Vocabulary for Qwen instead of silently ignoring a visible promise.
+- Disabled and explained Business Vocabulary for Qwen instead of silently ignoring a visible
+  promise.
 - Added `SelectableDictationEngine`; model replacement now awaits permanent retirement of the prior
   engine before installing and warming the replacement. Retirement waits for child exit and uses a
   five-second forced-stop fallback for an unresponsive helper.
@@ -89,7 +91,8 @@ Actual result:
   inference before readiness, then serves the same dictation request format.
 - Kept Qwen offline in the Swift-launched process and omitted the meeting forced aligner to avoid
   unnecessary dictation memory/startup cost.
-- Added helper self-healing, fresh-installer copying, bundle packaging, and local lifecycle/timing logs.
+- Added helper self-healing, fresh-installer copying, bundle packaging, and local lifecycle/timing
+  logs.
 
 ## Real installed-model checks
 

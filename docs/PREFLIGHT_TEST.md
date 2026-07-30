@@ -5,11 +5,11 @@ that matters happens?* WhisperMeet captures two independent tracks — your micr
 system audio — and either can fail quietly (wrong input device, muted mic, no Screen-Recording
 permission, nothing actually playing). You only find out afterwards, when it's too late.
 
-Preflight test recording removes that risk. Before a critical meeting you run a short, **disposable**
-test: it records a few seconds of both channels, analyzes each for real signal, and tells you plainly
-whether mic and system audio are being captured — with specific guidance when one isn't. The test is
-kept entirely **separate from the permanent meeting library**: it writes to a temp folder, is never
-indexed as a meeting, and is deleted when you dismiss it.
+Preflight test recording removes that risk. Before a critical meeting you run a short,
+**disposable** test: it records a few seconds of both channels, analyzes each for real signal, and
+tells you plainly whether mic and system audio are being captured — with specific guidance when one
+isn't. The test is kept entirely **separate from the permanent meeting library**: it writes to a
+temp folder, is never indexed as a meeting, and is deleted when you dismiss it.
 
 ## What it measures (`PreflightSignalAnalyzer`, pure `WhisperCore`, tested)
 
@@ -36,25 +36,26 @@ under that; a lone transient (huge peak over a near-silent RMS) is far above it 
 
 ## The verdict (`PreflightAssessment`, pure `WhisperCore`, tested)
 
-`evaluate(microphone:system:)` combines the two channel signals into a `PreflightReport`: per-channel
-`isCapturing` (the channel carried *sustained* audio — see `isSustained`, not merely a peak above
-`silent`), a headline, and specific, actionable notes. The two channels are treated differently on
-purpose:
+`evaluate(microphone:system:)` combines the two channel signals into a `PreflightReport`:
+per-channel `isCapturing` (the channel carried *sustained* audio — see `isSustained`, not merely a
+peak above `silent`), a headline, and specific, actionable notes. The two channels are treated
+differently on purpose:
 
 - **A silent microphone is a real problem** — you almost always want your own voice. It's flagged
   firmly ("check your input device / that you're not muted").
 - **Silent system audio is usually benign** — it's only captured while another app is *playing*
-  sound, so during a quiet test it's expected. It's surfaced as an informational check, not a failure
-  ("system audio is only captured while something is playing").
+  sound, so during a quiet test it's expected. It's surfaced as an informational check, not a
+  failure ("system audio is only captured while something is playing").
 
 ## Capture (UI, `WhisperMeet`)
 
-A "Test recording" control in the Record view opens a sheet that records a fixed ~8-second sample via
-a **dedicated** `AudioCaptureEngine` into a temp directory, then shows the report and lets you play the
-sample back and re-run. It is blocked while a real meeting recording (or Quick Dictation) is active,
-and the temp files are removed on dismiss.
+A "Test recording" control in the Record view opens a sheet that records a fixed ~8-second sample
+via a **dedicated** `AudioCaptureEngine` into a temp directory, then shows the report and lets you
+play the sample back and re-run. It is blocked while a real meeting recording (or Quick Dictation)
+is active, and the temp files are removed on dismiss.
 
 ## Invariants respected
 
-Local-only (all analysis on-device), the permanent recording library is never touched, no diarization,
-original language only. The disposable test never becomes a meeting and never deletes any real recording.
+Local-only (all analysis on-device), the permanent recording library is never touched, no
+diarization, original language only. The disposable test never becomes a meeting and never deletes
+any real recording.
