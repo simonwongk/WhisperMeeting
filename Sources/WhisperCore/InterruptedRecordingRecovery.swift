@@ -79,7 +79,7 @@ public enum InterruptedRecordingRecovery {
         fileManager.createFile(atPath: outputURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
-        output.write(Data(repeating: 0, count: 44))
+        try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
 
         let systemReader = try RawFloatReader(url: systemFrames > 0 ? systemURL : nil)
         let microphoneReader = try RawFloatReader(url: microphoneFrames > 0 ? microphoneURL : nil)
@@ -99,16 +99,21 @@ public enum InterruptedRecordingRecovery {
                     : (systemSample + microphoneSample) * 0.95
                 pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
             }
-            pcm.withUnsafeBytes { output.write(Data($0)) }
+            try pcm.withUnsafeBytes {
+                try ThrowingFileHandleIO.write(Data($0), to: output)
+            }
             writtenFrames += Int64(count)
         }
 
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
-        output.write(wavHeader(
-            sampleRate: UInt32(sampleRate),
-            dataByteCount: dataByteCount
-        ))
+        try ThrowingFileHandleIO.write(
+            wavHeader(
+                sampleRate: UInt32(sampleRate),
+                dataByteCount: dataByteCount
+            ),
+            to: output
+        )
         try writeRecoveryManifestIfNeeded(
             in: directory,
             sampleRate: sampleRate,

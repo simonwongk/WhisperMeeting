@@ -241,7 +241,12 @@ private struct RecordMeetingView: View {
             .buttonStyle(.borderedProminent)
             .tint(isRecording ? .red : .accentColor)
             .controlSize(.large)
-            .disabled(model.recordingState == .starting || model.recordingState == .stopping || model.isImporting)
+            .disabled(
+                model.recordingState == .starting
+                    || model.recordingState == .stopping
+                    || model.isImporting
+                    || model.isInstallingRecognitionRuntime
+            )
 
             if isRecording {
                 Button("Cancel Recording", role: .destructive) {
@@ -341,6 +346,7 @@ private struct RecordMeetingView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.tint)
+            .disabled(model.isInstallingRecognitionRuntime)
             .help("Record a few disposable seconds and check that both your microphone and Mac system audio are actually captured.")
         }
         .font(.callout)
@@ -397,7 +403,7 @@ private struct RecordMeetingView: View {
             } label: {
                 Label("Import Recordings…", systemImage: "square.and.arrow.down")
             }
-            .disabled(model.isImporting)
+            .disabled(model.isImporting || model.isInstallingRecognitionRuntime)
             if model.isImporting {
                 ProgressView("Importing…").controlSize(.small)
             } else {
@@ -1015,10 +1021,10 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Local Whisper") {
+            Section("Local recognition") {
                 HStack {
                     Label(
-                        model.isRuntimeInstalled ? "Ready on this Mac" : "Not installed",
+                        model.isRuntimeInstalled ? "Whisper ready" : "Whisper not installed",
                         systemImage: model.isRuntimeInstalled
                             ? "checkmark.circle.fill"
                             : "arrow.down.circle"
@@ -1028,8 +1034,15 @@ struct SettingsView: View {
                     Button(model.isRuntimeInstalled ? "Repair or Update" : "Install Local Whisper") {
                         model.installLocalWhisper()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isInstallingRuntime || model.hasActiveTranscription)
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        model.isInstallingRuntime
+                            || model.isInstallingQwenRuntime
+                            || model.hasActiveTranscription
+                            || model.isMicrophoneBusy
+                            || model.isImporting
+                            || dictation.isActive
+                    )
                 }
                 if model.isInstallingRuntime {
                     ProgressView("Installing. This can take several minutes…")
@@ -1037,18 +1050,51 @@ struct SettingsView: View {
                     Text(message)
                         .foregroundStyle(.secondary)
                 }
+                if MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac {
+                    HStack {
+                        Label(
+                            model.isQwenInstalled ? "Qwen3-ASR ready" : "Qwen3-ASR not installed",
+                            systemImage: model.isQwenInstalled
+                                ? "checkmark.circle.fill"
+                                : "arrow.down.circle"
+                        )
+                        .foregroundStyle(model.isQwenInstalled ? .green : .orange)
+                        Spacer()
+                        Button(model.isQwenInstalled ? "Repair or Update" : "Install Qwen3-ASR") {
+                            model.installQwenASR()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(
+                            model.isInstallingRuntime
+                                || model.isInstallingQwenRuntime
+                                || model.hasActiveTranscription
+                                || model.isMicrophoneBusy
+                                || model.isImporting
+                                || dictation.isActive
+                        )
+                    }
+                    if model.isInstallingQwenRuntime {
+                        ProgressView("Installing about 4.5 GB. This can take several minutes…")
+                    } else if let message = model.qwenInstallationMessage {
+                        Text(message)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Qwen3-ASR requires an Apple-silicon Mac; Whisper remains available here.")
+                        .foregroundStyle(.secondary)
+                }
                 Text("Audio and transcripts stay on this Mac. No account, API key, or usage payment is required.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("The installer uses an existing Homebrew installation to add FFmpeg and an isolated Python environment.")
+                Text("Both installers use an existing Homebrew installation and isolated Python environments. Qwen uses about 4.5 GB including its timestamp model and runtime.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Transcription") {
-                Picker("Model", selection: $model.selectedModel) {
-                    ForEach(WhisperModel.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
+                Picker("Model", selection: $model.selectedEngine) {
+                    ForEach(MeetingTranscriptionEngine.availableCases, id: \.self) { engine in
+                        Text(engine.displayName).tag(engine)
                     }
                 }
                 Picker("Meeting language", selection: $model.selectedLanguage) {
@@ -1056,9 +1102,9 @@ struct SettingsView: View {
                         Text(language.displayName).tag(language)
                     }
                 }
-                Text("Large is the accuracy-first multilingual choice for English and Mandarin. Turbo is much faster with a small accuracy tradeoff. A model downloads once on first use.")
+                Text("Whisper Large remains the default. Qwen3-ASR was the most accurate option in the app's short English, Mandarin, and mixed-language benchmark while remaining fast; it is opt-in until it is proven on long, real meetings.")
                     .foregroundStyle(.secondary)
-                Text("OpenAI Whisper produces timestamps but does not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
+                Text("Qwen does not yet use Business Vocabulary. Both engines produce timestamps but do not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
                     .foregroundStyle(.secondary)
             }
 
@@ -1527,17 +1573,17 @@ private struct TranscriptDetailView: View {
 
     private func transcriptionPhaseLabel(_ meeting: MeetingRecord) -> String {
         guard let progress = model.transcriptionProgress[meeting.id] else {
-            return "Transcribing locally with Whisper…"
+            return "Transcribing locally…"
         }
         switch progress.phase {
         case .preparing:
             return "Preparing…"
         case .loadingModel:
-            return "Loading the Whisper model…"
+            return "Loading the recognition model…"
         case .downloadingModel:
-            return "Downloading the Whisper model (first use)… \(percentText(progress.fractionCompleted))"
+            return "Downloading the recognition model (first use)… \(percentText(progress.fractionCompleted))"
         case .transcribing:
-            return "Transcribing locally with Whisper… \(percentText(progress.fractionCompleted))"
+            return "Transcribing locally… \(percentText(progress.fractionCompleted))"
         }
     }
 

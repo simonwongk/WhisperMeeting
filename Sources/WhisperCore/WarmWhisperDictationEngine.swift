@@ -58,7 +58,12 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
                 language: language.commandLineValue,
                 initialPrompt: initialPrompt
             )
-            self.stdin?.write(try DictationWireProtocol.encodeLine(request))
+            if let stdin = self.stdin {
+                try ThrowingFileHandleIO.write(
+                    try DictationWireProtocol.encodeLine(request),
+                    to: stdin
+                )
+            }
             let line = try self.readLine(timeout: 120)
             let response = try DictationWireProtocol.decodeResponse(line: line)
             if let error = response.error {

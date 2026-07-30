@@ -35,6 +35,9 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - **Round 11** — Recording markers (`RecordingMarker` + `RecordingMarkers`, pure/tested): flag key
   moments during a meeting (⇧⌘M) or from playback, jump back via a seek strip, rename/delete, and
   export a `## Markers` section in Meeting Notes. Timestamps only — audio never touched.
+- **Alternative local ASR, synthetic phase** — Qwen3-ASR 1.7B MLX 8-bit plus its aligner won the
+  10-clip English/Mandarin/code-switch comparison and is available as an opt-in model. Whisper
+  Large remains the default until Qwen passes the real, long-meeting gate.
 
 ## Round 1 — Extract & organize (mostly pure logic, low risk) — DONE
 - **Subtitle & document export (SRT, VTT, Markdown, JSON)** — H/L/L. Pure `TranscriptExporter` in
@@ -67,13 +70,19 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - Recording: input-level peak-hold / short history sparkline.
 
 ## Next candidates — ordered
-1. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
+1. **Qwen real-meeting validation** — the short synthetic gate selected Qwen3-ASR 1.7B and the user
+   approved its opt-in integration. Before considering it as the default, benchmark copied,
+   manually corrected English/Mandarin/code-switch meetings, including 30–60 minute, noisy, and
+   far-field recordings. Measure vocabulary recall, hallucinations, timestamp accuracy, real-time
+   factor, peak memory, and chunk-boundary correctness. Keep Whisper as default unless every gate
+   in [`ASR_MODEL_ALTERNATIVES.md`](ASR_MODEL_ALTERNATIVES.md) passes.
+2. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
    while another meeting app is frontmost, with explicit confirmation before destructive cancel.
-2. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
+3. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
    transcripts to a user-selected folder, with verification and retention controls.
-3. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
+4. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
    support, including the recording-start timings and recovery decisions.
-4. **Signed release updates** — add a signed update feed only after an Apple signing identity and
+5. **Signed release updates** — add a signed update feed only after an Apple signing identity and
    release channel exist; keep the guarded local installer for development builds.
 
 ## Explicitly deferred (cost/risk vs. identity)

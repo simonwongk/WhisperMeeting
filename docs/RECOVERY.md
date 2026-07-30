@@ -32,8 +32,8 @@ The backup is deliberately one version behind after an ordinary save. Audio fold
 
 | Event | Automatic behavior | What remains safe |
 |---|---|---|
-| Local Whisper fails, exits, or produces invalid output | The meeting changes to **Needs Attention** and can be transcribed again. | The combined WAV and both source tracks. |
-| The user cancels transcription | The Whisper process stops and the meeting returns to **Ready**. | The combined WAV and both source tracks. |
+| The selected local engine fails, exits, or produces invalid output | The meeting changes to **Needs Attention** and can be transcribed again. | The combined WAV and both source tracks. |
+| The user cancels transcription | The selected local process stops and the meeting returns to **Ready**. | The combined WAV and both source tracks. |
 | The app quits during transcription | On the next launch, the meeting returns from **Processing** to **Ready**. | The recording and any previously saved transcript. |
 | Recording finalization fails | The app closes the raw track files instead of deleting them, then attempts to rebuild `meeting-recovered.wav`. | All source files that reached disk. |
 | The app or Mac stops during recording | On the next launch, the app finds the unindexed recording folder and attempts to rebuild a WAV from the raw tracks. | Raw source tracks; the recovered WAV when enough audio was written. |

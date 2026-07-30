@@ -11,7 +11,10 @@ struct WhisperMeetApp: App {
             ContentView(model: model, dictation: dictation)
                 .frame(minWidth: 900, minHeight: 620)
                 .task {
-                    dictation.configure(isMicrophoneBusy: { [weak model] in model?.isMicrophoneBusy ?? false })
+                    dictation.configure(isMicrophoneBusy: { [weak model] in
+                        guard let model else { return false }
+                        return model.isMicrophoneBusy || model.isInstallingRecognitionRuntime
+                    })
                     dictation.configureVocabulary { [weak model] in model?.store.vocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
                     await model.performStartupRecovery()

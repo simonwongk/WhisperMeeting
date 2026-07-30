@@ -99,11 +99,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeExecutableURL: URL?
     @Published private(set) var isInstallingRuntime = false
     @Published private(set) var installationMessage: String?
+    @Published private(set) var isQwenInstalled = false
+    @Published private(set) var isInstallingQwenRuntime = false
+    @Published private(set) var qwenInstallationMessage: String?
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
     @Published private(set) var isImporting = false
-    @Published var selectedModel: WhisperModel {
-        didSet { defaults.set(selectedModel.rawValue, forKey: Self.modelKey) }
+    @Published var selectedEngine: MeetingTranscriptionEngine {
+        didSet { defaults.set(selectedEngine.rawValue, forKey: Self.modelKey) }
     }
     @Published var selectedLanguage: WhisperLanguage {
         didSet { defaults.set(selectedLanguage.rawValue, forKey: Self.languageKey) }
@@ -119,6 +122,7 @@ final class AppModel: ObservableObject {
     private static let preflightDurationSeconds = 8
     private let defaults: UserDefaults
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
+    private var transcriptionSettings = TranscriptionSelectionStore()
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
     private var didPerformStartupRecovery = false
     private var isDictationActive: () -> Bool = { false }
@@ -143,19 +147,29 @@ final class AppModel: ObservableObject {
         self.store = store
         self.recorder = recorder
         self.defaults = defaults
-        selectedModel = WhisperModel(
+        let storedEngine = MeetingTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.modelKey) ?? ""
-        ) ?? .large
+        ) ?? .whisperLarge
+        selectedEngine = storedEngine.isSupportedOnCurrentMac ? storedEngine : .whisperLarge
         selectedLanguage = WhisperLanguage(
             rawValue: defaults.string(forKey: Self.languageKey) ?? ""
         ) ?? .automatic
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+        isQwenInstalled = QwenASRRuntime.isInstalled()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
         refreshRecordingPreflight()
     }
 
     var isRuntimeInstalled: Bool {
         runtimeExecutableURL != nil
+    }
+
+    var isSelectedEngineInstalled: Bool {
+        selectedEngine == .qwenBalanced ? isQwenInstalled : isRuntimeInstalled
+    }
+
+    var isInstallingRecognitionRuntime: Bool {
+        isInstallingRuntime || isInstallingQwenRuntime
     }
 
     /// Wires the reverse of dictation's own meeting-active guard: lets `startRecording()` refuse to
@@ -209,6 +223,7 @@ final class AppModel: ObservableObject {
 
     func refreshRuntime() {
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+        isQwenInstalled = QwenASRRuntime.isInstalled()
     }
 
     func refreshRecordingPreflight() {
@@ -296,7 +311,13 @@ final class AppModel: ObservableObject {
     }
 
     func installLocalWhisper() {
-        guard !isInstallingRuntime else { return }
+        guard !isInstallingRecognitionRuntime,
+              !isMicrophoneBusy,
+              !isImporting,
+              !hasActiveTranscription,
+              !isDictationActive() else {
+            return
+        }
         guard let scriptURL = Bundle.main.url(
             forResource: "setup-local-whisper",
             withExtension: "sh"
@@ -327,8 +348,53 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func installQwenASR() {
+        guard !isInstallingRecognitionRuntime,
+              !isMicrophoneBusy,
+              !isImporting,
+              !hasActiveTranscription,
+              !isDictationActive() else {
+            return
+        }
+        guard MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac else {
+            alertMessage = "Qwen3-ASR requires an Apple-silicon Mac. Whisper remains available on Intel Macs."
+            return
+        }
+        guard let scriptURL = Bundle.main.url(
+            forResource: "setup-qwen-asr",
+            withExtension: "sh"
+        ) else {
+            alertMessage = "The Qwen3-ASR installer is missing. Rebuild the app and try again."
+            return
+        }
+        isInstallingQwenRuntime = true
+        qwenInstallationMessage = "Installing Qwen3-ASR and its timestamp model…"
+        Task {
+            do {
+                try await runQwenInstaller(
+                    scriptURL: scriptURL,
+                    runtimeDirectory: QwenASRRuntime.managedDirectory()
+                )
+                refreshRuntime()
+                if isQwenInstalled {
+                    qwenInstallationMessage = "Qwen3-ASR is ready for local transcription."
+                } else {
+                    throw QwenASRError.runtimeNotInstalled
+                }
+            } catch {
+                qwenInstallationMessage = "Installation failed. The previous runtime was preserved."
+                alertMessage = error.localizedDescription
+            }
+            isInstallingQwenRuntime = false
+        }
+    }
+
     func startRecording() async {
         guard recordingState == .idle, !isImporting, !isMicrophoneBusy else { return }
+        guard !isInstallingRecognitionRuntime else {
+            alertMessage = "Wait for the local recognition model installation to finish before recording."
+            return
+        }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
             return
@@ -408,10 +474,10 @@ final class AppModel: ObservableObject {
             refreshRecordingPreflight()
 
             refreshRuntime()
-            if isRuntimeInstalled {
+            if isSelectedEngineInstalled {
                 beginTranscription(id: id)
             } else {
-                alertMessage = "Recording saved on this Mac. Install Local Whisper in Settings, then choose Transcribe."
+                alertMessage = "Recording saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
             }
             return id
         } catch let recordingError {
@@ -508,6 +574,10 @@ final class AppModel: ObservableObject {
     /// a meeting. See `docs/PREFLIGHT_TEST.md`.
     func startPreflightTest() {
         guard recordingState == .idle, !isImporting, !isMicrophoneBusy else { return }
+        guard !isInstallingRecognitionRuntime else {
+            alertMessage = "Wait for the local recognition model installation to finish before testing a recording."
+            return
+        }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before running a test recording — they can't share the microphone at the same time."
             return
@@ -623,6 +693,10 @@ final class AppModel: ObservableObject {
     /// conversion is needed here.
     func importRecording(from sourceURL: URL, title: String) async -> UUID? {
         guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return nil }
+        guard !isInstallingRecognitionRuntime else {
+            alertMessage = "Wait for the local recognition model installation to finish before importing."
+            return nil
+        }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin.
@@ -655,10 +729,10 @@ final class AppModel: ObservableObject {
             ))
             isImporting = false
             refreshRuntime()
-            if isRuntimeInstalled {
+            if isSelectedEngineInstalled {
                 beginTranscription(id: id)
             } else {
-                alertMessage = "Recording imported and saved on this Mac. Install Local Whisper in Settings, then choose Transcribe."
+                alertMessage = "Recording imported and saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
             }
             return id
         } catch {
@@ -712,12 +786,26 @@ final class AppModel: ObservableObject {
     /// Requests transcription for a meeting. If another transcription is already running, this one
     /// waits in the queue and starts automatically when the active one finishes.
     func beginTranscription(id: UUID) {
+        guard !isInstallingRecognitionRuntime else {
+            alertMessage = "Wait for the local recognition model installation to finish before transcribing."
+            return
+        }
         refreshRuntime()
-        guard runtimeExecutableURL != nil else {
-            alertMessage = LocalWhisperError.runtimeNotInstalled.localizedDescription
+        let settings = MeetingTranscriptionSelection(
+            engine: selectedEngine,
+            language: selectedLanguage
+        )
+        let engineIsInstalled = settings.engine == .qwenBalanced
+            ? isQwenInstalled
+            : isRuntimeInstalled
+        guard engineIsInstalled else {
+            alertMessage = settings.engine == .qwenBalanced
+                ? QwenASRError.runtimeNotInstalled.localizedDescription
+                : LocalWhisperError.runtimeNotInstalled.localizedDescription
             return
         }
         guard transcription.enqueue(id) else { return }
+        transcriptionSettings.snapshot(settings, for: id)
         pumpTranscriptionQueue()
     }
 
@@ -731,6 +819,7 @@ final class AppModel: ObservableObject {
         let task = Task {
             await performTranscription(id: next)
             transcriptionTasks[next] = nil
+            transcriptionSettings.remove(next)
             transcription.finishActive()
             pumpTranscriptionQueue()
         }
@@ -742,6 +831,7 @@ final class AppModel: ObservableObject {
         // the slot and starts the next one.
         if transcription.isPending(id) {
             transcription.remove(id)
+            transcriptionSettings.remove(id)
             return
         }
         if transcription.activeID == id {
@@ -805,9 +895,8 @@ final class AppModel: ObservableObject {
 
     private func performTranscription(id: UUID) async {
         // The meeting may have been deleted while queued; that is not an error.
-        guard let meeting = store.meeting(id: id) else { return }
-        guard let executableURL = runtimeExecutableURL else {
-            alertMessage = LocalWhisperError.runtimeNotInstalled.localizedDescription
+        guard let meeting = store.meeting(id: id),
+              let settings = transcriptionSettings.selection(for: id) else {
             return
         }
         store.update(id: id) {
@@ -815,20 +904,42 @@ final class AppModel: ObservableObject {
             $0.errorMessage = nil
         }
 
-        let client = LocalWhisperClient(
-            executableURL: executableURL,
-            modelDirectory: LocalWhisperRuntime.modelDirectory()
-        )
         do {
-            let result = try await client.transcribe(
-                recordingAt: store.recordingURL(for: meeting),
-                options: .accuracyFirst(
-                    model: selectedModel,
-                    language: selectedLanguage,
-                    keyterms: store.vocabulary
+            let recordingURL = store.recordingURL(for: meeting)
+            let result: TranscriptionResult
+            if settings.engine == .qwenBalanced {
+                guard isQwenInstalled else { throw QwenASRError.runtimeNotInstalled }
+                let client = QwenASRClient(
+                    pythonExecutableURL: QwenASRRuntime.pythonExecutable(),
+                    helperScriptURL: QwenASRRuntime.helperScript(),
+                    modelDirectory: QwenASRRuntime.modelDirectory(),
+                    alignerDirectory: QwenASRRuntime.alignerDirectory()
                 )
-            ) { progress in
-                await self.apply(progress: progress, to: id)
+                result = try await client.transcribe(
+                    recordingAt: recordingURL,
+                    language: settings.language
+                ) { progress in
+                    await self.apply(progress: progress, to: id)
+                }
+            } else {
+                guard let executableURL = runtimeExecutableURL,
+                      let whisperModel = settings.engine.whisperModel else {
+                    throw LocalWhisperError.runtimeNotInstalled
+                }
+                let client = LocalWhisperClient(
+                    executableURL: executableURL,
+                    modelDirectory: LocalWhisperRuntime.modelDirectory()
+                )
+                result = try await client.transcribe(
+                    recordingAt: recordingURL,
+                    options: .accuracyFirst(
+                        model: whisperModel,
+                        language: settings.language,
+                        keyterms: store.vocabulary
+                    )
+                ) { progress in
+                    await self.apply(progress: progress, to: id)
+                }
             }
             apply(result: result, to: id)
         } catch is CancellationError {
@@ -894,7 +1005,7 @@ final class AppModel: ObservableObject {
                 withIntermediateDirectories: true
             )
             let logURL = runtimeDirectory.appendingPathComponent("install.log")
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            try Data().write(to: logURL, options: .atomic)
             let handle = try FileHandle(forWritingTo: logURL)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -910,6 +1021,37 @@ final class AppModel: ObservableObject {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw LocalWhisperError.processFailed(
                     tail.isEmpty ? "The installer exited with status \(process.terminationStatus)." : tail
+                )
+            }
+        }.value
+    }
+
+    private func runQwenInstaller(scriptURL: URL, runtimeDirectory: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let parent = runtimeDirectory.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: parent,
+                withIntermediateDirectories: true
+            )
+            let logURL = parent.appendingPathComponent("qwen-install.log")
+            try Data().write(to: logURL, options: .atomic)
+            let handle = try FileHandle(forWritingTo: logURL)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            process.standardOutput = handle
+            process.standardError = handle
+            try process.run()
+            process.waitUntilExit()
+            try? handle.close()
+            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+            guard process.terminationStatus == 0 else {
+                let tail = String(log.suffix(2_000))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw QwenASRError.processFailed(
+                    tail.isEmpty
+                        ? "The installer exited with status \(process.terminationStatus)."
+                        : tail
                 )
             }
         }.value

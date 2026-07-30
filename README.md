@@ -1,6 +1,9 @@
 # WhisperMeet
 
-WhisperMeet is a native macOS meeting recorder focused on producing an accurate transcript after the meeting. It records microphone and Mac system audio, prepares a clean WAV file, and transcribes the meeting entirely on this Mac with the open-source [OpenAI Whisper repository](https://github.com/openai/whisper).
+WhisperMeet is a native macOS meeting recorder focused on producing an accurate transcript after
+the meeting. It records microphone and Mac system audio, prepares a clean WAV file, and transcribes
+the meeting entirely on this Mac. OpenAI Whisper is the default engine; Apple-silicon Macs can also
+install the opt-in open-source Qwen3-ASR engine.
 
 No API key, account, cloud upload, or per-minute fee is required. The transcript remains in the meeting’s original English or Mandarin.
 
@@ -10,6 +13,7 @@ No API key, account, cloud upload, or per-minute fee is required. The transcript
 - Swift 6.1 command-line tools or Xcode to build the app
 - Homebrew for the one-time local Whisper installation
 - Enough free memory for the chosen model: the official repository lists about 10 GB for `large` and 6 GB for `turbo`
+- Qwen3-ASR is optional and requires Apple silicon plus about 4.5 GB of storage
 
 ## Build and run
 
@@ -32,19 +36,26 @@ Open **Settings** and choose **Install Local Whisper**. The bundled installer us
 
 Whisper downloads the selected speech model once, on its first transcription, and stores it under `~/Library/Application Support/WhisperMeet/Models`.
 
+On Apple silicon, Settings also offers **Install Qwen3-ASR**. Its pinned, hash-verified runtime is
+stored under `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR`. Qwen is opt-in;
+Whisper Large remains the default because Qwen still needs validation on long, real meetings.
+
 For a manual installation from this checkout:
 
 ```bash
 Scripts/setup-local-whisper.sh
+Scripts/setup-qwen-asr.sh
 ```
 
 ## Workflow
 
-1. In **Settings**, choose `Large` for maximum English/Mandarin accuracy or `Turbo` for a much faster result with a small accuracy tradeoff. Leave the language on automatic detection or select English/Mandarin explicitly for a single-language meeting.
+1. In **Settings**, choose Whisper Large for the best-established English/Mandarin path, Whisper
+   Turbo for speed, or the optional Qwen3-ASR trial on Apple silicon.
 2. Optionally import business documents under **Business Vocabulary**. Review the extracted terms; only those terms become a local initial prompt for Whisper.
 3. Start a meeting recording. Headphones are recommended to prevent remote voices from leaking into the microphone track.
 4. Watch the separate microphone and system-audio meters. WhisperMeet warns about a disconnected capture channel, clipping, or low storage while keeping the source tracks on disk.
-5. Stop the recording. Local Whisper transcribes the finished WAV with `task=transcribe`, preserving the original language.
+5. Stop the recording. The selected local engine reads the finished WAV and preserves the original
+   language. A missing, failed, or cancelled engine never modifies the recording.
 6. Correct the timestamped transcript, copy it, or export it as UTF-8 text.
 
 Recordings, separate microphone/system source tracks, models, and transcripts are stored under `~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`, which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so the sources remain reusable.
@@ -53,7 +64,10 @@ Recordings, separate microphone/system source tracks, models, and transcripts ar
 
 Beyond the core record → transcribe flow:
 
-- **Quick Dictation** — a push-to-talk hotkey (default Right Option) transcribes a short clip and pastes it into any app. On Apple Silicon it uses a Metal-accelerated `mlx-whisper` helper that keeps the model warm for fast repeat dictations; it shares your Business Vocabulary. Meetings are unaffected — they stay on `openai/whisper`. See [docs/QUICK_DICTATION_DESIGN.md](docs/QUICK_DICTATION_DESIGN.md).
+- **Quick Dictation** — a push-to-talk hotkey (default Right Option) transcribes a short clip and
+  pastes it into any app. On Apple Silicon it uses a Metal-accelerated `mlx-whisper` helper that
+  keeps the model warm; this path is independent of the meeting model selection. See
+  [docs/QUICK_DICTATION_DESIGN.md](docs/QUICK_DICTATION_DESIGN.md).
 - **Preflight test recording** — an ~8-second check that confirms your microphone (and system audio) are actually capturing *sustained* signal before you rely on a real meeting. See [docs/PREFLIGHT_TEST.md](docs/PREFLIGHT_TEST.md).
 - **Recording markers** — flag key moments live (⇧⌘M) or in playback; jump back to them and include them in exported notes. See [docs/RECORDING_MARKERS.md](docs/RECORDING_MARKERS.md).
 - **Transcript quality review** — flags low-confidence, likely-silence, and repetitive segments (using Whisper’s own metrics), ordered worst-first, so you can spot-check the shakiest parts. It never changes your transcript. See [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
@@ -63,7 +77,10 @@ Development history is tracked in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ## Recording safety and recovery
 
-The recording is the source of truth. Local Whisper only reads the finished WAV, so a failed or cancelled transcription leaves the audio untouched and can be retried. The app also keeps previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when recording finalization fails, and scans for interrupted recording folders on its next launch.
+The recording is the source of truth. Both local engines only read the finished WAV, so a failed
+or cancelled transcription leaves the audio untouched and can be retried. The app also keeps
+previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks
+when recording finalization fails, and scans for interrupted recording folders on its next launch.
 
 Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual recovery steps, and the intentionally destructive **Cancel Recording** and **Delete Meeting** actions.
 

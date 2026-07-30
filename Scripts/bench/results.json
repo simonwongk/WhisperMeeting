@@ -3,7 +3,7 @@
     {
       "clip": "cs1",
       "lang": "cs",
-      "sec": 5.477,
+      "sec": 5.626,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -12,7 +12,7 @@
     {
       "clip": "cs2",
       "lang": "cs",
-      "sec": 4.612,
+      "sec": 5.623,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -21,7 +21,7 @@
     {
       "clip": "cs3",
       "lang": "cs",
-      "sec": 4.594,
+      "sec": 6.556,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -30,7 +30,7 @@
     {
       "clip": "en1",
       "lang": "en",
-      "sec": 4.653,
+      "sec": 6.737,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -39,7 +39,7 @@
     {
       "clip": "en2",
       "lang": "en",
-      "sec": 4.634,
+      "sec": 5.82,
       "det": "en",
       "metric": "WER",
       "val": 0.091,
@@ -48,7 +48,7 @@
     {
       "clip": "en3",
       "lang": "en",
-      "sec": 4.606,
+      "sec": 5.936,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -57,7 +57,7 @@
     {
       "clip": "en4",
       "lang": "en",
-      "sec": 4.648,
+      "sec": 7.094,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -66,7 +66,7 @@
     {
       "clip": "zh1",
       "lang": "zh",
-      "sec": 4.662,
+      "sec": 10.962,
       "det": "zh",
       "metric": "CER",
       "val": 0.071,
@@ -75,7 +75,7 @@
     {
       "clip": "zh2",
       "lang": "zh",
-      "sec": 4.691,
+      "sec": 6.762,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -84,7 +84,7 @@
     {
       "clip": "zh3",
       "lang": "zh",
-      "sec": 5.025,
+      "sec": 6.368,
       "det": "zh",
       "metric": "CER",
       "val": 0.077,
@@ -95,7 +95,7 @@
     {
       "clip": "cs1",
       "lang": "cs",
-      "sec": 1.51,
+      "sec": 1.666,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -104,7 +104,7 @@
     {
       "clip": "cs2",
       "lang": "cs",
-      "sec": 1.43,
+      "sec": 1.545,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -113,7 +113,7 @@
     {
       "clip": "cs3",
       "lang": "cs",
-      "sec": 1.39,
+      "sec": 1.545,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -122,7 +122,7 @@
     {
       "clip": "en1",
       "lang": "en",
-      "sec": 1.403,
+      "sec": 1.531,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -131,7 +131,7 @@
     {
       "clip": "en2",
       "lang": "en",
-      "sec": 1.388,
+      "sec": 1.552,
       "det": "en",
       "metric": "WER",
       "val": 0.091,
@@ -140,7 +140,7 @@
     {
       "clip": "en3",
       "lang": "en",
-      "sec": 1.388,
+      "sec": 1.63,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -149,7 +149,7 @@
     {
       "clip": "en4",
       "lang": "en",
-      "sec": 1.393,
+      "sec": 1.73,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -158,7 +158,7 @@
     {
       "clip": "zh1",
       "lang": "zh",
-      "sec": 1.415,
+      "sec": 1.593,
       "det": "zh",
       "metric": "CER",
       "val": 0.071,
@@ -167,7 +167,7 @@
     {
       "clip": "zh2",
       "lang": "zh",
-      "sec": 1.435,
+      "sec": 1.66,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -176,11 +176,287 @@
     {
       "clip": "zh3",
       "lang": "zh",
-      "sec": 1.409,
+      "sec": 1.588,
       "det": "zh",
       "metric": "CER",
       "val": 0.077,
       "hyp": "请提醒我下午3点跟客户开会。"
+    }
+  ],
+  "sensevoice-small-q8": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 0.144,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的deadline是这个星期五。"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 0.166,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我schedule一个meeting，明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 0.21,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.053,
+      "hyp": "这个bg已经fix了，可以 merge了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 0.208,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon."
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 0.22,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.091,
+      "hyp": "Let's schedule the design review for next Tuesday at 10."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 0.205,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "The build is failing on the release step, please take a look."
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 0.209,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 0.186,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我把今天的会议纪要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 0.196,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 0.195,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.077,
+      "hyp": "请提醒我下午3点跟客户开会。"
+    }
+  ],
+  "qwen3-asr-1.7b-8bit": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 0.339,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的 deadline 是这个星期五。"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 0.345,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我 schedule 一个 meeting，明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 0.435,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个 bug 已经 fix 了，可以 merge 了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 0.386,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon?"
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 0.41,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Let's schedule the design review for next Tuesday at ten."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 0.442,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "The build is failing on the release step. Please take a look."
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 0.422,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 0.38,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我把今天的会议纪要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 0.338,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 0.347,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "请提醒我下午三点跟客户开会。"
+    }
+  ],
+  "qwen3-asr-1.7b-8bit-auto": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 0.293,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的 deadline 是这个星期五。"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 0.343,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我 schedule 一个 meeting，明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 0.442,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个 bug 已经 fix 了，可以 merge 了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 0.391,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon?"
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 0.403,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Let's schedule the design review for next Tuesday at ten."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 0.437,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "The build is failing on the release step. Please take a look."
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 0.423,
+      "det": "auto",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 0.355,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我把今天的会议纪要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 0.323,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 0.345,
+      "det": "auto",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "请提醒我下午三点跟客户开会。"
     }
   ]
 }

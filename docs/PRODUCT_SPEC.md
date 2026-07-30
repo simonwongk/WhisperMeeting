@@ -9,7 +9,9 @@ Build an easy-to-use native Mac application whose primary outcome is the most ac
 - Record both microphone and Mac system audio.
 - Preserve separate source tracks and prepare a combined speech-focused WAV after the meeting.
 - Do not require realtime transcription.
-- Run the open-source `openai/whisper` package locally; do not require an API key or upload meeting audio.
+- Run open-source speech recognition locally; do not require an API key or upload meeting audio.
+  Keep OpenAI Whisper Large as the default and offer the tested Qwen3-ASR path only as an explicit
+  Apple-silicon opt-in until it passes long, real-meeting validation.
 - Automatically detect English or Mandarin, with an option to select either language for a normally single-language meeting.
 - Preserve the original spoken language by using the `transcribe` task, never automatic translation.
 - Default to the multilingual `large` model for accuracy and offer `turbo` as a faster option.
@@ -24,6 +26,8 @@ Build an easy-to-use native Mac application whose primary outcome is the most ac
 - Keep a previous-readable backup of meeting and vocabulary indexes. If neither index copy is readable, preserve both files and reconstruct history from usable recording folders without deleting audio.
 - Surface recovery and storage failures in plain language, state whether the recording is safe, and let the user reveal a meeting's recording in Finder.
 - On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python 3.11, and `openai-whisper`; explain the prerequisite in Settings and the README.
+- On Apple-silicon Macs, optionally provide a staged, hash-verifying Qwen3-ASR installer that cannot
+  run concurrently with capture or transcription and preserves the previous runtime on failure.
 
 ## Verified local Whisper contract
 

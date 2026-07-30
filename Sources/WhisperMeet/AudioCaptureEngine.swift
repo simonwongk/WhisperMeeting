@@ -529,7 +529,10 @@ private final class FloatTrackWriter {
             firstPresentationTime = sampleBuffer.presentationTimeStamp.seconds
         }
         let byteCount = Int(outputBuffer.frameLength) * MemoryLayout<Float>.size
-        handle.write(Data(bytes: samples, count: byteCount))
+        try ThrowingFileHandleIO.write(
+            Data(bytes: samples, count: byteCount),
+            to: handle
+        )
         frameCount += Int64(outputBuffer.frameLength)
         let sampleCount = Int(outputBuffer.frameLength)
         guard sampleCount > 0 else { return .silent }
@@ -594,7 +597,7 @@ private enum FloatTrackMixer {
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
-        output.write(Data(repeating: 0, count: 44))
+        try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
 
         let systemReader = try PaddedFloatReader(url: system.url, paddingFrames: systemPadding)
         let microphoneReader = try PaddedFloatReader(url: microphone.url, paddingFrames: microphonePadding)
@@ -615,16 +618,21 @@ private enum FloatTrackMixer {
                     : (systemSample + microphoneSample) * 0.95
                 pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
             }
-            pcm.withUnsafeBytes { output.write(Data($0)) }
+            try pcm.withUnsafeBytes {
+                try ThrowingFileHandleIO.write(Data($0), to: output)
+            }
             writtenFrames += count
         }
 
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
-        output.write(WAVWriter.header(
-            sampleRate: UInt32(sampleRate),
-            dataByteCount: dataByteCount
-        ))
+        try ThrowingFileHandleIO.write(
+            WAVWriter.header(
+                sampleRate: UInt32(sampleRate),
+                dataByteCount: dataByteCount
+            ),
+            to: output
+        )
         return Double(writtenFrames) / sampleRate
     }
 
@@ -683,4 +691,3 @@ private extension DispatchQueue {
         }
     }
 }
-

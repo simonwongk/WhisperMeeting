@@ -12,6 +12,45 @@ public enum WhisperModel: String, Codable, CaseIterable, Sendable, Hashable {
     }
 }
 
+public enum MeetingTranscriptionEngine: String, Codable, CaseIterable, Sendable, Hashable {
+    case whisperLarge = "large"
+    case whisperTurbo = "turbo"
+    case qwenBalanced = "qwen3-asr-1.7b-8bit"
+
+    public var displayName: String {
+        switch self {
+        case .whisperLarge: "Whisper Large — best-established"
+        case .whisperTurbo: "Whisper Turbo — fast"
+        case .qwenBalanced: "Qwen3-ASR 1.7B — fast + accurate"
+        }
+    }
+
+    public var whisperModel: WhisperModel? {
+        switch self {
+        case .whisperLarge: .large
+        case .whisperTurbo: .turbo
+        case .qwenBalanced: nil
+        }
+    }
+
+    public var isSupportedOnCurrentMac: Bool {
+        switch self {
+        case .whisperLarge, .whisperTurbo:
+            return true
+        case .qwenBalanced:
+            #if arch(arm64)
+            return true
+            #else
+            return false
+            #endif
+        }
+    }
+
+    public static var availableCases: [Self] {
+        allCases.filter(\.isSupportedOnCurrentMac)
+    }
+}
+
 public enum WhisperLanguage: String, Codable, CaseIterable, Sendable, Hashable {
     case automatic
     case english

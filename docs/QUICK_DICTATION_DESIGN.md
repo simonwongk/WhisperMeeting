@@ -182,7 +182,7 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
 
 ### Settings
 New **"Quick Dictation"** `Section` in the existing `SettingsView` `Form` (same
-`@Published` + `UserDefaults { didSet }` pattern as `selectedModel`/`selectedLanguage`):
+`@Published` + `UserDefaults { didSet }` pattern as `selectedEngine`/`selectedLanguage`):
 Enable toggle · trigger key recorder + Hold/Toggle · language (Auto/English/Mandarin) ·
 delivery (Auto-paste/Clipboard-only) · use business vocabulary as `initial_prompt` (optional) ·
 Launch-at-login · live permission rows (Microphone ✓/✗, Accessibility ✓/✗) with "Open System

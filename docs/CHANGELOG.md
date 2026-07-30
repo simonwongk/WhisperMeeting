@@ -1,10 +1,44 @@
 # Changelog
 
-Autonomous improvement work on WhisperMeet. Every round: design → implement (TDD for pure logic)
-→ `swift test` + `swift build` → adversarial multi-agent review → fix confirmed findings → build
-and deploy `/Applications/WhisperMeet.app`. Test count grew 28 → 67. Non-negotiable invariants
-(local-only except Claude summaries; recording is the source of truth; no diarization; original
-language only) preserved throughout.
+Improvement work on WhisperMeet. The earlier autonomous rounds followed design → implementation
+(TDD for pure logic) → `swift test` + `swift build` → adversarial multi-agent review → confirmed
+fixes → build and deploy. Later maintenance cycles record their own verification and deployment
+status explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude
+summaries; recording is the source of truth; no diarization; original language only) are preserved.
+
+## Maintenance cycle — crash-safe recording writes and ASR alternatives
+
+- Replaced every legacy `FileHandle.write(_:)` call in live source-track capture, final WAV
+  mixing, interrupted-recording recovery, and the warm dictation helper. That Foundation API raises
+  an uncaught `NSFileHandleOperationException` on an I/O failure; all writes now use one throwing
+  boundary (`ThrowingFileHandleIO`) so existing recording-preservation and recovery paths receive a
+  normal Swift error instead of the app terminating.
+- Added a regression test that closes a file handle and proves the failed write throws without
+  terminating the test process. Verification: focused test passed; complete suite **157/157**;
+  warnings-as-errors release build passed; packaged app built, ad-hoc signed, and passed
+  `codesign --verify --deep --strict`.
+- Researched and, after explicit approval, isolated and benchmarked current open-source ASR
+  alternatives for local English/Mandarin meetings. Qwen3-ASR 1.7B 8-bit was selected over
+  SenseVoiceSmall because it combined a 0.38-second warm synthetic result with zero measured
+  English WER, Mandarin CER, and code-switch CER. SenseVoice was faster at 0.19 seconds but made a
+  code-switch error. Full evidence, versions, hashes, failed/corrected checks, and limitations are
+  in [`ASR_EVALUATION_LOG_2026-07-29.md`](ASR_EVALUATION_LOG_2026-07-29.md).
+- Added Qwen3-ASR as an opt-in meeting model while keeping Whisper Large as the default. The app
+  preserves existing `large`/`turbo` preferences, so no recording or transcript data format changed.
+  Qwen runs fully offline after installation, writes only an isolated temporary result before
+  updating a meeting, safely falls back to complete text if timestamp alignment cannot be mapped,
+  and leaves the recording untouched on failure or cancellation.
+- Added a pinned, hash-verifying, staged Qwen installer and installed its 4.2 GB managed runtime
+  after approval. Installation/repair cannot run during recording or transcription. The packaged
+  app includes both the installer and production helper.
+- Final review hardened queued jobs (engine/language snapshots), aligner-failure text preservation,
+  Intel availability, installer mutual exclusion, interruption rollback, stale multi-gigabyte
+  artifact cleanup, and documentation. Both standards and specification re-reviews reported no
+  remaining actionable findings.
+- Final verification: shell syntax, Python compilation, and `git diff --check` passed; the complete
+  Swift suite passed **169/169**; the warnings-as-errors release build passed; the packaged app
+  contains the Qwen installer/helper, is ad-hoc signed, and passed
+  `codesign --verify --deep --strict`.
 
 ## Round 0 — Recording & transcription visibility
 - Recording-health panel that explains itself: one-word status (healthy / check / at-risk),
