@@ -39,6 +39,13 @@ recording is the source of truth; no diarization; original language only) are pr
   true error was `纪要`→`记要`. Measured on the small synthetic corpus, so treat it as a smoke test of
   the wire path, not a general accuracy claim.
 
+  Reproduce with `Scripts/bench/dictation-ab.py` (added under F29; the table above predated it and
+  was originally produced by an uncommitted script). It drives the installed production helpers over
+  the real wire protocol. The clips are gitignored — run `Scripts/bench/generate_clips.sh` first. A
+  second run on the same machine reproduced the **error rates exactly**; latency moved about 15 %
+  (2.2 s / 9.5 s cold, 0.31 s / 1.39 s warm), so treat the error columns as deterministic for a
+  given clip set and the timings as indicative of the gap rather than as fixed figures.
+
 ## Maintenance cycle — selectable Quick Dictation model
 
 - Added a separate Quick Dictation model choice in Settings: Whisper Turbo remains the default,

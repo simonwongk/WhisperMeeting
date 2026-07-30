@@ -34,6 +34,70 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F29 — The benchmark table in `CHANGELOG.md` could not be reproduced from the repo
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code
+- **Commits:** `6d9b03d`
+
+**Root cause.** The two-engine table published in the F24 entry was produced by a driver written in
+a session scratchpad and never committed. Nothing in the repo could re-run or falsify it — the same
+claim-without-artifact pattern that let F24 itself hide for so long. `Scripts/bench/benchmark.py`
+looks like the relevant tool but is not: it loads candidate models with its own loaders to compare
+engine families, and never speaks to the shipped helper subprocesses.
+
+**Fix.** Added `Scripts/bench/dictation-ab.py`. It spawns both **production** helpers with the exact
+argv `WarmWhisperDictationEngine` / `WarmQwenDictationEngine` use, including the Qwen offline
+environment, and speaks the real `{"wavPath", "language", "initialPrompt"}` wire protocol. That is
+the distinction that matters: a model-level benchmark cannot see F24, but this script fails loudly
+on it. The `CHANGELOG.md` entry now cites the command and states which numbers are deterministic.
+
+**Evidence.**
+
+The script caught a real stale-helper condition on its first run — the installed Whisper helper
+still predated the F24 fix, because the app syncs only the selected engine's helper and Qwen was
+selected (that is F25, reproduced live):
+
+```text
+== turbo ==
+turbo: helper never reported ready.
+Detected language: English
+```
+
+After syncing the installed helper from the app bundle the way the app itself does (`80e86bdaf487` →
+`a1d671e3e6da`), the full comparison ran:
+
+```text
+| engine | cold start | warm per clip | en | zh | code-switch |
+|---|---|---|---|---|---|
+| Qwen3-ASR 1.7B | 2.2 s | 0.31 s | 0.000 | 0.000 | 0.000 |
+| Whisper Turbo | 9.5 s | 1.39 s | 0.025 | 0.049 | 0.000 |
+```
+
+Compared against the originally published table (2.8 s / 8.6 s cold, 0.36 s / 1.43 s warm): the
+**error rates reproduced exactly**, and latency moved about 15 %. The changelog now says so rather
+than implying the timings are fixed.
+
+Suite unaffected and still green:
+
+```text
+✔ Test run with 178 tests passed after 1.100 seconds.
+```
+
+**Gaps.** Two, both now stated in the changelog rather than hidden:
+
+1. `Scripts/bench/clips/*.wav` are **gitignored** — only `references.json` is tracked. A fresh
+   checkout must run `Scripts/bench/generate_clips.sh`, which re-synthesises the clips with macOS
+   `say`. A different macOS version or voice set will produce different audio, so error rates are
+   reproducible for *a given clip set*, not universally. Committing the clips would close this
+   properly; it was not done here because it adds binary audio to the repo and deserves its own
+   decision.
+2. No failing-test-first evidence, because this ticket changed tooling and documentation, not
+   product behaviour. The definition of done requires that test for behaviour changes; asserting one
+   here would be theatre.
+
+---
+
 ## F24 — Whisper dictation helper polluted its own JSON protocol with stdout chatter
 
 - **Outcome:** fixed

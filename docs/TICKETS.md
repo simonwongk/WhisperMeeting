@@ -111,6 +111,12 @@ on-disk state does not reflect the shipped build, which makes diagnostics and ma
 misleading, and it means a helper fix is one user action away from mattering rather than applied on
 update.
 
+**Reproduced 2026-07-30 while fixing F29.** `Scripts/bench/dictation-ab.py` drives the *installed*
+helpers, so it hit the stale copy and failed exactly as F24 did —
+`turbo: helper never reported ready. / Detected language: English` — until the bundle copy was
+synced by hand. This is no longer only a tidiness concern: any tool or diagnostic that reads the
+installed runtime sees pre-fix code.
+
 **Proposed fix.** Sync both engines' helpers on launch (or whenever the bundle version changes)
 rather than only the selected one. Cheap — a content comparison and a small file write.
 
@@ -191,35 +197,6 @@ move the force-stop into the app target.
 
 **Verification.** `grep -rn "^import " Sources/WhisperCore/*.swift` shows Foundation only (plus any
 exception `CLAUDE.md` explicitly sanctions); a test asserts the alignment warning is observable.
-
-### F29 — The benchmark table in `CHANGELOG.md` cannot be reproduced from the repo
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** docs
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, spec) — **self-inflicted, see note**
-
-**Problem.** `docs/CHANGELOG.md` (F24 entry) publishes cold-start 2.8 s / 8.6 s, warm-per-clip 0.36
-s / 1.43 s, and per-language error rates. Those numbers came from a driver script written in a
-session scratchpad and **never committed**, so nothing in the repo reproduces them.
-`Scripts/bench/benchmark.py` is a different tool measuring a different configuration (its committed
-`results.json` is a pytorch-turbo fp32/CPU baseline at ~5–6 s per clip) and does not drive the
-production helpers.
-
-**Impact.** This is the exact claim-without-artifact pattern that let F24 hide: a published
-verification result that no one else can re-run or falsify.
-
-**Note.** Filed against my own work. The review agent additionally asserted the numbers came from
-`Scripts/bench/qwen_server.py` using an `audio` key rather than the production `wavPath` protocol —
-that part is misattributed; the driver did speak the production protocol to both production helpers.
-The reproducibility criticism stands regardless and is the reason this ticket exists.
-
-**Proposed fix.** Commit the driver under `Scripts/bench/` (it spawns both production helpers with
-the exact argv the Swift engines use and speaks the `wavPath` wire protocol), and have the CHANGELOG
-cite the command that produces the table. Or delete the table.
-
-**Verification.** A fresh checkout reproduces the published numbers with one documented command.
 
 ### F30 — Qwen alignment failure silently drops every timestamp
 
