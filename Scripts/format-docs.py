@@ -144,10 +144,17 @@ def format_text(source):
     return text.rstrip("\n") + "\n"
 
 
+def targets():
+    """Every Markdown doc in the repo: docs/ plus the top-level guides."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = sorted(glob.glob(os.path.join(root, "docs", "*.md")))
+    paths += [os.path.join(root, name) for name in ("README.md", "CLAUDE.md", "AGENTS.md")]
+    return [p for p in paths if os.path.exists(p)]
+
+
 def main():
-    root = "/Users/simonwang/Documents/Whisper/docs"
     changed = failed = 0
-    for path in sorted(glob.glob(os.path.join(root, "*.md"))):
+    for path in targets():
         original = open(path, encoding="utf-8").read()
         formatted = format_text(original)
 
