@@ -16,6 +16,28 @@ pastes a Claude API key in Settings and presses Summarize, the transcript is sen
 Claude API to produce a summary + key points + action items. Nothing is uploaded without a saved
 key and an explicit press (with a confirmation). See `docs/CLAUDE_SUMMARIES.md`.
 
+## Ticket workflow — required
+
+**`docs/TICKETS.md` is the single source of truth for outstanding work. Read it before starting any
+task, and file what you find there.**
+
+- **Before you start:** read `docs/TICKETS.md`. If your task is not on the board, file it as a ticket
+  first. Claim a ticket by setting `Status: in-progress` and `Owner` in the same commit that begins
+  the work; never take one already `in-progress`.
+- **While you work:** every defect, regression, unverified claim, or follow-up you notice gets a
+  ticket — even one you are not going to fix. A finding that exists only in a chat reply is lost when
+  the session ends. This applies to findings from code review as much as from implementation.
+- **When you close one:** move the entry out of `docs/TICKETS.md` and append it to
+  `docs/TICKET_LOG.md` with **real command output** — the failing test before the fix and the passing
+  test after, plus the build and any real-model run. Never delete a ticket; `wontfix` and `invalid`
+  are outcomes that get logged too. Reference the ID in commit messages: `fix(dictation): … (F24)`.
+- **Do not close `fixed` without meeting the definition of done** in `docs/TICKETS.md` — notably: a
+  test that fails before and passes after, and, for anything touching a runtime helper or model
+  adapter, verification against the **real installed model** rather than only a stub.
+
+`docs/TICKETS.md` tracks committed, verifiable work; `docs/ROADMAP.md` remains the aspirational
+feature backlog; `docs/CHANGELOG.md` remains the human-facing narrative of shipped cycles.
+
 ## Commands
 
 ```bash
