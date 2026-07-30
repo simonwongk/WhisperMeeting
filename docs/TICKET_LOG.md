@@ -38,7 +38,7 @@ corrects it and say which entry it supersedes.
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-30 by Claude Code
-- **Commits:** `6d9b03d`
+- **Commits:** `c2c141c`
 
 **Root cause.** The two-engine table published in the F24 entry was produced by a driver written in
 a session scratchpad and never committed. Nothing in the repo could re-run or falsify it — the same
