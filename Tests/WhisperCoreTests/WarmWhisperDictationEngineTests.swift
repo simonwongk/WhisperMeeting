@@ -34,6 +34,61 @@ func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
     #expect(elapsed < 8)
 }
 
+@Test("retire() waits for an in-flight helper to exit before model replacement")
+func warmDictationEngineRetirementDrainsProcessWork() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineRetire-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let script = tmp.appendingPathComponent("stall.sh")
+    try "exec sleep 20\n".write(to: script, atomically: true, encoding: .utf8)
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+
+    let warm = Task { try await engine.warmUp() }
+    try await Task.sleep(for: .milliseconds(400))
+    let startedRetiring = Date()
+    await engine.retire()
+    _ = await warm.result
+
+    #expect(Date().timeIntervalSince(startedRetiring) < 8)
+}
+
+@Test("retire() waits for an idle helper process to actually exit")
+func warmDictationEngineRetirementWaitsForIdleProcessExit() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineIdleRetire-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let marker = tmp.appendingPathComponent("helper-exited")
+    let script = tmp.appendingPathComponent("ready-then-delay-exit.sh")
+    let helper = """
+    trap 'sleep 1; touch "\(marker.path)"; exit 0' TERM
+    printf '{"ready":true}\\n'
+    while :; do sleep 1; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+
+    try await engine.warmUp()
+    let startedRetiring = Date()
+    await engine.retire()
+    let elapsed = Date().timeIntervalSince(startedRetiring)
+
+    #expect(FileManager.default.fileExists(atPath: marker.path))
+    #expect(elapsed >= 0.8)
+    #expect(elapsed < 8)
+}
+
 @Test("A helper that dies during start surfaces its stderr in the error")
 func warmDictationEngineSurfacesStderrOnFailure() async throws {
     let tmp = FileManager.default.temporaryDirectory
@@ -59,4 +114,38 @@ func warmDictationEngineSurfacesStderrOnFailure() async throws {
     } catch {
         #expect("\(error)".contains("MLX-IMPORT-BOOM"))
     }
+}
+
+@Test("Warm Qwen dictation engine launches the local model and speaks the shared protocol")
+func warmQwenDictationEngineUsesLocalModel() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmQwenEngine-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let script = tmp.appendingPathComponent("qwen-stub.sh")
+    let helper = """
+    test "$1" = "--model" || { echo "missing --model" >&2; exit 2; }
+    test "$2" = "\(tmp.path)" || { echo "wrong model path" >&2; exit 2; }
+    printf '{"ready":true}\\n'
+    IFS= read -r request
+    printf '{"text":"qwen result","language":"English","error":null}\\n'
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmQwenDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+
+    let result = try await engine.transcribe(
+        wavAt: tmp.appendingPathComponent("shared.wav"),
+        language: .english,
+        initialPrompt: nil
+    )
+
+    #expect(result.text == "qwen result")
+    #expect(result.languageCode == "English")
 }

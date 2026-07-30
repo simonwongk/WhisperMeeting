@@ -67,6 +67,64 @@ public protocol DictationEngine: Sendable {
     func warmUp() async throws
     func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult
     func shutdown()
+    /// Permanently stops this instance and waits until queued process work has drained. Model
+    /// selection uses this stronger lifecycle boundary so two resident models cannot overlap.
+    func retire() async
+}
+
+public extension DictationEngine {
+    func retire() async {
+        shutdown()
+    }
+}
+
+/// Stable engine boundary for Quick Dictation. The recorder always produces the same WAV; replacing
+/// this delegate changes only transcription and immediately releases the previous resident model.
+public final class SelectableDictationEngine: DictationEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var engine: DictationEngine
+
+    public init(engine: DictationEngine) {
+        self.engine = engine
+    }
+
+    public func replace(with replacement: DictationEngine) async {
+        let previous = current
+        await previous.retire()
+        install(replacement)
+    }
+
+    private func install(_ replacement: DictationEngine) {
+        lock.lock()
+        engine = replacement
+        lock.unlock()
+    }
+
+    public func warmUp() async throws {
+        try await current.warmUp()
+    }
+
+    public func transcribe(
+        wavAt url: URL,
+        language: WhisperLanguage,
+        initialPrompt: String?
+    ) async throws -> DictationResult {
+        try await current.transcribe(
+            wavAt: url,
+            language: language,
+            initialPrompt: initialPrompt
+        )
+    }
+
+    public func shutdown() {
+        current.shutdown()
+    }
+
+    private var current: DictationEngine {
+        lock.lock()
+        defer { lock.unlock() }
+        return engine
+    }
 }
 
 public struct DictationHotkey: Codable, Equatable, Sendable {

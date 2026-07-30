@@ -43,6 +43,11 @@ public struct QwenASRRuntime: Sendable {
             .appendingPathComponent("qwen_transcribe.py")
     }
 
+    public static func dictationHelperScript(applicationSupport: URL? = nil) -> URL {
+        managedDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("qwen_dictate_server.py")
+    }
+
     public static func modelDirectory(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("model", isDirectory: true)

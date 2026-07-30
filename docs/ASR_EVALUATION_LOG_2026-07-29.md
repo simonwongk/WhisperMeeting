@@ -123,6 +123,75 @@ The installer produced a `MANIFEST` containing the pinned versions, revisions, a
 Both installed model hashes were recalculated successfully, the Python executable is present and
 executable, and the installed directory measured 4.2 GB.
 
+## Quick Dictation integration — 2026-07-30
+
+The follow-up request was to make the model selectable for Quick Dictation while reusing its audio
+capture. OpenAI Whisper's live repository documentation and Qwen3-ASR's official repository were
+rechecked before changing either adapter. They confirm a common high-level contract (audio in, text
+out), but not an interchangeable function call: the runtimes, arguments, warm-model processes,
+optional prompt support, and error behavior differ.
+
+### Implementation log
+
+- Preserved `MicDictationRecorder` and its existing ephemeral WAV. The file still follows the same
+  cleanup, text delivery, clipboard fallback, and history code regardless of model.
+- Added an independent dictation preference with two choices: Whisper Turbo (unchanged default) and
+  Qwen3-ASR 1.7B (opt-in). Meeting selection is not coupled to it.
+- Added one tested selection boundary that swaps only the `DictationEngine`. It permanently retires
+  and drains the previous resident process before installing or warming the replacement. Selection
+  is refused while capture, transcription, delivery, model retirement, or a self-test is active.
+- Added `qwen_dictate_server.py`, using the existing newline-delimited dictation request/response
+  protocol. It receives the same WAV path, maps automatic language to Qwen's `auto`, keeps the ASR
+  model resident, forces the pinned installed snapshot offline, and compiles one silent inference
+  before emitting `{"ready":true}` so the first real dictation does not pay benchmark-excluded
+  first-inference compilation.
+- Excluded the forced aligner from dictation. It is necessary for meeting timestamps but would add
+  memory and startup cost without changing the dictated text.
+- Made vocabulary support an explicit capability. Whisper continues receiving the existing
+  `initial_prompt`; Qwen never receives it because the current local Qwen API has no corresponding
+  parameter. Settings disables and explains the vocabulary toggle for Qwen.
+- Added selected-model diagnostics, a model-specific repair action, self-test text, bundle packaging,
+  fresh-install copying, and self-healing copying for runtimes installed before this helper existed.
+- Added local logs for model changes, warm-up model, per-engine transcription duration, helper
+  synchronization, failures, and the pre-existing delivery/capture outcomes.
+
+### Test-first and real-runtime evidence
+
+- The first focused Swift run initially failed before implementation because the model enum and
+  selectable engine did not exist. That attempt also exposed the managed environment's unwritable
+  default Clang cache; rerunning with the repository's temporary cache convention produced the
+  intended red tests.
+- New regression coverage proves that Qwen is opt-in, vocabulary capability is honest, replacing a
+  model shuts down the old engine, the Qwen adapter receives the unchanged WAV path, automatic
+  language becomes `auto`, Whisper-only vocabulary is not forwarded, and the warm Qwen process uses
+  the local model argument and shared wire protocol.
+- Focused dictation/Qwen result: **10 tests passed**.
+- A first real-model smoke attempt inside the managed sandbox failed with
+  `No Metal device available`, as expected for a GPU-restricted process. It was rerun outside that
+  restriction with the approved installed runtime.
+- The production helper loaded
+  `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR/model` and transcribed the repository
+  clip `Scripts/bench/clips/en1.wav` as:
+  `Can you send me the quarterly report by Friday afternoon?`
+  The response contained `language: English` and no error. No user recording or transcript was read
+  or changed. After the silent prewarm, the complete response arrived inside the first one-second
+  output polling window.
+- Python compilation, zsh syntax checks, and `git diff --check` passed with no output.
+- Complete Swift suite: **176 tests passed**.
+- Warnings-as-errors release build: `Build complete!`.
+- Packaged application: `.build/WhisperMeet.app`; the bundle contains the 2.3 KB production Qwen
+  dictation helper and `codesign --verify --deep --strict` passed.
+- The guarded updater installed the verified app at `/Applications/WhisperMeet.app`; strict
+  signature verification also passed on the installed copy.
+
+The speed/accuracy choice remains based on the corrected benchmark above: Qwen averaged 0.38 seconds
+warm and was the only candidate with zero measured English, Mandarin, and code-switch error on the
+small synthetic corpus. This integration does not claim that synthetic accuracy generalizes to
+accents, background noise, or every real microphone.
+
+The exact verification excerpts, failed attempts, review findings, and their corrections are in
+[`DICTATION_MODEL_SELECTION_LOG_2026-07-30.md`](DICTATION_MODEL_SELECTION_LOG_2026-07-30.md).
+
 ## Verification history
 
 - Test-first failures were observed before the new engine enum, alignment assembler, and Qwen client

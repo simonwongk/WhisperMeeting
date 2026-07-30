@@ -1,14 +1,21 @@
 // Sources/WhisperCore/WarmWhisperDictationEngine.swift
+import Darwin
 import Foundation
 
 /// Keeps a Whisper model resident in a child Python process, driven over stdin/stdout
 /// newline-delimited JSON, so repeat dictations skip the multi-second model-load cost.
 /// All process/IO work is serialized on a private queue; the model is evicted on `shutdown()`.
 public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Sendable {
+    fileprivate enum Runtime {
+        case whisper
+        case qwen
+    }
+
     private let python: URL
     private let script: URL
-    private let modelDirectory: URL
-    private let mlxRepo: String
+    private let launchArguments: [String]
+    private let directoryToCreate: URL?
+    private let runtime: Runtime
     private let queue = DispatchQueue(label: "com.whispermeet.dictation.engine")
 
     private var process: Process?
@@ -22,6 +29,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private let liveLock = NSLock()
     private var liveProcess: Process?
     private var liveStdin: FileHandle?
+    private var retired = false
 
     // Continuously-drained stderr, so an early failure (e.g. an MLX import traceback) shows WHY the
     // helper died instead of a generic "stopped unexpectedly". Draining on a background handler
@@ -38,8 +46,26 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     ) {
         self.python = python
         self.script = script
-        self.modelDirectory = modelDirectory
-        self.mlxRepo = mlxRepo
+        self.launchArguments = [
+            "--mlx-repo", mlxRepo,
+            "--model-dir", modelDirectory.path,
+        ]
+        self.directoryToCreate = modelDirectory
+        self.runtime = .whisper
+    }
+
+    fileprivate init(
+        python: URL,
+        script: URL,
+        launchArguments: [String],
+        directoryToCreate: URL?,
+        runtime: Runtime
+    ) {
+        self.python = python
+        self.script = script
+        self.launchArguments = launchArguments
+        self.directoryToCreate = directoryToCreate
+        self.runtime = runtime
     }
 
     public func warmUp() async throws {
@@ -67,7 +93,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             let line = try self.readLine(timeout: 120)
             let response = try DictationWireProtocol.decodeResponse(line: line)
             if let error = response.error {
-                throw LocalWhisperError.processFailed(error)
+                throw self.processFailure(error)
             }
             let text = (response.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return DictationResult(
@@ -92,19 +118,30 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         process?.terminate()
 
         queue.async {
-            try? self.stdin?.close()
-            self.process?.terminate()
-            self.process = nil
-            self.stdin = nil
-            self.stdout = nil
-            self.stdoutBuffer.removeAll()
-            self.stderrHandle?.readabilityHandler = nil
-            self.stderrHandle = nil
-            self.liveLock.lock()
-            self.liveProcess = nil
-            self.liveStdin = nil
-            self.liveLock.unlock()
+            self.clearProcessState()
         }
+    }
+
+    public func retire() async {
+        let (process, input) = markRetiredAndCaptureLiveProcess()
+        try? input?.close()
+        process?.terminate()
+
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.clearProcessState()
+                continuation.resume()
+            }
+        }
+    }
+
+    private func markRetiredAndCaptureLiveProcess() -> (Process?, FileHandle?) {
+        liveLock.lock()
+        retired = true
+        let process = liveProcess
+        let input = liveStdin
+        liveLock.unlock()
+        return (process, input)
     }
 
     private func appendStderr(_ text: String) {
@@ -137,17 +174,25 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
     private func ensureRunning() throws {
         if let process, process.isRunning { return }
+        guard !isRetired else {
+            throw processFailure("Dictation model was replaced before it finished starting.")
+        }
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            throw LocalWhisperError.runtimeNotInstalled
+            throw runtimeMissing
         }
         guard FileManager.default.fileExists(atPath: script.path) else {
-            throw LocalWhisperError.runtimeNotInstalled
+            throw runtimeMissing
         }
-        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        if let directoryToCreate {
+            try FileManager.default.createDirectory(
+                at: directoryToCreate,
+                withIntermediateDirectories: true
+            )
+        }
 
         let process = Process()
         process.executableURL = python
-        process.arguments = [script.path, "--mlx-repo", mlxRepo, "--model-dir", modelDirectory.path]
+        process.arguments = [script.path] + launchArguments
         let inPipe = Pipe()
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -159,6 +204,12 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
         environment["PYTHONUNBUFFERED"] = "1"
         environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" // keep the model download off stderr
+        if runtime == .qwen {
+            // Qwen is installed as a pinned local snapshot. Never let dictation reach the network or
+            // silently replace the verified model while a user is trying to dictate.
+            environment["HF_HUB_OFFLINE"] = "1"
+            environment["TRANSFORMERS_OFFLINE"] = "1"
+        }
         process.environment = environment
         resetStderr()
         try process.run()
@@ -182,7 +233,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         liveLock.lock()
         liveProcess = process
         liveStdin = self.stdin
+        let shouldStop = retired
         liveLock.unlock()
+        if shouldStop {
+            try? self.stdin?.close()
+            process.terminate()
+            throw processFailure("Dictation model was replaced before it finished starting.")
+        }
 
         // Block until the helper reports the model is resident.
         // First enable may download the model (~1.6 GB); give the one-time download+load room
@@ -196,9 +253,9 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // (not a generic message) so the self-test / diagnostics show WHY it failed.
         if let response = try? DictationWireProtocol.decodeResponse(line: readyLine),
            let error = response.error {
-            throw LocalWhisperError.processFailed(error)
+            throw processFailure(error)
         }
-        throw LocalWhisperError.processFailed("Dictation helper failed to start.\(stderrSuffix())")
+        throw processFailure("Dictation helper failed to start.\(stderrSuffix())")
     }
 
     private func readLine(timeout: TimeInterval) throws -> Data {
@@ -215,14 +272,106 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         while true {
             if let line = DictationWireProtocol.takeLine(&stdoutBuffer) { return line }
             guard let stdout else {
-                throw LocalWhisperError.processFailed("Dictation helper is not running.")
+                throw processFailure("Dictation helper is not running.")
             }
             let chunk = stdout.availableData
             if chunk.isEmpty {
-                throw LocalWhisperError.processFailed("Dictation helper stopped unexpectedly.\(stderrSuffix())")
+                throw processFailure("Dictation helper stopped unexpectedly.\(stderrSuffix())")
             }
             stdoutBuffer.append(chunk)
         }
+    }
+
+    private var runtimeMissing: Error {
+        switch runtime {
+        case .whisper: LocalWhisperError.runtimeNotInstalled
+        case .qwen: QwenASRError.runtimeNotInstalled
+        }
+    }
+
+    private func processFailure(_ message: String) -> Error {
+        switch runtime {
+        case .whisper: LocalWhisperError.processFailed(message)
+        case .qwen: QwenASRError.processFailed(message)
+        }
+    }
+
+    private var isRetired: Bool {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return retired
+    }
+
+    private func clearProcessState() {
+        try? stdin?.close()
+        if let process {
+            terminateAndWait(process)
+        }
+        process = nil
+        stdin = nil
+        stdout = nil
+        stdoutBuffer.removeAll()
+        stderrHandle?.readabilityHandler = nil
+        stderrHandle = nil
+        liveLock.lock()
+        liveProcess = nil
+        liveStdin = nil
+        liveLock.unlock()
+    }
+
+    private func terminateAndWait(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let pid = process.processIdentifier
+        let forceStop = DispatchWorkItem {
+            if process.isRunning {
+                _ = Darwin.kill(pid, SIGKILL)
+            }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+        process.waitUntilExit()
+        forceStop.cancel()
+    }
+}
+
+/// Qwen adapter for the same resident-process dictation protocol. It deliberately excludes the
+/// forced aligner used by meetings: dictation needs text, not timestamps, and loading the extra
+/// model would increase latency and memory without improving the delivered text.
+public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable {
+    private let runner: WarmWhisperDictationEngine
+
+    public init(python: URL, script: URL, modelDirectory: URL) {
+        runner = WarmWhisperDictationEngine(
+            python: python,
+            script: script,
+            launchArguments: ["--model", modelDirectory.path],
+            directoryToCreate: nil,
+            runtime: .qwen
+        )
+    }
+
+    public func warmUp() async throws {
+        try await runner.warmUp()
+    }
+
+    public func transcribe(
+        wavAt url: URL,
+        language: WhisperLanguage,
+        initialPrompt: String?
+    ) async throws -> DictationResult {
+        try await runner.transcribe(
+            wavAt: url,
+            language: language,
+            initialPrompt: nil
+        )
+    }
+
+    public func shutdown() {
+        runner.shutdown()
+    }
+
+    public func retire() async {
+        await runner.retire()
     }
 }
 
@@ -265,6 +414,11 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
     public func shutdown() {
         primary.shutdown()
         fallback.shutdown()
+    }
+
+    public func retire() async {
+        await primary.retire()
+        await fallback.retire()
     }
 
     private func setChosen(_ engine: DictationEngine) {

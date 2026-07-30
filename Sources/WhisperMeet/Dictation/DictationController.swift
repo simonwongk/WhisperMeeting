@@ -8,16 +8,17 @@ import os
 
 /// Snapshot of the dictation feature's health, gathered on demand for a future diagnostics UI.
 struct DictationDiagnostics: Equatable {
+    var engineName: String
     var runtimeInstalled: Bool
     var helperInstalled: Bool
-    var turboCached: Bool
+    var modelReady: Bool
     var microphoneGranted: Bool
     var accessibilityGranted: Bool
     var hotkeyActive: Bool
 }
 
-/// Owns the quick-dictation feature end to end: hotkey → capture → warm Whisper → paste, driven by
-/// the pure `DictationSession`. Independent of the meeting pipeline; disabled while a meeting records.
+/// Owns the quick-dictation feature end to end: hotkey → capture → selected local model → paste,
+/// driven by the pure `DictationSession`. Independent of the meeting pipeline.
 @MainActor
 final class DictationController: ObservableObject {
     enum Status: Equatable {
@@ -30,6 +31,7 @@ final class DictationController: ObservableObject {
     @Published var hotkey: DictationHotkey { didSet { persist(); if enabled { _ = hotkeyMonitor.start(hotkey: hotkey) } } }
     @Published var language: WhisperLanguage { didSet { persist() } }
     @Published var autoPaste: Bool { didSet { persist() } }
+    @Published private(set) var selectedEngine: DictationTranscriptionEngine
     /// Whether Quick Dictation feeds the business vocabulary into Whisper's initial prompt. On by
     /// default (same spelling nudge meetings get); can be turned off for plain dictation.
     @Published var useVocabulary: Bool { didSet { persist() } }
@@ -37,10 +39,10 @@ final class DictationController: ObservableObject {
     var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
     func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
 
-    /// True while dictation owns the microphone (listening/transcribing) or is about to deliver its
-    /// result — used by `AppModel` to refuse starting a meeting recording that would fight it for
-    /// the mic. `.idle`, `.disabled`, and `.error` are all safe for a meeting to start.
+    /// True while dictation owns the microphone/result path or is retiring a resident model. Used by
+    /// `AppModel` to avoid microphone and large-model contention with meeting recording.
     var isActive: Bool {
+        if isSwitchingModel { return true }
         switch status {
         case .listening, .transcribing, .delivering: return true
         case .disabled, .idle, .error: return false
@@ -50,12 +52,14 @@ final class DictationController: ObservableObject {
     let logStore = DictationLogStore()
     @Published var selfTestResult: String?
     @Published private(set) var isSelfTesting = false
+    @Published private(set) var isSwitchingModel = false
 
     private let defaults: UserDefaults
     private let hotkeyMonitor = HotkeyMonitor()
     private let recorder = MicDictationRecorder()
     private let overlay = DictationOverlay()
-    private let engine: DictationEngine
+    private let engine: SelectableDictationEngine
+    private let engineFactory: (DictationTranscriptionEngine) -> DictationEngine
     private var session = DictationSession()
     private var isMicrophoneBusy: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
@@ -72,10 +76,24 @@ final class DictationController: ObservableObject {
     private static let languageKey = "dictationLanguage"
     private static let autoPasteKey = "dictationAutoPaste"
     private static let useVocabularyKey = "dictationUseVocabulary"
+    private static let engineKey = "dictationTranscriptionEngine"
 
-    init(defaults: UserDefaults = .standard, engine: DictationEngine? = nil) {
+    init(
+        defaults: UserDefaults = .standard,
+        engine: DictationEngine? = nil,
+        engineFactory: ((DictationTranscriptionEngine) -> DictationEngine)? = nil
+    ) {
         self.defaults = defaults
-        self.engine = engine ?? DictationController.makeDefaultEngine()
+        let storedEngine = DictationTranscriptionEngine(
+            rawValue: defaults.string(forKey: Self.engineKey) ?? ""
+        ) ?? .whisperTurbo
+        let initialSelection = storedEngine.isSupportedOnCurrentMac ? storedEngine : .whisperTurbo
+        selectedEngine = initialSelection
+        let factory = engineFactory ?? DictationController.makeEngine
+        self.engineFactory = factory
+        self.engine = SelectableDictationEngine(
+            engine: engine ?? factory(initialSelection)
+        )
         enabled = defaults.bool(forKey: Self.enabledKey)
         hotkey = (try? JSONDecoder().decode(DictationHotkey.self, from: defaults.data(forKey: Self.hotkeyKey) ?? Data())) ?? .rightOption
         language = WhisperLanguage(rawValue: defaults.string(forKey: Self.languageKey) ?? "") ?? .automatic
@@ -88,7 +106,14 @@ final class DictationController: ObservableObject {
         apply()
     }
 
-    private static func makeDefaultEngine() -> DictationEngine {
+    private static func makeEngine(for selection: DictationTranscriptionEngine) -> DictationEngine {
+        if selection == .qwenBalanced {
+            return WarmQwenDictationEngine(
+                python: QwenASRRuntime.pythonExecutable(),
+                script: QwenASRRuntime.dictationHelperScript(),
+                modelDirectory: QwenASRRuntime.modelDirectory()
+            )
+        }
         let python = LocalWhisperRuntime.pythonExecutable()
         let script = LocalWhisperRuntime.dictationServerScript()
         let models = LocalWhisperRuntime.modelDirectory()
@@ -116,9 +141,29 @@ final class DictationController: ObservableObject {
 
     func setEnabled(_ on: Bool) { enabled = on }
 
+    func setSelectedEngine(_ selection: DictationTranscriptionEngine) {
+        guard selection.isSupportedOnCurrentMac,
+              selection != selectedEngine,
+              !isActive,
+              !isSelfTesting else { return }
+        idleEvictWorkItem?.cancel()
+        selectedEngine = selection
+        persist()
+        ensureHelperInstalled()
+        let replacement = engineFactory(selection)
+        isSwitchingModel = true
+        selfTestResult = nil
+        log.notice("dictation model changed to \(selection.rawValue, privacy: .public)")
+        Task { [engine] in
+            await engine.replace(with: replacement)
+            self.isSwitchingModel = false
+            self.warmUpIfNeeded()
+        }
+    }
+
     func warmUpIfNeeded() {
         guard enabled else { return }
-        log.notice("warm-up starting")
+        log.notice("warm-up starting for \(self.selectedEngine.rawValue, privacy: .public)")
         Task { [engine, log] in
             do {
                 try await engine.warmUp()
@@ -153,24 +198,33 @@ final class DictationController: ObservableObject {
             idleEvictWorkItem?.cancel()
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
             overlay.hide()
-            engine.shutdown()             // release the resident Whisper model/subprocess when disabled
+            engine.shutdown()             // release the resident model/subprocess when disabled
             status = .disabled
             log.notice("dictation disabled")
         }
     }
 
-    /// Keep the installed dictation helper in sync with the version shipped in THIS app build: if the
-    /// managed Python venv exists, (re-)copy the bundled `whisper_dictate_server.py` into the runtime
-    /// whenever it's missing OR differs. This self-heals a wiped helper AND applies updates whose arg
-    /// contract changed (e.g. the openai→MLX switch) — a stale helper would otherwise break dictation.
+    /// Keep the selected model's installed helper in sync with this app build. This self-heals an
+    /// existing runtime that predates Qwen dictation as well as applying future protocol fixes.
     private func ensureHelperInstalled() {
-        let python = LocalWhisperRuntime.pythonExecutable()
-        let script = LocalWhisperRuntime.dictationServerScript()
+        let resource: String
+        let python: URL
+        let script: URL
+        switch selectedEngine {
+        case .whisperTurbo:
+            resource = "whisper_dictate_server"
+            python = LocalWhisperRuntime.pythonExecutable()
+            script = LocalWhisperRuntime.dictationServerScript()
+        case .qwenBalanced:
+            resource = "qwen_dictate_server"
+            python = QwenASRRuntime.pythonExecutable()
+            script = QwenASRRuntime.dictationHelperScript()
+        }
         guard FileManager.default.fileExists(atPath: python.path) else { return } // no runtime installed yet
-        guard let bundled = Bundle.main.url(forResource: "whisper_dictate_server", withExtension: "py"),
+        guard let bundled = Bundle.main.url(forResource: resource, withExtension: "py"),
               let bundledData = try? Data(contentsOf: bundled) else {
             if !FileManager.default.fileExists(atPath: script.path) {
-                log.error("dictation helper missing and no bundled copy found to self-heal from")
+                log.error("\(resource, privacy: .public) missing and no bundled copy found")
             }
             return
         }
@@ -182,7 +236,7 @@ final class DictationController: ObservableObject {
                 withIntermediateDirectories: true
             )
             try bundledData.write(to: script)
-            log.notice("dictation helper synced from app bundle into runtime")
+            log.notice("\(resource, privacy: .public) synced from app bundle into runtime")
         } catch {
             log.error("failed to install dictation helper: \(error.localizedDescription, privacy: .public)")
         }
@@ -200,7 +254,7 @@ final class DictationController: ObservableObject {
     // MARK: - Hotkey events
 
     private func handlePressStart() {
-        guard enabled else { return }
+        guard enabled, !isSwitchingModel else { return }
         if isMicrophoneBusy() {
             log.notice("dictation press ignored — microphone busy (meeting or mic test)")
             flashBusy()
@@ -279,9 +333,13 @@ final class DictationController: ObservableObject {
 
     private func transcribe(clip: (url: URL, duration: TimeInterval)) {
         let language = self.language
+        let selection = selectedEngine
         // Same business vocabulary the meeting pipeline already feeds into Whisper's
         // `initial_prompt`, capped/formatted identically via the shared `VocabularyPrompt` helper.
-        let vocab = useVocabulary ? vocabularyProvider() : []
+        // Qwen has no prompt parameter, so the capability check prevents a misleading no-op.
+        let vocab = useVocabulary && selection.supportsVocabularyPrompt
+            ? vocabularyProvider()
+            : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
         Task { [engine, log] in
@@ -299,7 +357,7 @@ final class DictationController: ObservableObject {
                     cleaned, terms: vocab, noSpeechProb: result.noSpeechProb) {
                     cleaned = ""
                 }
-                log.notice("transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
+                log.notice("\(selection.rawValue, privacy: .public) transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
                 await MainActor.run { self.finish(text: cleaned) }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
@@ -401,10 +459,34 @@ final class DictationController: ObservableObject {
     // MARK: - Diagnostics / self-test
 
     func diagnostics() -> DictationDiagnostics {
-        DictationDiagnostics(
-            runtimeInstalled: FileManager.default.isExecutableFile(atPath: LocalWhisperRuntime.pythonExecutable().path),
-            helperInstalled: FileManager.default.fileExists(atPath: LocalWhisperRuntime.dictationServerScript().path),
-            turboCached: LocalWhisperRuntime.mlxModelCached(),
+        let files = FileManager.default
+        let runtimeInstalled: Bool
+        let helperInstalled: Bool
+        let modelReady: Bool
+        switch selectedEngine {
+        case .whisperTurbo:
+            runtimeInstalled = files.isExecutableFile(
+                atPath: LocalWhisperRuntime.pythonExecutable().path
+            )
+            helperInstalled = files.fileExists(
+                atPath: LocalWhisperRuntime.dictationServerScript().path
+            )
+            modelReady = LocalWhisperRuntime.mlxModelCached()
+        case .qwenBalanced:
+            runtimeInstalled = QwenASRRuntime.isInstalled()
+            helperInstalled = files.fileExists(
+                atPath: QwenASRRuntime.dictationHelperScript().path
+            )
+            modelReady = files.fileExists(
+                atPath: QwenASRRuntime.modelDirectory()
+                    .appendingPathComponent("model.safetensors").path
+            )
+        }
+        return DictationDiagnostics(
+            engineName: selectedEngine.displayName,
+            runtimeInstalled: runtimeInstalled,
+            helperInstalled: helperInstalled,
+            modelReady: modelReady,
             microphoneGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibilityGranted: HotkeyMonitor.isAccessibilityTrusted,
             hotkeyActive: hotkeyActive
@@ -412,11 +494,12 @@ final class DictationController: ObservableObject {
     }
 
     func runSelfTest() {
-        guard !isSelfTesting else { return }
+        guard !isSelfTesting, !isSwitchingModel else { return }
         isSelfTesting = true
         selfTestResult = nil
         idleEvictWorkItem?.cancel() // self-test is activity — don't let a stale timer evict mid-test
         ensureHelperInstalled()
+        let engineName = selectedEngine.displayName
         Task { [engine] in
             let samples = [Float](repeating: 0, count: 16_000) // 1s of silence @16kHz
             let url = FileManager.default.temporaryDirectory
@@ -425,7 +508,7 @@ final class DictationController: ObservableObject {
             do {
                 try WhisperCore.WAVWriter.wavData(from: samples, sampleRate: 16_000).write(to: url)
                 _ = try await engine.transcribe(wavAt: url, language: .automatic, initialPrompt: nil)
-                message = "✓ Whisper helper responded — dictation pipeline is working."
+                message = "✓ \(engineName) responded — dictation pipeline is working."
             } catch {
                 message = "✗ \(error.localizedDescription)"
             }
@@ -444,5 +527,6 @@ final class DictationController: ObservableObject {
         defaults.set(language.rawValue, forKey: Self.languageKey)
         defaults.set(autoPaste, forKey: Self.autoPasteKey)
         defaults.set(useVocabulary, forKey: Self.useVocabularyKey)
+        defaults.set(selectedEngine.rawValue, forKey: Self.engineKey)
     }
 }

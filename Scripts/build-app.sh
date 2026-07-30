@@ -23,6 +23,7 @@ cp "Scripts/whisper_dictate_server.py" "$app_dir/Contents/Resources/whisper_dict
 cp "Scripts/setup-qwen-asr.sh" "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 chmod +x "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 cp "Scripts/qwen_transcribe.py" "$app_dir/Contents/Resources/qwen_transcribe.py"
+cp "Scripts/qwen_dictate_server.py" "$app_dir/Contents/Resources/qwen_dictate_server.py"
 codesign --force --deep --sign - "$app_dir"
 
 print -r -- "$PWD/$app_dir"

@@ -7,7 +7,7 @@ struct DictationView: View {
     @ObservedObject var log: DictationLogStore
     @ObservedObject var model: AppModel
     @State private var diag = DictationDiagnostics(
-        runtimeInstalled: false, helperInstalled: false, turboCached: false,
+        engineName: "", runtimeInstalled: false, helperInstalled: false, modelReady: false,
         microphoneGranted: false, accessibilityGranted: false, hotkeyActive: false
     )
 
@@ -22,9 +22,9 @@ struct DictationView: View {
 
                 GroupBox("Status & diagnostics") {
                     VStack(alignment: .leading, spacing: 10) {
-                        statusRow("Local Whisper runtime", diag.runtimeInstalled)
+                        statusRow("\(diag.engineName) runtime", diag.runtimeInstalled)
                         statusRow("Dictation helper installed", diag.helperInstalled)
-                        statusRow("Turbo model downloaded", diag.turboCached)
+                        statusRow("Selected model ready", diag.modelReady)
                         statusRow("Microphone permission", diag.microphoneGranted)
                         statusRow("Accessibility permission", diag.accessibilityGranted)
                         statusRow("Hotkey listening", diag.hotkeyActive)
@@ -36,9 +36,14 @@ struct DictationView: View {
                             }
                             .disabled(dictation.isSelfTesting)
                             Button("Refresh") { diag = dictation.diagnostics() }
-                            if !diag.runtimeInstalled || !diag.helperInstalled {
-                                Button("Install / Repair Local Whisper") { model.installLocalWhisper() }
-                                    .disabled(model.isInstallingRuntime)
+                            if !diag.runtimeInstalled || !diag.helperInstalled || !diag.modelReady {
+                                if dictation.selectedEngine == .qwenBalanced {
+                                    Button("Install / Repair Qwen3-ASR") { model.installQwenASR() }
+                                        .disabled(model.isInstallingQwenRuntime)
+                                } else {
+                                    Button("Install / Repair Local Whisper") { model.installLocalWhisper() }
+                                        .disabled(model.isInstallingRuntime)
+                                }
                             }
                             Spacer()
                         }

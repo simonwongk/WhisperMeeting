@@ -1133,6 +1133,15 @@ struct SettingsView: View {
                 if let keyCaptureHint {
                     Text(keyCaptureHint).font(.caption).foregroundStyle(.orange)
                 }
+                Picker("Recognition model", selection: Binding(
+                    get: { dictation.selectedEngine },
+                    set: { dictation.setSelectedEngine($0) }
+                )) {
+                    ForEach(DictationTranscriptionEngine.availableCases, id: \.self) { engine in
+                        Text(engine.displayName).tag(engine)
+                    }
+                }
+                .disabled(dictation.isActive || dictation.isSelfTesting)
                 Picker("Language", selection: $dictation.language) {
                     ForEach(WhisperLanguage.allCases, id: \.self) { language in
                         Text(language.displayName).tag(language)
@@ -1140,6 +1149,12 @@ struct SettingsView: View {
                 }
                 Toggle("Paste into the focused field (else copy to clipboard)", isOn: $dictation.autoPaste)
                 Toggle("Use business vocabulary for dictation", isOn: $dictation.useVocabulary)
+                    .disabled(!dictation.selectedEngine.supportsVocabularyPrompt)
+                if !dictation.selectedEngine.supportsVocabularyPrompt {
+                    Text("Qwen does not currently accept Business Vocabulary prompts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {
@@ -1161,7 +1176,7 @@ struct SettingsView: View {
                         Button("Grant…") { dictation.requestAccessibility() }
                     }
                 }
-                Text("Hold Right Option anywhere to dictate. Transcription is 100% local (Whisper turbo). Accessibility is required to paste and to detect the hold key.")
+                Text("Use \(DictationKeyName.display(for: dictation.hotkey.keyCode)) anywhere to dictate. \(dictation.selectedEngine.displayName) runs 100% locally. Accessibility is required to paste and detect the trigger.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

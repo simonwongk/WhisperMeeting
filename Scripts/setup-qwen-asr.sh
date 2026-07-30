@@ -4,6 +4,7 @@ set -euo pipefail
 target_directory="${1:-${HOME}/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR}"
 script_directory="${0:A:h}"
 helper_source="$script_directory/qwen_transcribe.py"
+dictation_helper_source="$script_directory/qwen_dictate_server.py"
 runtime_parent="${target_directory:h}"
 staging_directory="$runtime_parent/.Qwen3ASR-install-$$"
 backup_directory="$runtime_parent/.Qwen3ASR-backup-$$"
@@ -26,6 +27,10 @@ if [[ "${QWEN_INSTALL_RECOVERY_ONLY:-0}" != "1"
 fi
 if [[ ! -f "$helper_source" ]]; then
   print -u2 "The bundled Qwen3-ASR helper is missing."
+  exit 1
+fi
+if [[ ! -f "$dictation_helper_source" ]]; then
+  print -u2 "The bundled Qwen3-ASR dictation helper is missing."
   exit 1
 fi
 
@@ -154,6 +159,8 @@ fi
 
 cp "$helper_source" "$staging_directory/qwen_transcribe.py"
 chmod 644 "$staging_directory/qwen_transcribe.py"
+cp "$dictation_helper_source" "$staging_directory/qwen_dictate_server.py"
+chmod 644 "$staging_directory/qwen_dictate_server.py"
 {
   print "mlx-audio=$mlx_audio_version"
   print "asr_repository=$asr_repository"
@@ -165,6 +172,7 @@ chmod 644 "$staging_directory/qwen_transcribe.py"
 } > "$staging_directory/MANIFEST"
 
 "$staging_directory/venv/bin/python" "$staging_directory/qwen_transcribe.py" --help >/dev/null
+"$staging_directory/venv/bin/python" "$staging_directory/qwen_dictate_server.py" --help >/dev/null
 
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"

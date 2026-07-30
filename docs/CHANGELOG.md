@@ -6,6 +6,29 @@ fixes → build and deploy. Later maintenance cycles record their own verificati
 status explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude
 summaries; recording is the source of truth; no diarization; original language only) are preserved.
 
+## Maintenance cycle — selectable Quick Dictation model
+
+- Added a separate Quick Dictation model choice in Settings: Whisper Turbo remains the default,
+  while Qwen3-ASR 1.7B is opt-in on Apple-silicon Macs. The meeting model preference remains
+  independent, and the new preference changes no recording or transcript format.
+- Kept the existing microphone recorder, temporary WAV, cleanup, delivery, and history paths.
+  Selection replaces only the transcription engine. Replacing an engine shuts down its resident
+  model before the next one warms, preventing Whisper and Qwen from accumulating in unified memory.
+- Added a persistent offline Qwen dictation helper that loads only the ASR model. It deliberately
+  does not load the 1.2 GB forced aligner used for meeting timestamps, because dictation delivers
+  text only. Qwen's current local API has no vocabulary prompt, so that control is disabled and
+  explained whenever Qwen is selected rather than silently promising unsupported behavior.
+- Added selected-model diagnostics, self-test wording, helper self-healing, installer packaging, and
+  per-engine timing/model-change log entries.
+- Verification: focused dictation/Qwen tests passed **10/10**; the complete suite passed **176/176**;
+  shell syntax, Python compilation, and diff validation passed; the warnings-as-errors release build
+  passed; the packaged app contains `qwen_dictate_server.py`, is ad-hoc signed, and passed strict
+  signature verification. The installed pinned Qwen runtime also transcribed the repository's
+  synthetic English clip exactly. Full command/output history and limitations are recorded in
+  [`DICTATION_MODEL_SELECTION_LOG_2026-07-30.md`](DICTATION_MODEL_SELECTION_LOG_2026-07-30.md).
+- Installed the verified build at `/Applications/WhisperMeet.app` through the guarded updater, which
+  refuses to replace the application while WhisperMeet is running and rolls back a failed swap.
+
 ## Maintenance cycle — crash-safe recording writes and ASR alternatives
 
 - Replaced every legacy `FileHandle.write(_:)` call in live source-track capture, final WAV

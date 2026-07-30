@@ -51,6 +51,44 @@ public enum MeetingTranscriptionEngine: String, Codable, CaseIterable, Sendable,
     }
 }
 
+/// The two engines suitable for short, latency-sensitive push-to-talk clips. This is intentionally
+/// separate from meeting selection: Quick Dictation never offers Whisper Large, and changing one
+/// workflow's preference must not silently change the other.
+public enum DictationTranscriptionEngine: String, Codable, CaseIterable, Sendable, Hashable {
+    case whisperTurbo = "turbo"
+    case qwenBalanced = "qwen3-asr-1.7b-8bit"
+
+    public var displayName: String {
+        switch self {
+        case .whisperTurbo: "Whisper Turbo"
+        case .qwenBalanced: "Qwen3-ASR 1.7B"
+        }
+    }
+
+    /// Whisper exposes `initial_prompt`; the current Qwen MLX API does not. Keeping the capability
+    /// explicit prevents the UI from promising vocabulary guidance that the selected engine ignores.
+    public var supportsVocabularyPrompt: Bool {
+        self == .whisperTurbo
+    }
+
+    public var isSupportedOnCurrentMac: Bool {
+        switch self {
+        case .whisperTurbo:
+            return true
+        case .qwenBalanced:
+            #if arch(arm64)
+            return true
+            #else
+            return false
+            #endif
+        }
+    }
+
+    public static var availableCases: [Self] {
+        allCases.filter(\.isSupportedOnCurrentMac)
+    }
+}
+
 public enum WhisperLanguage: String, Codable, CaseIterable, Sendable, Hashable {
     case automatic
     case english
