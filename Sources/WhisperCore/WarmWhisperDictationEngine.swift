@@ -270,7 +270,15 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         defer { watchdog.cancel() }
 
         while true {
-            if let line = DictationWireProtocol.takeLine(&stdoutBuffer) { return line }
+            if let line = DictationWireProtocol.takeLine(&stdoutBuffer) {
+                // Skipping happens inside the watchdog's window on purpose: chatter must not buy the
+                // helper extra time, so the timeout still measures the wait for a real message.
+                guard Self.isProtocolMessage(line) else {
+                    appendStderr("helper stdout: \(String(decoding: line, as: UTF8.self))\n")
+                    continue
+                }
+                return line
+            }
             guard let stdout else {
                 throw processFailure("Dictation helper is not running.")
             }
@@ -280,6 +288,14 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             }
             stdoutBuffer.append(chunk)
         }
+    }
+
+    /// Every message in this protocol is a JSON object, so a line that does not start with `{` is
+    /// helper chatter, not a reply. Whisper's own libraries print "Detected language: …" to stdout
+    /// whenever `verbose` is not None, and reading one such line as a reply would desync the stream
+    /// permanently: every later response would be answered by the previous request's line.
+    private static func isProtocolMessage(_ line: Data) -> Bool {
+        line.first(where: { $0 != 0x20 && $0 != 0x09 && $0 != 0x0D }) == 0x7B // "{"
     }
 
     private var runtimeMissing: Error {

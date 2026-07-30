@@ -6,6 +6,39 @@ fixes → build and deploy. Later maintenance cycles record their own verificati
 status explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude
 summaries; recording is the source of truth; no diarization; original language only) are preserved.
 
+## Maintenance cycle — warm Whisper dictation never actually warmed
+
+- Fixed a pre-existing defect that silently disabled the warm path for **Whisper Turbo, the default
+  Quick Dictation engine**. `whisper_dictate_server.py` passed `verbose=False` to
+  `mlx_whisper.transcribe`. Whisper documents `False` as "minimal details" and guards its prints
+  with `if verbose is not None`, so `False` still wrote `Detected language: X` to **stdout** — the
+  same stream carrying this helper's newline-delimited JSON protocol. Verified against the live
+  openai/whisper source and the installed `mlx_whisper/transcribe.py:175` per `AGENTS.md`.
+- Effect: the warm-up handshake read `Detected language: English` instead of `{"ready": true}` and
+  threw "Dictation helper failed to start.", so `FallbackDictationEngine` quietly dropped to the
+  batch Whisper CLI on every dictation. The feature still produced text, which is why it went
+  unnoticed — it just never delivered the low-latency warm-model behaviour it exists for. Auto-detect
+  is the default language, so this fired on warm-up and on every automatic request.
+- Fix is two layers: the helper now passes `verbose=None` (the only silent value), and
+  `WarmWhisperDictationEngine.readLine` skips any stdout line that is not a JSON object, recording it
+  as diagnostics instead. A single stray line would otherwise desync the stream permanently, with
+  every later response answering the previous request. Qwen was never affected — its helper only
+  writes JSON.
+- Verification: two new tests (real helper script driven with a stubbed `mlx_whisper` that reproduces
+  the library's exact print guard; and the engine fed a deliberately chatty helper) fail before the
+  fix and pass after. Complete suite **178/178**. Re-ran the real installed models over all ten
+  `Scripts/bench/clips` with `language: null`, which is the comparison the previous cycle could not
+  complete because Turbo never reached readiness.
+
+  | engine | cold start | warm per clip | en | zh | code-switch |
+  |---|---|---|---|---|---|
+  | Qwen3-ASR 1.7B | 2.8 s | **0.36 s** | 0.000 | 0.000 | 0.000 |
+  | Whisper Turbo | 8.6 s | 1.43 s | 0.025 | 0.049 | 0.000 |
+
+  Turbo's non-zero rates are mostly formatting, not misrecognition (`ten`→`10`, `三点`→`3点`); the one
+  true error was `纪要`→`记要`. Measured on the small synthetic corpus, so treat it as a smoke test of
+  the wire path, not a general accuracy claim.
+
 ## Maintenance cycle — selectable Quick Dictation model
 
 - Added a separate Quick Dictation model choice in Settings: Whisper Turbo remains the default,

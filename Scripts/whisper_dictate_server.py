@@ -70,12 +70,16 @@ def main() -> int:
     # request code path, so it loads the model into mlx_whisper's ModelHolder cache (fp16
     # by default, matching real requests) and compiles the MLX kernels. Only after this
     # returns is {"ready": true} genuinely resident.
+    #
+    # verbose MUST be None, not False. Whisper documents False as "minimal details", and the
+    # code guards its prints with `if verbose is not None` — so False still writes
+    # "Detected language: X" to STDOUT, which is this protocol's wire. Only None is silent.
     try:
         mlx_whisper.transcribe(
             mx.zeros(1600, dtype=mx.float32),  # 0.1s of silence at 16 kHz
             path_or_hf_repo=args.mlx_repo,
             task="transcribe",
-            verbose=False,
+            verbose=None,
         )
     except Exception as error:  # pragma: no cover - warm failure is fatal to the helper
         sys.stdout.write(json.dumps({"error": "warm-up failed: " + str(error)}) + "\n")
@@ -98,7 +102,7 @@ def main() -> int:
                 task="transcribe",  # never translate
                 language=request.get("language"),
                 initial_prompt=request.get("initialPrompt"),
-                verbose=False,
+                verbose=None,  # see the warm-up call: False is NOT silent, it prints to stdout
             )
             # Report the lowest per-segment no_speech_prob (the most speech-like segment). The app
             # uses it to tell a real dictation from a silence-driven prompt echo; taking the min
