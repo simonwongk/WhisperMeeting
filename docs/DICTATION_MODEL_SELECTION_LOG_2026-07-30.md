@@ -1,5 +1,13 @@
 # Quick Dictation model-selection work log — 2026-07-30
 
+> **Follow-up correction.** This cycle verified Qwen against the real model but never got Whisper
+> Turbo's warm helper to start, and did not notice. A pre-existing defect (`verbose=False` printing
+> `Detected language: X` onto the helper's JSON stdout) made the warm-up handshake fail, so the
+> default engine had been silently falling back to the batch Whisper CLI. Fixed in commit `64455ec`;
+> see the "warm Whisper dictation never actually warmed" entry in [`CHANGELOG.md`](CHANGELOG.md) for
+> the root cause, the two-layer fix, and the corrected ten-clip two-engine benchmark. Treat the
+> Whisper-side latency assumptions below as unverified for this cycle.
+
 Scope: add a separate Quick Dictation choice between Whisper Turbo and the already approved,
 installed Qwen3-ASR 1.7B model. No user meeting, recording, index, or transcript was opened or
 changed. The only audio used for real-model verification was `Scripts/bench/clips/en1.wav`.
