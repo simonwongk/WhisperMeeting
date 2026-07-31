@@ -20,7 +20,9 @@ struct DictationView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                GroupBox("Status & diagnostics") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Status & diagnostics", systemImage: "stethoscope")
+                        .font(.headline)
                     VStack(alignment: .leading, spacing: 10) {
                         statusRow("\(diag.engineName) runtime", diag.runtimeInstalled)
                         statusRow("Dictation helper installed", diag.helperInstalled)
@@ -54,34 +56,35 @@ struct DictationView: View {
                                 .textSelection(.enabled)
                         }
                     }
-                    .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(16)
+                .cardSurface()
                 .onChange(of: dictation.isSelfTesting) { _, testing in if !testing { diag = dictation.diagnostics() } }
 
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack {
-                            Text("History").font(.headline)
-                            Spacer()
-                            if !log.log.entries.isEmpty {
-                                Button("Clear All", role: .destructive) { log.clear() }
-                            }
-                        }
-                        .padding(.bottom, 8)
-                        if log.log.entries.isEmpty {
-                            Text("Your recent dictations will appear here.")
-                                .foregroundStyle(.secondary).padding(.vertical, 12)
-                        } else {
-                            ForEach(log.log.entries) { entry in
-                                DictationHistoryRow(entry: entry)
-                                if entry.id != log.log.entries.last?.id { Divider() }
-                            }
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                            .font(.headline)
+                        Spacer()
+                        if !log.log.entries.isEmpty {
+                            Button("Clear All", role: .destructive) { log.clear() }
                         }
                     }
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 8)
+                    if log.log.entries.isEmpty {
+                        Text("Your recent dictations will appear here.")
+                            .foregroundStyle(.secondary).padding(.vertical, 12)
+                    } else {
+                        ForEach(log.log.entries) { entry in
+                            DictationHistoryRow(entry: entry)
+                            if entry.id != log.log.entries.last?.id { Divider() }
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+                .cardSurface()
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)

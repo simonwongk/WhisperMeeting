@@ -16,4 +16,12 @@ func accessibilityPhrases() {
     #expect(AccessibilityPhrase.recordButton(isRecording: false, isBusy: true) == "Recording controls unavailable")
 
     #expect(AccessibilityPhrase.marker(label: "Q3 plan", offset: 125) == "Marker Q3 plan at 02:05")
+
+    // F87 — the level-meter phrase rounds to whole percent and clamps out-of-range levels.
+    #expect(AccessibilityPhrase.levelMeter(channel: "Microphone", level: 0.42)
+        == "Microphone level 42 percent")
+    #expect(AccessibilityPhrase.levelMeter(channel: "System audio", level: 1.7)
+        == "System audio level 100 percent")
+    #expect(AccessibilityPhrase.levelMeter(channel: "Live input", level: -0.3)
+        == "Live input level 0 percent")
 }

@@ -205,8 +205,8 @@ private struct MeetingRow: View {
                     ForEach(tags.prefix(4), id: \.self) { tag in
                         Text(tag)
                             .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())
                     }
                 }
@@ -237,15 +237,14 @@ private struct RecordMeetingView: View {
     @State private var title = ""
     @State private var isConfirmingCancellation = false
     @State private var showsImporter = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .largeTitle) private var heroIconSize: CGFloat = 44
 
     var body: some View {
         VStack(spacing: 28) {
             Spacer()
-            VStack(spacing: 8) {
-                Image(systemName: recordingIcon)
-                    .font(.system(size: 58, weight: .light))
-                    .foregroundStyle(isRecording ? Color.red : Color.accentColor)
-                    .symbolEffect(.pulse, isActive: isRecording)
+            VStack(spacing: 12) {
+                heroBadge
                 Text(recordingTitle)
                     .font(.largeTitle.bold())
                 Text(recordingSubtitle)
@@ -275,14 +274,14 @@ private struct RecordMeetingView: View {
                     .padding(.vertical, 7)
             }
             .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
             .tint(isRecording ? .red : .accentColor)
             .controlSize(.large)
-            .disabled(
-                model.recordingState == .starting
-                    || model.recordingState == .stopping
-                    || model.isImporting
-                    || model.isInstallingRecognitionRuntime
-            )
+            .disabled(isPrimaryActionBusy)
+            .accessibilityLabel(AccessibilityPhrase.recordButton(
+                isRecording: isRecording,
+                isBusy: isPrimaryActionBusy
+            ))
 
             if isRecording {
                 Button("Cancel Recording", role: .destructive) {
@@ -301,6 +300,9 @@ private struct RecordMeetingView: View {
             Spacer()
         }
         .padding(40)
+        // One critically-damped spring for the idle ⇄ recording layout swap; disabled entirely
+        // under Reduce Motion.
+        .animation(reduceMotion ? nil : .uiSpring, value: model.recordingState)
         .navigationTitle("New Meeting")
         .onAppear { model.refreshRecordingPreflight() }
         .confirmationDialog(
@@ -346,6 +348,32 @@ private struct RecordMeetingView: View {
         return false
     }
 
+    private var isPrimaryActionBusy: Bool {
+        model.recordingState == .starting
+            || model.recordingState == .stopping
+            || model.isImporting
+            || model.isInstallingRecognitionRuntime
+    }
+
+    /// The tinted orb behind the state icon — the screen's visual anchor. Pulses only while
+    /// recording, and never when the user has asked for reduced motion.
+    private var heroBadge: some View {
+        ZStack {
+            Circle()
+                .fill(heroTint.opacity(0.13))
+            Circle()
+                .strokeBorder(heroTint.opacity(0.22), lineWidth: 1)
+            Image(systemName: recordingIcon)
+                .font(.system(size: heroIconSize, weight: .light))
+                .foregroundStyle(heroTint)
+                .symbolEffect(.pulse, isActive: isRecording && !reduceMotion)
+        }
+        .frame(width: heroIconSize * 2.4, height: heroIconSize * 2.4)
+        .accessibilityHidden(true)
+    }
+
+    private var heroTint: Color { isRecording ? .red : .accentColor }
+
     private var preflightPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -386,8 +414,8 @@ private struct RecordMeetingView: View {
             .help("Record a few disposable seconds and check that both your microphone and Mac system audio are actually captured.")
         }
         .font(.callout)
-        .padding(16)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        .padding(18)
+        .cardSurface()
     }
 
     private func liveRecordingPanel(startedAt: Date) -> some View {
@@ -396,7 +424,8 @@ private struct RecordMeetingView: View {
                 let elapsed = max(0, Date.now.timeIntervalSince(startedAt))
                 VStack(spacing: 4) {
                     Text(duration(elapsed))
-                        .font(.system(.title, design: .monospaced).weight(.medium))
+                        .font(.system(.largeTitle, design: .rounded).weight(.medium))
+                        .monospacedDigit()
                         .contentTransition(.numericText())
                     Text("Estimated recording size: \(recordingSizeText(elapsed))")
                         .font(.callout)
@@ -474,9 +503,9 @@ private struct RecordMeetingView: View {
                 healthExplainer
             }
             .font(.callout)
-            .padding(16)
+            .padding(18)
             .frame(maxWidth: 560)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+            .cardSurface()
         } else {
             ProgressView("Checking both audio channels…")
                 .frame(maxWidth: 560)
@@ -708,12 +737,21 @@ private struct SimpleMarkersList: View {
                 .foregroundStyle(.secondary)
             ForEach(Array(markers.enumerated()), id: \.element.id) { index, marker in
                 HStack(spacing: 8) {
-                    Text(TranscriptFormatter.timestamp(marker.offset))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 48, alignment: .leading)
-                    Text(RecordingMarkers.displayLabel(for: marker, at: index + 1))
-                        .font(.callout)
+                    // The timestamp + label pair reads as one VoiceOver element ("Marker <label>
+                    // at MM:SS", F87); the Rename/Delete buttons stay individually reachable.
+                    HStack(spacing: 8) {
+                        Text(TranscriptFormatter.timestamp(marker.offset))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .leading)
+                        Text(RecordingMarkers.displayLabel(for: marker, at: index + 1))
+                            .font(.callout)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(AccessibilityPhrase.marker(
+                        label: RecordingMarkers.displayLabel(for: marker, at: index + 1),
+                        offset: marker.offset
+                    ))
                     Spacer()
                     Button("Rename") {
                         renameText = marker.label ?? ""
@@ -733,8 +771,8 @@ private struct SimpleMarkersList: View {
                 .font(.callout)
             }
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .padding(14)
+        .cardSurface(cornerRadius: 12)
         .alert("Rename Marker", isPresented: Binding(
             get: { renamingMarker != nil },
             set: { if !$0 { renamingMarker = nil } }
@@ -757,6 +795,11 @@ private struct SimpleMarkersList: View {
 /// whether the microphone and Mac system audio were each captured. Never becomes a meeting.
 private struct PreflightTestSheet: View {
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Scaled (not fixed) display sizes so the sheet follows the user's text size (F87).
+    @ScaledMetric(relativeTo: .largeTitle) private var heroSymbolSize: CGFloat = 40
+    @ScaledMetric(relativeTo: .largeTitle) private var countdownSize: CGFloat = 48
+    @ScaledMetric(relativeTo: .title) private var statusSymbolSize: CGFloat = 32
 
     var body: some View {
         VStack(spacing: 20) {
@@ -781,9 +824,9 @@ private struct PreflightTestSheet: View {
     private func recordingView(_ secondsRemaining: Int) -> some View {
         VStack(spacing: 18) {
             Image(systemName: "waveform.badge.mic")
-                .font(.system(size: 40, weight: .light))
+                .font(.system(size: heroSymbolSize, weight: .light))
                 .foregroundStyle(.tint)
-                .symbolEffect(.pulse)
+                .symbolEffect(.pulse, isActive: !reduceMotion)
             Text("Testing your recording")
                 .font(.title2.bold())
             Text("Speak normally. If your meeting will share audio — a video, call, or music — play some now so both channels are exercised.")
@@ -791,7 +834,8 @@ private struct PreflightTestSheet: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Text("\(secondsRemaining)")
-                .font(.system(size: 48, design: .monospaced).weight(.semibold))
+                .font(.system(size: countdownSize, design: .rounded).weight(.semibold))
+                .monospacedDigit()
                 .contentTransition(.numericText())
                 .frame(minWidth: 70)
             Button("Cancel", role: .cancel) { model.cancelPreflightTest() }
@@ -813,7 +857,7 @@ private struct PreflightTestSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Image(systemName: headlineIcon(report))
-                    .font(.system(size: 30))
+                    .font(.system(size: statusSymbolSize))
                     .foregroundStyle(headlineColor(report))
                 Text(report.headline)
                     .font(.headline)
@@ -836,7 +880,7 @@ private struct PreflightTestSheet: View {
                     Text("Play back the test").font(.caption).foregroundStyle(.secondary)
                     AudioPlayerView(url: playbackURL)
                         .frame(height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
 
@@ -857,7 +901,7 @@ private struct PreflightTestSheet: View {
     private func failedView(_ message: String) -> some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 34))
+                .font(.system(size: statusSymbolSize))
                 .foregroundStyle(.orange)
             Text("The test could not complete")
                 .font(.title3.bold())
@@ -902,7 +946,7 @@ private struct PreflightTestSheet: View {
             }
         }
         .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .cardSurface(cornerRadius: 10)
     }
 
     private func levelStyle(
@@ -950,7 +994,8 @@ private struct LiveVolumeBar: View {
 
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
+                    Capsule()
+                        .fill(.quaternary.opacity(0.6))
                     Capsule()
                         .fill(
                             LinearGradient(
@@ -960,12 +1005,17 @@ private struct LiveVolumeBar: View {
                             )
                         )
                         .frame(width: max(4, geometry.size.width * level))
+                        // Live 15 Hz tracking feedback stays *linear* and short — it must follow
+                        // the signal 1:1, not spring past it.
                         .animation(.linear(duration: 0.08), value: level)
                 }
             }
-            .frame(height: 14)
-            .accessibilityLabel("Live input volume")
-            .accessibilityValue("\(Int(level * 100)) percent")
+            .frame(height: 12)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(AccessibilityPhrase.levelMeter(
+                channel: "Live input",
+                level: meter.snapshot.combined
+            ))
         }
     }
 }
@@ -985,7 +1035,18 @@ private struct RecordingChannelMeter: View {
 
     var body: some View {
         ProgressView(value: level)
-            .accessibilityValue("\(Int(level * 100)) percent")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(AccessibilityPhrase.levelMeter(
+                channel: channelName,
+                level: Float(level)
+            ))
+    }
+
+    private var channelName: String {
+        switch channel {
+        case .microphone: "Microphone"
+        case .systemAudio: "System audio"
+        }
     }
 }
 
@@ -1057,7 +1118,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Local recognition") {
+            Section(header: Label("Local recognition", systemImage: "waveform.circle")) {
                 HStack {
                     Label(
                         model.isRuntimeInstalled ? "Whisper ready" : "Whisper not installed",
@@ -1127,7 +1188,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Meeting library") {
+            Section(header: Label("Meeting library", systemImage: "books.vertical")) {
                 HStack {
                     Label("Check recordings for problems", systemImage: "checkmark.shield")
                     Spacer()
@@ -1141,7 +1202,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Transcription") {
+            Section(header: Label("Transcription", systemImage: "captions.bubble")) {
                 Picker("Model", selection: $model.selectedEngine) {
                     ForEach(MeetingTranscriptionEngine.availableCases, id: \.self) { engine in
                         Text(engine.displayName).tag(engine)
@@ -1158,7 +1219,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Quick Dictation") {
+            Section(header: Label("Quick Dictation", systemImage: "keyboard")) {
                 Toggle("Enable push-to-talk dictation", isOn: Binding(
                     get: { dictation.enabled },
                     set: { dictation.setEnabled($0) }
@@ -1231,7 +1292,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Claude Summaries (optional)") {
+            Section(header: Label("Claude Summaries (optional)", systemImage: "sparkles")) {
                 HStack {
                     Label(
                         model.hasClaudeAPIKey ? "API key saved" : "No API key",
@@ -1354,7 +1415,12 @@ private struct VocabularyView: View {
                         }
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .alternatingRowBackgrounds()
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.separator.opacity(0.55), lineWidth: 1)
+                )
             }
         }
         .padding(32)
@@ -1569,9 +1635,9 @@ private struct TranscriptDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     private static func summaryText(_ summary: MeetingSummary) -> String {
@@ -1592,14 +1658,20 @@ private struct TranscriptDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             EditableMeetingTitle(store: store, meetingID: meetingID)
                 .id(meetingID)
-            HStack(spacing: 14) {
-                Label(meeting.createdAt.formatted(date: .long, time: .shortened), systemImage: "calendar")
-                Label(formatDuration(meeting.duration), systemImage: "clock")
+            HStack(spacing: 8) {
+                metadataChip(
+                    meeting.createdAt.formatted(date: .abbreviated, time: .shortened),
+                    systemImage: "calendar"
+                )
+                metadataChip(formatDuration(meeting.duration), systemImage: "clock")
                 if let language = meeting.languageCode {
-                    Label(language.uppercased(), systemImage: "character.bubble")
+                    metadataChip(language.uppercased(), systemImage: "character.bubble")
                 }
                 if let confidence = meeting.confidence {
-                    Label(confidence.formatted(.percent.precision(.fractionLength(0))), systemImage: "checkmark.seal")
+                    metadataChip(
+                        confidence.formatted(.percent.precision(.fractionLength(0))),
+                        systemImage: "checkmark.seal"
+                    )
                 }
                 Spacer()
                 Button("Show Recording in Finder") {
@@ -1612,8 +1684,17 @@ private struct TranscriptDetailView: View {
                 ))
             }
             .font(.callout)
-            .foregroundStyle(.secondary)
         }
+    }
+
+    /// Meeting facts as quiet capsule chips — scannable at a glance without competing with the title.
+    private func metadataChip(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(.quaternary.opacity(0.5), in: Capsule())
     }
 
     @ViewBuilder
@@ -1658,7 +1739,7 @@ private struct TranscriptDetailView: View {
                 }
             }
             .padding(18)
-            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+            .cardSurface()
         }
     }
 
@@ -1727,9 +1808,9 @@ private struct TranscriptDetailView: View {
             if FileManager.default.fileExists(atPath: recordingURL.path) {
                 AudioPlayerView(url: recordingURL)
                     .frame(height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(.separator, lineWidth: 1)
                     }
             } else {
@@ -1791,7 +1872,7 @@ private struct TranscriptDetailView: View {
                     .foregroundStyle(.secondary)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .bannerSurface(.orange)
                     .accessibilityElement(children: .combine)
             }
 
@@ -1803,7 +1884,7 @@ private struct TranscriptDetailView: View {
                     .foregroundStyle(.secondary)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .bannerSurface(.red)
                     .accessibilityElement(children: .combine)
             }
 
@@ -1841,9 +1922,9 @@ private struct TranscriptDetailView: View {
         .scrollContentBackground(.hidden)
         .padding(12)
         .frame(minHeight: 360)
-        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         }
     }
@@ -2226,9 +2307,10 @@ private struct PlayableTranscriptView: View {
             if FileManager.default.fileExists(atPath: recordingURL.path) {
                 AVPlayerContainer(player: playback.player)
                     .frame(height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(.separator, lineWidth: 1)
                     }
             } else {
                 Text("Recording unavailable on this Mac.").foregroundStyle(.secondary)
@@ -2272,8 +2354,8 @@ private struct PlayableTranscriptView: View {
                 .controlSize(.small)
                 .help("Auto-scroll to the segment that is currently playing")
             }
-            .padding(8)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            .padding(10)
+            .cardSurface(cornerRadius: 10)
 
             if flaggedCount > 0 && !isSearching {
                 qualityReviewBanner
@@ -2296,9 +2378,10 @@ private struct PlayableTranscriptView: View {
                     .padding(.vertical, 4)
                 }
                 .frame(minHeight: 320, maxHeight: 460)
-                .background(.background, in: RoundedRectangle(cornerRadius: 10))
+                .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(.separator, lineWidth: 1)
                 }
                 .onChange(of: activeIndex) { _, newValue in
                     guard followPlayback, !isSearching, let newValue else { return }
@@ -2372,8 +2455,8 @@ private struct PlayableTranscriptView: View {
             .foregroundStyle(.tint)
             .help("Add a marker at the current playback position")
         }
-        .padding(8)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .cardSurface(cornerRadius: 10)
     }
 
     private func markerChip(_ marker: RecordingMarker, index: Int) -> some View {
@@ -2386,8 +2469,13 @@ private struct PlayableTranscriptView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color.orange.opacity(0.15), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.25), lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(AccessibilityPhrase.marker(
+            label: RecordingMarkers.displayLabel(for: marker, at: index + 1),
+            offset: marker.offset
+        ))
         .contextMenu {
             Button("Rename…") {
                 renameText = marker.label ?? ""
@@ -2431,8 +2519,8 @@ private struct PlayableTranscriptView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Next flagged segment")
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .bannerSurface(.orange)
     }
 
     @ViewBuilder
@@ -2468,9 +2556,12 @@ private struct PlayableTranscriptView: View {
                     : (isReviewTarget
                         ? Color.orange.opacity(0.18)
                         : (isActive ? Color.accentColor.opacity(0.15) : Color.clear)),
-                in: RoundedRectangle(cornerRadius: 6)
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
             .contentShape(Rectangle())
+            // A short fade as the playing segment moves — a color-only change, safe under
+            // Reduce Motion.
+            .animation(.smooth(duration: 0.22), value: isActive)
         }
         .buttonStyle(.plain)
         .help(flags.map(qualityHelp) ?? "")

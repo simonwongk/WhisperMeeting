@@ -94,6 +94,7 @@ private struct DictationPill: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .contentTransition(.opacity)
             Spacer(minLength: 0)
             if model.phase == .listening {
                 LevelBars(level: model.level)
@@ -101,8 +102,13 @@ private struct DictationPill: View {
         }
         .padding(.horizontal, 16)
         .frame(width: 220, height: 44)
-        .background(.black.opacity(0.82), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+        // A deliberate dark HUD (like the system dictation pill): readable over any app beneath,
+        // in either appearance. The brighter top-edge stroke reads as light catching the surface.
+        .background(.black.opacity(0.78), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1))
+        // Phase changes cross-fade with a critically damped spring; the pill never moves, so this
+        // stays gentle under Reduce Motion too.
+        .animation(.uiSpring, value: model.phase)
     }
 
     @ViewBuilder private var icon: some View {
@@ -140,6 +146,8 @@ private struct LevelBars: View {
                     .frame(width: 3, height: 6 + CGFloat(index) * 3)
             }
         }
+        // Live level feedback tracks 1:1 — short linear fade, never a spring.
+        .animation(.linear(duration: 0.08), value: level)
     }
     private func barOpacity(_ index: Int) -> Double {
         Double(level) * 5 > Double(index) ? 0.95 : 0.25
