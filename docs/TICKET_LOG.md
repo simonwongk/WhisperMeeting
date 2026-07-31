@@ -34,6 +34,40 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F71 — VoiceOver labels and Dynamic Type for recording, meeting, and transcript surfaces
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `AccessibilityPhrase` module over framework-free primitives: `meetingRow`
+("Team sync, transcript ready, 42 minutes"), `recordButton`, `marker`, `levelMeter`. Attached the
+`meetingRow` spoken label to the sidebar row (`.accessibilityElement(children: .ignore)` +
+`.accessibilityLabel`).
+
+**Invariants.** Read-only labels describing state; meeting-row phrasing never implies identified
+speakers; local-only; original language echoed verbatim.
+
+**Evidence.**
+
+Fails before the fix (`completed` status phrasing wrong):
+
+```text
+✘ Test "Accessibility phrases render exact spoken strings" recorded an issue at AccessibilityPhraseTests.swift:7:5: Expectation failed: (AccessibilityPhrase.meetingRow(... "completed" ...) → "Team sync, completed, 42 minutes") == "Team sync, transcript ready, 42 minutes"
+```
+
+Passes after; full suite grew 213 → 214:
+
+```text
+✔ Test "Accessibility phrases render exact spoken strings" passed after 0.001 seconds.
+✔ Test run with 214 tests passed after 1.103 seconds.
+```
+
+**Gaps.** The `AccessibilityPhrase` core is fully tested and the primary `meetingRow` label is
+attached. Attaching `recordButton`/`marker`/`levelMeter` labels throughout the read view and replacing
+the fixed transcript font sizes with semantic text styles / `@ScaledMetric` (Dynamic Type) remain
+follow-up UI work; an Accessibility Inspector audit is manual (not possible in this harness).
+
 ## F56 — Persist an overall transcript confidence into the header and Meeting Notes
 
 - **Outcome:** fixed

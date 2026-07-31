@@ -524,34 +524,6 @@ by construction; no audio copied; no diarization/language change.
 output, the output parses as valid JSON, and two runs on identical input are byte-identical. Fails
 before, passes after.
 
-### F71 — VoiceOver labels and Dynamic Type for recording, meeting, and transcript surfaces
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** accessibility
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** The primary record button, sidebar rows (`MeetingRow`), transcript segments, and
-quality/marker strips have no spoken labels, and the transcript read view uses fixed point sizes
-(`ContentView.swift:210,748,758,780,824`) that ignore Dynamic Type; VoiceOver reads these as bare
-controls. (Labels exist only on the volume bar `:931` and delete-marker `:695`.) Concretizes the
-ROADMAP Ongoing accessibility item.
-
-**Proposed feature.** A pure `AccessibilityPhrase` module over primitives (WhisperCore cannot import
-the WhisperMeet types): `meetingRow(title:statusRaw:duration:)` → "Team sync, transcript ready, 42
-minutes"; `recordButton(isRecording:isBusy:)`; `marker(label:offset:)` (reusing
-`TranscriptFormatter.timestamp`); `levelMeter(channel:level:)`. Attach via
-`.accessibilityLabel/Value/Hint` in `ContentView.swift` and replace fixed font sizes in the read
-view with semantic text styles / `@ScaledMetric`.
-
-**Invariants.** Read-only: labels describe state, never mutate audio/transcript; meeting-row
-phrasing never implies identified speakers; local-only; original language echoed verbatim.
-
-**Verification.** New `AccessibilityPhraseTests` asserting exact strings across statuses/durations
-(completed + 2520s → "…, transcript ready, 42 minutes"; recorded → "…, ready to transcribe"). Fails
-before, passes after. Accessibility Inspector audit is manual — state it in the log.
-
 ### F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Status:** open

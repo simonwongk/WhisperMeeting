@@ -213,6 +213,12 @@ private struct MeetingRow: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(AccessibilityPhrase.meetingRow(
+            title: meeting.title,
+            statusRaw: meeting.status.rawValue,
+            duration: meeting.duration
+        ))
     }
 
     private var statusColor: Color {
