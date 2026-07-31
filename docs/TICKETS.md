@@ -375,35 +375,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F75 — Local automatic backups with hash verification and retention
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort H / risk M)
-- **Area:** recovery
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Everything lives under one Application Support folder on one volume; a dying disk or
-errant delete takes all of it. `BackupJSONStore` protects one index file from corruption, not the
-library from loss. Concretizes ROADMAP Next candidate #3.
-
-**Proposed feature.** Put the decidable logic in WhisperCore as pure functions: (a)
-`BackupPlan.compute(source:destination:)` over file descriptors (relativePath, size, contentHash) →
-copy vs already-current; (b) `BackupRetention.prune(generations:policy:)` → which destination
-generations to drop (keep-N or keep-N-days, modeled on `DictationLog`'s capped-history logic); (c)
-`BackupVerification` comparing expected vs actual hash after copy. A thin WhisperMeet
-`BackupCoordinator` does the `FileManager` copy in `Task.detached` from `store.rootDirectory`
-(`MeetingStore.swift:111`), destination chosen in Settings, triggered on quit or a schedule; it
-never writes the source, with a pre-copy free-space check reusing `RecordingSizeEstimator`.
-
-**Invariants.** Local-only: a user-selected local folder, no cloud path; the source is never
-modified or deleted — retention prunes only destination copies under the user's explicit policy; no
-diarization/language involvement.
-
-**Verification.** New `BackupPlanTests` + `BackupRetentionTests`: an unchanged (same-hash) file is
-skipped, a changed one scheduled, a new one copied; keep-3 retention prunes exactly the 4th-oldest
-and older; a post-copy hash mismatch surfaces as a verification failure. Fails before, passes after.
-
 ---
 
 *Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.* *F28–F37 added

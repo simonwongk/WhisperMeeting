@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F75 — Local automatic backups with hash verification and retention
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Put the decidable logic in WhisperCore as pure functions: `BackupPlan.compute` (over
+`BackupFile` descriptors — same path + same hash ⇒ skip, else copy), `BackupRetention.prune`
+(`.keepLatest(N)` / `.keepWithinDays(N, now:)` → generations to drop), and `BackupVerification`
+(post-copy expected-vs-actual hash).
+
+**Invariants.** Local-only decisions over descriptors; the source is never modified or deleted —
+retention prunes only destination generations; no diarization/language involvement.
+
+**Evidence.**
+
+Fails before the fix (the same-hash skip disabled) — an unchanged file is re-copied:
+
+```text
+✘ Test "Backup plan skips unchanged files, schedules changed and new ones" recorded an issue at BackupPlanTests.swift:20:5: Expectation failed: (action("a") → .copy) == .skip
+```
+
+Passes after (unchanged→skip, changed/new→copy; keep-3 drops exactly the oldest; hash mismatch →
+verification failure); full suite grew 224 → 227:
+
+```text
+✔ Test "Backup plan skips unchanged files, schedules changed and new ones" passed after 0.001 seconds.
+✔ Test "keep-3 retention prunes exactly the 4th-oldest and older" passed after 0.001 seconds.
+✔ Test "Backup verification fails on a post-copy hash mismatch" passed after 0.001 seconds.
+✔ Test run with 227 tests passed after 1.141 seconds.
+```
+
+**Gaps.** The three decidable cores are tested. The thin `BackupCoordinator` (the `FileManager` copy
+in `Task.detached` from `store.rootDirectory` to a user-chosen folder, pre-copy free-space check) is
+follow-up app wiring.
+
 ## F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
 
 - **Outcome:** fixed
