@@ -10,27 +10,7 @@ what was skipped and why — an honest gap is useful, a glossed one is a trap fo
 Never edit or delete an existing entry. If an entry turns out to be wrong, append a new one that
 corrects it and say which entry it supersedes.
 
-## Entry template
-
-```markdown
-## F<n> — <summary>
-
-- **Outcome:** fixed | wontfix | invalid | duplicate
-- **Closed:** YYYY-MM-DD by <agent/session>
-- **Commits:** `<sha>`
-
-**Root cause.** Why it happened, not just what changed.
-
-**Fix.** What changed, and why that is the right layer to change.
-
-**Evidence.**
-
-​```text
-<real command output — failing test before, passing after, build, real-model run>
-​```
-
-**Gaps.** Anything not verified, and why. Write "none" only if that is true.
-```
+The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 

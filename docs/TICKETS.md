@@ -1,91 +1,12 @@
 # Ticket board
 
-**Single source of truth for outstanding work.** Every coding agent working on WhisperMeet — Claude
-Code, Codex, or any other — MUST read this file before starting, file what it finds here, and record
-what it resolves in [`TICKET_LOG.md`](TICKET_LOG.md).
+**The rules for this board — how to file, claim, close, and log tickets, plus the ID scheme, status
+vocabulary, definition of done, and the ticket template — live in [`../AGENTS.md`](../AGENTS.md).
+Read them before touching this file.** This file holds **open** work only; closed tickets move to
+[`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
+[`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-This file holds **open** work only. Closed tickets move to the log; do not accumulate history here.
-
-Related, and deliberately separate:
-- [`ROADMAP.md`](ROADMAP.md) — prioritized *feature* backlog for improvement rounds. Aspirational.
-- [`CHANGELOG.md`](CHANGELOG.md) — narrative record of shipped cycles, written for a human reader.
-- [`TICKET_LOG.md`](TICKET_LOG.md) — append-only record of every ticket closed, with real evidence.
-
-A roadmap item becomes a ticket when someone commits to doing it. A ticket is a concrete, verifiable
-unit of work with an owner-independent definition of done.
-
-## Rules for agents
-
-1. **Read this file first.** If you are about to do work that is not on the board, file it as a
-   ticket before you start, so parallel agents can see it.
-2. **File what you find.** Any defect, regression, unverified claim, or follow-up you discover
-   during other work gets a ticket — even if you are not going to fix it. Do not leave findings only
-   in a chat reply; that context dies with the session.
-3. **Claim before you work.** Set `Status: in-progress` and put your agent/session identifier in
-   `Owner` in the same commit that starts the work. Never take a ticket already `in-progress`.
-4. **Never delete a ticket.** Close it by moving the entry to `TICKET_LOG.md` with an outcome — that
-   includes `wontfix` and `invalid`. Deleting loses the reasoning.
-5. **One ticket, one commit trail.** Reference the ID in every commit message that touches it, in
-   the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
-6. **Log on close.** Append to `TICKET_LOG.md` with real command output, not a summary of intent.
-   The repo's culture is evidence over assertion — see the existing entries.
-
-## ID allocation
-
-IDs are `F<n>`, continuing the finding-ID series already used in commits and `CHANGELOG.md`.
-**F1–F23 are consumed** by earlier review rounds (they predate this file and were never persisted —
-their outcomes live in `CHANGELOG.md`).
-
-**Next free ID: `F79`.** When you file a ticket, take the next ID and bump this line in the same
-commit. If you hit a collision because another agent raced you, take the next free one and move on.
-
-## Status vocabulary
-
-| Status | Meaning |
-|---|---|
-| `open` | Filed, unclaimed, ready for anyone. |
-| `in-progress` | Claimed. `Owner` is set. Do not touch. |
-| `blocked` | Cannot proceed. `Blocked by:` states exactly what is needed and from whom. |
-| `needs-human` | Requires a physical action or a decision only the user can make. |
-
-Closed states (`fixed`, `wontfix`, `invalid`, `duplicate`) exist only in `TICKET_LOG.md`.
-
-## Definition of done
-
-A ticket may only be closed `fixed` when all of these hold:
-
-- `swift build` and `swift test` both pass, and the test count did not silently drop.
-- Behaviour changes are covered by a test that **fails before the fix and passes after**. State both
-  results in the log. A fix with no failing-test-first evidence is not done.
-- If the change touches the Whisper or Qwen subprocess contract, the live official docs were fetched
-  and checked per [`../AGENTS.md`](../AGENTS.md) — flags and model names are never guessed.
-- If the change touches a runtime helper or model adapter, it was exercised against the **real
-  installed model**, not only a stub. Stubs cannot catch upstream API drift.
-- The non-negotiable invariants in [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) are intact: local-only
-  except opt-in Claude summaries, the recording is the source of truth, no diarization, original
-  language only.
-- No user meeting, recording, index, or transcript was read or modified for testing. Use
-  `Scripts/bench/clips`.
-
-## Ticket template
-
-```markdown
-### F<n> — <one-line summary>
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** high | medium | low
-- **Area:** dictation | meetings | transcription | recovery | ui | build | docs
-- **Filed:** YYYY-MM-DD by <agent/session>
-
-**Problem.** What is wrong, and the evidence it is wrong. Cite `file.swift:line`.
-
-**Impact.** Who or what breaks, and how it presents to the user.
-
-**Proposed fix.** Optional. Say so if you are unsure.
-
-**Verification.** How the fixer will prove it is done.
-```
+**Next free ID: `F79`.**
 
 ---
 
@@ -144,30 +65,6 @@ targets the wrong runtime — until the user presses Refresh.
 
 **Verification.** Not unit-testable (SwiftUI view; the `WhisperMeet` target has no test suite).
 Verify manually with both windows open, and say so explicitly in the log.
-
-### F27 — Whisper vs Qwen dictation is unverified with a real microphone
-
-- **Status:** needs-human
-- **Owner:** —
-- **Severity:** medium
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code
-
-**Problem.** The two engines have only been compared on the synthetic `Scripts/bench/clips` corpus,
-fed to the helpers as files. Real push-to-talk adds microphone capture, room noise, accents,
-variable clip length, and end-to-end release-to-text latency, none of which the file-fed comparison
-exercises.
-
-**Impact.** Any recommendation to prefer Qwen for dictation rests on clean synthetic audio and a
-zero-error result that is almost certainly optimistic. The 0.36 s vs 1.43 s per-clip gap is the more
-robust half of the finding, but it still excludes capture and delivery.
-
-**Blocked by:** the user. Automated key injection is correctly rejected by the app's global hotkey
-path, and microphone input cannot be synthesised — a person must hold the trigger and speak.
-
-**Verification.** Same phrase through both engines with noise, accents, and mixed English/Mandarin.
-Record release-to-text latency and any corrections needed. Append the numbers to `TICKET_LOG.md` and
-correct the benchmark claims in `CHANGELOG.md` if they do not hold up.
 
 ### F30 — Qwen alignment failure silently drops every timestamp
 
@@ -252,12 +149,6 @@ is orphaned and Qwen reports "not installed" until the user manually reinstalls.
 **Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
 user action.
 
-## Defects — filed 2026-07-30 from the codebase-wide fix sweep
-
-Each entry below was confirmed by an adversarial verifier that re-read the cited code and traced the
-failing path; the `file:line` references were checked against the working tree. Ordered worst-first:
-F38–F41 medium, F42–F54 low.
-
 ### F40 — Transcript Edit view double-writes the whole meetings index on every keystroke
 
 - **Status:** open
@@ -309,18 +200,3 @@ already uses.
 **Verification.** From a known-good venv, force the pip upgrade to fail (unreachable index) and
 assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
 before, passes after.
-
-## Feature tickets — filed 2026-07-30 from the multi-lens feature discovery
-
-New functionality, ranked best-first by value / effort with identity fit and risk weighed in. Each
-is grounded in a named type/file that was confirmed to exist and carries a WhisperCore-testable core
-with a fails-before/passes-after definition of done. These respect the non-negotiable invariants
-(local-only except the opt-in Claude summary, recording is source-of-truth, no diarization, original
-language). Tickets that concretize an existing `ROADMAP.md` "Next candidate" note it explicitly.
-
----
-
-*Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.* *F28–F37 added
-2026-07-30 from the two-axis review of `7e048ff...HEAD`.* *F38–F54 (defects) and F55–F77 (features)
-added 2026-07-30 from a codebase-wide fix sweep and a multi-lens feature discovery, each finding
-verified against the working tree.*
