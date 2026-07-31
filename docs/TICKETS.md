@@ -422,9 +422,8 @@ element, the meter reads "<channel> level NN percent", and larger-text settings 
 - **Severity:** low
 - **Area:** transcription
 - **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-- **Blocked by:** F30 (Qwen timestamps) — the Whisper→Qwen direction needs F30 for meaningful
-  time-overlap alignment; Qwen→Whisper and Whisper-large↔turbo can ship first, so the ticket is not
-  fully blocked.
+- **Dependency (resolved):** F30 (Qwen timestamps) shipped 2026-07-31 (`fd56622`), so the
+  Whisper→Qwen direction is no longer blocked and the full cross-engine comparison can be built.
 
 **Problem.** `TranscriptComparison.compare(_:_:)` (`Sources/WhisperCore/TranscriptComparison.swift:26`;
 `TranscriptComparisonTests.swift`) has no callers — `grep TranscriptComparison Sources/WhisperMeet` is
@@ -540,9 +539,8 @@ fake provider seam for a headless pre-fill test.
 - **Severity:** low
 - **Area:** transcription
 - **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-- **Blocked by:** F30 (Qwen timestamps) — the Qwen menu item must wait for F30 (its timestamps are
-  dropped, so there is nothing to splice); the Whisper path produces reliable timestamps and can ship
-  first, so the ticket is not fully blocked.
+- **Dependency (resolved):** F30 (Qwen timestamps) shipped 2026-07-31 (`fd56622`), so the Qwen
+  menu item is no longer blocked; the Whisper path was already buildable.
 
 **Problem.** `SegmentAudioRange.byteRange` + `TranscriptSegmentSplice.splice`
 (`Sources/WhisperCore/SegmentRerun.swift:10,20`; `SegmentRerunTests.swift`) have no callers. The
