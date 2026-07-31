@@ -245,9 +245,21 @@ final class AppModel: ObservableObject {
         MeetingIntegrityChecker.check($0)
     }
 
+    /// Runs the Qwen installer's recovery-only reclaim over a runtime directory (restores an orphaned
+    /// complete backup, removes abandoned artifacts). Injectable so the startup wiring is testable
+    /// without spawning a real process; defaults to invoking the bundled `setup-qwen-asr.sh` with
+    /// `QWEN_INSTALL_RECOVERY_ONLY=1` — the tested F33 core. Returns the reclaim's exit status.
+    var runQwenInstallRecovery: @Sendable (URL) async -> Int32 = { runtimeDirectory in
+        await AppModel.spawnQwenInstallRecovery(runtimeDirectory: runtimeDirectory)
+    }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
+        // Self-heal an interrupted Qwen install *before* refreshing runtime state, so a runtime that a
+        // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
+        // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
+        await reclaimInterruptedQwenInstall()
         refreshRuntime()
         refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
@@ -1248,5 +1260,65 @@ extension AppModel {
         case let .durationInconsistent(headerSeconds, indexSeconds):
             return "“\(title)”: the recording’s length (\(String(format: "%.1f", headerSeconds))s) doesn’t match its saved duration (\(String(format: "%.1f", indexSeconds))s)."
         }
+    }
+}
+
+// MARK: - Interrupted Qwen-install reclaim (F33 — wires the tested setup-qwen-asr.sh recovery to launch)
+
+extension AppModel {
+    /// Reclaim an interrupted Qwen install on launch — but only when orphaned install artifacts
+    /// actually exist under the runtime parent, so a clean launch (or a Mac that never installed Qwen)
+    /// spawns nothing. A force-quit mid-install can strand the previous ~4 GB runtime in a
+    /// `.Qwen3ASR-backup-*` dir while `Qwen3ASR/` is gone and Qwen reports "not installed"; the tested
+    /// recovery-only reclaim restores it (or clears an incomplete one) without a manual reinstall
+    /// (F33). Returns whether the reclaim was run. The reclaim itself is the injected
+    /// `runQwenInstallRecovery` seam, so this hop is headless-testable without spawning a process.
+    @discardableResult
+    func reclaimInterruptedQwenInstall(
+        runtimeDirectory: URL = QwenASRRuntime.managedDirectory()
+    ) async -> Bool {
+        let parent = runtimeDirectory.deletingLastPathComponent()
+        guard Self.hasOrphanedQwenInstallArtifacts(in: parent) else { return false }
+        _ = await runQwenInstallRecovery(runtimeDirectory)
+        return true
+    }
+
+    /// True when the runtime parent holds installer-owned orphan artifacts — a leftover backup or an
+    /// abandoned staging directory from an interrupted Qwen install. Only the installer's hidden
+    /// `.Qwen3ASR-backup-*` / `.Qwen3ASR-install-*` names match, so this never fires on a clean runtime
+    /// (the live `Qwen3ASR/`, `venv/`, and helper carry none of these prefixes).
+    nonisolated static func hasOrphanedQwenInstallArtifacts(in parent: URL) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
+            return false
+        }
+        return entries.contains {
+            $0.hasPrefix(".Qwen3ASR-backup-") || $0.hasPrefix(".Qwen3ASR-install-")
+        }
+    }
+
+    /// Spawns the bundled `setup-qwen-asr.sh` in recovery-only mode over the runtime directory and
+    /// returns its exit status. Runs off the main actor. Returns a non-zero sentinel if the bundled
+    /// script is missing or the process cannot start.
+    nonisolated static func spawnQwenInstallRecovery(runtimeDirectory: URL) async -> Int32 {
+        guard let scriptURL = Bundle.main.url(forResource: "setup-qwen-asr", withExtension: "sh") else {
+            return -1
+        }
+        return await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            var environment = ProcessInfo.processInfo.environment
+            environment["QWEN_INSTALL_RECOVERY_ONLY"] = "1"
+            process.environment = environment
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus
+            } catch {
+                return -1
+            }
+        }.value
     }
 }

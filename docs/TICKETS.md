@@ -114,8 +114,8 @@ one.
 
 ### F33 — Installer crash recovery is only reachable from tests
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** runtime
 - **Severity:** medium
 - **Area:** recovery
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
