@@ -14,6 +14,70 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F83 — Reachable meeting-integrity sweep: startup fold + Settings "Verify Library"
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `aff961d`
+- **Reachability:** two user-triggerable surfaces reach the F66 core. (1) App launch (`AppEntry` `.task`)
+  → `AppModel.performStartupRecovery()` → `verifyLibraryIntegrity()` → the `checkMeetingIntegrity`
+  seam → `MeetingIntegrityChecker.check` → findings joined into `alertMessage` → the root `.alert`
+  (`ContentView.swift:97`). (2) Settings → `SettingsView` "Verify Library" button →
+  `AppModel.verifyLibrary()` → the same sweep → `alertMessage`.
+
+**Root cause.** F66 shipped a tested `MeetingIntegrityChecker` + `WAVInspection` in WhisperCore with no
+caller; the user-facing half was deferred. So a truncated/empty/inconsistent recording was flagged only
+by code nothing ran.
+
+**Fix (three layers; pattern now in AGENTS.md "Wiring an unreachable core").**
+
+- Layer 1 (WhisperCore, unchanged): `MeetingIntegrityChecker.check` / `WAVInspection`.
+- Layer 2 (AppModel, tested): `verifyLibraryIntegrity()` sweeps `store.meetings`, builds a
+  `MeetingIntegrityDescriptor` per meeting from `store.recordingURL(for:)` + the on-disk
+  `source-tracks.json` frame counts + the index duration, and runs the check via an injectable
+  `checkMeetingIntegrity` `@Sendable` seam (mirrors F47's `recoverInterruptedRecording`). Folded into
+  `performStartupRecovery` after orphan recovery; findings surface through the existing `alertMessage`.
+  Read-only — reports, never repairs or deletes.
+- Layer 3 (SettingsView, manual): a thin "Verify Library" button → `verifyLibrary()`.
+
+**Evidence.**
+
+Red-green lands on the AppModel wiring layer. Fails before (stub `verifyLibraryIntegrity()` returns `[]`):
+
+```text
+✘ Test "Library integrity sweep flags a truncated WAV and a frame-mismatched source track through the app-level call (F83)" recorded an issue at LibraryIntegrityTests.swift:119:5: Expectation failed: (results.count → 0) == 2
+```
+
+Fails before for the launch path (the integrity fold reverted):
+
+```text
+✘ Test "Integrity findings surface through startup recovery's alert without touching audio (F83)" recorded an issue at LibraryIntegrityTests.swift:150:5: Expectation failed: (model.alertMessage?.contains("Corrupt meeting") → nil) == true
+```
+
+Passes after; full suite grew 230 → 233:
+
+```text
+✔ Test "Library integrity sweep flags a truncated WAV and a frame-mismatched source track through the app-level call (F83)" passed after 0.215 seconds.
+✔ Test "Integrity findings surface through startup recovery's alert without touching audio (F83)" passed after 0.191 seconds.
+✔ Test "Library sweep routes findings through the injected checker seam and skips recording-less meetings (F83)" passed after 0.156 seconds.
+✔ Test run with 233 tests passed after 1.108 seconds.
+```
+
+Read-only invariant asserted: each test re-stats the recording after the sweep and expects the byte
+size unchanged (144 bytes for the truncated fixture). Fixtures are synthesized in a temp
+`MeetingStore(rootDirectory:)`; the healthy meeting copies a real `Scripts/bench/clips/en1.wav` — no
+real user meeting is read or touched.
+
+**Gaps.** Not planned: an automated view test for the "Verify Library" button click or the launch alert
+presentation — the `WhisperMeet` target has no SwiftUI render harness. Its target method
+`verifyLibrary()` and the whole sweep are tested; only the literal click/alert are not. Manual check:
+`Scripts/build-app.sh && open .build/WhisperMeet.app`; Settings → "Meeting library" → "Verify Library"
+reports "no audio problems" on a healthy library. To see a finding, record a throwaway meeting (never
+an important one), quit, truncate its `~/Library/Application Support/WhisperMeet/Recordings/<uuid>/meeting.wav`
+on disk, then relaunch (the startup alert names it) or press "Verify Library" again; confirm the message
+says the recording looks truncated and "were not changed", and that the file's byte size is unchanged
+afterward.
+
 ## F28 — `WhisperCore` is no longer framework-free
 
 - **Outcome:** fixed

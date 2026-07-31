@@ -147,6 +147,33 @@ A ticket may only be closed `fixed` when all of these hold:
 permanent limitation says "Not planned:". Write "none" only if that is true.
 ````
 
+## Wiring an unreachable core
+
+Many WhisperCore features shipped a tested pure core with no caller (F79–F92). To make one reachable
+without regressing testability, build it in three layers — the middle layer is the point.
+
+1. **WhisperCore core** — already exists and is tested. Do not change it.
+2. **AppModel wiring layer** — the reachable logic, headlessly testable through an injected seam in
+   the F47 style: a mutable `@Sendable` closure property defaulting to the real core call, assigned by
+   a test after construction (see `AppModel.recoverInterruptedRecording`). The layer builds the core's
+   inputs from the store/disk and collects its outputs. **The red-green test lands here**, over a real
+   fixture library in a temp `MeetingStore(rootDirectory:)` (the `WhisperMeetTests` precedent),
+   asserting the core's results come back *through the app-level call* — never a direct core call.
+3. **SwiftUI binding** — the thinnest possible: a control that calls one AppModel method, and/or a
+   fold into an existing lifecycle hook. Nothing but presentation lives here. Verified manually (the
+   `WhisperMeet` target has no view-render harness); state the manual steps in the log and mark the
+   absence of a GUI test **"Not planned:"** — a harness limitation, not deferred work.
+
+Name the exact call path from a user-triggerable surface to the core in the log's **Reachability**
+field (see the Definition of done). If only the core lands and layers 2–3 are deferred, the ticket
+closes `partial`, not `fixed`.
+
+**Worked example — F83** (in `docs/TICKET_LOG.md`): wired F66's `MeetingIntegrityChecker` in. Layer 2
+is `AppModel.verifyLibraryIntegrity()` with an injectable `checkMeetingIntegrity` seam, folded into
+`performStartupRecovery`; layer 3 is a Settings "Verify Library" button. Three red-green tests land on
+layer 2 (`Tests/WhisperMeetTests/LibraryIntegrityTests.swift`); the button and launch alert are
+manual. Sibling tickets F79–F92 should cite this section rather than re-deriving the shape.
+
 ## Upstream documentation
 
 Always fetch https://whisperai.com/docs before writing WhisperAI code. Verify endpoint paths and

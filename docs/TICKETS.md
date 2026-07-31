@@ -333,36 +333,6 @@ to vocabulary, open a meeting whose segment says "cooper netties", run the actio
 "cooper netties" → "Kubernetes", accept, confirm the segment updates in place and `meeting.wav` is
 unmodified.
 
-### F83 — Fold the meeting-integrity checker into startup recovery + a Settings "Verify library" (delivers F66)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** recovery
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `MeetingIntegrityChecker.check(_:)` + `WAVInspection`
-(`Sources/WhisperCore/MeetingIntegrityChecker.swift:78,5`; `MeetingIntegrityCheckerTests.swift`) have
-zero callers in `Sources/WhisperMeet`. `performStartupRecovery` (`AppModel.swift:241`) rebuilds
-orphans but never runs an integrity sweep, and `SettingsView` (`ContentView.swift:1049`) has no
-"Verify library" action. The six `IntegrityFinding` cases are computed by code nothing invokes.
-
-**Impact.** Silent corruption stays invisible: a truncated/empty `meeting.wav`, a header/index
-duration mismatch, or short `.f32` tracks produce no warning until transcription fails or yields
-garbage — undermining the app's trust guarantee exactly where it was meant to help. Read-only, so no
-extra data risk.
-
-**Proposed fix.** Add an `AppModel` method building a `MeetingIntegrityDescriptor` per `MeetingRecord`
-and running `check` in `Task.detached`. Fold a sweep into `performStartupRecovery` (`:241`) after
-orphan recovery (surface findings via `startupRecoveryMessages`, never mutating audio), and add a
-"Verify library" button to `SettingsView` (`:1049`). Flag only; never repair by deletion.
-
-**Verification.** The startup fold IS headless-testable via
-`Tests/WhisperMeetTests/StartupRecoveryResilienceTests.swift` — seed a store record whose `meeting.wav`
-is truncated on disk, run `performStartupRecovery`, assert a finding surfaces AND the WAV byte size is
-unchanged (fails before, passes after). The Settings button is SwiftUI (manual: truncate a WAV, press
-"Verify library", confirm it is reported and the file is byte-identical after).
-
 ### F84 — Wire tag click-to-filter into the sidebar (delivers F67)
 
 - **Status:** open
