@@ -1,6 +1,8 @@
 import AVFoundation
+import AppKit
 import CoreGraphics
 import Foundation
+import UserNotifications
 import WhisperCore
 
 struct RecordingPreflightStatus: Equatable {
@@ -990,6 +992,31 @@ final class AppModel: ObservableObject {
             $0.transcriptNormalized = true
         }
         transcriptionProgress[id] = nil
+        postTranscriptionNotification(
+            title: store.meeting(id: id)?.title ?? "Meeting",
+            outcome: .completed,
+            segmentCount: result.segments.count
+        )
+    }
+
+    /// Local OS notification when a transcription finishes while the app is backgrounded. Reuses the
+    /// dictation notification pattern; the body carries only the meeting title + outcome, never
+    /// transcript content (F57). No-op when frontmost or on cancellation.
+    private func postTranscriptionNotification(
+        title: String,
+        outcome: TranscriptionOutcome,
+        segmentCount: Int
+    ) {
+        guard TranscriptionNotification.shouldNotify(outcome: outcome, appIsActive: NSApp.isActive),
+              let content = TranscriptionNotification.content(
+                title: title, outcome: outcome, segmentCount: segmentCount
+              ) else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: notification, trigger: nil))
     }
 
     private func handleCancellation(id: UUID) {
@@ -1020,6 +1047,11 @@ final class AppModel: ObservableObject {
         }
         transcriptionProgress[id] = nil
         alertMessage = message
+        postTranscriptionNotification(
+            title: store.meeting(id: id)?.title ?? "Meeting",
+            outcome: .failed,
+            segmentCount: 0
+        )
     }
 
     private func runInstaller(scriptURL: URL, runtimeDirectory: URL) async throws {

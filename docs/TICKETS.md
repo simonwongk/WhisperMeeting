@@ -406,32 +406,6 @@ confidence claim (never fabricates trust); no diarization/translation.
 "NN% clean / K flagged" line and worst-first MM:SS entries; an unscored or edited transcript emits
 no confidence section. Fails before, passes after.
 
-### F57 — Local notification when a meeting transcription finishes or fails
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** A long Whisper Large run reports nothing on completion; the user must watch the
-progress bar. Dictation already notifies (`DictationController.notifyClipboard`,
-`DictationController.swift:451-457`) but `AppModel.apply(result:to:)` (`:962`) and
-`handle(error:id:)` (`:986`) post nothing.
-
-**Proposed feature.** Add a pure `TranscriptionNotification` to WhisperCore:
-`content(title:outcome:segmentCount:) -> (title, body)` for completed/failed (cancelled → none) and
-`shouldNotify(outcome:appIsActive:)` suppressing while frontmost. Wire into
-`AppModel.apply(result:)`/`handle(error:)` reusing the dictation `UNUserNotificationCenter` pattern;
-tapping activates the app and selects that meeting.
-
-**Invariants.** Local OS notification only — nothing uploaded, does not touch the Claude path; body
-carries only title + outcome, never transcript content; recording/transcript unchanged.
-
-**Verification.** New `TranscriptionNotificationTests`: completed → title "Transcript ready", body
-contains only the meeting title; failed → failure phrasing; cancelled → nil; `shouldNotify` false
-when active, true when backgrounded. Fails before, passes after.
-
 ### F58 — Post-meeting recording-health report: persist why a recording was bad
 
 - **Status:** open

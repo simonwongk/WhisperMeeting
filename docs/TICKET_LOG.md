@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F57 — Local notification when a meeting transcription finishes or fails
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** A long transcription reported nothing on completion. Added a pure
+`TranscriptionNotification` (`content(title:outcome:segmentCount:)` → (title, body) for
+completed/failed, nil for cancelled; `shouldNotify(outcome:appIsActive:)` suppressing while
+frontmost), and wired it into `AppModel.apply(result:)` (completed) and `handle(error:)` (failed),
+reusing the dictation `UNUserNotificationCenter` pattern.
+
+**Invariants.** Local OS notification only — nothing uploaded, Claude path untouched; the body carries
+only the meeting title + outcome, never transcript content; recording/transcript unchanged.
+
+**Evidence.**
+
+Fails before the fix (frontmost suppression removed from `shouldNotify`):
+
+```text
+✘ Test "Transcription notification content and gating rules" recorded an issue at TranscriptionNotificationTests.swift:18:5: Expectation failed: !(TranscriptionNotification.shouldNotify(outcome: .completed, appIsActive: true) → true)
+✘ Test run with 1 test failed after 0.001 seconds with 1 issue.
+```
+
+Passes after, full suite grew 199 → 200:
+
+```text
+✔ Test "Transcription notification content and gating rules" passed after 0.001 seconds.
+✔ Test run with 200 tests passed after 1.095 seconds.
+```
+
+**Gaps.** The pure content/gating is tested; the actual `UNUserNotificationCenter` post + best-effort
+authorization is not (matches the existing untested dictation `notifyClipboard`). Tap-to-select-meeting
+(a `UNUserNotificationCenterDelegate`) is a follow-up, not implemented here.
+
 ## F68 — Structured transcription-failure classification and retry ergonomics
 
 - **Outcome:** fixed
