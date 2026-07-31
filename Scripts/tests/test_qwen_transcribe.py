@@ -33,5 +33,27 @@ class DetectedLanguageCodeTests(unittest.TestCase):
         self.assertEqual(qwen.detected_language_code("   "), "en")
 
 
+class BuildChunksTests(unittest.TestCase):
+    """F51 — segment extraction must degrade to [] + warning on schema drift, never raise."""
+
+    def test_valid_segments_build_chunks(self):
+        segments = [
+            {"text": "hello", "start": 0.0, "end": 1.0},
+            {"text": "  ", "start": 1.0, "end": 2.0},  # blank → dropped
+        ]
+        chunks, warning = qwen.build_chunks(segments)
+        self.assertIsNone(warning)
+        self.assertEqual(chunks, [{"text": "hello", "start": 0.0, "end": 1.0}])
+
+    def test_schema_drift_degrades_to_warning(self):
+        # A changed segment shape (missing the expected "text" key) raises KeyError; the helper must
+        # swallow it so the full text is still written.
+        segments = [{"content": "hello", "begin": 0.0}]
+        chunks, warning = qwen.build_chunks(segments)
+        self.assertEqual(chunks, [])
+        self.assertIsNotNone(warning)
+        self.assertIn("KeyError", warning)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -49,6 +49,31 @@ def detected_language_code(text: str) -> str:
     return "zh" if cjk * 2 > total else "en"
 
 
+def build_chunks(segments):
+    """Extract ASR segments defensively. On any schema drift (a changed mlx_audio segment shape),
+    degrade to no chunks plus a warning so the complete `text` is still written, mirroring how
+    `align_chunks` already preserves text. Without this, a `KeyError`/`AttributeError` here would
+    exit the process non-zero and discard a transcript that was actually produced (F51).
+    """
+    try:
+        return [
+            {
+                "text": segment["text"].strip(),
+                "start": float(segment["start"]),
+                "end": float(segment["end"]),
+            }
+            for segment in segments
+            if segment["text"].strip()
+        ], None
+    except Exception as error:
+        warning = f"{type(error).__name__}: {error}"
+        print(
+            f"Qwen segment parsing failed; preserving complete ASR text. {warning}",
+            file=sys.stderr,
+        )
+        return [], warning
+
+
 def align_chunks(load_aligner, aligner_path: str, audio, chunks: list[dict], requested: str):
     aligned_items = []
     try:
@@ -100,15 +125,7 @@ def main() -> int:
     text = transcription.text.strip()
     if not text:
         raise RuntimeError("Qwen3-ASR returned an empty transcript.")
-    chunks = [
-        {
-            "text": segment["text"].strip(),
-            "start": float(segment["start"]),
-            "end": float(segment["end"]),
-        }
-        for segment in transcription.segments
-        if segment["text"].strip()
-    ]
+    chunks, chunk_warning = build_chunks(transcription.segments)
 
     del transcription
     del asr
@@ -135,7 +152,7 @@ def main() -> int:
         "text": text,
         "language": language_code,
         "alignedItems": aligned_items,
-        "alignmentWarning": alignment_warning,
+        "alignmentWarning": alignment_warning or chunk_warning,
     }
     temporary_output = f"{args.output}.tmp"
     with open(temporary_output, "w", encoding="utf-8") as handle:

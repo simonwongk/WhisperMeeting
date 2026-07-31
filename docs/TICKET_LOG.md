@@ -34,6 +34,45 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `align_chunks` is try/except-wrapped so an alignment failure preserves the text, but
+the ASR segment extraction that runs before it (`for segment in transcription.segments`, indexing
+`segment["text"/"start"/"end"]`) had no guard. A schema drift there raised `KeyError`/`AttributeError`
+out of `main()`, exiting non-zero before the payload (with the full text) was written, so
+`QwenASRClient` reported `.processFailed` and the user lost a transcript that existed.
+
+**Fix.** Extracted the segment extraction into `build_chunks(segments)` wrapped in try/except: on any
+failure it degrades to `([], warning)` and prints a stderr note, mirroring `align_chunks`. `main()`
+now writes the payload with the full `text`, `alignedItems: []`, and the `alignmentWarning` set to
+`alignment_warning or chunk_warning`.
+
+**Evidence.** `python3 Scripts/tests/test_qwen_transcribe.py`. Fails before the fix (guard removed) —
+the drift raises out of `build_chunks`:
+
+```text
+    if segment["text"].strip()
+KeyError: 'text'
+Ran 6 tests in 0.001s
+FAILED (errors=1)
+```
+
+Passes after (`build_chunks` degrades to `[], warning`):
+
+```text
+Ran 6 tests in 0.000s
+OK
+```
+
+**Gaps.** `build_chunks` is unit-tested directly (pure function). The end-to-end `main()` path (empty
+`chunks` → payload still written) is validated by inspection + the `ast.parse` check, not a live
+mlx-audio run — the change is defensive Python around already-produced ASR output, not the
+`generate()` call contract.
+
 ## F41 — Qwen auto-detect labels any transcript containing a single CJK character as `zh`
 
 - **Outcome:** fixed

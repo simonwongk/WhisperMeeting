@@ -390,37 +390,6 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
 
-### F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The full transcript `text` is produced at `Scripts/qwen_transcribe.py:79`.
-`align_chunks` is deliberately try/except-wrapped so an alignment failure still preserves the text
-(returns `[], warning`), but the ASR segment extraction at `:82-90`
-(`for segment in transcription.segments`, indexing `segment["text"/"start"/"end"]`) runs before
-alignment with no guard. If mlx_audio's segment schema changes, a `KeyError`/`AttributeError`
-propagates out of `main()`, the process exits non-zero (the payload with `text` is only written at
-`:113-124`), and `QwenASRClient.run` raises `.processFailed`
-(`Sources/WhisperCore/QwenASRClient.swift:196-201`) — so the user gets no transcript even though the
-complete text existed. This is distinct from F30 (timestamps dropped all-or-nothing); here the TEXT
-is lost.
-
-**Impact.** A meeting where Qwen produced a correct full transcript becomes a hard failure instead
-of the documented "complete text remains authoritative" degradation. Latent — the pinned mlx-audio
-0.3.1 keys currently work; it only manifests on a dependency schema change.
-
-**Proposed fix.** Wrap the segment-building block so any failure degrades to `chunks=[]` plus an
-`alignmentWarning` and still writes the payload with the full `text`, mirroring how `align_chunks`
-already preserves text.
-
-**Verification.** A Python test with a fake model whose `.generate` returns a valid `.text` but
-unexpected `.segments`: the script exits non-zero today; after the fix it exits 0 with the full
-`text`, `alignedItems: []`, and a non-null `alignmentWarning`. Fails before, passes after.
-
 ### F52 — `setup-local-whisper.sh` installs the default runtime with no atomic staging/backup
 
 - **Status:** open
