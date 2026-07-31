@@ -156,33 +156,6 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
 
-### F52 — `setup-local-whisper.sh` installs the default runtime with no atomic staging/backup
-
-- **Status:** in-progress
-- **Owner:** runtime
-- **Severity:** low
-- **Area:** build
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The default meetings runtime is built directly into the live `$runtime_directory/venv`
-(`Scripts/setup-local-whisper.sh:25,29`); `pip install --upgrade openai-whisper` uninstalls the old
-package before installing the new one, so a failure in that window (network drop, build error, disk
-full) leaves the previously-working runtime broken with no rollback. The sibling `setup-qwen-asr.sh`
-guards the optional path with a staging dir + backup + atomic rename + restore-on-failure
-(`:122-186`); the more-critical default path has none of that.
-
-**Impact.** Re-running the installer to upgrade (or a transient failure during first install) can
-leave the user unable to transcribe any meeting until a successful re-run. Recordings are untouched
-(recording-first invariant holds); recoverable by re-running.
-
-**Proposed fix.** Build into a staging venv, verify `venv/bin/whisper --help`, then swap it in
-atomically, keeping the prior venv as a restore-on-failure backup — the pattern `setup-qwen-asr.sh`
-already uses.
-
-**Verification.** From a known-good venv, force the pip upgrade to fail (unreachable index) and
-assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
-before, passes after.
-
 ### F112 — 42 closed log entries carry the `<this commit>` placeholder instead of a real SHA
 
 - **Status:** open

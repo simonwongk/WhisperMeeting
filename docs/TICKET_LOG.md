@@ -14,6 +14,87 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F52 — `setup-local-whisper.sh` installed the default runtime with no atomic staging/backup
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `7d85958` (stage + atomic swap + shlock + reclaim + trap), `c35b333` (venv relocation
+  before the swap), `d9bdc0d` (health-checked reclaim + shebang-only rewrite), `<close-sha>` (close)
+- **Reachability:** user clicks "Install / Repair Local Whisper" (`DictationView.swift:44`) or the
+  Settings runtime control (`ContentView.swift:1071`) → `AppModel.installLocalWhisper()`
+  (`AppModel.swift:342`) spawns the bundled `setup-local-whisper.sh` (`forResource:` `:351`). Also the
+  first-run install and a direct `Scripts/setup-local-whisper.sh` invocation.
+
+**Root cause.** The default meetings runtime was built directly into the **live** `venv`
+(`python -m venv "$runtime/venv"`; `pip install --upgrade openai-whisper`). `pip --upgrade` uninstalls
+the old package before installing the new, so a failure in that window (network drop, build error,
+disk full) left the previously-working runtime broken with no rollback — unlike the sibling
+`setup-qwen-asr.sh`, which stages + backs up + atomically renames + restores.
+
+**Fix.** Adopt the qwen staging pattern, **scoped to the `venv` subdirectory** (the shared `Runtime/`
+dir also holds `Qwen3ASR/` and the dictation helper, which a whole-dir swap would clobber): build the
+new venv in `.venv-install-$$`, `pip install --upgrade` there, verify `whisper --help` at staging,
+then atomically `mv` it onto the live path keeping the prior venv as `.venv-backup-$$`, restoring it
+on any failure. A `shlock` guards against concurrent installers, a start-of-run reclaim self-heals a
+crashed prior install, and a trap restores on interrupt.
+
+Two corrections came from the **real-runtime exercise** (which is exactly why AGENTS.md requires it —
+the pure logic reviewer approved the staging design, but only a real install revealed the bug):
+
+1. **A Python venv is not relocatable.** After the `mv`, `venv/bin/whisper`'s console-script shebang
+   still pointed at the gone staging path (`bad interpreter`), and the app invokes `venv/bin/whisper`
+   directly (`LocalWhisperClient.swift:42`). Fix: rewrite the venv's embedded absolute staging path to
+   the live path (in the `#!`-prefixed console scripts only, never a compiled launcher) **before** the
+   move, then re-verify `whisper --help` at the live path and roll back if it fails.
+2. **Health-check before purging backups.** `venv_is_complete` (file + exec-bit) treats a
+   broken-shebang venv as good, so a crash leaving a structurally-complete-but-broken venv could make
+   the reclaim purge the only good backup while the live runtime was broken — unrecoverable. Fix: a
+   `venv_works()` check (`whisper --help`) gates both the reclaim's restore and its purge, so a good
+   backup is never deleted unless a working runtime is in place.
+
+**Evidence.** No `swift test` red-green — this is a shell installer with no product-code change (254
+tests unchanged, 0 delta; the F29 tooling precedent). The red-green is the behavioural shell
+verification, all against real or realistic runtimes:
+
+```text
+# GREEN — the ticket's exact verification (new script): forced pip failure (unreachable index) leaves
+# the pre-existing venv byte-unchanged, the sibling Qwen3ASR untouched, no leftover staging/backup:
+installer exit: 1 (non-zero expected)
+live venv byte-unchanged ✓   Qwen untouched ✓   clean ✓
+
+# GREEN — real install into a temp dir builds a WORKING relocated venv (the venv-relocation fix):
+Local Whisper is ready at …/Runtime/venv/bin/whisper
+venv/bin/whisper --help: exit 0 (WORKS)
+shebang: #!…/Runtime/venv/bin/python          # points at the LIVE path, not staging
+
+# GREEN — re-install over an existing real venv: works, Qwen sibling intact, clean.
+# GREEN — health-checked reclaim: a structurally-complete but BROKEN live venv + a good backup →
+#         reclaim RESTORES the backup (live whisper --help → exit 0), does NOT purge it:
+live whisper --help now exit 0 ✓   live venv is the restored GOOD backup ✓   backup consumed ✓
+
+# RED — the OLD script (origin/main), same unreachable-index run, MODIFIED the live venv in place
+#       (pyvenv.cfg hash changed): it re-runs `python -m venv` over the live runtime and exposes it to
+#       every pip step, which is the class of failure this fix forecloses:
+=> OLD script MODIFIED the live venv (operates destructively in place)
+```
+
+Full `Scripts/quality-check.sh` passes whole (254 tests, release `-warnings-as-errors` clean,
+packaging OK).
+
+**Gaps.** The exact catastrophic case F52 names — `pip --upgrade openai-whisper` uninstalling the old
+package then failing mid-download — could not be reproduced deterministically on this machine, because
+its pip cache/already-latest state means an unreachable index does not force a re-download for an
+already-installed package. Reproducing it precisely would need a mock package index serving newer
+metadata with a broken wheel. It is **not planned** to add that harness: the fix's guarantee is proven
+from the other side — the new installer leaves the live venv **byte-unchanged** until a fully built,
+verified, relocated venv is swapped in atomically, which forecloses the entire class regardless of
+where in a pip run the failure lands. **Not planned:** the pathological case where a `uchg`/immutable
+file inside the venv makes a rollback `rm` fail persistently — an operator who has locked their own
+venv files; the reclaim still preserves the backup (it never purges while the live venv is broken), so
+it is degraded-but-recoverable, not lost.
+
+---
+
 ## F26 — Dictation diagnostics went stale when the recognition model was changed
 
 - **Outcome:** fixed
