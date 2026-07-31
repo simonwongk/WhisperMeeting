@@ -29,6 +29,26 @@ func exportsWebVTT() {
     #expect(vtt.contains("00:00:00.250 --> 00:00:02.500\nHello everyone."))
 }
 
+@Test("WebVTT and SubRip escape special characters in cue text")
+func escapesSubtitleCueText() {
+    let request = TranscriptExportRequest(
+        title: "t",
+        languageCode: nil,
+        durationSeconds: 1,
+        transcriptText: "R&D <plan> --> done",
+        segments: []
+    )
+
+    let vtt = TranscriptExporter.render(.vtt, request)
+    #expect(vtt.contains("R&amp;D &lt;plan&gt;"))
+    // The only "-->" is the cue-time separator; the escaped payload carries "--&gt;" instead.
+    #expect(vtt.components(separatedBy: "-->").count - 1 == 1)
+
+    let srt = TranscriptExporter.render(.srt, request)
+    #expect(srt.contains("R&D &lt;plan&gt;")) // SRT escapes < >, leaves & literal
+    #expect(srt.components(separatedBy: "-->").count - 1 == 1)
+}
+
 @Test("Plain-text export strips the leading timestamps from each line")
 func exportsPlainText() {
     let text = TranscriptExporter.render(.plainText, sampleRequest())

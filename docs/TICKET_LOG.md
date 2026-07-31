@@ -34,6 +34,40 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F44 — WebVTT/SubRip export writes cue text unescaped
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `vtt`/`srt` embedded the raw segment text with no escaping. WebVTT decodes entities
+and forbids a literal `-->` in a cue payload, so an edited transcript containing `&`, `<`, `>`, or a
+stray `-->` produced spec-invalid WebVTT (and SRT could mis-interpret a `<tag>`).
+
+**Fix.** Added `escapeCueText(_:escapeAmpersand:)`: WebVTT escapes `&`→`&amp;`, `<`→`&lt;`,
+`>`→`&gt;` in order (escaping `>` also turns any `-->` into `--&gt;`, satisfying the no-arrow rule);
+SubRip escapes only `<`/`>` because it does not decode `&` (so "AT&T" stays literal). Applied in both
+renderers.
+
+**Evidence.**
+
+Fails before the fix — the unescaped payload keeps a second literal `-->` and raw `<>`:
+
+```text
+✘ Test "WebVTT and SubRip escape special characters in cue text" recorded an issue at TranscriptExporterTests.swift:45:5: Expectation failed: (vtt.components(separatedBy: "-->").count - 1 → 2) == 1
+✘ ...:49:5: Expectation failed: (srt.components(separatedBy: "-->").count - 1 → 2) == 1
+✘ Test run with 1 test failed after 0.002 seconds with 4 issues.
+```
+
+Passes after, full suite grew 187 → 188:
+
+```text
+✔ Test "WebVTT and SubRip escape special characters in cue text" passed after 0.002 seconds.
+✔ Test run with 188 tests passed after 1.101 seconds.
+```
+
+**Gaps.** None. Escaping is applied to cue payload only; the timestamp separator line is unaffected.
+
 ## F43 — In-transcript find double-counts overlapping/duplicate query terms
 
 - **Outcome:** fixed

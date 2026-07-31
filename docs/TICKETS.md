@@ -446,28 +446,6 @@ existing); be conservative — do not strip unless the transcript is genuinely t
 must equal "3:00 PM kickoff" (returns "PM kickoff" today); an SRT case asserts the cue text still
 contains "3:00". Fails before, passes after.
 
-### F44 — WebVTT/SubRip export writes cue text unescaped
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `vtt` appends the raw segment text (`Sources/WhisperCore/TranscriptExporter.swift:216`)
-and `srt` embeds it raw (`:202`) with no escaping. WebVTT requires `&`→`&amp;`, `<`→`&lt;`, and
-forbids the literal `-->` in cue payload. An edited transcript containing "R&D", "5 < 10", or a
-stray "-->" therefore emits spec-invalid WebVTT.
-
-**Impact.** Subtitle files that strict players/validators reject or mis-render. Everyday CJK/English
-speech rarely contains these characters; it bites edited transcripts ("AT&T", "C < D").
-
-**Proposed fix.** Escape `&`, `<`, `>` in cue text and neutralize any `-->` inside a cue; escape
-`<`/`>` in SRT too to avoid accidental tag interpretation.
-
-**Verification.** A segment text "R&D <plan> --> done" → VTT output contains "R&amp;D &lt;plan&gt;"
-and no literal "-->" inside the cue. Fails before, passes after.
-
 ### F45 — ClaudeSummarizer never handles `stop_reason == "max_tokens"`
 
 - **Status:** open

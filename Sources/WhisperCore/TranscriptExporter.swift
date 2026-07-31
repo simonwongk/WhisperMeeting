@@ -199,7 +199,7 @@ public enum TranscriptExporter {
             blocks.append("""
             \(index)
             \(subtitleTimestamp(start, millisecondSeparator: ",")) --> \(subtitleTimestamp(end, millisecondSeparator: ","))
-            \(text)
+            \(escapeCueText(text, escapeAmpersand: false))
             """)
             index += 1
         }
@@ -213,7 +213,7 @@ public enum TranscriptExporter {
             guard !text.isEmpty, let start = segment.start else { continue }
             let end = segment.end ?? start
             lines.append("\(subtitleTimestamp(start, millisecondSeparator: ".")) --> \(subtitleTimestamp(end, millisecondSeparator: "."))")
-            lines.append(text)
+            lines.append(escapeCueText(text, escapeAmpersand: true))
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -237,6 +237,20 @@ public enum TranscriptExporter {
             return "{}"
         }
         return string
+    }
+
+    /// Escape characters that would make subtitle cue text invalid or mis-render. WebVTT decodes
+    /// entities and forbids a literal `-->` in a cue, so it needs `&`, `<`, `>` escaped (escaping `>`
+    /// also neutralizes any `-->`). SubRip does not decode `&`, so only `<`/`>` are escaped there to
+    /// avoid a stray `<tag>` being interpreted (F44). Order matters: `&` first.
+    private static func escapeCueText(_ text: String, escapeAmpersand: Bool) -> String {
+        var escaped = text
+        if escapeAmpersand {
+            escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
+        }
+        escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
+        escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
+        return escaped
     }
 
     /// `HH:MM:SS,mmm` (SRT) or `HH:MM:SS.mmm` (WebVTT).
