@@ -18,7 +18,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by transcription lane (Opus 4.8)
-- **Commits:** `<sha-pending>` (F30 fix + tests + spec; real SHA recorded by the immediately following commit)
+- **Commits:** `fd56622` (F30 fix + tests + spec)
 - **Reachability:** Qwen meeting finishes → `AppModel.performTranscription` → `AppModel.apply(result:to:)`
   (`AppModel.swift:991`) stores `result.alignmentWarning` onto the `MeetingRecord` → the user opens the
   completed meeting and `TranscriptDetailView.transcriptSection` (`ContentView.swift:1785`) renders a
