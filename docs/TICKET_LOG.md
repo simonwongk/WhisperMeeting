@@ -19,7 +19,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
 - **Commits:** `d612771` (app wiring + red-green tests), `0a3b967` (recovery-only self-sufficiency),
-  `<close-sha>` (close)
+  `c9f6f7d` (close)
 - **Reachability:** app launch → `ContentView` `.task` (`AppEntry.swift:13`) →
   `AppModel.performStartupRecovery()` → `reclaimInterruptedQwenInstall()` (folded in **before**
   `refreshRuntime()`) → the orphan gate `hasOrphanedQwenInstallArtifacts` → the injected
