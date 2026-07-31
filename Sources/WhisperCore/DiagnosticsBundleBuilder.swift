@@ -52,17 +52,25 @@ public struct DiagnosticsInput: Sendable {
 public enum DiagnosticsBundleBuilder {
     public static func json(_ input: DiagnosticsInput) -> String {
         let meetings: [[String: Any]] = input.meetings.map { meeting in
-            [
+            // Bind the nil-coalesced values to explicitly-typed locals so `??` resolves to the
+            // non-optional `(T?, T) -> T` overload. Inside the `[String: Any]` literal the contextual
+            // type is `Any`, and Swift otherwise picks `(T?, T?) -> T?`, leaving the result optional
+            // and emitting a `String?`/`Int64?` → `Any` coercion warning the release gate promotes to
+            // an error (F111). Output bytes are unchanged.
+            let languageCode: String = meeting.languageCode ?? ""
+            let recordingBytes: Int64 = meeting.recordingBytes ?? -1
+            let errorMessage: String = meeting.errorMessage ?? ""
+            return [
                 "id": meeting.id,
                 "createdAt": meeting.createdAtEpoch,
                 "durationSeconds": meeting.durationSeconds,
                 "status": meeting.status,
-                "languageCode": meeting.languageCode ?? "",
+                "languageCode": languageCode,
                 "segmentCount": meeting.segmentCount,
                 "markerCount": meeting.markerCount,
-                "recordingBytes": meeting.recordingBytes ?? -1,
+                "recordingBytes": recordingBytes,
                 "hasError": meeting.errorMessage != nil,
-                "errorMessage": meeting.errorMessage ?? "",
+                "errorMessage": errorMessage,
             ]
         }
         let payload: [String: Any] = [
