@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F56 — Persist an overall transcript confidence into the header and Meeting Notes
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** `MeetingRecord.confidence` was dead (forced nil). Revived it: `AppModel.apply(result:)`
+now sets `confidence` from `TranscriptQuality.review(result.segments).confidence` (nil when unscored,
+so no false claim). Added a "## Confidence" section to `MeetingNotesExporter.markdown`: an
+"NN% clean — K of M segments flagged" headline plus a worst-first list (`flaggedBySeverity`) with each
+flagged passage's MM:SS and `SegmentQualityFlag.reason`. The whole section is gated on
+`!isUnscored && !isEdited` so an unscored or edited transcript makes no claim. Builds on F55, so this
+now works for Qwen/legacy transcripts too.
+
+**Invariants.** Read-only over segments; audio untouched; unscored/edited transcripts make no
+confidence claim (never fabricates trust); no diarization/translation.
+
+**Evidence.**
+
+Fails before the fix (confidence section suppressed):
+
+```text
+✘ Test "Meeting notes emit a confidence section only for a scored, unedited transcript" recorded an issue at MeetingNotesExporterTests.swift:111:5: Expectation failed: (md → "# t ...").contains("## Confidence")
+```
+
+Passes after (67% clean / "1 of 3 segments flagged" / flagged MM:SS; edited & unscored transcripts
+emit no section); full suite grew 212 → 213:
+
+```text
+✔ Test "Meeting notes emit a confidence section only for a scored, unedited transcript" passed after 0.001 seconds.
+✔ Test run with 213 tests passed after 1.105 seconds.
+```
+
+**Gaps.** The exporter section is red-green tested; the revived header label (`AppModel` → SwiftUI) is
+not view-tested in this harness.
+
 ## F55 — Engine-agnostic repetition flag: text-derived quality review for Qwen/legacy transcripts
 
 - **Outcome:** fixed

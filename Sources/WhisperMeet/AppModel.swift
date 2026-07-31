@@ -985,7 +985,10 @@ final class AppModel: ObservableObject {
                 ? result.text
                 : TranscriptFormatter.timestamped(result.segments)
             $0.languageCode = result.languageCode
-            $0.confidence = nil
+            // Revive the header confidence label from the quality review; nil (no claim) when the
+            // transcript carries no scorable segments (F56).
+            let quality = TranscriptQuality.review(result.segments)
+            $0.confidence = quality.isUnscored ? nil : quality.confidence
             $0.segments = result.segments
             $0.errorMessage = nil
             // Freshly produced text is already final; never rebuild it from segments later.

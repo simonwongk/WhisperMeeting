@@ -55,6 +55,25 @@ public enum MeetingNotesExporter {
             }
         }
 
+        // Confidence: only for a scored, unedited transcript. An edited transcript no longer matches
+        // its segments, and an unscored one carries no metrics — either way a score would be a false
+        // claim, so the section is omitted rather than fabricated (F56).
+        let quality = TranscriptQuality.review(segments)
+        if !quality.isUnscored,
+           !TranscriptFormatter.isEdited(transcriptText: transcriptText, segments: segments) {
+            let cleanPercent = Int((quality.confidence * 100).rounded())
+            lines.append("## Confidence")
+            lines.append("")
+            lines.append("\(cleanPercent)% clean — \(quality.flagged.count) of \(quality.scoredCount) segments flagged")
+            lines.append("")
+            for flagged in quality.flaggedBySeverity where segments.indices.contains(flagged.index) {
+                let stamp = segments[flagged.index].start.map(TranscriptFormatter.timestamp) ?? "--:--"
+                let reasons = flagged.flags.map(\.reason).joined(separator: " ")
+                lines.append("- **\(stamp)** \(reasons)")
+            }
+            if !quality.flagged.isEmpty { lines.append("") }
+        }
+
         // Once the transcript is edited, the original segments no longer match the exported body, so
         // drop segment-derived marker context (the markers themselves still list). Keeps notes from
         // showing a "context" line that contradicts the transcript beneath it.

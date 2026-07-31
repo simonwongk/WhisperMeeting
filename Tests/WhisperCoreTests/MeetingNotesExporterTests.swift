@@ -92,3 +92,36 @@ func exportsNotesSection() {
     )
     #expect(!withoutNotes.contains("## Notes"))
 }
+
+@Test("Meeting notes emit a confidence section only for a scored, unedited transcript")
+func exportsConfidenceSection() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 2, text: "clean one", avgLogprob: -0.3, noSpeechProb: 0.01, compressionRatio: 1.2),
+        TranscriptSegment(speaker: nil, start: 62, end: 64, text: "clean two", avgLogprob: -0.4, noSpeechProb: 0.02, compressionRatio: 1.3),
+        TranscriptSegment(speaker: nil, start: 125, end: 127, text: "shaky", avgLogprob: -2.0, noSpeechProb: 0.05, compressionRatio: 1.4),
+    ]
+    let transcriptText = TranscriptFormatter.timestamped(segments)
+
+    let md = MeetingNotesExporter.markdown(
+        title: "t", dateText: "", durationSeconds: 0, languageCode: nil,
+        summary: nil, transcriptText: transcriptText, segments: segments
+    )
+    #expect(md.contains("## Confidence"))
+    #expect(md.contains("67% clean"))                 // 3 scored, 1 flagged → 2/3
+    #expect(md.contains("1 of 3 segments flagged"))
+    #expect(md.contains("02:05"))                     // the flagged segment at 125s
+
+    // An edited transcript emits no confidence section.
+    let editedMd = MeetingNotesExporter.markdown(
+        title: "t", dateText: "", durationSeconds: 0, languageCode: nil,
+        summary: nil, transcriptText: "totally different edited text", segments: segments
+    )
+    #expect(!editedMd.contains("## Confidence"))
+
+    // An unscored transcript (no segments) emits no confidence section.
+    let unscoredMd = MeetingNotesExporter.markdown(
+        title: "t", dateText: "", durationSeconds: 0, languageCode: nil,
+        summary: nil, transcriptText: "some text", segments: []
+    )
+    #expect(!unscoredMd.contains("## Confidence"))
+}

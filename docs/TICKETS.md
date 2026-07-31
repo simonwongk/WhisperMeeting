@@ -347,35 +347,6 @@ with a fails-before/passes-after definition of done. These respect the non-negot
 (local-only except the opt-in Claude summary, recording is source-of-truth, no diarization, original
 language). Tickets that concretize an existing `ROADMAP.md` "Next candidate" note it explicitly.
 
-### F56 — Persist an overall transcript confidence into the header and Meeting Notes
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** The only trust figure is ephemeral ("X% clean", `ContentView.swift:2287`), recomputed
-in the detail banner and present in no export. `MeetingRecord.confidence` (`MeetingStore.swift:40`)
-is dead: rendered in the header (`ContentView.swift:1499-1500`) but `AppModel` forces it nil
-(`AppModel.swift:969`) and both clients return `confidence: nil` (`LocalWhisperClient.swift:190`,
-`QwenASRClient.swift:155`). Depends on F55 to be meaningful on Qwen.
-
-**Proposed feature.** In `AppModel.apply(result:to:)` (`:962-976`) set
-`$0.confidence = TranscriptQuality.review(result.segments).confidence`, reviving the header label.
-Add a confidence section to `MeetingNotesExporter.markdown` (`MeetingNotesExporter.swift:7`): a "NN%
-clean — K of M segments flagged" headline plus a worst-first list from `report.flaggedBySeverity`
-with each flagged passage's MM:SS and `SegmentQualityFlag.reason`. Gate the whole section on
-`!report.isUnscored && !TranscriptFormatter.isEdited` so an unscored or edited transcript makes no
-false claim.
-
-**Invariants.** Read-only over segments; audio untouched; unscored/edited transcripts make no
-confidence claim (never fabricates trust); no diarization/translation.
-
-**Verification.** In `MeetingNotesExporterTests`: segments with a known flagged fraction emit the
-"NN% clean / K flagged" line and worst-first MM:SS entries; an unscored or edited transcript emits
-no confidence section. Fails before, passes after.
-
 ### F58 — Post-meeting recording-health report: persist why a recording was bad
 
 - **Status:** open
