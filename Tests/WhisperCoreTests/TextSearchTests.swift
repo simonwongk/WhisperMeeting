@@ -34,6 +34,20 @@ func findsHighlightRanges() {
     #expect(ranges.map { String(text[$0]) } == ["Café", "CAFE", "cafe"])
 }
 
+@Test("Overlapping query terms count and highlight one merged region, not two")
+func mergesOverlappingRanges() {
+    // "meet" is a substring of the only match of "meeting" — one visible region, one match.
+    let overlapping = TextSearch.occurrenceRanges("meet meeting", in: "the meeting is set")
+    #expect(overlapping.count == 1)
+    #expect(overlapping.map { String("the meeting is set"[$0]) } == ["meeting"])
+
+    // A duplicated query word must not double-count its single occurrence.
+    #expect(TextSearch.occurrences("the the", in: ["the cat"]).count == 1)
+
+    // Adjacent but non-overlapping matches stay distinct.
+    #expect(TextSearch.occurrenceRanges("a b", in: "ab").count == 2)
+}
+
 @Test("Search indexes every occurrence across matching transcript lines")
 func indexesEveryOccurrence() {
     let occurrences = TextSearch.occurrences(

@@ -446,31 +446,6 @@ existing); be conservative — do not strip unless the transcript is genuinely t
 must equal "3:00 PM kickoff" (returns "PM kickoff" today); an SRT case asserts the cue text still
 contains "3:00". Fails before, passes after.
 
-### F43 — In-transcript find double-counts overlapping/duplicate query terms
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `occurrenceRanges` (`Sources/WhisperCore/TextSearch.swift:41-63`) iterates each
-whitespace-split term independently and concatenates hits; `occurrences` (`:68-78`) counts them. Two
-terms covering the same text — a duplicate word ("the the") or a substring pair ("meet meeting") —
-count the same visible region twice. ContentView drives the "X of N" label, Prev/Next, and
-highlighting from these (`ContentView.swift:2062,2071-2076,2365`); overlapping highlight ranges also
-clobber each other (the later `backgroundColor` write wins).
-
-**Impact.** Inflated match count, Prev/Next stepping onto visually identical positions, and a
-selected-match highlight that can be overwritten. Uncommon trigger (duplicate-word typo, or a term
-that is a prefix of another).
-
-**Proposed fix.** Merge/deduplicate overlapping ranges before counting and navigating, and keep
-highlighting consistent with the deduped list.
-
-**Verification.** `occurrenceRanges("meet meeting", in: "the meeting is set").count == 1` (returns 2
-today); `occurrences("the the", in: ["the cat"]).count == 1`. Fails before, passes after.
-
 ### F44 — WebVTT/SubRip export writes cue text unescaped
 
 - **Status:** open

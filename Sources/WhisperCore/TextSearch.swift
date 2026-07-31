@@ -56,10 +56,25 @@ public enum TextSearch {
                 start = range.upperBound
             }
         }
-        return ranges.sorted { lhs, rhs in
+        let sorted = ranges.sorted { lhs, rhs in
             if lhs.lowerBound == rhs.lowerBound { return lhs.upperBound < rhs.upperBound }
             return lhs.lowerBound < rhs.lowerBound
         }
+        // Merge overlapping ranges into their union. A duplicated query word ("the the") or a term
+        // that is a substring of another ("meet" vs "meeting") otherwise counts and highlights the
+        // same visible text twice and lets Prev/Next step onto identical positions (F43). Adjacent
+        // but non-overlapping matches ("a"+"b" in "ab") stay distinct.
+        var merged: [Range<String.Index>] = []
+        for range in sorted {
+            if let last = merged.last, range.lowerBound < last.upperBound {
+                if range.upperBound > last.upperBound {
+                    merged[merged.count - 1] = last.lowerBound..<range.upperBound
+                }
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
     }
 
     /// A stable, range-independent index of every occurrence across a collection of transcript

@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F43 — In-transcript find double-counts overlapping/duplicate query terms
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `TextSearch.occurrenceRanges` searched each whitespace-split term independently and
+concatenated the hits, only sorting the result. Two terms covering the same visible text — a
+duplicated word ("the the") or a substring pair ("meet"/"meeting") — produced overlapping ranges, so
+`occurrences` counted the same region twice and Prev/Next stepped onto visually identical positions.
+
+**Fix.** After sorting, merge overlapping ranges into their union (a range is dropped if fully
+contained, or extends the previous one if it overhangs). Adjacent-but-non-overlapping matches stay
+distinct. Both counting (`occurrences`) and highlighting read the merged list, so they now agree.
+
+**Evidence.**
+
+Fails before the fix:
+
+```text
+✘ Test "Overlapping query terms count and highlight one merged region, not two" recorded an issue at TextSearchTests.swift:41:5: Expectation failed: (overlapping.count → 2) == 1
+✘ ...:42:5: Expectation failed: (overlapping.map { ... } → ["meet", "meeting"]) == ["meeting"]
+✘ ...:45:5: Expectation failed: (TextSearch.occurrences("the the", in: ["the cat"]).count → 2) == 1
+✘ Test run with 1 test failed after 0.001 seconds with 3 issues.
+```
+
+Passes after, full suite grew 186 → 187:
+
+```text
+✔ Test "Overlapping query terms count and highlight one merged region, not two" passed after 0.001 seconds.
+✔ Test run with 187 tests passed after 1.098 seconds.
+```
+
+**Gaps.** None. Pure WhisperCore change; the ContentView highlight/navigation now consume the deduped
+list transitively (no view test in this harness).
+
 ## F39 — Changing the dictation trigger key leaves `hotkeyActive`/`status` stale
 
 - **Outcome:** fixed
