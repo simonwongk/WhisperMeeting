@@ -19,6 +19,7 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case requestFailed(String)
     case httpStatus(Int, String)
     case refused(String)
+    case responseTruncated
     case unreadableResponse
     case emptyResponse
 
@@ -37,6 +38,8 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "Claude returned an error (HTTP \(code)): \(message)"
         case let .refused(message):
             return "Claude declined to summarize this transcript: \(message)"
+        case .responseTruncated:
+            return "Claude's summary was cut off at the length limit. Summarize a shorter transcript, or raise the summary length limit and try again."
         case .unreadableResponse:
             return "Claude returned a summary the app could not read."
         case .emptyResponse:

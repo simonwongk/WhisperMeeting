@@ -123,6 +123,20 @@ func mapsRefusal() async throws {
     }
 }
 
+@Test("A max_tokens stop reason surfaces as a distinct truncation error, not unreadable")
+func mapsTruncation() async throws {
+    StubURLProtocol.statusCode = 200
+    // HTTP 200 with a truncated JSON payload — decoding this would throw .unreadableResponse.
+    StubURLProtocol.responseBody = try! JSONSerialization.data(withJSONObject: [
+        "stop_reason": "max_tokens",
+        "content": [["type": "text", "text": #"{"summary":"partial answer that ran out of to"#]]
+    ])
+
+    await #expect(throws: SummarizerError.responseTruncated) {
+        try await makeSummarizer().summarize(transcript: "hello", language: nil)
+    }
+}
+
 @Test("An empty transcript is rejected before any request")
 func rejectsEmptyTranscript() async throws {
     await #expect(throws: SummarizerError.emptyTranscript) {

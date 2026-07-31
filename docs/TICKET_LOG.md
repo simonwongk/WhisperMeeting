@@ -34,6 +34,44 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F45 — ClaudeSummarizer never handles `stop_reason == "max_tokens"`
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `decodeSummary` branched only on `stop_reason == "refusal"`. On a token-cap hit the
+API returns HTTP 200 with `stop_reason == "max_tokens"` and truncated JSON, so the decode failed and
+surfaced `.unreadableResponse` ("Claude returned a summary the app could not read") — misleading and
+non-actionable, since a retry at the same cap fails again.
+
+**Fix.** Detect `stop_reason == "max_tokens"` before decoding and throw a new `SummarizerError`
+`.responseTruncated` with actionable guidance ("cut off at the length limit… summarize a shorter
+transcript, or raise the summary length limit"). Also raised the default `maxTokens` 4_000 → 8_000 to
+reduce how often long meetings hit the cap.
+
+**Evidence.**
+
+Fails before the fix (only the truncation-detection change stashed; the enum case stays) — the bug's
+`.unreadableResponse` is thrown:
+
+```text
+✘ Test "A max_tokens stop reason surfaces as a distinct truncation error, not unreadable" recorded an issue at ClaudeSummarizerTests.swift:135:11: Expectation failed: expected error "responseTruncated" of type SummarizerError, but "unreadableResponse" of type SummarizerError was thrown instead
+✘ Test run with 1 test failed after 0.006 seconds with 1 issue.
+```
+
+Passes after, full suite grew 189 → 190:
+
+```text
+✔ Test "A max_tokens stop reason surfaces as a distinct truncation error, not unreadable" passed after 0.008 seconds.
+✔ Test run with 190 tests passed after 1.095 seconds.
+```
+
+**Gaps.** The Claude API contract (`stop_reason` values, `output_config` json_schema) was not
+re-fetched from live docs this cycle; the `max_tokens` value is a documented, long-standing Anthropic
+stop reason and the change only adds a branch on it. Not exercised against a live API call (the
+`URLProtocol` stub mirrors the documented 200+truncated-JSON shape).
+
 ## F42 — Export strips a leading clock-like token as a timestamp on non-timestamped transcripts
 
 - **Outcome:** fixed

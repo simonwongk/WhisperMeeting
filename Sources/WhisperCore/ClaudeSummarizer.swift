@@ -15,7 +15,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
     public init(
         apiKey: String,
         model: String = defaultModel,
-        maxTokens: Int = 4_000,
+        maxTokens: Int = 8_000,
         baseURL: URL = URL(string: "https://api.anthropic.com")!,
         session: URLSession = .shared
     ) {
@@ -120,9 +120,16 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw SummarizerError.unreadableResponse
         }
-        if let stopReason = object["stop_reason"] as? String, stopReason == "refusal" {
-            let details = (object["stop_details"] as? [String: Any])?["explanation"] as? String
-            throw SummarizerError.refused(details ?? "No explanation provided.")
+        if let stopReason = object["stop_reason"] as? String {
+            if stopReason == "refusal" {
+                let details = (object["stop_details"] as? [String: Any])?["explanation"] as? String
+                throw SummarizerError.refused(details ?? "No explanation provided.")
+            }
+            // A token-cap hit returns HTTP 200 with truncated JSON; decoding it would misreport a
+            // truncation as an unreadable/garbled response. Surface an actionable error instead (F45).
+            if stopReason == "max_tokens" {
+                throw SummarizerError.responseTruncated
+            }
         }
         guard let content = object["content"] as? [[String: Any]] else {
             throw SummarizerError.unreadableResponse

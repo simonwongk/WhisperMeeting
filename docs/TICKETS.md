@@ -418,33 +418,6 @@ language can stay as-is; only the top-level `language_code` needs the fix.
 **Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
 threshold rule), not `zh`. Fails before, passes after.
 
-### F45 — ClaudeSummarizer never handles `stop_reason == "max_tokens"`
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The request caps output at `maxTokens = 4_000`
-(`Sources/WhisperCore/ClaudeSummarizer.swift:18`, sent at `:63`). `decodeSummary` (`:119-140`)
-branches only on `stop_reason == "refusal"` (`:123`). On a token-cap hit the API returns HTTP 200
-with `stop_reason == "max_tokens"` and truncated JSON; the code extracts it and
-`JSONDecoder().decode(MeetingSummary.self, …)` fails, throwing `.unreadableResponse` → "Claude
-returned a summary the app could not read." (`MeetingSummarizer.swift:41`). No branch distinguishes
-truncation from genuinely garbled output.
-
-**Impact.** A long meeting whose summary + key points + action items exceed ~4000 output tokens
-fails with a misleading, non-actionable error; retrying will not help without raising the cap. The
-recording/transcript are untouched.
-
-**Proposed fix.** Detect `stop_reason == "max_tokens"` and throw a dedicated `.responseTruncated`
-with guidance; and/or raise the `maxTokens` default well above 4_000.
-
-**Verification.** A `URLProtocol` stub returns 200 with `"stop_reason":"max_tokens"` and truncated
-JSON; assert the current `.unreadableResponse` (documents the bug), then after the fix a distinct
-actionable error. Fails before, passes after.
-
 ### F46 — Preflight headline contradicts its own microphone note on transient-only capture
 
 - **Status:** open
