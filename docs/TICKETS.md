@@ -732,36 +732,6 @@ it does not pin a specific stale number.
 **Verification.** Run `swift test`, count the executed tests, and update line 6 to match the newest
 recorded per-cycle count.
 
-### F78 — Toggle-mode dictation desyncs after the F50 capture watchdog auto-finalizes
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (found during F38 review)
-
-**Problem.** F38 fixed the toggle desync on *refused* starts, but a sibling path remains. In toggle
-mode a successful start latches `toggledOn = true`; the normal stop is a second press
-(`onPressEnd`) which flips it back to false. The F50 capture watchdog, however, finalizes a stuck
-`.listening` session by calling `beginTranscriptionIfNeeded()` directly from its `onTimeout` closure
-(`Sources/WhisperMeet/Dictation/DictationController.swift:73-80`) with no hotkey edge, so `toggledOn`
-stays `true`. The user's next press — intending to start a fresh dictation — is therefore treated as
-the "stop" edge: `onPressEnd` → `handlePressEnd` → `beginTranscriptionIfNeeded()` returns false
-(nothing recording) → silent no-op. Only the press after that starts capture.
-
-**Impact.** After a toggle-mode capture hits the 120 s watchdog cap and auto-finalizes, the user's
-first press to dictate again does nothing; a second press is needed. Low frequency (requires hitting
-the cap in toggle mode), non-destructive, but the same confusing class of desync F38 addressed.
-
-**Proposed fix.** Reset the monitor's toggle state whenever capture ends without a user end-edge —
-i.e. call `hotkeyMonitor.resetToggleState()` in the watchdog `onTimeout` path after finalizing (not
-in `beginTranscriptionIfNeeded` itself, which is also the normal press-driven stop where the edge
-already cleared the toggle).
-
-**Verification.** Controller test: inject a real `HotkeyMonitor` in toggle mode, start a capture,
-fire the watchdog `onTimeout`, then deliver one down edge and assert it STARTS a new capture (rather
-than a no-op end edge). Fails before, passes after.
-
 ## Feature tickets — filed 2026-07-30 from the multi-lens feature discovery
 
 New functionality, ranked best-first by value / effort with identity fit and risk weighed in. Each

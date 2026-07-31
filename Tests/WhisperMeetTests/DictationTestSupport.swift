@@ -10,6 +10,9 @@ final class FakeDictationRecorder: DictationRecording {
     private(set) var isRecording = false
     private(set) var stopCount = 0
     var startError: Error?
+    /// Duration reported by `stop()`. Default 1 s (transcribe path). Set below the session's
+    /// `minClipDuration` (0.35 s) to exercise the immediate discard-to-idle path.
+    var stopDuration: TimeInterval = 1
     private let outputURL: URL
 
     init(outputURL: URL) {
@@ -26,7 +29,7 @@ final class FakeDictationRecorder: DictationRecording {
     func stop() throws -> (url: URL, duration: TimeInterval) {
         stopCount += 1
         isRecording = false
-        return (outputURL, 1)
+        return (outputURL, stopDuration)
     }
 
     func cancel() {

@@ -77,6 +77,10 @@ final class DictationController: ObservableObject {
         guard let self, self.enabled, self.status == .listening else { return }
         self.log.notice("maximum dictation capture duration reached; finalizing")
         _ = self.beginTranscriptionIfNeeded()
+        // The watchdog finalized without a user end-edge, so toggle mode's latched state must be
+        // cleared or the next press fires a no-op end edge instead of a fresh start (F78). No-op in
+        // hold mode, which never reads toggledOn.
+        self.hotkeyMonitor.resetToggleState()
     }
 
     private static let idleEvictSeconds: TimeInterval = 300 // 5 min; configurable later

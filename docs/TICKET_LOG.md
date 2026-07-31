@@ -34,6 +34,45 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F78 — Toggle-mode dictation desyncs after the F50 capture watchdog auto-finalizes
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** Filed during the F38 review. F38 cleared toggle state on *refused* starts, but a
+successful toggle start latches `toggledOn = true` and relies on a user end-edge to clear it. The F50
+capture watchdog finalizes a stuck `.listening` session by calling `beginTranscriptionIfNeeded()`
+from its `onTimeout` closure with no hotkey edge, so `toggledOn` stayed `true`. The user's next press
+was then read as the "stop" edge (`onPressEnd` → no-op, nothing recording); only the press after that
+started a new capture.
+
+**Fix.** Call `hotkeyMonitor.resetToggleState()` in the watchdog `onTimeout` closure, right after
+finalizing — the one capture-end path that has no user edge. It is deliberately NOT placed inside
+`beginTranscriptionIfNeeded()` (the normal press-driven stop already cleared the toggle via its edge)
+and is a no-op in hold mode.
+
+**Evidence.**
+
+Fails before the fix (reset neutralized) — the post-watchdog press is swallowed:
+
+```text
+✘ Test "After the capture watchdog auto-finalizes a toggle dictation, the next press starts a new one" recorded an issue at DictationToggleRecoveryTests.swift:118:5: Expectation failed: (recorder → WhisperMeetTests.FakeDictationRecorder).isRecording → false
+✘ Test "After the capture watchdog auto-finalizes a toggle dictation, the next press starts a new one" recorded an issue at DictationToggleRecoveryTests.swift:119:5: Expectation failed: (controller.status → .idle) == .listening
+✘ Test run with 1 test failed after 0.446 seconds with 2 issues.
+```
+
+Passes after, full suite grew 184 → 185:
+
+```text
+✔ Test "After the capture watchdog auto-finalizes a toggle dictation, the next press starts a new one" passed after 0.018 seconds.
+✔ Test run with 185 tests passed after 1.071 seconds.
+```
+
+**Gaps.** The test drives the watchdog via an injected `captureSleep` that fires only the first
+armed capture; real-clock firing at the 120 s cap is not wall-clock tested (same seam F50 uses). No
+runtime helper/model adapter touched.
+
 ## F38 — Toggle-mode dictation hotkey desyncs when a press-start is refused
 
 - **Outcome:** fixed

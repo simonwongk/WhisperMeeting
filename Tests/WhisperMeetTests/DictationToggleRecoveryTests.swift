@@ -55,3 +55,66 @@ func refusedToggleStartStillStartsOnNextPress() async throws {
     #expect(recorder.isRecording)
     #expect(controller.status == .listening)
 }
+
+/// Fires the capture watchdog for the first armed capture only; later captures never fire (so a
+/// freshly-started capture stays `.listening`).
+private final class FirstArmFiresOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func isFirst() -> Bool { lock.withLock { count += 1; return count == 1 } }
+}
+
+/// F78 — after the F50 watchdog auto-finalizes a toggle-mode capture (no user end-edge), the next
+/// press must START a fresh capture, not fire a swallowed end edge.
+@MainActor
+@Test("After the capture watchdog auto-finalizes a toggle dictation, the next press starts a new one")
+func watchdogFinalizeDoesNotInvertToggle() async throws {
+    let suite = "WhisperMeet.DictationToggleRecoveryTests.watchdog.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationToggleWatchdogTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(false, forKey: "dictationAutoPaste")
+
+    let monitor = HotkeyMonitor(hotkey: DictationHotkey(keyCode: 96, mode: .toggle))
+    let recorder = FakeDictationRecorder(
+        outputURL: temporaryDirectory.appendingPathComponent("capture.wav")
+    )
+    // A too-short clip so the first watchdog finalize discards straight back to idle (no transcribe
+    // pipeline / dismiss timer), keeping the test deterministic.
+    recorder.stopDuration = 0.1
+    let firstArm = FirstArmFiresOnce()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: EmptyDictationEngine(),
+        recorder: recorder,
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: monitor,
+        logStore: DictationLogStore(directory: temporaryDirectory),
+        captureTimeout: .seconds(120),
+        // Only the first armed capture's watchdog fires; the second stays pending.
+        captureSleep: { _ in if !firstArm.isFirst() { try await Task.sleep(for: .seconds(3600)) } },
+        activateOnInit: false
+    )
+
+    // First toggle press → capture starts → watchdog fires immediately → discard back to idle.
+    monitor.handleKeyStateChange(true)
+    for _ in 0..<60 where controller.status != .idle {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(controller.status == .idle)
+    #expect(!recorder.isRecording)
+
+    // Next press must START a new capture, not fire a swallowed end edge.
+    monitor.handleKeyStateChange(false)
+    monitor.handleKeyStateChange(true)
+    for _ in 0..<60 where controller.status != .listening {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(recorder.isRecording)
+    #expect(controller.status == .listening)
+}
