@@ -34,6 +34,40 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F70 — Privacy-safe diagnostics bundle (audio- and transcript-excluded)
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `DiagnosticsBundleBuilder`. Its `DiagnosticsInput` deliberately carries the
+sensitive fields (transcript, summary, vocabulary) so the builder can prove — by never emitting them
+— that a support bundle excludes them. `json(_:)` emits only structural metadata (ids, epoch
+timestamps, durations, status, language code, segment/marker counts, byte sizes, error messages,
+vocabulary term COUNT) as deterministic (`.sortedKeys`) JSON.
+
+**Invariants.** Local-only (returns a string; the app writes a local file); excludes transcript
+text, summaries, and vocabulary terms by construction; no absolute paths; no audio.
+
+**Evidence.**
+
+Fails before the fix (transcript deliberately leaked into the payload):
+
+```text
+✘ Test "Diagnostics bundle excludes transcript/summary/vocabulary and is deterministic JSON" recorded an issue at DiagnosticsBundleBuilderTests.swift:22:5: Expectation failed: !((out → "{ ...").contains("SECRET-TRANSCRIPT"))
+```
+
+Passes after (excludes SECRET-TRANSCRIPT / SECRET-SUMMARY / AcmeCorp; valid JSON; byte-identical
+across runs); full suite grew 215 → 216:
+
+```text
+✔ Test "Diagnostics bundle excludes transcript/summary/vocabulary and is deterministic JSON" passed after 0.003 seconds.
+✔ Test run with 216 tests passed after 1.087 seconds.
+```
+
+**Gaps.** The builder is fully tested; the Settings "Export diagnostics…" action that maps
+`MeetingRecord`s into `DiagnosticsInput` and writes the file is follow-up wiring.
+
 ## F74 — Compact recording HUD overlay for backgrounded meetings
 
 - **Outcome:** fixed

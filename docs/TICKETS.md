@@ -496,34 +496,6 @@ modifiers) — a real accessibility footgun; `displayShortcut` strings are exact
 predicate is correct for representative `AppCommandState` values (Add Marker enabled only while
 recording). Fails before, passes after.
 
-### F70 — Privacy-safe diagnostics bundle (audio- and transcript-excluded)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** recovery
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** When recovery/install/transcription misbehaves the evidence is scattered across
-ephemeral `alertMessage`s, `store.startupRecoveryMessages`, the `DictationLog`, and per-recording
-`source-tracks.json`, with no coherent snapshot for support and every hand-copy risking sweeping in
-transcript text. Concretizes ROADMAP Next candidate #4.
-
-**Proposed feature.** A pure `DiagnosticsBundleBuilder` handed the full per-meeting data (including
-`transcriptText`, summary, vocabulary) that returns a deterministic Markdown+JSON string provably
-excluding transcript text, summaries, vocabulary terms, and any absolute path outside the app
-container — keeping only ids, timestamps, durations, status, `languageCode`, segment/marker counts,
-byte sizes, recovery-alignment strings, and error messages. Wire a Settings "Export diagnostics…"
-action writing the bundle to a user-chosen local folder; no audio copied.
-
-**Invariants.** Local-only: writes a local file, no network; excludes transcript text and summaries
-by construction; no audio copied; no diarization/language change.
-
-**Verification.** New `DiagnosticsBundleBuilderTests`: feed a record whose `transcriptText` is
-"SECRET-TRANSCRIPT" plus a vocabulary term "AcmeCorp"; assert neither string appears anywhere in the
-output, the output parses as valid JSON, and two runs on identical input are byte-identical. Fails
-before, passes after.
-
 ### F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Status:** open
