@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 public enum QwenASRError: LocalizedError, Sendable, Equatable {
     case runtimeNotInstalled
@@ -140,23 +139,23 @@ public struct QwenASRClient: Sendable {
         }
         let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw QwenASRError.emptyTranscript }
-        if let warning = payload.alignmentWarning {
-            Logger(
-                subsystem: "com.whispermeet.app",
-                category: "qwen-asr"
-            ).warning("Timestamp alignment unavailable; complete text preserved. \(warning)")
-        }
+        return Self.makeResult(id: fileURL.lastPathComponent, text: text, payload: payload)
+    }
 
-        return TranscriptionResult(
-            id: fileURL.lastPathComponent,
+    /// Builds the result from the decoded helper payload, surfacing the alignment warning through the
+    /// result rather than logging it as an OSLog side effect — keeping WhisperCore framework-free and
+    /// making the warning observable to callers and tests (F28).
+    static func makeResult(id: String, text: String, payload: QwenOutput) -> TranscriptionResult {
+        TranscriptionResult(
+            id: id,
             text: text,
             languageCode: payload.language,
             audioDuration: payload.alignedItems.map(\.end).max(),
             confidence: nil,
-            segments: QwenAlignedTranscript.segments(
-                fullText: text,
-                alignedItems: payload.alignedItems
-            )
+            segments: QwenAlignedTranscript.segments(fullText: text, alignedItems: payload.alignedItems),
+            alignmentWarning: payload.alignmentWarning.flatMap {
+                "Timestamp alignment unavailable; complete text preserved. \($0)"
+            }
         )
     }
 
@@ -207,7 +206,7 @@ public struct QwenASRClient: Sendable {
     }
 }
 
-private struct QwenOutput: Decodable {
+struct QwenOutput: Decodable {
     let text: String
     let language: String?
     let alignedItems: [QwenAlignedItem]

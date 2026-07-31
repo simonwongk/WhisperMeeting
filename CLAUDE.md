@@ -88,7 +88,10 @@ Two SwiftPM targets, and the split is the key design decision:
   (`InterruptedRecordingRecovery`), and the Claude summarizer (`MeetingSummarizer` protocol +
   `ClaudeSummarizer`, a raw-HTTPS `URLSession` client — no Swift SDK exists). No AppKit/SwiftUI
   import — this is why it's unit-testable without a GUI (the summarizer is tested with a
-  `URLProtocol` stub).
+  `URLProtocol` stub). **Sanctioned exception:** `WarmWhisperDictationEngine.swift` imports `Darwin`
+  solely for `SIGKILL` to force-stop a wedged helper process — there is no Foundation equivalent.
+  Every other `WhisperCore` file imports only Foundation; do not add framework imports (surface
+  diagnostics through return values instead, as `TranscriptionResult.alignmentWarning` does).
 - **`WhisperMeet`** (executable, macOS 15+) — everything that touches Apple frameworks:
   `AudioCaptureEngine` (ScreenCaptureKit), `MeetingStore`, `AppModel`, SwiftUI `ContentView`,
   `VocabularyExtractor`. Keep macOS-framework code out of `WhisperCore`.

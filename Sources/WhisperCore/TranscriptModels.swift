@@ -270,6 +270,10 @@ public struct TranscriptionResult: Sendable, Equatable {
     public let audioDuration: Double?
     public let confidence: Double?
     public let segments: [TranscriptSegment]
+    /// A plain-language note when timestamp alignment was unavailable but the complete text was
+    /// preserved. Surfaced through the result (not an OSLog side effect) so callers/tests can observe
+    /// it and the UI can explain it (F28). `nil` on the Whisper path.
+    public let alignmentWarning: String?
 
     public init(
         id: String,
@@ -277,7 +281,8 @@ public struct TranscriptionResult: Sendable, Equatable {
         languageCode: String?,
         audioDuration: Double?,
         confidence: Double?,
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        alignmentWarning: String? = nil
     ) {
         self.id = id
         self.text = text
@@ -285,5 +290,6 @@ public struct TranscriptionResult: Sendable, Equatable {
         self.audioDuration = audioDuration
         self.confidence = confidence
         self.segments = segments
+        self.alignmentWarning = alignmentWarning
     }
 }

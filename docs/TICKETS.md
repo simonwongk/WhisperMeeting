@@ -169,35 +169,6 @@ path, and microphone input cannot be synthesised — a person must hold the trig
 Record release-to-text latency and any corrections needed. Append the numbers to `TICKET_LOG.md` and
 correct the benchmark claims in `CHANGELOG.md` if they do not hold up.
 
-### F28 — `WhisperCore` is no longer framework-free
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** build
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, standards)
-
-**Problem.** `CLAUDE.md` states `WhisperCore` is "pure, `Sendable`, **framework-free** logic". Two
-files now break that. 29 of 31 WhisperCore files import Foundation only; these are the exceptions:
-- `Sources/WhisperCore/QwenASRClient.swift:2` — `import os`, and `:144` constructs
-  `Logger(subsystem: "com.whispermeet.app", …)` inside the library. This also breaks *pure*: the
-  alignment-failure warning becomes an OSLog side effect instead of being surfaced in
-  `TranscriptionResult`, so neither callers nor tests can observe it. The app-identity string
-  belongs in the `WhisperMeet` target.
-- `Sources/WhisperCore/WarmWhisperDictationEngine.swift:2` — `import Darwin`, for `SIGKILL` at
-  `:344`. Same rule, weaker case: there is no Foundation equivalent.
-
-**Impact.** Erodes the split that makes `WhisperCore` unit-testable without a GUI. The
-`QwenASRClient` case additionally hides a real diagnostic from tests, which is how the F24 class of
-bug survives.
-
-**Proposed fix.** Return the alignment warning through `TranscriptionResult` and let `WhisperMeet`
-log it. For `SIGKILL`, either accept `import Darwin` with a documented exception in `CLAUDE.md`, or
-move the force-stop into the app target.
-
-**Verification.** `grep -rn "^import " Sources/WhisperCore/*.swift` shows Foundation only (plus any
-exception `CLAUDE.md` explicitly sanctions); a test asserts the alignment warning is observable.
-
 ### F30 — Qwen alignment failure silently drops every timestamp
 
 - **Status:** open

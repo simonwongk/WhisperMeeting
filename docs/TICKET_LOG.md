@@ -34,6 +34,47 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F28 — `WhisperCore` is no longer framework-free
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `QwenASRClient.swift` imported `os` and constructed a `Logger` inside the library,
+breaking the "pure, framework-free" contract and hiding the Qwen alignment-failure warning in OSLog
+where neither callers nor tests could observe it. `WarmWhisperDictationEngine.swift` also imports
+`Darwin` (for `SIGKILL`), which has no Foundation equivalent.
+
+**Fix.** Added `TranscriptionResult.alignmentWarning` (defaulted nil) and route the Qwen warning
+through it via an extracted, testable `QwenASRClient.makeResult(...)`; removed `import os` and the
+`Logger` call. Documented the `Darwin`/`SIGKILL` import in `CLAUDE.md` as the one sanctioned exception
+and stated the "surface diagnostics through return values" rule.
+
+**Evidence.**
+
+`WhisperCore` imports are now Foundation only, plus the sanctioned Darwin:
+
+```text
+   1 import Darwin
+  45 import Foundation
+```
+
+The warning is observable — fails before the fix (warning not surfaced):
+
+```text
+✘ Test "Qwen alignment warning is observable through the transcription result" recorded an issue at QwenAlignmentWarningTests.swift:13:5: Expectation failed: (result.alignmentWarning?.contains("KeyError: text") → nil) == true
+```
+
+Passes after; full suite grew 229 → 230:
+
+```text
+✔ Test "Qwen alignment warning is observable through the transcription result" passed after 0.001 seconds.
+✔ Test run with 230 tests passed after 1.145 seconds.
+```
+
+**Gaps.** The warning is now in the result and testable; surfacing it in the UI (and amending
+`PRODUCT_SPEC.md`) is F30. No live-model run — the change is pure result plumbing.
+
 ## F58 — Post-meeting recording-health report: persist why a recording was bad
 
 - **Outcome:** fixed
