@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F58 — Post-meeting recording-health report: persist why a recording was bad
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** The live `RecordingHealthSnapshot.warnings` were thrown away on stop. Added a pure
+`RecordingHealthReport` (distinct warnings, worst status reached, per-channel total stale seconds,
+whether system audio was ever detected) and `RecordingHealthMonitor.report()` which folds it across
+every `snapshot(...)`. Made `RecordingHealthWarning`/`RecordingHealthStatus`/`RecordingHealthReport`
+`Codable` and added optional `MeetingRecord.healthReport` (old indexes still decode).
+
+**Invariants.** Advisory only, derived from level data already computed during capture; audio
+untouched; channel-level (mic vs system), never speaker identity; local-only.
+
+**Evidence.**
+
+Fails before the fix (mic stale-seconds accrual disabled):
+
+```text
+✘ Test "Health report folds warnings, worst status, and mic stale seconds" recorded an issue at RecordingHealthReportTests.swift:21:5: Expectation failed: (report.microphoneStaleSeconds → 0.0) == (8 → 8.0)
+```
+
+Passes after (folds `.systemAudioNotDetected`, worst `.atRisk`, mic stale-seconds 8, never-detected;
+plus a Codable round-trip); full suite grew 227 → 229:
+
+```text
+✔ Test "Health report folds warnings, worst status, and mic stale seconds" passed after 0.001 seconds.
+✔ Test "A RecordingHealthReport round-trips through Codable" passed after 0.001 seconds.
+✔ Test run with 229 tests passed after 1.144 seconds.
+```
+
+**Gaps.** The report fold + persistence field are tested. Calling `monitor.report()` on stop, storing
+it into `MeetingRecord.healthReport`, and rendering the one-line advisory are follow-up app wiring.
+
 ## F75 — Local automatic backups with hash verification and retention
 
 - **Outcome:** fixed

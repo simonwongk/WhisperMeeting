@@ -19,7 +19,7 @@ public struct RecordingAudioLevel: Sendable, Equatable {
 
 /// A plain-language rollup of the health snapshot so the UI can state, in one word, whether the
 /// recording is fine — instead of leaving the user to interpret a list of warnings.
-public enum RecordingHealthStatus: Sendable, Equatable {
+public enum RecordingHealthStatus: String, Sendable, Equatable, Codable {
     /// Both channels are being captured and nothing needs attention.
     case good
     /// Something is worth a glance but the recording is not in danger (clipping, or system audio
@@ -27,9 +27,18 @@ public enum RecordingHealthStatus: Sendable, Equatable {
     case caution
     /// The recording is at risk right now (a channel stopped delivering audio, or storage is low).
     case atRisk
+
+    /// Severity rank (higher = worse), for folding the worst status reached across a capture.
+    var rank: Int {
+        switch self {
+        case .good: return 0
+        case .caution: return 1
+        case .atRisk: return 2
+        }
+    }
 }
 
-public enum RecordingHealthWarning: Sendable, Equatable, Hashable {
+public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codable {
     case microphoneCaptureStopped
     case systemAudioCaptureStopped
     case systemAudioNotDetected
@@ -72,6 +81,31 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
     }
 }
 
+/// A post-meeting rollup folded across the whole capture: which distinct warnings occurred, the worst
+/// status reached, per-channel total stale seconds, and whether system audio was ever detected —
+/// persisted so a bad recording explains itself rather than being blamed on the model (F58).
+public struct RecordingHealthReport: Sendable, Equatable, Codable {
+    public let warnings: Set<RecordingHealthWarning>
+    public let worstStatus: RecordingHealthStatus
+    public let microphoneStaleSeconds: TimeInterval
+    public let systemAudioStaleSeconds: TimeInterval
+    public let systemAudioEverDetected: Bool
+
+    public init(
+        warnings: Set<RecordingHealthWarning>,
+        worstStatus: RecordingHealthStatus,
+        microphoneStaleSeconds: TimeInterval,
+        systemAudioStaleSeconds: TimeInterval,
+        systemAudioEverDetected: Bool
+    ) {
+        self.warnings = warnings
+        self.worstStatus = worstStatus
+        self.microphoneStaleSeconds = microphoneStaleSeconds
+        self.systemAudioStaleSeconds = systemAudioStaleSeconds
+        self.systemAudioEverDetected = systemAudioEverDetected
+    }
+}
+
 /// Evaluates capture health from a serial stream of audio observations.
 public final class RecordingHealthMonitor {
     private struct ChannelState {
@@ -88,6 +122,13 @@ public final class RecordingHealthMonitor {
     private let lowStorageThresholdBytes: Int64
     private var microphone = ChannelState()
     private var systemAudio = ChannelState()
+
+    // Accumulated across the capture for the post-meeting report (F58).
+    private var seenWarnings: Set<RecordingHealthWarning> = []
+    private var worstStatus: RecordingHealthStatus = .good
+    private var microphoneStaleSeconds: TimeInterval = 0
+    private var systemAudioStaleSeconds: TimeInterval = 0
+    private var lastSnapshotTime: TimeInterval?
 
     public init(
         startedAt: TimeInterval,
@@ -146,11 +187,34 @@ public final class RecordingHealthMonitor {
            availableStorageBytes < lowStorageThresholdBytes {
             warnings.append(.lowStorage)
         }
-        return RecordingHealthSnapshot(
+        let snapshot = RecordingHealthSnapshot(
             microphoneLevel: microphone.level,
             systemAudioLevel: systemAudio.level,
             availableStorageBytes: availableStorageBytes,
             warnings: warnings
+        )
+
+        // Fold this snapshot into the running report.
+        seenWarnings.formUnion(warnings)
+        if snapshot.overallStatus.rank > worstStatus.rank { worstStatus = snapshot.overallStatus }
+        if let last = lastSnapshotTime, time > last, time - startedAt >= initialGracePeriod {
+            let delta = time - last
+            if isStale(microphone, at: time) { microphoneStaleSeconds += delta }
+            if systemAudio.lastReceivedAt != nil, isStale(systemAudio, at: time) { systemAudioStaleSeconds += delta }
+        }
+        lastSnapshotTime = time
+
+        return snapshot
+    }
+
+    /// The post-meeting rollup folded across every `snapshot(...)` taken during the capture (F58).
+    public func report() -> RecordingHealthReport {
+        RecordingHealthReport(
+            warnings: seenWarnings,
+            worstStatus: worstStatus,
+            microphoneStaleSeconds: microphoneStaleSeconds,
+            systemAudioStaleSeconds: systemAudioStaleSeconds,
+            systemAudioEverDetected: systemAudio.lastReceivedAt != nil
         )
     }
 

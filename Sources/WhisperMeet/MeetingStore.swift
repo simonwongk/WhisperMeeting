@@ -58,6 +58,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// User labels for organizing/filtering the sidebar (never speaker identity). Optional so old
     /// indexes decode; normalized via `MeetingTags` before storage (F67).
     var tags: [String]?
+    /// Post-meeting capture-health rollup (why a recording was bad). Optional so old indexes decode;
+    /// channel-level, never speaker identity (F58).
+    var healthReport: RecordingHealthReport?
 
     init(
         id: UUID = UUID(),
@@ -76,7 +79,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         markers: [RecordingMarker]? = nil,
         pinned: Bool? = nil,
         notes: String? = nil,
-        tags: [String]? = nil
+        tags: [String]? = nil,
+        healthReport: RecordingHealthReport? = nil
     ) {
         self.id = id
         self.title = title
@@ -95,6 +99,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.pinned = pinned
         self.notes = notes
         self.tags = tags
+        self.healthReport = healthReport
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

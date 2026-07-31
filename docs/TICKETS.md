@@ -347,34 +347,6 @@ with a fails-before/passes-after definition of done. These respect the non-negot
 (local-only except the opt-in Claude summary, recording is source-of-truth, no diarization, original
 language). Tickets that concretize an existing `ROADMAP.md` "Next candidate" note it explicitly.
 
-### F58 — Post-meeting recording-health report: persist why a recording was bad
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk L)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** A meeting where system audio was never detected, or the mic went stale mid-recording,
-becomes a `MeetingRecord` with no trace: the live `RecordingHealthSnapshot.warnings`
-(`RecordingHealthMonitor.swift:62-72,121-155`, surfaced via `AppModel.recordingHealth`) are thrown
-away on stop, so the user may blame the model for a capture failure.
-
-**Proposed feature.** Add a pure `RecordingHealthReport` value plus
-`RecordingHealthMonitor.report()` folding across the capture: the distinct warnings seen, the worst
-status reached, per-channel total stale seconds, and whether system audio was ever detected. Persist
-as optional `MeetingRecord.healthReport` (`MeetingStore.swift:31`, exactly like the existing
-optional markers/`transcriptNormalized` so old indexes decode). Render a one-line advisory in the
-detail reusing the Round-9 banner pattern.
-
-**Invariants.** Advisory only, derived from level data already computed during capture; audio
-untouched; channel-level (mic vs system track), not speaker identity; local-only.
-
-**Verification.** New `RecordingHealthReportTests`: a scripted `receive()`/`snapshot()` sequence
-where system audio never arrives and the mic goes stale → the report lists
-`.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
-`MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
-
 ---
 
 *Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.* *F28–F37 added
