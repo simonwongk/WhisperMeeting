@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F93`.**
+**Next free ID: `F114`.**
 
 ---
 
@@ -19,10 +19,9 @@ Read them before touching this file.** This file holds **open** work only; close
 - **Severity:** medium
 - **Area:** transcription
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
-- **Blocked by:** F101 — the determinate bar needs the Qwen helper (`Scripts/qwen_transcribe.py`,
-  outside the transcription lane's `Sources/` ownership) to emit per-chunk progress. Verified
-  2026-07-31 by the transcription lane: the helper emits **zero** stdout/stderr during a real run,
-  so there is nothing for `QwenASRClient` to stream-parse until the helper is changed.
+- **Blocked by:** F101 — the determinate bar needs the Qwen helper (`Scripts/qwen_transcribe.py`) to
+  emit per-chunk progress. Verified 2026-07-31: the helper emits **zero** stdout/stderr during a real
+  run, so there is nothing for `QwenASRClient` to stream-parse until the helper is changed.
 
 **Problem.** `QwenASRClient.transcribe` (`Sources/WhisperCore/QwenASRClient.swift:117-118`) emits only
 `.preparing` / `.loadingModel` and never `.transcribing` with a fraction, and its `run(...)`
@@ -38,7 +37,7 @@ stderr and is parsed live (`LocalWhisperClient.run`, `WhisperProgressParser`) �
 `asr.generate(...)` with `verbose` defaulting to `False`, and mlx-audio 0.3.1 only shows its
 "Processing chunks" `tqdm` bar when `verbose and len(chunks) > 1`
 (`…/mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:1108-1111`). So the helper produces no parseable
-progress today. The Swift-side streaming (my lane) is ready to build the moment the helper emits
+progress today. The Swift-side streaming is ready to build the moment the helper emits
 something; the helper change is the blocker.
 
 **Verification.** A long Qwen run advances a determinate bar.
@@ -76,7 +75,7 @@ before, passes after.
 - **Owner:** —
 - **Severity:** medium
 - **Area:** build
-- **Filed:** 2026-07-31 by transcription (cross-lane dependency for F31)
+- **Filed:** 2026-07-31 by Claude Code (dependency for F31)
 
 **Problem.** F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits
 no progress signal to parse. `Scripts/qwen_transcribe.py:129` calls `asr.generate(audio,
@@ -88,21 +87,21 @@ written unless `verbose=True` and there is more than one chunk**. A `stream=True
 that yields a `StreamingResult` per chunk (`qwen3_asr.py:1180,1244-1278`). Verified empirically on
 2026-07-31: a real helper run over `Scripts/bench/clips/en2.wav` produced **zero** stdout/stderr.
 
-**Why cross-lane.** The helper lives under `Scripts/`, outside the transcription lane's `Sources/`
-ownership. The Swift half (streaming `QwenASRClient.run` + a Qwen progress parser mirroring
-`LocalWhisperClient.run` / `WhisperProgressParser`) is in the transcription lane and is ready to build
-as soon as a stable progress format exists — but it must not guess the format before the helper emits
-one.
+**Why separate from F31.** The helper change (Python, under `Scripts/`) and the Swift consumer (F31:
+streaming `QwenASRClient.run` + a Qwen progress parser mirroring `LocalWhisperClient.run` /
+`WhisperProgressParser`) are two distinct changes with a natural order — the Swift half is ready to
+build as soon as a stable progress format exists, but it must not guess the format before the helper
+emits one.
 
 **Proposed fix (coordinate the two halves).**
-1. **Helper (`Scripts/` lane):** make the per-chunk progress observable on a stream the client reads.
+1. **Helper (`Scripts/qwen_transcribe.py`):** make the per-chunk progress observable on a stream the client reads.
    Lowest-risk is `verbose=True` so mlx-audio's own "Processing chunks" `tqdm` bar streams to stderr
    (matching the Whisper precedent of parsing `tqdm`); note it is suppressed for single-chunk
    (short) runs, which is acceptable since those finish quickly. A more explicit and single-chunk-safe
    alternative is to switch to `stream=True` and print one dedicated progress line per yielded chunk
    (e.g. a stable `QWEN_PROGRESS <done>/<total>` token on stderr). Re-verify the chosen call against
    the pinned mlx-audio 0.3.1 source per AGENTS.md and record the citation.
-2. **`QwenASRClient` (transcription lane):** replace `readDataToEndOfFile` with the streaming
+2. **`QwenASRClient` (`Sources/WhisperCore`):** replace `readDataToEndOfFile` with the streaming
    `AsyncStream<Data>` + `readabilityHandler` pattern already used by `LocalWhisperClient.run`, add a
    `QwenProgressParser` (unit-tested against captured helper output), and emit `.transcribing`
    `LocalTranscriptionProgress` with `fractionCompleted` (done/total) and an ETA.
@@ -167,6 +166,37 @@ as a frozen historical artifact and instead tighten the close checklist so no fu
 **Verification.** After the ruling: either `grep -c '<this commit>' docs/TICKET_LOG.md` returns 0
 (backfilled), or a documented decision records the placeholders as accepted history and a guard
 prevents new ones.
+
+### F113 — Presentation-only redesign pass: one surface/typography/motion language for the UI
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+
+**Problem.** The visual layer grew feature-by-feature and reads as assembled, not designed: four
+different card fills (`.quaternary.opacity(0.35/0.4/0.45/0.55)`) across corner radii 6/8/10/12
+(`Sources/WhisperMeet/ContentView.swift:390,479,737,905,1574,1661,2276,2376,2435`), fixed-point fonts
+that ignore the user's text size (`:246,784,794,816,860` — also cited by F87), the recording pulse
+and springs run regardless of the system Reduce Motion setting, and `DictationView` uses stock
+`GroupBox` chrome unrelated to the card language everywhere else. No behavioural defect.
+
+**Impact.** Craft/consistency only: panels built in different rounds look unrelated, motion ignores
+an accessibility setting, and the app's most-seen screens (record, transcript) miss the visual
+hierarchy the content deserves.
+
+**Proposed fix.** A presentation-only pass over `ContentView.swift`, `DictationView.swift`, and the
+`DictationPill` visuals in `DictationOverlay.swift`, plus a new `DesignSystem.swift` of shared
+view-modifier helpers: one card/banner surface vocabulary, semantic or `@ScaledMetric` typography,
+critically-damped springs gated on `accessibilityReduceMotion`, and F87's phrase attachments (claimed
+together). **No change** to `AppModel`, stores, capture, dictation controllers, or `WhisperCore`
+behaviour — every action, binding, dialog, and state machine keeps its exact call path.
+
+**Verification.** `swift build` + `swift test` pass with no test-count drop (baseline 257);
+`git diff --stat` shows only the named view files, `DesignSystem.swift`, docs, and the F87 test;
+manual visual pass of every redesigned screen. Change-by-change record in
+`docs/UI_REDESIGN_LOG.md`.
 
 ## Reachability wiring — filed 2026-07-31
 
@@ -389,8 +419,8 @@ of your transcript/vocab strings and no absolute paths.
 
 ### F87 — Attach the remaining accessibility labels and Dynamic Type (delivers F71)
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31) — bundled with F113
 - **Severity:** medium
 - **Area:** ui
 - **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
