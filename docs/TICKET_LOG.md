@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F63 — Summary style controls for the opt-in Claude summary
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** The summarizer used one fixed prompt shape. Added `SummaryStyle` (`.balanced` default,
+`.brief`, `.detailed`, `.actionItemsFocused`), threaded it through the `MeetingSummarizer` protocol
+(`summarize(transcript:language:style:)` with a source-compatible 2-arg convenience defaulting to
+balanced) and into `ClaudeSummarizer.systemPrompt(language:style:)` via `styleGuidance`. The response
+schema and the "do not translate" clause are unchanged for every style.
+
+**Invariants.** Strictly within the one sanctioned cloud exception — no new upload path; the
+original-language clause is preserved and asserted for every style; no diarization.
+
+**Evidence.**
+
+Fails before the fix (style guidance omitted from the prompt):
+
+```text
+✘ Test "Summary style changes the system prompt but not the schema or the do-not-translate clause" recorded an issue at ClaudeSummarizerTests.swift:150:5: Expectation failed: (ClaudeSummarizer.systemPrompt(language: nil, style: .brief).lowercased() → "you summarize ...").contains("brief")
+✘ ...:172:5: Expectation failed: (brief.system → "You summarize ...") != detailed.system
+```
+
+Passes after (URLProtocol stub confirms schema byte-identical across styles while the prompt differs);
+full suite grew 204 → 205:
+
+```text
+✔ Test "Summary style changes the system prompt but not the schema or the do-not-translate clause" passed after 0.008 seconds.
+✔ Test run with 205 tests passed after 1.146 seconds.
+```
+
+**Gaps.** The tested core + protocol threading are done; the compact style picker + Regenerate button
+in the summary UI is a follow-up (SwiftUI, not view-tested here). `AppModel.summarize` still uses the
+balanced default until the picker is wired.
+
 ## F67 — Meeting tags with click-to-filter sidebar
 
 - **Outcome:** fixed

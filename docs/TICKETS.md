@@ -545,34 +545,6 @@ marker disabled; recording(323s) → title "Recording 05:23", Stop & Add Marker 
 `cancelNeedsConfirmation` true; stopping/importing → actions disabled. Fails before, passes after.
 Menu wiring verified manually (no `WhisperMeet` test target); state so in the log.
 
-### F63 — Summary style controls for the opt-in Claude summary
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** export
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `ClaudeSummarizer.summarize` uses one fixed system prompt
-(`Sources/WhisperCore/ClaudeSummarizer.swift:79`) producing one shape/length; the only recourse is
-re-running the identical prompt.
-
-**Proposed feature.** Add `public enum SummaryStyle` (`.balanced` default, `.brief`, `.detailed`,
-`.actionItemsFocused`) in `MeetingSummarizer.swift`; thread it through the protocol as
-`summarize(transcript:language:style:)` (defaulted for source compatibility) and into
-`ClaudeSummarizer.systemPrompt(language:style:)` appending style-specific guidance while leaving the
-schema and the "do not translate / write in the transcript's language" clause unchanged. Add a
-compact style picker + Regenerate next to the summary UI (`ContentView.swift:~1427`). Still requires
-a saved key + explicit press + the existing confirmation.
-
-**Invariants.** Stays strictly within the one sanctioned cloud exception — no new upload path; the
-original-language clause is preserved for every style and asserted; no diarization.
-
-**Verification.** In `ClaudeSummarizerTests` (URLProtocol stub): `systemPrompt(…style:.brief)`
-contains the brevity instruction; `.actionItemsFocused` emphasizes action items; the schema is
-byte-identical across all styles; the "do not translate" clause is present for every style. Fails
-before, passes after.
-
 ### F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
 
 - **Status:** open

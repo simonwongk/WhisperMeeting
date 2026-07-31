@@ -26,14 +26,18 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         self.session = session
     }
 
-    public func summarize(transcript: String, language: String?) async throws -> MeetingSummary {
+    public func summarize(
+        transcript: String,
+        language: String?,
+        style: SummaryStyle
+    ) async throws -> MeetingSummary {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SummarizerError.missingAPIKey
         }
         guard !trimmed.isEmpty else { throw SummarizerError.emptyTranscript }
 
-        let request = try makeRequest(transcript: trimmed, language: language)
+        let request = try makeRequest(transcript: trimmed, language: language, style: style)
         let data: Data
         let response: URLResponse
         do {
@@ -51,7 +55,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         return try Self.decodeSummary(from: data)
     }
 
-    private func makeRequest(transcript: String, language: String?) throws -> URLRequest {
+    private func makeRequest(transcript: String, language: String?, style: SummaryStyle) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/messages"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -61,7 +65,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
-            "system": Self.systemPrompt(language: language),
+            "system": Self.systemPrompt(language: language, style: style),
             "messages": [
                 ["role": "user", "content": transcript]
             ],
@@ -76,7 +80,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         return request
     }
 
-    static func systemPrompt(language: String?) -> String {
+    static func systemPrompt(language: String?, style: SummaryStyle = .balanced) -> String {
         var prompt = """
         You summarize meeting transcripts. Read the transcript and produce:
         - summary: a concise paragraph capturing what the meeting was about and what was decided.
@@ -86,10 +90,26 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         Write the summary, key points, and action items in the same language as the transcript. \
         Do not translate. Return only the fields requested.
         """
+        prompt += "\n" + styleGuidance(style)
         if let language, !language.isEmpty {
             prompt += "\nThe transcript's detected language code is \"\(language)\"."
         }
         return prompt
+    }
+
+    /// Style-specific guidance appended to the system prompt. The response schema and the
+    /// original-language clause above are unchanged for every style (F63).
+    static func styleGuidance(_ style: SummaryStyle) -> String {
+        switch style {
+        case .balanced:
+            return "Aim for a balanced level of detail."
+        case .brief:
+            return "Be brief: a short summary, only the most essential key points, and only clearly-stated action items."
+        case .detailed:
+            return "Be thorough and detailed: a fuller summary and comprehensive key points, without padding."
+        case .actionItemsFocused:
+            return "Focus on action items: capture every concrete follow-up task, owner, and deadline mentioned; keep the summary and key points concise."
+        }
     }
 
     static var schema: [String: Any] {

@@ -144,4 +144,32 @@ func rejectsEmptyTranscript() async throws {
     }
 }
 
+@Test("Summary style changes the system prompt but not the schema or the do-not-translate clause")
+func summaryStyleControls() async throws {
+    // Prompt-level: each style adds its guidance; the original-language clause survives every style.
+    #expect(ClaudeSummarizer.systemPrompt(language: nil, style: .brief).lowercased().contains("brief"))
+    #expect(ClaudeSummarizer.systemPrompt(language: nil, style: .actionItemsFocused).lowercased().contains("action item"))
+    for style in SummaryStyle.allCases {
+        #expect(ClaudeSummarizer.systemPrompt(language: "en", style: style).contains("Do not translate"))
+    }
+
+    // Request-level: the response schema is byte-identical across styles; only the system prompt changes.
+    func capture(_ style: SummaryStyle) async throws -> (schema: Data, system: String) {
+        StubURLProtocol.statusCode = 200
+        StubURLProtocol.responseBody = successResponse(#"{"summary":"s","keyPoints":[],"actionItems":[]}"#)
+        StubURLProtocol.requestBody = nil
+        _ = try await makeSummarizer().summarize(transcript: "hi", language: nil, style: style)
+        let body = try #require(StubURLProtocol.requestBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let schema = ((object["output_config"] as? [String: Any])?["format"] as? [String: Any])?["schema"] as Any
+        let schemaData = try JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+        let system = try #require(object["system"] as? String)
+        return (schemaData, system)
+    }
+    let brief = try await capture(.brief)
+    let detailed = try await capture(.detailed)
+    #expect(brief.schema == detailed.schema) // schema unchanged across styles
+    #expect(brief.system != detailed.system) // system prompt did change
+}
+
 }
