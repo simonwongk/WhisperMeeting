@@ -22,21 +22,25 @@ source of truth for the **rules** that govern it. Both are binding.
 2. **File what you find.** Every defect, regression, unverified claim, or follow-up you notice — from
    code review as much as from implementation — gets a ticket, even one you are not going to fix. A
    finding that lives only in a chat reply dies with the session.
-3. **Claim before you work.** Set `Status: in-progress` and put your agent/session identifier in
+3. **Verify before you claim.** Before claiming a ticket, re-verify that the cited `file:line` still
+   shows the described problem in the current tree. If the code has moved or the issue is already
+   gone, close the ticket `invalid` with that evidence and move on — do not fix from the ticket's
+   description alone. Descriptions go stale; the tree is the source of truth.
+4. **Claim before you work.** Set `Status: in-progress` and put your agent/session identifier in
    `Owner` in the **same commit that begins the work**. Never take a ticket already `in-progress`.
-4. **Never delete a ticket.** Close it by moving the entry out of `docs/TICKETS.md` and appending it
-   to `docs/TICKET_LOG.md` with an outcome — `fixed`, `wontfix`, `invalid`, or `duplicate`. Deleting
-   loses the reasoning.
-5. **Log on close with real evidence.** Append to `docs/TICKET_LOG.md` with real command output —
+5. **Never delete a ticket.** Close it by moving the entry out of `docs/TICKETS.md` and appending it
+   to `docs/TICKET_LOG.md` with an outcome — `fixed`, `partial`, `wontfix`, `invalid`, or
+   `duplicate`. Deleting loses the reasoning.
+6. **Log on close with real evidence.** Append to `docs/TICKET_LOG.md` with real command output —
    the test failing before the fix, the test passing after, the build, and any real-model run — not a
    summary of intent. The repo's culture is evidence over assertion.
-6. **One ticket, one commit trail.** Reference the ID in **every** commit message that touches it, in
+7. **One ticket, one commit trail.** Reference the ID in **every** commit message that touches it, in
    the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
-7. **Escalate human-blocked work.** When you set a ticket to `needs-human`, move the entry to
+8. **Escalate human-blocked work.** When you set a ticket to `needs-human`, move the entry to
    `docs/NEEDS_HUMAN.md` in the **same commit**, adding a `**What I need from you:**` line that states
    the single concrete action required. That file is capped at 5 entries; when it is full, stop
    escalating and work open tickets instead.
-8. **Remove empty scaffolding.** A section header on the board with no tickets under it must be
+9. **Remove empty scaffolding.** A section header on the board with no tickets under it must be
    removed when its last ticket closes — do not leave orphaned batch headings behind.
 
 `docs/TICKETS.md` tracks committed, verifiable work; `docs/ROADMAP.md` is the aspirational feature
@@ -59,7 +63,10 @@ another agent raced you to an ID, take the next free one and move on.
 | `blocked` | Cannot proceed. `Blocked by:` states exactly what is needed and from whom. |
 | `needs-human` | Requires a physical action or a decision only the user can make. Lives in `docs/NEEDS_HUMAN.md`. |
 
-Closed states (`fixed`, `wontfix`, `invalid`, `duplicate`) exist only in `docs/TICKET_LOG.md`.
+Closed states (`fixed`, `partial`, `wontfix`, `invalid`, `duplicate`) exist only in
+`docs/TICKET_LOG.md`. **`partial`** means the tested core landed but the user cannot reach it yet. A
+`partial` close is **invalid** unless a follow-up ticket for the remaining (reachability/wiring) work
+is filed in the **same commit** and that follow-up's `F<n>` appears in the log entry.
 
 ## Definition of done
 
@@ -68,6 +75,13 @@ A ticket may only be closed `fixed` when all of these hold:
 - `swift build` and `swift test` both pass, and the test count did not silently drop.
 - Behaviour changes are covered by a test that **fails before the fix and passes after**. State both
   results in the log. A fix with no failing-test-first evidence is not done.
+- **Reachability.** A ticket that adds user-facing behaviour closes `fixed` only when the new code is
+  **reachable from the running app** — there is a call path from a user-triggerable surface (a
+  SwiftUI view, menu command, hotkey, or app-lifecycle hook) to the new type, and that call path is
+  **named in the log entry**. A tested pure core with no caller is not user-facing behaviour: it
+  closes `partial`, not `fixed` (see the status vocabulary), and the follow-up wiring ticket is filed
+  in the same commit. A cheap WhisperCore test does not by itself satisfy this — the incentive to
+  ship an unreachable core is exactly what this rule closes.
 - If the change touches the Whisper or Qwen subprocess contract, the live official docs were fetched
   and checked per the **Upstream documentation** rules below — flags and model names are never
   guessed.
@@ -77,6 +91,13 @@ A ticket may only be closed `fixed` when all of these hold:
   summaries, the recording is the source of truth, no diarization, original language only.
 - No user meeting, recording, index, or transcript was read or modified for testing. Use
   `Scripts/bench/clips`.
+- **Traceable commit.** The log entry's **Commits** field contains a real SHA. The placeholder
+  `<this commit>` is never an acceptable final value; if the SHA is unknown at write time, amend the
+  entry in the following commit.
+- **Actionable gaps.** Every sentence in the log entry's **Gaps** section that describes work a
+  person could still do carries a ticket ID. The words "follow-up", "future", "not implemented",
+  "app wiring", or "is a follow-up" with no `F<n>` beside them are a rule violation. A Gap that is a
+  genuine permanent limitation needs no ticket, but must say so explicitly with **"Not planned:"**.
 
 ## Ticket template (`docs/TICKETS.md`)
 
@@ -103,9 +124,11 @@ A ticket may only be closed `fixed` when all of these hold:
 ````markdown
 ## F<n> — <summary>
 
-- **Outcome:** fixed | wontfix | invalid | duplicate
+- **Outcome:** fixed | partial | wontfix | invalid | duplicate
 - **Closed:** YYYY-MM-DD by <agent/session>
-- **Commits:** `<sha>`
+- **Commits:** `<real-sha>` (never `<this commit>`)
+- **Reachability:** <call path from a user-triggerable surface to the new code — required for a user-facing `fixed`>
+- **Follow-up:** `F<n>` <required when Outcome is `partial`: the ticket for the remaining wiring>
 
 **Root cause.** Why it happened, not just what changed.
 
@@ -117,7 +140,8 @@ A ticket may only be closed `fixed` when all of these hold:
 <real command output — failing test before, passing after, build, real-model run>
 ```
 
-**Gaps.** Anything not verified, and why. Write "none" only if that is true.
+**Gaps.** Anything not verified, and why. Every gap that is doable work carries an `F<n>`; a genuine
+permanent limitation says "Not planned:". Write "none" only if that is true.
 ````
 
 ## Upstream documentation
