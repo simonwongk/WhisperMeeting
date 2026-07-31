@@ -34,6 +34,28 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F34 — `QUICK_DICTATION_DESIGN.md` still locks dictation to Whisper turbo
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** The design spec still said "shares only the local Whisper runtime" and listed
+"Transcription engine | Local Whisper `turbo`", but `DictationController` now offers a Whisper/Qwen
+selector — so the doc contradicted shipped behavior.
+
+**Fix.** Updated `docs/QUICK_DICTATION_DESIGN.md`: an update note + the Decisions table now describe
+the Settings engine selector (Whisper `turbo` default; Qwen3-ASR 1.7B MLX 8-bit opt-in on Apple
+silicon) and state that the vocabulary `initial_prompt` applies to Whisper only. The "Original
+language only" bullet now notes Qwen returns original-language recognition.
+
+**Evidence.** Documentation-only. Verified against current code: `DictationController` defaults the
+stored engine to `.whisperTurbo`; `DictationTranscriptionEngine.qwenBalanced.supportsVocabularyPrompt`
+is `false` (asserted by `dictationModelCapabilitiesAreExplicit`). No behavior change → no
+fails-before/passes-after test.
+
+**Gaps.** None applicable — docs ticket.
+
 ## F54 — CHANGELOG intro test-count claim is stale
 
 - **Outcome:** fixed

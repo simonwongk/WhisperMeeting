@@ -12,8 +12,14 @@ the same "hold, talk, release, it's there" loop as Wispr Flow, but **fully local
 leaves this Mac and no API key is used. (Setup does download open-source dependencies and the
 Whisper model files, like the meeting pipeline.)
 
-This is a *separate* function from the meeting record/transcribe pipeline. It shares only the local
-Whisper runtime and pure helpers in `WhisperCore`.
+This is a *separate* function from the meeting record/transcribe pipeline. It shares the local
+transcription runtimes — Whisper, and optionally Qwen3-ASR 1.7B on Apple silicon — and pure helpers
+in `WhisperCore`.
+
+> **Updated since the original spec.** Dictation is no longer locked to Whisper `turbo`: Settings now
+> exposes an engine selector (Whisper `turbo` default; Qwen3-ASR 1.7B MLX 8-bit opt-in on Apple
+> silicon). The business-vocabulary `initial_prompt` nudge applies to the Whisper engine only — Qwen
+> does not consume it, and Settings discloses that limitation.
 
 ## Non-goals (v1)
 
@@ -30,8 +36,9 @@ Whisper runtime and pure helpers in `WhisperCore`.
 
 - **Local-only preserved.** Dictation never touches the network. The lone existing network exception
   (opt-in Claude summaries) is untouched and does not apply here.
-- **Original language only.** Always `--task transcribe`; language auto-detect or a pinned
-  English/Mandarin, reusing `WhisperLanguage`. Never translate.
+- **Original language only.** Whisper always uses `--task transcribe`; Qwen returns original-language
+  recognition. Language auto-detect or a pinned English/Mandarin, reusing `WhisperLanguage`. Never
+  translate.
 - **`WhisperCore` stays framework-free and `Sendable`.** All AppKit/AVFoundation/CoreGraphics code
   lives in `WhisperMeet`; all pure logic is in `WhisperCore` and unit-tested headlessly.
 - **Ephemeral, non-destructive.** Dictation clips are temporary scratch WAVs, deleted after
@@ -42,7 +49,7 @@ Whisper runtime and pure helpers in `WhisperCore`.
 
 | Decision | Choice |
 |---|---|
-| Transcription engine | Local Whisper `turbo` |
+| Transcription engine | Selectable in Settings: Local Whisper `turbo` (**default**) or Qwen3-ASR 1.7B MLX 8-bit (Apple silicon, opt-in). Vocabulary `initial_prompt` applies to Whisper only. |
 | Instant-feel strategy | **Warm helper**: a resident Python process holds the model in RAM |
 | Presence | Menu-bar icon + **launch at login**; runs in background with window closed |
 | Text delivery | **Auto-paste** into focused field (clipboard + synthesized ⌘V); **clipboard fallback** |

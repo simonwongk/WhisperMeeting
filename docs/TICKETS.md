@@ -281,24 +281,6 @@ is orphaned and Qwen reports "not installed" until the user manually reinstalls.
 **Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
 user action.
 
-### F34 — `QUICK_DICTATION_DESIGN.md` still locks dictation to Whisper turbo
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** docs
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
-
-**Problem.** `docs/QUICK_DICTATION_DESIGN.md:44` still records "Transcription engine | Local Whisper
-`turbo`" and `:16` "shares only the local Whisper runtime", while
-`DictationController.swift:109-116` now offers Qwen. The only authorization for the change is the
-same cycle's own work log.
-
-**Impact.** The design doc contradicts shipped behaviour, so it can no longer be trusted as the spec
-for this feature — which is what the Spec review axis judges against.
-
-**Verification.** The design doc describes the selector, its default, and the vocabulary limitation.
-
 ### F36 — The Qwen subprocess contract has no upstream documentation anchor
 
 - **Status:** open
