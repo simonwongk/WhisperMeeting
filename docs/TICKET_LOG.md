@@ -100,7 +100,7 @@ same error on line 60).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `7d9a01e` (file), `451b078` (fix), `6d96f8e` (test), `8e1e0af` (close + this entry)
+- **Commits:** `5156fab` (file), `0777d94` (fix), `32c24b1` (test), `7f42174` (close + this entry)
 - **Reachability:** n/a — build-infrastructure fix. It changes no runtime behaviour and adds no user
   surface; the touched code (`DiagnosticsBundleBuilder.json`) is already reached by
   `DiagnosticsBundleBuilderTests` and will be wired to the app by F86. The "surface" restored is the
@@ -178,7 +178,7 @@ the test brittle to intentional field additions.
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `587fdae` (mode change, by simonwang), `d191100` (file), `31d94a4` (close + this entry)
+- **Commits:** `587fdae` (mode change, by simonwang), `a3c1e9f` (file), `287e754` (close + this entry)
 - **Reachability:** n/a — tooling only; no user-facing code path. The "surface" is a developer running
   `Scripts/bench/generate_clips.sh` from a fresh checkout, which now has the executable bit.
 
