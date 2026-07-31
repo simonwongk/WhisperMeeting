@@ -30,7 +30,7 @@ enum VocabularyExtractor {
             }
             text = value
         case "txt", "md", "markdown", "csv":
-            text = try String(contentsOf: url, encoding: .utf8)
+            text = try readText(from: url)
         case "docx":
             var attributes: NSDictionary?
             let value = try NSAttributedString(
@@ -43,6 +43,39 @@ enum VocabularyExtractor {
             throw VocabularyImportError.unsupportedFile
         }
         return candidates(in: text)
+    }
+
+    /// Reads a plain-text document, tolerating non-UTF-8 encodings. Excel CSVs (Windows-1252),
+    /// UTF-16, and Latin-1 `.txt` files are common and must not throw. Tries the file's declared
+    /// encoding first, then a small list of fallbacks (F49).
+    private static func readText(from url: URL) throws -> String {
+        var detected = String.Encoding.utf8
+        if let text = try? String(contentsOf: url, usedEncoding: &detected) {
+            return text
+        }
+        for encoding in [String.Encoding.utf8, .utf16, .windowsCP1252, .isoLatin1] {
+            if let text = try? String(contentsOf: url, encoding: encoding) {
+                return text
+            }
+        }
+        throw VocabularyImportError.unreadableFile
+    }
+
+    /// Extracts candidate terms from several files, skipping (never aborting on) any file that cannot
+    /// be read, so one bad file in a batch does not throw away the good files' terms (F49). Returns
+    /// the merged, first-seen-deduplicated terms and the URLs that failed.
+    static func extractBatch(from urls: [URL]) -> (terms: [String], failed: [URL]) {
+        var terms: [String] = []
+        var failed: [URL] = []
+        for url in urls {
+            if let extracted = try? extract(from: url) {
+                terms.append(contentsOf: extracted)
+            } else {
+                failed.append(url)
+            }
+        }
+        var seen = Set<String>()
+        return (terms.filter { seen.insert($0).inserted }, failed)
     }
 
     /// Extracts candidate proper nouns / key terms from free text.

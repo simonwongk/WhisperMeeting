@@ -418,32 +418,6 @@ language can stay as-is; only the top-level `language_code` needs the fix.
 **Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
 threshold rule), not `zh`. Fails before, passes after.
 
-### F49 — Vocabulary import is UTF-8-only; one bad file aborts the whole batch
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `VocabularyExtractor.extract` decodes txt/md/markdown/csv with
-`String(contentsOf:encoding:.utf8)` (`Sources/WhisperMeet/VocabularyExtractor.swift:33`), which
-throws on any non-UTF-8 file (Excel CSV as Windows-1252, UTF-16, Latin-1 `.txt`). The batch importer
-runs `try urls.flatMap(VocabularyExtractor.extract(from:))` (`ContentView.swift:1359`) inside one
-do/catch, so one throwing file aborts extraction for the entire batch and imports zero terms.
-CLAUDE.md lists CSV as a supported import format.
-
-**Impact.** Importing a glossary set where any one file is non-UTF-8 shows "The selected document
-could not be read" and imports nothing. No data loss, but a common real-world file silently blocks
-the feature.
-
-**Proposed fix.** Use `String(contentsOf:usedEncoding:)` or try a small list of fallback encodings
-(utf8, utf16, isoLatin1/windowsCP1252); have the importer collect per-file failures instead of
-aborting the whole `flatMap`.
-
-**Verification.** A UTF-16 (or Windows-1252) `.csv` fixture returns candidate terms instead of
-throwing; a batch with one bad file still returns the good files' terms. Fails before, passes after.
-
 ### F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
 
 - **Status:** open

@@ -1354,17 +1354,21 @@ private struct VocabularyView: View {
     private func importDocuments(_ urls: [URL]) {
         importMessage = "Reading \(urls.count) document\(urls.count == 1 ? "" : "s")…"
         Task {
-            do {
-                let extracted = try await Task.detached(priority: .userInitiated) {
-                    try urls.flatMap(VocabularyExtractor.extract(from:))
-                }.value
-                let before = Set(store.vocabulary)
-                store.addVocabulary(extracted)
-                let added = Set(store.vocabulary).subtracting(before).count
-                importMessage = "Added \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
-            } catch {
-                importMessage = error.localizedDescription
+            let result = await Task.detached(priority: .userInitiated) {
+                VocabularyExtractor.extractBatch(from: urls)
+            }.value
+            if result.terms.isEmpty && !result.failed.isEmpty {
+                importMessage = "None of the selected document\(result.failed.count == 1 ? "" : "s") could be read."
+                return
             }
+            let before = Set(store.vocabulary)
+            store.addVocabulary(result.terms)
+            let added = Set(store.vocabulary).subtracting(before).count
+            var message = "Added \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
+            if !result.failed.isEmpty {
+                message += " \(result.failed.count) file\(result.failed.count == 1 ? "" : "s") could not be read and were skipped."
+            }
+            importMessage = message
         }
     }
 }

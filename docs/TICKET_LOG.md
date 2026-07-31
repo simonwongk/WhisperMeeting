@@ -34,6 +34,47 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F49 — Vocabulary import is UTF-8-only; one bad file aborts the whole batch
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `VocabularyExtractor.extract` decoded txt/md/markdown/csv with
+`String(contentsOf:encoding:.utf8)`, which throws on any non-UTF-8 file (Excel CSV as Windows-1252,
+UTF-16, Latin-1). The batch importer ran `try urls.flatMap(extract)` in one do/catch, so a single
+non-UTF-8 file threw and imported zero terms — even though CSV is a documented import format.
+
+**Fix.** Two changes: (1) `readText(from:)` tolerant reader — the file's declared encoding first
+(via `usedEncoding:`), then a fallback list (utf8, utf16, windowsCP1252, isoLatin1); (2)
+`extractBatch(from:)` collects per-file failures instead of aborting, returning merged first-seen-
+deduplicated terms plus the failed URLs. `importDocuments` now calls `extractBatch` and reports a
+partial-success message ("N files… skipped") instead of one blanket error.
+
+**Evidence.**
+
+Fails before the fix (tolerant read reverted to UTF-8-only) — the UTF-16 file throws, and in the
+batch its terms are lost while it lands in `failed`:
+
+```text
+✘ Test "Vocabulary import reads a non-UTF-8 (UTF-16) document" recorded an issue at VocabularyExtractorEncodingTests.swift:13:2: Caught error: Error Domain=NSCocoaErrorDomain Code=259 "The file couldn’t be opened because it isn’t in the correct format."
+✘ Test "Vocabulary batch import skips a bad file and keeps the good files' terms" recorded an issue at VocabularyExtractorEncodingTests.swift:39:5: Expectation failed: (result.terms → ["Grafana"]).contains("Kubernetes")
+✘ Test run with 2 tests failed after 0.052 seconds with 3 issues.
+```
+
+Passes after, full suite grew 192 → 194:
+
+```text
+✔ Test "Vocabulary import reads a non-UTF-8 (UTF-16) document" passed after 0.098 seconds.
+✔ Test "Vocabulary batch import skips a bad file and keeps the good files' terms" passed after 0.140 seconds.
+✔ Test run with 194 tests passed after 1.122 seconds.
+```
+
+**Gaps.** The batch-abort fix (inline `flatMap` → `extractBatch`) is verified via `extractBatch`'s
+resilience test; the old inline `flatMap` lived in the SwiftUI view and is not directly red-green
+tested. The `importDocuments` rewrite to call `extractBatch` is exercised only by the extractor tests
+(no view test in this harness).
+
 ## F47 — Startup orphan-recovery aborts all remaining orphans on the first throwing folder
 
 - **Outcome:** fixed
