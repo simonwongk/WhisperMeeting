@@ -14,6 +14,63 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F26 — Dictation diagnostics went stale when the recognition model was changed
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `b8af385` (fix), `<close-sha>` (close)
+- **Reachability:** app launch → `ContentView` (`AppEntry.swift:11`) sidebar → `.dictation` selection
+  renders `DictationView(dictation:…)` (`ContentView.swift:154`); the new
+  `.onChange(of: dictation.selectedEngine)` (`DictationView.swift:95`) recomputes `diag`. The trigger
+  is the user changing the "Recognition model" picker in the Settings scene
+  (`SettingsView`, `ContentView.swift:1186`), which calls `dictation.setSelectedEngine`. Both views
+  observe the **same** `@StateObject dictation` (`AppEntry.swift:7`).
+
+**Root cause.** `DictationView` recomputed its `@State diag` on `onAppear`, the Refresh button, and
+self-test completion, but had no `.onChange` for `dictation.selectedEngine`. The model picker lives in
+the Settings scene — a separate window — so after switching engines there the Dictation tab kept
+showing the previous engine's rows (`"<engineName> runtime"` label, "Selected model ready", and an
+Install/Repair button targeting the wrong runtime) until the user pressed Refresh.
+
+**Fix.** Add `.onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }`,
+mirroring the existing `.onChange(of: dictation.isSelfTesting)` sibling. `selectedEngine` is
+`@Published` on the shared `@MainActor DictationController`, so the change made in the Settings window
+propagates to `DictationView` and the handler recomputes the engine-specific rows immediately.
+`diagnostics()` switches on `selectedEngine` (`DictationController.swift:530`) and has no side effect
+on it, so the assignment cannot re-trigger the observation.
+
+**Evidence.**
+
+No red-green test — and none is manufactured. Per the ticket this is a SwiftUI view change and the
+`WhisperMeet` target has no view-render/unit harness. What was verified:
+
+```text
+- swift build: Build complete!
+- Scripts/quality-check.sh: passed whole — 254 tests (unchanged; count did not drop),
+  release -warnings-as-errors clean, packaging OK.
+- Independent diff review against source confirmed the mechanism: the macOS 14+ two-parameter
+  .onChange signature is correct; DictationTranscriptionEngine is Hashable (satisfies Equatable);
+  no observation loop (diagnostics() never mutates selectedEngine); main-thread-safe (@MainActor);
+  no retain cycle; setSelectedEngine guards `selection != selectedEngine` so no redundant fires.
+```
+
+**Manual verification (stated honestly, as the ticket requires).** The mechanism is verified by code
+review against the real source and by a clean build/launch of the packaged app. The final
+**cross-window visual confirmation** — open the Dictation sidebar tab, change the "Recognition model"
+in Settings, and watch the runtime label + Install/Repair target update *without pressing Refresh* —
+is a human GUI step; this autonomous session did **not** perform that pixel-level check, because the
+`WhisperMeet` target has no scriptable view-inspection harness and driving the SwiftUI picker across
+windows via accessibility automation would be unreliable evidence. The change is a one-line,
+standard-pattern `.onChange` that mirrors a working sibling on the same view, so confidence is high;
+the visual confirmation remains the one open manual step.
+
+**Gaps.** **Not planned:** an automated GUI test for this behaviour — the `WhisperMeet` target has no
+view-render harness (the standing repo limitation shared by every SwiftUI-only change; e.g. F30/F83
+manual advisories). The pixel-level cross-window visual check above is the only unautomated step and
+is left for a human with the app open; it is low-risk given the mechanism verification.
+
+---
+
 ## F25 — A shipped helper-script fix did not reach disk until its engine was selected
 
 - **Outcome:** fixed

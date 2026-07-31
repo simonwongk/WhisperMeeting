@@ -12,28 +12,6 @@ Read them before touching this file.** This file holds **open** work only; close
 
 # Open tickets
 
-### F26 — Dictation diagnostics go stale when the model is changed
-
-- **Status:** in-progress
-- **Owner:** runtime
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (review of `e9bca61`)
-
-**Problem.** `DictationView` refreshes `diag` on `onAppear`, on the Refresh button, and when a
-self-test finishes (`Sources/WhisperMeet/DictationView.swift:38,60,90`) — but not when
-`dictation.selectedEngine` changes. The model picker lives in `SettingsView`, a separate window.
-
-**Impact.** Changing the recognition model in Settings leaves the Dictation tab showing the previous
-engine's rows — including the `"\(diag.engineName) runtime"` label and an Install/Repair button that
-targets the wrong runtime — until the user presses Refresh.
-
-**Proposed fix.**
-`.onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }`.
-
-**Verification.** Not unit-testable (SwiftUI view; the `WhisperMeet` target has no test suite).
-Verify manually with both windows open, and say so explicitly in the log.
-
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
 - **Status:** blocked
