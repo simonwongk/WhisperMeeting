@@ -34,6 +34,44 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F53 — Qwen empty/silent clip surfaces a raw Python traceback
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** On empty text the helper did `raise RuntimeError(...)` before writing any output, so
+the process exited non-zero. `QwenASRClient.run` hits its `terminationStatus == 0` guard first and
+threw `.processFailed` with the captured traceback, so the dedicated `.emptyTranscript` ("No speech
+was detected") guard could never fire — a raw traceback in a modal, inconsistent with the Whisper
+path.
+
+**Fix.** The empty-text branch now writes an empty-text payload (`{"text":"", …}`) via a new
+`write_payload()` helper and returns 0, so the client reads it, sees empty text, and surfaces
+`.emptyTranscript`. The normal path uses the same `write_payload()`.
+
+**Evidence.** `python3 Scripts/tests/test_qwen_transcribe.py`, driving `main()` with a fake mlx /
+mlx_audio (the empty case returns exit 0 + `{"text":""}`). Fails before the fix (empty branch
+restored to `raise`):
+
+```text
+    raise RuntimeError("Qwen3-ASR returned an empty transcript.")  # RED-GREEN old behavior
+RuntimeError: Qwen3-ASR returned an empty transcript.
+Ran 7 tests in 0.002s
+FAILED (errors=1)
+```
+
+Passes after:
+
+```text
+Ran 7 tests in 0.002s
+OK
+```
+
+**Gaps.** `main()` is exercised with injected fake mlx modules (the heavy imports are deferred inside
+`main()`), not the real mlx-audio runtime. The client-side `.emptyTranscript` guard is unchanged and
+already covered by `QwenASRClient` tests; this fixes the helper so that guard is reachable.
+
 ## F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
 
 - **Outcome:** fixed

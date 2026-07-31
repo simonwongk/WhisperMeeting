@@ -417,33 +417,6 @@ already uses.
 assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
 before, passes after.
 
-### F53 — Qwen empty/silent clip surfaces a raw Python traceback
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** On empty text the Qwen helper does
-`raise RuntimeError("Qwen3-ASR returned an empty transcript.")` (`Scripts/qwen_transcribe.py:80-81`)
-BEFORE writing any output JSON, so the process exits non-zero. `QwenASRClient.run` hits the
-`terminationStatus == 0` guard first and throws `.processFailed` with the captured stdout/stderr —
-the traceback (`Sources/WhisperCore/QwenASRClient.swift:196-201`). The dedicated `.emptyTranscript`
-("No speech was detected…") guard (`:141-142`) can never fire. The Whisper path handles the same
-case cleanly (`LocalWhisperClient.swift:170-171`).
-
-**Impact.** Transcribing a silent/very-short/non-speech clip with Qwen shows a modal alert
-containing a raw Python traceback instead of the designed "No speech was detected", violating the
-plain-language spec requirement and leaving `.emptyTranscript` dead code — an engine-to-engine
-inconsistency for the same audio.
-
-**Proposed fix.** Have the helper write an empty-text payload and `return 0` so the client's
-existing `.emptyTranscript` guard runs; or special-case the sentinel string in the client.
-
-**Verification.** A stub helper that exits 0 with `{"text":"",…}` → `client.transcribe` throws
-`.emptyTranscript`, not `.processFailed`. Fails before, passes after.
-
 ### F54 — CHANGELOG intro test-count claim is stale
 
 - **Status:** open

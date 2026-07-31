@@ -8,8 +8,12 @@ heavy model imports are deferred inside main(), so importing the module here is 
 """
 
 import importlib.util
+import json
 import os
+import sys
+import tempfile
 import unittest
+from types import ModuleType, SimpleNamespace
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "qwen_transcribe.py")
 _spec = importlib.util.spec_from_file_location("qwen_transcribe", _SCRIPT)
@@ -53,6 +57,69 @@ class BuildChunksTests(unittest.TestCase):
         self.assertEqual(chunks, [])
         self.assertIsNotNone(warning)
         self.assertIn("KeyError", warning)
+
+
+def _install_fake_mlx(transcription, aligner_items=None):
+    """Inject fake mlx / numpy / mlx_audio modules so main() runs without the real models. Both the
+    ASR model and the aligner load through the same fake load_model (keyed on 'aligner' in the path)."""
+    core = ModuleType("mlx.core")
+    core.clear_cache = lambda: None
+    mlx = ModuleType("mlx")
+    mlx.core = core
+    numpy = ModuleType("numpy")
+    numpy.asarray = lambda x: x
+    utils = ModuleType("mlx_audio.stt.utils")
+    utils.load_audio = lambda path: [0.0] * 32000
+
+    def load_model(path):
+        if "aligner" in path:
+            return SimpleNamespace(generate=lambda *a, **k: SimpleNamespace(items=aligner_items or []))
+        return SimpleNamespace(generate=lambda *a, **k: transcription)
+
+    utils.load_model = load_model
+    stt = ModuleType("mlx_audio.stt")
+    stt.utils = utils
+    mlx_audio = ModuleType("mlx_audio")
+    mlx_audio.stt = stt
+    for name, module in {
+        "mlx": mlx, "mlx.core": core, "numpy": numpy,
+        "mlx_audio": mlx_audio, "mlx_audio.stt": stt, "mlx_audio.stt.utils": utils,
+    }.items():
+        sys.modules[name] = module
+
+
+def _run_main(transcription, language="auto", aligner_items=None):
+    _install_fake_mlx(transcription, aligner_items=aligner_items)
+    directory = tempfile.mkdtemp()
+    output = os.path.join(directory, "out.json")
+    audio = os.path.join(directory, "audio.wav")
+    open(audio, "w").close()
+    sys.argv = [
+        "qwen_transcribe.py",
+        "--model", os.path.join(directory, "model"),
+        "--aligner", os.path.join(directory, "aligner"),
+        "--audio", audio,
+        "--output", output,
+        "--language", language,
+    ]
+    code = qwen.main()
+    payload = None
+    if os.path.exists(output):
+        with open(output, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    return code, payload
+
+
+class EmptyTranscriptTests(unittest.TestCase):
+    """F53 — an empty/silent clip must exit 0 with an empty payload, not raise a traceback."""
+
+    def test_empty_text_writes_empty_payload_and_exits_zero(self):
+        transcription = SimpleNamespace(text="   ", segments=[])
+        code, payload = _run_main(transcription)
+        self.assertEqual(code, 0)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["text"], "")
+        self.assertEqual(payload["alignedItems"], [])
 
 
 if __name__ == "__main__":

@@ -107,6 +107,16 @@ def align_chunks(load_aligner, aligner_path: str, audio, chunks: list[dict], req
         return [], warning
 
 
+def write_payload(output_path: str, payload: dict) -> None:
+    """Atomically write the transcript payload (temp file + fsync + rename)."""
+    temporary_output = f"{output_path}.tmp"
+    with open(temporary_output, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_output, output_path)
+
+
 def main() -> int:
     import mlx.core as mx
     import numpy as np
@@ -124,7 +134,14 @@ def main() -> int:
     )
     text = transcription.text.strip()
     if not text:
-        raise RuntimeError("Qwen3-ASR returned an empty transcript.")
+        # Write an empty-text payload and exit 0 so the client surfaces its designed "No speech was
+        # detected" message. Exiting non-zero here made the client hit its terminationStatus guard
+        # first and show a raw Python traceback instead (F53).
+        write_payload(
+            args.output,
+            {"text": "", "language": None, "alignedItems": [], "alignmentWarning": None},
+        )
+        return 0
     chunks, chunk_warning = build_chunks(transcription.segments)
 
     del transcription
@@ -154,12 +171,7 @@ def main() -> int:
         "alignedItems": aligned_items,
         "alignmentWarning": alignment_warning or chunk_warning,
     }
-    temporary_output = f"{args.output}.tmp"
-    with open(temporary_output, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary_output, args.output)
+    write_payload(args.output, payload)
     return 0
 
 
