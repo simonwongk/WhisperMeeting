@@ -656,8 +656,8 @@ throwing; a batch with one bad file still returns the good files' terms. Fails b
 
 ### F50 — Hold-mode dictation has no capture cap or stuck-listen watchdog
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Codex / root
 - **Severity:** low
 - **Area:** dictation
 - **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
