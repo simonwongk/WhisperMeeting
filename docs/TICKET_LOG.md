@@ -96,6 +96,84 @@ same error on line 60).
 
 ---
 
+## F111 — Shared quality gate was red: release build failed under `-warnings-as-errors`
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `7d9a01e` (file), `451b078` (fix), `6d96f8e` (test), `<close-sha>` (close + this entry)
+- **Reachability:** n/a — build-infrastructure fix. It changes no runtime behaviour and adds no user
+  surface; the touched code (`DiagnosticsBundleBuilder.json`) is already reached by
+  `DiagnosticsBundleBuilderTests` and will be wired to the app by F86. The "surface" restored is the
+  shared quality gate itself: `Scripts/quality-check.sh` step [3/4] now compiles clean.
+
+**Root cause.** `DiagnosticsBundleBuilder.json` builds a `[[String: Any]]` where three values are
+`meeting.<field> ?? <default>`. Because the dictionary's value type is `Any`, Swift 6.1.2 resolves
+`??` there to the `(T?, T?) -> T?` overload — the literal default (`""`, `-1`) is promoted to
+optional — so each result is `String?`/`Int64?` and is implicitly coerced to `Any`. That is a
+warning, and `quality-check.sh` compiles the release build with `-Xswiftc -warnings-as-errors`, which
+turned it into a hard error. Introduced by F70 (`03e4694`, 19 commits back). It escaped notice because
+the *shipping* build (`Scripts/build-app.sh`, plain `-c release`) and `swift test` are both unaffected
+— only the gate's warnings-as-errors step trips it, and that step is easy to miss when its output is
+piped (e.g. through `tee`/`tail`, which report the pipe's exit code, not the build's). It blocked
+**every** lane, since a `fixed` close requires the gate to "pass whole".
+
+**Fix.** Bind the three nil-coalesced values to explicitly-typed locals
+(`let languageCode: String = meeting.languageCode ?? ""`, `let recordingBytes: Int64 = … ?? -1`,
+`let errorMessage: String = … ?? ""`) before the literal, forcing the non-optional `(T?, T) -> T`
+overload so the values are non-optional `String`/`Int64` and coerce to `Any` cleanly. All three sites
+are pinned, not just the one the compiler happened to flag on a given incremental build (the reported
+line shifted between 60 and 65 run-to-run). Emitted JSON bytes are unchanged. This is the right layer:
+the gate's `-warnings-as-errors` is a real guarantee worth keeping, so the code is fixed rather than
+the gate weakened.
+
+**Evidence.**
+
+Before — clean release build with the gate's flags fails:
+
+```text
+$ rm -rf .build/release && swift build -c release -Xswiftc -warnings-as-errors
+Sources/WhisperCore/DiagnosticsBundleBuilder.swift:65:33: error: expression implicitly coerced from 'String?' to 'Any'
+```
+
+After — same command passes, and no coercion warning remains anywhere:
+
+```text
+$ rm -rf .build/release && swift build -c release -Xswiftc -warnings-as-errors && echo PASS
+Build complete! (17.86s)
+PASS
+$ swift build -c release 2>&1 | grep -E 'coerced|warning:' || echo NONE
+NONE
+```
+
+New test locks the nil-optional default path the fix covers (fails-safe against future drift):
+
+```text
+✔ Test "Diagnostics bundle encodes nil optionals as the documented defaults" passed after 0.066 seconds.
+```
+
+Full gate passes whole:
+
+```text
+[1/4] Checking the candidate diff for whitespace errors
+[2/4] Running the complete test suite
+✔ Test run with 234 tests passed after 1.125 seconds.
+[3/4] Building production code with warnings as errors
+[4/4] Packaging and signing WhisperMeet.app
+Quality check passed.
+```
+
+Test count **+1** (233 → 234 from this ticket's origin/main baseline): the added nil-optional
+coverage test. No test was removed.
+
+**Gaps.** The RED/GREEN here is the **release build**, not a `swift test` case — the runtime output is
+byte-identical, so there is no behavioural assertion that would fail before and pass after; a build
+that compiles clean is the honest evidence (the F29/F110 tooling precedent). The added test guards the
+nil-default output, not the compile warning itself. **Not planned:** locking the exact full byte
+output of the bundle — the builder's determinism is already covered and pinning every byte would make
+the test brittle to intentional field additions.
+
+---
+
 ## F110 — `generate_clips.sh` was committed non-executable, so F29's reproducibility gap stayed open
 
 - **Outcome:** fixed
