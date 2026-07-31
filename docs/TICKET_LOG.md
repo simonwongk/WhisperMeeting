@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `WAVInspection` (reads the 44-byte RIFF/WAVE header — header bytes + file
+size only) and `MeetingIntegrityChecker.check(_:)` over a lightweight `MeetingIntegrityDescriptor`,
+returning `[IntegrityFinding]`: `.recordingMissing`, `.recordingEmpty`, `.wavHeaderUnreadable`,
+`.wavTruncated(declared:actual:)`, `.sourceTrackFrameMismatch(...)`, `.durationInconsistent(...)`.
+
+**Invariants.** Read-only — parses headers and stats sizes, never opens or deletes audio; it flags,
+never repairs by deletion; local-only.
+
+**Evidence.**
+
+Fails before the fix (truncation check defeated):
+
+```text
+✘ Test "Integrity checker flags missing, truncated, and frame-mismatched audio; healthy returns none" recorded an issue at MeetingIntegrityCheckerTests.swift:62:5: Expectation failed: truncated.contains { if case .wavTruncated = $0 { return true }; return false }
+```
+
+Passes after (truncated WAV → `.wavTruncated`; short `.f32` → `.sourceTrackFrameMismatch`; missing wav
+→ `.recordingMissing`; healthy dir → []); full suite 224:
+
+```text
+✔ Test "Integrity checker flags missing, truncated, and frame-mismatched audio; healthy returns none" passed after 0.004 seconds.
+✔ Test run with 224 tests passed after 1.133 seconds.
+```
+
+**Gaps.** `WAVInspection` is new and used by the checker; unifying `InterruptedRecordingRecovery`'s
+own header parse onto it (safe, behind the recovery tests) is a follow-up. Folding the check into
+`performStartupRecovery` + a Settings "Verify library" action is app wiring. (Noted separately: the
+subprocess-timing test "retire() waits for an idle helper process to actually exit" flaked once during
+this run and passed on re-run — a known real-process timing sensitivity, unrelated to this change.)
+
 ## F62 — Menu-bar recording controls with live status
 
 - **Outcome:** fixed

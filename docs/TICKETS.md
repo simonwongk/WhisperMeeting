@@ -375,37 +375,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** recovery
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `MeetingStore.loadMeetings` (`MeetingStore.swift:277`) validates only that
-`meetings.json` decodes; it never confirms each `recordingPath` still points at present,
-non-truncated, self-consistent audio, so a crash-truncated `meeting.wav` or a `.f32` whose byte
-length disagrees with `source-tracks.json` loads silently and fails later opaquely.
-
-**Proposed feature.** New pure `MeetingIntegrityChecker` taking a lightweight per-meeting descriptor
-and returning `[IntegrityFinding]` (`.recordingMissing`, `.recordingEmpty`, `.wavHeaderUnreadable`,
-`.wavTruncated(declared:actual:)`, `.sourceTrackFrameMismatch(…)`, `.durationInconsistent(…)`).
-Extract the 44-byte WAV-header parse + frameCount arithmetic from
-`InterruptedRecordingRecovery.swift:160-193` into a shared `WAVInspection` and reuse
-`RecordingSizeEstimator`'s constants. Reads header bytes and file sizes only. Fold into
-`AppModel.performStartupRecovery` (`:233`) plus an optional Settings "Verify library"; a finding
-sets status to "Needs attention" and appends a message, rewriting no audio.
-
-**Invariants.** Read-only: parses headers and stats sizes, never opens or deletes audio; only
-annotates the index (itself recoverable); source-of-truth intact — it flags, never repairs by
-deletion; local-only.
-
-**Verification.** New `MeetingIntegrityCheckerTests` (temp-dir pattern from
-`InterruptedRecordingRecoveryTests`): dirs with (a) a WAV header declaring more data than present,
-(b) a `.f32` shorter than its manifest frameCount, (c) a missing `meeting.wav` each yield the
-matching finding; a healthy dir returns `[]`. Fails before, passes after.
-
 ### F75 — Local automatic backups with hash verification and retention
 
 - **Status:** open
