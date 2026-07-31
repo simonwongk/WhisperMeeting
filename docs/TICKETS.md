@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F116`.**
+**Next free ID: `F117`.**
 
 ---
 
@@ -159,7 +159,7 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
 
-### F115 — Bridge the five teleporting-state seams found by the post-F113 motion sweep
+### F116 — Bridge the five teleporting-state seams found by the post-F113 motion sweep
 
 - **Status:** open
 - **Owner:** —

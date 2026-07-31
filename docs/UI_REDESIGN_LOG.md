@@ -162,7 +162,8 @@ Derived from Apple's design guidance (Designing Fluid Interfaces, WWDC 2018; the
 # Motion opportunity sweep (post-redesign, 2026-07-31)
 
 A restraint-first sweep of the redesigned UI for moments that would *genuinely* benefit from
-motion (ticketed as **F115**). Every candidate was gated on frequency, purpose, speed budget, and
+motion (ticketed as **F116**; originally filed as F115, renumbered after an ID race with a parallel
+session's CI ticket). Every candidate was gated on frequency, purpose, speed budget, and
 function; most were rejected. Recipes extend the repo's existing vocabulary only —
 `Animation.uiSpring` (critically damped, `DesignSystem.swift`), `.smooth(duration: 0.22)`,
 `.linear(duration: 0.08)`, and the established Reduce Motion convention (layout springs gate to
