@@ -1127,6 +1127,20 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Meeting library") {
+                HStack {
+                    Label("Check recordings for problems", systemImage: "checkmark.shield")
+                    Spacer()
+                    Button("Verify Library") {
+                        model.verifyLibrary()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text("Scans your saved recordings for missing, truncated, or inconsistent audio and reports what it finds. It never changes or deletes a recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Transcription") {
                 Picker("Model", selection: $model.selectedEngine) {
                     ForEach(MeetingTranscriptionEngine.availableCases, id: \.self) { engine in

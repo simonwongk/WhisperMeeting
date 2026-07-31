@@ -238,6 +238,13 @@ final class AppModel: ObservableObject {
         try InterruptedRecordingRecovery.recover(in: $0)
     }
 
+    /// Runs the read-only integrity check for one meeting's on-disk audio. Injectable so the library
+    /// sweep is testable with a fake finding, mirroring F47's recover seam; defaults to the real
+    /// checker. Never opens, deletes, or rewrites audio (F83 wires the F66 core).
+    var checkMeetingIntegrity: @Sendable (MeetingIntegrityDescriptor) -> [IntegrityFinding] = {
+        MeetingIntegrityChecker.check($0)
+    }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
@@ -324,6 +331,9 @@ final class AppModel: ObservableObject {
             )
         }
         recoverInterruptedTranscriptions()
+        // Read-only integrity sweep over the whole library (including anything just recovered above):
+        // flags missing/truncated/inconsistent audio without ever touching it (F83 wires the F66 core).
+        messages.append(contentsOf: Self.integrityMessages(verifyLibraryIntegrity()))
         if !messages.isEmpty {
             alertMessage = messages.joined(separator: "\n\n")
         }
@@ -1114,5 +1124,111 @@ final class AppModel: ObservableObject {
                 )
             }
         }.value
+    }
+}
+
+// MARK: - Library integrity sweep (F83 — wires the tested F66 core to the running app)
+
+extension AppModel {
+    /// One meeting's read-only integrity result. Advisory only — the audio is never repaired.
+    struct LibraryIntegrityResult: Sendable, Equatable {
+        let meeting: MeetingRecord
+        let findings: [IntegrityFinding]
+    }
+
+    /// Read-only sweep of the whole meeting library. Reachable from launch (`performStartupRecovery`)
+    /// and Settings ("Verify Library"). Flags missing/truncated/inconsistent audio; never touches it.
+    func verifyLibraryIntegrity() -> [LibraryIntegrityResult] {
+        var results: [LibraryIntegrityResult] = []
+        for meeting in store.meetings {
+            guard let descriptor = integrityDescriptor(for: meeting) else { continue }
+            let findings = checkMeetingIntegrity(descriptor)
+            if !findings.isEmpty {
+                results.append(LibraryIntegrityResult(meeting: meeting, findings: findings))
+            }
+        }
+        return results
+    }
+
+    /// Runs the sweep and surfaces any findings through the shared alert. The thin action behind the
+    /// Settings "Verify Library" button (F83). Read-only — it reports, never repairs.
+    func verifyLibrary() {
+        let messages = Self.integrityMessages(verifyLibraryIntegrity())
+        if messages.isEmpty {
+            alertMessage = "Library check complete — no audio problems were found."
+        } else {
+            let header = "Library check found problems with \(messages.count) recording"
+                + (messages.count == 1 ? "" : "s")
+                + ". The recordings were not changed."
+            alertMessage = ([header] + messages).joined(separator: "\n\n")
+        }
+    }
+
+    /// Builds a read-only integrity descriptor for a meeting from its on-disk files. Returns nil for
+    /// a meeting with no recording (nothing to check).
+    private func integrityDescriptor(for meeting: MeetingRecord) -> MeetingIntegrityDescriptor? {
+        guard !meeting.recordingPath.isEmpty else { return nil }
+        let recordingURL = store.recordingURL(for: meeting)
+        let directory = recordingURL.deletingLastPathComponent()
+        return MeetingIntegrityDescriptor(
+            recordingURL: recordingURL,
+            sourceTracks: Self.sourceTracks(in: directory),
+            indexDurationSeconds: meeting.duration > 0 ? meeting.duration : nil
+        )
+    }
+
+    /// Maps integrity results into user-facing advisory lines. Presentation only.
+    static func integrityMessages(_ results: [LibraryIntegrityResult]) -> [String] {
+        results.flatMap { result in
+            result.findings.map { describe($0, title: result.meeting.title) }
+        }
+    }
+
+    /// Decodes `source-tracks.json` (or the recovery variant) into descriptor source tracks. A
+    /// missing or unreadable manifest yields no track checks — an imported meeting may have none.
+    static func sourceTracks(in directory: URL) -> [MeetingIntegrityDescriptor.SourceTrack] {
+        struct Manifest: Decodable {
+            struct Track: Decodable {
+                let file: String
+                let frameCount: Int64
+            }
+            let systemAudio: Track
+            let microphoneAudio: Track
+        }
+        for name in ["source-tracks.json", "source-tracks.recovered.json"] {
+            let url = directory.appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: url),
+                  let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { continue }
+            return [
+                .init(
+                    name: "system",
+                    url: directory.appendingPathComponent(manifest.systemAudio.file),
+                    expectedFrameCount: manifest.systemAudio.frameCount
+                ),
+                .init(
+                    name: "microphone",
+                    url: directory.appendingPathComponent(manifest.microphoneAudio.file),
+                    expectedFrameCount: manifest.microphoneAudio.frameCount
+                ),
+            ]
+        }
+        return []
+    }
+
+    private static func describe(_ finding: IntegrityFinding, title: String) -> String {
+        switch finding {
+        case .recordingMissing:
+            return "“\(title)”: the recording file is missing from disk. The meeting entry was kept; its audio could not be found."
+        case .recordingEmpty:
+            return "“\(title)”: the recording file is empty."
+        case .wavHeaderUnreadable:
+            return "“\(title)”: the recording’s audio header could not be read."
+        case let .wavTruncated(declaredBytes, actualBytes):
+            return "“\(title)”: the recording looks truncated — its header expects \(declaredBytes) bytes but only \(actualBytes) are present."
+        case let .sourceTrackFrameMismatch(track, expectedFrames, actualFrames):
+            return "“\(title)”: the \(track) source track is shorter than recorded (\(actualFrames) of \(expectedFrames) frames)."
+        case let .durationInconsistent(headerSeconds, indexSeconds):
+            return "“\(title)”: the recording’s length (\(String(format: "%.1f", headerSeconds))s) doesn’t match its saved duration (\(String(format: "%.1f", indexSeconds))s)."
+        }
     }
 }
