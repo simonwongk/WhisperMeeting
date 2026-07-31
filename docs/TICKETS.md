@@ -12,38 +12,6 @@ Read them before touching this file.** This file holds **open** work only; close
 
 # Open tickets
 
-### F25 — A shipped helper-script fix does not reach disk until its engine is selected
-
-- **Status:** in-progress
-- **Owner:** runtime
-- **Severity:** low
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (review of `e9bca61`)
-
-**Problem.** `DictationController.ensureHelperInstalled()`
-(`Sources/WhisperMeet/Dictation/DictationController.swift:209`) syncs only the *currently selected*
-engine's helper from the app bundle. After F24 shipped in `64455ec`, the installed
-`Runtime/whisper_dictate_server.py` on this machine — which has Qwen selected — stayed at the old
-hash `80e86bdaf487` while the bundle carried the fixed `a1d671e3e6da`.
-
-**Impact.** Not a correctness bug today: the sync runs at `DictationController.swift:152` *before*
-the replacement engine is constructed, so the fixed helper is always on disk before it is used. But
-on-disk state does not reflect the shipped build, which makes diagnostics and manual inspection
-misleading, and it means a helper fix is one user action away from mattering rather than applied on
-update.
-
-**Reproduced 2026-07-30 while fixing F29.** `Scripts/bench/dictation-ab.py` drives the *installed*
-helpers, so it hit the stale copy and failed exactly as F24 did —
-`turbo: helper never reported ready. / Detected language: English` — until the bundle copy was
-synced by hand. This is no longer only a tidiness concern: any tool or diagnostic that reads the
-installed runtime sees pre-fix code.
-
-**Proposed fix.** Sync both engines' helpers on launch (or whenever the bundle version changes)
-rather than only the selected one. Cheap — a content comparison and a small file write.
-
-**Verification.** Install a build whose Whisper helper differs from the runtime copy while Qwen is
-selected; assert the runtime copy matches the bundle after launch without switching engines.
-
 ### F26 — Dictation diagnostics go stale when the model is changed
 
 - **Status:** open

@@ -14,6 +14,92 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F25 — A shipped helper-script fix did not reach disk until its engine was selected
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `dc6343d` (fix + core + tests), `db14193` (plan-coverage regression test), `<close-sha>` (close)
+- **Reachability:** app launch → `AppEntry` `@StateObject private var dictation = DictationController()`
+  (`AppEntry.swift:7`, default `activateOnInit: true`) → `DictationController.init` →
+  `ensureHelperInstalled()` → `DictationHelperSync.installedHelperPlan()` (every
+  `DictationTranscriptionEngine` case) → `DictationHelperSync.sync(...)` writes each stale helper
+  atomically. Also reached from `apply()` (dictation enabled), `setSelectedEngine()`, and
+  `runSelfTest()`. Empirically confirmed: a freshly-built binary re-synced a stale Whisper helper 1 s
+  after launch with Qwen selected (evidence below).
+
+**Root cause.** `ensureHelperInstalled()` `switch`ed on `selectedEngine` and reconciled only that one
+engine's bundled helper against disk. So when a helper fix shipped (e.g. F24's stdout-protocol fix),
+the *non-selected* engine's installed helper stayed at the old bytes until the user happened to select
+that engine — misleading any tool or diagnostic that reads the installed runtime (F29's
+`dictation-ab.py` hit exactly this), and leaving an already-shipped fix one user action away from
+applying. The write was also non-atomic (`Data.write(to:)`), unsafe against the shared runtime
+directory having a concurrent reader/writer.
+
+**Fix.** A pure `Sources/WhisperCore/DictationHelperSync.swift`:
+* `installedHelperPlan(applicationSupport:)` enumerates **`DictationTranscriptionEngine.allCases`** —
+  never `selectedEngine` — so every engine's helper location is covered (a new engine is included
+  automatically). This is the layer that actually fixes F25, and it is testable.
+* `sync(_:)` reconciles each supplied helper: skip if the engine's runtime is absent, skip if the
+  installed bytes already match (content-gate), else write the bundle bytes with `.atomic`
+  (write-temp-then-rename) so a concurrent reader never sees a half-written script and overlapping
+  writers of the same build converge. The lane owns the installed runtime exclusively *because* of
+  this bug; the fix assumes it is **not** the only writer.
+`DictationController.ensureHelperInstalled()` now builds a `Helper` per plan entry (bundle bytes +
+runtime-installed check) and syncs them all, preserving the old logging (runtime-absent silent,
+bundle-missing logged only when no installed copy exists, synced/failed logged).
+
+**Evidence.**
+
+Red — the plan-coverage regression guard fails when the plan is reduced to one engine (the pre-fix
+selected-only shape); the sync centerpiece fails when only the first helper is written:
+
+```text
+✘ Test "The installed-helper plan covers every dictation engine (F25)" recorded an issue at DictationHelperSyncTests.swift:117:5: Expectation failed: (plan.count → 1) == (DictationTranscriptionEngine.allCases.count → 2)
+✘ Test "Both engines' helpers are synced, not just one (F25)" recorded an issue: Caught error: … "qwen_dictate_server.py" couldn't be opened because there is no such file.
+```
+
+Green — all 7 F25 tests pass (suite delta **+7** from this ticket's baseline of 240):
+
+```text
+✔ Test "The installed-helper plan covers every dictation engine (F25)" passed
+✔ Test "Both engines' helpers are synced, not just one (F25)" passed
+✔ Test "Syncing the whole plan updates every installed engine's helper (F25)" passed
+✔ Test "A stale helper is atomically and completely replaced (F25)" passed
+✔ Test "A helper already matching the bundle is left untouched (F25)" passed
+✔ Test "A helper whose runtime is absent is skipped, not created (F25)" passed
+✔ Test "A missing bundled helper is reported without writing (F25)" passed
+```
+
+Real installed runtime — the ticket's exact verification. With Qwen selected, the installed Whisper
+helper was made stale, then **only** the freshly-built fixed binary was launched (no other instance):
+
+```text
+selected engine: qwen3-asr-1.7b-8bit
+installed whisper (stale): 891235573c685188f31a2d445d95604695ef8e41
+bundle whisper (target):   e16fcca2eb66165827d0f9f532228365d4127246
+confirm: installed differs from bundle
+NO WhisperMeet running before launch
+launch MY fixed .build binary directly (only instance) → pid 56733
+installed whisper after launch: e16fcca2eb66165827d0f9f532228365d4127246
+RE-SYNCED after 1s by my fixed binary (Qwen selected, no switch)
+qwen helper still matches bundle: YES
+```
+
+The pre-F25 code, with Qwen selected, would have left the Whisper helper stale. (The `/Applications`
+copy in the environment is an older build without this fix — binary `2893b6d9` ≠ my `481c13b6` — so
+the clean run above launched only my fixed binary to attribute the re-sync unambiguously.)
+`Scripts/quality-check.sh` passed whole before this rebase (247 tests, release `-warnings-as-errors`
+clean, packaging OK).
+
+**Gaps.** The controller hop itself — `Bundle.main.url(forResource:)` + the plan→`Helper` mapping in
+`bundledDictationHelpers` — has no headless unit test (it reads the real app bundle and the real
+installed paths); it is covered by the real-runtime launch above and by the pure `installedHelperPlan`
+/ `sync` tests on either side of it. **Not planned:** a GUI/`DictationController`-init test harness for
+that hop — the `WhisperMeet` target has no view/app-launch render rig (the standing repo limitation),
+and the real-runtime launch is the honest end-to-end check.
+
+---
+
 ## F32 — "Original language only" is unenforced and untested on the Qwen path
 
 - **Outcome:** fixed
