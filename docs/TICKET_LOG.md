@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F35 — `SelectableDictationEngine.replace` is a non-atomic read → await → write
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `replace` read `current`, awaited `retire()`, then installed. The `NSLock` cannot be
+held across the `await`, so two concurrent replaces both read the same engine and both retired it,
+and one installed engine was then overwritten without being retired (a leaked resident model). Safety
+depended entirely on a `@MainActor` guard in `DictationController` — in the other module — despite the
+class advertising `@unchecked Sendable`.
+
+**Fix.** Serialized replacements inside the class: each `replace` enqueues a task that first awaits
+the previous replacement's task, then reads `current`, retires it, and installs. A synchronous
+`enqueueReplace` helper holds the `NSLock` only to chain the task (no lock held across an await). The
+class is now self-sufficient.
+
+**Evidence.**
+
+Fails before the fix — the initial engine is retired twice and both replacements leak:
+
+```text
+✘ Test "Concurrent engine replacements retire the initial engine once and leak none" recorded an issue at DictationModelSelectionTests.swift:96:5: Expectation failed: (initial.shutdownCount → 2) == 1
+✘ ...:97:5: Expectation failed: (first.shutdownCount + second.shutdownCount → 0) == 1
+✘ Test run with 1 test failed after 0.022 seconds with 2 issues.
+```
+
+Passes after, full suite grew 194 → 195:
+
+```text
+✔ Test "Concurrent engine replacements retire the initial engine once and leak none" passed after 0.048 seconds.
+✔ Test run with 195 tests passed after 2.035 seconds.
+```
+
+**Gaps.** None. The test forces the interleaving with a suspending `retire()` in the spy.
+
 ## F53 — Qwen empty/silent clip surfaces a raw Python traceback
 
 - **Outcome:** fixed

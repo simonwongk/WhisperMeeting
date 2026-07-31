@@ -299,26 +299,6 @@ for this feature — which is what the Spec review axis judges against.
 
 **Verification.** The design doc describes the selector, its default, and the vocabulary limitation.
 
-### F35 — `SelectableDictationEngine.replace` is a non-atomic read → await → write
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, standards)
-
-**Problem.** `DictationProtocol.swift:83-95`. The `NSLock` makes each accessor safe, but `replace`
-reads `current`, awaits `retire()`, then installs — so two concurrent replaces can both retire the
-same engine. Safety today comes only from the `@MainActor` `isActive` / `isSwitchingModel` guard in
-`DictationController.setSelectedEngine`, which lives in the *other* target.
-
-**Impact.** No data race; a logical one. The class advertises `@unchecked Sendable`, implying it is
-self-sufficient, but its correctness depends on a caller in another module.
-
-**Proposed fix.** Serialize `replace` inside the class, or document the caller contract on the type.
-
-**Verification.** Two concurrent `replace` calls leave exactly one live engine.
-
 ### F36 — The Qwen subprocess contract has no upstream documentation anchor
 
 - **Status:** open

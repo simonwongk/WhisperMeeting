@@ -83,15 +83,31 @@ public extension DictationEngine {
 public final class SelectableDictationEngine: DictationEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var engine: DictationEngine
+    private var pendingReplace: Task<Void, Never>?
 
     public init(engine: DictationEngine) {
         self.engine = engine
     }
 
     public func replace(with replacement: DictationEngine) async {
-        let previous = current
-        await previous.retire()
-        install(replacement)
+        // Serialize replacements: each waits for the previous one to finish before reading the
+        // current engine, so two concurrent `replace` calls cannot both retire the same engine or
+        // install one that is then overwritten without retiring it (F35).
+        await enqueueReplace(replacement).value
+    }
+
+    private func enqueueReplace(_ replacement: DictationEngine) -> Task<Void, Never> {
+        lock.lock()
+        defer { lock.unlock() }
+        let prior = pendingReplace
+        let task = Task { [self] in
+            await prior?.value
+            let previous = current
+            await previous.retire()
+            install(replacement)
+        }
+        pendingReplace = task
+        return task
     }
 
     private func install(_ replacement: DictationEngine) {

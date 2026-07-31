@@ -71,4 +71,28 @@ private final class EngineSpy: DictationEngine, @unchecked Sendable {
     func shutdown() {
         state.recordShutdown()
     }
+
+    func retire() async {
+        // Suspend so a concurrent-replace race has a window to interleave (mirrors the real engine's
+        // async drain), then release via the same shutdown path.
+        try? await Task.sleep(for: .milliseconds(20))
+        shutdown()
+    }
+}
+
+@Test("Concurrent engine replacements retire the initial engine once and leak none")
+func concurrentReplaceIsSerialized() async {
+    let initial = EngineState(result: "0")
+    let first = EngineState(result: "1")
+    let second = EngineState(result: "2")
+    let selectable = SelectableDictationEngine(engine: EngineSpy(state: initial))
+
+    async let a: Void = selectable.replace(with: EngineSpy(state: first))
+    async let b: Void = selectable.replace(with: EngineSpy(state: second))
+    _ = await (a, b)
+
+    // The initial engine is retired exactly once (not twice by both replaces racing on the same
+    // read), and exactly one of the two replacements is retired — the other stays live, none leak.
+    #expect(initial.shutdownCount == 1)
+    #expect(first.shutdownCount + second.shutdownCount == 1)
 }
