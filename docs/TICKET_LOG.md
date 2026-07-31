@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F77 — Per-segment re-run: re-transcribe a single flagged span
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added two pure pieces: `SegmentAudioRange.byteRange(...)` maps a segment's time span to a
+byte range in `meeting.wav` using the fixed 16-bit-mono PCM layout `WAVWriter` writes (44-byte header,
+2 bytes/sample), and `TranscriptSegmentSplice.splice(_:replacingIndex:with:)` replaces one segment
+with a re-run's segments, re-anchoring the clip-relative timestamps by the original segment's start
+and re-flowing order.
+
+**Invariants.** Reads `meeting.wav` only (the app writes a disposable temp clip); recording is the
+source of truth, untouched; original language preserved; no diarization.
+
+**Evidence.**
+
+Fails before the fix (offset anchoring removed) — re-run timestamps collide / mis-order:
+
+```text
+✘ Test "TranscriptSegmentSplice replaces one segment and anchors the re-run timestamps" recorded an issue at SegmentRerunTests.swift:31:5: Expectation failed: (Set(starts).count → 3) == (starts.count → 4)
+```
+
+Passes after (byte offsets `44 + t·16000·2`; splice yields 4 ordered segments); full suite grew
+217 → 219:
+
+```text
+✔ Test "SegmentAudioRange maps a time span to WAV byte offsets" passed after 0.001 seconds.
+✔ Test "TranscriptSegmentSplice replaces one segment and anchors the re-run timestamps" passed after 0.001 seconds.
+✔ Test run with 219 tests passed after 1.121 seconds.
+```
+
+**Gaps.** The two pure pieces are fully tested. The WhisperMeet wiring (the codebase's first WAV
+sub-range READ, writing a temp clip via `WAVWriter.wavData`, running the chosen engine, and splicing
+back) is follow-up; on Qwen it also depends on reliable segment timestamps (F30).
+
 ## F76 — Suggest a meeting title from the local Calendar
 
 - **Outcome:** fixed

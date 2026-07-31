@@ -554,36 +554,6 @@ diarization/language involvement.
 skipped, a changed one scheduled, a new one copied; keep-3 retention prunes exactly the 4th-oldest
 and older; a post-copy hash mismatch surfaces as a verification failure. Fails before, passes after.
 
-### F77 — Per-segment re-run: re-transcribe a single flagged span
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort H / risk M)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** When the quality banner flags one segment, the only remedies are hand-editing or
-re-running the whole meeting; there is no way to re-transcribe just that time range (e.g. forcing a
-language on a code-switch stumble, or trying the other engine on a 6-second span).
-
-**Proposed feature.** Two pure WhisperCore pieces: (a) `SegmentAudioRange` — given a segment's
-start/end, sample rate, and the fixed 16-bit-mono PCM layout `WAVWriter` defines (44-byte header,
-`WAVWriter.swift:7`; 2 bytes/sample), compute the byte range to slice; (b) `TranscriptSegmentSplice`
-— replace `segment[i]` with the re-run's segments, re-anchoring timestamps by the clip's start
-offset and re-flowing order/ids. WhisperMeet reads that byte range from `meeting.wav`, writes a temp
-clip via `WAVWriter.wavData`, runs the chosen engine/language on the clip, and splices back. Note:
-this introduces the codebase's first WAV sub-range READ (`WAVWriter` is write-only today), and on
-Qwen it depends on reliable segment timestamps that F30 shows can be dropped.
-
-**Invariants.** Reads `meeting.wav` only and writes a disposable temp clip (recording is the source
-of truth, untouched, retryable); local-only; original language preserved; no diarization;
-user-initiated per segment.
-
-**Verification.** New tests: `SegmentAudioRange` maps t=[1.0,2.0] at 16 kHz to byte offsets
-44+1.0×16000×2 through 44+2.0×16000×2; `TranscriptSegmentSplice` replacing index 1 of a 3-segment
-transcript with two re-run segments yields 4 segments, start-offset-anchored and strictly ordered.
-Fails before, passes after.
-
 ---
 
 *Board created 2026-07-30. Seeded from the review of `e9bca61` and `64455ec`.* *F28–F37 added
