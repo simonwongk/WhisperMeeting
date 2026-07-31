@@ -654,34 +654,6 @@ aborting the whole `flatMap`.
 **Verification.** A UTF-16 (or Windows-1252) `.csv` fixture returns candidate terms instead of
 throwing; a batch with one bad file still returns the good files' terms. Fails before, passes after.
 
-### F50 — Hold-mode dictation has no capture cap or stuck-listen watchdog
-
-- **Status:** in-progress
-- **Owner:** Codex / root
-- **Severity:** low
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `MicDictationRecorder` appends every chunk to `samples` with no size/duration cap
-(`Sources/WhisperMeet/Dictation/MicDictationRecorder.swift:102-103`), and `DictationController` has
-no timeout on `.listening` — capture ends only on a matching `handlePressEnd`. `HotkeyMonitor`
-re-enables the tap on `.tapDisabledByTimeout`/`.tapDisabledByUserInput`
-(`HotkeyMonitor.swift:42-45`) but events during the disabled window are dropped; the modifier path
-self-heals from absolute state (`:92`) but the keyDown/keyUp path used for F-keys does not, so a
-missed key-up leaves `keyDown = true` and the recorder hot.
-
-**Impact.** Rare but real: after an OS tap-disable during a hold (or an F-key hotkey whose up edge
-is dropped), dictation is wedged in `.listening`, the mic stays hot, the overlay stays up, and the
-buffer grows (~64 KB/s at 16 kHz Float32) until the user disables dictation. F-keys are an
-explicitly recommended trigger (`ContentView.swift:1130`).
-
-**Proposed fix.** Cap capture duration (and buffer size) with a watchdog that finalizes or cancels;
-on tap re-enable, resynchronize `keyDown` from the current hardware key state.
-
-**Verification.** Simulate a missed key-up (a `handlePressStart` with no matching `handlePressEnd`)
-and assert the session self-recovers to idle and the recorder stops after a max duration. Fails
-before, passes after.
-
 ### F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
 
 - **Status:** open

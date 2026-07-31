@@ -34,6 +34,64 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F50 — Hold-mode dictation has no capture cap or stuck-listen watchdog
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `af8ddbd` (claim), `e8a0692` (fix)
+
+**Root cause.** Two independent ways for hold-mode dictation to wedge in `.listening` with the mic
+hot. (1) `DictationController` armed no timeout on `.listening`; capture ended only on a matching
+`handlePressEnd`, so a dropped release edge left it listening forever while `MicDictationRecorder`
+appended every chunk to an unbounded `samples` array (~64 KB/s at 16 kHz Float32). (2) On
+`.tapDisabledByTimeout`/`.tapDisabledByUserInput`, `HotkeyMonitor` re-enabled the tap but dropped
+the events during the disabled window; the modifier path self-heals from absolute flag state, but
+the keyDown/keyUp path used for F-keys (an explicitly recommended trigger) did not — a missed key-up
+left `keyDown = true` and every subsequent press was swallowed by the autorepeat guard.
+
+**Fix.** Added `DictationCaptureWatchdog` (armed on `.listening`, cancelled on finalize/disable) that
+finalizes the session after the maximum capture duration, so a missed release self-recovers to idle.
+Backed it with a hard-capped `BoundedAudioSampleBuffer` (`WhisperCore`, pure/`Sendable`) as an
+independent backstop against unbounded queue growth if the main actor can't fire the watchdog in
+time. `HotkeyMonitor.recoverFromDisabledTap()` resynchronizes `keyDown` from live hardware key state
+(`CGEventSource.keyState`) on tap re-enable. Introduced injection seams (`DictationRecording` /
+`DictationOverlayPresenting` protocols, injectable `logStore`/timeout/sleep, `activateOnInit`) so the
+recovery paths are testable headlessly without mic/Accessibility hardware.
+
+**Evidence.**
+
+The two behavioral regressions fail with the fix neutralized (watchdog `arm()` and the key-state
+resync temporarily disabled), reproducing the exact wedge — controller stuck in `.listening` with
+the recorder still hot, and the F-key press swallowed after a missed release:
+
+```text
+✘ Test "A missed dictation release stops recording and recovers the controller to idle" recorded an issue at DictationControllerWatchdogTests.swift:88:5: Expectation failed: (recorder.stopCount → 0) == 1
+✘ Test "A missed dictation release stops recording and recovers the controller to idle" recorded an issue at DictationControllerWatchdogTests.swift:89:5: Expectation failed: !((recorder → ...FakeDictationRecorder).isRecording → true → true)
+✘ Test "A missed dictation release stops recording and recovers the controller to idle" recorded an issue at DictationControllerWatchdogTests.swift:90:5: Expectation failed: (controller.status → .listening) == .idle
+✘ Test "A disabled event tap resynchronizes a missed F-key release" recorded an issue at HotkeyMonitorRecoveryTests.swift:36:5: Expectation failed: (presses.value → 1) == 2
+✘ Test run with 2 tests failed after 0.025 seconds with 4 issues.
+```
+
+They pass with the fix restored:
+
+```text
+✔ Test "A missed dictation release stops recording and recovers the controller to idle" passed after 0.007 seconds.
+✔ Test "A disabled event tap resynchronizes a missed F-key release" passed after 0.025 seconds.
+✔ Test run with 2 tests passed after 0.025 seconds.
+```
+
+The full quality gate (build + both suites) passed:
+
+```text
+Build complete! (0.42s)
+✔ Test run with 183 tests passed after 1.075 seconds.
+```
+
+**Gaps.** The watchdog's real-clock firing at the 120 s ceiling is proven only with an injected
+instant `sleep` (unit-verified in `watchdogFinalizesStuckCapture` and the controller integration
+test), not by a 120 s wall-clock hold on hardware. No model runtime/adapter was touched, so no
+real-model run applies.
+
 ## F48 — `AudioCaptureEngine.stop()` could wedge the engine after a finalization failure
 
 - **Outcome:** fixed
