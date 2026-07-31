@@ -434,35 +434,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F60 — Chapters export: turn recording markers into a chapter list + chaptered transcript
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk L)
-- **Area:** export
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Markers only produce a flat "## Markers" list (`RecordingMarkers.markdownSection`,
-`Sources/WhisperCore/RecordingMarker.swift:77`). There is no navigable chapter structure and no
-standard chapter-file artifact.
-
-**Proposed feature.** New pure `TranscriptChapters`: given `[RecordingMarker]`,
-`[TranscriptSegment]`, and `durationSeconds`, partition the timeline into chapters bounded by marker
-offsets (leading chapter from 0; no markers → one chapter) and produce (a) a "MM:SS Title"
-one-line-per-chapter list using `RecordingMarkers.displayLabel` and `TranscriptFormatter.timestamp`,
-and (b) a chaptered Markdown transcript grouping each segment under a "## MM:SS Title" heading. Add
-`chapterList`/`chapteredMarkdown` cases to `TranscriptExportFormat` (`TranscriptExporter.swift:6`).
-Grounding fix: add a defaulted `markers: [RecordingMarker] = []` to `TranscriptExportRequest.init`
-(`:53`) and pass `current.orderedMarkers` from `exportTranscript` (`ContentView.swift:1779-1787`).
-
-**Invariants.** Timestamps only — chapters are time ranges, never speakers; fully local;
-original-language text copied verbatim; WAV never read/modified.
-
-**Verification.** New `TranscriptChaptersTests`: markers at 0:00/5:00/12:30 over 20:00 yield exactly
-3 chapters with correct [start,end) ranges; each segment assigned by its start; a boundary-start
-segment goes to the later chapter; an unlabeled marker renders "Marker N"; empty markers yield one
-full-duration chapter. Fails before, passes after.
-
 ### F61 — Self-contained printable HTML transcript export
 
 - **Status:** open

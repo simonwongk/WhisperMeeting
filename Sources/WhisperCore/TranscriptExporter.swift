@@ -10,6 +10,8 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     case srt
     case vtt
     case json
+    case chapterList
+    case chapteredMarkdown
 
     public var displayName: String {
         switch self {
@@ -19,13 +21,15 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
         case .srt: "Subtitles — SubRip (.srt)"
         case .vtt: "Subtitles — WebVTT (.vtt)"
         case .json: "JSON (.json)"
+        case .chapterList: "Chapter List (.txt)"
+        case .chapteredMarkdown: "Chaptered Transcript (.md)"
         }
     }
 
     public var fileExtension: String {
         switch self {
-        case .plainText, .timestampedText: "txt"
-        case .markdown: "md"
+        case .plainText, .timestampedText, .chapterList: "txt"
+        case .markdown, .chapteredMarkdown: "md"
         case .srt: "srt"
         case .vtt: "vtt"
         case .json: "json"
@@ -37,8 +41,8 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     /// align with the displayed Whisper timestamps.
     public var usesSegments: Bool {
         switch self {
-        case .srt, .vtt, .json: true
-        case .plainText, .timestampedText, .markdown: false
+        case .srt, .vtt, .json, .chapteredMarkdown: true
+        case .plainText, .timestampedText, .markdown, .chapterList: false
         }
     }
 }
@@ -49,19 +53,22 @@ public struct TranscriptExportRequest: Sendable {
     public let durationSeconds: TimeInterval
     public let transcriptText: String
     public let segments: [TranscriptSegment]
+    public let markers: [RecordingMarker]
 
     public init(
         title: String,
         languageCode: String?,
         durationSeconds: TimeInterval,
         transcriptText: String,
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        markers: [RecordingMarker] = []
     ) {
         self.title = title
         self.languageCode = languageCode
         self.durationSeconds = durationSeconds
         self.transcriptText = transcriptText
         self.segments = segments
+        self.markers = markers
     }
 }
 
@@ -92,7 +99,19 @@ public enum TranscriptExporter {
             return vtt(effectiveSegments(request))
         case .json:
             return json(request)
+        case .chapterList:
+            return TranscriptChapters.list(chapters(request))
+        case .chapteredMarkdown:
+            return TranscriptChapters.markdown(chapters(request))
         }
+    }
+
+    private static func chapters(_ request: TranscriptExportRequest) -> [TranscriptChapter] {
+        TranscriptChapters.chapters(
+            markers: request.markers,
+            segments: effectiveSegments(request),
+            durationSeconds: request.durationSeconds
+        )
     }
 
     /// The editable transcript is the user-facing source of truth. When its non-empty lines still

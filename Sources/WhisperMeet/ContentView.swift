@@ -1865,7 +1865,8 @@ private struct TranscriptDetailView: View {
             languageCode: current.languageCode,
             durationSeconds: current.duration,
             transcriptText: current.transcriptText,
-            segments: current.segments
+            segments: current.segments,
+            markers: current.orderedMarkers
         )
         saveExport(
             TranscriptExporter.render(format, request),

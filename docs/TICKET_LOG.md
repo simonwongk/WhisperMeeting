@@ -34,6 +34,45 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F60 — Chapters export: turn recording markers into a chapter list + chaptered transcript
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Markers only produced a flat "## Markers" list. Added a pure `TranscriptChapters` that
+partitions `[0, duration)` into chapters bounded by marker offsets (leading chapter prepended only
+when the first marker starts after 0; no markers → one full-duration chapter), assigns each segment
+to the chapter whose `[start, end)` contains its start (boundary-start → later chapter), and renders
+either a "MM:SS Title" list or a chaptered Markdown transcript. Added `.chapterList` /
+`.chapteredMarkdown` to `TranscriptExportFormat` (they appear in the Export menu via `allCases`), a
+defaulted `markers` on `TranscriptExportRequest`, and pass `current.orderedMarkers` at the call site.
+
+**Invariants.** Timestamps only — chapters are time ranges, never speakers; fully local;
+original-language text copied verbatim; WAV never read/modified.
+
+**Evidence.**
+
+Fails before the fix (segment boundary handling broken to `<= end`) — a boundary segment leaks into
+the earlier chapter:
+
+```text
+✘ Test "Markers partition the timeline into chapters with correct ranges and segment assignment" recorded an issue at TranscriptChaptersTests.swift:26:5: Expectation failed: (chapters[0].segments.map(\.text) → ["a", "b"]) == ["a"]
+```
+
+Passes after (partition ranges, leading chapter, no-marker single chapter, "Marker N" fallback);
+full suite grew 207 → 210:
+
+```text
+✔ Test "Markers partition the timeline into chapters with correct ranges and segment assignment" passed after 0.001 seconds.
+✔ Test "A leading chapter is prepended when the first marker starts after 0" passed after 0.001 seconds.
+✔ Test "No markers yields a single full-duration chapter" passed after 0.001 seconds.
+✔ Test run with 210 tests passed after 1.290 seconds.
+```
+
+**Gaps.** None on the partition logic. The two new formats render via the existing `allCases` Export
+menu; no view test in this harness.
+
 ## F59 — Faceted meeting search: filter by language, status, duration, and date
 
 - **Outcome:** fixed
