@@ -14,8 +14,8 @@ Read them before touching this file.** This file holds **open** work only; close
 
 ### F25 — A shipped helper-script fix does not reach disk until its engine is selected
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** runtime
 - **Severity:** low
 - **Area:** dictation
 - **Filed:** 2026-07-30 by Claude Code (review of `e9bca61`)

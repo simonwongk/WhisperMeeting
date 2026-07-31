@@ -253,42 +253,57 @@ final class DictationController: ObservableObject {
         }
     }
 
-    /// Keep the selected model's installed helper in sync with this app build. This self-heals an
-    /// existing runtime that predates Qwen dictation as well as applying future protocol fixes.
+    /// Keep **both** engines' installed helpers in sync with this app build — not only the selected
+    /// one — so a shipped helper fix reaches disk on launch instead of waiting for the user to select
+    /// that engine (F25). This self-heals a runtime that predates Qwen dictation and applies future
+    /// protocol fixes. The reconciliation (atomic, content-gated writes, safe against another writer
+    /// of the shared runtime directory) lives in the pure `DictationHelperSync`; this method only
+    /// builds the specs from the bundle and the installed paths, then logs each outcome.
     private func ensureHelperInstalled() {
-        let resource: String
-        let python: URL
-        let script: URL
-        switch selectedEngine {
-        case .whisperTurbo:
-            resource = "whisper_dictate_server"
-            python = LocalWhisperRuntime.pythonExecutable()
-            script = LocalWhisperRuntime.dictationServerScript()
-        case .qwenBalanced:
-            resource = "qwen_dictate_server"
-            python = QwenASRRuntime.pythonExecutable()
-            script = QwenASRRuntime.dictationHelperScript()
-        }
-        guard FileManager.default.fileExists(atPath: python.path) else { return } // no runtime installed yet
-        guard let bundled = Bundle.main.url(forResource: resource, withExtension: "py"),
-              let bundledData = try? Data(contentsOf: bundled) else {
-            if !FileManager.default.fileExists(atPath: script.path) {
-                log.error("\(resource, privacy: .public) missing and no bundled copy found")
+        let files = FileManager.default
+        let helpers = Self.bundledDictationHelpers(fileManager: files)
+        for (helper, outcome) in zip(helpers, DictationHelperSync.sync(helpers, fileManager: files)) {
+            switch outcome {
+            case let .synced(name):
+                log.notice("\(name, privacy: .public) synced from app bundle into runtime")
+            case let .failed(name, message):
+                log.error("failed to install dictation helper \(name, privacy: .public): \(message, privacy: .public)")
+            case let .bundleMissing(name):
+                // Only a real problem when there is also no installed copy to fall back on.
+                if !files.fileExists(atPath: helper.installedScript.path) {
+                    log.error("\(name, privacy: .public) missing and no bundled copy found")
+                }
+            case .upToDate, .runtimeAbsent:
+                break
             }
-            return
         }
-        let installedData = try? Data(contentsOf: script)
-        guard bundledData != installedData else { return } // already the current version
-        do {
-            try FileManager.default.createDirectory(
-                at: script.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+    }
+
+    /// Build a `DictationHelperSync.Helper` per engine from the app bundle and the installed runtime
+    /// paths. An engine whose runtime is not installed (no python executable on disk) is marked so the
+    /// sync skips it — the same guard the per-engine sync used before F25, now applied to every engine
+    /// rather than just the selected one.
+    private static func bundledDictationHelpers(
+        fileManager files: FileManager
+    ) -> [DictationHelperSync.Helper] {
+        func spec(_ name: String, python: URL, script: URL) -> DictationHelperSync.Helper {
+            let bundledData = Bundle.main.url(forResource: name, withExtension: "py")
+                .flatMap { try? Data(contentsOf: $0) }
+            return DictationHelperSync.Helper(
+                name: name,
+                bundledData: bundledData,
+                installedScript: script,
+                runtimeInstalled: files.fileExists(atPath: python.path)
             )
-            try bundledData.write(to: script)
-            log.notice("\(resource, privacy: .public) synced from app bundle into runtime")
-        } catch {
-            log.error("failed to install dictation helper: \(error.localizedDescription, privacy: .public)")
         }
+        return [
+            spec("whisper_dictate_server",
+                 python: LocalWhisperRuntime.pythonExecutable(),
+                 script: LocalWhisperRuntime.dictationServerScript()),
+            spec("qwen_dictate_server",
+                 python: QwenASRRuntime.pythonExecutable(),
+                 script: QwenASRRuntime.dictationHelperScript()),
+        ]
     }
 
     deinit {
