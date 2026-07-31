@@ -34,6 +34,44 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F47 — Startup orphan-recovery aborts all remaining orphans on the first throwing folder
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `performStartupRecovery` wrapped the whole `for orphan in …` loop in a single
+do/catch. `InterruptedRecordingRecovery.recover()` does throwing I/O, so a throw on orphan N
+propagated to the one catch and skipped every later orphan. Since orphans iterate in stable
+`createdAt` order, one persistently-broken folder blocked recovery of all later ones on every launch.
+
+**Fix.** Wrapped the per-orphan recover call in its own do/catch: a failure appends a per-folder
+message ("could not be rebuilt and was left untouched") and `continue`s to the next orphan. The
+folder is never deleted (raw tracks preserved). The outer catch still guards `orphanedRecordings()`
+itself (a genuine can't-scan abort). To make it testable, the recover step is now an injectable
+`@Sendable` seam on `AppModel` defaulting to the real rebuild.
+
+**Evidence.**
+
+Fails before the fix (per-orphan catch removed, injectable seam kept) — the middle throw aborts the
+loop, so only the first orphan is recovered:
+
+```text
+✘ Test "A throwing orphan folder does not block recovery of the others" recorded an issue at StartupRecoveryResilienceTests.swift:61:5: Expectation failed: (model.store.meetings.count → 1) == 2
+✘ Test run with 1 test failed after 0.217 seconds with 1 issue.
+```
+
+Passes after, full suite grew 191 → 192 (first headless `AppModel` test):
+
+```text
+✔ Test "A throwing orphan folder does not block recovery of the others" passed after 0.861 seconds.
+✔ Test run with 192 tests passed after 1.085 seconds.
+```
+
+**Gaps.** The test injects a fake recover that throws on the 2nd of 3 real on-disk orphan folders
+rather than crafting a folder that makes the real `recover()` throw; the resilience behavior (per-
+orphan isolation) is what's under test, and the real recover path is unchanged.
+
 ## F46 — Preflight headline contradicts its own microphone note on transient-only capture
 
 - **Outcome:** fixed

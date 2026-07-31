@@ -230,6 +230,12 @@ final class AppModel: ObservableObject {
         recordingPreflight = .inspect(storageDirectory: store.rootDirectory)
     }
 
+    /// Rebuilds one interrupted recording folder from its raw tracks. Injectable so startup
+    /// recovery's per-orphan resilience is testable; defaults to the real rebuild (F47).
+    var recoverInterruptedRecording: @Sendable (URL) throws -> RecoveredRecording? = {
+        try InterruptedRecordingRecovery.recover(in: $0)
+    }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
@@ -238,10 +244,21 @@ final class AppModel: ObservableObject {
         var messages = store.startupRecoveryMessages
 
         do {
+            let recover = recoverInterruptedRecording
             for orphan in try store.orphanedRecordings() {
-                let recovered = try await Task.detached(priority: .utility) {
-                    try InterruptedRecordingRecovery.recover(in: orphan.directory)
-                }.value
+                let recovered: RecoveredRecording?
+                do {
+                    recovered = try await Task.detached(priority: .utility) {
+                        try recover(orphan.directory)
+                    }.value
+                } catch {
+                    // One unreadable/broken orphan folder must not abort recovery of the rest (F47).
+                    // The folder is left untouched (raw tracks preserved) and reported.
+                    messages.append(
+                        "An interrupted recording folder at \(orphan.directory.path) could not be rebuilt and was left untouched. \(error.localizedDescription)"
+                    )
+                    continue
+                }
                 guard let recovered else {
                     if let imported = InterruptedRecordingRecovery.importedRecordingCandidate(
                         in: orphan.directory

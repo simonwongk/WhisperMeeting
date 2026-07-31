@@ -418,32 +418,6 @@ language can stay as-is; only the top-level `language_code` needs the fix.
 **Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
 threshold rule), not `zh`. Fails before, passes after.
 
-### F47 — Startup orphan-recovery aborts all remaining orphans on the first throwing folder
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** recovery
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `performStartupRecovery` wraps the whole `for orphan in try store.orphanedRecordings()`
-loop in one do/catch (`Sources/WhisperMeet/AppModel.swift:240-306`).
-`InterruptedRecordingRecovery.recover()` performs throwing I/O
-(`InterruptedRecordingRecovery.swift:77-116`), so a throw on orphan N propagates to the single catch
-(`:302`), skipping orphans N+1…. Orphans iterate in a stable `createdAt` order
-(`MeetingStore.swift:196`), so a persistently-failing folder blocks every later orphan on every
-launch.
-
-**Impact.** Non-destructive (raw tracks are never deleted, so audio is safe), but recovered
-recordings after a failing folder never reappear in the library and the user sees only a generic
-"could not finish scanning" message.
-
-**Proposed fix.** Wrap each orphan iteration in its own do/catch so one failure appends a per-folder
-message and continues to the next orphan.
-
-**Verification.** Three orphan folders where the middle one makes `recover()` throw; assert the
-first and third are both upserted into the store. Fails before, passes after.
-
 ### F49 — Vocabulary import is UTF-8-only; one bad file aborts the whole batch
 
 - **Status:** open
