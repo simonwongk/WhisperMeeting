@@ -96,6 +96,65 @@ same error on line 60).
 
 ---
 
+## F110 — `generate_clips.sh` was committed non-executable, so F29's reproducibility gap stayed open
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `587fdae` (mode change, by simonwang), `d191100` (file), `e4605c6` (close + this entry)
+- **Reachability:** n/a — tooling only; no user-facing code path. The "surface" is a developer running
+  `Scripts/bench/generate_clips.sh` from a fresh checkout, which now has the executable bit.
+
+**Root cause.** F29 closed the "benchmark table is unreproducible" ticket by making a fresh checkout
+re-synthesise the gitignored clips with `Scripts/bench/generate_clips.sh` (F29 Gap 1). That script was
+added to the index with mode `100644`. `git` records the executable bit; a `100644` script cannot be
+run as `./generate_clips.sh` from a clean clone without a manual `chmod`. So F29's own remedy did not
+work on the checkout it was written for — the reproducibility hole was still open. The other five
+tracked shell scripts had been committed `100755` all along; only this one was missed.
+
+**Fix.** The executable bit was recorded on `generate_clips.sh` (`587fdae`, a pure `100644 → 100755`
+mode change with an identical blob `2b8e82e → 2b8e82e`, landed on `main` by simonwang). This ticket
+then verified the bit across **every** tracked shell script — not just the one F29 named — so the
+class of defect is closed, not just the instance.
+
+**Evidence.**
+
+`587fdae` is a mode-only change (blob unchanged), i.e. exactly recording the executable bit:
+
+```text
+$ git show 587fdae --raw --format='%s'
+chore(scripts): record executable bit so a fresh worktree can run them
+:100644 100755 2b8e82e 2b8e82e M	Scripts/bench/generate_clips.sh
+```
+
+Every tracked shell script now carries mode `100755`; none remain `100644`:
+
+```text
+$ git ls-files -s '*.sh'
+100755 2b8e82ebfd6b197ca583c8d247089bb317317923 0	Scripts/bench/generate_clips.sh
+100755 882a6593611abe1ce14648df0645e57508fbb68f 0	Scripts/build-app.sh
+100755 8418bce58816e304e17499c153c0c84bd7c95ff4 0	Scripts/install-app.sh
+100755 a4f637a28de0440e2db75c67e505814577d2fe67 0	Scripts/quality-check.sh
+100755 54a053b8348a628c770f4df5b3648d84b9e11694 0	Scripts/setup-local-whisper.sh
+100755 61d948af8ee4ef1ab3918fca640433ca804cd815 0	Scripts/setup-qwen-asr.sh
+
+$ git ls-files -s '*.sh' | grep '^100644' || echo "NONE at 100644"
+NONE at 100644
+```
+
+`generate_clips.sh` is self-contained (drives macOS `say`/`afconvert`, invokes no other repo script),
+so its own bit is the whole reproducibility dependency; with it set, `./Scripts/bench/generate_clips.sh`
+runs from a fresh checkout.
+
+**Gaps.** No red-green test: this is a tooling/permissions change with no product behaviour to cover —
+git file modes are not observable from `swift test`, and asserting a test here would be theatre (the
+F29 entry's own Gap 2 is the precedent). The full suite is unaffected at **233 tests** (0 delta from
+this ticket's origin/main baseline). The deeper reproducibility caveat F29 named — synthetic `say`
+clips differ across macOS versions/voices, so numbers are reproducible for *a given clip set*, not
+universally — is unchanged and remains a **Not planned:** limitation of synthetic corpora (committing
+binary audio is a separate product decision, not deferred work).
+
+---
+
 ## F83 — Reachable meeting-integrity sweep: startup fold + Settings "Verify Library"
 
 - **Outcome:** fixed
@@ -1888,7 +1947,9 @@ Suite unaffected and still green:
    `say`. A different macOS version or voice set will produce different audio, so error rates are
    reproducible for *a given clip set*, not universally. Committing the clips would close this
    properly; it was not done here because it adds binary audio to the repo and deserves its own
-   decision.
+   decision. **Follow-up `F110`:** the script was committed non-executable (`100644`), so a fresh
+   worktree could not actually run this remedy; the executable bit was recorded and every tracked
+   shell script verified `100755` — see the F110 entry above.
 2. No failing-test-first evidence, because this ticket changed tooling and documentation, not
    product behaviour. The definition of done requires that test for behaviour changes; asserting one
    here would be theatre.

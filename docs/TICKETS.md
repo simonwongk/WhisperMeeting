@@ -259,32 +259,6 @@ already uses.
 assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
 before, passes after.
 
-### F110 — F29's `generate_clips.sh` was committed non-executable, so its reproducibility gap stayed open
-
-- **Status:** in-progress
-- **Owner:** runtime
-- **Severity:** low
-- **Area:** build
-- **Filed:** 2026-07-31 by Claude Code (runtime lane)
-
-**Problem.** F29 closed `fixed` telling a fresh checkout to run `Scripts/bench/generate_clips.sh` to
-re-synthesise the gitignored benchmark clips (`TICKET_LOG.md`, F29 Gap 1). But that script was
-committed with mode `100644`, not `100755` — `git ls-files -s Scripts/bench/generate_clips.sh`
-reported `100644` before `587fdae`. A fresh worktree therefore could not execute it, so the exact
-reproducibility hole F29 was filed to close was still open.
-
-**Impact.** Anyone cloning the repo to regenerate the benchmark corpus hits a permission error (or
-silently forgets and reports non-reproducible numbers); the F29 fix does not actually deliver on a
-clean checkout. Tooling only — no product behaviour, no invariant at risk.
-
-**Proposed fix.** Record the executable bit on every tracked shell script under `Scripts/` /
-`Scripts/bench/` so a fresh worktree can run them, then verify none remain `100644`. (Simon already
-recorded the bit for `generate_clips.sh` on `main` in `587fdae`; this ticket verifies the rest and
-fixes any still non-executable.)
-
-**Verification.** `git ls-files -s '*.sh'` shows mode `100755` for every tracked shell script; none
-remain `100644`.
-
 ## Reachability wiring — filed 2026-07-31
 
 Each ticket wires an already-shipped, WhisperCore-tested core to a user-triggerable surface. These
