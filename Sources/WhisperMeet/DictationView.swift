@@ -88,6 +88,11 @@ struct DictationView: View {
         }
         .navigationTitle("Dictation")
         .onAppear { diag = dictation.diagnostics() }
+        // The model picker lives in SettingsView (a separate window) but mutates the SAME
+        // @Published selectedEngine, so recompute the engine-specific diagnostics rows the moment it
+        // changes — otherwise the tab shows the previous engine's runtime label and a wrong-target
+        // Install/Repair button until the user presses Refresh (F26).
+        .onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }
     }
 
     private func statusRow(_ label: String, _ ok: Bool) -> some View {

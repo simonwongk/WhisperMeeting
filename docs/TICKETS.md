@@ -14,8 +14,8 @@ Read them before touching this file.** This file holds **open** work only; close
 
 ### F26 — Dictation diagnostics go stale when the model is changed
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** runtime
 - **Severity:** low
 - **Area:** ui
 - **Filed:** 2026-07-30 by Claude Code (review of `e9bca61`)
