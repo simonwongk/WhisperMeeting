@@ -7,14 +7,17 @@ on:
 
 concurrency:
   group: quality-${{ github.ref }}
-  cancel-in-progress: true
+  # Fast-cancel superseded runs on feature branches/PRs, but let every push to
+  # main run to completion — otherwise the next push cancels it and main never
+  # gets a finished gate result (F115).
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test-build-package:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Verify, test, build, and package
