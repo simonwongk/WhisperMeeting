@@ -68,18 +68,32 @@ Verify manually with both windows open, and say so explicitly in the log.
 
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
-- **Status:** open
+- **Status:** blocked
 - **Owner:** —
 - **Severity:** medium
 - **Area:** transcription
 - **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
+- **Blocked by:** F101 — the determinate bar needs the Qwen helper (`Scripts/qwen_transcribe.py`,
+  outside the transcription lane's `Sources/` ownership) to emit per-chunk progress. Verified
+  2026-07-31 by the transcription lane: the helper emits **zero** stdout/stderr during a real run,
+  so there is nothing for `QwenASRClient` to stream-parse until the helper is changed.
 
-**Problem.** `QwenASRClient.swift:118-119` emits only `.preparing` / `.loadingModel` and never
-`.transcribing` with a fraction. `ContentView.swift:1596-1601` therefore shows "Loading the
-recognition model…" with an indeterminate bar for the entire run.
+**Problem.** `QwenASRClient.transcribe` (`Sources/WhisperCore/QwenASRClient.swift:117-118`) emits only
+`.preparing` / `.loadingModel` and never `.transcribing` with a fraction, and its `run(...)`
+(`:174`) reads the subprocess output only at EOF (`readDataToEndOfFile`) rather than streaming it.
+`transcriptionProgressBar` (`Sources/WhisperMeet/ContentView.swift`) therefore shows an indeterminate
+bar labelled "Loading the recognition model…" for the entire run.
 
 **Impact.** A one-hour Qwen meeting looks hung. The "transcription progress + ETA" delivered in
 Round 0 (`ROADMAP.md`) silently does not apply to the newer engine.
+
+**Root of the block (verified 2026-07-31).** Unlike the Whisper CLI — whose `tqdm` bar streams to
+stderr and is parsed live (`LocalWhisperClient.run`, `WhisperProgressParser`) — the Qwen helper runs
+`asr.generate(...)` with `verbose` defaulting to `False`, and mlx-audio 0.3.1 only shows its
+"Processing chunks" `tqdm` bar when `verbose and len(chunks) > 1`
+(`…/mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:1108-1111`). So the helper produces no parseable
+progress today. The Swift-side streaming (my lane) is ready to build the moment the helper emits
+something; the helper change is the blocker.
 
 **Verification.** A long Qwen run advances a determinate bar.
 
@@ -131,6 +145,48 @@ confusing than none — spike before committing.
 **Verification.** A `QwenAlignedTranscript` test: a two-sentence transcript whose second sentence does
 not reconcile yields one timestamped segment for the first sentence (today it yields zero). Fails
 before, passes after.
+
+### F101 — Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** medium
+- **Area:** build
+- **Filed:** 2026-07-31 by transcription (cross-lane dependency for F31)
+
+**Problem.** F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits
+no progress signal to parse. `Scripts/qwen_transcribe.py:129` calls `asr.generate(audio,
+language=…, chunk_duration=240.0, min_chunk_duration=0.1)` with `verbose` defaulting to `False`.
+In the pinned **mlx-audio 0.3.1** source, `Qwen3ASR.generate` chunks the audio and iterates
+`tqdm(chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1)`
+(`…/site-packages/mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:1078,1108-1111`), so **no bar is
+written unless `verbose=True` and there is more than one chunk**. A `stream=True` path also exists
+that yields a `StreamingResult` per chunk (`qwen3_asr.py:1180,1244-1278`). Verified empirically on
+2026-07-31: a real helper run over `Scripts/bench/clips/en2.wav` produced **zero** stdout/stderr.
+
+**Why cross-lane.** The helper lives under `Scripts/`, outside the transcription lane's `Sources/`
+ownership. The Swift half (streaming `QwenASRClient.run` + a Qwen progress parser mirroring
+`LocalWhisperClient.run` / `WhisperProgressParser`) is in the transcription lane and is ready to build
+as soon as a stable progress format exists — but it must not guess the format before the helper emits
+one.
+
+**Proposed fix (coordinate the two halves).**
+1. **Helper (`Scripts/` lane):** make the per-chunk progress observable on a stream the client reads.
+   Lowest-risk is `verbose=True` so mlx-audio's own "Processing chunks" `tqdm` bar streams to stderr
+   (matching the Whisper precedent of parsing `tqdm`); note it is suppressed for single-chunk
+   (short) runs, which is acceptable since those finish quickly. A more explicit and single-chunk-safe
+   alternative is to switch to `stream=True` and print one dedicated progress line per yielded chunk
+   (e.g. a stable `QWEN_PROGRESS <done>/<total>` token on stderr). Re-verify the chosen call against
+   the pinned mlx-audio 0.3.1 source per AGENTS.md and record the citation.
+2. **`QwenASRClient` (transcription lane):** replace `readDataToEndOfFile` with the streaming
+   `AsyncStream<Data>` + `readabilityHandler` pattern already used by `LocalWhisperClient.run`, add a
+   `QwenProgressParser` (unit-tested against captured helper output), and emit `.transcribing`
+   `LocalTranscriptionProgress` with `fractionCompleted` (done/total) and an ETA.
+
+**Verification.** With the helper change in place, a multi-chunk Qwen run advances a determinate bar
+(fraction increases per completed chunk) and the label reads "Transcribing locally…"; a
+`QwenProgressParser` unit test maps a captured progress line/`tqdm` frame to the expected fraction
+(fails before, passes after).
 
 ### F33 — Installer crash recovery is only reachable from tests
 
