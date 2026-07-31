@@ -34,6 +34,39 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `CommandCatalog`: `AppCommand`s (id, title, section, keyEquivalent,
+`CommandModifiers`, `CommandEnablement`) plus `displayShortcut(for:)` and an `AppCommandState`-driven
+enablement. Commands: toggle recording (⌘R), Add Marker (⇧⌘M, while recording), Cancel Recording…
+(no shortcut, while recording), Keyboard Shortcuts (⌘/).
+
+**Invariants.** Purely additive keyboard/menu surface described as data; no audio/transcript
+mutation; local-only; no diarization/translation.
+
+**Evidence.**
+
+Fails before the fix (Add Marker enablement weakened to `.always`):
+
+```text
+✘ Test "No two commands share a shortcut; display strings and enablement are correct" recorded an issue at CommandCatalogTests.swift:23:5: Expectation failed: !((addMarker.enablement → .always).isEnabled(AppCommandState(isRecording: false) ...) → true)
+```
+
+Passes after (no (key, modifiers) collisions; exact display strings "⇧⌘M"/"⌘R"/nil; Add Marker
+enabled only while recording); full suite grew 219 → 220:
+
+```text
+✔ Test "No two commands share a shortcut; display strings and enablement are correct" passed after 0.001 seconds.
+✔ Test run with 220 tests passed after 1.157 seconds.
+```
+
+**Gaps.** The catalog is fully tested. Wiring it into a `.commands { CommandMenu }` and a
+render-from-catalog Keyboard Shortcuts sheet is follow-up SwiftUI.
+
 ## F77 — Per-segment re-run: re-transcribe a single flagged span
 
 - **Outcome:** fixed

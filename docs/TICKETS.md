@@ -468,34 +468,6 @@ deletion; local-only.
 (b) a `.f32` shorter than its manifest frameCount, (c) a missing `meeting.wav` each yield the
 matching finding; a healthy dir returns `[]`. Fails before, passes after.
 
-### F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** accessibility
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Keyboard coverage is window-local and undiscoverable: the only shortcut, ⇧⌘M, is
-attached to a Button inside the record pane (`ContentView.swift:388`) so it fires only when that
-pane shows, and there is no `.commands`/`CommandMenu` anywhere. Concretizes ROADMAP Next candidate
-#2 and the Ongoing accessibility (keyboard shortcuts) item.
-
-**Proposed feature.** A pure `CommandCatalog`: commands (id, title, section, keyEquivalent,
-modifiers, enablement predicate over a small `AppCommandState`) plus `displayShortcut(for:)`
-following the `DictationKeyName.display` precedent (`DictationKeyName.swift:18`). In
-`AppEntry.swift` add `.commands { }` building a Recording `CommandMenu` (Start/Stop ⌘R, Add Marker
-⇧⌘M now app-wide, Cancel Recording… routed through the guarded dialog) and a Help item opening a
-Keyboard Shortcuts sheet rendered from the catalog.
-
-**Invariants.** Purely additive keyboard/menu surface; Cancel still funnels into the existing
-confirmation; no audio/transcript mutation; local-only; no diarization/translation.
-
-**Verification.** New `CommandCatalogTests`: no two commands share the same (keyEquivalent,
-modifiers) — a real accessibility footgun; `displayShortcut` strings are exact; each enablement
-predicate is correct for representative `AppCommandState` values (Add Marker enabled only while
-recording). Fails before, passes after.
-
 ### F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Status:** open
