@@ -390,34 +390,6 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
 
-### F41 — Qwen auto-detect labels any transcript containing a single CJK character as `zh`
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** Under `--language auto` (the default; `Sources/WhisperCore/QwenASRClient.swift:126`
-passes `language.commandLineValue ?? "auto"`), the reported language code is a whole-text CJK-any
-heuristic: `language_code = "zh" if alignment_language(text, "auto") == "Chinese" else "en"`
-(`Scripts/qwen_transcribe.py:111`), where `alignment_language` returns "Chinese" if
-`any("㐀" <= char <= "鿿" for char in text)` (`:25-27`). So a mostly-English meeting mentioning one
-Chinese name or term (e.g. "meet in 北京") is labeled `zh`. There is no majority/threshold, and it
-ignores what the ASR actually detected. Whisper on the same audio reports `en`.
-
-**Impact.** Systematic mislabel of the core "detect English or Mandarin" feature on the default
-path. The wrong code shows in the header chip (`ContentView.swift:1496`) and is injected into the
-Claude summary system prompt ("detected language code is \"zh\"", `ClaudeSummarizer.swift:89-90`),
-which can bias summary output language. Cross-engine inconsistency with Whisper on the same file.
-
-**Proposed fix.** Report the language the ASR actually detected, or use a proportion threshold
-(label `zh` only when CJK is the majority of non-whitespace characters). The per-chunk aligner
-language can stay as-is; only the top-level `language_code` needs the fix.
-
-**Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
-threshold rule), not `zh`. Fails before, passes after.
-
 ### F51 — Qwen segment parsing is unguarded; a schema drift discards the whole transcript
 
 - **Status:** open

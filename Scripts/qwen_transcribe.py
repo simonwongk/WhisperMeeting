@@ -28,6 +28,27 @@ def alignment_language(text: str, requested: str) -> str:
     return "Chinese" if any("\u3400" <= char <= "\u9fff" for char in text) else "English"
 
 
+def detected_language_code(text: str) -> str:
+    """Top-level en/zh label for the whole transcript.
+
+    Unlike the per-chunk aligner heuristic (`alignment_language`, which flags any CJK), require CJK
+    to be the MAJORITY of non-whitespace characters. Otherwise a mostly-English meeting that mentions
+    one Chinese name or term (e.g. "meet in \u5317\u4eac") is mislabeled `zh`, disagreeing with Whisper on the
+    same audio and biasing the summary language (F41).
+    """
+    cjk = 0
+    total = 0
+    for char in text:
+        if char.isspace():
+            continue
+        total += 1
+        if "\u3400" <= char <= "\u9fff":
+            cjk += 1
+    if total == 0:
+        return "en"
+    return "zh" if cjk * 2 > total else "en"
+
+
 def align_chunks(load_aligner, aligner_path: str, audio, chunks: list[dict], requested: str):
     aligned_items = []
     try:
@@ -108,7 +129,7 @@ def main() -> int:
     elif args.language == "Chinese":
         language_code = "zh"
     elif args.language == "auto":
-        language_code = "zh" if alignment_language(text, "auto") == "Chinese" else "en"
+        language_code = detected_language_code(text)
 
     payload = {
         "text": text,

@@ -34,6 +34,49 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F41 — Qwen auto-detect labels any transcript containing a single CJK character as `zh`
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** Under `--language auto`, the top-level language label was
+`"zh" if alignment_language(text, "auto") == "Chinese" else "en"`, and `alignment_language` returns
+"Chinese" on ANY CJK character. So a mostly-English meeting mentioning one Chinese name ("meet in
+北京") was labeled `zh`, disagreeing with Whisper on the same audio and biasing the Claude summary
+language.
+
+**Fix.** Added a pure `detected_language_code(text)` that labels `zh` only when CJK is the MAJORITY
+of non-whitespace characters, and used it for the top-level `language_code`. The per-chunk aligner
+heuristic (`alignment_language`) is unchanged, as the ticket scoped.
+
+**Evidence.** New Python unit tests (`python3 Scripts/tests/test_qwen_transcribe.py`) — the helper's
+pure functions are importable without mlx. Fails before the fix (function body reverted to the old
+any-CJK rule):
+
+```text
+    self.assertEqual(qwen.detected_language_code("Let's meet in 北京 next week"), "en")
+AssertionError: 'zh' != 'en'
+FAILED (failures=1)
+```
+
+Passes after:
+
+```text
+test_empty_is_en ... ok
+test_mostly_chinese_is_zh ... ok
+test_mostly_english_with_one_cjk_name_is_en ... ok
+test_pure_english_is_en ... ok
+Ran 4 tests in 0.000s
+OK
+```
+
+Swift suite unaffected: `✔ Test run with 194 tests passed`.
+
+**Gaps.** Verified via a new Python test harness (not part of `swift test`; the 194 count is Swift
+only). No live mlx-audio run — the change is to pure post-processing of the ASR text, not the
+`generate()` call contract, so no upstream doc fetch applies.
+
 ## F49 — Vocabulary import is UTF-8-only; one bad file aborts the whole batch
 
 - **Outcome:** fixed
