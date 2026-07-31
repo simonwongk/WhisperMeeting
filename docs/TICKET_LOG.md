@@ -90,6 +90,8 @@ plus a Codable round-trip); full suite grew 227 → 229:
 **Gaps.** The report fold + persistence field are tested. Calling `monitor.report()` on stop, storing
 it into `MeetingRecord.healthReport`, and rendering the one-line advisory are follow-up app wiring.
 
+**Follow-up filed:** F79 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F75 — Local automatic backups with hash verification and retention
 
 - **Outcome:** fixed
@@ -125,6 +127,8 @@ verification failure); full suite grew 224 → 227:
 **Gaps.** The three decidable cores are tested. The thin `BackupCoordinator` (the `FileManager` copy
 in `Task.detached` from `store.rootDirectory` to a user-chosen folder, pre-copy free-space check) is
 follow-up app wiring.
+
+**Follow-up filed:** F90 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
 
@@ -162,6 +166,8 @@ own header parse onto it (safe, behind the recovery tests) is a follow-up. Foldi
 subprocess-timing test "retire() waits for an idle helper process to actually exit" flaked once during
 this run and passed on re-run — a known real-process timing sensitivity, unrelated to this change.)
 
+**Follow-up filed:** F83 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F62 — Menu-bar recording controls with live status
 
 - **Outcome:** fixed
@@ -195,6 +201,8 @@ Marker enabled, cancelNeedsConfirmation true; stopping/importing → actions dis
 
 **Gaps.** The presentation core is tested; extending the `MenuBarExtra` to render it (Start / Stop /
 Add Marker / guarded Cancel) is follow-up SwiftUI (menu wiring verified manually per the ticket).
+
+**Follow-up filed:** F80 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
 
@@ -231,6 +239,8 @@ suite grew 221 → 222:
 **Gaps.** The matcher is tested. The review sheet (mirroring `VocabularySuggestionSheet`) that applies
 accepted proposals is follow-up UI.
 
+**Follow-up filed:** F82 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Outcome:** fixed
@@ -264,6 +274,8 @@ timelines → non-overlapping); full suite grew 220 → 221:
 on the same WAV under the single-run guard, then a comparison sheet with replace/keep) is follow-up;
 the Qwen side depends on reliable timestamps (F30).
 
+**Follow-up filed:** F88 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
 
 - **Outcome:** fixed
@@ -296,6 +308,8 @@ enabled only while recording); full suite grew 219 → 220:
 
 **Gaps.** The catalog is fully tested. Wiring it into a `.commands { CommandMenu }` and a
 render-from-catalog Keyboard Shortcuts sheet is follow-up SwiftUI.
+
+**Follow-up filed:** F85 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F77 — Per-segment re-run: re-transcribe a single flagged span
 
@@ -333,6 +347,8 @@ Passes after (byte offsets `44 + t·16000·2`; splice yields 4 ordered segments)
 sub-range READ, writing a temp clip via `WAVWriter.wavData`, running the chosen engine, and splicing
 back) is follow-up; on Qwen it also depends on reliable segment timestamps (F30).
 
+**Follow-up filed:** F92 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F76 — Suggest a meeting title from the local Calendar
 
 - **Outcome:** fixed
@@ -368,6 +384,8 @@ privacy-sensitive Calendar permission) is deliberately left as follow-up — add
 dependency should be an explicit choice, not automatic. When added, it degrades silently to the
 existing auto-title if access is denied.
 
+**Follow-up filed:** F91 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F70 — Privacy-safe diagnostics bundle (audio- and transcript-excluded)
 
 - **Outcome:** fixed
@@ -401,6 +419,8 @@ across runs); full suite grew 215 → 216:
 
 **Gaps.** The builder is fully tested; the Settings "Export diagnostics…" action that maps
 `MeetingRecord`s into `DiagnosticsInput` and writes the file is follow-up wiring.
+
+**Follow-up filed:** F86 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F74 — Compact recording HUD overlay for backgrounded meetings
 
@@ -436,6 +456,8 @@ grew 214 → 215:
 is follow-up UI (and the ticket flags an overlap with F62 — if only one background-awareness surface
 is funded, prefer F62's menu bar).
 
+**Follow-up filed:** F89 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F71 — VoiceOver labels and Dynamic Type for recording, meeting, and transcript surfaces
 
 - **Outcome:** fixed
@@ -469,6 +491,8 @@ Passes after; full suite grew 213 → 214:
 attached. Attaching `recordButton`/`marker`/`levelMeter` labels throughout the read view and replacing
 the fixed transcript font sizes with semantic text styles / `@ScaledMetric` (Dynamic Type) remain
 follow-up UI work; an Accessibility Inspector audit is manual (not possible in this harness).
+
+**Follow-up filed:** F87 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F56 — Persist an overall transcript confidence into the header and Meeting Notes
 
@@ -689,6 +713,8 @@ full suite grew 204 → 205:
 in the summary UI is a follow-up (SwiftUI, not view-tested here). `AppModel.summarize` still uses the
 balanced default until the picker is wired.
 
+**Follow-up filed:** F81 (2026-07-31) — the deferred app wiring is now tracked on the board.
+
 ## F67 — Meeting tags with click-to-filter sidebar
 
 - **Outcome:** fixed
@@ -723,6 +749,8 @@ Passes after, full suite grew 202 → 204:
 selected-tags predicate composing into `filteredMeetings`) is a follow-up on top of the tested
 `matches`. Legacy decode of an index without `tags` follows the same optional-field mechanism proven
 by the F64 `legacyIndexWithoutPinnedDecodes` test (tags decodes to nil).
+
+**Follow-up filed:** F84 (2026-07-31) — the deferred app wiring is now tracked on the board.
 
 ## F72 — Per-meeting notes field, searchable and exported
 

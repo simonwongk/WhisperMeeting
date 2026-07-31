@@ -33,7 +33,10 @@ source of truth for the **rules** that govern it. Both are binding.
    `duplicate`. Deleting loses the reasoning.
 6. **Log on close with real evidence.** Append to `docs/TICKET_LOG.md` with real command output —
    the test failing before the fix, the test passing after, the build, and any real-model run — not a
-   summary of intent. The repo's culture is evidence over assertion.
+   summary of intent. The repo's culture is evidence over assertion. The log is **append-only**: never
+   edit or delete a closed entry. The one sanctioned exception is appending a follow-up ticket's
+   `F<n>` cross-reference to an existing entry's **Gaps** line, so deferred work it named stays
+   traceable to the board.
 7. **One ticket, one commit trail.** Reference the ID in **every** commit message that touches it, in
    the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
 8. **Escalate human-blocked work.** When you set a ticket to `needs-human`, move the entry to
