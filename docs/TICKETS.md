@@ -158,8 +158,8 @@ coalesces to roughly one write after idle rather than N. Fails before, passes af
 
 ### F52 — `setup-local-whisper.sh` installs the default runtime with no atomic staging/backup
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** runtime
 - **Severity:** low
 - **Area:** build
 - **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
