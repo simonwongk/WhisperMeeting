@@ -630,8 +630,8 @@ first and third are both upserted into the store. Fails before, passes after.
 
 ### F48 — `AudioCaptureEngine.stop()` can throw before its `reset()` defer, wedging the engine
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Codex / root
 - **Severity:** low
 - **Area:** meetings
 - **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
