@@ -100,7 +100,7 @@ same error on line 60).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `587fdae` (mode change, by simonwang), `d191100` (file), `e4605c6` (close + this entry)
+- **Commits:** `587fdae` (mode change, by simonwang), `d191100` (file), `31d94a4` (close + this entry)
 - **Reachability:** n/a — tooling only; no user-facing code path. The "surface" is a developer running
   `Scripts/bench/generate_clips.sh` from a fresh checkout, which now has the executable bit.
 
