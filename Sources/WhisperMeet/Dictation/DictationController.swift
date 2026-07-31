@@ -49,17 +49,19 @@ final class DictationController: ObservableObject {
         }
     }
 
-    let logStore = DictationLogStore()
+    let logStore: DictationLogStore
     @Published var selfTestResult: String?
     @Published private(set) var isSelfTesting = false
     @Published private(set) var isSwitchingModel = false
 
     private let defaults: UserDefaults
     private let hotkeyMonitor = HotkeyMonitor()
-    private let recorder = MicDictationRecorder()
-    private let overlay = DictationOverlay()
+    private let recorder: any DictationRecording
+    private let overlay: any DictationOverlayPresenting
     private let engine: SelectableDictationEngine
     private let engineFactory: (DictationTranscriptionEngine) -> DictationEngine
+    private let captureTimeout: Duration
+    private let captureSleep: DictationCaptureWatchdog.Sleep
     private var session = DictationSession()
     private var isMicrophoneBusy: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
@@ -68,6 +70,14 @@ final class DictationController: ObservableObject {
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
+    private lazy var captureWatchdog = DictationCaptureWatchdog(
+        timeout: captureTimeout,
+        sleep: captureSleep
+    ) { [weak self] in
+        guard let self, self.enabled, self.status == .listening else { return }
+        self.log.notice("maximum dictation capture duration reached; finalizing")
+        _ = self.beginTranscriptionIfNeeded()
+    }
 
     private static let idleEvictSeconds: TimeInterval = 300 // 5 min; configurable later
 
@@ -81,9 +91,22 @@ final class DictationController: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         engine: DictationEngine? = nil,
-        engineFactory: ((DictationTranscriptionEngine) -> DictationEngine)? = nil
+        engineFactory: ((DictationTranscriptionEngine) -> DictationEngine)? = nil,
+        recorder: any DictationRecording = MicDictationRecorder(),
+        overlay: (any DictationOverlayPresenting)? = nil,
+        logStore: DictationLogStore? = nil,
+        captureTimeout: Duration = .seconds(DictationCaptureLimits.maximumDurationSeconds),
+        captureSleep: @escaping DictationCaptureWatchdog.Sleep = {
+            try await Task.sleep(for: $0)
+        },
+        activateOnInit: Bool = true
     ) {
         self.defaults = defaults
+        self.recorder = recorder
+        self.overlay = overlay ?? DictationOverlay()
+        self.logStore = logStore ?? DictationLogStore()
+        self.captureTimeout = captureTimeout
+        self.captureSleep = captureSleep
         let storedEngine = DictationTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.engineKey) ?? ""
         ) ?? .whisperTurbo
@@ -102,8 +125,10 @@ final class DictationController: ObservableObject {
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
-        ensureHelperInstalled()
-        apply()
+        if activateOnInit {
+            ensureHelperInstalled()
+            apply()
+        }
     }
 
     private static func makeEngine(for selection: DictationTranscriptionEngine) -> DictationEngine {
@@ -193,6 +218,7 @@ final class DictationController: ObservableObject {
             hotkeyMonitor.stop()
             hotkeyActive = false
             recorder.cancel()             // never leave the mic hot after the user disables dictation
+            captureWatchdog.cancel()
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
             idleEvictWorkItem?.cancel()
@@ -253,7 +279,7 @@ final class DictationController: ObservableObject {
 
     // MARK: - Hotkey events
 
-    private func handlePressStart() {
+    func handlePressStart() {
         guard enabled, !isSwitchingModel else { return }
         if isMicrophoneBusy() {
             log.notice("dictation press ignored — microphone busy (meeting or mic test)")
@@ -284,6 +310,7 @@ final class DictationController: ObservableObject {
             }
             status = .listening
             overlay.show(.listening)
+            captureWatchdog.arm()
             log.notice("listening")
         } catch {
             _ = session.handle(.engineFailed(error.localizedDescription))
@@ -292,6 +319,7 @@ final class DictationController: ObservableObject {
     }
 
     private func beginTranscriptionIfNeeded() -> Bool {
+        captureWatchdog.cancel()
         guard recorder.isRecording else { return false }
         let clip: (url: URL, duration: TimeInterval)
         do {

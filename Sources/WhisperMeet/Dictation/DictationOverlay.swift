@@ -70,6 +70,15 @@ final class DictationOverlay {
     }
 }
 
+@MainActor
+protocol DictationOverlayPresenting: AnyObject {
+    func show(_ phase: DictationOverlay.Phase)
+    func update(level: Float)
+    func hide()
+}
+
+extension DictationOverlay: DictationOverlayPresenting {}
+
 private final class PillModel: ObservableObject {
     @Published var phase: DictationOverlay.Phase = .listening
     @Published var level: Float = 0

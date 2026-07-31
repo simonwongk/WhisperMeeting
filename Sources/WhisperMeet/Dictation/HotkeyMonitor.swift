@@ -15,6 +15,17 @@ final class HotkeyMonitor {
     private var hotkey: DictationHotkey = .rightOption
     private var keyDown = false       // physical down-state of the configured hotkey key
     private var toggledOn = false     // (toggle mode) whether dictation is currently on
+    private let currentKeyState: (CGKeyCode) -> Bool
+
+    init(
+        hotkey: DictationHotkey = .rightOption,
+        currentKeyState: @escaping (CGKeyCode) -> Bool = {
+            CGEventSource.keyState(.combinedSessionState, key: $0)
+        }
+    ) {
+        self.hotkey = hotkey
+        self.currentKeyState = currentKeyState
+    }
 
     static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
 
@@ -41,6 +52,7 @@ final class HotkeyMonitor {
             // The OS disables a tap on timeout / heavy input; re-enable so the always-on hotkey survives.
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                 if let tap = monitor.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+                monitor.recoverFromDisabledTap()
                 return Unmanaged.passUnretained(event)
             }
             monitor.handle(type: type, event: event)
@@ -97,9 +109,17 @@ final class HotkeyMonitor {
         default:
             return
         }
+        handleKeyStateChange(nowDown)
+    }
+
+    func handleKeyStateChange(_ nowDown: Bool) {
         guard nowDown != keyDown else { return } // ignore autorepeat / duplicate transitions
         keyDown = nowDown
         dispatch(pressed: nowDown)
+    }
+
+    func recoverFromDisabledTap() {
+        keyDown = currentKeyState(CGKeyCode(hotkey.keyCode))
     }
 
     /// Whether the configured modifier hotkey key is currently physically down, read from the

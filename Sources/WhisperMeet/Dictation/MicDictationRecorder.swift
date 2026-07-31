@@ -1,6 +1,14 @@
 import AVFoundation
 import WhisperCore
 
+protocol DictationRecording: AnyObject {
+    var isRecording: Bool { get }
+    func requestPermission() async -> Bool
+    func start(onLevel: @escaping @Sendable (Float) -> Void) throws
+    func stop() throws -> (url: URL, duration: TimeInterval)
+    func cancel()
+}
+
 /// Mic-only capture for quick dictation. Uses AVAudioEngine (NOT ScreenCaptureKit) so dictation
 /// never requires Screen Recording permission. Produces a 16 kHz mono WAV in the temp dir.
 ///
@@ -9,7 +17,7 @@ import WhisperCore
 /// `processingQueue` — the ONLY place `samples` is touched. `stop()`/`cancel()` remove the tap and
 /// then drain `processingQueue` (a `sync` barrier) before reading, so no in-flight tap chunk can
 /// race the read. This mirrors the tap+queue+flush discipline `AudioCaptureEngine` already uses.
-final class MicDictationRecorder: @unchecked Sendable {
+final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     enum RecorderError: Error {
         case audioFormatUnavailable
         case notRecording
@@ -17,9 +25,14 @@ final class MicDictationRecorder: @unchecked Sendable {
     }
 
     private let engine = AVAudioEngine()
-    private let targetSampleRate: Double = 16_000
+    private let targetSampleRate = Double(DictationCaptureLimits.sampleRate)
     private let processingQueue = DispatchQueue(label: "com.whispermeet.dictation.mic")
-    private var samples: [Float] = []
+    // The controller normally finalizes at 120 seconds. This independent hard limit prevents the
+    // audio queue from growing without bound if the main actor is temporarily unable to fire the
+    // watchdog.
+    private var sampleBuffer = BoundedAudioSampleBuffer(
+        capacity: DictationCaptureLimits.maximumSampleCount
+    )
     private(set) var isRecording = false
 
     func requestPermission() async -> Bool {
@@ -48,7 +61,7 @@ final class MicDictationRecorder: @unchecked Sendable {
             throw RecorderError.audioFormatUnavailable
         }
 
-        processingQueue.sync { samples.removeAll(keepingCapacity: true) }
+        processingQueue.sync { sampleBuffer.removeAll(keepingCapacity: true) }
 
         input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer, converter: converter, outputFormat: outputFormat, onLevel: onLevel)
@@ -100,7 +113,7 @@ final class MicDictationRecorder: @unchecked Sendable {
         let level = min(1, (sumOfSquares / Float(frames)).squareRoot() * 8)
 
         processingQueue.async {
-            self.samples.append(contentsOf: chunk)
+            self.sampleBuffer.append(contentsOf: chunk)
             DispatchQueue.main.async { onLevel(level) }
         }
     }
@@ -111,7 +124,7 @@ final class MicDictationRecorder: @unchecked Sendable {
         engine.stop()
         isRecording = false
 
-        let captured: [Float] = processingQueue.sync { samples }
+        let captured: [Float] = processingQueue.sync { sampleBuffer.samples }
         guard !captured.isEmpty else { throw RecorderError.noAudioCaptured }
 
         let data = WAVWriter.wavData(from: captured, sampleRate: Int(targetSampleRate))
@@ -128,6 +141,6 @@ final class MicDictationRecorder: @unchecked Sendable {
             engine.stop()
             isRecording = false
         }
-        processingQueue.sync { samples.removeAll() }
+        processingQueue.sync { sampleBuffer.removeAll() }
     }
 }
