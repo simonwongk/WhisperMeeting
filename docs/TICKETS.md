@@ -259,6 +259,37 @@ already uses.
 assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
 before, passes after.
 
+### F112 — 42 closed log entries carry the `<this commit>` placeholder instead of a real SHA
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** docs
+- **Filed:** 2026-07-31 by Claude Code (runtime lane)
+
+**Problem.** `grep -c '<this commit>' docs/TICKET_LOG.md` returns **42**: that many closed entries
+were logged with the literal placeholder in their **Commits** field (e.g. F28 at
+`docs/TICKET_LOG.md:222`). `AGENTS.md` (Definition of done → Traceable commit) states the placeholder
+"is never an acceptable final value; if the SHA is unknown at write time, amend the entry in the
+following commit." These were never amended.
+
+**Impact.** The evidence log cannot be traced to the commit that closed each of those tickets from
+the log alone. The information is **recoverable** (`git log --grep=F28` → `2cea357`), so nothing is
+lost, but the log — the repo's primary evidence artifact — silently fails its own traceability rule
+42 times.
+
+**Proposed fix — needs a human ruling first.** `AGENTS.md` also makes the log **append-only**
+("Never edit or delete an existing entry"), with the *only* sanctioned edit being a Gaps
+cross-reference append. Backfilling these SHAs would edit closed entries, which the append-only rule
+forbids. Resolving this therefore requires Simon to decide whether to relax append-only for a
+one-time SHA backfill (each SHA recovered via `git log --grep=F<n>`), or to accept the placeholders
+as a frozen historical artifact and instead tighten the close checklist so no future entry ships with
+`<this commit>`. **Do not edit the closed entries without that ruling.**
+
+**Verification.** After the ruling: either `grep -c '<this commit>' docs/TICKET_LOG.md` returns 0
+(backfilled), or a documented decision records the placeholders as accepted history and a guard
+prevents new ones.
+
 ## Reachability wiring — filed 2026-07-31
 
 Each ticket wires an already-shipped, WhisperCore-tested core to a user-triggerable surface. These
