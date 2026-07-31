@@ -94,9 +94,12 @@ A ticket may only be closed `fixed` when all of these hold:
   summaries, the recording is the source of truth, no diarization, original language only.
 - No user meeting, recording, index, or transcript was read or modified for testing. Use
   `Scripts/bench/clips`.
-- **Traceable commit.** The log entry's **Commits** field contains a real SHA. The placeholder
-  `<this commit>` is never an acceptable final value; if the SHA is unknown at write time, amend the
-  entry in the following commit.
+- **Traceable by ticket ID.** Traceability runs through the **ticket ID in the commit message**, not
+  through a logged SHA. Every commit that touches a ticket names its `F<n>` (rule 7 above), so
+  `git log --grep=F111` recovers the complete commit trail for any ticket at any time. The log
+  entry's **Commits** field is therefore **optional** — record a SHA there only when it usefully
+  pinpoints something. A commit can never contain its own SHA, so requiring one would force a second
+  bookkeeping push per close for no traceability gain; do not.
 - **Actionable gaps.** Every sentence in the log entry's **Gaps** section that describes work a
   person could still do carries a ticket ID. The words "follow-up", "future", "not implemented",
   "app wiring", or "is a follow-up" with no `F<n>` beside them are a rule violation. A Gap that is a
@@ -129,7 +132,7 @@ A ticket may only be closed `fixed` when all of these hold:
 
 - **Outcome:** fixed | partial | wontfix | invalid | duplicate
 - **Closed:** YYYY-MM-DD by <agent/session>
-- **Commits:** `<real-sha>` (never `<this commit>`)
+- **Commits:** _optional_ — SHA(s) worth pinpointing; the full trail is always recoverable via `git log --grep=F<n>`
 - **Reachability:** <call path from a user-triggerable surface to the new code — required for a user-facing `fixed`>
 - **Follow-up:** `F<n>` <required when Outcome is `partial`: the ticket for the remaining wiring>
 

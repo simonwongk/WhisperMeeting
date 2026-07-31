@@ -14,6 +14,39 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F112 — 42 closed log entries carry the `<this commit>` placeholder instead of a real SHA
+
+- **Outcome:** wontfix
+- **Closed:** 2026-07-31 by Claude Code (Opus 4.8)
+
+**Root cause.** F112 was a defect *only because of* the "Traceable commit" rule in `AGENTS.md`, which
+required every log entry's **Commits** field to carry a real SHA and forbade the `<this commit>`
+placeholder. That rule was self-defeating: a commit can never contain its own SHA, so honouring it
+forced a **second bookkeeping push per close** purely to amend the SHA after the fact — which is
+exactly why 42 entries were logged with the placeholder and never amended.
+
+**Fix.** The rule is retracted, not enforced. `AGENTS.md` (Definition of done → **Traceable by ticket
+ID**, and the log-template **Commits** field) now routes traceability through the **ticket ID in the
+commit message**: every commit that touches a ticket names its `F<n>` (rule 7), so `git log --grep=F<n>`
+recovers the full commit trail for any ticket, and the **Commits** field is optional. Under the old
+rule the 42 placeholders were violations; under the new rule they are not — so there is nothing left
+to fix, and the ticket closes `wontfix`.
+
+**Evidence.**
+
+```text
+$ grep -c '<this commit>' docs/TICKET_LOG.md
+42
+$ git log --grep=F28 --oneline        # the trail is recoverable with no logged SHA
+2cea357 fix(core): keep WhisperCore framework-free; surface Qwen warning in result (F28)
+```
+
+**Gaps.** The 42 historical placeholders are left exactly as they are: the log is append-only, and
+they are no longer rule violations. **Not planned:** backfilling them — it would edit closed entries
+and buys nothing now that traceability runs through the commit-message ticket ID.
+
+---
+
 ## F33 — Installer crash recovery was only reachable from tests
 
 - **Outcome:** fixed
