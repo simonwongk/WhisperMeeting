@@ -12,9 +12,13 @@ struct WhisperMeetApp: App {
                 .frame(minWidth: 900, minHeight: 620)
                 .task {
                     dictation.configure(isMicrophoneBusy: { [weak model] in
-                        guard let model else { return false }
-                        return model.isMicrophoneBusy || model.isInstallingRecognitionRuntime
+                        model?.isMicrophoneBusy ?? false
                     })
+                    // Distinct from a microphone conflict: pause dictation while a meeting model
+                    // runtime installs so the two don't contend for CPU/memory (F37).
+                    dictation.configureRuntimeInstalling { [weak model] in
+                        model?.isInstallingRecognitionRuntime ?? false
+                    }
                     dictation.configureVocabulary { [weak model] in model?.store.vocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
                     await model.performStartupRecovery()

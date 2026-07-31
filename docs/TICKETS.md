@@ -281,25 +281,6 @@ is orphaned and Qwen reports "not installed" until the user manually reinstalls.
 **Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
 user action.
 
-### F37 — Dictation is blocked while a *meeting* model runtime installs
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
-
-**Problem.** `AppEntry.swift:14-17` folds `model.isInstallingRecognitionRuntime` into dictation's
-`isMicrophoneBusy`. The spec only required the reverse (a meeting must not start while dictation
-owns the mic).
-
-**Impact.** Probably desirable — a multi-GB install contends for CPU and memory — but it is
-undocumented, and it is not a microphone conflict, so expressing it as "microphone busy" makes the
-reason opaque to the user and to future readers.
-
-**Verification.** Confirm the behaviour is intended, then document it and give it an accurate
-user-facing reason.
-
 ## Defects — filed 2026-07-30 from the codebase-wide fix sweep
 
 Each entry below was confirmed by an adversarial verifier that re-read the cited code and traced the

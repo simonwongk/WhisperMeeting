@@ -34,6 +34,43 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F37 — Dictation is blocked while a *meeting* model runtime installs
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** `AppEntry` folded `isInstallingRecognitionRuntime` into dictation's `isMicrophoneBusy`
+predicate. The pause during a meeting-runtime install is intended (a multi-GB install contends for
+CPU/memory), but expressing it as a microphone conflict was inaccurate and undocumented, and the
+`DictationController` itself had no first-class notion of the reason.
+
+**Fix.** Confirmed the behavior is intended and made it first-class: added
+`DictationController.configureRuntimeInstalling(_:)` and a distinct guard in `handlePressStart`
+(logs "a recognition model is installing (avoids CPU/memory contention)"), wired separately from
+`isMicrophoneBusy` in `AppEntry`. Documented it in `docs/QUICK_DICTATION_DESIGN.md` as a deliberate
+contention guard.
+
+**Evidence.**
+
+Fails before the fix (install guard neutralized) — a press during an install starts capture:
+
+```text
+✘ Test "Dictation is paused while a recognition runtime is installing, then resumes" recorded an issue at DictationToggleRecoveryTests.swift:155:5: Expectation failed: (controller.status → .listening) != .listening
+✘ Test run with 1 test failed after 0.008 seconds with 2 issues.
+```
+
+Passes after, full suite grew 195 → 196:
+
+```text
+✔ Test "Dictation is paused while a recognition runtime is installing, then resumes" passed after 0.005 seconds.
+✔ Test run with 196 tests passed after 1.132 seconds.
+```
+
+**Gaps.** The user-facing overlay remains the shared brief "busy" pill (a tiny non-activating panel);
+the accurate reason is surfaced in logs/diagnostics and the design doc. Enriching the overlay with a
+distinct install message is a possible follow-up, not required by this ticket.
+
 ## F36 — The Qwen subprocess contract has no upstream documentation anchor
 
 - **Outcome:** fixed

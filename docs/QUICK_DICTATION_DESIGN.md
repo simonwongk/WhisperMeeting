@@ -41,6 +41,10 @@ in `WhisperCore`.
   translate.
 - **`WhisperCore` stays framework-free and `Sendable`.** All AppKit/AVFoundation/CoreGraphics code
   lives in `WhisperMeet`; all pure logic is in `WhisperCore` and unit-tested headlessly.
+- **Paused during a meeting-runtime install.** While a *meeting* recognition runtime is downloading
+  and loading (a multi-GB operation), dictation refuses to start so the two don't contend for CPU and
+  memory. This is a deliberate contention guard, tracked separately from a "microphone busy" conflict
+  so logs and diagnostics state the accurate reason (F37).
 - **Ephemeral, non-destructive.** Dictation clips are temporary scratch WAVs, deleted after
   transcription. Dictation never reads, writes, or deletes anything under `Recordings/` and never
   mutates the meetings index. It cannot regress "the recording is the source of truth."

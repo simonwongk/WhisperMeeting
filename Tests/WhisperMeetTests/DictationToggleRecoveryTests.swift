@@ -118,3 +118,46 @@ func watchdogFinalizeDoesNotInvertToggle() async throws {
     #expect(recorder.isRecording)
     #expect(controller.status == .listening)
 }
+
+/// F37 — dictation is paused while a meeting recognition runtime installs (CPU/memory contention),
+/// then resumes, with a reason distinct from "microphone busy".
+@MainActor
+@Test("Dictation is paused while a recognition runtime is installing, then resumes")
+func dictationPausesDuringRuntimeInstall() async throws {
+    let suite = "WhisperMeet.DictationInstallGuardTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationInstallGuardTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(false, forKey: "dictationAutoPaste")
+
+    let recorder = FakeDictationRecorder(
+        outputURL: temporaryDirectory.appendingPathComponent("capture.wav")
+    )
+    var installing = true
+    let controller = DictationController(
+        defaults: defaults,
+        engine: EmptyDictationEngine(),
+        recorder: recorder,
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: HotkeyMonitor(hotkey: DictationHotkey(keyCode: 96, mode: .hold)),
+        logStore: DictationLogStore(directory: temporaryDirectory),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        activateOnInit: false
+    )
+    controller.configureRuntimeInstalling { installing }
+
+    // While installing, a press is refused (not a microphone conflict).
+    controller.handlePressStart()
+    #expect(controller.status != .listening)
+    #expect(!recorder.isRecording)
+
+    // Once the install finishes, dictation resumes.
+    installing = false
+    controller.handlePressStart()
+    #expect(controller.status == .listening)
+    #expect(recorder.isRecording)
+}

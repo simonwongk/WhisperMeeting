@@ -64,6 +64,7 @@ final class DictationController: ObservableObject {
     private let captureSleep: DictationCaptureWatchdog.Sleep
     private var session = DictationSession()
     private var isMicrophoneBusy: () -> Bool = { false }
+    private var isRecognitionRuntimeInstalling: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
@@ -162,6 +163,14 @@ final class DictationController: ObservableObject {
 
     func configure(isMicrophoneBusy: @escaping () -> Bool) {
         self.isMicrophoneBusy = isMicrophoneBusy
+    }
+
+    /// Dictation is intentionally paused while a *meeting* recognition runtime is installing: a
+    /// multi-GB download + model load contends for CPU and memory, so a warm dictation would stutter.
+    /// This is a distinct reason from "microphone busy" — kept separate so logs/diagnostics are
+    /// accurate rather than claiming a microphone conflict (F37).
+    func configureRuntimeInstalling(_ provider: @escaping () -> Bool) {
+        self.isRecognitionRuntimeInstalling = provider
     }
 
     /// Supplies the business vocabulary (same source meetings already feed into their
@@ -299,6 +308,12 @@ final class DictationController: ObservableObject {
         guard enabled, !isSwitchingModel else { hotkeyMonitor.resetToggleState(); return }
         if isMicrophoneBusy() {
             log.notice("dictation press ignored — microphone busy (meeting or mic test)")
+            flashBusy()
+            hotkeyMonitor.resetToggleState()
+            return
+        }
+        if isRecognitionRuntimeInstalling() {
+            log.notice("dictation press ignored — a recognition model is installing (avoids CPU/memory contention)")
             flashBusy()
             hotkeyMonitor.resetToggleState()
             return
