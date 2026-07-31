@@ -112,25 +112,6 @@ one.
 `QwenProgressParser` unit test maps a captured progress line/`tqdm` frame to the expected fraction
 (fails before, passes after).
 
-### F33 — Installer crash recovery is only reachable from tests
-
-- **Status:** in-progress
-- **Owner:** runtime
-- **Severity:** medium
-- **Area:** recovery
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
-
-**Problem.** `Scripts/setup-qwen-asr.sh` gates its recovery branch on `QWEN_INSTALL_RECOVERY_ONLY`
-(`:23`, `:99`). The only caller is `Tests/WhisperCoreTests/QwenInstallerRecoveryTests.swift:76` —
-the app never invokes it.
-
-**Impact.** `PRODUCT_SPEC.md:29-30` promises the previous runtime is preserved on failure. That
-holds only within a single install process. After a force-quit mid-install, a ~4 GB backup directory
-is orphaned and Qwen reports "not installed" until the user manually reinstalls.
-
-**Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
-user action.
-
 ### F40 — Transcript Edit view double-writes the whole meetings index on every keystroke
 
 - **Status:** open

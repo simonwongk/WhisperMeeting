@@ -14,6 +14,80 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F33 — Installer crash recovery was only reachable from tests
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `d612771` (app wiring + red-green tests), `0a3b967` (recovery-only self-sufficiency),
+  `<close-sha>` (close)
+- **Reachability:** app launch → `ContentView` `.task` (`AppEntry.swift:13`) →
+  `AppModel.performStartupRecovery()` → `reclaimInterruptedQwenInstall()` (folded in **before**
+  `refreshRuntime()`) → the orphan gate `hasOrphanedQwenInstallArtifacts` → the injected
+  `runQwenInstallRecovery` seam → `spawnQwenInstallRecovery` spawns the bundled `setup-qwen-asr.sh`
+  with `QWEN_INSTALL_RECOVERY_ONLY=1`. So a force-quit-stranded runtime is restored *before* the app
+  reads runtime state, and shows as installed rather than "not installed".
+
+**Root cause.** `setup-qwen-asr.sh`'s reclaim (restore a complete backup if the target vanished, clear
+incomplete backups + abandoned staging) was gated behind `QWEN_INSTALL_RECOVERY_ONLY` and invoked only
+by `QwenInstallerRecoveryTests`. The app never ran it, so after a force-quit mid-install the previous
+~4 GB runtime sat orphaned in a `.Qwen3ASR-backup-*` dir while Qwen reported "not installed" until a
+manual reinstall — breaking `PRODUCT_SPEC.md`'s "previous runtime preserved on failure" across a
+process boundary.
+
+**Fix.** Wire the tested reclaim to launch in the F47/F83 injected-seam style (three layers):
+* **Core** (unchanged, tested): `setup-qwen-asr.sh` recovery-only mode.
+* **AppModel hop** (`reclaimInterruptedQwenInstall`): runs the reclaim **only** when orphaned
+  `.Qwen3ASR-{backup,install}-*` artifacts exist under the runtime parent, so a clean launch — or a
+  Mac that never installed Qwen — spawns nothing. The reclaim is the injected `runQwenInstallRecovery`
+  seam, so the hop is headless-testable. Folded into `performStartupRecovery` before `refreshRuntime`.
+* One installer correction (review): recovery-only mode no longer requires the install helpers
+  (`qwen_transcribe.py`/`qwen_dictate_server.py`) to exist — a build missing one would otherwise make
+  the launch reclaim exit before reclaiming, re-stranding the runtime.
+
+**Evidence.**
+
+Red — with the orphan gate removed, a clean runtime wrongly spawns the reclaim:
+
+```text
+✘ Test "A clean runtime does not trigger the Qwen reclaim (F33)" recorded an issue: Expectation failed: !(ran → <not evaluated>)
+✘ … Expectation failed: !(…fileExists(atPath: …/reclaim-ran) → true)
+```
+
+Green — the three app-hop tests pass (suite delta **+3** from this ticket's baseline of 254):
+
+```text
+✔ Test "Orphaned Qwen-install artifacts are detected; a clean runtime is not (F33)" passed
+✔ Test "An orphaned Qwen install triggers the reclaim through the app-level call (F33)" passed
+✔ Test "A clean runtime does not trigger the Qwen reclaim (F33)" passed
+```
+
+Real script recovery exercised against real fixtures — the recovery-only reclaim restores a complete
+backup even with **no install helpers** beside the script (the self-sufficiency fix), and the existing
+`QwenInstallerRecoveryTests` (which runs the real `setup-qwen-asr.sh`) stays green:
+
+```text
+helpers next to temp script? NO
+Restored the previous Qwen3-ASR runtime after an interrupted installation.
+recovery exit: 0
+target restored from backup? YES ✓ (reclaim worked without helpers)   backup consumed? YES ✓
+✔ Test "Qwen installer recovery restores a complete backup and removes abandoned artifacts" passed
+```
+
+Full `Scripts/quality-check.sh` passes whole (257 tests, release `-warnings-as-errors` clean,
+packaging OK).
+
+**Gaps.** The full GUI end-to-end (launch the app with a real stranded install and watch it self-heal)
+was **not** run, because the app reads the real meeting library on startup (the F83 integrity sweep)
+and the definition of done forbids reading user meetings for testing. The path is instead verified in
+pieces: the AppModel hop by the red-green tests above, the real reclaim by the script exercised against
+real fixtures, and the fold + call path by review against source. **Not planned:** an automated GUI
+launch test — the `WhisperMeet` target has no app-launch/view-render harness (the standing repo
+limitation shared by F30/F83). The recovery-only reclaim runs synchronously at launch only when
+orphans exist; its worst case is bounded `mv`/`rm` work behind a `shlock`, and it never reads or
+mutates any recording.
+
+---
+
 ## F52 — `setup-local-whisper.sh` installed the default runtime with no atomic staging/backup
 
 - **Outcome:** fixed
