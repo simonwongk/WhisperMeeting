@@ -66,6 +66,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Carried from `TranscriptionResult.alignmentWarning` so the detail view can explain why a
     /// meeting has no seekable timestamps instead of dropping them silently (F30).
     var alignmentWarning: String?
+    /// A plain-language note when the transcript's dominant script disagrees with the language the
+    /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
+    /// decode; nil under automatic detection or when the language matches.
+    var languageWarning: String?
 
     init(
         id: UUID = UUID(),
@@ -86,7 +90,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         notes: String? = nil,
         tags: [String]? = nil,
         healthReport: RecordingHealthReport? = nil,
-        alignmentWarning: String? = nil
+        alignmentWarning: String? = nil,
+        languageWarning: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -107,6 +112,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.tags = tags
         self.healthReport = healthReport
         self.alignmentWarning = alignmentWarning
+        self.languageWarning = languageWarning
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

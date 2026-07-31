@@ -14,6 +14,90 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F32 — "Original language only" is unenforced and untested on the Qwen path
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by transcription lane (Opus 4.8)
+- **Commits:** `<sha-pending>` (F32 guard + tests; real SHA recorded by the following commit)
+- **Reachability:** transcription finishes → `AppModel.performTranscription` →
+  `apply(result:to:requestedLanguage: settings.language)` (`AppModel.swift:992`) stores
+  `LanguageConsistency.mismatchWarning(...)` onto `MeetingRecord.languageWarning` → the user opens the
+  completed meeting and `TranscriptDetailView.transcriptSection` (`ContentView.swift:1800`) renders a
+  red advisory. Red-green lands on the app-level `apply` hop
+  (`Tests/WhisperMeetTests/LanguageWarningPersistenceTests.swift`); the SwiftUI advisory is manual
+  (**Not planned:** no GUI-render harness in the `WhisperMeet` target).
+
+**Root cause.** The invariant "original spoken language only, never translation" was asserted nowhere
+on the Qwen path. Whisper pins `--task transcribe`; the Qwen helper passes a language name into the
+model call and nothing checked the result.
+
+**What is actually structural (verified).** Qwen3-ASR is a transcription-only model. In the pinned
+mlx-audio 0.3.1 source, `Qwen3ASR.generate(language:)` uses the language *only* to build an ASR
+prompt (`…/mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:849,861` — `"…language {lang_name}<asr_text>"`)
+and there is **no `translate` task anywhere in the model**. So translation cannot occur — a stronger
+guarantee than Whisper's flag, which merely happens to be set to `transcribe`. Confirmed empirically:
+forcing `--language English` on a Mandarin clip still returned **Mandarin** text (see Evidence). This
+is a finding, not new code — the model type itself enforces "no translation."
+
+**Fix.** Added `LanguageConsistency` + `TranscriptLanguage.dominant(of:)` in WhisperCore: a heuristic,
+post-transcription **advisory** (it changes nothing about the transcript or recording) that flags when
+the user *explicitly* selected English or Chinese but the transcript's dominant script disagrees. The
+detector mirrors the helper's `detected_language_code` majority rule exactly (CJK `U+3400…U+9FFF`,
+`cjk*2 > total`) so Swift and Python never disagree on a language label. Wired engine-agnostically
+through `AppModel.apply(...)` into a new optional `MeetingRecord.languageWarning` (back-compat) and
+surfaced as a detail-view advisory. This catches the residual risk the structural fact does not: a
+forced/mis-selected wrong language, and any future upstream change.
+
+**Evidence.**
+
+Real installed Qwen model over Mandarin bench clips — language preserved on auto, and (critically)
+**not translated even when English is forced**, which the advisory then flags:
+
+```text
+[zh1 auto]           lang=zh cjk-majority=True (14/15) text='帮我把今天的会议纪要发给团队。'
+[zh2 auto]           lang=zh cjk-majority=True (15/16) text='这个季度的销售数据看起来很不错。'
+[zh1 forced=English] lang=en cjk-majority=True (14/15) text='帮我把今天的会议纪要发给团队。'
+```
+
+Fails before the guard existed (neutering the wiring to `languageWarning = nil`):
+
+```text
+✘ Test "A wrong-language transcript persists a language warning through the app-level apply (F32)" recorded an issue at LanguageWarningPersistenceTests.swift:43:5: Expectation failed: (model.store.meeting(id: id)?.languageWarning → nil) != nil
+```
+
+Passes after; full suite grew 239 → 246 on this branch (+7: 5 core, 2 persistence):
+
+```text
+✔ Test "A Chinese-requested transcript that comes back English is flagged (F32)" passed after 0.001 seconds.
+✔ Test "Dominant-script detection labels Mandarin as zh and English as en (F32)" passed after 0.001 seconds.
+✔ Test "A wrong-language transcript persists a language warning through the app-level apply (F32)" passed after 0.109 seconds.
+✔ Test run with 246 tests passed after 1.118 seconds.
+```
+
+Release + `-warnings-as-errors`: my code is clean (verified by temporarily applying F93's fix, reaching
+`Build complete!` with zero diagnostics in any file I touched, then reverting). Step 3 of the gate is
+otherwise red on the pre-existing cross-lane **F93** (`DiagnosticsBundleBuilder.swift`), as it is for
+every lane.
+
+**Gaps — exactly what the test does and does not prove.** The hermetic tests prove the *advisory
+logic*: given a wrong-language transcript for an explicit selection, the app detects and surfaces it.
+They do **not** prove the model preserves language on arbitrary audio — that rests on the model's
+no-translate structure (verified above) plus the real-clip corpus, which is **synthetic and small**
+(the ticket already flagged this; F27 tracks a real-microphone comparison). Two heuristic limits, both
+deliberate: (1) under `.automatic` (the default) the advisory cannot fire — the only available label
+is the helper's own `detected_language_code`, derived from the same text by the same rule, so
+cross-checking it would be circular; auto-mode fidelity therefore rests on the model + corpus, not
+this check. **Not planned:** there is no in-app signal independent of the model to check auto-mode
+against without running a second recognizer. (2) The majority rule counts CJK ideographs but not
+fullwidth CJK punctuation, so a punctuation-heavy Mandarin transcript could in principle dip below the
+50% threshold; this is a faithful port of the already-validated helper rule (intentional parity), and
+normal prose sits far above the threshold. The SwiftUI advisory has no automated view test
+(**Not planned:** no GUI-render harness); manual check: transcribe a Mandarin meeting with the language
+pinned to English, open it, confirm the red "You selected English, but this transcript reads as
+Mandarin" advisory appears, and is absent when the language matches or is automatic.
+
+---
+
 ## F93 — Quality gate red: `-warnings-as-errors` build fails on `DiagnosticsBundleBuilder.swift`
 
 - **Outcome:** duplicate

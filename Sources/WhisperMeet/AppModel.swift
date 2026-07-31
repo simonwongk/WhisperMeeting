@@ -970,7 +970,7 @@ final class AppModel: ObservableObject {
                     await self.apply(progress: progress, to: id)
                 }
             }
-            apply(result: result, to: id)
+            apply(result: result, to: id, requestedLanguage: settings.language)
         } catch is CancellationError {
             handleCancellation(id: id)
         } catch {
@@ -989,8 +989,10 @@ final class AppModel: ObservableObject {
     }
 
     /// Applies a completed transcription to the stored meeting. Exposed to `WhisperMeetTests` (not
-    /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30).
-    func apply(result: TranscriptionResult, to id: UUID) {
+    /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30). The
+    /// `requestedLanguage` is the engine snapshot's selected language, used for the
+    /// "original language only" advisory (F32); it defaults to `.automatic`, which never flags.
+    func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic) {
         store.update(id: id) {
             $0.status = .completed
             $0.transcriptText = result.segments.isEmpty
@@ -1006,6 +1008,13 @@ final class AppModel: ObservableObject {
             // Carry the alignment warning onto the meeting so the detail view can explain why a
             // Qwen transcript has no seekable timestamps, instead of dropping it silently (F30).
             $0.alignmentWarning = result.alignmentWarning
+            // "Original language only" advisory: if the user pinned a language and the transcript's
+            // dominant script disagrees, surface it rather than trusting the model blindly. Advisory
+            // only — the transcript and recording are untouched (F32).
+            $0.languageWarning = LanguageConsistency.mismatchWarning(
+                requested: requestedLanguage,
+                transcript: result.text
+            )
             // Freshly produced text is already final; never rebuild it from segments later.
             $0.transcriptNormalized = true
         }

@@ -1795,6 +1795,18 @@ private struct TranscriptDetailView: View {
                     .accessibilityElement(children: .combine)
             }
 
+            // Flag when the transcript's language disagrees with the language the user selected, so
+            // "original language only" is visibly enforced rather than silently trusted (F32).
+            if let warning = meeting.languageWarning {
+                Label(warning, systemImage: "character.bubble.badge.exclamationmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .combine)
+            }
+
             if hasSegments && transcriptMode == .read {
                 if meeting.isTranscriptEdited {
                     Text("Read view shows the original timestamped transcription; your edits are in Edit view. Quality flags are hidden here because they describe the original text.")

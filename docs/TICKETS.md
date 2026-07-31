@@ -97,28 +97,6 @@ something; the helper change is the blocker.
 
 **Verification.** A long Qwen run advances a determinate bar.
 
-### F32 — "Original language only" is unenforced and untested on the Qwen path
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, spec)
-
-**Problem.** `PRODUCT_SPEC.md:16` forbids automatic translation. Whisper enforces it structurally by
-pinning `--task transcribe`. Qwen has no equivalent: `Scripts/qwen_transcribe.py:74-78` passes a
-language name into the model call, and nothing in the codebase asserts the output language matches
-the input.
-
-**Impact.** A non-negotiable invariant rests on model behaviour rather than on an enforced contract.
-Upstream drift would be silent.
-
-**Evidence it currently holds.** All ten `Scripts/bench/clips` returned original-language text on
-2026-07-30 (en/zh/code-switch, zero error). That is empirical, not structural, and the corpus is
-synthetic.
-
-**Verification.** A regression test that fails if a Mandarin clip comes back in English.
-
 ### F100 — Qwen alignment is all-or-nothing; consider keeping the sentences that did map
 
 - **Status:** open
