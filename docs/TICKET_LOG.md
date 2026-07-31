@@ -100,7 +100,7 @@ same error on line 60).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `7d9a01e` (file), `451b078` (fix), `6d96f8e` (test), `<close-sha>` (close + this entry)
+- **Commits:** `7d9a01e` (file), `451b078` (fix), `6d96f8e` (test), `8e1e0af` (close + this entry)
 - **Reachability:** n/a — build-infrastructure fix. It changes no runtime behaviour and adds no user
   surface; the touched code (`DiagnosticsBundleBuilder.json`) is already reached by
   `DiagnosticsBundleBuilderTests` and will be wired to the app by F86. The "surface" restored is the
