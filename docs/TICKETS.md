@@ -161,8 +161,8 @@ coalesces to roughly one write after idle rather than N. Fails before, passes af
 
 ### F116 — Bridge the five teleporting-state seams found by the post-F113 motion sweep
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
 - **Severity:** low
 - **Area:** ui
 - **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)

@@ -14,6 +14,28 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F114 — Visually verify the F113 redesign and the F87 VoiceOver/Dynamic Type wiring
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 — verified by Simon; logged by Claude Code (Fable 5, apple-design
+  redesign session)
+- **Commits:** — (verification only; no code change)
+
+**Root cause.** Follow-up verification ticket from the F113/F87 close: the on-screen look and the
+VoiceOver/Dynamic Type behaviour could not be verified from an agent session (launching the app
+runs startup recovery over the real meeting index, which the testing rules forbid).
+
+**Fix.** No change needed — Simon ran the F114 checklist (redesigned screens, VoiceOver
+announcements, text size / Reduce Motion) against the built app and reported no findings.
+
+**Evidence.**
+
+```text
+Simon, 2026-07-31 (chat, after running the F114 checklist): "F114 looks good, you can continue."
+```
+
+**Gaps.** none — the checklist surfaced no follow-up work.
+
 ## F113 — Presentation-only redesign pass: one surface/typography/motion language for the UI
 
 - **Outcome:** fixed

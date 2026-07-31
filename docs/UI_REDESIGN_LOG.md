@@ -156,6 +156,8 @@ Derived from Apple's design guidance (Designing Fluid Interfaces, WWDC 2018; the
 - **Not verified here:** the on-screen visual pass and VoiceOver/Dynamic Type spot-check. The GUI
   cannot be launched for testing from an agent session (startup recovery reads the real meeting
   index, which `AGENTS.md` forbids using for tests) — tracked as **F114** in `NEEDS_HUMAN.md`.
+  **Update 2026-07-31: F114 passed** — Simon ran the checklist and reported no findings
+  (`TICKET_LOG.md` § F114).
 
 ---
 
