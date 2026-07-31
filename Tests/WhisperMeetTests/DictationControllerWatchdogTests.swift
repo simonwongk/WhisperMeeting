@@ -3,52 +3,7 @@ import Testing
 import WhisperCore
 @testable import WhisperMeet
 
-private final class FakeDictationRecorder: DictationRecording {
-    private(set) var isRecording = false
-    private(set) var stopCount = 0
-    private let outputURL: URL
-
-    init(outputURL: URL) {
-        self.outputURL = outputURL
-    }
-
-    func requestPermission() async -> Bool { true }
-
-    func start(onLevel: @escaping @Sendable (Float) -> Void) throws {
-        isRecording = true
-    }
-
-    func stop() throws -> (url: URL, duration: TimeInterval) {
-        stopCount += 1
-        isRecording = false
-        return (outputURL, 1)
-    }
-
-    func cancel() {
-        isRecording = false
-    }
-}
-
-@MainActor
-private final class SilentDictationOverlay: DictationOverlayPresenting {
-    func show(_ phase: DictationOverlay.Phase) {}
-    func update(level: Float) {}
-    func hide() {}
-}
-
-private struct EmptyDictationEngine: DictationEngine {
-    func warmUp() async throws {}
-
-    func transcribe(
-        wavAt url: URL,
-        language: WhisperLanguage,
-        initialPrompt: String?
-    ) async throws -> DictationResult {
-        DictationResult(text: "", languageCode: nil)
-    }
-
-    func shutdown() {}
-}
+// Shared headless fakes live in DictationTestSupport.swift.
 
 @MainActor
 @Test("A missed dictation release stops recording and recovers the controller to idle")

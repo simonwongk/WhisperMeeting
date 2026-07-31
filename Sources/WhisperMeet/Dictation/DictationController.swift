@@ -55,7 +55,7 @@ final class DictationController: ObservableObject {
     @Published private(set) var isSwitchingModel = false
 
     private let defaults: UserDefaults
-    private let hotkeyMonitor = HotkeyMonitor()
+    private let hotkeyMonitor: any HotkeyMonitoring
     private let recorder: any DictationRecording
     private let overlay: any DictationOverlayPresenting
     private let engine: SelectableDictationEngine
@@ -94,6 +94,7 @@ final class DictationController: ObservableObject {
         engineFactory: ((DictationTranscriptionEngine) -> DictationEngine)? = nil,
         recorder: any DictationRecording = MicDictationRecorder(),
         overlay: (any DictationOverlayPresenting)? = nil,
+        hotkeyMonitor: any HotkeyMonitoring = HotkeyMonitor(),
         logStore: DictationLogStore? = nil,
         captureTimeout: Duration = .seconds(DictationCaptureLimits.maximumDurationSeconds),
         captureSleep: @escaping DictationCaptureWatchdog.Sleep = {
@@ -104,6 +105,7 @@ final class DictationController: ObservableObject {
         self.defaults = defaults
         self.recorder = recorder
         self.overlay = overlay ?? DictationOverlay()
+        self.hotkeyMonitor = hotkeyMonitor
         self.logStore = logStore ?? DictationLogStore()
         self.captureTimeout = captureTimeout
         self.captureSleep = captureSleep
@@ -280,10 +282,13 @@ final class DictationController: ObservableObject {
     // MARK: - Hotkey events
 
     func handlePressStart() {
-        guard enabled, !isSwitchingModel else { return }
+        // Every refusal below must clear toggle mode's latched state; otherwise the monitor keeps
+        // believing dictation is "on" and the next press fires an end edge that silently no-ops (F38).
+        guard enabled, !isSwitchingModel else { hotkeyMonitor.resetToggleState(); return }
         if isMicrophoneBusy() {
             log.notice("dictation press ignored — microphone busy (meeting or mic test)")
             flashBusy()
+            hotkeyMonitor.resetToggleState()
             return
         }
         switch session.handle(.startPressed) {
@@ -291,8 +296,11 @@ final class DictationController: ObservableObject {
         case .busy:
             // A press arrived while a dictation is still in flight — leave the in-flight session and
             // its overlay untouched. Never reset it here; that would drop the pending transcript.
+            // The monitor's toggle IS reset so the user's next press starts a fresh capture.
             log.notice("dictation press ignored — busy")
-        default: break
+            hotkeyMonitor.resetToggleState()
+        default:
+            hotkeyMonitor.resetToggleState()
         }
     }
 
@@ -314,6 +322,7 @@ final class DictationController: ObservableObject {
             log.notice("listening")
         } catch {
             _ = session.handle(.engineFailed(error.localizedDescription))
+            hotkeyMonitor.resetToggleState() // capture never began — never leave toggle latched "on" (F38)
             fail(error.localizedDescription)
         }
     }

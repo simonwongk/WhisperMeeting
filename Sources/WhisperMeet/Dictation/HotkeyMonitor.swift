@@ -3,10 +3,23 @@ import ApplicationServices
 import CoreGraphics
 import WhisperCore
 
+/// Injection seam so `DictationController`'s hotkey-driven state machine is testable without a real
+/// CGEventTap (which requires Accessibility). `HotkeyMonitor` is the only production conformer.
+protocol HotkeyMonitoring: AnyObject {
+    var onPressStart: (() -> Void)? { get set }
+    var onPressEnd: (() -> Void)? { get set }
+    @discardableResult func start(hotkey: DictationHotkey) -> Bool
+    func stop()
+    /// Clear toggle mode's latched on-state so the next press is treated as a fresh start. The
+    /// controller calls this whenever it refuses a start, so a refused toggle press cannot leave the
+    /// monitor believing dictation is "on" and invert the on/off edges (F38).
+    func resetToggleState()
+}
+
 /// Global push-to-talk listener backed by a listen-only CGEventTap. Detects the configured key's
 /// down/up (modifier keys via `.flagsChanged`, regular keys via `.keyDown`/`.keyUp`) and reports
 /// press/release on the main queue. Requires Accessibility (the tap) — the same grant used for paste.
-final class HotkeyMonitor {
+final class HotkeyMonitor: HotkeyMonitoring {
     var onPressStart: (() -> Void)?
     var onPressEnd: (() -> Void)?
 
@@ -120,6 +133,10 @@ final class HotkeyMonitor {
 
     func recoverFromDisabledTap() {
         keyDown = currentKeyState(CGKeyCode(hotkey.keyCode))
+    }
+
+    func resetToggleState() {
+        toggledOn = false
     }
 
     /// Whether the configured modifier hotkey key is currently physically down, read from the

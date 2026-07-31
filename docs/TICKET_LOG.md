@@ -34,6 +34,62 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F38 — Toggle-mode dictation hotkey desyncs when a press-start is refused
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** In toggle mode `HotkeyMonitor.dispatch` flips `toggledOn` on every down edge and
+derives start-vs-end from the result. `DictationController.handlePressStart` could refuse the start
+(feature disabled / model switching, microphone busy, or a still-in-flight session returning `.busy`)
+without informing the monitor, so the monitor kept believing dictation was "on". The next press then
+fired an `onPressEnd` edge that no-ops (`recorder.isRecording` is false), inverting the on/off state
+and swallowing one or two presses before capture actually began.
+
+**Fix.** Added `HotkeyMonitoring.resetToggleState()` (a protocol seam; `HotkeyMonitor` clears
+`toggledOn`) and made `HotkeyMonitor` injectable into `DictationController`. `handlePressStart` now
+calls `hotkeyMonitor.resetToggleState()` on every refusal path (disabled/switching, mic-busy,
+session `.busy`, and the defensive `default`), and `startCapture()` resets on its engine-failure
+`catch`. A successful start never resets, so toggle stays latched and the next press correctly stops.
+The reset is a harmless no-op in hold mode (which never reads `toggledOn`). This is the right layer:
+the controller owns the accept/refuse decision, so it must own telling the monitor when a start did
+not take. Shared headless test fakes were extracted to `DictationTestSupport.swift`.
+
+**Evidence.**
+
+The regression fails before the fix (toggle reset on the mic-busy refusal neutralized) — the second
+press fires a no-op end edge, so capture never starts:
+
+```text
+✘ Test "A refused toggle-mode start does not invert the hotkey; the next press still starts capture" recorded an issue at DictationToggleRecoveryTests.swift:55:5: Expectation failed: (recorder → WhisperMeetTests.FakeDictationRecorder).isRecording → false
+✘ Test "A refused toggle-mode start does not invert the hotkey; the next press still starts capture" recorded an issue at DictationToggleRecoveryTests.swift:56:5: Expectation failed: (controller.status → .disabled) == .listening
+✘ Test run with 1 test failed after 0.325 seconds with 2 issues.
+```
+
+It passes with the fix restored:
+
+```text
+✔ Test "A refused toggle-mode start does not invert the hotkey; the next press still starts capture" passed after 0.052 seconds.
+```
+
+Build clean and the full suite grew by the new test (183 → 184):
+
+```text
+Build complete! (3.62s)
+✔ Test run with 184 tests passed after 1.077 seconds.
+```
+
+**Review.** Adversarially reviewed (independent subagent): confirmed the success path leaves toggle
+latched, the `.busy` reset does not drop an in-flight transcript, `toggledOn` is genuinely
+main-thread-only (CGEventTap source is on the main run loop), and the red→green is legitimate. The
+review surfaced a distinct, related desync — the F50 watchdog auto-finalize also leaves `toggledOn`
+latched — filed as **F78** (out of F38's stated scope).
+
+**Gaps.** The `default:` reset in `handlePressStart` is unreachable today (`DictationSession.handle`
+returns only `.startCapture` or `.busy` for `.startPressed`); kept as defensive. No runtime
+helper/model adapter touched, so no real-model run applies.
+
 ## F50 — Hold-mode dictation has no capture cap or stuck-listen watchdog
 
 - **Outcome:** fixed

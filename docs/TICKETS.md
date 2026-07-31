@@ -36,7 +36,7 @@ IDs are `F<n>`, continuing the finding-ID series already used in commits and `CH
 **F1–F23 are consumed** by earlier review rounds (they predate this file and were never persisted —
 their outcomes live in `CHANGELOG.md`).
 
-**Next free ID: `F78`.** When you file a ticket, take the next ID and bump this line in the same
+**Next free ID: `F79`.** When you file a ticket, take the next ID and bump this line in the same
 commit. If you hit a collision because another agent raced you, take the next free one and move on.
 
 ## Status vocabulary
@@ -364,35 +364,6 @@ user-facing reason.
 Each entry below was confirmed by an adversarial verifier that re-read the cited code and traced the
 failing path; the `file:line` references were checked against the working tree. Ordered worst-first:
 F38–F41 medium, F42–F54 low.
-
-### F38 — Toggle-mode dictation hotkey desyncs when a press-start is refused
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** In toggle mode `HotkeyMonitor.dispatch` flips `toggledOn` on every down edge and picks
-start-vs-end from the result (`Sources/WhisperMeet/Dictation/HotkeyMonitor.swift:131`).
-`DictationController.handlePressStart` can refuse the start without telling the monitor: it
-early-returns on `!enabled || isSwitchingModel`, on `isMicrophoneBusy()` (only `flashBusy()`), and
-when `session.handle(.startPressed)` returns `.busy`
-(`Sources/WhisperMeet/Dictation/DictationController.swift:256-270`). After a refusal the monitor
-still believes dictation is "on", so the next press fires `onPressEnd`, which no-ops because
-`recorder.isRecording` is false.
-
-**Impact.** A toggle-mode user who tries to dictate while a meeting is recording, while the model is
-switching, or while a prior dictation is still transcribing gets a silent no-op and an inverted
-on/off state — the next one or two presses do nothing (and the even presses show no busy flash)
-before capture actually starts. Toggle is a first-class Settings mode (`ContentView.swift:1120`).
-
-**Proposed fix.** Let the controller drive the monitor's toggle state (reset `toggledOn` when a
-start is refused), or move the on/off truth into `DictationController`/`DictationSession` and have
-the monitor report only raw edges.
-
-**Verification.** Controller-level test: put the session in busy/switching/mic-busy state, deliver a
-toggle down edge, and assert the NEXT down edge still starts capture. Fails before, passes after.
 
 ### F39 — Changing the dictation trigger key leaves `hotkeyActive`/`status` stale
 
@@ -760,6 +731,36 @@ it does not pin a specific stale number.
 
 **Verification.** Run `swift test`, count the executed tests, and update line 6 to match the newest
 recorded per-cycle count.
+
+### F78 — Toggle-mode dictation desyncs after the F50 capture watchdog auto-finalizes
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** dictation
+- **Filed:** 2026-07-30 by Claude Code (found during F38 review)
+
+**Problem.** F38 fixed the toggle desync on *refused* starts, but a sibling path remains. In toggle
+mode a successful start latches `toggledOn = true`; the normal stop is a second press
+(`onPressEnd`) which flips it back to false. The F50 capture watchdog, however, finalizes a stuck
+`.listening` session by calling `beginTranscriptionIfNeeded()` directly from its `onTimeout` closure
+(`Sources/WhisperMeet/Dictation/DictationController.swift:73-80`) with no hotkey edge, so `toggledOn`
+stays `true`. The user's next press — intending to start a fresh dictation — is therefore treated as
+the "stop" edge: `onPressEnd` → `handlePressEnd` → `beginTranscriptionIfNeeded()` returns false
+(nothing recording) → silent no-op. Only the press after that starts capture.
+
+**Impact.** After a toggle-mode capture hits the 120 s watchdog cap and auto-finalizes, the user's
+first press to dictate again does nothing; a second press is needed. Low frequency (requires hitting
+the cap in toggle mode), non-destructive, but the same confusing class of desync F38 addressed.
+
+**Proposed fix.** Reset the monitor's toggle state whenever capture ends without a user end-edge —
+i.e. call `hotkeyMonitor.resetToggleState()` in the watchdog `onTimeout` path after finalizing (not
+in `beginTranscriptionIfNeeded` itself, which is also the normal press-driven stop where the edge
+already cleared the toggle).
+
+**Verification.** Controller test: inject a real `HotkeyMonitor` in toggle mode, start a capture,
+fire the watchdog `onTimeout`, then deliver one down edge and assert it STARTS a new capture (rather
+than a no-op end edge). Fails before, passes after.
 
 ## Feature tickets — filed 2026-07-30 from the multi-lens feature discovery
 
