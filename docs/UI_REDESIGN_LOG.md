@@ -156,3 +156,51 @@ Derived from Apple's design guidance (Designing Fluid Interfaces, WWDC 2018; the
 - **Not verified here:** the on-screen visual pass and VoiceOver/Dynamic Type spot-check. The GUI
   cannot be launched for testing from an agent session (startup recovery reads the real meeting
   index, which `AGENTS.md` forbids using for tests) — tracked as **F114** in `NEEDS_HUMAN.md`.
+
+---
+
+# Motion opportunity sweep (post-redesign, 2026-07-31)
+
+A restraint-first sweep of the redesigned UI for moments that would *genuinely* benefit from
+motion (ticketed as **F115**). Every candidate was gated on frequency, purpose, speed budget, and
+function; most were rejected. Recipes extend the repo's existing vocabulary only —
+`Animation.uiSpring` (critically damped, `DesignSystem.swift`), `.smooth(duration: 0.22)`,
+`.linear(duration: 0.08)`, and the established Reduce Motion convention (layout springs gate to
+`nil`; opacity-only fades may remain).
+
+## Accepted (5)
+
+| # | Location | Today | Purpose | Frequency | Suggested motion |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `ContentView.swift:1552-1558` (meeting detail) | When `meeting.status` flips to `.completed`, the status card vanishes and the summary + transcript sections appear with no bridge — the app's payoff moment teleports in | Preventing a jarring change / state indication | Occasional (once per transcription) | `.animation(reduceMotion ? nil : .uiSpring, value: meeting.status)` on the detail `VStack`; `.transition(.opacity)` on `statusCard` and the completed-only sections so the swap cross-fades while the spring settles the layout. Under Reduce Motion the opacity cross-fade stays, the layout spring goes |
+| 2 | `ContentView.swift:82` (pin), `:130` (delete) | Pinning a meeting teleports its row to the top of the sidebar; deleting one makes the row vanish instantly | Spatial consistency | Occasional | Wrap the mutations at these two call sites in `withAnimation(reduceMotion ? nil : .uiSpring) { … }` so the pinned row glides to its new position and the deleted row collapses. Call-site wrapping (not `.animation` on the `List`) guarantees search filtering stays instant |
+| 3 | `ContentView.swift:1605-1608` (summary section) | After a multi-second Claude wait, `ProgressView` → `summaryBody` swaps instantly | State indication (payoff after a wait) | Occasional–rare | `.transition(.opacity)` on `summaryBody`, `.animation(reduceMotion ? nil : .uiSpring, value: isSummarizing)` scoped to the section container — the card fades in as the spring grows the layout. No bounce; the moment earns a beat, not a show |
+| 4 | `ContentView.swift:1408,1462,1481,1578` (vocabulary) | Term rows appear/vanish instantly on add, batch import, sheet-accept, and remove | Preventing a jarring change | Occasional | Wrap the four `store.addVocabulary`/`removeVocabulary` call sites in `withAnimation(reduceMotion ? nil : .uiSpring)`. Batch imports animate as one layout change — deliberately **no stagger** |
+| 5 | `ContentView.swift:806-820` (preflight test sheet) | The sheet's recording → analyzing → result phases hard-swap inside a fixed frame | Preventing a jarring change | Occasional–rare | `.transition(.opacity)` per phase view + `.animation(reduceMotion ? nil : .uiSpring, value: phaseKey)` where `phaseKey` is a lightweight `Int` discriminant of `model.preflightTest` (the enum carries associated values). Cross-fade only — the sheet frame is fixed, nothing should slide |
+
+## Rejected (with the gate question that killed each)
+
+- `ContentView.swift:36-49,77` — animating sidebar rows as **search filtering** adds/removes them.
+  **Rejected: frequency/function — rows change per keystroke while the user is scanning; motion
+  hinders.**
+- `ContentView.swift:989,1010` — the **"Someone is speaking" label and live meters**.
+  **Rejected: function — 15 Hz live feedback must track 1:1; the existing 0.08 s linear fill is
+  already the ceiling. Springs or text transitions here would lag the signal.**
+- `DictationOverlay.swift:24-28` — an **entrance animation for the dictation pill** on hotkey press.
+  **Rejected: frequency + purpose — push-to-talk readiness feedback, tens of times/day; any
+  entrance delay undermines "it's listening" certainty. (The in-place phase cross-fade already
+  shipped in F113.)**
+- `ContentView.swift:2439-2470` — more motion on **transcript segment rows** (entrances, slides).
+  **Rejected: function — a reading surface; the existing 0.22 s active-highlight fade (`:2564`) is
+  the correct maximum.**
+- `ContentView.swift:128-141` — replacing the delete **confirmation dialog with a hold-to-confirm
+  fill**. **Rejected: purpose — macOS's `confirmationDialog` is the platform-familiar safeguard;
+  a web-style hold gesture solves no gap here.**
+
+## Verdict
+
+Post-F113 the app is close to right: continuous feedback is linear, state changes spring without
+overshoot, and motion already respects Reduce Motion. What remains is a handful of *teleporting
+state* seams, not a style gap. The single highest-leverage item is **#1** — transcription
+completing is the product's payoff moment and currently the most jarring cut in the app. Items
+2–5 are small, same-vocabulary refinements; nothing here justifies new tokens, bounce, or stagger.
