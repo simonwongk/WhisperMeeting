@@ -34,6 +34,42 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F72 — Per-meeting notes field, searchable and exported
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** There was no neutral per-meeting scratchpad (agenda/attendee notes) separate from the
+transcript and summary. Added optional `MeetingRecord.notes` (old indexes decode), a `notes:` param
+to `MeetingNotesExporter.markdown` emitting a "## Notes" section above "## Transcript", included notes
+in `filteredMeetings`' searched fields, and added a plain notes editor to `TranscriptDetailView`
+(flushes via `update(id:)`).
+
+**Invariants.** Index-only text; no audio read/write; local-only — notes are NOT sent to Claude
+(`summarize` takes only the transcript, so notes are excluded by construction); no diarization.
+
+**Evidence.**
+
+Fails before the fix (Notes section emission neutralized):
+
+```text
+✘ Test "Meeting notes export includes a Notes section only when notes are present" recorded an issue at MeetingNotesExporterTests.swift:77:5: Expectation failed: (withNotes → "# Weekly Sync ...").contains("## Notes")
+```
+
+Passes after (both the exporter section test and the note-searchability test), full suite grew
+200 → 202:
+
+```text
+✔ Test "Meeting notes export includes a Notes section only when notes are present" passed after 0.001 seconds.
+✔ Test "A note-only term matches once notes is included in the searched fields" passed after 0.001 seconds.
+✔ Test run with 202 tests passed after 1.135 seconds.
+```
+
+**Gaps.** The "notes never sent to Claude" invariant holds by construction (not asserted by a test —
+`summarize` has no notes parameter). The SwiftUI notes editor flushes per edit via `update(id:)`
+(same write pattern as the transcript editor; the F40 debounce concern applies but notes are short).
+
 ## F57 — Local notification when a meeting transcription finishes or fails
 
 - **Outcome:** fixed

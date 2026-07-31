@@ -62,3 +62,33 @@ func markerContextDroppedWhenEdited() {
     #expect(edited.contains("Decision"))
     #expect(!edited.contains("— the plan"))
 }
+
+@Test("Meeting notes export includes a Notes section only when notes are present")
+func exportsNotesSection() {
+    let withNotes = MeetingNotesExporter.markdown(
+        title: "Weekly Sync",
+        dateText: "",
+        durationSeconds: 0,
+        languageCode: nil,
+        summary: nil,
+        transcriptText: "Hello.",
+        notes: "Agenda: budget, hiring"
+    )
+    #expect(withNotes.contains("## Notes"))
+    #expect(withNotes.contains("Agenda: budget, hiring"))
+    // Notes appear above the transcript.
+    let notesIndex = withNotes.range(of: "## Notes")!.lowerBound
+    let transcriptIndex = withNotes.range(of: "## Transcript")!.lowerBound
+    #expect(notesIndex < transcriptIndex)
+
+    let withoutNotes = MeetingNotesExporter.markdown(
+        title: "Weekly Sync",
+        dateText: "",
+        durationSeconds: 0,
+        languageCode: nil,
+        summary: nil,
+        transcriptText: "Hello.",
+        notes: "   "
+    )
+    #expect(!withoutNotes.contains("## Notes"))
+}

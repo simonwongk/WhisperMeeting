@@ -52,6 +52,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Whether the user pinned this meeting to the top of the sidebar. Optional so meeting indexes
     /// written before this feature still decode (F64).
     var pinned: Bool?
+    /// A free-text scratchpad (agenda / attendee notes) tied to this meeting, separate from the
+    /// transcript and the Claude summary. Optional so old indexes decode; never sent to Claude (F72).
+    var notes: String?
 
     init(
         id: UUID = UUID(),
@@ -68,7 +71,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         summary: MeetingSummary? = nil,
         transcriptNormalized: Bool? = nil,
         markers: [RecordingMarker]? = nil,
-        pinned: Bool? = nil
+        pinned: Bool? = nil,
+        notes: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -85,6 +89,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.transcriptNormalized = transcriptNormalized
         self.markers = markers
         self.pinned = pinned
+        self.notes = notes
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

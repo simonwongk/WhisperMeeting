@@ -11,6 +11,7 @@ public enum MeetingNotesExporter {
         languageCode: String?,
         summary: MeetingSummary?,
         transcriptText: String,
+        notes: String? = nil,
         markers: [RecordingMarker] = [],
         segments: [TranscriptSegment] = []
     ) -> String {
@@ -22,6 +23,15 @@ public enum MeetingNotesExporter {
         if let languageCode, !languageCode.isEmpty { meta.append(languageCode.uppercased()) }
         if !meta.isEmpty {
             lines.append("_\(meta.joined(separator: " · "))_")
+            lines.append("")
+        }
+
+        // Per-meeting notes (an agenda / attendee scratchpad) go above the transcript. Notes are
+        // never sent to Claude — they belong to the local index only (F72).
+        if let notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(notes.trimmingCharacters(in: .whitespacesAndNewlines))
             lines.append("")
         }
 

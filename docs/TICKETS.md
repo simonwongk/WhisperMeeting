@@ -748,32 +748,6 @@ phrasing never implies identified speakers; local-only; original language echoed
 (completed + 2520s → "…, transcript ready, 42 minutes"; recorded → "…, ready to transcribe"). Fails
 before, passes after. Accessibility Inspector audit is manual — state it in the log.
 
-### F72 — Per-meeting notes field, searchable and exported
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** The only writable per-meeting text is the transcript itself (editing diverges from
-segments and drops overlays) or the Claude summary; there is no neutral scratchpad for an agenda or
-attendee note tied to a recording.
-
-**Proposed feature.** Add optional `notes: String?` to `MeetingRecord` (`MeetingStore.swift:31`).
-Wire a plain notes editor into `TranscriptDetailView` (`ContentView.swift:1372`) persisting via
-`update(id:)`. Two pure changes: (1) add a `notes:` parameter to `MeetingNotesExporter.markdown`
-(`MeetingNotesExporter.swift:7`) emitting a "## Notes" section above "## Transcript"; (2) make notes
-searchable by adding it to the `fields` array in `filteredMeetings` (`ContentView.swift:40`). Notes
-are NOT included in the Claude summary payload.
-
-**Invariants.** Index-only text; no audio read/write; local-only — notes are NOT sent on the
-explicit Claude Summarize (asserted); no diarization; original language unaffected.
-
-**Verification.** In `MeetingNotesExporterTests`: non-empty notes emit a "## Notes" section with the
-text; empty/nil omits it. A `TextSearch`-level test that a note-only term matches once notes is in
-the `fields` array. Both fail before, pass after.
-
 ### F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Status:** open

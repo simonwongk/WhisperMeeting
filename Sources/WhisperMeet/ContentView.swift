@@ -37,7 +37,7 @@ struct ContentView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return store.meetings }
         return store.meetings.filter {
-            TextSearch.matches(query, in: [$0.title, $0.transcriptText])
+            TextSearch.matches(query, in: [$0.title, $0.transcriptText, $0.notes ?? ""])
         }
     }
 
@@ -1392,6 +1392,30 @@ private struct TranscriptDetailView: View {
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
     @State private var isSuggestingVocab = false
+    @State private var notesDraft = ""
+    @State private var notesLoadedFor: UUID?
+
+    /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
+    /// Claude summary. Loaded once per meeting; flushed to the index on edit. Never sent to Claude.
+    private var notesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Notes").font(.headline)
+            TextEditor(text: $notesDraft)
+                .font(.body)
+                .frame(minHeight: 72)
+                .padding(6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                .onChange(of: notesDraft) { _, newValue in
+                    store.update(id: meetingID) { $0.notes = newValue.isEmpty ? nil : newValue }
+                }
+        }
+        .onAppear {
+            if notesLoadedFor != meetingID {
+                notesDraft = store.meeting(id: meetingID)?.notes ?? ""
+                notesLoadedFor = meetingID
+            }
+        }
+    }
 
     var body: some View {
         if let meeting = store.meeting(id: meetingID) {
@@ -1399,6 +1423,7 @@ private struct TranscriptDetailView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     header(meeting)
                     statusCard(meeting)
+                    notesSection
 
                     if meeting.status == .completed {
                         summarySection(meeting)
@@ -1816,6 +1841,7 @@ private struct TranscriptDetailView: View {
             languageCode: current.languageCode,
             summary: current.summary,
             transcriptText: current.transcriptText,
+            notes: current.notes,
             markers: current.orderedMarkers,
             segments: current.segments
         )

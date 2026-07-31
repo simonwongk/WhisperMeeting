@@ -34,6 +34,14 @@ func findsHighlightRanges() {
     #expect(ranges.map { String(text[$0]) } == ["Café", "CAFE", "cafe"])
 }
 
+@Test("A note-only term matches once notes is included in the searched fields")
+func notesAreSearchable() {
+    // filteredMeetings searches [title, transcript, notes] (F72): a note-only term matches only when
+    // notes is part of the fields.
+    #expect(TextSearch.matches("attendee", in: ["Weekly Sync", "transcript body", "note: attendee list"]))
+    #expect(!TextSearch.matches("attendee", in: ["Weekly Sync", "transcript body"]))
+}
+
 @Test("Overlapping query terms count and highlight one merged region, not two")
 func mergesOverlappingRanges() {
     // "meet" is a substring of the only match of "meeting" — one visible region, one match.
