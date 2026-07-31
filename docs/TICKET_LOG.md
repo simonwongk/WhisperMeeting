@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F76 — Suggest a meeting title from the local Calendar
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `CalendarTitleMatcher` over a framework-free `CalendarEventSummary`:
+`bestTitle(forRecordingStartedAt:in:tolerance:)` returns the title of an event whose `[start, end]`
+contains the recording start (overlaps resolved deterministically — earliest start, then title),
+else the closest event whose start is within `tolerance`, else nil.
+
+**Invariants.** Pure matching over supplied summaries; no network; associates a TITLE only, never
+speaker identity; transcription language unaffected.
+
+**Evidence.**
+
+Fails before the fix (overlap tie-break removed) — input order wins instead of earliest start:
+
+```text
+✘ Test "Calendar matcher picks a containing event, then the nearest within tolerance" recorded an issue at CalendarTitleMatcherTests.swift:34:5: Expectation failed: (CalendarTitleMatcher.bestTitle(...) ...) == "Earlier"
+```
+
+Passes after (containing event; 2-min-before within tolerance; no-nearby → nil; overlap → earliest);
+full suite grew 216 → 217:
+
+```text
+✔ Test "Calendar matcher picks a containing event, then the nearest within tolerance" passed after 0.001 seconds.
+✔ Test run with 217 tests passed after 1.118 seconds.
+```
+
+**Gaps.** The matcher is fully tested. EventKit wiring (a new framework dependency + a
+privacy-sensitive Calendar permission) is deliberately left as follow-up — adding a privacy-sensitive
+dependency should be an explicit choice, not automatic. When added, it degrades silently to the
+existing auto-title if access is denied.
+
 ## F70 — Privacy-safe diagnostics bundle (audio- and transcript-excluded)
 
 - **Outcome:** fixed

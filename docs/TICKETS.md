@@ -554,36 +554,6 @@ diarization/language involvement.
 skipped, a changed one scheduled, a new one copied; keep-3 retention prunes exactly the 4th-oldest
 and older; a post-copy hash mismatch surfaces as a verification failure. Fails before, passes after.
 
-### F76 — Suggest a meeting title from the local Calendar
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk M)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** New recordings get a generic auto-title (`AppModel.swift:251/279/290`), so the sidebar
-fills with placeholder names the user renames by hand, even when a real calendar event's title is
-the obvious name and already exists on the Mac.
-
-**Proposed feature.** A pure `CalendarTitleMatcher` over a framework-free
-`CalendarEventSummary { title; start; end }`: `bestTitle(forRecordingStartedAt:in:tolerance:)`
-returns the event whose [start,end] contains the recording start, else the closest within tolerance,
-resolving overlaps deterministically (earliest start wins, documented). Thin WhisperMeet wiring
-reads EventKit (a new dependency — add to the WhisperMeet target in `Package.swift`) to build the
-summaries and pre-fills the editable title in `RecordMeetingView` (`ContentView.swift:198`).
-Suggestion only; if access is denied, fall back to the existing auto-title with zero behaviour
-change.
-
-**Invariants.** Reads the local EventKit store only — no network/upload; audio untouched; associates
-a TITLE only, not speaker identity; transcription language unaffected. Honest cost: a
-privacy-sensitive Calendar permission and a new framework, degrading silently when denied.
-
-**Verification.** New `CalendarTitleMatcherTests`: a start inside an event returns its title; a
-start 2 min before an event (within tolerance) returns it; no nearby event returns nil; two
-overlapping events resolve to the earliest-start title. Fails before, passes after. EventKit wiring
-verified manually; state it in the log.
-
 ### F77 — Per-segment re-run: re-transcribe a single flagged span
 
 - **Status:** open
