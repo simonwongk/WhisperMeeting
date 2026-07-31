@@ -14,6 +14,38 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F27 — Whisper vs Qwen dictation is unverified with a real microphone
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Opus 4.8), on the user's real-microphone verification
+
+**Root cause.** The Whisper-vs-Qwen dictation comparison had only ever run on the synthetic
+`Scripts/bench/clips` corpus fed as files; real push-to-talk (mic capture, room noise, accents,
+end-to-end release-to-text latency) could not be exercised by an agent — key injection is rejected by
+the global-hotkey path and mic input cannot be synthesised — so it needed a person.
+
+**Fix.** None required — a verification ticket. The user exercised real-microphone push-to-talk
+dictation through both engines and reported it good, with **Qwen noticeably faster** than Whisper.
+That corroborates the direction of the existing benchmark (Qwen ~0.36 s vs Whisper ~1.43 s per clip),
+so the `CHANGELOG.md` speed claim holds and was not changed.
+
+**Evidence.**
+
+```text
+User verification (2026-07-31): real-microphone push-to-talk dictation through both engines —
+reported good, with "Qwen seems a lot faster." Qualitative; no dictation problem reported.
+```
+
+**Gaps.** The confirmation is qualitative. It validates the benchmark's **speed** direction (Qwen
+clearly faster, so the CHANGELOG figures hold and were left unchanged) and surfaced no
+dictation-quality problem — but exact per-condition release-to-text latencies and word-error /
+correction counts (noisy, accented, mixed EN–ZH takes) were not separately recorded, so the
+CHANGELOG's precise numbers remain the synthetic-corpus figures. Not planned: a formal numeric
+real-mic table — the user's qualitative "Qwen clearly faster, works well" sign-off is sufficient for
+the engine-preference recommendation this ticket guarded, and no regression is suspected.
+
+---
+
 ## F114 — Visually verify the F113 redesign and the F87 VoiceOver/Dynamic Type wiring
 
 - **Outcome:** fixed
