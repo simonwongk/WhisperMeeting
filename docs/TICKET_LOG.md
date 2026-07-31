@@ -34,6 +34,39 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F73 — Second opinion: re-transcribe with the other engine and compare divergences
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `TranscriptComparison.compare(_:_:)` aligning two `[TranscriptSegment]` by
+time overlap (falling back to normalized-text match when a side has no timestamps) and returning
+`TranscriptComparisonSpan`s marked `.agree` / `.diverge` (carrying both engines' text) / `.nonOverlapping`.
+
+**Invariants.** Pure read-only comparison; both engines only read the WAV (source-of-truth safe);
+local-only; no diarization; original-language.
+
+**Evidence.**
+
+Fails before the fix (divergence detection disabled) — a differing segment is not flagged:
+
+```text
+✘ Test "Transcript comparison marks agreement, divergence, and non-overlap" recorded an issue at TranscriptComparisonTests.swift:21:5: Expectation failed: (diff.filter { $0.kind == .diverge }.count → 0) == 1
+```
+
+Passes after (identical → all agree; one differing word → one divergence with both texts; disjoint
+timelines → non-overlapping); full suite grew 220 → 221:
+
+```text
+✔ Test "Transcript comparison marks agreement, divergence, and non-overlap" passed after 0.001 seconds.
+✔ Test run with 221 tests passed after 1.138 seconds.
+```
+
+**Gaps.** The comparison core is tested. The "Second opinion" action (running the non-selected engine
+on the same WAV under the single-run guard, then a comparison sheet with replace/keep) is follow-up;
+the Qwen side depends on reliable timestamps (F30).
+
 ## F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
 
 - **Outcome:** fixed

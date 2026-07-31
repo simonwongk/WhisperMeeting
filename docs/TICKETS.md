@@ -468,35 +468,6 @@ deletion; local-only.
 (b) a `.f32` shorter than its manifest frameCount, (c) a missing `meeting.wav` each yield the
 matching finding; a healthy dir returns `[]`. Fails before, passes after.
 
-### F73 — Second opinion: re-transcribe with the other engine and compare divergences
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort H / risk M)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `beginTranscription` (`AppModel.swift:788`) runs one engine and `apply(result:)`
-overwrites the transcript; when a user distrusts a passage there is no way to get the other
-installed engine's read and see where they disagree — even though Whisper (silence-hallucination)
-and Qwen (looping) have complementary failure modes, so diffing them is exactly how you catch an
-error.
-
-**Proposed feature.** A pure `TranscriptComparison` aligning two `[TranscriptSegment]` by
-time-overlap and normalized text, yielding agreeing vs diverging spans carrying both engines' text
-(degrade to text-only alignment when one side has no timestamps — note the dependency on F30 for the
-Qwen side). WhisperMeet adds a "Second opinion" action running the non-selected installed engine on
-the same read-only `meeting.wav` (honoring the `activeTranscriptionID` single-run guard), then a
-comparison sheet where the user replaces or keeps the stored transcript.
-
-**Invariants.** Both engines only READ the WAV (source-of-truth safe, retryable); local-only; both
-run original-language transcribe; one transcription at a time preserved; no diarization; overwrite
-is an explicit user choice like the existing re-transcribe.
-
-**Verification.** New `TranscriptComparisonTests`: identical inputs → all-agree, zero divergences;
-one differing word in an overlapping segment → exactly one divergence span carrying both texts;
-disjoint timelines → handled without crashing, marked non-overlapping. Fails before, passes after.
-
 ### F75 — Local automatic backups with hash verification and retention
 
 - **Status:** open
