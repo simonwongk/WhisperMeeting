@@ -690,34 +690,6 @@ are user labels, never speaker identity; transcription language untouched.
 cap; `matches()` is true only when the meeting carries all (AND) / any (OR) selected tags; a
 `meetings.json` fixture with no `tags` key still decodes. Fails before, passes after.
 
-### F68 — Structured transcription-failure classification and retry ergonomics
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `AppModel.handle(error:id:)` (`AppModel.swift:986-998`) stores an unstructured
-`errorMessage` and flips to `.failed`; the single Transcribe button cannot distinguish a transient
-crash (retry) from runtime-not-installed (install first) or empty/too-short audio (will fail again),
-inviting blind re-runs. Concretizes the ROADMAP Ongoing "clearer errors, retry ergonomics" item.
-
-**Proposed feature.** A pure `TranscriptionFailureClassifier` mapping WhisperCore error cases to a
-`FailureCategory` carrying a plain-language explanation and a `SuggestedAction`. Map the real cases
-(`runtimeNotInstalled`→`installRuntime`; `recordingNotFound`/`emptyTranscript`→`reimport`;
-`processFailed`/`missingOutput`/`unreadableOutput`→`retry`; `CancellationError`→none). State
-explicitly that categories like `insufficientStorage`/`audioTooShort` become reachable only if those
-error cases are introduced. Attach the category in the `performTranscription` catch (`:945-949`) so
-the detail renders the correct button.
-
-**Invariants.** Pure deterministic mapping: no audio access, no language logic, local-only;
-source-of-truth untouched — it classifies an existing failure. Distinct from F30.
-
-**Verification.** New `TranscriptionFailureClassifierTests`: `runtimeNotInstalled` →
-`.installRuntime`; `emptyTranscript` → `.reimport`; `processFailed` → `.retry`; `CancellationError`
-→ no failure state; an unrecognized error → `.retry`. Fails before, passes after.
-
 ### F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
 
 - **Status:** open

@@ -34,6 +34,44 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F68 — Structured transcription-failure classification and retry ergonomics
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** `AppModel.handle(error:)` stored an unstructured message and flipped to `.failed`, so the
+single Transcribe button couldn't tell a transient crash (retry) from runtime-not-installed (install)
+from missing/empty audio (re-import). Added a pure `TranscriptionFailureClassifier` mapping both
+`LocalWhisperError` and `QwenASRError` (identical case shapes) plus `CancellationError` to a
+`FailureCategory { action, explanation }` with a `SuggestedAction` (`installRuntime` / `reimport` /
+`retry` / `none`). Wired it into `handle(error:)`: the stored message is now the actionable
+explanation, keeping the underlying subprocess detail for retry-class failures.
+
+**Invariants.** Pure deterministic mapping — no audio access, no language logic, local-only; it
+classifies an existing failure, source-of-truth untouched. Distinct from F30.
+
+**Evidence.**
+
+Fails before the fix (`installRuntime` mapping neutralized to `.retry`):
+
+```text
+✘ Test "Transcription failures classify into actionable categories" recorded an issue at TranscriptionFailureClassifierTests.swift:11:5: Expectation failed: (TranscriptionFailureClassifier.classify(QwenASRError.runtimeNotInstalled).action → .retry) == .installRuntime
+✘ Test run with 1 test failed after 0.001 seconds with 2 issues.
+```
+
+Passes after, full suite grew 198 → 199:
+
+```text
+✔ Test "Transcription failures classify into actionable categories" passed after 0.001 seconds.
+✔ Test run with 199 tests passed after 1.135 seconds.
+```
+
+**Gaps.** The classifier and its use in `handle(error:)` are covered; rendering a distinct
+action-specific button in the SwiftUI detail (vs the improved message) is a follow-up, not view-tested
+here. `insufficientStorage` / `audioTooShort` categories are documented as reachable only if those
+error cases are introduced.
+
 ## F64 — Pin important meetings to the top of the sidebar
 
 - **Outcome:** fixed

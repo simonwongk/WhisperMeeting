@@ -1001,12 +1001,19 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(error: Error, id: UUID) {
-        let recordingIsSafe = store.meeting(id: id).map {
-            FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
-        } ?? false
-        let message = recordingIsSafe
-            ? "\(error.localizedDescription) The recording is safe on this Mac; choose Transcribe to try again."
-            : error.localizedDescription
+        // Classify the failure so the message tells the user what to actually do (install / re-import /
+        // retry) instead of a blind "Transcribe" retry (F68).
+        let category = TranscriptionFailureClassifier.classify(error)
+        var message = category.explanation
+        // Keep the underlying detail (e.g. a subprocess message) for transient/subprocess failures.
+        if category.action == .retry {
+            let detail = error.localizedDescription
+            if !detail.isEmpty { message += " (\(detail))" }
+            let recordingIsSafe = store.meeting(id: id).map {
+                FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
+            } ?? false
+            if recordingIsSafe { message += " The recording is safe on this Mac." }
+        }
         store.update(id: id) {
             $0.status = .failed
             $0.errorMessage = message
