@@ -15,7 +15,10 @@ concurrency:
 jobs:
   test-build-package:
     runs-on: macos-15
-    timeout-minutes: 20
+    # The gate runs a full swift test plus two release builds (step 3's
+    # -warnings-as-errors build and build-app.sh's) on a cold runner, which
+    # exceeds 20 min — runs were being killed mid-build at the old limit (F115).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
         with:
