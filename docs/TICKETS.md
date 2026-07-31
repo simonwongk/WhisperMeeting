@@ -12,6 +12,40 @@ Read them before touching this file.** This file holds **open** work only; close
 
 # Open tickets
 
+### F111 — Shared quality gate is red: release build fails under `-warnings-as-errors`
+
+- **Status:** in-progress
+- **Owner:** runtime
+- **Severity:** medium
+- **Area:** build
+- **Filed:** 2026-07-31 by Claude Code (runtime lane)
+
+**Problem.** `Scripts/quality-check.sh` step [3/4]
+(`swift build -c release -Xswiftc -warnings-as-errors`) fails on the current tree:
+
+```text
+Sources/WhisperCore/DiagnosticsBundleBuilder.swift:65:33: error: expression implicitly coerced
+from 'String?' to 'Any'
+```
+
+In the `[String: Any]` dictionary literal in `DiagnosticsBundleBuilder.json`
+(`DiagnosticsBundleBuilder.swift:54-66`), each `meeting.<field> ?? <default>` is type-checked in an
+`Any` context. Swift 6.1.2 resolves `??` there to the `(T?, T?) -> T?` overload (the literal default
+is promoted to optional), so the result is `String?`/`Int64?` and is implicitly coerced to `Any` —
+a warning the gate promotes to an error. Introduced by F70 (`03e4694`, 19 commits back); the shipping
+build (`build-app.sh`, plain `-c release`) is unaffected, so it went unnoticed.
+
+**Impact.** The shared quality gate cannot pass whole on **any** lane, so no ticket can be closed to
+the definition-of-done ("`Scripts/quality-check.sh` … must pass whole"). Runtime behaviour and the
+shipped app are unaffected; `swift test` (233) and the debug build are green.
+
+**Proposed fix.** Bind the nil-coalesced values to explicitly-typed locals before the dictionary
+literal (`let languageCode: String = meeting.languageCode ?? ""`, etc.), forcing the non-optional
+`(T?, T) -> T` overload. Output bytes are unchanged, so `DiagnosticsBundleBuilderTests` stays green.
+
+**Verification.** `swift build -c release -Xswiftc -warnings-as-errors` fails before, passes after;
+`DiagnosticsBundleBuilderTests` unchanged; full `Scripts/quality-check.sh` passes whole.
+
 ### F25 — A shipped helper-script fix does not reach disk until its engine is selected
 
 - **Status:** open
