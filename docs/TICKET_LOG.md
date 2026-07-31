@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F59 — Faceted meeting search: filter by language, status, duration, and date
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Sidebar search only substring-matched title+transcript. Added a pure `MeetingQuery`:
+`parse(_:)` peels `lang:`, `status:`, `before:`/`after:YYYY-MM-DD`, and `min:`/`max:` duration tokens
+(malformed tokens fall back to free text), leaving the remainder as free text; `matches(_ facets:)`
+checks the constraints and delegates free text to `TextSearch.matches`. Wired into `filteredMeetings`
+(building `MeetingFacets` from the record) and updated the `.searchable` prompt.
+
+**Invariants.** Read-only over fields already in the index; no audio/network; language is a filter
+facet only (never changes `--task transcribe`); no diarization.
+
+**Evidence.**
+
+Fails before the fix (the `min:` duration check disabled) — a 10-minute meeting matches `min:30m`:
+
+```text
+✘ Test "MeetingQuery filters by language, duration, and date facets" recorded an issue at MeetingQueryTests.swift:34:5: Expectation failed: !((MeetingQuery.parse("min:30m") ...).matches(... durationSeconds: 600.0 ...) → true)
+```
+
+Passes after (incl. the explicit free-text regression guard — a bare word matches identically to a
+direct `TextSearch.matches`); full suite grew 205 → 207:
+
+```text
+✔ Test "MeetingQuery filters by language, duration, and date facets" passed after 0.002 seconds.
+✔ Test "A bare-word MeetingQuery matches identically to a direct TextSearch call" passed after 0.002 seconds.
+✔ Test run with 207 tests passed after 1.125 seconds.
+```
+
+**Gaps.** None on the query logic. The `.searchable` prompt hints at the token syntax; a richer
+facet-picker UI is optional future polish.
+
 ## F63 — Summary style controls for the opt-in Claude summary
 
 - **Outcome:** fixed

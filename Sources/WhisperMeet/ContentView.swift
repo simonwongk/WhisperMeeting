@@ -34,10 +34,17 @@ struct ContentView: View {
     }
 
     private var filteredMeetings: [MeetingRecord] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return store.meetings }
+        let raw = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return store.meetings }
+        let query = MeetingQuery.parse(raw)
         return store.meetings.filter {
-            TextSearch.matches(query, in: [$0.title, $0.transcriptText, $0.notes ?? ""])
+            query.matches(MeetingFacets(
+                languageCode: $0.languageCode,
+                status: $0.status.rawValue,
+                durationSeconds: $0.duration,
+                createdAt: $0.createdAt,
+                textFields: [$0.title, $0.transcriptText, $0.notes ?? ""]
+            ))
         }
     }
 
@@ -82,7 +89,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("WhisperMeet")
-            .searchable(text: $searchText, placement: .sidebar, prompt: "Search meetings & transcripts")
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
             .navigationSplitViewColumnWidth(min: 245, ideal: 290)
         } detail: {
             detail

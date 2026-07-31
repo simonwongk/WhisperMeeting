@@ -434,32 +434,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F59 — Faceted meeting search: filter by language, status, duration, and date
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk L)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `filteredMeetings` (`ContentView.swift:36-42`) only substring-matches title+transcript
-via `TextSearch.matches` (`TextSearch.swift:17`). A user cannot ask for "Mandarin meetings over 30
-minutes from June" even though `languageCode`/`status`/`duration`/`createdAt` all already live on
-`MeetingRecord` (`MeetingStore.swift:31-42`).
-
-**Proposed feature.** New pure `MeetingQuery` in WhisperCore: `parse(_:)` peels tokens
-(`lang:en|zh`, `status:…`, `before:/after:YYYY-MM-DD`, `min:/max:` durations) and leaves the
-remainder as free text; `matches(_ facets:)` where a small `Facets` value carries the fields. Free
-text delegates to `TextSearch.matches` so shipped search is byte-identical with no token. Wire by
-replacing the body of `filteredMeetings` and updating the `.searchable` prompt (`:82`).
-
-**Invariants.** Read-only over fields already in the index; no audio/network; language is a filter
-facet only, never changing `--task transcribe`; no diarization.
-
-**Verification.** New `MeetingQueryTests`: `lang:zh` excludes an English facet; `min:30m` excludes a
-10-minute meeting; `before:2026-06-01` excludes a July facet; a bare word matches identically to a
-direct `TextSearch.matches` call (explicit regression guard). Fails before, passes after.
-
 ### F60 — Chapters export: turn recording markers into a chapter list + chaptered transcript
 
 - **Status:** open
