@@ -18,7 +18,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by transcription lane (Opus 4.8)
-- **Commits:** `<sha-pending>` (F32 guard + tests; real SHA recorded by the following commit)
+- **Commits:** `cc28272` (F32 guard + tests)
 - **Reachability:** transcription finishes → `AppModel.performTranscription` →
   `apply(result:to:requestedLanguage: settings.language)` (`AppModel.swift:992`) stores
   `LanguageConsistency.mismatchWarning(...)` onto `MeetingRecord.languageWarning` → the user opens the
