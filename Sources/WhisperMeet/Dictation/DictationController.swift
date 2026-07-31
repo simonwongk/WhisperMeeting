@@ -279,31 +279,21 @@ final class DictationController: ObservableObject {
         }
     }
 
-    /// Build a `DictationHelperSync.Helper` per engine from the app bundle and the installed runtime
-    /// paths. An engine whose runtime is not installed (no python executable on disk) is marked so the
-    /// sync skips it — the same guard the per-engine sync used before F25, now applied to every engine
-    /// rather than just the selected one.
+    /// Build a `DictationHelperSync.Helper` for every engine in the tested `installedHelperPlan`
+    /// (all engine cases — deliberately not `selectedEngine`, which was the F25 bug), attaching the
+    /// bundle bytes and whether that engine's runtime is installed.
     private static func bundledDictationHelpers(
         fileManager files: FileManager
     ) -> [DictationHelperSync.Helper] {
-        func spec(_ name: String, python: URL, script: URL) -> DictationHelperSync.Helper {
-            let bundledData = Bundle.main.url(forResource: name, withExtension: "py")
-                .flatMap { try? Data(contentsOf: $0) }
-            return DictationHelperSync.Helper(
-                name: name,
-                bundledData: bundledData,
-                installedScript: script,
-                runtimeInstalled: files.fileExists(atPath: python.path)
+        DictationHelperSync.installedHelperPlan().map { location in
+            DictationHelperSync.Helper(
+                name: location.resource,
+                bundledData: Bundle.main.url(forResource: location.resource, withExtension: "py")
+                    .flatMap { try? Data(contentsOf: $0) },
+                installedScript: location.installedScript,
+                runtimeInstalled: files.fileExists(atPath: location.pythonExecutable.path)
             )
         }
-        return [
-            spec("whisper_dictate_server",
-                 python: LocalWhisperRuntime.pythonExecutable(),
-                 script: LocalWhisperRuntime.dictationServerScript()),
-            spec("qwen_dictate_server",
-                 python: QwenASRRuntime.pythonExecutable(),
-                 script: QwenASRRuntime.dictationHelperScript()),
-        ]
     }
 
     deinit {

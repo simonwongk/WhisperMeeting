@@ -103,6 +103,67 @@ func dictationHelperSyncSkipsAbsentRuntime() {
     #expect(!FileManager.default.fileExists(atPath: script.path)) // never created
 }
 
+/// The regression guard for F25's *actual* bug site: the sync plan must be derived from every engine
+/// case, never the selected engine. Filtering it to one engine (the pre-fix behaviour) drops a case
+/// and fails here.
+@Test("The installed-helper plan covers every dictation engine (F25)")
+func installedHelperPlanCoversEveryEngine() {
+    let root = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let plan = DictationHelperSync.installedHelperPlan(applicationSupport: root)
+
+    #expect(Set(plan.map(\.engine)) == Set(DictationTranscriptionEngine.allCases))
+    #expect(plan.count == DictationTranscriptionEngine.allCases.count)
+    #expect(Set(plan.map(\.installedScript)).count == plan.count) // no two engines collide on a path
+    for location in plan {
+        // Paths resolve under the injected support root, and each carries a bundled resource name.
+        #expect(location.installedScript.path.hasPrefix(root.path))
+        #expect(location.pythonExecutable.path.hasPrefix(root.path))
+        #expect(!location.resource.isEmpty)
+    }
+}
+
+/// End-to-end through the tested plan: with every engine's runtime "installed" under a temp support
+/// root and every helper stale, syncing the plan updates BOTH — the ticket's verification ("the
+/// runtime copy matches the bundle after launch, without switching engines") expressed without a GUI
+/// or the real install.
+@Test("Syncing the whole plan updates every installed engine's helper (F25)")
+func syncingTheWholePlanUpdatesEveryEngine() throws {
+    let root = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = FileManager.default
+
+    let plan = DictationHelperSync.installedHelperPlan(applicationSupport: root)
+    var bundles: [String: Data] = [:]
+    for location in plan {
+        // Mark this engine's runtime installed (python marker) and drop a stale helper beside it.
+        try files.createDirectory(
+            at: location.pythonExecutable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("python".utf8).write(to: location.pythonExecutable)
+        try files.createDirectory(
+            at: location.installedScript.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("STALE \(location.resource)\n".utf8).write(to: location.installedScript)
+        bundles[location.resource] = Data("FRESH \(location.resource)\n".utf8)
+    }
+
+    let helpers = plan.map { location in
+        DictationHelperSync.Helper(
+            name: location.resource,
+            bundledData: bundles[location.resource],
+            installedScript: location.installedScript,
+            runtimeInstalled: files.fileExists(atPath: location.pythonExecutable.path)
+        )
+    }
+    let outcomes = DictationHelperSync.sync(helpers, fileManager: files)
+
+    #expect(outcomes.allSatisfy { if case .synced = $0 { return true } else { return false } })
+    #expect(outcomes.count == plan.count)
+    for location in plan { // every engine's helper now matches its bundle — none left stale
+        #expect(try Data(contentsOf: location.installedScript) == bundles[location.resource])
+    }
+}
+
 /// A missing bundled copy (a broken build) is reported, not silently written as empty.
 @Test("A missing bundled helper is reported without writing (F25)")
 func dictationHelperSyncReportsMissingBundle() {

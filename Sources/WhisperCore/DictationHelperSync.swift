@@ -58,6 +58,50 @@ public enum DictationHelperSync {
         case failed(String, String)
     }
 
+    /// Where one engine's dictation helper lives: the bundled resource stem to look up, the
+    /// runtime's python executable (its presence means that engine's runtime is installed), and the
+    /// installed script path to keep current.
+    public struct HelperLocation: Sendable, Equatable {
+        public let engine: DictationTranscriptionEngine
+        public let resource: String
+        public let pythonExecutable: URL
+        public let installedScript: URL
+
+        public init(engine: DictationTranscriptionEngine, resource: String,
+                    pythonExecutable: URL, installedScript: URL) {
+            self.engine = engine
+            self.resource = resource
+            self.pythonExecutable = pythonExecutable
+            self.installedScript = installedScript
+        }
+    }
+
+    /// The helper location for **every** dictation engine — derived from
+    /// `DictationTranscriptionEngine.allCases`, never from the selected engine, which is the whole
+    /// point of F25: the app must keep all engines' installed helpers current, not only the one in
+    /// use. An engine whose runtime turns out to be absent is filtered later by `runtimeInstalled`;
+    /// enumerating all cases here means a newly added engine is covered automatically.
+    public static func installedHelperPlan(applicationSupport: URL? = nil) -> [HelperLocation] {
+        DictationTranscriptionEngine.allCases.map { engine in
+            switch engine {
+            case .whisperTurbo:
+                return HelperLocation(
+                    engine: engine,
+                    resource: "whisper_dictate_server",
+                    pythonExecutable: LocalWhisperRuntime.pythonExecutable(applicationSupport: applicationSupport),
+                    installedScript: LocalWhisperRuntime.dictationServerScript(applicationSupport: applicationSupport)
+                )
+            case .qwenBalanced:
+                return HelperLocation(
+                    engine: engine,
+                    resource: "qwen_dictate_server",
+                    pythonExecutable: QwenASRRuntime.pythonExecutable(applicationSupport: applicationSupport),
+                    installedScript: QwenASRRuntime.dictationHelperScript(applicationSupport: applicationSupport)
+                )
+            }
+        }
+    }
+
     /// Reconcile every supplied helper with its bundle copy. Returns one `Outcome` per input, in
     /// order. Only a helper whose runtime is installed *and* whose on-disk bytes differ from the
     /// bundle is written, and every write is atomic.
