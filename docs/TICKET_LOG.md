@@ -34,6 +34,40 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F74 — Compact recording HUD overlay for backgrounded meetings
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `RecordingHUD` core: `make(...)` returns a `RecordingHUDState`
+(elapsedText, statusLine, topWarning, level) selecting the single most-severe warning from a
+`RecordingHealthSnapshot` (severity rank consistent with `overallStatus`), and `shouldPresent`
+gates on recording-AND-backgrounded.
+
+**Invariants.** Display-only derivation; reads state, never mutates/deletes audio; local-only; no
+diarization/translation.
+
+**Evidence.**
+
+Fails before the fix (severity mis-ranked) — a lower-severity warning wins:
+
+```text
+✘ Test "Recording HUD surfaces the most-severe warning and formats elapsed time" recorded an issue at RecordingHUDTests.swift:19:5: Expectation failed: (state.topWarning → "No system audio detected") == "Low storage — recording may stop soon"
+```
+
+Passes after (most-severe warning; "5:23" elapsed; finishing state; shouldPresent gating); full suite
+grew 214 → 215:
+
+```text
+✔ Test "Recording HUD surfaces the most-severe warning and formats elapsed time" passed after 0.001 seconds.
+✔ Test run with 215 tests passed after 1.113 seconds.
+```
+
+**Gaps.** The `RecordingHUD` state core is fully tested; the `NonActivatingPanel`-based overlay view
+is follow-up UI (and the ticket flags an overlap with F62 — if only one background-awareness surface
+is funded, prefer F62's menu bar).
+
 ## F71 — VoiceOver labels and Dynamic Type for recording, meeting, and transcript surfaces
 
 - **Outcome:** fixed

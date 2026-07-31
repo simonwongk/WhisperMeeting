@@ -553,35 +553,6 @@ is an explicit user choice like the existing re-transcribe.
 one differing word in an overlapping segment → exactly one divergence span carrying both texts;
 disjoint timelines → handled without crashing, marked non-overlapping. Fails before, passes after.
 
-### F74 — Compact recording HUD overlay for backgrounded meetings
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk M)
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** When WhisperMeet is backgrounded during a meeting the user has no glanceable
-confirmation the recording is healthy — elapsed time, level, and at-risk warnings live only inside
-`ContentView`'s live panels. (Status role overlaps F62's menu bar; if only one background-awareness
-feature is funded, prefer F62 — this is the passive-glance complement.)
-
-**Proposed feature.** A `RecordingOverlay` mirroring `DictationOverlay` (reuse `NonActivatingPanel`,
-`ignoresMouseEvents`, bottom-center placement, `DictationOverlay.swift:8-11,55,61-70`) driven by
-`AppModel.recordingState/recordingMeter/recordingHealth`. Core in WhisperCore:
-`RecordingHUDState.make(isRecording:isStopping:elapsedSeconds:health:level:)` returning
-(elapsedText, statusLine, topWarning?, level) where `topWarning` selects the single most-severe item
-from `RecordingHealthSnapshot`, plus `shouldPresent(isRecording:appIsActive:)` (show only while
-recording AND backgrounded).
-
-**Invariants.** Display-only overlay (`ignoresMouseEvents`, non-key panel): reads state, never
-mutates/deletes audio; no new capture; local-only; no diarization/translation.
-
-**Verification.** New `RecordingHUDStateTests`: recording with
-`[.lowStorage, .systemAudioNotDetected]` surfaces the higher-severity warning; elapsed 323s →
-"5:23"; `shouldPresent` false when active, true when backgrounded; stopping shows a finishing state.
-Fails before, passes after.
-
 ### F75 — Local automatic backups with hash verification and retention
 
 - **Status:** open
