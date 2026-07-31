@@ -405,38 +405,6 @@ marker disabled; recording(323s) → title "Recording 05:23", Stop & Add Marker 
 `cancelNeedsConfirmation` true; stopping/importing → actions disabled. Fails before, passes after.
 Menu wiring verified manually (no `WhisperMeet` test target); state so in the log.
 
-### F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk M)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Vocabulary reaches Whisper only as `--initial_prompt` (`VocabularyPrompt.build`) — a
-soft nudge that fails on hard proper nouns — and reaches Qwen not at all
-(`DictationTranscriptionEngine.supportsVocabularyPrompt` is false for Qwen,
-`TranscriptModels.swift:70-72`). "Kubernetes" stays "cooper netties" in a Qwen meeting with no
-recourse but manual find-replace. This is the only idea that brings custom vocabulary to the Qwen
-path without any model API, sidestepping the F36 unanchored-contract risk.
-
-**Proposed feature.** A pure `GlossaryCorrector`: given `store.vocabulary` and
-`[TranscriptSegment]`, find high-confidence near-misses of each term via bounded edit-distance /
-normalized-token matching and return `{segmentIndex, range, from, to}`. Reuse the CJK-safe
-alphanumerics-lowercase normalizer (today private in `VocabularyPrompt.normalizedForEcho`,
-`VocabularyPrompt.swift:93`, and `QwenAlignedTranscript.alignmentKey`,
-`QwenAlignedTranscript.swift:77` — expose a shared one). WhisperMeet reviews proposals in a sheet
-mirroring `VocabularySuggestionSheet` (`ContentView.swift:1835`), then applies. Same-language only;
-never auto-applies.
-
-**Invariants.** Local-only pure string logic; recording untouched; corrections are user-reviewed and
-same-language (never translation); applying edits flips `isTranscriptEdited`, which already drops
-segment overlays; no diarization.
-
-**Verification.** New `GlossaryCorrectorTests`: "we deployed cooper netties today" + ["Kubernetes"]
-→ exactly one proposed "cooper netties"→"Kubernetes"; an exact match → none; a cross-script
-candidate → none; a too-distant token → none. Fails before, passes after.
-
 ### F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
 
 - **Status:** open

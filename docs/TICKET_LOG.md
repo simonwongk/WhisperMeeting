@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `GlossaryCorrector.corrections(vocabulary:segments:)`. For each term it
+scans 1–3 word windows per segment, normalizes both (CJK-safe alphanumerics-lowercase), and proposes
+the best window whose longest-common-subsequence ratio meets a 0.5 threshold — skipping exact matches
+(already correct), too-distant tokens, and cross-script candidates (LCS ≈ 0). Returns
+`{segmentIndex, from, to}` proposals for the user to review; nothing auto-applies. This is the only
+path that brings custom vocabulary to the Qwen transcript without a model API.
+
+**Invariants.** Pure string logic; recording untouched; corrections are user-reviewed and
+same-language (never translation); no diarization.
+
+**Evidence.**
+
+Fails before the fix (similarity threshold raised to 0.95) — the near-miss is not proposed:
+
+```text
+✘ Test "Glossary corrector proposes near-miss corrections and skips exact/cross-script/distant" recorded an issue at GlossaryCorrectorTests.swift:18:5: Expectation failed: (near.first?.to → nil) == "Kubernetes"
+```
+
+Passes after ("cooper netties" → "Kubernetes" exactly once; exact/cross-script/distant → none); full
+suite grew 221 → 222:
+
+```text
+✔ Test "Glossary corrector proposes near-miss corrections and skips exact/cross-script/distant" passed after 0.001 seconds.
+✔ Test run with 222 tests passed after 1.114 seconds.
+```
+
+**Gaps.** The matcher is tested. The review sheet (mirroring `VocabularySuggestionSheet`) that applies
+accepted proposals is follow-up UI.
+
 ## F73 — Second opinion: re-transcribe with the other engine and compare divergences
 
 - **Outcome:** fixed
