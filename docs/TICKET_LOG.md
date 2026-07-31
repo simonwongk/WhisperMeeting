@@ -14,6 +14,44 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F93 — Quality gate red: `-warnings-as-errors` build fails on `DiagnosticsBundleBuilder.swift`
+
+- **Outcome:** duplicate
+- **Closed:** 2026-07-31 by Claude Code (runtime lane)
+- **Commits:** `0777d94` (the fix, under F111)
+- **Duplicate of:** `F111`
+
+**Root cause.** The recovery lane filed F93 for the same defect the runtime lane independently found
+and filed as **F111**: `DiagnosticsBundleBuilder.json`'s `[String: Any]` literal makes Swift 6.1.2
+resolve `meeting.<field> ?? <default>` to the optional-returning `??` overload, coercing `String?` to
+`Any` — a warning that `quality-check.sh`'s release `-warnings-as-errors` step turns into an error.
+Both tickets were filed on 2026-07-31 as concurrent lanes raced the same red gate; F93 and F111 are
+one issue.
+
+**Fix.** Landed under **F111** (`0777d94`): bind the three nil-coalesced values to explicitly-typed
+locals so the non-optional `(T?, T) -> T` overload is chosen. F93 itself correctly predicted that its
+own one-line proposal (`(errorMessage ?? "") as String` on line 65 only) was insufficient — patching
+one site exposes the same error at another; F111 pins all three sites (`languageCode`,
+`recordingBytes`, `errorMessage`). See the F111 entry for full RED/GREEN evidence and the added
+nil-optional coverage test.
+
+**Evidence.**
+
+The gate is green on `main` as of F111's merge (`aed4b5b`):
+
+```text
+[3/4] Building production code with warnings as errors
+[4/4] Packaging and signing WhisperMeet.app
+✔ Test run with 240 tests passed after 1.145 seconds.
+Quality check passed.
+```
+
+**Gaps.** none — closed as a duplicate; the fix, tests, and evidence live in F111. (Board note: the
+recovery lane filed F93 without bumping the `Next free ID` line, which still reads `F93`; that shared
+counter is not the runtime lane's to edit and is left as-is.)
+
+---
+
 ## F30 — Qwen alignment failure silently drops every timestamp
 
 - **Outcome:** fixed
