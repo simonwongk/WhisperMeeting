@@ -375,36 +375,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F62 — Menu-bar recording controls with live status
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk M)
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** During a real meeting the record controls live only in `ContentView` and need the
-window frontmost; the `MenuBarExtra`'s `DictationMenu` (`AppEntry.swift:47-59`) today only toggles
-dictation/Settings/Quit — no elapsed time, Stop, Add Marker, or Cancel. Concretizes ROADMAP Next
-candidate #2.
-
-**Proposed feature.** Core: a pure a pure `MenuBarRecordingPresentation.make(...)` taking
-`isRecording`, `isStopping`, `elapsedSeconds`, `isMicrophoneBusy`, and `hasActiveTranscription`
-returning menu titles, per-item enabled flags, an SF Symbol, and a `cancelNeedsConfirmation` flag.
-Extend the `MenuBarExtra` so the symbol and menu reflect `AppModel.recordingState` and add Start,
-Stop & Transcribe, Add Marker (`AppModel.addLiveMarker()`, `:532`), and a guarded Cancel Recording…
-that activates the app and triggers the existing `isConfirmingCancellation` dialog (never deletes
-inline).
-
-**Invariants.** Recording stays source-of-truth: Stop uses `AppModel.stopRecording` (no mutation on
-failure); Cancel is the only destructive path and stays behind the existing confirmation;
-local-only; no diarization/translation.
-
-**Verification.** New `MenuBarRecordingPresentationTests`: idle → "Start Recording" enabled, stop/
-marker disabled; recording(323s) → title "Recording 05:23", Stop & Add Marker enabled,
-`cancelNeedsConfirmation` true; stopping/importing → actions disabled. Fails before, passes after.
-Menu wiring verified manually (no `WhisperMeet` test target); state so in the log.
-
 ### F66 — Meeting-library integrity self-check: flag missing/truncated audio without touching it
 
 - **Status:** open

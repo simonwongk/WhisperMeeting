@@ -34,6 +34,40 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F62 — Menu-bar recording controls with live status
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Added a pure `MenuBarRecording.make(...)` → `MenuBarRecordingPresentation`: an SF Symbol,
+a live status title ("Recording 05:23" / "Finishing…" / "Transcribing…" / "Not recording"), per-item
+enablement (Start / Stop & Transcribe / Add Marker / Cancel), and `cancelNeedsConfirmation` (always
+true — Cancel is the only destructive path).
+
+**Invariants.** Recording stays source-of-truth (Stop uses the no-mutation-on-failure path; Cancel
+stays behind confirmation); local-only; no diarization/translation.
+
+**Evidence.**
+
+Fails before the fix (Add Marker mis-disabled while recording):
+
+```text
+✘ Test "Menu bar recording presentation reflects idle / recording / stopping / importing" recorded an issue at MenuBarRecordingTests.swift:21:5: Expectation failed: (recording → MenuBarRecordingPresentation(... addMarkerEnabled: false ...)).addMarkerEnabled → false
+```
+
+Passes after (idle → Start enabled, Stop/Marker disabled; recording(323s) → "Recording 05:23", Stop &
+Marker enabled, cancelNeedsConfirmation true; stopping/importing → actions disabled); full suite grew
+222 → 223:
+
+```text
+✔ Test "Menu bar recording presentation reflects idle / recording / stopping / importing" passed after 0.001 seconds.
+✔ Test run with 223 tests passed after 1.097 seconds.
+```
+
+**Gaps.** The presentation core is tested; extending the `MenuBarExtra` to render it (Start / Stop /
+Add Marker / guarded Cancel) is follow-up SwiftUI (menu wiring verified manually per the ticket).
+
 ## F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
 
 - **Outcome:** fixed
