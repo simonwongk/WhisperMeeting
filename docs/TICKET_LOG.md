@@ -34,6 +34,39 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F46 — Preflight headline contradicts its own microphone note on transient-only capture
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** A lone transient (peak ≥ silentCeiling but crest factor > 20) is not sustained, so
+`isCapturing` was false and the headline fell into the generic "No microphone audio was captured"
+branch — while `micNote` (via `isTransientOnly`) simultaneously said "Only a brief sound (a click or
+tap) was detected". Headline and note contradicted each other.
+
+**Fix.** Added a transient-specific headline branch (reusing `isTransientOnly`) ahead of the generic
+"no audio" branch, so the headline agrees with the note. `isReady` stays false — a click is correctly
+not treated as speech.
+
+**Evidence.**
+
+Fails before the fix:
+
+```text
+✘ Test "A transient-only microphone gets a headline that agrees with its note, not a false 'no audio'" recorded an issue at PreflightTestTests.swift:180:5: Expectation failed: !((report.headline → "No microphone audio was captured — fix this before your meeting.").contains("No microphone audio was captured") → true)
+✘ Test run with 1 test failed after 0.001 seconds with 2 issues.
+```
+
+Passes after, full suite grew 190 → 191:
+
+```text
+✔ Test "A transient-only microphone gets a headline that agrees with its note, not a false 'no audio'" passed after 0.001 seconds.
+✔ Test run with 191 tests passed after 1.091 seconds.
+```
+
+**Gaps.** None. Pure WhisperCore verdict logic; readiness gating unchanged.
+
 ## F45 — ClaudeSummarizer never handles `stop_reason == "max_tokens"`
 
 - **Outcome:** fixed

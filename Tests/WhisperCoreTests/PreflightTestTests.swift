@@ -167,3 +167,18 @@ func headlineReflectsState() {
     #expect(!ready.headline.isEmpty)
     #expect(!micDead.headline.isEmpty)
 }
+
+@Test("A transient-only microphone gets a headline that agrees with its note, not a false 'no audio'")
+func transientMicHeadlineAgreesWithNote() {
+    // Big peak over a near-silent RMS → a lone click/tap (crest factor 50 > 20), not sustained.
+    let mic = ChannelSignal(peak: 0.5, rms: 0.01, level: .ok)
+    let system = ChannelSignal(peak: 0, rms: 0, level: .silent)
+
+    let report = PreflightAssessment.evaluate(microphone: mic, system: system)
+
+    #expect(!report.isReady) // a click is not speech — readiness is unchanged
+    #expect(!report.headline.contains("No microphone audio was captured"))
+    #expect(report.microphone.note?.contains("brief sound") == true)
+    // The headline agrees with the note rather than contradicting it.
+    #expect(report.headline.lowercased().contains("brief"))
+}

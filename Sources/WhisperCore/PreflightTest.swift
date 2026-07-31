@@ -143,7 +143,11 @@ public enum PreflightAssessment {
 
         let isReady = mic.isCapturing
         let headline: String
-        if !mic.isCapturing {
+        if isTransientOnly(microphone) {
+            // A lone click/tap is not sustained, so isReady stays false — but say so in a way that
+            // agrees with micNote instead of claiming no audio at all (F46).
+            headline = "Only a brief sound (a click or tap) was detected on the microphone, not sustained speech — fix this before your meeting."
+        } else if !mic.isCapturing {
             headline = "No microphone audio was captured — fix this before your meeting."
         } else if !sys.isCapturing {
             headline = "Your microphone is capturing. System audio was silent — see the note if you expected it."

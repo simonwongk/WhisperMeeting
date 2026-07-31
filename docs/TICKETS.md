@@ -418,32 +418,6 @@ language can stay as-is; only the top-level `language_code` needs the fix.
 **Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
 threshold rule), not `zh`. Fails before, passes after.
 
-### F46 — Preflight headline contradicts its own microphone note on transient-only capture
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** `isReady`/`isCapturing` derive from `isSustained`
-(`Sources/WhisperCore/PreflightTest.swift:135,144`). A lone transient (peak ≥ silentCeiling but
-crest factor > 20) is not sustained, so `isCapturing` is false and the headline hits "No microphone
-audio was captured — fix this before your meeting." (`:146-147`), while `micNote` via
-`isTransientOnly` (`:160-167`) simultaneously returns "Only a brief sound (a click or tap) was
-detected…". The headline and its own note contradict each other.
-
-**Impact.** A user who tapped the mic or had a cable pop sees a top-line verdict claiming no mic
-audio at all, contradicting the accompanying note, and may debug a non-problem. The readiness
-decision itself is correct (a click is not speech).
-
-**Proposed fix.** Add a transient-specific headline branch (reusing `isTransientOnly`) before the
-generic "no audio" branch so the headline and note agree.
-
-**Verification.** A `PreflightAssessment` with a lone-transient microphone signal and a silent
-system signal → `isReady == false` and the headline does not claim "No microphone audio was
-captured" while the note mentions a brief/transient sound. Fails before, passes after.
-
 ### F47 — Startup orphan-recovery aborts all remaining orphans on the first throwing folder
 
 - **Status:** open
