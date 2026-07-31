@@ -25,9 +25,10 @@ without evidence. Treat the invariants below as the point of the project, not as
 
 | Path | What it is |
 |---|---|
-| `Sources/WhisperCore/` | Pure, `Sendable`, framework-free logic. The **only** tested target. |
+| `Sources/WhisperCore/` | Pure, `Sendable`, framework-free logic. |
 | `Sources/WhisperMeet/` | Everything touching Apple frameworks: capture, SwiftUI, app state. |
 | `Tests/WhisperCoreTests/` | Swift Testing suite (`@Test`/`#expect`) for `WhisperCore`. |
+| `Tests/WhisperMeetTests/` | Headless lifecycle tests for injected seams in the app target. |
 | `Scripts/` | Build/install/setup scripts and the Python subprocess helpers. |
 | `Scripts/bench/clips/` | Synthetic en/zh/code-switch clips — use these, never user recordings. |
 | `docs/TICKETS.md` | Open work. Read before starting anything. |
@@ -64,7 +65,7 @@ feature backlog; `docs/CHANGELOG.md` remains the human-facing narrative of shipp
 
 ```bash
 swift build                      # build the WhisperCore library + WhisperMeet executable
-swift test                       # run the WhisperCoreTests suite (does NOT download a model)
+swift test                       # run both Swift Testing suites (does NOT download a model)
 swift test --filter "original language"   # run a single test by name substring (Swift Testing)
 Scripts/build-app.sh             # build + ad-hoc-sign .build/WhisperMeet.app (release)
 open .build/WhisperMeet.app      # run the GUI app
@@ -73,8 +74,8 @@ Scripts/setup-qwen-asr.sh        # install pinned Qwen ASR + aligner (Apple sili
 ```
 
 Tests use the **Swift Testing** framework (`@Test`/`#expect`), not XCTest — `--filter` matches the
-string in the `@Test("...")` display name. Only `WhisperCore` has tests; the `WhisperMeet` GUI
-target has none (it depends on AppKit/ScreenCaptureKit and can't run headless).
+string in the `@Test("...")` display name. `WhisperMeetTests` may exercise app-target lifecycle
+logic only through injected seams that avoid permissions, live hardware, and GUI startup.
 
 ## Architecture
 

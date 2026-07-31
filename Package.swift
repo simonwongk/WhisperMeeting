@@ -36,6 +36,10 @@ let package = Package(
         .testTarget(
             name: "WhisperCoreTests",
             dependencies: ["WhisperCore"]
+        ),
+        .testTarget(
+            name: "WhisperMeetTests",
+            dependencies: ["WhisperCore", "WhisperMeet"]
         )
     ],
     swiftLanguageModes: [.v5]

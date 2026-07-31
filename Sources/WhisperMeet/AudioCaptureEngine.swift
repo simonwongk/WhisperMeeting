@@ -54,6 +54,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var healthUpdate: (@Sendable (RecordingHealthSnapshot) -> Void)?
     private var healthTimer: DispatchSourceTimer?
     private var recordingActivity: NSObjectProtocol?
+    private var injectedStopCapture: (() async throws -> Void)?
+    private var injectedFinishTracks: (() throws -> Void)?
+    private var injectedPreserveTracks: (() -> Void)?
+    private var injectedStartCapture: ((
+        URL,
+        @escaping @Sendable (RecordingHealthSnapshot) -> Void,
+        @escaping @Sendable (RecordingMeterSnapshot) -> Void
+    ) async throws -> Void)?
 
     // Fast, throttled level stream that drives the live volume bar, separate from the 1 Hz health
     // snapshot used for warnings.
@@ -62,13 +70,40 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var lastLevelsEmittedAt: TimeInterval = 0
     private static let levelsEmitInterval: TimeInterval = 1.0 / 15.0
 
+    override init() {
+        super.init()
+    }
+
+    init(
+        stoppingCapture: @escaping () async throws -> Void,
+        finishingTracks: @escaping () throws -> Void,
+        preservingPartialTracks: @escaping () -> Void,
+        startingCapture: @escaping (
+            URL,
+            @escaping @Sendable (RecordingHealthSnapshot) -> Void,
+            @escaping @Sendable (RecordingMeterSnapshot) -> Void
+        ) async throws -> Void,
+        directory: URL
+    ) {
+        injectedStopCapture = stoppingCapture
+        injectedFinishTracks = finishingTracks
+        injectedPreserveTracks = preservingPartialTracks
+        injectedStartCapture = startingCapture
+        sessionDirectory = directory
+        super.init()
+    }
+
     func start(
         in directory: URL,
         onHealthUpdate: @escaping @Sendable (RecordingHealthSnapshot) -> Void,
         onLevels: @escaping @Sendable (RecordingMeterSnapshot) -> Void
     ) async throws {
         let startBeganAt = ProcessInfo.processInfo.systemUptime
-        guard stream == nil else { return }
+        guard stream == nil, injectedStopCapture == nil else { return }
+        if let injectedStartCapture {
+            try await injectedStartCapture(directory, onHealthUpdate, onLevels)
+            return
+        }
         guard await requestMicrophoneAccess() else {
             throw AudioCaptureError.microphonePermissionDenied
         }
@@ -163,17 +198,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 
     func stop() async throws -> RecordingArtifact {
-        guard let stream, let directory = sessionDirectory else {
+        guard let directory = sessionDirectory,
+              stream != nil || injectedStopCapture != nil else {
             throw AudioCaptureError.noAudioCaptured
         }
+        defer { reset() }
 
         do {
-            try await stream.stopCapture()
+            if let injectedStopCapture {
+                try await injectedStopCapture()
+            } else {
+                try await stream?.stopCapture()
+            }
         } catch {
             stopHealthTimer()
             await captureQueue.flush()
             preservePartialTracks()
-            reset()
             throw error
         }
         stopHealthTimer()
@@ -181,16 +221,23 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
         if let streamError {
             preservePartialTracks()
-            reset()
             throw streamError
         }
 
-        guard let systemTrack = try systemWriter?.finish(),
-              let microphoneTrack = try microphoneWriter?.finish() else {
-            reset()
-            throw AudioCaptureError.noAudioCaptured
+        let systemTrack: FloatTrack
+        let microphoneTrack: FloatTrack
+        do {
+            try injectedFinishTracks?()
+            guard let finishedSystemTrack = try systemWriter?.finish(),
+                  let finishedMicrophoneTrack = try microphoneWriter?.finish() else {
+                throw AudioCaptureError.noAudioCaptured
+            }
+            systemTrack = finishedSystemTrack
+            microphoneTrack = finishedMicrophoneTrack
+        } catch {
+            preservePartialTracks()
+            throw error
         }
-        defer { reset() }
         guard systemTrack.frameCount > 0 || microphoneTrack.frameCount > 0 else {
             throw AudioCaptureError.noAudioCaptured
         }
@@ -304,13 +351,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         healthMonitor = nil
         healthUpdate = nil
         levelsUpdate = nil
+        injectedStopCapture = nil
+        injectedFinishTracks = nil
+        injectedPreserveTracks = nil
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
 
     private func preservePartialTracks() {
-        _ = try? systemWriter?.finish()
-        _ = try? microphoneWriter?.finish()
+        if let injectedPreserveTracks {
+            injectedPreserveTracks()
+        } else {
+            _ = try? systemWriter?.finish()
+            _ = try? microphoneWriter?.finish()
+        }
     }
 
     private func beginRecordingActivity() {
