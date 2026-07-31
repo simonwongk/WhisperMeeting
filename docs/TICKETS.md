@@ -599,30 +599,6 @@ contains the brevity instruction; `.actionItemsFocused` emphasizes action items;
 byte-identical across all styles; the "do not translate" clause is present for every style. Fails
 before, passes after.
 
-### F64 — Pin important meetings to the top of the sidebar
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Meetings are strictly reverse-chronological (inline sorts at `MeetingStore.swift:205`
-and `:280`); a reference or recurring recording sinks out of view with no way to keep it reachable.
-
-**Proposed feature.** Add optional `pinned: Bool?` to `MeetingRecord` (`:31`, like the existing
-optional `transcriptNormalized` so old indexes decode). Add a pure `MeetingOrdering.sorted(_:)`
-returning pinned-first then `createdAt`-descending, and replace both inline sorts (`:205,280`) with
-it. Add `MeetingStore.togglePin(id:)` via `update(id:)` (`:209`). Split the sidebar into
-Pinned/Meetings and add Pin/Unpin to the row context menu (`ContentView.swift:73`).
-
-**Invariants.** A single ordering flag in the index; audio/source tracks untouched; no
-network/diarization.
-
-**Verification.** New `MeetingOrderingTests`: a pinned July-1 meeting sorts before an unpinned
-July-20 meeting; among equal pin state the newer `createdAt` wins; a fixture with no `pinned` key
-still decodes. Fails before, passes after.
-
 ### F65 — Glossary auto-correction: reviewable spelling normalization toward the user's vocabulary
 
 - **Status:** open

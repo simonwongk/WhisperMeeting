@@ -71,6 +71,9 @@ struct ContentView: View {
                         MeetingRow(meeting: meeting)
                             .tag(SidebarItem.meeting(meeting.id))
                             .contextMenu {
+                                Button((meeting.pinned ?? false) ? "Unpin" : "Pin to Top") {
+                                    store.togglePin(id: meeting.id)
+                                }
                                 Button("Delete Meeting", role: .destructive) {
                                     pendingDeletion = meeting
                                 }
@@ -163,9 +166,17 @@ private struct MeetingRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(meeting.title)
-                .fontWeight(.medium)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                if meeting.pinned ?? false {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Pinned")
+                }
+                Text(meeting.title)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+            }
             HStack(spacing: 6) {
                 Circle()
                     .fill(statusColor)

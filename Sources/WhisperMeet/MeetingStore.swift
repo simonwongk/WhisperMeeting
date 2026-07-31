@@ -49,6 +49,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// User-dropped markers (timestamps only). Optional so meeting indexes written before this
     /// feature still decode. The audio is never modified — see `docs/RECORDING_MARKERS.md`.
     var markers: [RecordingMarker]?
+    /// Whether the user pinned this meeting to the top of the sidebar. Optional so meeting indexes
+    /// written before this feature still decode (F64).
+    var pinned: Bool?
 
     init(
         id: UUID = UUID(),
@@ -64,7 +67,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         errorMessage: String? = nil,
         summary: MeetingSummary? = nil,
         transcriptNormalized: Bool? = nil,
-        markers: [RecordingMarker]? = nil
+        markers: [RecordingMarker]? = nil,
+        pinned: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -80,6 +84,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.summary = summary
         self.transcriptNormalized = transcriptNormalized
         self.markers = markers
+        self.pinned = pinned
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.
@@ -202,13 +207,21 @@ final class MeetingStore: ObservableObject {
         } else {
             meetings.append(meeting)
         }
-        meetings.sort { $0.createdAt > $1.createdAt }
+        meetings = MeetingOrdering.sorted(meetings)
         persistMeetings()
     }
 
     func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
+        persistMeetings()
+    }
+
+    /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
+    func togglePin(id: UUID) {
+        guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        meetings[index].pinned = !(meetings[index].pinned ?? false)
+        meetings = MeetingOrdering.sorted(meetings)
         persistMeetings()
     }
 
@@ -277,7 +290,7 @@ final class MeetingStore: ObservableObject {
     private func loadMeetings() {
         do {
             guard let result = try meetingFiles.load() else { return }
-            meetings = result.value.sorted { $0.createdAt > $1.createdAt }
+            meetings = MeetingOrdering.sorted(result.value)
             if result.source == .backup {
                 startupRecoveryMessages.append(
                     "The meeting index was damaged, so WhisperMeet restored the previous readable backup. No recording folders were deleted."

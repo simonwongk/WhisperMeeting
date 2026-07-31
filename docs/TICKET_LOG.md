@@ -34,6 +34,43 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F64 — Pin important meetings to the top of the sidebar
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** Meetings were strictly reverse-chronological, so a reference/recurring recording sank
+out of view. Added optional `pinned: Bool?` to `MeetingRecord` (old indexes still decode), a pure
+`MeetingOrdering.sorted(_:)` (pinned first, then newest `createdAt`), replaced both inline store sorts
+with it, and added `MeetingStore.togglePin(id:)`. UI: Pin/Unpin in the row context menu and a
+`pin.fill` badge on pinned rows.
+
+**Invariants.** A single ordering flag in the index; audio/source tracks untouched; no
+network/diarization.
+
+**Evidence.**
+
+Fails before the fix (pin priority removed from `MeetingOrdering`) — the pinned older meeting sorts by
+date:
+
+```text
+✘ Test "Pinned meetings sort first, then newest createdAt" recorded an issue at MeetingOrderingTests.swift:17:5: Expectation failed: (sorted.map(\.title) → ["new", "pinned", "old"]) == ["pinned", "new", "old"]
+✘ Test run with 1 test failed after 0.001 seconds with 1 issue.
+```
+
+Passes after, full suite grew 196 → 198:
+
+```text
+✔ Test "Pinned meetings sort first, then newest createdAt" passed after 0.001 seconds.
+✔ Test "A meetings index written before the pinned field still decodes" passed after 0.001 seconds.
+✔ Test run with 198 tests passed after 2.284 seconds.
+```
+
+**Gaps.** Delivered pin-first ordering everywhere + a pin badge rather than a separate
+"Pinned"/"Meetings" sidebar section (the section split is cosmetic on top of the ordering). The
+SwiftUI context menu / badge are not view-tested in this harness.
+
 ## F37 — Dictation is blocked while a *meeting* model runtime installs
 
 - **Outcome:** fixed
