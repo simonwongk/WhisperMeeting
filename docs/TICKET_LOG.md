@@ -19,7 +19,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
 - **Commits:** `7d85958` (stage + atomic swap + shlock + reclaim + trap), `c35b333` (venv relocation
-  before the swap), `d9bdc0d` (health-checked reclaim + shebang-only rewrite), `<close-sha>` (close)
+  before the swap), `d9bdc0d` (health-checked reclaim + shebang-only rewrite), `8bf29a1` (close)
 - **Reachability:** user clicks "Install / Repair Local Whisper" (`DictationView.swift:44`) or the
   Settings runtime control (`ContentView.swift:1071`) → `AppModel.installLocalWhisper()`
   (`AppModel.swift:342`) spawns the bundled `setup-local-whisper.sh` (`forResource:` `:351`). Also the
