@@ -21,3 +21,13 @@ parameters against the live docs — do not guess.
 Before writing local OpenAI Whisper code, fetch the current official repository documentation at
 https://github.com/openai/whisper and verify model names and command-line options against the live
 source.
+
+Before changing the **Qwen3-ASR** subprocess contract (`Scripts/qwen_transcribe.py` and
+`Scripts/qwen_dictate_server.py` — the `generate(language=, chunk_duration=, min_chunk_duration=)`
+call and the segment / forced-alignment shapes it reads), verify against the **pinned `mlx-audio`
+package**. `Scripts/setup-qwen-asr.sh` pins `mlx-audio==0.3.1` from PyPI; there is no stable hosted
+API reference for it, so — exactly as the F24 entry cited `mlx_whisper/transcribe.py:175` — **cite the
+installed package source** for the pinned version (e.g. the relevant file under
+`…/Runtime/Qwen3ASR/venv/lib/python*/site-packages/mlx_audio/stt/…`) rather than guessing a flag or
+key. If you bump the pin, re-verify the call and output shapes against the new version's source and
+record the citation in `docs/TICKET_LOG.md`.

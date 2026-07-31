@@ -281,27 +281,6 @@ is orphaned and Qwen reports "not installed" until the user manually reinstalls.
 **Verification.** Kill an install mid-run; on next launch the backup is reclaimed or removed without
 user action.
 
-### F36 — The Qwen subprocess contract has no upstream documentation anchor
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** docs
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, standards)
-
-**Problem.** `docs/TICKETS.md:61` requires live-doc verification "per `../AGENTS.md`" for the
-Whisper **or Qwen** contract, but `AGENTS.md` names only whisperai.com and
-github.com/openai/whisper. There is no Qwen / `mlx-audio` source listed, so the Qwen call contract
-(`Scripts/qwen_transcribe.py:70-75`, `Scripts/qwen_dictate_server.py:24-29` —
-`generate(language=, chunk_duration=, min_chunk_duration=)`) is unanchored.
-`docs/ASR_EVALUATION_LOG_2026-07-29.md:9-13` claims docs "were checked" but cites no URL or version,
-unlike the F24 entry which cites `mlx_whisper/transcribe.py:175`.
-
-**Impact.** A rule that cannot be followed as written. Qwen API drift would not be caught.
-
-**Proposed fix.** Add the pinned `mlx-audio` source to `AGENTS.md`, or require citing the installed
-package source (as F24 did) when no upstream doc exists.
-
 ### F37 — Dictation is blocked while a *meeting* model runtime installs
 
 - **Status:** open

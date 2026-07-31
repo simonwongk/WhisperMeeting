@@ -34,6 +34,30 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F36 — The Qwen subprocess contract has no upstream documentation anchor
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** The definition of done requires live-doc verification for the Whisper **or Qwen**
+contract "per AGENTS.md", but AGENTS.md's Upstream-documentation section named only whisperai.com and
+github.com/openai/whisper — the Qwen / `mlx-audio` call contract was unanchored, so the rule could not
+be followed as written.
+
+**Fix.** Added a Qwen3-ASR paragraph to AGENTS.md. It names the pinned package (`mlx-audio==0.3.1`
+from `Scripts/setup-qwen-asr.sh`), scopes the contract (`generate(language=, chunk_duration=,
+min_chunk_duration=)` plus segment/alignment shapes), and — since there is no hosted API reference —
+requires citing the **installed package source** for the pinned version (mirroring how the F24 entry
+cited `mlx_whisper/transcribe.py:175`), plus re-verifying and recording a citation on any pin bump.
+
+**Evidence.** Documentation-only. Verified the pinned version against the installer
+(`Scripts/setup-qwen-asr.sh:15,125` → `mlx-audio==0.3.1`). No behavior change → no
+fails-before/passes-after test.
+
+**Gaps.** The upstream GitHub URL is intentionally not asserted (unverified); the anchor points at the
+installed package source, which is the reliable citation for a pinned dependency.
+
 ## F34 — `QUICK_DICTATION_DESIGN.md` still locks dictation to Whisper turbo
 
 - **Outcome:** fixed
