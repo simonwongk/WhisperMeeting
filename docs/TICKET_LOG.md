@@ -34,6 +34,76 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F48 — `AudioCaptureEngine.stop()` could wedge the engine after a finalization failure
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Codex / root
+- **Commits:** `69def10`, `9a9731a`
+
+**Root cause.** `AudioCaptureEngine.stop()` registered `defer { reset() }` only after both raw-track
+writers finished. If either writer threw while closing its file handle, `stop()` exited before
+resetting the active stream. Every later `start()` therefore hit the already-active guard and
+returned without starting capture or installing health/level callbacks, while the app could still
+show a recording state.
+
+**Fix.** Registered reset immediately after `stop()` validates the active capture session, so every
+exit path releases the stream. A track-finalization error now also invokes the existing best-effort
+partial-track preservation path before propagating the original error. Added a headless
+`WhisperMeetTests` target and a narrow injected capture seam: the regression makes track
+finalization throw, proves preservation runs, then proves a subsequent `start()` proceeds and
+delivers both callbacks without accessing microphone/screen hardware or user data. Updated
+`CLAUDE.md` to document that test boundary.
+
+**Evidence.**
+
+The regression failed before the lifecycle fix:
+
+```text
+◇ Test "A failed stop releases the capture session and preserves partial tracks" started.
+✘ Expectation failed: expected error of type AudioCaptureError,
+  but "finishingTrack" of type ExpectedFailure was thrown instead
+✘ Expectation failed: (stopCount → 2) == 1
+✘ Expectation failed: preservedPartialTracks
+✘ Test run with 1 test failed after 0.001 seconds with 3 issues.
+```
+
+It passed after the fix and after the review-strengthened restart/callback assertions:
+
+```text
+Build complete! (1.11s)
+◇ Test "A failed stop releases the capture session and preserves partial tracks" started.
+✔ Test "A failed stop releases the capture session and preserves partial tracks" passed after 0.001 seconds.
+✔ Test run with 1 test passed after 0.001 seconds.
+```
+
+The final repository quality gate passed:
+
+```text
+[1/4] Checking the candidate diff for whitespace errors
+[2/4] Running the complete test suite
+✔ Test run with 179 tests passed after 1.058 seconds.
+[3/4] Building production code with warnings as errors
+Build complete! (12.39s)
+[4/4] Packaging and signing WhisperMeet.app
+Build complete! (11.15s)
+.build/WhisperMeet.app: replacing existing signature
+/Users/simonwang/Documents/Whisper/.build/WhisperMeet.app
+Quality check passed.
+```
+
+Two-axis review initially found an outdated Core-only testing rule and incomplete restart coverage.
+After the documentation and test corrections, both reviewers reported no remaining standards or
+F48/spec findings.
+
+**Gaps.** No live microphone/screen recording was started: the failure requires a writer close
+error, which the injected test reproduces deterministically without risking a user's recording.
+No model run was applicable because F48 does not touch a model adapter or runtime helper. The first
+sandboxed test attempt could not compile because Swift's module cache was outside the writable
+workspace; the approved rerun used a writable temporary compiler cache and produced the red/green
+results above.
+
+---
+
 ## F29 — The benchmark table in `CHANGELOG.md` could not be reproduced from the repo
 
 - **Outcome:** fixed

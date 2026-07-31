@@ -628,34 +628,6 @@ message and continues to the next orphan.
 **Verification.** Three orphan folders where the middle one makes `recover()` throw; assert the
 first and third are both upserted into the store. Fails before, passes after.
 
-### F48 — `AudioCaptureEngine.stop()` can throw before its `reset()` defer, wedging the engine
-
-- **Status:** in-progress
-- **Owner:** Codex / root
-- **Severity:** low
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** In `stop()`, `try systemWriter?.finish()` / `try microphoneWriter?.finish()`
-(`Sources/WhisperMeet/AudioCaptureEngine.swift:188-189`) can throw because `finish()` calls
-`handle.close()` (`:554`), but `defer { reset() }` is only registered at `:193` — after. A throw
-exits `stop()` without `reset()`, leaving `self.stream` non-nil. The next `start()` hits
-`guard stream == nil else { return }` (`:71`) and returns early with no throw and without installing
-the health/level callbacks; `AppModel.startRecording` sees no error and sets
-`recordingState = .recording` over a dead engine (`AppModel.swift:440`).
-
-**Impact.** After a `stop()` that throws from `finish()` (rare — e.g. a full or failing volume),
-every subsequent "recording" is a silent no-op until relaunch, breaking "every failure is
-retryable". The recording being stopped is still recoverable from its raw `.f32` tracks on next
-launch; the loss falls on all later recordings.
-
-**Proposed fix.** Register `defer { reset() }` immediately after the initial
-`guard let stream, let directory`; on the `finish()` throw path also call `preservePartialTracks()`.
-
-**Verification.** With an injectable writer that throws from `finish()`, assert that after `stop()`
-throws the engine has `stream == nil` so a following `start()` proceeds and installs callbacks.
-Fails before, passes after.
-
 ### F49 — Vocabulary import is UTF-8-only; one bad file aborts the whole batch
 
 - **Status:** open
