@@ -26,6 +26,15 @@ venv_is_complete() {
   [[ -x "$candidate/bin/python" && -x "$candidate/bin/whisper" ]]
 }
 
+# Stronger than a structural check: does the venv's whisper actually RUN? A structurally-complete venv
+# whose console-script shebang points at a gone path (e.g. left by an interrupted install) passes
+# venv_is_complete but is broken, so the live path is validated by whether it runs before any backup
+# is purged.
+venv_works() {
+  candidate="$1"
+  [[ -x "$candidate/bin/whisper" ]] && "$candidate/bin/whisper" --help >/dev/null 2>&1
+}
+
 cleanup_and_restore() {
   exit_status=$?
   trap - EXIT HUP INT TERM
@@ -48,19 +57,22 @@ if ! /usr/bin/shlock -p $$ -f "$lock_file"; then
 fi
 lock_acquired=1
 
-# Reclaim installer-owned artifacts while holding the lock: restore a complete backup if the live
-# venv vanished (an install interrupted after the swap moved it aside), and clear abandoned staging
-# directories and incomplete backups — neither can ever serve as a runtime.
-if [[ ! -e "$venv_target" ]]; then
+# Reclaim installer-owned artifacts while holding the lock. Restore the previous runtime if the live
+# venv is missing OR present-but-nonfunctional — a crash could leave a structurally-complete but
+# broken venv, and purging backups on `venv_is_complete` alone would then delete the only good copy
+# while the live runtime is broken (unrecoverable). Gate both the restore and the purge on whether the
+# live venv actually RUNS, so a good backup is never removed unless a working runtime is in place.
+if ! venv_works "$venv_target"; then
   for orphaned_backup in "$runtime_directory"/.venv-backup-*(N); do
     if venv_is_complete "$orphaned_backup"; then
+      rm -rf "$venv_target"
       mv "$orphaned_backup" "$venv_target"
       print -u2 "Restored the previous Local Whisper runtime after an interrupted installation."
       break
     fi
   done
 fi
-if venv_is_complete "$venv_target"; then
+if venv_works "$venv_target"; then
   for orphaned_backup in "$runtime_directory"/.venv-backup-*(N); do rm -rf "$orphaned_backup"; done
 else
   for orphaned_backup in "$runtime_directory"/.venv-backup-*(N); do
@@ -124,7 +136,10 @@ for name in os.listdir(bindir):
         continue
     with open(path, "rb") as handle:
         data = handle.read()
-    if old in data:
+    # Only rewrite console-script shebangs (files that start with "#!"). That covers venv/bin/whisper
+    # — the executable the app runs — while never editing a compiled launcher (a length-changing byte
+    # replace would corrupt a Mach-O) or the sourced-only activate scripts, which the app never uses.
+    if data.startswith(b"#!") and old in data:
         with open(path, "wb") as handle:
             handle.write(data.replace(old, new))
 PY
