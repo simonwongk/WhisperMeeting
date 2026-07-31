@@ -18,7 +18,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `dc6343d` (fix + core + tests), `db14193` (plan-coverage regression test), `<close-sha>` (close)
+- **Commits:** `dc6343d` (fix + core + tests), `db14193` (plan-coverage regression test), `c72222c` (close)
 - **Reachability:** app launch → `AppEntry` `@StateObject private var dictation = DictationController()`
   (`AppEntry.swift:7`, default `activateOnInit: true`) → `DictationController.init` →
   `ensureHelperInstalled()` → `DictationHelperSync.installedHelperPlan()` (every
