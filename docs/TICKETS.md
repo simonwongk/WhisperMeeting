@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F114`.**
+**Next free ID: `F115`.**
 
 ---
 
@@ -135,37 +135,6 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
-
-### F113 — Presentation-only redesign pass: one surface/typography/motion language for the UI
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
-
-**Problem.** The visual layer grew feature-by-feature and reads as assembled, not designed: four
-different card fills (`.quaternary.opacity(0.35/0.4/0.45/0.55)`) across corner radii 6/8/10/12
-(`Sources/WhisperMeet/ContentView.swift:390,479,737,905,1574,1661,2276,2376,2435`), fixed-point fonts
-that ignore the user's text size (`:246,784,794,816,860` — also cited by F87), the recording pulse
-and springs run regardless of the system Reduce Motion setting, and `DictationView` uses stock
-`GroupBox` chrome unrelated to the card language everywhere else. No behavioural defect.
-
-**Impact.** Craft/consistency only: panels built in different rounds look unrelated, motion ignores
-an accessibility setting, and the app's most-seen screens (record, transcript) miss the visual
-hierarchy the content deserves.
-
-**Proposed fix.** A presentation-only pass over `ContentView.swift`, `DictationView.swift`, and the
-`DictationPill` visuals in `DictationOverlay.swift`, plus a new `DesignSystem.swift` of shared
-view-modifier helpers: one card/banner surface vocabulary, semantic or `@ScaledMetric` typography,
-critically-damped springs gated on `accessibilityReduceMotion`, and F87's phrase attachments (claimed
-together). **No change** to `AppModel`, stores, capture, dictation controllers, or `WhisperCore`
-behaviour — every action, binding, dialog, and state machine keeps its exact call path.
-
-**Verification.** `swift build` + `swift test` pass with no test-count drop (baseline 257);
-`git diff --stat` shows only the named view files, `DesignSystem.swift`, docs, and the F87 test;
-manual visual pass of every redesigned screen. Change-by-change record in
-`docs/UI_REDESIGN_LOG.md`.
 
 ## Reachability wiring — filed 2026-07-31
 
@@ -385,35 +354,6 @@ a seam and add a `WhisperMeetTests` case: a `MeetingRecord` with sentinel transc
 mapping + `json` → output has counts/ids but not the sentinels (fails before the seam, passes after).
 Button is SwiftUI — manual: export, confirm the file lists only structural fields and grep finds none
 of your transcript/vocab strings and no absolute paths.
-
-### F87 — Attach the remaining accessibility labels and Dynamic Type (delivers F71)
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31) — bundled with F113
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `AccessibilityPhrase` (`Sources/WhisperCore/AccessibilityPhrase.swift`) is 1/4 wired:
-`meetingRow` is attached (`ContentView.swift:217`), but `recordButton` (`:13`), `marker` (`:18`), and
-`levelMeter` (`:22`) are not attached to the record button (`ContentView.swift:270-285`), marker rows
-(`:709-716`), or the meter (a hardcoded label sits at `:967`). Transcript/timer fonts use fixed point
-sizes (`:246,784,794,816,860`) that ignore Dynamic Type.
-
-**Impact.** VoiceOver users do not hear the tested state-aware labels (the record button never
-announces "Recording controls unavailable"; markers read as unlabeled; the meter reads a generic
-string), and low-vision users get no scaling on the 58pt title / 48pt timer. Operable but materially
-less accessible than the tested core already allows.
-
-**Proposed fix.** Attach `recordButton(isRecording:isBusy:)`, `marker(label:offset:)` (with
-`.accessibilityElement(children:.ignore)`), and `levelMeter(channel:level:)` at the sites above; add
-the missing `levelMeter` assertion to `AccessibilityPhraseTests`; replace fixed `.system(size:)` fonts
-with semantic text styles or `@ScaledMetric`.
-
-**Verification.** Phrase functions get WhisperCore unit coverage (add the `levelMeter` red-green). The
-wiring has no SwiftUI/accessibility harness — verify manually with Accessibility Inspector / VoiceOver:
-record button announces start/stop/unavailable, a marker reads "Marker <label> at MM:SS" as one
-element, the meter reads "<channel> level NN percent", and larger-text settings scale the title/timer.
 
 ### F88 — Wire the "Second opinion" cross-engine comparison (delivers F73)
 

@@ -14,6 +14,105 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F113 — Presentation-only redesign pass: one surface/typography/motion language for the UI
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+- **Commits:** `4bdb631` (file+claim), `6e0bac5` (implementation)
+- **Reachability:** every redesigned surface is an existing user-visible view — the sidebar,
+  `RecordMeetingView`, `PreflightTestSheet`, `SettingsView`, `VocabularyView`,
+  `TranscriptDetailView`/`PlayableTranscriptView`, `DictationView`, and the `DictationPill`
+  overlay. No new call paths; no functional file touched.
+- **Follow-up:** F114 (needs-human — the on-screen visual pass)
+
+**Root cause.** The visual layer accreted per feature: four different card fills
+(`.quaternary.opacity(0.35/0.4/0.45/0.55)`) across corner radii 6/8/10/12, fixed-point fonts,
+motion that ignored the system Reduce Motion setting, and stock `GroupBox` chrome on the Dictation
+tab unrelated to the card language everywhere else.
+
+**Fix.** A shared design vocabulary in a new `Sources/WhisperMeet/DesignSystem.swift`
+(`cardSurface`/`bannerSurface` continuous-corner surfaces, a critically-damped `Animation.uiSpring`)
+applied across `ContentView.swift` and `DictationView.swift`; a tinted hero orb and capsule primary
+button on the record screen; capsule metadata chips on the meeting header; `@ScaledMetric`/semantic
+type replacing every fixed font; pulse/layout springs gated on `accessibilityReduceMotion`; the
+`DictationPill` phase changes cross-fade instead of hard-cutting. Presentation is the right layer:
+the redesign brief explicitly forbade functional change, and the diff was reviewed hunk-by-hunk
+against that rule (the one refactor, `isPrimaryActionBusy`, reuses the identical boolean
+expression). Full change-by-change record: `docs/UI_REDESIGN_LOG.md`.
+
+**Evidence.**
+
+```text
+$ swift build
+Build complete! (5.50s)
+$ swift test
+✔ Test run with 257 tests passed after 1.119 seconds.   # baseline before the pass: 257 tests
+$ Scripts/build-app.sh
+Build complete! (11.02s)
+.build/WhisperMeet.app: replacing existing signature
+$ git diff --stat   # before commit — UI/test/docs files only
+ Sources/WhisperMeet/ContentView.swift                 | 231 ++++++++++++-------
+ Sources/WhisperMeet/Dictation/DictationOverlay.swift  |  12 +-
+ Sources/WhisperMeet/DictationView.swift               |  45 ++--
+ Tests/WhisperCoreTests/AccessibilityPhraseTests.swift |   8 +
+ (+ new Sources/WhisperMeet/DesignSystem.swift)
+```
+
+**Gaps.** The on-screen visual pass (light/dark, every redesigned screen) could not be performed in
+this session — launching the app runs startup recovery over the real meeting index, which the
+testing rules forbid — filed as F114 (needs-human). Not planned: an automated SwiftUI render test;
+the `WhisperMeet` target has no view-render harness (a standing limitation, per AGENTS.md's wiring
+guidance).
+
+## F87 — Attach the remaining accessibility labels and Dynamic Type (delivers F71)
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session) — bundled with F113
+- **Commits:** `6e0bac5`
+- **Reachability:** record button → `AccessibilityPhrase.recordButton(isRecording:isBusy:)`
+  (`RecordMeetingView`'s primary button); marker rows (`SimpleMarkersList`) and marker chips
+  (`PlayableTranscriptView.markerChip`) → `AccessibilityPhrase.marker(label:offset:)`; live meter
+  (`LiveVolumeBar`) and per-channel meters (`RecordingChannelMeter`) →
+  `AccessibilityPhrase.levelMeter(channel:level:)`. All are existing user-visible controls.
+
+**Root cause.** F71 shipped the tested phrase core but only wired `meetingRow`; the remaining
+attachments and the Dynamic Type font work were deferred (F87 filed under the Reachability rule).
+
+**Fix.** Attached the three remaining phrases at the sites the ticket cites. In `SimpleMarkersList`
+the timestamp+label pair is grouped with `.accessibilityElement(children: .ignore)` so a marker
+reads as one element while Rename/Delete stay individually reachable (a deliberate refinement of
+the ticket's blanket `.ignore` suggestion, which would have hidden those buttons from VoiceOver).
+Replaced the fixed fonts at the cited sites (`58/40/48/30/34pt`) with `@ScaledMetric` sizes and
+semantic styles (the live timer is now `.largeTitle` rounded + `.monospacedDigit()`), so the record
+screen and preflight sheet follow the user's text size. Landed with F113 in the same commit.
+
+**Evidence.**
+
+The previously missing `levelMeter` assertions, first proven to bite via a deliberately wrong
+expectation (then restored):
+
+```text
+✘ Test "Accessibility phrases render exact spoken strings" recorded an issue at
+  AccessibilityPhraseTests.swift:21:5: Expectation failed:
+  (AccessibilityPhrase.levelMeter(channel: "Microphone", level: 0.42)
+  → "Microphone level 42 percent") == "Microphone level 41 percent"
+✘ Test run with 1 test failed after 0.001 seconds with 1 issue.
+```
+
+Restored and green with the rest of the suite:
+
+```text
+✔ Test run with 257 tests passed after 1.119 seconds.
+```
+
+The phrase function pre-dated this ticket (its correctness was never in question), so the red run
+demonstrates the new assertions execute and can fail — there was no broken-code state to capture.
+
+**Gaps.** The VoiceOver / Accessibility Inspector spot-check and the larger-text visual check the
+ticket's verification section prescribes need a person at the machine — folded into F114
+(needs-human, filed with F113's close). Not planned: an automated accessibility-tree test; no such
+harness exists for the `WhisperMeet` target.
+
 ## F112 — 42 closed log entries carry the `<this commit>` placeholder instead of a real SHA
 
 - **Outcome:** wontfix
