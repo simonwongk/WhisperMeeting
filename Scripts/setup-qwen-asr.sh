@@ -25,13 +25,19 @@ if [[ "${QWEN_INSTALL_RECOVERY_ONLY:-0}" != "1"
   print -u2 "Qwen3-ASR currently requires an Apple-silicon Mac."
   exit 1
 fi
-if [[ ! -f "$helper_source" ]]; then
-  print -u2 "The bundled Qwen3-ASR helper is missing."
-  exit 1
-fi
-if [[ ! -f "$dictation_helper_source" ]]; then
-  print -u2 "The bundled Qwen3-ASR dictation helper is missing."
-  exit 1
+# Recovery-only mode reclaims an interrupted install (F33) and never copies the bundled helpers, so it
+# must not require them — otherwise a build missing a helper would make the launch reclaim exit before
+# it runs, leaving the orphaned runtime stranded (the very failure F33 closes). Only the real install
+# needs them.
+if [[ "${QWEN_INSTALL_RECOVERY_ONLY:-0}" != "1" ]]; then
+  if [[ ! -f "$helper_source" ]]; then
+    print -u2 "The bundled Qwen3-ASR helper is missing."
+    exit 1
+  fi
+  if [[ ! -f "$dictation_helper_source" ]]; then
+    print -u2 "The bundled Qwen3-ASR dictation helper is missing."
+    exit 1
+  fi
 fi
 
 mkdir -p "$runtime_parent"
