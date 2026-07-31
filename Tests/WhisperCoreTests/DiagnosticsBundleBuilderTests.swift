@@ -34,3 +34,33 @@ func diagnosticsBundleExcludesSensitive() {
     #expect(out.contains("\"vocabularyTermCount\""))
     #expect(out.contains("m1"))
 }
+
+/// F111 — a meeting whose optional fields are all nil serialises to the documented defaults
+/// (`languageCode` "", `recordingBytes` -1, `errorMessage` "", `hasError` false). This locks the
+/// nil path the typed-local `??` bindings cover, so the emitted values cannot silently drift when
+/// the overload is pinned to the non-optional form.
+@Test("Diagnostics bundle encodes nil optionals as the documented defaults")
+func diagnosticsBundleNilOptionalsUseDefaults() throws {
+    let input = DiagnosticsInput(
+        meetings: [
+            DiagnosticsInput.Meeting(
+                id: "m-nil", createdAtEpoch: 0, durationSeconds: 0, status: "failed",
+                languageCode: nil, segmentCount: 0, markerCount: 0, recordingBytes: nil,
+                errorMessage: nil, transcriptText: "", summary: nil
+            )
+        ],
+        vocabulary: []
+    )
+
+    let out = DiagnosticsBundleBuilder.json(input)
+    let root = try #require(
+        try JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any]
+    )
+    let meetings = try #require(root["meetings"] as? [[String: Any]])
+    let meeting = try #require(meetings.first)
+
+    #expect(meeting["languageCode"] as? String == "")
+    #expect(meeting["errorMessage"] as? String == "")
+    #expect(meeting["hasError"] as? Bool == false)
+    #expect(meeting["recordingBytes"] as? Int == -1)
+}
