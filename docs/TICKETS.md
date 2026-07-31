@@ -347,36 +347,6 @@ with a fails-before/passes-after definition of done. These respect the non-negot
 (local-only except the opt-in Claude summary, recording is source-of-truth, no diarization, original
 language). Tickets that concretize an existing `ROADMAP.md` "Next candidate" note it explicitly.
 
-### F55 — Engine-agnostic repetition flag: text-derived quality review for Qwen/legacy transcripts
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort L / risk L)
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** `TranscriptQuality` only scores segments carrying Whisper's
-`avgLogprob`/`noSpeechProb`/`compressionRatio`. `QwenAlignedTranscript.segments`
-(`Sources/WhisperCore/QwenAlignedTranscript.swift:43-48`) builds every segment with all three nil,
-so `classify()` (`TranscriptQuality.swift:115-120`) returns nil, `isUnscored` is true, and the
-quality banner (`ContentView.swift:2149`) never appears for any Qwen meeting — including Qwen's most
-common failure, a degenerate loop.
-
-**Proposed feature.** Add a pure, framework-free repetition heuristic to WhisperCore (deterministic
-n-gram / longest-repeat over `TranscriptSegment.text`, not Foundation's compression API) yielding a
-compression-ratio equivalent from text alone. Extend `TranscriptQuality.classify` so
-`SegmentQualityFlag.repetitive` is reachable when `compressionRatio == nil`, while keeping
-`.lowConfidence`/`.likelySilence` gated on real model metrics. Count a text-only-scored segment
-toward `scoredCount` so `isUnscored` flips to false.
-
-**Invariants.** Read-only classification; audio untouched; no translation; speaker stays nil; stays
-framework-free (pure-Swift text math).
-
-**Verification.** In `TranscriptQualityTests`: a Qwen-style `[TranscriptSegment]` with all metrics
-nil but text "yes yes yes yes yes yes yes" yields a `.repetitive` flag and
-`report.isUnscored == false`; a clean nil-metric segment stays unflagged and
-`.lowConfidence`/`.likelySilence` never fire without real metrics. Fails before, passes after.
-
 ### F56 — Persist an overall transcript confidence into the header and Meeting Notes
 
 - **Status:** open

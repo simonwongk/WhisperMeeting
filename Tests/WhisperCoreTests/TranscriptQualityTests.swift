@@ -105,10 +105,12 @@ func thresholdBoundaries() {
     #expect(report.flagged.isEmpty)
 }
 
-@Test("Segments without metrics are unscored, never flagged")
+@Test("A metric-less segment with no text is unscored (metric-less WITH text is scored via F55)")
 func missingMetricsUnscored() {
+    // Truly unscored now means no metrics AND no text; a metric-less segment with text is scored
+    // via the text-only repetition heuristic (covered by textOnlyRepetitionFlag).
     let report = TranscriptQuality.review([
-        seg("legacy transcript segment", logprob: nil, noSpeech: nil, compression: nil)
+        seg("", logprob: nil, noSpeech: nil, compression: nil)
     ])
     #expect(report.flagged.isEmpty)
     #expect(report.scoredCount == 0)
@@ -121,7 +123,7 @@ func confidenceFraction() {
         seg("clean one", logprob: -0.3, noSpeech: 0.01, compression: 1.2),
         seg("clean two", logprob: -0.4, noSpeech: 0.02, compression: 1.3),
         seg("shaky", logprob: -1.8, noSpeech: 0.1, compression: 1.4),
-        seg("no metrics here")
+        seg("") // truly unscored: no metrics and no text
     ])
     // 3 scored (the 4th is unscored), 1 flagged → 2/3 clean.
     #expect(report.scoredCount == 3)
@@ -170,4 +172,21 @@ func flagReasons() {
     #expect(SegmentQualityFlag.lowConfidence.reason.isEmpty == false)
     #expect(SegmentQualityFlag.likelySilence.reason.isEmpty == false)
     #expect(SegmentQualityFlag.repetitive.reason.isEmpty == false)
+}
+
+@Test("Text-only repetition is flagged without model metrics; clean metric-less text stays unflagged")
+func textOnlyRepetitionFlag() {
+    // Qwen-style segment: all model metrics nil, degenerate loop text.
+    let repetitive = TranscriptSegment(speaker: nil, start: 0, end: 1, text: "yes yes yes yes yes yes yes")
+    let report = TranscriptQuality.review([repetitive])
+    #expect(report.flagged.first?.flags.contains(.repetitive) == true)
+    #expect(report.isUnscored == false)
+
+    // A clean metric-less segment is scored (text present) but unflagged; silence/lowConfidence
+    // never fire without real metrics.
+    let clean = TranscriptSegment(speaker: nil, start: 0, end: 1, text: "the team agreed on the plan today")
+    let cleanReport = TranscriptQuality.review([clean])
+    #expect(cleanReport.flagged.isEmpty)
+    #expect(cleanReport.isUnscored == false)
+    #expect(!cleanReport.flagged.contains { $0.flags.contains(.lowConfidence) || $0.flags.contains(.likelySilence) })
 }

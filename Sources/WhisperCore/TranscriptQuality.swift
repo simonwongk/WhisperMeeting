@@ -110,25 +110,45 @@ public enum TranscriptQuality {
         return TranscriptQualityReport(flagged: flagged, scoredCount: scoredCount)
     }
 
-    /// Returns the flags for a segment, or `nil` if it has no metrics (unscored).
-    /// A scored-but-clean segment returns `[]`.
-    private static func classify(_ segment: TranscriptSegment) -> [SegmentQualityFlag]? {
-        // A segment is "scored" only if it carries the signals we actually use.
-        guard segment.avgLogprob != nil || segment.noSpeechProb != nil
-            || segment.compressionRatio != nil else {
-            return nil
+    /// A compression-ratio-equivalent derived from text alone, for transcripts (Qwen, legacy) that
+    /// carry no model metrics. Deterministic and framework-free — a degenerate loop repeats tokens,
+    /// so total/distinct token count spikes above the same 2.4 threshold Whisper's real ratio uses.
+    /// Space-delimited text scores by word (letters repeat too much to score by character); CJK runs
+    /// with no word boundaries fall back to per-character repetition (F55).
+    static func textCompressionRatio(_ text: String) -> Double {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 1.0 }
+        let words = trimmed.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+        if words.count > 1 {
+            let distinct = Set(words.map { $0.lowercased() })
+            return Double(words.count) / Double(max(1, distinct.count))
         }
+        let characters = trimmed.filter { !$0.isWhitespace }
+        guard !characters.isEmpty else { return 1.0 }
+        return Double(characters.count) / Double(max(1, Set(characters).count))
+    }
+
+    /// Returns the flags for a segment, or `nil` if it is truly unscored (no metrics and no text).
+    /// A scored-but-clean segment returns `[]`. A metric-less segment with text is still scored via
+    /// the text-only repetition heuristic, so the quality banner reaches Qwen/legacy transcripts.
+    private static func classify(_ segment: TranscriptSegment) -> [SegmentQualityFlag]? {
+        let hasMetrics = segment.avgLogprob != nil || segment.noSpeechProb != nil
+            || segment.compressionRatio != nil
+        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hasMetrics || !text.isEmpty else { return nil }
 
         var flags: [SegmentQualityFlag] = []
 
-        // Repetition and likely-silence are independent signals; a segment can carry any combination.
-        if (segment.compressionRatio ?? 0) > compressionRatioThreshold {
+        // Repetition uses the model's compression ratio when present, else the text-only heuristic.
+        let ratio = segment.compressionRatio ?? textCompressionRatio(text)
+        if ratio > compressionRatioThreshold {
             flags.append(.repetitive)
         }
+        // Likely-silence and low-confidence require real model metrics — never inferred from text.
         if (segment.noSpeechProb ?? 0) > silenceNoSpeechThreshold {
             flags.append(.likelySilence)
         }
-        if (segment.avgLogprob ?? 0) < logprobThreshold {
+        if let logprob = segment.avgLogprob, logprob < logprobThreshold {
             flags.append(.lowConfidence)
         }
 
@@ -140,7 +160,8 @@ public enum TranscriptQuality {
     private static func severity(of segment: TranscriptSegment, flags: [SegmentQualityFlag]) -> Double {
         var score = 0.0
         if let logprob = segment.avgLogprob { score += max(0, logprobThreshold - logprob) }
-        if let compression = segment.compressionRatio { score += max(0, compression - compressionRatioThreshold) }
+        let ratio = segment.compressionRatio ?? textCompressionRatio(segment.text)
+        score += max(0, ratio - compressionRatioThreshold)
         if let noSpeech = segment.noSpeechProb { score += max(0, noSpeech - silenceNoSpeechThreshold) }
         score += 0.25 * Double(max(0, flags.count - 1))
         return score

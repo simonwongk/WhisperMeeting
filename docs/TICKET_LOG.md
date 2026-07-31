@@ -34,6 +34,46 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F55 — Engine-agnostic repetition flag: text-derived quality review for Qwen/legacy transcripts
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** `TranscriptQuality` only scored segments carrying Whisper's metrics, so the quality
+banner never appeared for Qwen/legacy transcripts (all metrics nil) — including Qwen's most common
+failure, a degenerate loop. Added a pure `textCompressionRatio(_:)` (total/distinct token count —
+word-level for space-delimited text, character-level for CJK runs) and used it in `classify` when
+`compressionRatio == nil`, so `.repetitive` is reachable from text alone. A metric-less segment with
+text now counts toward `scoredCount` (so `isUnscored` flips to false). `.lowConfidence`/
+`.likelySilence` remain gated on real model metrics.
+
+**Invariants.** Read-only classification; audio untouched; no translation; speaker stays nil;
+framework-free (pure-Swift text math).
+
+**Evidence.**
+
+Fails before the fix (text heuristic disabled) — a metric-less loop is not flagged:
+
+```text
+✘ Test "Text-only repetition is flagged without model metrics; clean metric-less text stays unflagged" recorded an issue at TranscriptQualityTests.swift:182:5: Expectation failed: (report.flagged.first?.flags.contains(.repetitive) → nil) == true
+```
+
+Passes after; full suite grew 211 → 212:
+
+```text
+✔ Test "Text-only repetition is flagged without model metrics; clean metric-less text stays unflagged" passed after 0.001 seconds.
+✔ Test run with 212 tests passed after 1.105 seconds.
+```
+
+**Note on updated tests.** Two existing tests used metric-less segments WITH text as stand-ins for
+"unscored". Since F55 makes those scored, they were updated to use empty-text metric-less segments
+(the now-truly-unscored case); their intent and assertions (`scoredCount`, `confidence` math) are
+preserved.
+
+**Gaps.** The text heuristic is a repetition proxy, not Whisper's exact zlib ratio; it targets
+degenerate loops (the failure that matters), not subtle repetition.
+
 ## F61 — Self-contained printable HTML transcript export
 
 - **Outcome:** fixed
