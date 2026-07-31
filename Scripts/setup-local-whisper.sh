@@ -104,7 +104,34 @@ if ! "$staging_venv/bin/python" -m pip install --upgrade mlx-whisper; then
   print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
 fi
 
-# Atomically swap the verified staging venv in, keeping the prior venv as a restore-on-failure backup.
+# A Python venv is NOT relocatable: its console-script shebangs (e.g. `venv/bin/whisper` — the exact
+# executable the app invokes via LocalWhisperRuntime.managedExecutable) and its activate scripts embed
+# the absolute path it was created at. The `--help` check above passed because it ran while the venv
+# was still at the staging path; a bare `mv` to the live path would leave `bin/whisper` with a
+# "bad interpreter" shebang. So rewrite that staging path to the LIVE path *before* the move, so the
+# venv works the instant it lands. (`bin/python` is a relative symlink and survives the move on its
+# own; only the text console scripts embed the absolute path.)
+"$python_executable" - "$staging_venv" "$venv_target" <<'PY'
+import os
+import sys
+
+old = os.fsencode(sys.argv[1])
+new = os.fsencode(sys.argv[2])
+bindir = os.path.join(sys.argv[1], "bin")
+for name in os.listdir(bindir):
+    path = os.path.join(bindir, name)
+    if os.path.islink(path) or not os.path.isfile(path):
+        continue
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if old in data:
+        with open(path, "wb") as handle:
+            handle.write(data.replace(old, new))
+PY
+
+# Atomically swap the relocated staging venv in, keeping the prior venv as a restore-on-failure
+# backup. `mv` within one directory is an atomic rename, so the live path is never half-populated.
+rm -rf "$backup_venv"                      # never move the live venv into a leftover same-PID backup
 if [[ -e "$venv_target" ]]; then
   mv "$venv_target" "$backup_venv"
 fi
@@ -113,6 +140,17 @@ if ! mv "$staging_venv" "$venv_target"; then
     mv "$backup_venv" "$venv_target"
   fi
   print -u2 "The new Local Whisper runtime could not be activated; the previous runtime was restored."
+  exit 1
+fi
+# Re-verify at the LIVE path — the relocated shebangs must actually run — and roll back if not.
+if ! "$venv_target/bin/whisper" --help >/dev/null 2>&1; then
+  rm -rf "$venv_target"
+  if [[ -e "$backup_venv" ]]; then
+    mv "$backup_venv" "$venv_target"
+    print -u2 "The relocated Local Whisper runtime failed verification; the previous runtime was restored."
+  else
+    print -u2 "The Local Whisper runtime failed verification and there was no previous runtime to restore."
+  fi
   exit 1
 fi
 activation_complete=1
