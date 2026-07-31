@@ -34,6 +34,41 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F67 — Meeting tags with click-to-filter sidebar
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** The sidebar had no organizing axis beyond free-text search. Added a pure `MeetingTags`
+(`normalized` — trim/drop-empty/length-cap/case-insensitive-dedupe/count-cap; `matches` — AND/OR),
+optional `MeetingRecord.tags` (old indexes decode), `MeetingStore.setTags(id:_:)`, a comma-separated
+tag editor in the detail view, and tag chips in the sidebar row.
+
+**Invariants.** Pure label metadata in `meetings.json`; never reads/mutates audio; no network; tags
+are user labels, never speaker identity; transcription language untouched.
+
+**Evidence.**
+
+Fails before the fix (dedupe made case-sensitive):
+
+```text
+✘ Test "Tag normalization trims, drops empties, dedupes case-insensitively, and caps" recorded an issue at MeetingTagsTests.swift:7:5: Expectation failed: (MeetingTags.normalized(["Budget", "budget", "  ", "Hiring", "BUDGET"]) → ["Budget", "budget", "Hiring", "BUDGET"]) == ["Budget", "Hiring"]
+```
+
+Passes after, full suite grew 202 → 204:
+
+```text
+✔ Test "Tag normalization trims, drops empties, dedupes case-insensitively, and caps" passed after 0.001 seconds.
+✔ Test "Tag matching honors AND / OR and an empty selection matches all" passed after 0.001 seconds.
+✔ Test run with 204 tests passed after 1.143 seconds.
+```
+
+**Gaps.** Delivered the tested core + persistence + editor + chips. The sidebar tag-FILTER UI (a
+selected-tags predicate composing into `filteredMeetings`) is a follow-up on top of the tested
+`matches`. Legacy decode of an index without `tags` follows the same optional-field mechanism proven
+by the F64 `legacyIndexWithoutPinnedDecodes` test (tags decodes to nil).
+
 ## F72 — Per-meeting notes field, searchable and exported
 
 - **Outcome:** fixed

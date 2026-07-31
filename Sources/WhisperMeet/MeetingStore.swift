@@ -55,6 +55,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// A free-text scratchpad (agenda / attendee notes) tied to this meeting, separate from the
     /// transcript and the Claude summary. Optional so old indexes decode; never sent to Claude (F72).
     var notes: String?
+    /// User labels for organizing/filtering the sidebar (never speaker identity). Optional so old
+    /// indexes decode; normalized via `MeetingTags` before storage (F67).
+    var tags: [String]?
 
     init(
         id: UUID = UUID(),
@@ -72,7 +75,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         transcriptNormalized: Bool? = nil,
         markers: [RecordingMarker]? = nil,
         pinned: Bool? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        tags: [String]? = nil
     ) {
         self.id = id
         self.title = title
@@ -90,6 +94,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.markers = markers
         self.pinned = pinned
         self.notes = notes
+        self.tags = tags
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.
@@ -220,6 +225,12 @@ final class MeetingStore: ObservableObject {
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         persistMeetings()
+    }
+
+    /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
+    func setTags(id: UUID, _ raw: [String]) {
+        let normalized = MeetingTags.normalized(raw)
+        update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
 
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.

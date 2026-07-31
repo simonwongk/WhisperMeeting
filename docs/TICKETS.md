@@ -636,34 +636,6 @@ deletion; local-only.
 (b) a `.f32` shorter than its manifest frameCount, (c) a missing `meeting.wav` each yield the
 matching finding; a healthy dir returns `[]`. Fails before, passes after.
 
-### F67 — Meeting tags with click-to-filter sidebar
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact M / effort M / risk L)
-- **Area:** meetings
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** Dozens of meetings look alike in the sidebar (title, status dot, date). The only
-organizing axis is free-text search over title+transcript (`ContentView.swift:36-42`), which cannot
-express "show everything tagged budget". (More manual-upkeep than F59's faceted search; both can
-coexist — a `tag:` token slots into `MeetingQuery` later.)
-
-**Proposed feature.** A pure `MeetingTags` enum mirroring `RecordingMarkers`:
-`normalized(_ raw: [String])` (trim, drop empties, case-insensitive dedupe keeping first spelling,
-cap count/length like `MeetingStore.promptSafeTerms`, `MeetingStore.swift:245`) and
-`matches(meetingTags:selected:mode:)` (AND/OR). Add optional `tags: [String]?` to `MeetingRecord`
-(`:31`). Add `MeetingStore.setTags(id:_:)` via `update(id:)`. Render chips in `MeetingRow`
-(`ContentView.swift:161`), a selected-tags predicate composing into `filteredMeetings`, and a
-Tag/Untag context-menu item.
-
-**Invariants.** Pure label metadata in `meetings.json`; never reads/mutates audio; no network; tags
-are user labels, never speaker identity; transcription language untouched.
-
-**Verification.** New `MeetingTagsTests`: `normalized()` dedupes case-insensitively and enforces the
-cap; `matches()` is true only when the meeting carries all (AND) / any (OR) selected tags; a
-`meetings.json` fixture with no `tags` key still decodes. Fails before, passes after.
-
 ### F69 — App-wide keyboard command catalog + main-menu Commands + shortcuts help
 
 - **Status:** open

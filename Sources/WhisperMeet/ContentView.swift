@@ -192,6 +192,18 @@ private struct MeetingRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            if let tags = meeting.tags, !tags.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(tags.prefix(4), id: \.self) { tag in
+                        Text(tag)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
     }
@@ -1394,6 +1406,8 @@ private struct TranscriptDetailView: View {
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
+    @State private var tagsDraft = ""
+    @State private var tagsLoadedFor: UUID?
 
     /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
     /// Claude summary. Loaded once per meeting; flushed to the index on edit. Never sent to Claude.
@@ -1417,12 +1431,33 @@ private struct TranscriptDetailView: View {
         }
     }
 
+    /// A comma-separated tag editor. Tags are labels for organizing/filtering — never speaker
+    /// identity. Committed (normalized) on Return (F67).
+    private var tagsEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Tags").font(.headline)
+            TextField("Comma-separated (e.g. budget, hiring)", text: $tagsDraft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    store.setTags(id: meetingID, tagsDraft.split(separator: ",").map(String.init))
+                    tagsDraft = (store.meeting(id: meetingID)?.tags ?? []).joined(separator: ", ")
+                }
+        }
+        .onAppear {
+            if tagsLoadedFor != meetingID {
+                tagsDraft = (store.meeting(id: meetingID)?.tags ?? []).joined(separator: ", ")
+                tagsLoadedFor = meetingID
+            }
+        }
+    }
+
     var body: some View {
         if let meeting = store.meeting(id: meetingID) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     header(meeting)
                     statusCard(meeting)
+                    tagsEditor
                     notesSection
 
                     if meeting.status == .completed {
