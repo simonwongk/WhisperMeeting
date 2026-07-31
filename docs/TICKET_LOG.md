@@ -18,7 +18,7 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Claude Code (runtime lane)
-- **Commits:** `b8af385` (fix), `<close-sha>` (close)
+- **Commits:** `b8af385` (fix), `52d4291` (close)
 - **Reachability:** app launch → `ContentView` (`AppEntry.swift:11`) sidebar → `.dictation` selection
   renders `DictationView(dictation:…)` (`ContentView.swift:154`); the new
   `.onChange(of: dictation.selectedEngine)` (`DictationView.swift:95`) recomputes `diag`. The trigger
