@@ -28,7 +28,7 @@ final class DictationController: ObservableObject {
 
     @Published private(set) var status: Status = .disabled
     @Published var enabled: Bool { didSet { persist(); apply() } }
-    @Published var hotkey: DictationHotkey { didSet { persist(); if enabled { _ = hotkeyMonitor.start(hotkey: hotkey) } } }
+    @Published var hotkey: DictationHotkey { didSet { persist(); if enabled { applyHotkeyStart() } } }
     @Published var language: WhisperLanguage { didSet { persist() } }
     @Published var autoPaste: Bool { didSet { persist() } }
     @Published private(set) var selectedEngine: DictationTranscriptionEngine
@@ -207,17 +207,25 @@ final class DictationController: ObservableObject {
 
     // MARK: - Enable / disable
 
+    /// Start (or restart) the global hotkey tap and reflect the result in `hotkeyActive`/`status`.
+    /// Shared by `apply()` and the `hotkey` didSet so changing the trigger key can never leave a
+    /// stale `.error`/`.idle` verdict or a stale `hotkeyActive` behind (F39).
+    private func applyHotkeyStart() {
+        let started = hotkeyMonitor.start(hotkey: hotkey)
+        hotkeyActive = started
+        if started {
+            status = .idle
+        } else {
+            log.error("event tap could not be created — Accessibility/Input Monitoring off")
+            status = .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
+        }
+    }
+
     private func apply() {
         if enabled {
             ensureHelperInstalled()
-            let started = hotkeyMonitor.start(hotkey: hotkey)
-            hotkeyActive = started
-            status = .idle
             log.notice("dictation enabled (hotkey \(self.hotkey.keyCode, privacy: .public) mode \(self.hotkey.mode.rawValue, privacy: .public))")
-            if !started {
-                log.error("event tap could not be created — Accessibility/Input Monitoring off")
-                status = .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
-            }
+            applyHotkeyStart()
             Task { await requestMicIfNeeded() }
             warmUpIfNeeded()
         } else {

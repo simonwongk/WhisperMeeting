@@ -365,33 +365,6 @@ Each entry below was confirmed by an adversarial verifier that re-read the cited
 failing path; the `file:line` references were checked against the working tree. Ordered worst-first:
 F38–F41 medium, F42–F54 low.
 
-### F39 — Changing the dictation trigger key leaves `hotkeyActive`/`status` stale
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** dictation
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The `hotkey` didSet restarts the monitor with `_ = hotkeyMonitor.start(hotkey:)` and
-discards the `Bool` (`Sources/WhisperMeet/Dictation/DictationController.swift:31`). Unlike `apply()`
-(`:182-189`) it never updates `hotkeyActive` or `status`. So after enabling dictation without
-Accessibility (status `.error`, `hotkeyActive=false`), granting Accessibility, then changing the
-key, the tap is re-created successfully but `status` stays `.error` and `hotkeyActive` stays false;
-the reverse — a re-tap that now fails — is silent.
-
-**Impact.** The "Hotkey listening" diagnostics row (`DictationView.swift:30`) stays red and the
-menu-bar icon stays on the error glyph (`AppEntry.swift:37-43`) even though dictation is working —
-or vice versa. The only resync is toggling dictation off/on. Realistic sequence: enable → error →
-grant permission → adjust key.
-
-**Proposed fix.** Route the didSet through the same success/failure handling `apply()` uses instead
-of discarding the `start()` result.
-
-**Verification.** Inject a `HotkeyMonitor` whose `start()` result is controllable; set `status` to
-`.error`, assign a new hotkey with `start()` succeeding, and assert `hotkeyActive == true` and
-`status == .idle`. Fails before, passes after.
-
 ### F40 — Transcript Edit view double-writes the whole meetings index on every keystroke
 
 - **Status:** open

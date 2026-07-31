@@ -34,6 +34,48 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F39 — Changing the dictation trigger key leaves `hotkeyActive`/`status` stale
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** The `hotkey` didSet restarted the tap with `_ = hotkeyMonitor.start(hotkey:)` and
+discarded the `Bool`, unlike `apply()` which reflects it into `hotkeyActive`/`status`. So after
+enable-without-Accessibility (`.error`), granting Accessibility, then changing the key, the tap was
+re-created successfully but `status` stayed `.error` and `hotkeyActive` stayed false (and the reverse
+failure was silent). The diagnostics row and menu-bar glyph then disagreed with reality until the
+user toggled dictation off/on.
+
+**Fix.** Extracted the start-and-reflect logic into `applyHotkeyStart()` and called it from both
+`apply()` and the `hotkey` didSet, so the re-tap result is always applied. Used the `HotkeyMonitoring`
+seam from F38 to inject a fake monitor with a controllable `start()` result.
+
+**Evidence.**
+
+Fails before the fix (old didSet discards the result) — the re-tap succeeds but `status` stays
+`.error`:
+
+```text
+✘ Test "Changing the dictation hotkey re-syncs status from the re-tap result" recorded an issue at HotkeyChangeResyncTests.swift:42:5: Expectation failed: (controller.status → .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")) == .idle
+✘ Test run with 1 test failed after 0.007 seconds with 1 issue.
+```
+
+Passes after, full suite grew 185 → 186:
+
+```text
+✔ Test "Changing the dictation hotkey re-syncs status from the re-tap result" passed after 0.012 seconds.
+✔ Test run with 186 tests passed after 1.052 seconds.
+```
+
+**Review.** Self-review: `applyHotkeyStart()` is a behavior-preserving extraction of `apply()`'s
+existing start/status logic, now shared; the only change is that the didSet reflects the result. The
+"dictation enabled" log now precedes the (possible) error log — cosmetic only.
+
+**Gaps.** `hotkeyActive` is `private`, so the test asserts the user-visible `status` (which
+`applyHotkeyStart` sets together with `hotkeyActive` in the same branch) rather than reading
+`hotkeyActive` directly. No runtime helper/model adapter touched.
+
 ## F78 — Toggle-mode dictation desyncs after the F50 capture watchdog auto-finalizes
 
 - **Outcome:** fixed
