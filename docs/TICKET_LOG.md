@@ -34,6 +34,25 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F54 — CHANGELOG intro test-count claim is stale
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** The CHANGELOG opening summary pinned "Test count grew 28 → 157" while later cycle
+entries recorded 169/176/178, and the live suite is now 195 — the header contradicted the file's own
+evidence and would go stale again with any new number.
+
+**Fix.** Reworded the intro to state the suite has grown from 28 across rounds and to point readers at
+each cycle's own recorded count, rather than pinning a single fragile figure.
+
+**Evidence.** Documentation-only change (no behavior, so no fails-before/passes-after test). Verified
+by inspection: `docs/CHANGELOG.md:6` no longer states a specific total; the per-cycle counts below it
+remain the authoritative figures. The live Swift suite at close: `✔ Test run with 195 tests passed`.
+
+**Gaps.** None applicable — docs ticket.
+
 ## F35 — `SelectableDictationEngine.replace` is a non-atomic read → await → write
 
 - **Outcome:** fixed

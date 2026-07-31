@@ -3,7 +3,8 @@
 Improvement work on WhisperMeet. The earlier autonomous rounds followed design → implementation (TDD
 for pure logic) → `swift test` + `swift build` → adversarial multi-agent review → confirmed fixes →
 build and deploy. Later maintenance cycles record their own verification and deployment status
-explicitly. Test count grew 28 → 157. Non-negotiable invariants (local-only except Claude summaries;
+explicitly. The test suite has grown steadily from 28 across rounds — see each cycle's own recorded
+count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
 ## Maintenance cycle — warm Whisper dictation never actually warmed

@@ -397,28 +397,6 @@ already uses.
 assert the pre-existing `venv/bin/whisper --help` still exits 0 after the script fails. Fails
 before, passes after.
 
-### F54 — CHANGELOG intro test-count claim is stale
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** docs
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The CHANGELOG opening summary says "Test count grew 28 → 157." (`docs/CHANGELOG.md:6`),
-but its own later cycle entries record higher totals — 169/169 (`:103`), 176/176 (`:66`), and the
-most recent 178/178 (`:29`). The header contradicts the file's own evidence and understates the
-suite.
-
-**Impact.** The next agent reading the top-of-file summary is told the suite is 157 tests when the
-latest recorded run is 178, undermining the CHANGELOG's role as evidence.
-
-**Proposed fix.** Update line 6 to the current suite size (the latest cycle logs 178), or reword so
-it does not pin a specific stale number.
-
-**Verification.** Run `swift test`, count the executed tests, and update line 6 to match the newest
-recorded per-cycle count.
-
 ## Feature tickets — filed 2026-07-30 from the multi-lens feature discovery
 
 New functionality, ranked best-first by value / effort with identity fit and risk weighed in. Each
