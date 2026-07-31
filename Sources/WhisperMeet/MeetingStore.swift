@@ -61,6 +61,11 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Post-meeting capture-health rollup (why a recording was bad). Optional so old indexes decode;
     /// channel-level, never speaker identity (F58).
     var healthReport: RecordingHealthReport?
+    /// A plain-language note when timestamp alignment was unavailable but the complete text was
+    /// preserved (Qwen path). Optional so old indexes decode; nil on a normally aligned transcript.
+    /// Carried from `TranscriptionResult.alignmentWarning` so the detail view can explain why a
+    /// meeting has no seekable timestamps instead of dropping them silently (F30).
+    var alignmentWarning: String?
 
     init(
         id: UUID = UUID(),
@@ -80,7 +85,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         pinned: Bool? = nil,
         notes: String? = nil,
         tags: [String]? = nil,
-        healthReport: RecordingHealthReport? = nil
+        healthReport: RecordingHealthReport? = nil,
+        alignmentWarning: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -100,6 +106,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.notes = notes
         self.tags = tags
         self.healthReport = healthReport
+        self.alignmentWarning = alignmentWarning
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

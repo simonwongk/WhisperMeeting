@@ -17,7 +17,10 @@ post-meeting transcript in the meeting’s original language, with all speech pr
   single-language meeting.
 - Preserve the original spoken language by using the `transcribe` task, never automatic translation.
 - Default to the multilingual `large` model for accuracy and offer `turbo` as a faster option.
-- Produce editable timestamped transcript segments.
+- Produce editable timestamped transcript segments. When the optional Qwen3-ASR path cannot
+  reconcile its forced-alignment word timings with the recognized text, preserve the complete
+  transcript text without per-segment timestamps and surface a plain-language notice explaining that
+  timing is unavailable — never drop the transcript or the explanation silently.
 - Allow PDF, DOCX, TXT, Markdown, and CSV documents to supply a reviewable business-vocabulary list
   used as Whisper’s `initial_prompt`.
 - Do not add AI summarization in v1.

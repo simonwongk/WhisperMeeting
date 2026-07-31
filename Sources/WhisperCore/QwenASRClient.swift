@@ -146,17 +146,39 @@ public struct QwenASRClient: Sendable {
     /// result rather than logging it as an OSLog side effect — keeping WhisperCore framework-free and
     /// making the warning observable to callers and tests (F28).
     static func makeResult(id: String, text: String, payload: QwenOutput) -> TranscriptionResult {
-        TranscriptionResult(
+        let segments = QwenAlignedTranscript.segments(fullText: text, alignedItems: payload.alignedItems)
+        return TranscriptionResult(
             id: id,
             text: text,
             languageCode: payload.language,
             audioDuration: payload.alignedItems.map(\.end).max(),
             confidence: nil,
-            segments: QwenAlignedTranscript.segments(fullText: text, alignedItems: payload.alignedItems),
-            alignmentWarning: payload.alignmentWarning.flatMap {
-                "Timestamp alignment unavailable; complete text preserved. \($0)"
-            }
+            segments: segments,
+            alignmentWarning: Self.alignmentWarning(text: text, segments: segments, payload: payload)
         )
+    }
+
+    /// A plain-language note whenever the transcript has text but no timestamped segments, so a Qwen
+    /// meeting can never silently drop every timestamp (F30). Prefers the helper's own diagnostic (a
+    /// `build_chunks`/`align_chunks` failure it reports as `alignmentWarning`); otherwise, when the
+    /// helper reported success but its word timings could not be reconciled with the punctuated
+    /// transcript (`QwenAlignedTranscript` returned no segments), it explains the Swift-side mismatch.
+    /// Returns `nil` only when alignment actually produced timestamps.
+    static func alignmentWarning(
+        text: String,
+        segments: [TranscriptSegment],
+        payload: QwenOutput
+    ) -> String? {
+        // The notice claims timestamps are unavailable, so it may only appear when there genuinely
+        // are none: text present but no reconciled segments. Guarding here (rather than only on the
+        // helper-silent branch) keeps the message truthful even if a future helper emits a warning
+        // alongside usable word timings — we would never show "unavailable" over a seekable transcript.
+        guard !text.isEmpty, segments.isEmpty else { return nil }
+        if let helperWarning = payload.alignmentWarning {
+            return "Timestamp alignment unavailable; complete text preserved. \(helperWarning)"
+        }
+        return "Timestamp alignment unavailable; complete text preserved. "
+            + "The recognizer's word timings could not be matched to the transcript."
     }
 
     private var runtimeIsComplete: Bool {

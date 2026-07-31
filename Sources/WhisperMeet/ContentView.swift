@@ -1782,6 +1782,19 @@ private struct TranscriptDetailView: View {
                 .fixedSize()
             }
 
+            // Explain in plain language when timestamp alignment was unavailable, so a transcript
+            // with no seekable timestamps never looks like a silent failure (F30). The complete text
+            // below is authoritative; only the per-segment timing is missing.
+            if let warning = meeting.alignmentWarning {
+                Label(warning, systemImage: "clock.badge.exclamationmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .combine)
+            }
+
             if hasSegments && transcriptMode == .read {
                 if meeting.isTranscriptEdited {
                     Text("Read view shows the original timestamped transcription; your edits are in Edit view. Quality flags are hidden here because they describe the original text.")

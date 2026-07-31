@@ -14,6 +14,88 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F30 — Qwen alignment failure silently drops every timestamp
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by transcription lane (Opus 4.8)
+- **Commits:** `<sha-pending>` (F30 fix + tests + spec; real SHA recorded by the immediately following commit)
+- **Reachability:** Qwen meeting finishes → `AppModel.performTranscription` → `AppModel.apply(result:to:)`
+  (`AppModel.swift:991`) stores `result.alignmentWarning` onto the `MeetingRecord` → the user opens the
+  completed meeting and `TranscriptDetailView.transcriptSection` (`ContentView.swift:1785`) renders a
+  plain-language advisory. The red-green test lands on the app-level `apply(result:)` hop
+  (`Tests/WhisperMeetTests/QwenAlignmentWarningPersistenceTests.swift`); the SwiftUI advisory has no
+  view harness and is manual (**Not planned:** the `WhisperMeet` target has no GUI-render test rig).
+
+**Root cause.** Two independent silent-drop paths, only one of which F28 addressed. (1) When Qwen's
+forced aligner *succeeds* (emits `alignedItems`, reports no warning) but `QwenAlignedTranscript.segments`
+cannot reconcile those word timings with the punctuated transcript, it returns `[]` at one of its five
+guard sites — so the result carried empty segments AND a nil `alignmentWarning` (F28 only routed the
+helper's *own* warning, which is nil here). (2) Even when a warning existed, `AppModel.apply(result:)`
+never copied `result.alignmentWarning` onto the stored `MeetingRecord`, and no view read it — so it
+never reached the user regardless. Net effect: a Qwen meeting could complete with untimestamped text
+and no explanation.
+
+**Fix.** Three layers. (a) WhisperCore: `QwenASRClient.alignmentWarning(text:segments:payload:)` now
+returns a plain-language note whenever the transcript has text but no reconciled segments — preferring
+the helper's diagnostic when present, otherwise explaining the Swift-side mismatch — and returns nil
+only when timestamps actually exist. Guarded on `segments.isEmpty` so it can never claim "unavailable"
+over a seekable transcript (review finding, locked by `helperWarningSuppressedWhenSegmentsReconcile`).
+(b) App wiring: `MeetingRecord.alignmentWarning` (optional, so old indexes decode) carried through
+`apply(result:)`. (c) SwiftUI: a one-line advisory in `transcriptSection`, shown above the transcript
+whenever the field is set. `PRODUCT_SPEC.md` amended to document the no-timestamp fallback so the spec
+matches actual behaviour. Incidental: `postTranscriptionNotification` now binds `NSApp` instead of
+force-unwrapping it (nil in a headless test) so the `apply` hop is testable — identical production
+behaviour (`NSApp` is never nil in the running app).
+
+**Evidence.**
+
+Fails before the fix — the core silent-drop and the persistence hop:
+
+```text
+✘ Test "Unreconcilable Qwen alignment surfaces a warning even when the helper reported none (F30)" recorded an issue at QwenAlignmentDropWarningTests.swift:29:5: Expectation failed: (result.alignmentWarning → nil) != nil
+✘ Test "A timestamp-less Qwen transcript with no helper warning still surfaces a warning (F30)" recorded an issue at QwenAlignmentDropWarningTests.swift:43:5: Expectation failed: (result.alignmentWarning → nil) != nil
+✘ Test "A Qwen alignment warning is persisted onto the meeting through the app-level apply (F30)" recorded an issue at QwenAlignmentWarningPersistenceTests.swift:46:5: Expectation failed: (stored?.alignmentWarning?.contains("Timestamp alignment unavailable") → nil) == true
+```
+
+Passes after; the full suite grew 233 → 239 on this branch (+6: 4 core, 2 persistence):
+
+```text
+✔ Test "Unreconcilable Qwen alignment surfaces a warning even when the helper reported none (F30)" passed after 0.001 seconds.
+✔ Test "A timestamp-less Qwen transcript with no helper warning still surfaces a warning (F30)" passed after 0.001 seconds.
+✔ Test "A helper warning is suppressed when segments still reconcile (F30)" passed after 0.001 seconds.
+✔ Test "A Qwen alignment warning is persisted onto the meeting through the app-level apply (F30)" passed after 0.214 seconds.
+✔ Test run with 239 tests passed after 1.197 seconds.
+```
+
+Real installed Qwen model over a bench clip (`Scripts/bench/clips/en1.wav`) — the decoded contract
+`makeResult` reads is intact, and a clean transcript yields timestamps and no warning:
+
+```text
+keys: ['alignedItems', 'alignmentWarning', 'language', 'text']
+language: en
+text: Can you send me the quarterly report by Friday afternoon?
+alignedItems count: 10
+alignmentWarning: None
+first item: {'text': 'Can', 'start': 0.0, 'end': 0.16}
+```
+
+Release + `-warnings-as-errors` build: **my code is clean** — verified by temporarily applying F93's
+fix locally, which made `swift build -c release -Xswiftc -warnings-as-errors` reach `Build complete!`
+with zero diagnostics in any file I touched, then reverting. The gate's step 3 is otherwise red on the
+pre-existing, cross-lane **F93** (`DiagnosticsBundleBuilder.swift`, a diagnostics/build file outside
+this lane; F83 was likewise merged with F93 open).
+
+**Gaps.** Partial alignment (keeping the sentences that *did* reconcile instead of dropping all
+timestamps) is deferred as **F100** — F30 makes the all-or-nothing drop *visible* but does not change
+it. The SwiftUI advisory has no automated view test (**Not planned:** no GUI-render harness in the
+`WhisperMeet` target); manual check: transcribe a Qwen meeting whose alignment fails, open it, confirm
+the orange "Timestamp alignment unavailable…" advisory appears above the transcript and is absent on a
+cleanly aligned meeting. The whole-repo gate cannot pass green until **F93** is fixed by the
+diagnostics/build owner (F93's own one-line proposed fix is incomplete — patching line 65 exposes the
+same error on line 60).
+
+---
+
 ## F83 — Reachable meeting-integrity sweep: startup fold + Settings "Verify Library"
 
 - **Outcome:** fixed

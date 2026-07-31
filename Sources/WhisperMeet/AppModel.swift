@@ -988,7 +988,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func apply(result: TranscriptionResult, to id: UUID) {
+    /// Applies a completed transcription to the stored meeting. Exposed to `WhisperMeetTests` (not
+    /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30).
+    func apply(result: TranscriptionResult, to id: UUID) {
         store.update(id: id) {
             $0.status = .completed
             $0.transcriptText = result.segments.isEmpty
@@ -1001,6 +1003,9 @@ final class AppModel: ObservableObject {
             $0.confidence = quality.isUnscored ? nil : quality.confidence
             $0.segments = result.segments
             $0.errorMessage = nil
+            // Carry the alignment warning onto the meeting so the detail view can explain why a
+            // Qwen transcript has no seekable timestamps, instead of dropping it silently (F30).
+            $0.alignmentWarning = result.alignmentWarning
             // Freshly produced text is already final; never rebuild it from segments later.
             $0.transcriptNormalized = true
         }
@@ -1020,7 +1025,11 @@ final class AppModel: ObservableObject {
         outcome: TranscriptionOutcome,
         segmentCount: Int
     ) {
-        guard TranscriptionNotification.shouldNotify(outcome: outcome, appIsActive: NSApp.isActive),
+        // `NSApp` is always set in the running app but nil in a headless test process; binding it
+        // (rather than force-unwrapping) keeps production behaviour identical while letting
+        // WhisperMeetTests drive `apply(result:)` without a GUI (a prerequisite for the F30 test).
+        guard let app = NSApp else { return }
+        guard TranscriptionNotification.shouldNotify(outcome: outcome, appIsActive: app.isActive),
               let content = TranscriptionNotification.content(
                 title: title, outcome: outcome, segmentCount: segmentCount
               ) else { return }

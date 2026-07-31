@@ -66,31 +66,6 @@ targets the wrong runtime — until the user presses Refresh.
 **Verification.** Not unit-testable (SwiftUI view; the `WhisperMeet` target has no test suite).
 Verify manually with both windows open, and say so explicitly in the log.
 
-### F30 — Qwen alignment failure silently drops every timestamp
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (two-axis review, both axes)
-
-**Problem.** `PRODUCT_SPEC.md:18` requires "editable **timestamped** transcript segments", and `:27`
-requires failures surfaced "in plain language". `QwenAlignedTranscript.swift` returns `[]` at five
-guard sites (`:24,30,36,39,51`) — mapping is all-or-nothing, so a single mismatch anywhere drops
-*every* timestamp. `AppModel.apply(result:to:)` (`AppModel.swift:965`) then stores untimestamped
-plain text. The only trace is an `os.Logger` line (`QwenASRClient.swift:143-148`), which the user
-never sees. `PRODUCT_SPEC.md` was edited in this same range but line 18 was left untouched.
-
-**Impact.** A Qwen meeting can silently produce a transcript with no timestamps — no seek, no
-playback sync — and the user is given no reason why.
-
-**Proposed fix.** Surface the warning in the UI, and consider partial alignment (keep the sentences
-that did map) instead of all-or-nothing. Amend `PRODUCT_SPEC.md:18` to state the documented
-fallback.
-
-**Verification.** Force an alignment mismatch; assert the user-visible explanation appears and that
-`PRODUCT_SPEC.md` matches actual behaviour.
-
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
 - **Status:** open
@@ -129,6 +104,33 @@ Upstream drift would be silent.
 synthetic.
 
 **Verification.** A regression test that fails if a Mandarin clip comes back in English.
+
+### F100 — Qwen alignment is all-or-nothing; consider keeping the sentences that did map
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** transcription
+- **Filed:** 2026-07-31 by transcription (follow-up from F30)
+
+**Problem.** `QwenAlignedTranscript.segments` (`Sources/WhisperCore/QwenAlignedTranscript.swift:24,30,36,39,51`)
+returns `[]` at every guard site, so a single unreconcilable sentence discards the timestamps of
+*every* sentence — including the ones that matched exactly. F30 made this state visible (the meeting
+now carries a plain-language `alignmentWarning`) but did not change the all-or-nothing mapping.
+
+**Impact.** A meeting where alignment fails on one sentence loses seek/playback-sync for the whole
+transcript even though most sentences aligned cleanly. Lower value than F30's silent-drop fix, which
+is why it was deferred rather than bundled.
+
+**Proposed fix.** Emit the sentences that assembled exactly as timestamped segments and leave only the
+unmatched tail untimestamped, rather than dropping all. Sentences are only appended after an exact
+key match, so kept segments never risk dropped/misattributed words. Keep the F30 warning whenever any
+sentence is left untimestamped. Weigh against a mixed timestamped/untimestamped transcript being more
+confusing than none — spike before committing.
+
+**Verification.** A `QwenAlignedTranscript` test: a two-sentence transcript whose second sentence does
+not reconcile yields one timestamped segment for the first sentence (today it yields zero). Fails
+before, passes after.
 
 ### F33 — Installer crash recovery is only reachable from tests
 
