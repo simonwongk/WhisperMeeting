@@ -192,3 +192,44 @@ func exportsEditedTranscriptTimestamps() {
     #expect(srt.contains("00:00:12,000 --> 00:00:20,000\nMoved ending."))
     #expect(!srt.contains("00:00:00,250"))
 }
+
+@Test("HTML export is self-contained, escaped, and offline")
+func exportsSelfContainedHTML() {
+    let request = TranscriptExportRequest(
+        title: "R&D <review>",
+        languageCode: "en",
+        durationSeconds: 125,
+        // Whole-second timestamps aligned with the segments so original timings are preserved.
+        transcriptText: "00:00  Hello & welcome <script>\n01:05  Done.",
+        segments: [
+            TranscriptSegment(speaker: nil, start: 0, end: 3, text: "Hello & welcome <script>"),
+            TranscriptSegment(speaker: nil, start: 65, end: 70, text: "Done."),
+        ]
+    )
+
+    let html = TranscriptExporter.render(.html, request)
+
+    // Escaping (title + body).
+    #expect(html.contains("R&amp;D &lt;review&gt;"))
+    #expect(html.contains("Hello &amp; welcome &lt;script&gt;"))
+    #expect(!html.contains("<script>")) // never raw
+
+    // Exactly one <html and one <style>.
+    #expect(html.components(separatedBy: "<html").count - 1 == 1)
+    #expect(html.components(separatedBy: "<style").count - 1 == 1)
+
+    // Offline: no external URLs anywhere.
+    #expect(!html.contains("http://"))
+    #expect(!html.contains("https://"))
+
+    // Every segment timestamp appears.
+    #expect(html.contains("00:00"))
+    #expect(html.contains("01:05")) // 65s
+
+    // An empty transcript still yields a valid minimal document.
+    let empty = TranscriptExporter.render(.html, TranscriptExportRequest(
+        title: "t", languageCode: nil, durationSeconds: 0, transcriptText: "", segments: []
+    ))
+    #expect(empty.contains("<html"))
+    #expect(empty.contains("</html>"))
+}

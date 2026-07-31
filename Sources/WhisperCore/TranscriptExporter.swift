@@ -12,6 +12,7 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     case json
     case chapterList
     case chapteredMarkdown
+    case html
 
     public var displayName: String {
         switch self {
@@ -23,6 +24,7 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
         case .json: "JSON (.json)"
         case .chapterList: "Chapter List (.txt)"
         case .chapteredMarkdown: "Chaptered Transcript (.md)"
+        case .html: "Web Page (.html)"
         }
     }
 
@@ -33,6 +35,7 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
         case .srt: "srt"
         case .vtt: "vtt"
         case .json: "json"
+        case .html: "html"
         }
     }
 
@@ -41,7 +44,7 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     /// align with the displayed Whisper timestamps.
     public var usesSegments: Bool {
         switch self {
-        case .srt, .vtt, .json, .chapteredMarkdown: true
+        case .srt, .vtt, .json, .chapteredMarkdown, .html: true
         case .plainText, .timestampedText, .markdown, .chapterList: false
         }
     }
@@ -103,6 +106,8 @@ public enum TranscriptExporter {
             return TranscriptChapters.list(chapters(request))
         case .chapteredMarkdown:
             return TranscriptChapters.markdown(chapters(request))
+        case .html:
+            return html(request)
         }
     }
 
@@ -252,6 +257,77 @@ public enum TranscriptExporter {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// A standalone, offline HTML document: inline `<style>` only (no external CSS/fonts/images),
+    /// HTML-escaped text, per-segment MM:SS anchors, and an optional markers table of contents. The
+    /// no-external-URL guarantee is what keeps it local (F61).
+    private static func html(_ request: TranscriptExportRequest) -> String {
+        let title = htmlEscape(request.title)
+        var parts: [String] = ["<h1>\(title)</h1>"]
+
+        var meta: [String] = []
+        if request.durationSeconds > 0 { meta.append(htmlEscape(TranscriptFormatter.clock(request.durationSeconds))) }
+        if let language = request.languageCode, !language.isEmpty { meta.append(htmlEscape(language.uppercased())) }
+        if !meta.isEmpty { parts.append("<p class=\"meta\">\(meta.joined(separator: " · "))</p>") }
+
+        let orderedMarkers = request.markers.sorted { $0.offset < $1.offset }
+        if !orderedMarkers.isEmpty {
+            var toc = ["<nav class=\"toc\"><h2>Markers</h2><ul>"]
+            for (index, marker) in orderedMarkers.enumerated() {
+                let label = htmlEscape(RecordingMarkers.displayLabel(for: marker, at: index + 1))
+                toc.append("<li><span class=\"ts\">\(TranscriptFormatter.timestamp(marker.offset))</span> \(label)</li>")
+            }
+            toc.append("</ul></nav>")
+            parts.append(toc.joined(separator: "\n"))
+        }
+
+        let segments = effectiveSegments(request)
+        parts.append("<section class=\"transcript\">")
+        if segments.isEmpty {
+            parts.append("<p>\(htmlEscape(request.transcriptText))</p>")
+        } else {
+            for segment in segments {
+                let text = htmlEscape(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                if let start = segment.start {
+                    let stamp = TranscriptFormatter.timestamp(start)
+                    parts.append("<p id=\"seg-\(Int(start))\"><span class=\"ts\">\(stamp)</span> \(text)</p>")
+                } else {
+                    parts.append("<p>\(text)</p>")
+                }
+            }
+        }
+        parts.append("</section>")
+
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <title>\(title)</title>
+        <style>
+        body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; }
+        h1 { font-size: 1.6rem; }
+        .meta { color: #666; }
+        .ts { color: #888; font-variant-numeric: tabular-nums; margin-right: .5rem; }
+        .toc { border: 1px solid #ddd; border-radius: 8px; padding: .5rem 1rem; }
+        .transcript p { margin: .4rem 0; }
+        </style>
+        </head>
+        <body>
+        \(parts.joined(separator: "\n"))
+        </body>
+        </html>
+        """
+    }
+
+    private static func htmlEscape(_ text: String) -> String {
+        var escaped = text
+        escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
+        escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
+        escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
+        escaped = escaped.replacingOccurrences(of: "\"", with: "&quot;")
+        return escaped
     }
 
     private static func json(_ request: TranscriptExportRequest) -> String {

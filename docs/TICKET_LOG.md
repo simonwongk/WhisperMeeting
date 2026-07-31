@@ -34,6 +34,39 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F61 — Self-contained printable HTML transcript export
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Feature.** The only single-file human-readable export was Markdown. Added an `.html` format + an
+`html(_ request:)` renderer: a standalone document with an inline `<style>` (no external
+CSS/fonts/images), HTML-escaped text (`&`,`<`,`>`,`"`), per-segment MM:SS anchors, and an optional
+markers table of contents. Appears in the Export menu via `allCases`.
+
+**Invariants.** Fully local — the no-external-URL assertion structurally enforces it; original
+language preserved verbatim (only HTML-escaped); no diarization; recording untouched.
+
+**Evidence.**
+
+Fails before the fix (HTML escaping disabled) — raw `<script>` leaks into the document:
+
+```text
+✘ Test "HTML export is self-contained, escaped, and offline" recorded an issue at TranscriptExporterTests.swift:215:5: Expectation failed: !((html → "<!DOCTYPE html> ...").contains("<script>"))
+✘ Test run with 1 test failed after 0.002 seconds with 3 issues.
+```
+
+Passes after (escaping; exactly one `<html`/`<style>`; no `http://`/`https://`; every segment
+timestamp present; empty transcript → valid minimal doc); full suite grew 210 → 211:
+
+```text
+✔ Test "HTML export is self-contained, escaped, and offline" passed after 0.002 seconds.
+✔ Test run with 211 tests passed after 1.140 seconds.
+```
+
+**Gaps.** None on the renderer. Uses the `allCases` Export menu; no view test in this harness.
+
 ## F60 — Chapters export: turn recording markers into a chapter list + chaptered transcript
 
 - **Outcome:** fixed

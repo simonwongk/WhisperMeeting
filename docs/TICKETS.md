@@ -434,32 +434,6 @@ where system audio never arrives and the mic goes stale → the report lists
 `.systemAudioNotDetected`, worst status `.atRisk`, and the correct mic stale-seconds total; a
 `MeetingRecord` JSON without `healthReport` still decodes. Fails before, passes after.
 
-### F61 — Self-contained printable HTML transcript export
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** — (feature; impact H / effort M / risk L)
-- **Area:** export
-- **Filed:** 2026-07-30 by Claude Code (feature discovery)
-
-**Problem.** The only single-file human-readable export is Markdown (`TranscriptExporter.markdown`,
-`Sources/WhisperCore/TranscriptExporter.swift:175`), which non-technical recipients cannot render
-and which has no clean Print-to-PDF path.
-
-**Proposed feature.** Add a `html` case to `TranscriptExportFormat` (`:6`) and an `html(_ request:)`
-renderer emitting a standalone document: an inline `<style>` block (no external CSS/fonts/images),
-HTML-escaped transcript text, per-segment MM:SS anchors, and an optional markers table-of-contents +
-summary header when present (reuse the defaulted fields from F60). Wires in free via the `allCases`
-Export menu (`ContentView.swift:1673`) and `saveExport` (`:1810`).
-
-**Invariants.** Fully local — the no-external-URL assertion structurally enforces it; original
-language preserved verbatim (only HTML-escaped); no diarization; recording untouched.
-
-**Verification.** In `TranscriptExporterTests`: a request whose text contains `<`, `&`, `"` escapes
-them; exactly one `<html` and one `<style>`; NO `http://`/`https://` anywhere (offline guarantee);
-every segment timestamp appears; an empty transcript still yields a valid minimal document. Fails
-before, passes after.
-
 ### F62 — Menu-bar recording controls with live status
 
 - **Status:** open
