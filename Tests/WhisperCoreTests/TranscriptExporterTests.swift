@@ -29,6 +29,25 @@ func exportsWebVTT() {
     #expect(vtt.contains("00:00:00.250 --> 00:00:02.500\nHello everyone."))
 }
 
+@Test("Export does not strip a leading clock-like token from a non-timestamped transcript")
+func preservesLeadingClockOnUntimestampedTranscript() {
+    let request = TranscriptExportRequest(
+        title: "t",
+        languageCode: nil,
+        durationSeconds: 60,
+        transcriptText: "3:00 PM kickoff",
+        segments: []
+    )
+
+    // Plain text keeps the prose token verbatim.
+    #expect(TranscriptExporter.render(.plainText, request) == "3:00 PM kickoff")
+
+    // SRT keeps "3:00" in the cue text and does not mis-time the cue to 00:03:00.
+    let srt = TranscriptExporter.render(.srt, request)
+    #expect(srt.contains("3:00 PM kickoff"))
+    #expect(srt.contains("00:00:00,000 -->"))
+}
+
 @Test("WebVTT and SubRip escape special characters in cue text")
 func escapesSubtitleCueText() {
     let request = TranscriptExportRequest(
@@ -76,12 +95,17 @@ func exportsJSON() throws {
 
 @Test("Plain-text export strips timestamps from meetings past 100 minutes")
 func stripsThreeDigitMinuteTimestamps() {
+    // A genuinely timestamped transcript is backed by timed segments (F42): empty segments mark a
+    // verbatim, non-timestamped transcript, whose leading tokens must be preserved.
     let request = TranscriptExportRequest(
         title: "Long Session",
         languageCode: "en",
         durationSeconds: 6_100,
         transcriptText: "99:59  Almost there.\n100:05  Wrap up.",
-        segments: []
+        segments: [
+            TranscriptSegment(speaker: nil, start: 5_999, end: 6_005, text: "Almost there."),
+            TranscriptSegment(speaker: nil, start: 6_005, end: 6_100, text: "Wrap up."),
+        ]
     )
     #expect(TranscriptExporter.render(.plainText, request) == "Almost there.\nWrap up.")
 }

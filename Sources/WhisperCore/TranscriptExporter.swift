@@ -77,7 +77,11 @@ public enum TranscriptExporter {
     ) -> String {
         switch format {
         case .plainText:
-            return TranscriptFormatter.stripTimestamps(request.transcriptText)
+            // Only strip leading timestamps when timed segments actually back the transcript.
+            // Without them a leading clock-like token ("3:00 PM") is prose, not a timestamp (F42).
+            return request.segments.isEmpty
+                ? request.transcriptText
+                : TranscriptFormatter.stripTimestamps(request.transcriptText)
         case .timestampedText:
             return request.transcriptText
         case .markdown:
@@ -95,6 +99,18 @@ public enum TranscriptExporter {
     /// align one-for-one with Whisper's segments, preserve the precise original timings while
     /// replacing segment text with the current edited text.
     private static func effectiveSegments(_ request: TranscriptExportRequest) -> [TranscriptSegment] {
+        // Without timed segments backing the transcript, a leading clock-like token is prose, not a
+        // cue time — do not parse or strip it. Emit one cue spanning the whole duration (F42).
+        guard !request.segments.isEmpty else {
+            let text = request.transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return [] }
+            return [TranscriptSegment(
+                speaker: nil,
+                start: 0,
+                end: max(0, request.durationSeconds),
+                text: text
+            )]
+        }
         let editedLines = transcriptLines(request.transcriptText)
         if linesStillAlignWithOriginalTimings(editedLines, request.segments) {
             return zip(request.segments, editedLines).map { segment, line in

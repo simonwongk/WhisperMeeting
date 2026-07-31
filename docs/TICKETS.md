@@ -418,34 +418,6 @@ language can stay as-is; only the top-level `language_code` needs the fix.
 **Verification.** A test that maps a mostly-English string containing one CJK character to `en` (a
 threshold rule), not `zh`. Fails before, passes after.
 
-### F42 — Export strips a leading clock-like token as a timestamp on non-timestamped transcripts
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** Both export paths consume a leading `\d{1,3}:\d{2}` token as a cue timestamp without
-checking the transcript is actually timestamped. `transcriptLines`
-(`Sources/WhisperCore/TranscriptExporter.swift:149-173`) does it for SRT/VTT/JSON;
-`TranscriptFormatter.stripTimestamps` (`TranscriptModels.swift:252-263`) for plain text. A
-non-timestamped transcript — e.g. the Qwen path stores `result.text` verbatim
-(`AppModel.swift:965-966`) — with a line like "3:00 PM kickoff" loses "3:00" (plain text → "PM
-kickoff"; SRT/VTT emit a cue at 00:03:00 with text "PM kickoff").
-`TranscriptFormatter.isTimestamped` exists (`:223`) but is never applied in the export path.
-
-**Impact.** A user exporting a Qwen (untimestamped) transcript silently loses the leading clock-like
-token of any line beginning with one, and cues are mis-timed. The stored transcript is unchanged
-(re-exportable), so this is a wrong export file rather than permanent loss, but it is silent.
-
-**Proposed fix.** Gate stripping/parsing on `TranscriptFormatter.isTimestamped` (or on real segments
-existing); be conservative — do not strip unless the transcript is genuinely timestamped.
-
-**Verification.** `render(.plainText, …)` with `transcriptText: "3:00 PM kickoff", segments: []`
-must equal "3:00 PM kickoff" (returns "PM kickoff" today); an SRT case asserts the cue text still
-contains "3:00". Fails before, passes after.
-
 ### F45 — ClaudeSummarizer never handles `stop_reason == "max_tokens"`
 
 - **Status:** open

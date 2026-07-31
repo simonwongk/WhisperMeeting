@@ -34,6 +34,50 @@ corrects it and say which entry it supersedes.
 
 ---
 
+## F42 — Export strips a leading clock-like token as a timestamp on non-timestamped transcripts
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-30 by Claude Code (Opus 4.8) / simonwang
+- **Commits:** `<this commit>`
+
+**Root cause.** Both export paths consumed a leading `\d{1,3}:\d{2}` token as a timestamp without
+checking the transcript was genuinely timestamped: `stripTimestamps` for plain text and
+`transcriptLines` (inside `effectiveSegments`) for SRT/VTT/JSON. A verbatim, non-timestamped
+transcript (e.g. an unaligned Qwen result) whose line began "3:00 PM kickoff" lost "3:00" — plain
+text became "PM kickoff" and subtitles emitted a cue mis-timed to 00:03:00. `isTimestamped` could not
+be used as the gate because it false-positives on prose like "3:00 PM".
+
+**Fix.** Gate on whether timed segments actually back the transcript, which is the real invariant:
+the export request always pairs `transcriptText` with the meeting's `segments`, and `transcriptText`
+is only ever in `MM:SS  text` form when it was generated from segments. Plain text now strips only
+when `!segments.isEmpty`; `effectiveSegments` short-circuits to a single full-duration cue carrying
+the verbatim text when there are no segments. This is the right layer — the exporter already owns the
+segment/cue derivation.
+
+**Evidence.**
+
+The new regression fails before the fix:
+
+```text
+✘ Test "Export does not strip a leading clock-like token from a non-timestamped transcript" recorded an issue at TranscriptExporterTests.swift:43:5: Expectation failed: (TranscriptExporter.render(.plainText, request) → "PM kickoff") == "3:00 PM kickoff"
+✘ Test run with 1 test failed after 0.002 seconds with 3 issues.
+```
+
+Passes after, full suite 189:
+
+```text
+✔ Test "Export does not strip a leading clock-like token from a non-timestamped transcript" passed after 0.001 seconds.
+✔ Test run with 189 tests passed after 1.096 seconds.
+```
+
+**Note on an updated test.** `stripsThreeDigitMinuteTimestamps` previously passed `segments: []` with
+genuinely-timestamped text — an input impossible in the real app (verified: `ContentView` builds the
+export request from the same record's `transcriptText` + `segments`). It was updated to carry the two
+backing segments; its assertion and expected output ("Almost there.\nWrap up.") are unchanged, so the
+3-digit-minute stripping it targets is still exercised.
+
+**Gaps.** None. Behavior verified against the real export-request construction path.
+
 ## F44 — WebVTT/SubRip export writes cue text unescaped
 
 - **Outcome:** fixed
