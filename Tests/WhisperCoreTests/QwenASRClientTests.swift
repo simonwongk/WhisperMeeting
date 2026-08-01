@@ -117,7 +117,7 @@ func qwenRuntimeCompleteness() throws {
 
 @Test("Cancelling Qwen transcription terminates its helper process")
 func qwenClientCancellation() async throws {
-    let fixture = try QwenClientFixture(script: "#!/bin/zsh\nwhile true; do :; done\n")
+    let fixture = try QwenClientFixture(script: "#!/bin/zsh\nexec sleep 120\n")
     defer { fixture.remove() }
     let client = QwenASRClient(
         pythonExecutableURL: fixture.pythonURL,

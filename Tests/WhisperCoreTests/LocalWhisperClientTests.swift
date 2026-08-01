@@ -117,7 +117,7 @@ func cancelsLocalProcess() async throws {
     try Data("audio".utf8).write(to: audioURL)
     try makeExecutable(
         at: executableURL,
-        script: "#!/bin/zsh\nwhile true; do :; done\n"
+        script: "#!/bin/zsh\nexec sleep 120\n"
     )
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
@@ -159,7 +159,7 @@ func cancellationDuringLaunchHandoff() async throws {
         .appendingPathComponent("WhisperMeetLaunchRaceTests-\(UUID().uuidString)", isDirectory: true)
     let executableURL = directory.appendingPathComponent("worker")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try makeExecutable(at: executableURL, script: "#!/bin/zsh\nwhile true; do :; done\n")
+    try makeExecutable(at: executableURL, script: "#!/bin/zsh\nexec sleep 120\n")
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let process = Process()
