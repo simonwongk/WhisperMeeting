@@ -6,6 +6,7 @@ public enum SuggestedAction: Sendable, Equatable {
     case installRuntime  // the runtime is missing — install it first
     case reimport        // the audio is missing/empty/too short — retrying will fail again
     case retry           // a transient/subprocess failure — retrying may succeed
+    case switchEngine    // this engine can't decode the recording's container — the other one can
     case none            // cancellation — not a failure the user needs to act on
 }
 
@@ -43,6 +44,12 @@ public enum TranscriptionFailureClassifier {
                 action: .reimport,
                 explanation: "No usable audio was found for this meeting. Re-import the recording — retrying as-is will fail again."
             )
+        case .switchEngine:
+            return FailureCategory(
+                action: .switchEngine,
+                explanation: "The Qwen engine can't read this recording's format. Switch to Whisper — "
+                    + "it handles more audio and video formats — and transcribe again."
+            )
         case .retry, .none:
             return FailureCategory(
                 action: .retry,
@@ -63,7 +70,16 @@ public enum TranscriptionFailureClassifier {
             switch error {
             case .runtimeNotInstalled: return .installRuntime
             case .recordingNotFound, .emptyTranscript: return .reimport
-            case .processFailed, .missingOutput, .unreadableOutput: return .retry
+            case .processFailed(let message):
+                // "unsupported file format" (miniaudio, via mlx-audio) means Qwen cannot decode this
+                // container at all — deterministic, so retrying the same engine can never work, but
+                // Whisper decodes it through ffmpeg. Guide an engine switch. Other subprocess failures
+                // stay transient/retryable; a corrupt WAV reports "could not open/decode file" — a
+                // different signature that correctly stays .retry. (F118)
+                return message.range(of: "unsupported file format", options: .caseInsensitive) != nil
+                    ? .switchEngine
+                    : .retry
+            case .missingOutput, .unreadableOutput: return .retry
             }
         }
         // Unrecognized error → retry is the safest default (never claims the audio is unusable).

@@ -25,3 +25,19 @@ func classifiesTranscriptionFailures() {
     // An unrecognized error defaults to retry.
     #expect(TranscriptionFailureClassifier.classify(UnknownError()).action == .retry)
 }
+
+/// F118 — a Qwen "unsupported file format" failure is deterministic (the container can't be decoded
+/// by this engine), so the classifier must guide switching engines rather than a retry that can never
+/// succeed with the same engine.
+@Test("A Qwen unsupported-format failure suggests switching engines, not retrying (F118)")
+func qwenUnsupportedFormatSuggestsEngineSwitch() {
+    let stderr = "Traceback (most recent call last):\n"
+        + "  File \"qwen_transcribe.py\", line 126, in <module>\n"
+        + "miniaudio.DecodeError: unsupported file format"
+    let category = TranscriptionFailureClassifier.classify(QwenASRError.processFailed(stderr))
+    #expect(category.action == .switchEngine)
+    // The deterministic "try transcribing again" advice must be gone…
+    #expect(!category.explanation.contains("try transcribing again"))
+    // …replaced by guidance to use the other engine, which decodes more formats.
+    #expect(category.explanation.contains("Whisper"))
+}
