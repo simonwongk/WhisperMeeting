@@ -30,8 +30,12 @@ cp "Scripts/qwen_dictate_server.py" "$app_dir/Contents/Resources/qwen_dictate_se
 # WHISPERMEET_SIGNING_IDENTITY; otherwise a keychain certificate named "WhisperMeet Dev" is picked
 # up automatically; otherwise fall back to ad-hoc and say how to fix it.
 signing_identity="${WHISPERMEET_SIGNING_IDENTITY:-}"
+# Match even an untrusted identity (note: no -v). A self-signed dev certificate is
+# CSSMERR_TP_NOT_TRUSTED by default, yet codesign signs with it fine — signing needs the private key,
+# not trust. Requiring a *trusted* identity (-v) meant the F128 certificate was never picked up and
+# builds silently fell back to ad-hoc: the exact permission-reset loop this is meant to end (F131).
 if [[ -z "$signing_identity" ]] \
-  && security find-identity -v -p codesigning 2>/dev/null | grep -q '"WhisperMeet Dev"'; then
+  && security find-identity -p codesigning 2>/dev/null | grep -q '"WhisperMeet Dev"'; then
   signing_identity="WhisperMeet Dev"
 fi
 if [[ -n "$signing_identity" ]]; then

@@ -14,6 +14,49 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F131 — build-app.sh required a *trusted* codesigning identity, so the F128 dev cert was never used
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** n/a — build-infrastructure fix (`Scripts/build-app.sh`). The surface restored is
+  stable signing: `Scripts/install-app.sh` now produces an app whose signing identity is "WhisperMeet
+  Dev", so macOS TCC keeps permission grants across rebuilds.
+
+**Root cause.** F127's `build-app.sh` chose a stable signing identity with
+`security find-identity -v -p codesigning | grep '"WhisperMeet Dev"'`. The `-v` requires a *trusted*
+identity, but a self-signed development certificate made in Keychain's Certificate Assistant is
+`CSSMERR_TP_NOT_TRUSTED` by default. So the F128 certificate — correctly created, private key present,
+fully usable for signing — was never matched, and every build silently fell back to ad-hoc, whose
+identity changes each build and resets microphone/screen/accessibility grants. F128 was closed "fixed"
+on the user creating the cert, but stable signing never actually engaged; that is why the reset loop
+persisted, and this entry corrects that record — the defect was this gate, not the certificate.
+
+**Fix.** Drop `-v` so an untrusted self-signed identity is matched (`security find-identity -p
+codesigning`). `codesign` signs with it fine: signing needs the private key, not trust — trust governs
+signature *verification*/Gatekeeper, which does not apply to a locally built app the user runs.
+
+**Evidence.**
+
+```text
+$ security find-identity -v -p codesigning            # before the fix: trusted-only → nothing
+     0 valid identities found
+$ security find-identity -p codesigning | grep 'WhisperMeet Dev'
+  1) 7A54121B… "WhisperMeet Dev" (CSSMERR_TP_NOT_TRUSTED)   # present, just untrusted
+$ codesign --force --sign "WhisperMeet Dev" <file>          # signs fine while untrusted
+<file>: replacing existing signature   (Authority=WhisperMeet Dev)
+$ Scripts/install-app.sh
+.build/WhisperMeet.app: replacing existing signature
+Installed WhisperMeet at /Applications/WhisperMeet.app
+$ codesign -dvv /Applications/WhisperMeet.app | grep Authority
+Authority=WhisperMeet Dev                                   # stable identity, not ad-hoc
+```
+
+**Gaps.** The user grants microphone/screen/accessibility one more time (the identity changed from
+ad-hoc to "WhisperMeet Dev"); from here rebuilds keep the grants. **Not planned:** marking the cert
+trusted in Keychain — unnecessary, since local signing does not require trust.
+
+---
+
 ## F84 — Wire tag click-to-filter into the sidebar (delivers F67)
 
 - **Outcome:** fixed
