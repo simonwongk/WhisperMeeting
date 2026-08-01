@@ -45,7 +45,7 @@
 <body>
 <main>
 <h1>WhisperMeet Ticket Board</h1>
-<p class="sub">22 active — 16 open · 2 in progress · 1 blocked · 3 needs human</p>
+<p class="sub">19 active — 16 open · 2 in progress · 1 blocked</p>
 <p class="sub">Generated August 1, 2026 from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
 <table>
 <thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
@@ -62,7 +62,6 @@
 <tr><td class="id">F121</td><td><div class="title">Serial quality gate can still hang inside the Swift test helper</div><div class="summary">The first post-F120 Scripts/quality-check.sh run completed its build and started the serial Swift suite, then stopped emitting output for more than a minute.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
 <tr><td class="id">F126</td><td><div class="title">Sidebar search field renders on top of the window controls</div><div class="summary">.searchable(text:placement:.sidebar,…) (Sources/WhisperMeet/ContentView.swift:100 area) renders the search field pinned at the very top of the sidebar above the traffic-light window controls, overlapp…</div></td><td><span class="badge st-in-progress">in-progress</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Claude Code (Fable 5, apple-design redesign session 2026-07-31) · —</td></tr>
 <tr><td class="id">F31</td><td><div class="title">Qwen meeting transcription reports no progress or ETA</div><div class="summary">QwenASRClient.transcribe (Sources/WhisperCore/QwenASRClient.swift:117-118) emits only .preparing / .loadingModel and never .transcribing with a fraction, and its run(...) (:174) reads the subprocess o…</div></td><td><span class="badge st-blocked">blocked</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · Blocked by F101</td></tr>
-<tr><td class="id">F128</td><td><div class="title">Create the one-time "WhisperMeet Dev" signing certificate (ends the re-grant loop)</div><div class="summary">macOS keys permission grants to the app's signing identity.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Needs a human · —</td></tr>
 <tr><td class="id">F80</td><td><div class="title">Render the menu-bar recording controls from the tested presentation core</div><div class="summary">MenuBarRecording.make(...) -&gt; MenuBarRecordingPresentation (Sources/WhisperCore/MenuBarRecording.swift:17-48; MenuBarRecordingTests.swift) is never rendered.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F62</td></tr>
 <tr><td class="id">F81</td><td><div class="title">Wire the summary-style picker into the summary UI and AppModel.summarize</div><div class="summary">SummaryStyle (Sources/WhisperCore/MeetingSummarizer.swift:53) and the style-threaded summarize(transcript:language:style:) / ClaudeSummarizer.systemPrompt(language:style:) (ClaudeSummarizer.swift:83,1…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F63</td></tr>
 <tr><td class="id">F86</td><td><div class="title">Add a Settings "Export diagnostics…" action for the diagnostics bundle</div><div class="summary">DiagnosticsBundleBuilder.json over DiagnosticsInput (Sources/WhisperCore/DiagnosticsBundleBuilder.swift:52,6; DiagnosticsBundleBuilderTests.swift) has zero callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F70</td></tr>
@@ -70,20 +69,18 @@
 <tr><td class="id">F89</td><td><div class="title">Build the compact recording HUD overlay</div><div class="summary">RecordingHUD.make(...) -&gt; RecordingHUDState (Sources/WhisperCore/RecordingHUD.swift:19; RecordingHUDTests.swift) has zero callers in Sources/WhisperMeet.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F74</td></tr>
 <tr><td class="id">F91</td><td><div class="title">Add the EventKit bridge so calendar titles pre-fill</div><div class="summary">CalendarTitleMatcher.bestTitle(...) over CalendarEventSummary (Sources/WhisperCore/CalendarTitleMatcher.swift:17,5; CalendarTitleMatcherTests.swift) has no caller.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F76</td></tr>
 <tr><td class="id">F92</td><td><div class="title">Wire per-segment re-run into the transcript segment menu</div><div class="summary">SegmentAudioRange.byteRange + TranscriptSegmentSplice.splice (Sources/WhisperCore/SegmentRerun.swift:10,20; SegmentRerunTests.swift) have no callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
-<tr><td class="id">F117</td><td><div class="title">Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)</div><div class="summary">The F116 seams are build/test/workflow-verified but SwiftUI has no render harness, and one round-2 verifier claim about transition layout mechanics contradicts established SwiftUI behavior — only look…</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Needs a human · —</td></tr>
-<tr><td class="id">F124</td><td><div class="title">Feel-check the five executed motion plans (F119)</div><div class="summary">All five F119 plans are executed, workflow-verified, and green on build/tests, but SwiftUI has no render harness — feel is verifiable only on screen.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Needs a human · —</td></tr>
 </tbody>
 </table>
 <h2>Recently closed</h2>
 <ul class="recent">
+<li><span class="id">F117</span>Eyeball the five F116 motion seams (and arbitrate one verifier dis… <em>— fixed</em></li>
+<li><span class="id">F124</span>Feel-check the five executed motion plans (F119) <em>— fixed</em></li>
+<li><span class="id">F128</span>Create the one-time "WhisperMeet Dev" signing certificate (ends th… <em>— fixed</em></li>
 <li><span class="id">F122</span>Correction to the F115 close: unclaimed ticket, incomplete evidenc… <em>— fixed</em></li>
 <li><span class="id">F100</span>Qwen alignment is all-or-nothing; consider keeping the sentences t… <em>— wontfix</em></li>
 <li><span class="id">F129</span>Vocabulary screen showed the app-level title in its toolbar <em>— fixed</em></li>
 <li><span class="id">F127</span>Ad-hoc signing resets every TCC permission on each rebuild <em>— fixed</em></li>
 <li><span class="id">F119</span>Execute the motion-audit plans (plans/001–005) <em>— fixed</em></li>
-<li><span class="id">F123</span>Offline local dashboard for the ticket board <em>— fixed</em></li>
-<li><span class="id">F120</span>Dictation pill level quantizer disagreed with the rendered bar thr… <em>— fixed</em></li>
-<li><span class="id">F115</span>CI never completed on main: concurrency cancels, a hung test, and… <em>— fixed</em></li>
 </ul>
 </main>
 </body>

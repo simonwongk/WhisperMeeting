@@ -14,6 +14,71 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F117 — Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8), on the user's on-device verification
+
+**Resolution.** The user eyeballed the five F116 transitions on the running app — the
+transcription-finish fade (the one that mattered most), pin/delete row motion, the Summarize spinner,
+vocabulary updates, and the Test-Recording sheet phases — and reported **all good**. The
+transcription-finish transition shows no snap or transient stacking, which **settles the round-2
+verifier disagreement** in favour of the shipped behaviour.
+
+**Evidence.**
+
+```text
+User verification (2026-08-01): the five-seam checklist, including the disputed finish-fade — "all good".
+```
+
+**Gaps.** none — no artifact reported, so nothing filed. Not planned: an automated SwiftUI-render test
+— the `WhisperMeet` target has no view-render harness.
+
+---
+
+## F124 — Feel-check the five executed motion plans (F119)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8), on the user's on-device feel-check
+
+**Resolution.** The user ran the F119 motion plans on the running app — playback-follow scrolling, the
+dictation pill, press-and-hold dim, the volume-bar green→orange reveal, the recording-health fade, and
+the Reduce Motion repeats — and reported **all good**. F119's motion work is now feel-verified in
+addition to build/test/workflow-verified.
+
+**Evidence.**
+
+```text
+User verification (2026-08-01): the seven-part feel checklist — "all good".
+```
+
+**Gaps.** none — no motion artifact reported. Not planned: an automated feel/render test (no SwiftUI
+render harness in the `WhisperMeet` target).
+
+---
+
+## F128 — Create the one-time "WhisperMeet Dev" signing certificate (ends the re-grant loop)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8), on the user's confirmation
+
+**Resolution.** The user created the self-signed "WhisperMeet Dev" code-signing certificate in Keychain
+and re-granted permissions once. Rebuilds now retain the microphone, screen-recording, and
+accessibility grants — `build-app.sh` picks up the stable signing identity automatically (F127), so the
+rebuild → reinstall → re-grant loop is closed.
+
+**Evidence.**
+
+```text
+User confirmation (2026-08-01): certificate created and permissions re-granted; signing identity is now
+stable across rebuilds.
+```
+
+**Gaps.** none. Only a person could create the keychain certificate (it prompts for trust) — which is
+why this was needs-human; done now.
+
+---
+
 ## F122 — Correction to the F115 close: unclaimed ticket, incomplete evidence, overstated claim
 
 - **Outcome:** fixed
