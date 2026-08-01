@@ -95,13 +95,14 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("WhisperMeet")
-            // Toolbar placement, not .sidebar: the sidebar variant rendered the field on top of
-            // the window controls (F126); the toolbar is the macOS-conventional home anyway.
-            .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
             .navigationSplitViewColumnWidth(min: 245, ideal: 290)
         } detail: {
             detail
         }
+        // Attached to the split view, not the sidebar list: on the list, even .toolbar placement
+        // renders inside the sidebar and scrolls beneath the window controls (observed live,
+        // F126); at this level it lands in the window toolbar like Finder/Mail.
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
         .alert(
             "WhisperMeet",
             isPresented: Binding(
@@ -317,6 +318,10 @@ private struct RecordMeetingView: View {
             ScrollView {
                 recordContent
                     .padding(40)
+                    // Take the full ideal height: without this, the minHeight frame compresses
+                    // the column into the viewport — captions truncate to one line and scrolling
+                    // goes dead (observed live, F125).
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity)
                     // Center when the content fits the window; scroll when it does not — the
                     // Stop button must always be reachable (F125).
@@ -1481,6 +1486,7 @@ private struct VocabularyView: View {
             }
         }
         .padding(32)
+        .navigationTitle("Business Vocabulary")
         .fileImporter(
             isPresented: $showsImporter,
             allowedContentTypes: supportedTypes,

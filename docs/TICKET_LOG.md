@@ -14,6 +14,31 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F129 — Vocabulary screen showed the app-level title in its toolbar
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Fable 5, apple-design redesign session) — filed and fixed
+  same session (live screen-control pass, user-authorized)
+- **Commits:** the `fix(ui)` commit referencing F129
+- **Reachability:** `VocabularyView` (sidebar → Business Vocabulary).
+
+**Root cause.** `VocabularyView` set no `navigationTitle`, so the detail toolbar fell back to the
+sidebar's app-level title ("WhisperMeet") — the only screen violating the wayfinding rule that
+every screen names itself.
+
+**Fix.** `.navigationTitle("Business Vocabulary")` on the view. Observed live via the
+computer-use pass (screenshot showed the wrong title); Dictation and Settings already titled
+correctly.
+
+**Evidence.**
+
+```text
+$ swift build → Build complete!   $ swift test → ✔ Test run with 259 tests passed
+```
+
+**Gaps.** Visual confirmation folds into the pending F125/F126 re-check (same relaunch). Not
+planned: view-render harness (standing limitation).
+
 ## F127 — Ad-hoc signing resets every TCC permission on each rebuild
 
 - **Outcome:** fixed
