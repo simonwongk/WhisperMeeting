@@ -144,14 +144,22 @@ final class MeetingStore: ObservableObject {
     let rootDirectory: URL
     private let meetingFiles: BackupJSONStore<[MeetingRecord]>
     private let vocabularyFiles: BackupJSONStore<[String]>
+    /// How long a transcript keystroke waits before its edit is flushed to disk. Coalesces the
+    /// per-keystroke full-index rewrite (F40) into one debounced write; tests pass a large value to
+    /// prove coalescing and drive the flush explicitly.
+    private let transcriptWriteDebounce: TimeInterval
+    /// Count of completed index writes — lets F40's coalescing test assert how many disk writes ran.
+    private(set) var persistCount = 0
+    private var pendingIndexFlush: Task<Void, Never>?
 
-    init(rootDirectory: URL? = nil) {
+    init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = 0.5) {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
         self.rootDirectory = rootDirectory
             ?? appSupport.appendingPathComponent("WhisperMeet", isDirectory: true)
+        self.transcriptWriteDebounce = transcriptWriteDebounce
         meetingFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
             backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json")
@@ -245,6 +253,45 @@ final class MeetingStore: ObservableObject {
         persistMeetings()
     }
 
+    /// Apply a transcript-body edit: update the in-memory record immediately (so the editor stays
+    /// live) but coalesce the expensive whole-index write, which otherwise ran on every keystroke
+    /// (F40). See `scheduleDebouncedPersist`.
+    func editTranscript(id: UUID, text: String) {
+        guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        meetings[index].transcriptText = text
+        scheduleDebouncedPersist()
+    }
+
+    /// Apply a notes edit with the same immediate-in-memory + debounced-write coalescing as the
+    /// transcript editor — the notes field had the identical per-keystroke whole-index write (F133).
+    /// Empty text clears the field (nil), matching the prior binding.
+    func editNotes(id: UUID, text: String) {
+        guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        meetings[index].notes = text.isEmpty ? nil : text
+        scheduleDebouncedPersist()
+    }
+
+    /// Cancel any pending flush and schedule a single trailing one `transcriptWriteDebounce` later, so
+    /// a burst of keystrokes collapses into one whole-index write (F40/F133).
+    private func scheduleDebouncedPersist() {
+        pendingIndexFlush?.cancel()
+        let delay = transcriptWriteDebounce
+        pendingIndexFlush = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.flushPendingEdits()
+        }
+    }
+
+    /// Flush a pending debounced edit now — call on focus loss, meeting change, or view disappearance
+    /// so no edit is lost (F40/F133). No-op when nothing is pending.
+    func flushPendingEdits() {
+        guard let task = pendingIndexFlush else { return }
+        pendingIndexFlush = nil
+        task.cancel()
+        persistMeetings()
+    }
+
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
     func setTags(id: UUID, _ raw: [String]) {
         let normalized = MeetingTags.normalized(raw)
@@ -304,6 +351,7 @@ final class MeetingStore: ObservableObject {
     }
 
     private func persistMeetings() {
+        persistCount += 1
         do {
             try meetingFiles.save(meetings)
             storageErrorMessage = nil

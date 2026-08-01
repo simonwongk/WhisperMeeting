@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F133`.**
+**Next free ID: `F134`.**
 
 ---
 
@@ -164,31 +164,6 @@ emits one.
 (fraction increases per completed chunk) and the label reads "Transcribing locally…"; a
 `QwenProgressParser` unit test maps a captured progress line/`tqdm` frame to the expected fraction
 (fails before, passes after).
-
-### F40 — Transcript Edit view double-writes the whole meetings index on every keystroke
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-07-30 by Claude Code (fix sweep, verified)
-
-**Problem.** The transcript editor binding's setter calls
-`store.update(id:) { $0.transcriptText = value }` on every keystroke
-(`Sources/WhisperMeet/ContentView.swift:1709-1712`). `MeetingStore.update` runs on `@MainActor` and
-unconditionally calls `persistMeetings()` (`MeetingStore.swift:209-213`), which JSON-encodes the
-ENTIRE `meetings` array and performs a crash-safe backup-then-primary double write. There is no
-debounce/coalescing.
-
-**Impact.** For a large library or long transcript, editing re-serializes and writes megabytes to
-disk twice per keystroke on the main thread — typing lag, possible cursor/IME-composition jumps (the
-app supports Mandarin), and multiplied disk wear.
-
-**Proposed fix.** Hold the edited text in `@State` and flush to the store on a debounce timer and on
-blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
-
-**Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
-coalesces to roughly one write after idle rather than N. Fails before, passes after.
 
 ## Reachability wiring — filed 2026-07-31
 

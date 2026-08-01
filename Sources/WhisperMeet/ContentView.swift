@@ -1627,8 +1627,9 @@ private struct TranscriptDetailView: View {
                 .frame(minHeight: 72)
                 .padding(6)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                // Debounced write (F133): coalesce the per-keystroke whole-index write.
                 .onChange(of: notesDraft) { _, newValue in
-                    store.update(id: meetingID) { $0.notes = newValue.isEmpty ? nil : newValue }
+                    store.editNotes(id: meetingID, text: newValue)
                 }
         }
         .onAppear {
@@ -1637,6 +1638,8 @@ private struct TranscriptDetailView: View {
                 notesLoadedFor = meetingID
             }
         }
+        // Persist a pending notes edit if the view goes away before the debounce fires (F133).
+        .onDisappear { store.flushPendingEdits() }
     }
 
     /// A comma-separated tag editor. Tags are labels for organizing/filtering — never speaker
@@ -2048,7 +2051,8 @@ private struct TranscriptDetailView: View {
     private func transcriptTextEditor(_ meeting: MeetingRecord) -> some View {
         TextEditor(text: Binding(
             get: { store.meeting(id: meeting.id)?.transcriptText ?? "" },
-            set: { value in store.update(id: meeting.id) { $0.transcriptText = value } }
+            // Debounced write (F40): update in memory immediately, coalesce the whole-index disk write.
+            set: { value in store.editTranscript(id: meeting.id, text: value) }
         ))
         .font(.body)
         .scrollContentBackground(.hidden)
@@ -2059,6 +2063,9 @@ private struct TranscriptDetailView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         }
+        // Flush any pending debounced edit when the editor goes away (tab switch, detail close) so an
+        // edit made in the last debounce window is never lost (F40).
+        .onDisappear { store.flushPendingEdits() }
     }
 
     /// Upgrades meetings transcribed before the unified-transcript change exactly once: if a

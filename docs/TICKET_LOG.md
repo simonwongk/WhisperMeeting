@@ -14,6 +14,64 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F40 — Transcript editor double-wrote the whole meetings index on every keystroke
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the transcript `TextEditor` binding (`ContentView.swift:2051`) now calls
+  `MeetingStore.editTranscript(id:text:)` instead of `store.update{…}`, and flushes on disappear
+  (`ContentView.swift`). User-triggerable surface: typing in the meeting-detail transcript editor.
+
+**Root cause.** The `TextEditor` setter called `store.update(id:){ $0.transcriptText = value }` on every
+keystroke → `persistMeetings()` → `BackupJSONStore.save`, which full-array-encodes `meetings`, decodes
+both existing files, and writes two `.atomic` files — per character, on `@MainActor`.
+
+**Fix.** `MeetingStore.editTranscript(id:text:)` updates the in-memory record immediately (the editor
+stays live) but coalesces the whole-index write via `scheduleDebouncedPersist()` — one trailing flush
+after `transcriptWriteDebounce` (default 0.5 s); each keystroke cancels the prior pending flush.
+`flushPendingEdits()` writes immediately on editor teardown so no edit is lost.
+
+**Evidence.** Red-green (`TranscriptEditCoalescingTests.swift`), 20 keystrokes. Before — naive per-call
+persist → 20 writes:
+
+```text
+✘ Expectation failed: (store.persistCount - baseline → 20) == 0
+```
+
+After — 0 writes while pending, in-memory value live, exactly 1 on `flushPendingEdits()`, final text on
+disk. Full gate green (267 tests).
+
+**Gaps.** **Not planned:** a GUI test of the editor binding — the `WhisperMeet` target has no
+view-render harness (AGENTS.md "Wiring an unreachable core"). Manual: type quickly in a transcript;
+confirm the text persists on reopen and disk I/O no longer fires per keystroke.
+
+---
+
+## F133 — Notes editor double-wrote the whole meetings index on every keystroke
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the Notes `TextEditor`'s `.onChange` (`ContentView.swift`) now calls
+  `MeetingStore.editNotes(id:text:)` (debounced) instead of `store.update{…}`, flushing on disappear.
+  User surface: typing in a meeting's Notes scratchpad.
+
+**Root cause.** The same defect as F40 in a sibling editor: `notesSection`'s `.onChange(of: notesDraft)`
+called `store.update{ $0.notes = … }` per keystroke → a full-index write per character. Discovered while
+fixing F40; filed and fixed here rather than left latent.
+
+**Fix.** `MeetingStore.editNotes(id:text:)` mirrors `editTranscript`: immediate in-memory update (empty →
+`nil`, matching the prior binding) + the shared `scheduleDebouncedPersist()` coalescing;
+`flushPendingEdits()` on view disappear.
+
+**Evidence.** Red-green (`NotesEditCoalescingTests.swift`): failed "value of type 'MeetingStore' has no
+member 'editNotes'" before; after, 20 notes keystrokes → 0 pending-window writes, 1 on flush, final
+notes on disk. Full gate green (267 tests).
+
+**Gaps.** **Not planned:** GUI test of the binding (no view harness). Manual: type quickly in Notes;
+confirm persistence on reopen.
+
+---
+
 ## F125 — Record screen not scrollable; Stop button unreachable while recording
 
 - **Outcome:** fixed
