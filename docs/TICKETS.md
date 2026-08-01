@@ -375,8 +375,8 @@ unmodified.
 
 ### F84 — Wire tag click-to-filter into the sidebar (delivers F67)
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Claude Code (Opus 4.8)
 - **Severity:** medium
 - **Area:** meetings
 - **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
