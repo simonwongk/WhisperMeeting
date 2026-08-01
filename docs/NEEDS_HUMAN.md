@@ -6,6 +6,36 @@ the ticket rules in [`../AGENTS.md`](../AGENTS.md); open work stays in [`TICKETS
 
 ---
 
+### F128 — Create the one-time "WhisperMeet Dev" signing certificate (ends the re-grant loop)
+
+- **Status:** needs-human
+- **Owner:** —
+- **Severity:** medium
+- **Area:** build
+- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+
+**What I need from you** (about 30 seconds, once ever):
+
+1. Open **Keychain Access** (Applications → Utilities).
+2. Menu bar: **Keychain Access → Certificate Assistant → Create a Certificate…**
+3. Fill in exactly: Name **WhisperMeet Dev** · Identity Type **Self-Signed Root** ·
+   Certificate Type **Code Signing** → Create (accept the warning).
+4. Back in the repo, run `Scripts/install-app.sh`, open the app from /Applications, and grant
+   the permissions **one last time**.
+
+From then on, every rebuild keeps your microphone, screen-recording, and accessibility grants —
+`build-app.sh` finds the certificate automatically (F127).
+
+**Problem.** macOS keys permission grants to the app's signing identity. With no certificate on
+this Mac, builds are signed ad-hoc, whose identity changes every build — so every rebuild wipes
+the grants. Only a person can create a keychain certificate (it prompts for trust).
+
+**Impact.** Until done, the rebuild → reinstall → re-grant loop continues (the build script
+reminds you on each ad-hoc build).
+
+**Verification.** After creating it: `Scripts/install-app.sh`, grant once, rebuild + reinstall
+again — the app should launch with all permissions intact, no prompts.
+
 ### F124 — Feel-check the five executed motion plans (F119)
 
 - **Status:** needs-human

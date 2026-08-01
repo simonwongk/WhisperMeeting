@@ -14,6 +14,45 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F127 — Ad-hoc signing resets every TCC permission on each rebuild
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+- **Commits:** the `fix(build)` commit referencing F127
+- **Reachability:** `Scripts/build-app.sh` (used directly and by `Scripts/install-app.sh`).
+- **Follow-up:** F128 (needs-human — create the one-time keychain certificate; also carries the
+  end-to-end TCC-persistence verification, which cannot run until the certificate exists)
+
+**Root cause.** `codesign --sign -` (ad-hoc) keys the signature to the build's CDHash, which
+changes every build; macOS TCC keys permission grants to the signing identity, so each rebuild
+looked like a brand-new app and wiped microphone/screen-recording/accessibility grants. No
+code-signing identity existed on the machine (`security find-identity -v -p codesigning` → 0).
+
+**Fix.** `build-app.sh` now signs with `WHISPERMEET_SIGNING_IDENTITY` if set, else an
+auto-detected keychain certificate named "WhisperMeet Dev", else falls back to ad-hoc and prints
+the one-time certificate-creation steps. The bundle identifier was already stable
+(`com.whispermeet.app`), so a stable certificate is the only missing piece for grants to persist.
+`install-app.sh` (staged replace + verify + rollback) is unchanged and remains the one-command
+rebuild-and-install path.
+
+**Evidence.**
+
+```text
+$ security find-identity -v -p codesigning
+     0 valid identities found
+$ Scripts/build-app.sh          # fallback path, on this machine today
+.build/WhisperMeet.app: replacing existing signature
+note: signed ad-hoc — macOS will re-ask for microphone/screen/accessibility after every rebuild.
+      One-time fix: Keychain Access → Certificate Assistant → Create a Certificate…
+      Name: WhisperMeet Dev  ·  Identity Type: Self-Signed Root  ·  Certificate Type: Code Signing.
+      Rebuild afterwards and this script signs with it automatically.
+/Users/simonwang/Documents/Whisper/.build/WhisperMeet.app
+```
+
+**Gaps.** The stable-identity branch and grant persistence are untestable until the certificate
+exists — both carried by F128, whose verification section covers them. Not planned: a real
+Developer ID / notarization pipeline; out of scope for a local-only personal build.
+
 ## F119 — Execute the motion-audit plans (plans/001–005)
 
 - **Outcome:** fixed
