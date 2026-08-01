@@ -22,7 +22,12 @@ else
 fi
 
 print "[2/4] Running the complete test suite"
-swift test --disable-sandbox
+# Run serially: several tests block a cooperative thread waiting on a real
+# subprocess (Qwen's readDataToEndOfFile, the warm dictation engine's readLine).
+# In parallel on a low-core CI runner those blocking waits exhaust the Swift
+# concurrency pool, so the tasks that cancel/terminate them are starved and the
+# suite stalls until timeouts (F115). One-at-a-time keeps a thread free.
+swift test --disable-sandbox --no-parallel
 
 print "[3/4] Building production code with warnings as errors"
 swift build --disable-sandbox -c release -Xswiftc -warnings-as-errors
