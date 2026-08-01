@@ -32,7 +32,7 @@ final class DictationOverlay {
         // The mic tap publishes ~47 Hz (1024-frame buffers at 48 kHz); the bars have only six
         // states, so publish only when the lit-bar count changes — visually identical, and it
         // spares a pill re-render per audio buffer.
-        let bucket = Int((min(1, max(0, level)) * 5).rounded(.down))
+        let bucket = DictationPillLevelBucket.bucket(for: level)
         guard bucket != model.levelBucket else { return }
         model.levelBucket = bucket
         model.level = level
@@ -84,6 +84,13 @@ protocol DictationOverlayPresenting: AnyObject {
 }
 
 extension DictationOverlay: DictationOverlayPresenting {}
+
+enum DictationPillLevelBucket {
+    static func bucket(for level: Float) -> Int {
+        let scaled = min(1, max(0, level)) * 5
+        return scaled == 0 ? 0 : Int(scaled.rounded(.up))
+    }
+}
 
 private final class PillModel: ObservableObject {
     @Published var phase: DictationOverlay.Phase = .listening
