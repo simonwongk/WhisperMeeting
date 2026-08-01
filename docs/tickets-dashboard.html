@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>WhisperMeet Ticket Board</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #656a73;
+      --line: #d9dce2;
+      --soft: #eceef2;
+      --accent: #315efb;
+      --accent-soft: #e7edff;
+      --danger: #b42318;
+      --danger-soft: #feeceb;
+      --warning: #8a5800;
+      --warning-soft: #fff3d6;
+      --success: #166534;
+      --success-soft: #e6f5ea;
+      --radius: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111317;
+        --panel: #1b1e24;
+        --text: #f2f3f5;
+        --muted: #a8adb7;
+        --line: #363b45;
+        --soft: #252a32;
+        --accent: #8eabff;
+        --accent-soft: #202d52;
+        --danger: #ff9b91;
+        --danger-soft: #44231f;
+        --warning: #ffd17a;
+        --warning-soft: #3f3119;
+        --success: #8ddeaa;
+        --success-soft: #193a27;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 56px; }
+    a { color: var(--accent); }
+    h1, h2, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.7rem, 4vw, 2.35rem); letter-spacing: -0.035em; }
+    h2 { margin-bottom: 14px; font-size: 1.05rem; }
+    .topline, .controls, .stats, .review-strip, .detail-meta { display: flex; gap: 12px; flex-wrap: wrap; }
+    .topline { justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+    .subtitle { margin: 0; color: var(--muted); max-width: 720px; }
+    .source-links { display: flex; gap: 12px; white-space: nowrap; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 22px; }
+    .stat, .detail, .recent { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .stat { padding: 16px; }
+    .stat-label { color: var(--muted); font-size: 0.82rem; }
+    .stat-value { display: block; margin-top: 5px; font-size: 1.65rem; font-weight: 650; }
+    .review-strip { align-items: center; padding: 12px 14px; margin-bottom: 22px; background: var(--warning-soft); border-left: 4px solid var(--warning); border-radius: 8px; }
+    .review-strip strong { color: var(--warning); }
+    .review-strip span { color: var(--text); }
+    .controls { align-items: end; margin-bottom: 14px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 0.8rem; }
+    input, select, button {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 9px 11px;
+    }
+    input { width: min(340px, 100%); }
+    input:focus, select:focus, button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 1px; }
+    button { cursor: pointer; }
+    button:hover { background: var(--soft); }
+    .result-count { margin: 0 0 10px; color: var(--muted); font-size: 0.86rem; }
+    .table-wrap { overflow-x: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; min-width: 860px; }
+    th { color: var(--muted); font-size: 0.76rem; font-weight: 600; text-align: left; letter-spacing: 0.02em; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: color-mix(in srgb, var(--soft) 55%, transparent); }
+    .ticket-button { padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; }
+    .ticket-button:hover { color: var(--accent); background: transparent; }
+    .id { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--accent); white-space: nowrap; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; font-size: 0.75rem; white-space: nowrap; }
+    .status-open { background: var(--accent-soft); color: var(--accent); }
+    .status-in-progress { background: var(--success-soft); color: var(--success); }
+    .status-blocked, .status-needs-human { background: var(--warning-soft); color: var(--warning); }
+    .severity-medium { background: var(--danger-soft); color: var(--danger); }
+    .severity-low { background: var(--soft); color: var(--muted); }
+    .detail { margin-top: 18px; padding: 18px; }
+    .detail[hidden] { display: none; }
+    .detail-head { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
+    .detail h2 { margin-bottom: 8px; }
+    .detail p { color: var(--muted); max-width: 920px; }
+    .detail-meta { margin: 14px 0; }
+    .detail-meta span { background: var(--soft); padding: 6px 9px; border-radius: 8px; font-size: 0.8rem; }
+    .detail-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .recent { margin-top: 28px; padding: 18px; }
+    .recent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .recent-item { padding-left: 12px; border-left: 3px solid var(--success); }
+    .recent-item strong { display: block; margin-bottom: 4px; }
+    .recent-item span { color: var(--muted); font-size: 0.86rem; }
+    .empty { padding: 28px 10px; text-align: center; color: var(--muted); }
+    @media (max-width: 760px) {
+      main { padding: 22px 14px 40px; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .topline { align-items: start; }
+      .source-links { white-space: normal; }
+      .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .controls label:first-child { grid-column: 1 / -1; }
+      input, select { width: 100%; }
+      .recent-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 420px) {
+      .controls { grid-template-columns: 1fr; }
+      .controls label:first-child { grid-column: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="topline">
+      <div>
+        <h1>WhisperMeet Ticket Board</h1>
+        <p class="subtitle">Offline snapshot of active engineering work. Markdown remains authoritative. Updated July 31, 2026.</p>
+      </div>
+      <nav class="source-links" aria-label="Ticket source files">
+        <a href="TICKETS.md">Open board</a>
+        <a href="NEEDS_HUMAN.md">Needs human</a>
+        <a href="TICKET_LOG.md">Closed log</a>
+      </nav>
+    </header>
+
+    <section class="stats" aria-label="Ticket summary">
+      <div class="stat"><span class="stat-label">Active tickets</span><strong class="stat-value" id="activeCount">21</strong></div>
+      <div class="stat"><span class="stat-label">Open and unowned</span><strong class="stat-value" id="openCount">18</strong></div>
+      <div class="stat"><span class="stat-label">In progress</span><strong class="stat-value" id="progressCount">1</strong></div>
+      <div class="stat"><span class="stat-label">Blocked or human</span><strong class="stat-value" id="blockedCount">2</strong></div>
+    </section>
+
+    <aside class="review-strip" aria-label="Current review focus">
+      <strong>Review focus</strong>
+      <span>F118 still needs decode-first import support · F121 tracks the intermittent test-helper hang · F119 awaits required visual evidence.</span>
+    </aside>
+
+    <section aria-labelledby="activeHeading">
+      <h2 id="activeHeading">Active work</h2>
+      <div class="controls">
+        <label>Search
+          <input id="search" type="search" placeholder="ID, title, area, owner, blocker…" autocomplete="off">
+        </label>
+        <label>Status
+          <select id="statusFilter"><option value="all">All statuses</option></select>
+        </label>
+        <label>Area
+          <select id="areaFilter"><option value="all">All areas</option></select>
+        </label>
+        <label>Severity
+          <select id="severityFilter"><option value="all">All severities</option></select>
+        </label>
+      </div>
+      <p class="result-count" id="resultCount" aria-live="polite"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Severity</th><th>Area</th><th>Owner / dependency</th></tr></thead>
+          <tbody id="ticketRows"></tbody>
+        </table>
+      </div>
+      <div class="detail" id="ticketDetail" hidden aria-live="polite">
+        <div class="detail-head">
+          <div><span class="id" id="detailID"></span><h2 id="detailTitle"></h2></div>
+          <button type="button" id="closeDetail" aria-label="Close ticket detail">Close</button>
+        </div>
+        <p id="detailSummary"></p>
+        <div class="detail-meta" id="detailMeta"></div>
+        <p><strong>Verification:</strong> <span id="detailVerification"></span></p>
+        <div class="detail-actions"><a id="detailSource" href="TICKETS.md">Open authoritative source</a></div>
+      </div>
+    </section>
+
+    <section class="recent" aria-labelledby="recentHeading">
+      <h2 id="recentHeading">Recently reviewed and closed</h2>
+      <div class="recent-grid">
+        <div class="recent-item"><strong>F120 · Dictation level bars</strong><span>Fixed with a boundary regression test; full gate passed with 259 tests.</span></div>
+        <div class="recent-item"><strong>F123 · Local ticket dashboard</strong><span>This offline view, generated from the live board and verified against its current IDs.</span></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const tickets = [
+      {id:"F122",title:"F115 was closed without a claim or definition-of-done evidence",status:"open",severity:"low",area:"docs",owner:"Unowned",dependency:"Correction must be append-only",summary:"The F115 commit trail was never claimed and its fixed-close record lacks the required failing-before, explicit build, and test-count evidence.",verification:"Append an honest correction without altering the original log entry; preserve the complete F115 commit trail.",source:"TICKETS.md"},
+      {id:"F121",title:"Serial quality gate can still hang inside the Swift test helper",status:"open",severity:"medium",area:"build",owner:"Unowned",dependency:"Fresh recurrence after F115",summary:"One serial quality-gate run remained inside swiftpm-testing-helper with no child process or output; the identical retry passed all 259 tests.",verification:"Capture the last-started test, reproduce under a bounded timeout, and make a deliberate wedge produce actionable diagnostics.",source:"TICKETS.md"},
+      {id:"F119",title:"Execute the motion-audit plans (001–005)",status:"in-progress",severity:"medium",area:"ui",owner:"Claude Code · Fable 5",dependency:"Mandatory feel checks remain",summary:"Five motion and feedback improvements are implemented: transcript scrolling, live meter, dictation pill, press feedback, and recording-health transitions.",verification:"Complete every plan's driven-app feel checks, preserve Reduce Motion behavior, and satisfy the repository's behavior-test requirement before closing.",source:"TICKETS.md"},
+      {id:"F118",title:"Qwen cannot transcribe imported mp4/mov/aiff/caf recordings",status:"open",severity:"medium",area:"transcription",owner:"Unowned",dependency:"Decode-first path missing",summary:"The classifier now guides users toward Whisper, but Qwen still receives unsupported imported containers directly instead of a disposable local WAV.",verification:"Transcode a bench mp4/aiff to a temporary 16 kHz mono WAV, run it through the real installed Qwen model, and leave the original untouched.",source:"TICKETS.md"},
+      {id:"F31",title:"Qwen meeting transcription reports no progress or ETA",status:"blocked",severity:"medium",area:"transcription",owner:"Unowned",dependency:"Blocked by F101",summary:"Long Qwen transcription remains indeterminate because the helper emits no progress signal that the Swift client can parse.",verification:"A long Qwen run advances a determinate progress bar with a useful label and ETA.",source:"TICKETS.md"},
+      {id:"F100",title:"Keep successfully aligned Qwen sentences when later alignment fails",status:"open",severity:"low",area:"transcription",owner:"Unowned",dependency:"Spike mixed timestamp behavior first",summary:"One unreconcilable sentence currently discards timestamps for every sentence, including earlier exact matches.",verification:"A two-sentence mismatch fixture preserves the first sentence's timestamps without dropping text.",source:"TICKETS.md"},
+      {id:"F101",title:"Qwen helper must emit per-chunk progress",status:"open",severity:"medium",area:"build",owner:"Unowned",dependency:"Unblocks F31",summary:"The helper calls mlx-audio with progress disabled, so the app has no stable per-chunk signal to stream and parse.",verification:"Emit a stable progress format, parse it incrementally in Swift, and show increasing fractions on a real multi-chunk Qwen run.",source:"TICKETS.md"},
+      {id:"F40",title:"Transcript editor rewrites the whole meetings index on every keystroke",status:"open",severity:"medium",area:"ui",owner:"Unowned",dependency:"None",summary:"Each edit keystroke synchronously encodes and crash-safely writes the entire meetings index twice on the main actor.",verification:"A write-count test proves many keystrokes coalesce into roughly one persisted update after idle and still flush on exit.",source:"TICKETS.md"},
+      {id:"F79",title:"Wire recording-health report into meeting detail",status:"open",severity:"medium",area:"meetings",owner:"Unowned",dependency:"Delivers F58",summary:"The tested recording-health report is discarded during stop and never persisted or shown on a completed meeting.",verification:"Carry a known report through recorder stop into MeetingStore and manually confirm the advisory for a disposable unhealthy recording.",source:"TICKETS.md"},
+      {id:"F80",title:"Render recording controls in the menu bar",status:"open",severity:"low",area:"ui",owner:"Unowned",dependency:"Delivers F62; preferred over F89",summary:"The menu bar currently exposes dictation only; tested meeting-recording controls and status are not rendered.",verification:"With the main window hidden, start, mark, cancel, and stop a disposable recording from the menu bar.",source:"TICKETS.md"},
+      {id:"F81",title:"Wire summary-style picker into summaries",status:"open",severity:"low",area:"ui",owner:"Unowned",dependency:"Delivers F63",summary:"Brief, detailed, and action-focused summary styles exist in core but every app request still uses balanced.",verification:"Prove the selected style reaches the summarizer and manually compare regenerated brief and action-focused outputs.",source:"TICKETS.md"},
+      {id:"F82",title:"Add glossary-correction review sheet",status:"open",severity:"medium",area:"transcription",owner:"Unowned",dependency:"Delivers F65",summary:"The glossary matcher is tested but unreachable; users cannot review suggested proper-noun corrections before applying them.",verification:"Review and apply one proposed correction while proving the recording stays byte-for-byte unchanged.",source:"TICKETS.md"},
+      {id:"F84",title:"Wire tag click-to-filter into the sidebar",status:"open",severity:"medium",area:"meetings",owner:"Unowned",dependency:"Delivers F67",summary:"Meetings can be tagged, but tag chips are not interactive and the library filter ignores saved tags.",verification:"Selecting a tag narrows a fixture library and clearing it restores all meetings alongside existing text filters.",source:"TICKETS.md"},
+      {id:"F85",title:"Add Commands menu and Keyboard Shortcuts sheet",status:"open",severity:"medium",area:"ui",owner:"Unowned",dependency:"Delivers F69",summary:"The tested command catalog has no app scene wiring, so global recording commands and shortcut help are absent.",verification:"Exercise the menu shortcuts, their enablement, and the complete shortcut sheet without duplicate registrations.",source:"TICKETS.md"},
+      {id:"F86",title:"Add Settings export for privacy-safe diagnostics",status:"open",severity:"low",area:"ui",owner:"Unowned",dependency:"Delivers F70",summary:"The diagnostic bundle builder is tested but has no mapping from the live store and no Settings export action.",verification:"Export a fixture bundle and prove transcript, summary, vocabulary, and absolute-path sentinels are absent.",source:"TICKETS.md"},
+      {id:"F88",title:"Wire the cross-engine “Second opinion” comparison",status:"open",severity:"low",area:"transcription",owner:"Unowned",dependency:"F30 resolved",summary:"The comparison core exists, but users cannot run the other local engine into a scratch result and inspect disagreements.",verification:"A second-opinion run cannot mutate the stored transcript and respects the single-transcription guard.",source:"TICKETS.md"},
+      {id:"F89",title:"Build compact recording HUD overlay",status:"open",severity:"low",area:"ui",owner:"Unowned",dependency:"Subordinate to F80",summary:"The tested HUD state has no background overlay; if only one background-awareness surface ships, the menu bar wins.",verification:"Backgrounding during a disposable recording shows elapsed time and the worst warning, then hides on foreground or stop.",source:"TICKETS.md"},
+      {id:"F90",title:"Add library backup coordinator and Settings action",status:"open",severity:"medium",area:"recovery",owner:"Unowned",dependency:"Delivers F75",summary:"Hash-verified backup planning and retention exist only as pure core; users cannot copy their local library to another folder.",verification:"Temp source/destination tests cover copy, skip, hash verification, retention, free-space failure, and untouched source bytes.",source:"TICKETS.md"},
+      {id:"F91",title:"Add opt-in EventKit bridge for meeting titles",status:"open",severity:"low",area:"meetings",owner:"Unowned",dependency:"Requires explicit Calendar permission",summary:"Calendar title matching exists in core, but there is no opt-in EventKit provider or permission-gated app wiring.",verification:"With opt-in enabled, a nearby event pre-fills the title; denied access and no match silently retain the timestamp fallback.",source:"TICKETS.md"},
+      {id:"F92",title:"Wire per-segment re-transcription",status:"open",severity:"low",area:"transcription",owner:"Unowned",dependency:"F30 resolved",summary:"Audio-range and transcript-splice helpers are tested, but the segment menu cannot re-run a small clip through the selected engine.",verification:"A stubbed app-level run splices only the target segment; failure/cancel leaves transcript and all recording files unchanged.",source:"TICKETS.md"},
+      {id:"F117",title:"Eyeball the five F116 motion seams",status:"needs-human",severity:"low",area:"ui",owner:"Needs Simon",dependency:"Physical visual check",summary:"SwiftUI has no render harness for the five F116 transitions, including one disputed layout-snap observation.",verification:"Run the documented five-part checklist, including optional Reduce Motion checks, and report findings or “all good.”",source:"NEEDS_HUMAN.md"}
+    ];
+
+    const rows = document.getElementById("ticketRows");
+    const search = document.getElementById("search");
+    const statusFilter = document.getElementById("statusFilter");
+    const areaFilter = document.getElementById("areaFilter");
+    const severityFilter = document.getElementById("severityFilter");
+    const resultCount = document.getElementById("resultCount");
+    const detail = document.getElementById("ticketDetail");
+
+    const label = value => value === "ui"
+      ? "UI"
+      : value.split("-").map(part => part[0].toUpperCase() + part.slice(1)).join(" ");
+    const fillOptions = (select, values) => [...new Set(values)].sort().forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label(value);
+      select.append(option);
+    });
+    fillOptions(statusFilter, tickets.map(ticket => ticket.status));
+    fillOptions(areaFilter, tickets.map(ticket => ticket.area));
+    fillOptions(severityFilter, tickets.map(ticket => ticket.severity));
+
+    const severityRank = {medium: 0, low: 1};
+    const statusRank = {open: 0, "in-progress": 1, blocked: 2, "needs-human": 3};
+    const numericID = id => Number(id.slice(1));
+
+    function showDetail(ticket) {
+      document.getElementById("detailID").textContent = ticket.id;
+      document.getElementById("detailTitle").textContent = ticket.title;
+      document.getElementById("detailSummary").textContent = ticket.summary;
+      document.getElementById("detailVerification").textContent = ticket.verification;
+      const meta = document.getElementById("detailMeta");
+      meta.replaceChildren();
+      [label(ticket.status), label(ticket.severity), label(ticket.area), ticket.owner, ticket.dependency].forEach(value => {
+        const item = document.createElement("span");
+        item.textContent = value;
+        meta.append(item);
+      });
+      const source = document.getElementById("detailSource");
+      source.href = ticket.source;
+      source.textContent = `Open ${ticket.source}`;
+      detail.hidden = false;
+      detail.scrollIntoView({behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest"});
+    }
+
+    function render() {
+      const query = search.value.trim().toLowerCase();
+      const filtered = tickets.filter(ticket => {
+        const haystack = Object.values(ticket).join(" ").toLowerCase();
+        return (!query || haystack.includes(query))
+          && (statusFilter.value === "all" || ticket.status === statusFilter.value)
+          && (areaFilter.value === "all" || ticket.area === areaFilter.value)
+          && (severityFilter.value === "all" || ticket.severity === severityFilter.value);
+      }).sort((a, b) =>
+        severityRank[a.severity] - severityRank[b.severity]
+        || statusRank[a.status] - statusRank[b.status]
+        || numericID(a.id) - numericID(b.id)
+      );
+
+      rows.replaceChildren();
+      filtered.forEach(ticket => {
+        const row = document.createElement("tr");
+        const idCell = document.createElement("td");
+        idCell.className = "id";
+        idCell.textContent = ticket.id;
+
+        const titleCell = document.createElement("td");
+        const titleButton = document.createElement("button");
+        titleButton.type = "button";
+        titleButton.className = "ticket-button";
+        titleButton.textContent = ticket.title;
+        titleButton.addEventListener("click", () => showDetail(ticket));
+        titleCell.append(titleButton);
+
+        const statusCell = document.createElement("td");
+        const status = document.createElement("span");
+        status.className = `badge status-${ticket.status}`;
+        status.textContent = label(ticket.status);
+        statusCell.append(status);
+
+        const severityCell = document.createElement("td");
+        const severity = document.createElement("span");
+        severity.className = `badge severity-${ticket.severity}`;
+        severity.textContent = label(ticket.severity);
+        severityCell.append(severity);
+
+        const areaCell = document.createElement("td");
+        areaCell.textContent = label(ticket.area);
+        const contextCell = document.createElement("td");
+        contextCell.className = "muted";
+        contextCell.textContent = `${ticket.owner} · ${ticket.dependency}`;
+        row.append(idCell, titleCell, statusCell, severityCell, areaCell, contextCell);
+        rows.append(row);
+      });
+
+      if (!filtered.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 6;
+        cell.className = "empty";
+        cell.textContent = "No tickets match these filters.";
+        row.append(cell);
+        rows.append(row);
+      }
+      resultCount.textContent = `Showing ${filtered.length} of ${tickets.length} active tickets`;
+    }
+
+    [search, statusFilter, areaFilter, severityFilter].forEach(control => control.addEventListener("input", render));
+    document.getElementById("closeDetail").addEventListener("click", () => { detail.hidden = true; });
+
+    document.getElementById("activeCount").textContent = tickets.length;
+    document.getElementById("openCount").textContent = tickets.filter(ticket => ticket.status === "open").length;
+    document.getElementById("progressCount").textContent = tickets.filter(ticket => ticket.status === "in-progress").length;
+    document.getElementById("blockedCount").textContent = tickets.filter(ticket => ["blocked", "needs-human"].includes(ticket.status)).length;
+    render();
+  </script>
+</body>
+</html>
