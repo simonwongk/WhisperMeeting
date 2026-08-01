@@ -6,11 +6,43 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F119`.**
+**Next free ID: `F120`.**
 
 ---
 
 # Open tickets
+
+### F119 — Execute the motion-audit plans (plans/001–005)
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** medium
+- **Area:** ui
+- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+
+**Problem.** An eight-category animation audit (workflow-run, every finding hand-vetted at its
+cited line; full record in `plans/README.md`) found five MEDIUM defects the F113/F116 passes did
+not cover: (1) the transcript's three scroll animations — the app's only `.easeInOut` curves —
+restart from zero on retarget, run **ungated for Reduce Motion users**, glide on search
+keystrokes, and lose a scroll-ownership race between review jumps and follow-playback
+(`ContentView.swift:2443-2460`); (2) the dictation pill's phase cross-fade is ~2× the feedback
+budget, its content slides because the icon slot changes width (ungated), and its level publishes
+unthrottled at ~47 Hz (`DictationOverlay.swift:111,:32`; `MicDictationRecorder.swift:66`);
+(3) every custom-styled pressable (`.buttonStyle(.plain)`) has zero press feedback (~14 sites);
+(4) `LiveVolumeBar` animates `.frame(width:)` at 15 Hz — continuous layout invalidation on the
+continuously watched panel (`ContentView.swift:1038`); (5) the recording-health banner hard-swaps
+icon/tint/title on status flips (`ContentView.swift:525-540`).
+
+**Impact.** Feel, accessibility (two Reduce Motion convention violations), and steady-state
+performance on the two surfaces users watch longest. No data or behaviour risk.
+
+**Proposed fix.** Self-contained implementation plans exist: `plans/001`–`005` (stamped
+`c2230fa`, verified drift-free at filing). Execute in the order given by `plans/README.md`
+(001 → 004 → 002 → 003 → 005; 001/004 share a `DesignSystem.swift` token block). Vetted LOW
+findings that did not make the cut are recorded in `plans/README.md` § Audit record.
+
+**Verification.** Per-plan verification sections: `swift build` + `swift test` with no test-count
+drop, plus each plan's mandatory feel checks (manual, per the F114/F117 pattern).
 
 ### F118 — Qwen cannot transcribe imported mp4/mov/aiff/caf recordings; failure message calls it transient
 
