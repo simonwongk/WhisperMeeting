@@ -24,6 +24,24 @@ cp "Scripts/setup-qwen-asr.sh" "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 chmod +x "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 cp "Scripts/qwen_transcribe.py" "$app_dir/Contents/Resources/qwen_transcribe.py"
 cp "Scripts/qwen_dictate_server.py" "$app_dir/Contents/Resources/qwen_dictate_server.py"
-codesign --force --deep --sign - "$app_dir"
+# Sign with a stable identity when one exists, so macOS TCC keeps the user's permission grants
+# across rebuilds — an ad-hoc signature's identity changes every build, which resets microphone,
+# screen-recording, and accessibility grants each time (F127). Override with
+# WHISPERMEET_SIGNING_IDENTITY; otherwise a keychain certificate named "WhisperMeet Dev" is picked
+# up automatically; otherwise fall back to ad-hoc and say how to fix it.
+signing_identity="${WHISPERMEET_SIGNING_IDENTITY:-}"
+if [[ -z "$signing_identity" ]] \
+  && security find-identity -v -p codesigning 2>/dev/null | grep -q '"WhisperMeet Dev"'; then
+  signing_identity="WhisperMeet Dev"
+fi
+if [[ -n "$signing_identity" ]]; then
+  codesign --force --deep --sign "$signing_identity" "$app_dir"
+else
+  codesign --force --deep --sign - "$app_dir"
+  print -u2 "note: signed ad-hoc — macOS will re-ask for microphone/screen/accessibility after every rebuild."
+  print -u2 "      One-time fix: Keychain Access → Certificate Assistant → Create a Certificate…"
+  print -u2 "      Name: WhisperMeet Dev  ·  Identity Type: Self-Signed Root  ·  Certificate Type: Code Signing."
+  print -u2 "      Rebuild afterwards and this script signs with it automatically."
+fi
 
 print -r -- "$PWD/$app_dir"

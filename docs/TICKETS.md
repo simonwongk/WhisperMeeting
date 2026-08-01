@@ -6,11 +6,38 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F127`.**
+**Next free ID: `F129`.**
 
 ---
 
 # Open tickets
+
+### F127 — Ad-hoc signing resets every TCC permission on each rebuild
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
+- **Severity:** medium
+- **Area:** build
+- **Filed:** 2026-07-31 by Claude Code, reported by Simon ("every rebuild I must reinstall and
+  re-grant all access")
+
+**Problem.** `Scripts/build-app.sh` signs with `codesign --force --deep --sign -` (ad-hoc). An
+ad-hoc signature's identity is the build's CDHash, which changes on every build, so macOS TCC
+treats each rebuild as a new app: microphone, screen/system-audio recording, and accessibility
+grants are all wiped every time. Verified: `security find-identity -v -p codesigning` shows **0**
+identities on this Mac, so there is nothing stable to key grants to. The bundle identifier
+(`com.whispermeet.app`) is already stable; only the certificate is missing.
+
+**Impact.** The dev loop is rebuild → reinstall → re-grant three permissions, every iteration.
+
+**Proposed fix.** `build-app.sh` signs with a stable identity when available: honor
+`WHISPERMEET_SIGNING_IDENTITY`, else auto-detect a "WhisperMeet Dev" code-signing certificate in
+the keychain, else fall back to ad-hoc while printing the one-time certificate-creation steps.
+Creating the certificate itself is a human/keychain action → F128 (needs-human).
+
+**Verification.** With no identity: build succeeds and prints the guidance. With the certificate
+created: `codesign -dv` shows the stable identity, and TCC grants survive a rebuild+reinstall
+(`Scripts/install-app.sh`).
 
 ### F125 — Record screen is not scrollable; the Stop button can be unreachable while recording
 
