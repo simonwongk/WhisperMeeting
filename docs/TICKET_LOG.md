@@ -14,6 +14,64 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F120 — Dictation pill level quantizer disagreed with the rendered bar thresholds
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Codex /root (new-build review)
+- **Commits:** `2ca15bc` (file + claim), `bc1f527` (fix + regression test)
+- **Reachability:** Quick Dictation microphone tap → `DictationController` level callback →
+  `DictationOverlay.update(level:)` → `DictationPillLevelBucket.bucket(for:)` → published
+  `PillModel.level` → `LevelBars.barOpacity`; the fix changes only whether a visually distinct bar
+  state is published, never the captured samples or transcription path.
+
+**Root cause.** F119 plan 002 attempted to suppress visually redundant ~47 Hz microphone-level
+updates using `floor(clampedLevel * 5)`. The renderer uses the strict predicate
+`level * 5 > index`, whose number of lit bars is zero at silence and otherwise the ceiling of that
+same scaled value. The two formulas therefore disagreed after silence and immediately above every
+20% boundary, suppressing updates that should light another bar.
+
+**Fix.** Extracted the bucket calculation into the testable `DictationPillLevelBucket` and made it
+return the renderer's exact bar count: zero for zero/negative input, otherwise
+`ceil(clampedLevel * 5)`, capped at five. `DictationOverlay.update(level:)` still publishes only when
+that count changes, preserving the F119 performance improvement without changing capture behavior.
+
+**Evidence.** Focused red before the formula change:
+
+```text
+◇ Test "Dictation pill level buckets exactly match the number of rendered bars (F120)" started.
+✘ ... (bucket → 0) == (expectedBars → 1) — level 0.01 should render 1 bars
+✘ ... (bucket → 1) == (expectedBars → 2) — level 0.21 should render 2 bars
+✘ ... (bucket → 2) == (expectedBars → 3) — level 0.41 should render 3 bars
+✘ ... (bucket → 3) == (expectedBars → 4) — level 0.61 should render 4 bars
+✘ ... (bucket → 4) == (expectedBars → 5) — level 0.81 should render 5 bars
+✘ Test run with 1 test failed after 0.001 seconds with 5 issues.
+```
+
+Focused green after the fix:
+
+```text
+✔ Test "Dictation pill level buckets exactly match the number of rendered bars (F120)" passed after 0.001 seconds.
+✔ Test run with 1 test passed after 0.001 seconds.
+```
+
+Complete gate retry (test count 258 → 259):
+
+```text
+✔ Test run with 259 tests passed after 5.429 seconds.
+Build complete! (17.04s)   # release, -warnings-as-errors
+Build complete! (17.22s)   # packaged app
+.build/WhisperMeet.app: replacing existing signature
+/Users/simonwang/Documents/Whisper/.build/WhisperMeet.app
+Quality check passed.
+```
+
+**Gaps.** The first complete gate attempt hung in `swiftpm-testing-helper --no-parallel` with no
+child process and was interrupted; the identical retry above passed. That reliability finding is
+tracked as **F121**. Not planned: an automated SwiftUI pixel test for the five bars — this repository
+has no view-render harness; the pure bucket test asserts the exact predicate the renderer uses.
+
+---
+
 ## F115 — CI never completed on `main`: concurrency cancels, a hung test, and thread-pool exhaustion
 
 - **Outcome:** fixed

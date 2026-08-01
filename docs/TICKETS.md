@@ -6,37 +6,65 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F121`.**
+**Next free ID: `F123`.**
 
 ---
 
 # Open tickets
 
-### F120 — Dictation pill level quantizer disagrees with the rendered bar thresholds
+### F122 — F115 was closed without a claim or definition-of-done evidence
 
-- **Status:** in-progress
-- **Owner:** Codex /root (new-build review, 2026-07-31)
+- **Status:** open
+- **Owner:** —
 - **Severity:** low
-- **Area:** dictation
+- **Area:** docs
+- **Filed:** 2026-07-31 by Codex /root (new-build standards review)
+
+**Problem.** The F115 implementation commits (`b0b00c5`, `e1d013f`, `4d82c17`, `a4e5030`) landed
+while its board entry remained `Status: open`, `Owner: —`, violating AGENTS.md ticket rule 4. Its
+fixed-close entry (`docs/TICKET_LOG.md:75`) also lacks pasted failing-before output, an explicit
+`swift build` result, and a before/after test count; the aggregate GitHub success plus one post-fix
+test count does not satisfy ticket rule 6 or the Definition of done. The log is append-only, so the
+existing entry cannot be edited in place.
+
+**Impact.** The repository claims F115 met the same evidence standard enforced on other fixes when
+the authoritative record cannot prove that. This is a process/traceability defect, not evidence that
+the CI code itself is wrong; the fresh intermittent hang is tracked separately as F121.
+
+**Proposed fix.** Append a correction entry that explicitly supersedes F115's unsupported closure
+claims, records which evidence is permanently unavailable, and cites current reproducible gate
+evidence without presenting it as historical red-green proof. Decide the honest corrected outcome
+under the status vocabulary; do not fabricate missing output or edit the old entry.
+
+**Verification.** The appended correction names the unclaimed commit trail and every unavailable
+Definition-of-done proof; `git log --grep=F115` remains traceable; the original entry is byte-for-byte
+untouched.
+
+### F121 — Serial quality gate can still hang inside the Swift test helper
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** medium
+- **Area:** build
 - **Filed:** 2026-07-31 by Codex /root (new-build review)
 
-**Problem.** F119 plan 002 added a presentation-boundary level bucket using
-`floor(clampedLevel * 5)` (`Sources/WhisperMeet/Dictation/DictationOverlay.swift:35`), while
-`LevelBars.barOpacity` lights bar `index` only when `level * 5 > index` (`:166`). Those functions
-disagree at every nonzero bucket boundary: after a zero sample, a small positive level stays in
-bucket 0 even though the first bar should light; just above 20/40/60/80%, the next bar should light
-but the floor bucket suppresses the update until the following boundary.
+**Problem.** The first post-F120 `Scripts/quality-check.sh` run completed its build and started the
+serial Swift suite, then stopped emitting output for more than a minute. Process inspection showed
+only `swiftpm-testing-helper --no-parallel` alive, with no child test subprocess. Interrupting that
+run left no helper processes; an immediate identical gate retry completed all 259 tests in 5.429 s.
+This is a fresh recurrence after F115 claimed the constrained-runner hang class fixed.
 
-**Impact.** The new optimization can make live dictation feedback show one fewer bar than the actual
-level, including showing silence for quiet speech. Audio capture and transcription are unaffected.
+**Impact.** A nondeterministic local/CI hang can withhold the quality signal and waste the full job
+timeout even though the candidate is healthy. It also weakens F115's claim that serial execution
+removed the whole class of subprocess-wait contention.
 
-**Proposed fix.** Extract one pure bucket function whose result exactly equals the number of bars
-lit by the renderer (`0` at silence; otherwise `ceil(clampedLevel * 5)`, capped at 5), and use it at
-the overlay update boundary. Keep the ~47 Hz suppression and all panel/capture behavior unchanged.
+**Proposed fix.** Reproduce with per-test timing/last-started-test capture around the serial gate;
+identify whether the Swift testing helper, an async teardown, or a subprocess test remains live.
+Keep a bounded watchdog around CI test execution so a recurrence produces diagnostics rather than a
+silent 40-minute timeout. Do not weaken or skip tests.
 
-**Verification.** Red-green boundary tests cover zero, the first positive level, exact 20% steps,
-just-above-boundary values, and clamping; the complete Swift suite and release quality gate pass
-without a test-count drop.
+**Verification.** Repeated serial full-suite runs complete under a bounded timeout and a deliberately
+wedged fixture produces the diagnostic/timeout path. Capture the last-started test when reproducing.
 
 ### F119 — Execute the motion-audit plans (plans/001–005)
 
@@ -120,6 +148,10 @@ Verify any helper change against the pinned mlx-audio 0.3.1 source per AGENTS.md
 the new guidance (fails before, passes after). Real-runtime: an `.mp4`/`.aiff` conversion of a
 bench clip (e.g. `afconvert -f m4af … && cp x.m4a x.mp4`) transcribes successfully on the Qwen path
 after the fix; a genuinely undecodable file produces the engine-switch guidance, not a traceback.
+
+**Review note (2026-07-31, Codex /root).** Commit `0eb1a48` landed the classifier/guidance slice
+without first setting this ticket `in-progress`, violating AGENTS.md ticket rule 4. The ticket stays
+open because the required decode-first conversion and real Qwen imported-format run are still absent.
 
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
