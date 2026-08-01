@@ -29,6 +29,12 @@ final class DictationOverlay {
     }
 
     func update(level: Float) {
+        // The mic tap publishes ~47 Hz (1024-frame buffers at 48 kHz); the bars have only six
+        // states, so publish only when the lit-bar count changes — visually identical, and it
+        // spares a pill re-render per audio buffer.
+        let bucket = Int((min(1, max(0, level)) * 5).rounded(.down))
+        guard bucket != model.levelBucket else { return }
+        model.levelBucket = bucket
         model.level = level
     }
 
@@ -82,14 +88,17 @@ extension DictationOverlay: DictationOverlayPresenting {}
 private final class PillModel: ObservableObject {
     @Published var phase: DictationOverlay.Phase = .listening
     @Published var level: Float = 0
+    var levelBucket: Int = -1
 }
 
 private struct DictationPill: View {
     @ObservedObject var model: PillModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 10) {
             icon
+                .frame(width: 18)
             Text(label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white)
@@ -106,9 +115,15 @@ private struct DictationPill: View {
         // in either appearance. The brighter top-edge stroke reads as light catching the surface.
         .background(.black.opacity(0.78), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1))
-        // Phase changes cross-fade with a critically damped spring; the pill never moves, so this
-        // stays gentle under Reduce Motion too.
-        .animation(.uiSpring, value: model.phase)
+        // A feedback pill: phase confirmations land at feedback speed (~150 ms), not the window-class
+        // 0.35 s. The fixed icon slot above keeps content from sliding, so under Reduce Motion the
+        // same-speed pure fade is safe.
+        .animation(
+            reduceMotion
+                ? .linear(duration: 0.15)
+                : .spring(response: 0.15, dampingFraction: 1.0),
+            value: model.phase
+        )
     }
 
     @ViewBuilder private var icon: some View {
