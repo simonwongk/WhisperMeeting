@@ -297,7 +297,7 @@ private struct RecordMeetingView: View {
                 Button("Cancel Recording", role: .destructive) {
                     isConfirmingCancellation = true
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LinkPressStyle())
             }
 
             Label(
@@ -391,7 +391,7 @@ private struct RecordMeetingView: View {
                     .font(.headline)
                 Spacer()
                 Button("Check Again") { model.refreshRecordingPreflight() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .foregroundStyle(.tint)
             }
             preflightRow(
@@ -418,7 +418,7 @@ private struct RecordMeetingView: View {
             } label: {
                 Label("Test Recording…", systemImage: "waveform.badge.mic")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LinkPressStyle())
             .foregroundStyle(.tint)
             .disabled(model.isInstallingRecognitionRuntime)
             .help("Record a few disposable seconds and check that both your microphone and Mac system audio are actually captured.")
@@ -767,14 +767,14 @@ private struct SimpleMarkersList: View {
                         renameText = marker.label ?? ""
                         renamingMarker = marker
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .foregroundStyle(.tint)
                     Button(role: .destructive) {
                         model.removeMarker(marker.id, from: meetingID)
                     } label: {
                         Image(systemName: "trash")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Delete marker")
                 }
@@ -1446,7 +1446,7 @@ private struct VocabularyView: View {
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(LinkPressStyle())
                             .foregroundStyle(.tertiary)
                             .accessibilityLabel("Remove \(term)")
                         }
@@ -2395,7 +2395,7 @@ private struct PlayableTranscriptView: View {
                     Button { findText = "" } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .foregroundStyle(.tertiary)
                     .accessibilityLabel("Clear search")
                 }
@@ -2406,13 +2406,13 @@ private struct PlayableTranscriptView: View {
                     Button { moveSearchSelection(by: -1) } label: {
                         Image(systemName: "chevron.up")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .disabled(searchOccurrences.isEmpty)
                     .accessibilityLabel("Previous transcript match")
                     Button { moveSearchSelection(by: 1) } label: {
                         Image(systemName: "chevron.down")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LinkPressStyle())
                     .disabled(searchOccurrences.isEmpty)
                     .accessibilityLabel("Next transcript match")
                 }
@@ -2523,7 +2523,7 @@ private struct PlayableTranscriptView: View {
                 Label("Add at \(TranscriptFormatter.timestamp(playback.currentTime))", systemImage: "bookmark.badge.plus")
                     .font(.caption)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LinkPressStyle())
             .foregroundStyle(.tint)
             .help("Add a marker at the current playback position")
         }
@@ -2543,7 +2543,7 @@ private struct PlayableTranscriptView: View {
                 .background(Color.orange.opacity(0.15), in: Capsule())
                 .overlay(Capsule().strokeBorder(Color.orange.opacity(0.25), lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableChipStyle())
         .accessibilityLabel(AccessibilityPhrase.marker(
             label: RecordingMarkers.displayLabel(for: marker, at: index + 1),
             offset: marker.offset
@@ -2572,7 +2572,7 @@ private struct PlayableTranscriptView: View {
                     : "\(flaggedCount) segments may need a look")
                     .font(.callout)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LinkPressStyle())
             .help("Whisper flagged these as low-confidence, likely-silence (text over near-silent audio), or repetitive, worst first. Tap to review; this never changes your transcript.")
             Text("· \(Int((qualityReport.confidence * 100).rounded()))% clean")
                 .font(.caption.monospacedDigit())
@@ -2584,12 +2584,12 @@ private struct PlayableTranscriptView: View {
             Button { moveReview(by: -1) } label: {
                 Image(systemName: "chevron.up")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LinkPressStyle())
             .accessibilityLabel("Previous flagged segment")
             Button { moveReview(by: 1) } label: {
                 Image(systemName: "chevron.down")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LinkPressStyle())
             .accessibilityLabel("Next flagged segment")
         }
         .padding(10)
