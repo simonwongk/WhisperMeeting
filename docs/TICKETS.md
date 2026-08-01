@@ -6,11 +6,37 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F120`.**
+**Next free ID: `F121`.**
 
 ---
 
 # Open tickets
+
+### F120 — Dictation pill level quantizer disagrees with the rendered bar thresholds
+
+- **Status:** in-progress
+- **Owner:** Codex /root (new-build review, 2026-07-31)
+- **Severity:** low
+- **Area:** dictation
+- **Filed:** 2026-07-31 by Codex /root (new-build review)
+
+**Problem.** F119 plan 002 added a presentation-boundary level bucket using
+`floor(clampedLevel * 5)` (`Sources/WhisperMeet/Dictation/DictationOverlay.swift:35`), while
+`LevelBars.barOpacity` lights bar `index` only when `level * 5 > index` (`:166`). Those functions
+disagree at every nonzero bucket boundary: after a zero sample, a small positive level stays in
+bucket 0 even though the first bar should light; just above 20/40/60/80%, the next bar should light
+but the floor bucket suppresses the update until the following boundary.
+
+**Impact.** The new optimization can make live dictation feedback show one fewer bar than the actual
+level, including showing silence for quiet speech. Audio capture and transcription are unaffected.
+
+**Proposed fix.** Extract one pure bucket function whose result exactly equals the number of bars
+lit by the renderer (`0` at silence; otherwise `ceil(clampedLevel * 5)`, capped at 5), and use it at
+the overlay update boundary. Keep the ~47 Hz suppression and all panel/capture behavior unchanged.
+
+**Verification.** Red-green boundary tests cover zero, the first positive level, exact 20% steps,
+just-above-boundary values, and clamping; the complete Swift suite and release quality gate pass
+without a test-count drop.
 
 ### F119 — Execute the motion-audit plans (plans/001–005)
 
