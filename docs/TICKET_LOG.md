@@ -14,6 +14,56 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F86 — Add a Settings "Export diagnostics…" action for the diagnostics bundle (delivers F70)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** Settings → "Meeting library" → **Export diagnostics…** button (`SettingsView`,
+  `ContentView.swift`) → `SettingsView.exportDiagnostics()` (NSSavePanel) → `AppModel.diagnosticsJSON()`
+  → `DiagnosticsExport.input(meetings:vocabulary:recordingBytes:)` → `DiagnosticsBundleBuilder.json`.
+  The red-green test lands on the mapping seam (`DiagnosticsExport`) — the layer carrying the privacy
+  risk; the NSSavePanel button is presentation.
+
+**Root cause.** F70 shipped and tested `DiagnosticsBundleBuilder.json`/`DiagnosticsInput` (privacy-safe
+by construction — emits only structural metadata), but nothing mapped the live store into a
+`DiagnosticsInput` and no Settings control exported it, so the guarantee delivered no value.
+
+**Fix.** Three layers per the wiring rule. (1) Core unchanged. (2) `DiagnosticsExport.input`
+(`Sources/WhisperMeet/DiagnosticsExport.swift`) — a pure seam mapping `[MeetingRecord]` + vocabulary
+into `DiagnosticsInput`: transcript and summary go ONLY into the carried-but-never-emitted slots,
+vocabulary supplies its count alone, and the title and recording path are not mapped at all;
+`recordingBytes` is injected so the mapping is unit-testable without real files. `AppModel.diagnosticsJSON()`
+supplies the live store and FileManager-backed byte sizes. (3) A "Export diagnostics…" button in the
+Settings "Meeting library" section writes the JSON via `NSSavePanel`.
+
+**Evidence.**
+
+Fails before the seam exists (feature missing):
+
+```text
+DiagnosticsExportTests.swift:29: error: cannot find 'DiagnosticsExport' in scope
+```
+
+Passes after; suite grew 259 → 260 (+1) and the release warnings-as-errors build is clean:
+
+```text
+✔ Test run with 260 tests passed after 5.847 seconds.
+Build complete! (10.32s)   # swift build -c release -Xswiftc -warnings-as-errors
+```
+
+The test stuffs a meeting with `SENTINEL_*` transcript/summary/keypoint/action/vocabulary/title/path,
+maps + serializes, and asserts the structural fields (id, status, segment/marker counts, recordingBytes)
+are present while none of the sentinels appear in the JSON. (One transient F121 test-helper stall on the
+first run; killed and re-ran clean.)
+
+**Gaps.** The NSSavePanel button has no automated coverage — **Not planned:** the `WhisperMeet` target
+has no GUI-render harness. The export *content* (the privacy guarantee) is fully covered by the seam
+test; the button is a thin write of that tested output. Optional manual check: Settings → Export
+diagnostics…, confirm the file lists only structural fields and `grep` finds none of your
+transcript/vocabulary strings and no absolute paths.
+
+---
+
 ## F117 — Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)
 
 - **Outcome:** fixed

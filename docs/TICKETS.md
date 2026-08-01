@@ -431,35 +431,6 @@ fake a view test. Manual: confirm a Recording menu with ⌘R and ⇧⌘M (enable
 Help ▸ Keyboard Shortcuts (⌘/) lists every entry with its shortcut, ⌘R toggles recording, and no
 "ambiguous shortcut" console warning.
 
-### F86 — Add a Settings "Export diagnostics…" action for the diagnostics bundle (delivers F70)
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Opus 4.8)
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `DiagnosticsBundleBuilder.json` over `DiagnosticsInput`
-(`Sources/WhisperCore/DiagnosticsBundleBuilder.swift:52,6`; `DiagnosticsBundleBuilderTests.swift`) has
-zero callers. `SettingsView` (`ContentView.swift:1049-1248`) has no "Export diagnostics…" control and
-`AppModel` never maps `store.meetings`/`store.vocabulary` into a `DiagnosticsInput`.
-
-**Impact.** A user hitting a problem cannot export the privacy-safe structural JSON the core produces,
-so support relies on manual descriptions. The tested guarantee (ids/counts/sizes but never transcript
-text, summaries, vocabulary terms, or absolute paths) delivers no real value while unwired.
-
-**Proposed fix.** Add an `AppModel` mapping method (`MeetingRecord` → `DiagnosticsInput.Meeting`:
-id, epoch createdAt, duration, status, languageCode, segment/marker counts, `recordingBytes` via
-`FileManager`, errorMessage; transcript/summary passed through but never emitted) + a Settings
-"Export diagnostics…" button writing via `NSSavePanel`, mirroring `saveExport` (`ContentView.swift:1900`).
-Keep the mapping in a testable seam, not inline in the view.
-
-**Verification.** Exclusion/determinism covered by `DiagnosticsBundleBuilderTests`. Put the mapping in
-a seam and add a `WhisperMeetTests` case: a `MeetingRecord` with sentinel transcript/summary/vocab →
-mapping + `json` → output has counts/ids but not the sentinels (fails before the seam, passes after).
-Button is SwiftUI — manual: export, confirm the file lists only structural fields and grep finds none
-of your transcript/vocab strings and no absolute paths.
-
 ### F88 — Wire the "Second opinion" cross-engine comparison (delivers F73)
 
 - **Status:** open

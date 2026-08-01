@@ -1259,6 +1259,15 @@ struct SettingsView: View {
                 Text("Scans your saved recordings for missing, truncated, or inconsistent audio and reports what it finds. It never changes or deletes a recording.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Label("Export a privacy-safe diagnostics report", systemImage: "doc.badge.gearshape")
+                    Spacer()
+                    Button("Export diagnostics…") { exportDiagnostics() }
+                        .buttonStyle(.bordered)
+                }
+                Text("Writes a support file with only structural details — meeting counts, durations, statuses, byte sizes, and any error messages. It never includes transcript text, summaries, vocabulary terms, or file paths.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(header: Label("Transcription", systemImage: "captions.bubble")) {
@@ -1381,6 +1390,14 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Settings")
         .onDisappear { endKeyCapture() }
+    }
+
+    private func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "WhisperMeet Diagnostics.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? Data(model.diagnosticsJSON().utf8).write(to: url)
     }
 
     private func toggleKeyCapture() {

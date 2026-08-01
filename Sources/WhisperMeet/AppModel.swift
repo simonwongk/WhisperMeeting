@@ -1070,6 +1070,22 @@ final class AppModel: ObservableObject {
         transcriptionProgress[id] = nil
     }
 
+    /// Privacy-safe diagnostics JSON built from the live library (F86 → delivers F70). The mapping and
+    /// its exclusion guarantee (never transcript, summary, vocabulary, title, or paths) are unit-tested
+    /// in `DiagnosticsExport`; this hop only supplies the live store and real recording byte sizes.
+    func diagnosticsJSON() -> String {
+        let input = DiagnosticsExport.input(
+            meetings: store.meetings,
+            vocabulary: store.vocabulary,
+            recordingBytes: { meeting in
+                let path = store.recordingURL(for: meeting).path
+                let size = try? FileManager.default.attributesOfItem(atPath: path)[.size]
+                return (size as? NSNumber)?.int64Value
+            }
+        )
+        return DiagnosticsBundleBuilder.json(input)
+    }
+
     private func handle(error: Error, id: UUID) {
         // Classify the failure so the message tells the user what to actually do (install / re-import /
         // retry) instead of a blind "Transcribe" retry (F68).
