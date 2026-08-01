@@ -527,15 +527,22 @@ private struct RecordMeetingView: View {
             Image(systemName: statusIcon(health.overallStatus))
                 .font(.title3)
                 .foregroundStyle(statusColor(health.overallStatus))
+                .contentTransition(reduceMotion ? .opacity : .symbolEffect(.replace))
             VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle(health.overallStatus))
                     .fontWeight(.semibold)
+                    .contentTransition(.opacity)
                 Text(statusReason(health))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
             }
             Spacer()
         }
+        // The continuously watched surface: status flips fade (color/text only, no movement)
+        // instead of teleporting, so a warning reads as a monitored transition, not a glitch.
+        .animation(.smooth(duration: 0.22), value: health.overallStatus)
+        .animation(.smooth(duration: 0.22), value: health.warnings)
     }
 
     private func storageRow(_ health: RecordingHealthSnapshot) -> some View {
