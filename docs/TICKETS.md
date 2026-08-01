@@ -43,18 +43,25 @@ through … try transcribing again", though it failed at 0% and retrying the sam
 succeed — plus a raw Python traceback. Nothing tells the user the file is fine and Whisper would
 transcribe it.
 
-**Proposed fix (fixer's choice; verify against the pinned mlx-audio source per AGENTS.md).**
-Options, roughly by preference: (1) transcode imports to 16 kHz mono WAV at import time
-(AVFoundation), making every engine uniform; (2) Qwen-client preflight: for extensions outside
-{wav, flac, mp3, ogg, m4a, aac}, transcode a temp WAV (or fail fast with an accurate message
-steering to Whisper); (3) teach the helper to decode via ffmpeg for all formats. Independently:
-classify the `unsupported file format` stderr signature in `TranscriptionFailureClassifier` to say
-the format isn't supported by Qwen3-ASR and that Whisper or conversion will work — not "try again".
+**Decided direction (Simon, 2026-07-31 — this supersedes fixer's choice).** Accept more formats;
+never surface a raw error for a format problem:
+1. **Decode first.** When the selected engine cannot read the recording's container, transcode it
+   locally (AVFoundation/`afconvert`) to 16 kHz mono WAV — at import time or as a temp file at
+   transcription time — and feed the engine that. The original recording is never modified
+   (recording-is-source-of-truth invariant); any temp clip is disposable.
+2. **If decoding is impossible, guide — don't error.** No Python traceback and no dead-end alert:
+   the failure surface must say the format isn't supported by the selected engine and offer
+   switching to the other model (Whisper decodes everything via ffmpeg), e.g. an actionable
+   message/control that re-runs with the other engine.
+3. **Fix the classifier.** Map the `unsupported file format` stderr signature in
+   `TranscriptionFailureClassifier` to that guidance — this failure is deterministic, so "try
+   transcribing again" must go.
+Verify any helper change against the pinned mlx-audio 0.3.1 source per AGENTS.md.
 
 **Verification.** Red-green: a `TranscriptionFailureClassifier` test mapping the captured stderr to
-the new explanation (fails before, passes after); plus a real-runtime run — an `.mp4` conversion of
-a bench clip (e.g. `afconvert -f m4af … && cp x.m4a x.mp4`) transcribes on the Qwen path after the
-fix, or fails fast with the accurate message, per the chosen option.
+the new guidance (fails before, passes after). Real-runtime: an `.mp4`/`.aiff` conversion of a
+bench clip (e.g. `afconvert -f m4af … && cp x.m4a x.mp4`) transcribes successfully on the Qwen path
+after the fix; a genuinely undecodable file produces the engine-switch guidance, not a traceback.
 
 ### F115 — CI concurrency cancels every `main` run, so the gate never completes on `main`
 
