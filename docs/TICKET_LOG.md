@@ -14,6 +14,80 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F122 — Correction to the F115 close: unclaimed ticket, incomplete evidence, overstated claim
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+
+**Supersedes.** This corrects the claims of the F115 close entry (`## F115 — CI never completed on
+main…`, further down this file) — left byte-for-byte untouched per the append-only rule. Codex /root's
+standards review (F122) is right on three points, all owned here:
+
+1. **Unclaimed ticket (rule 4).** F115's implementation commits — `b0b00c5` (concurrency + checkout),
+   `e1d013f` (timeout), `4d82c17` (busy-loop fakes), `a4e5030` (serial tests) — all landed while the
+   F115 board entry still read `Status: open`, `Owner: —`. It was never claimed `in-progress` before
+   the work began. The concurrency at the time explains that but does not excuse it.
+2. **Incomplete close evidence (rule 6 / Definition of done).** The F115 log entry cited the aggregate
+   green GitHub run plus a single post-fix test count — not, per fix, the failing-before output, an
+   explicit `swift build` result, and a before/after test count. That evidence is **permanently
+   unavailable**: the pre-fix runs failed by *cancellation/timeout* (the suite hung and never emitted
+   per-test results), so there is no captured red-green sequence to paste, and none will be fabricated.
+3. **Overstated claim.** The F115 entry said serial execution "removed the whole class of
+   subprocess-wait contention." That was too strong. F121 records a fresh intermittent recurrence (the
+   `swiftpm-testing-helper` hanging with no child test process, passing on immediate retry). Corrected:
+   `--no-parallel` made the hang **rare/nondeterministic**, not eliminated; the residual is F121.
+
+**Corrected outcome of F115.** Its *substance* stands and is verifiable now — `main` CI completes to a
+real pass/fail instead of being cancelled. What is corrected is the *record*: the close was unclaimed
+and under-evidenced, and the elimination claim was overstated. F115 is best read as **fixed with the
+F121 caveat**.
+
+**Evidence (current and reproducible — presented as such, not as the missing historical red-green).**
+
+```text
+$ git rev-parse --short HEAD
+851d470
+$ swift test --disable-sandbox --no-parallel
+✔ Test run with 259 tests passed after 5.833 seconds.
+$ swift build --disable-sandbox -c release -Xswiftc -warnings-as-errors
+Build complete! (14.80s)
+```
+
+**Gaps.** The original per-fix failing-before evidence for F115 cannot be reconstructed — **Not
+planned:** re-manufacturing it would be fabrication. The intermittent hang is open work under **F121**,
+not this ticket. The F115 entry is left byte-for-byte unedited; `git log --grep=F115` remains the
+traceable commit trail. Traceability of this correction is by `git log --grep=F122` (the SHA rule was
+retracted; the Commits field is optional).
+
+---
+
+## F100 — Qwen alignment is all-or-nothing; consider keeping the sentences that did map
+
+- **Outcome:** wontfix
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8), on the user's product decision
+
+**Decision.** F100 proposed emitting the sentences that aligned as timestamped segments and leaving the
+unmatched tail untimestamped, instead of dropping all timestamps. The user's product call (2026-08-01)
+is to **keep the all-or-nothing behavior**: when any sentence fails to reconcile, drop every timestamp
+and surface the existing F30 "alignment unavailable" warning.
+
+**Why wontfix.** The ticket itself flagged the risk ("weigh against a mixed timestamped/untimestamped
+transcript being more confusing than none — spike before committing"). On investigation the change is
+also not the isolated `segments()`-only edit it appears: a partial return would (a) suppress the F30
+warning — `QwenASRClient.alignmentWarning` only fires when `segments` is empty — and (b) require every
+consumer to combine the partial-timestamped segments with the untimestamped tail without dropping that
+text, touching the result model and the transcript UI. The user prefers the simpler, uniform behavior
+over a mixed transcript, so the proposed change is declined.
+
+**Evidence.** No code change. The current behavior is intended and intact: `QwenAlignedTranscript.segments`
+returns `[]` on any reconciliation failure while `QwenASRClient` keeps the complete text plus the F30
+warning — the full suite passes (`✔ Test run with 259 tests passed`).
+
+**Gaps.** none. **Not planned:** partial-timestamp emission — a deliberate product decision to avoid a
+mixed transcript; the F30 warning already tells the user timestamps are unavailable.
+
+---
+
 ## F129 — Vocabulary screen showed the app-level title in its toolbar
 
 - **Outcome:** fixed

@@ -63,34 +63,6 @@ binding, same query syntax, same prompt.
 traffic lights are back in their normal single title-bar row, and `lang:zh`-style queries still
 filter the sidebar list.
 
-### F122 — F115 was closed without a claim or definition-of-done evidence
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** docs
-- **Filed:** 2026-07-31 by Codex /root (new-build standards review)
-
-**Problem.** The F115 implementation commits (`b0b00c5`, `e1d013f`, `4d82c17`, `a4e5030`) landed
-while its board entry remained `Status: open`, `Owner: —`, violating AGENTS.md ticket rule 4. Its
-fixed-close entry (`docs/TICKET_LOG.md:75`) also lacks pasted failing-before output, an explicit
-`swift build` result, and a before/after test count; the aggregate GitHub success plus one post-fix
-test count does not satisfy ticket rule 6 or the Definition of done. The log is append-only, so the
-existing entry cannot be edited in place.
-
-**Impact.** The repository claims F115 met the same evidence standard enforced on other fixes when
-the authoritative record cannot prove that. This is a process/traceability defect, not evidence that
-the CI code itself is wrong; the fresh intermittent hang is tracked separately as F121.
-
-**Proposed fix.** Append a correction entry that explicitly supersedes F115's unsupported closure
-claims, records which evidence is permanently unavailable, and cites current reproducible gate
-evidence without presenting it as historical red-green proof. Decide the honest corrected outcome
-under the status vocabulary; do not fabricate missing output or edit the old entry.
-
-**Verification.** The appended correction names the unclaimed commit trail and every unavailable
-Definition-of-done proof; `git log --grep=F115` remains traceable; the original entry is byte-for-byte
-untouched.
-
 ### F121 — Serial quality gate can still hang inside the Swift test helper
 
 - **Status:** open
@@ -201,33 +173,6 @@ progress today. The Swift-side streaming is ready to build the moment the helper
 something; the helper change is the blocker.
 
 **Verification.** A long Qwen run advances a determinate bar.
-
-### F100 — Qwen alignment is all-or-nothing; consider keeping the sentences that did map
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** transcription
-- **Filed:** 2026-07-31 by transcription (follow-up from F30)
-
-**Problem.** `QwenAlignedTranscript.segments` (`Sources/WhisperCore/QwenAlignedTranscript.swift:24,30,36,39,51`)
-returns `[]` at every guard site, so a single unreconcilable sentence discards the timestamps of
-*every* sentence — including the ones that matched exactly. F30 made this state visible (the meeting
-now carries a plain-language `alignmentWarning`) but did not change the all-or-nothing mapping.
-
-**Impact.** A meeting where alignment fails on one sentence loses seek/playback-sync for the whole
-transcript even though most sentences aligned cleanly. Lower value than F30's silent-drop fix, which
-is why it was deferred rather than bundled.
-
-**Proposed fix.** Emit the sentences that assembled exactly as timestamped segments and leave only the
-unmatched tail untimestamped, rather than dropping all. Sentences are only appended after an exact
-key match, so kept segments never risk dropped/misattributed words. Keep the F30 warning whenever any
-sentence is left untimestamped. Weigh against a mixed timestamped/untimestamped transcript being more
-confusing than none — spike before committing.
-
-**Verification.** A `QwenAlignedTranscript` test: a two-sentence transcript whose second sentence does
-not reconcile yields one timestamped segment for the first sentence (today it yields zero). Fails
-before, passes after.
 
 ### F101 — Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar
 
