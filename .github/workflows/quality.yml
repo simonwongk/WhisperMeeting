@@ -7,23 +7,39 @@ on:
 
 concurrency:
   group: quality-${{ github.ref }}
-  # Fast-cancel superseded runs on feature branches/PRs, but let every push to
-  # main run to completion — otherwise the next push cancels it and main never
-  # gets a finished gate result (F115).
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test-build-package:
     runs-on: macos-15
-    # The gate runs a full swift test plus two release builds (step 3's
-    # -warnings-as-errors build and build-app.sh's) on a cold runner, which
-    # exceeds 20 min — runs were being killed mid-build at the old limit (F115).
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Verify, test, build, and package
-        run: Scripts/quality-check.sh
-        env:
-          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - name: Diagnose the test hang
+        run: |
+          set +e
+          echo "cores=$(sysctl -n hw.ncpu)  sw_vers=$(sw_vers -productVersion)"
+          echo "=== pre-build tests so heartbeats reflect execution, not compile ==="
+          swift build --build-tests --disable-sandbox 2>&1 | tail -2
+          echo "=== run the suite in the background ==="
+          swift test --disable-sandbox > /tmp/t.log 2>&1 &
+          TPID=$!
+          for i in $(seq 1 12); do
+            sleep 20
+            if ! kill -0 $TPID 2>/dev/null; then echo "swift test EXITED after ~$((i*20))s"; break; fi
+            echo "[hb$i ~$((i*20))s] loglines=$(wc -l </tmp/t.log | tr -d ' ')  last: $(tail -1 /tmp/t.log)"
+          done
+          echo "===== PROCESS TREE (pcpu) ====="
+          ps -axo pid,ppid,pcpu,stat,command | grep -iE 'zsh|/bin/bash| sleep|swift|whisper|python|worker|xctest|while true' | grep -v grep
+          echo "===== STACK SAMPLES of test/child processes ====="
+          for p in $(pgrep -f 'xctest|swiftpm|PackageTests|\.xctest|swift-test'); do
+            echo "--- pid $p : $(ps -o command= -p $p 2>/dev/null | cut -c1-70) ---"
+            sample "$p" 1 -mayDie 2>&1 | sed -n '1,45p'
+          done
+          echo "===== TEST LOG TAIL (last 45) ====="
+          tail -45 /tmp/t.log
+          kill -9 $TPID 2>/dev/null; pkill -9 zsh 2>/dev/null; pkill -9 -f 'swift-test' 2>/dev/null
+          echo "=== diagnostic step done (intentional non-zero) ==="
+          exit 1
