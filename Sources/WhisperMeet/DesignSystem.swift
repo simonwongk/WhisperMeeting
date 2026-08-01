@@ -60,23 +60,27 @@ extension AnyTransition {
 
 /// Press feedback for custom-styled controls: macOS's `.plain` style has no pressed state, so
 /// these provide the pointer-down acknowledgment fluid interfaces require. The opacity dim
-/// survives Reduce Motion; the chip's scale is gated.
+/// survives Reduce Motion; the chip's scale is gated. A custom ButtonStyle must also render the
+/// disabled state itself (built-in styles do it for free), hence the `isEnabled` dim.
 struct PressableChipStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.4)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
 /// Press dim for text/icon "link" buttons. Opacity-only, so no Reduce Motion gate is needed.
 struct LinkPressStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

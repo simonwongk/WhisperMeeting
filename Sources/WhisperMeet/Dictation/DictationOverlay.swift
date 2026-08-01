@@ -22,6 +22,12 @@ final class DictationOverlay {
     private var panel: NSPanel?
 
     func show(_ phase: Phase) {
+        if phase == .listening {
+            // A new dictation session: clear the previous session's level so stale bars never
+            // flash before the first mic callback lands.
+            model.levelBucket = -1
+            model.level = 0
+        }
         model.phase = phase
         ensurePanel()
         reposition()
