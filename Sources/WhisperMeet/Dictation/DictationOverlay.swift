@@ -147,7 +147,7 @@ private struct LevelBars: View {
             }
         }
         // Live level feedback tracks 1:1 — short linear fade, never a spring.
-        .animation(.linear(duration: 0.08), value: level)
+        .animation(.meterTracking, value: level)
     }
     private func barOpacity(_ index: Int) -> Double {
         Double(level) * 5 > Double(index) ? 0.95 : 0.25

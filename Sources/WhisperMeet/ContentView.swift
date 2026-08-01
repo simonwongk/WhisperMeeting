@@ -1023,10 +1023,9 @@ private struct LiveVolumeBar: View {
             .font(.callout.weight(.medium))
             .foregroundStyle(isSpeaking ? Color.accentColor : Color.secondary)
 
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.quaternary.opacity(0.6))
+            Capsule()
+                .fill(.quaternary.opacity(0.6))
+                .overlay(alignment: .leading) {
                     Capsule()
                         .fill(
                             LinearGradient(
@@ -1035,12 +1034,16 @@ private struct LiveVolumeBar: View {
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: max(4, geometry.size.width * level))
-                        // Live 15 Hz tracking feedback stays *linear* and short — it must follow
-                        // the signal 1:1, not spring past it.
-                        .animation(.linear(duration: 0.08), value: level)
+                        .mask(alignment: .leading) {
+                            Rectangle()
+                                // Reveal, don't resize: the mask scales (a transform), so the 15 Hz tick
+                                // never invalidates layout, and the gradient stays fixed — orange now means
+                                // the signal actually reached the hot zone.
+                                .scaleEffect(x: max(CGFloat(level), 0.02), y: 1, anchor: .leading)
+                                // Live tracking stays *linear* and short — 1:1 with the signal, never a spring.
+                                .animation(.meterTracking, value: level)
+                        }
                 }
-            }
             .frame(height: 12)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(AccessibilityPhrase.levelMeter(

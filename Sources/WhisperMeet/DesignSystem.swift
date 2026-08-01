@@ -42,6 +42,10 @@ extension Animation {
     /// retargets — e.g. follow-playback while the user scrubs — carry velocity instead of
     /// restarting from zero.
     static var transcriptScroll: Animation { .uiSpring }
+
+    /// Live level-meter tracking: linear and short, 1:1 with the signal. Shared by the recording
+    /// meter and the dictation pill bars so the two can never drift apart.
+    static var meterTracking: Animation { .linear(duration: 0.08) }
 }
 
 extension AnyTransition {
