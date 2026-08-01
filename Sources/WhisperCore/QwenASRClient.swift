@@ -193,6 +193,22 @@ public struct QwenASRClient: Sendable {
             )
     }
 
+    /// Environment for the Qwen helper subprocess. Prepends Homebrew's bin dirs to PATH so
+    /// mlx-audio's `shutil.which("ffmpeg"/"ffprobe")` (`audio_io.py:67,83`) resolves the ffmpeg that
+    /// `setup-local-whisper.sh` installs. A GUI-launched app inherits a bare PATH without
+    /// /opt/homebrew/bin, which otherwise makes imported .m4a/.aac recordings fail with "ffmpeg not
+    /// found" though ffmpeg is present (F132). Mirrors LocalWhisperClient / WarmWhisperDictationEngine.
+    static func makeEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var environment = base
+        let existingPath = environment["PATH"] ?? "/usr/bin:/bin"
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
+        environment["HF_HUB_OFFLINE"] = "1"
+        environment["TRANSFORMERS_OFFLINE"] = "1"
+        return environment
+    }
+
     private func run(arguments: [String]) async throws -> String {
         let pipe = Pipe()
         let process = Process()
@@ -200,10 +216,7 @@ public struct QwenASRClient: Sendable {
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = pipe
-        var environment = ProcessInfo.processInfo.environment
-        environment["HF_HUB_OFFLINE"] = "1"
-        environment["TRANSFORMERS_OFFLINE"] = "1"
-        process.environment = environment
+        process.environment = Self.makeEnvironment()
         let cancellation = ProcessCancellationController(process: process)
         let handle = pipe.fileHandleForReading
 

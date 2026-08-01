@@ -14,6 +14,53 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F132 — Qwen transcription of imported .m4a/.aac fails "ffmpeg not found" though ffmpeg is installed
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `AppModel` transcription → `QwenASRClient.run` (`QwenASRClient.swift:196`) now spawns
+  the helper with `process.environment = Self.makeEnvironment()`; the builder is unit-tested and the
+  import → Qwen-engine flow reaches it. **Distinct from F118** (miniaudio "unsupported file format" on
+  mp4/mov/aiff/caf); this is the `.m4a`/`.aac` ffmpeg branch, a different root cause.
+
+**Root cause.** `QwenASRClient.run` built the subprocess environment inline and set only
+`HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` — it never prepended Homebrew's bin dirs to `PATH`, unlike the
+two Whisper launchers (`LocalWhisperClient.swift:239`, `WarmWhisperDictationEngine.swift:204`). A
+GUI-launched app (from /Applications) inherits a bare `PATH` (`/usr/bin:/bin`, no `/opt/homebrew/bin`),
+so mlx-audio's `shutil.which("ffmpeg")` (`audio_io.py:67`) returned `None` and any imported `.m4a`/`.aac`
+— the formats mlx-audio routes to ffmpeg (`audio_io.py:196-223`, pinned 0.3.1) — died with "ffmpeg not
+found!", though `setup-local-whisper.sh:94` had installed ffmpeg. Reproduced from a shell (full PATH) it
+never appeared; it only bit the GUI launch. In-app WAV recordings (miniaudio, no ffmpeg) were unaffected.
+
+**Fix.** Extract `QwenASRClient.makeEnvironment(base:)`, which prepends
+`/opt/homebrew/bin:/usr/local/bin:` to the inherited PATH (falling back to `/usr/bin:/bin` when unset)
+and keeps the offline pins; `run()` uses it. Matches the Whisper launchers exactly.
+
+**Evidence.** Red→green unit tests (`QwenSubprocessEnvironmentTests.swift`, 3 cases: PATH prepend,
+missing-PATH fallback, offline pins preserved) — failed "no member 'makeEnvironment'" before, pass
+after. Full gate green (265 tests, release build -warnings-as-errors, package+sign). Real runtime, the
+exact failing call:
+
+```text
+# bare GUI PATH (what the app passed before)
+$ env -i PATH="/usr/bin:/bin" python3 -c "import shutil; print(shutil.which('ffmpeg'))"
+None
+# PATH the fixed client builds
+$ env -i PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" python3 -c "import shutil; print(shutil.which('ffmpeg'))"
+/opt/homebrew/bin/ffmpeg          # ffprobe (audio_io.py:83) resolves likewise
+```
+
+The committed fix is the source of truth; reaching the user's installed app needs a rebuild +
+`Scripts/install-app.sh`, which refuses while WhisperMeet is running (recording-first guard) — so it
+lands on the next quit-and-reinstall (the app was live at close time).
+
+**Gaps.** The Qwen *dictation* path already prepends PATH (`WarmWhisperDictationEngine.swift:204`, shared
+via `WarmQwenDictationEngine`) — no change needed there. F118's decode-first (transcode to WAV before the
+engine) would additionally remove the ffmpeg dependency for these formats, but that is a separate,
+broader change owned under F118; this is the minimal correctness fix.
+
+---
+
 ## F131 — build-app.sh required a *trusted* codesigning identity, so the F128 dev cert was never used
 
 - **Outcome:** fixed
