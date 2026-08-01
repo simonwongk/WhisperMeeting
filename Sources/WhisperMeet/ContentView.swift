@@ -2265,6 +2265,10 @@ private struct PlayableTranscriptView: View {
     // Marker rename.
     @State private var renamingMarker: RecordingMarker?
     @State private var renameText = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Distinguishes chevron navigation (glides) from typing (snaps): recomputeVisible() leaves
+    // this false; moveSearchSelection(by:) sets it just before changing the selection.
+    @State private var animateNextSearchScroll = false
 
     // Computed once — segments are fixed for the life of this view.
     private let qualityReport: TranscriptQualityReport
@@ -2323,6 +2327,9 @@ private struct PlayableTranscriptView: View {
     }
 
     private func recomputeVisible() {
+        // Typing must never inherit a chevron press's pending glide (a same-segment chevron step
+        // can leave the flag latched because selectedSearchID does not change).
+        animateNextSearchScroll = false
         let query = findText.trimmingCharacters(in: .whitespacesAndNewlines)
         searchOccurrences = query.isEmpty
             ? []
@@ -2337,6 +2344,7 @@ private struct PlayableTranscriptView: View {
 
     private func moveSearchSelection(by offset: Int) {
         guard !searchOccurrences.isEmpty else { return }
+        animateNextSearchScroll = true
         selectedSearchPosition = (
             selectedSearchPosition + offset + searchOccurrences.count
         ) % searchOccurrences.count
@@ -2355,6 +2363,8 @@ private struct PlayableTranscriptView: View {
     /// position still triggers a scroll).
     private func moveReview(by offset: Int) {
         guard flaggedCount > 0 else { return }
+        // A deliberate jump owns the viewport; Follow visibly disengages (re-enable to resume).
+        followPlayback = false
         reviewPosition = (reviewPosition + offset + flaggedCount) % flaggedCount
         reviewNudge += 1
     }
@@ -2442,19 +2452,21 @@ private struct PlayableTranscriptView: View {
                 }
                 .onChange(of: activeIndex) { _, newValue in
                     guard followPlayback, !isSearching, let newValue else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(reduceMotion ? nil : .transcriptScroll) {
                         proxy.scrollTo(newValue, anchor: .center)
                     }
                 }
                 .onChange(of: selectedSearchID) { _, newValue in
                     guard isSearching, let newValue else { return }
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    // Typing snaps to the first match instantly; only chevron navigation glides.
+                    withAnimation(animateNextSearchScroll && !reduceMotion ? .transcriptScroll : nil) {
                         proxy.scrollTo(newValue, anchor: .center)
                     }
+                    animateNextSearchScroll = false
                 }
                 .onChange(of: reviewNudge) { _, _ in
                     guard let target = reviewTargetID else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(reduceMotion ? nil : .transcriptScroll) {
                         proxy.scrollTo(target, anchor: .center)
                     }
                 }
@@ -2549,6 +2561,7 @@ private struct PlayableTranscriptView: View {
             Image(systemName: "exclamationmark.bubble")
                 .foregroundStyle(.orange)
             Button {
+                followPlayback = false
                 reviewNudge += 1
             } label: {
                 Text(flaggedCount == 1

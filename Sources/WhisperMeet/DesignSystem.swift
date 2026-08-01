@@ -37,6 +37,11 @@ extension Animation {
     /// guidance for state changes that carry no gesture momentum. Callers gate it on
     /// `accessibilityReduceMotion` when it drives layout movement.
     static var uiSpring: Animation { .spring(response: 0.35, dampingFraction: 1.0) }
+
+    /// Scroll-to-segment motion in the playable transcript. A spring (not a fixed tween) so rapid
+    /// retargets — e.g. follow-playback while the user scrubs — carry velocity instead of
+    /// restarting from zero.
+    static var transcriptScroll: Animation { .uiSpring }
 }
 
 extension AnyTransition {
