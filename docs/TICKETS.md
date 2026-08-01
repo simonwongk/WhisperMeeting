@@ -6,11 +6,37 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F123`.**
+**Next free ID: `F124`.**
 
 ---
 
 # Open tickets
+
+### F123 — Build an offline local dashboard for the ticket board
+
+- **Status:** in-progress
+- **Owner:** Codex /root (ticket-dashboard session 2026-07-31)
+- **Severity:** low
+- **Area:** docs
+- **Filed:** 2026-07-31 by Codex /root (user requested a local ticket visualization)
+
+**Problem.** The authoritative work state is split across `docs/TICKETS.md`,
+`docs/NEEDS_HUMAN.md`, and the newest entries in `docs/TICKET_LOG.md`. The Markdown is complete but
+difficult to scan for priority, ownership, blockers, and the specific review findings that remain
+after a build cycle.
+
+**Impact.** A maintainer cannot quickly see which tickets are actionable, blocked, already owned, or
+recently closed without reading several long files. This increases the chance of taking owned work
+or overlooking a higher-value correctness item.
+
+**Proposed fix.** Add a fully offline, responsive `docs/tickets-dashboard.html` snapshot containing
+every live board ticket plus `NEEDS_HUMAN` work, grouped and filterable by status/area with local
+source links. Include recently reviewed/closed F120 for context. Use no network resources and keep
+the Markdown files authoritative.
+
+**Verification.** Check that every current live ticket ID appears exactly once, totals match the
+Markdown sources, search/status/area interactions update the visible results, local links resolve,
+JavaScript parses, and the page renders without overflow at desktop and narrow widths.
 
 ### F122 — F115 was closed without a claim or definition-of-done evidence
 
