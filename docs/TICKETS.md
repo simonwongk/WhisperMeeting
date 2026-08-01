@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F117`.**
+**Next free ID: `F118`.**
 
 ---
 
@@ -158,36 +158,6 @@ blur/teardown, mirroring `EditableMeetingTitle`'s commit-on-blur pattern.
 
 **Verification.** Count `meetingFiles.save` calls while applying N keystrokes and assert it
 coalesces to roughly one write after idle rather than N. Fails before, passes after.
-
-### F116 — Bridge the five teleporting-state seams found by the post-F113 motion sweep
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
-
-**Problem.** A restraint-gated motion sweep after the F113 redesign found five state changes that
-still hard-cut with no bridge; every other candidate was rejected on frequency/purpose/function
-grounds. The five, with exact recipes and the rejected list, are in
-`docs/UI_REDESIGN_LOG.md` § "Motion opportunity sweep": (1) the status-card → transcript swap when
-`meeting.status` completes (`ContentView.swift:1552-1558`) — the app's payoff moment teleports;
-(2) sidebar pin/delete row teleports (`:82`, `:130`); (3) the `ProgressView` → `summaryBody` swap
-after a Claude summarize (`:1605-1608`); (4) vocabulary add/remove/import row pops
-(`:1408,1462,1481,1578`); (5) the preflight sheet's phase hard-swaps (`:806-820`).
-
-**Impact.** Craft only — no data or behaviour risk. The most user-visible is (1): transcription
-finishing, the product's payoff, is currently the most jarring cut in the app.
-
-**Proposed fix.** Apply the per-item recipes recorded in the sweep: existing vocabulary only
-(`Animation.uiSpring`, `.transition(.opacity)`, call-site `withAnimation` for the sidebar so search
-filtering stays instant), layout springs gated on `accessibilityReduceMotion` per the F113
-convention, no bounce/stagger/new tokens anywhere.
-
-**Verification.** Presentation-only (SwiftUI layer, no render harness — manual per the F114
-pattern): each of the five seams cross-fades/settles instead of cutting; sidebar **search
-filtering stays instant while typing**; Reduce Motion leaves only opacity fades; `swift build` +
-`swift test` with no test-count drop.
 
 ## Reachability wiring — filed 2026-07-31
 

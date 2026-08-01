@@ -46,6 +46,59 @@ the engine-preference recommendation this ticket guarded, and no regression is s
 
 ---
 
+## F116 — Bridge the five teleporting-state seams found by the post-F113 motion sweep
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+- **Commits:** `889e360` (claim), `59bdadd` (implementation)
+- **Reachability:** all five seams are existing user-visible surfaces — the meeting detail's
+  status-card → summary/transcript swap (`TranscriptDetailView`), the sidebar's pin/delete context
+  actions, the summarize spinner → `summaryBody` swap, the vocabulary list's add/remove/import,
+  and `PreflightTestSheet`'s phase changes. No new call paths.
+- **Follow-up:** F117 (needs-human — the on-screen eyeball pass, and arbitration of one verifier
+  disagreement)
+
+**Root cause.** The F113 redesign unified surfaces and springs but left five state changes that
+hard-cut with no bridge (catalogued by the restraint-gated motion sweep in
+`docs/UI_REDESIGN_LOG.md`).
+
+**Fix.** Presentation-only, existing vocabulary only: `.animation(reduceMotion ? nil : .uiSpring,
+value:)` keyed to the exact state that swaps (with a case discriminant for the preflight enum so
+the per-second countdown can't re-trigger), call-site `withAnimation` for sidebar and vocabulary
+mutations (so search filtering stays instant), and a new `AnyTransition.gentleFade(reduceMotion:)`
+in `DesignSystem.swift`. `gentleFade` exists because the first adversarial verification round
+proved the original recipe snippets self-contradictory: a bare `.transition(.opacity)` never fires
+when the transaction animation is gated to `nil`, so Reduce Motion users would have lost the
+promised cross-fade — the transition now carries its own animation (spring normally, 0.2 s linear
+fade under Reduce Motion). The same round caught the preflight phases transiently stacking as
+`VStack` siblings; the container is now a `ZStack` overlay.
+
+**Evidence.**
+
+```text
+$ swift build
+Build complete! (5.43s)
+$ swift test
+✔ Test run with 257 tests passed after 1.171 seconds.   # count unchanged from the F113 baseline
+$ Scripts/build-app.sh
+Build complete! (10.92s)
+.build/WhisperMeet.app: replacing existing signature
+```
+
+Adversarial verification workflow, round 1 (`verify-f116-motion`: 4 review lenses → refutation of
+each finding; 8 agents): 4 raw findings, 3 confirmed — the Reduce Motion cross-fade suppression
+(×2, semantics + fidelity lenses) and the preflight VStack stacking. Both defects fixed as above.
+Round 2 (`verify-f116-fixes`: 2 skeptical verifiers over the fixes): the `gentleFade` and `ZStack`
+mechanics verified; 4 residual observations dispositioned in `docs/UI_REDESIGN_LOG.md`
+§ Implementation notes — two rejected as resting on a transition-layout model that contradicts
+established SwiftUI behavior (sibling reflow animates concurrently with the transaction), two
+accepted as sub-half-second cross-fade cosmetics the verifier itself called "not a blocker."
+
+**Gaps.** The on-screen check of the five seams — including the disputed reflow-snap claim, which
+one second of looking settles — needs a person: F117 (needs-human). Not planned: an automated
+SwiftUI render/animation harness; the `WhisperMeet` target has none (standing limitation per
+AGENTS.md).
+
 ## F114 — Visually verify the F113 redesign and the F87 VoiceOver/Dynamic Type wiring
 
 - **Outcome:** fixed
