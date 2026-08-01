@@ -12,57 +12,6 @@ Read them before touching this file.** This file holds **open** work only; close
 
 # Open tickets
 
-### F125 — Record screen is not scrollable; the Stop button can be unreachable while recording
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
-- **Severity:** high
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code, reported by Simon with a screenshot (F124 feel pass)
-
-**Problem.** `RecordMeetingView.body` is a fixed `VStack` with top/bottom `Spacer()`s and no
-`ScrollView` (`Sources/WhisperMeet/ContentView.swift:252` area). While recording, the content
-(hero + timer + live meter + markers + health card + buttons + consent note) exceeds the window
-height at common sizes; the `VStack` overflows and clips at BOTH edges — Simon's screenshot shows
-the hero orb sliced at the top and the red **Stop & Transcribe** button cut off at the bottom with
-no way to scroll to it.
-
-**Impact.** The primary way to end a recording can be unreachable (no menu command exists — F85
-is still unwired). The user must resize the window to regain the button. High severity: blocks the
-core flow at realistic window sizes.
-
-**Proposed fix.** Wrap the content in `GeometryReader` + `ScrollView`, drop the two `Spacer()`s,
-and give the inner `VStack` `.frame(minHeight: geometry.size.height)` so it stays vertically
-centered when it fits and scrolls when it doesn't.
-
-**Verification.** Build/test green; manual — shrink the window to `minHeight` while recording and
-confirm the Stop button is always reachable by scrolling; content still centers on a tall window.
-
-### F126 — Sidebar search field renders on top of the window controls
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code, reported by Simon with a screenshot (F124 feel pass)
-
-**Problem.** `.searchable(text:placement:.sidebar,…)` (`Sources/WhisperMeet/ContentView.swift:100`
-area) renders the search field pinned at the very top of the sidebar **above** the traffic-light
-window controls, overlapping the title-bar row (Simon's screenshot: search field at y≈0 spanning
-the sidebar, window controls pushed to a second row below it). Pre-existing (the placement predates
-F113), surfaced by the feel pass.
-
-**Impact.** The sidebar header area reads as broken and the search field crowds the window
-controls.
-
-**Proposed fix.** Move the search to `placement: .toolbar` — the macOS-conventional position
-(Finder, Mail) in the unified toolbar, away from the fragile sidebar/title-bar region. Same
-binding, same query syntax, same prompt.
-
-**Verification.** Build/test green; manual — the search field sits in the window toolbar, the
-traffic lights are back in their normal single title-bar row, and `lang:zh`-style queries still
-filter the sidebar list.
-
 ### F121 — Serial quality gate can still hang inside the Swift test helper
 
 - **Status:** open

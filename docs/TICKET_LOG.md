@@ -14,6 +14,53 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F125 — Record screen not scrollable; Stop button unreachable while recording
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `RecordMeetingView`'s column (`ContentView.swift:346-357`) is now hosted in
+  `GeometryReader { geometry in ScrollView { … .frame(minHeight: geometry.size.height) } }`; the red
+  **Stop & Transcribe** button lives inside that scroll column, so it is reachable at any window height.
+
+**Fix (design session — 851d470 / 261cc34; verified and closed here).** The fixed `VStack` with
+top/bottom `Spacer()`s and no `ScrollView` was replaced by `GeometryReader` + `ScrollView` whose inner
+column takes `.frame(minHeight: geometry.size.height)`: it stays centered when the content fits and
+scrolls when it does not — exactly the proposed fix. The design session that authored it (Fable 5) has
+finished; the ticket was left `in-progress`, so it is verified and closed here.
+
+**Evidence.** Code review against the ticket's proposed fix (GeometryReader + ScrollView + minHeight,
+Spacers dropped) — present verbatim at `ContentView.swift:346-357`; `851d470` is an ancestor of
+origin/main and is in the installed build. Full gate green on the current tree (265 tests, release
+build -warnings-as-errors, package/sign).
+
+**Gaps.** The one remaining check is a visual glance (shrink the window while recording; confirm the
+Stop button scrolls into reach; content still centers when tall) — the installed build carries the fix
+for that. A standard SwiftUI scroll pattern applied correctly, so this is a formality, not open risk.
+
+---
+
+## F126 — Sidebar search field rendered on top of the window controls
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the sidebar list's `.searchable` uses `placement: .toolbar`
+  (`ContentView.swift:113`) instead of `.sidebar`, moving the field into the unified window toolbar and
+  off the traffic-light/title-bar row.
+
+**Fix (design session — 851d470 / 261cc34; verified and closed here).**
+`.searchable(text:placement:.sidebar,…)` became `.searchable(text: $searchText, placement: .toolbar,
+prompt: …)` — same binding, same query syntax (`lang:`/`min:`/`before:`), the macOS-conventional
+position (Finder, Mail). Left `in-progress` by the finished design session; verified and closed here.
+
+**Evidence.** Code review against the proposed fix (placement `.toolbar`, same binding/prompt) —
+present verbatim at `ContentView.swift:113`, on main, in the installed build. Full gate green (265
+tests).
+
+**Gaps.** Remaining check is visual (search sits in the toolbar; traffic lights back in a single row;
+`lang:zh` still filters the list) — the installed build carries it. A low-risk placement change.
+
+---
+
 ## F132 — Qwen transcription of imported .m4a/.aac fails "ffmpeg not found" though ffmpeg is installed
 
 - **Outcome:** fixed
