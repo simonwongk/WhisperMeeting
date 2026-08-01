@@ -433,8 +433,8 @@ Help ▸ Keyboard Shortcuts (⌘/) lists every entry with its shortcut, ⌘R tog
 
 ### F86 — Add a Settings "Export diagnostics…" action for the diagnostics bundle (delivers F70)
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Claude Code (Opus 4.8)
 - **Severity:** low
 - **Area:** ui
 - **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
