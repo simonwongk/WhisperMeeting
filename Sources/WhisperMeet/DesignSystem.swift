@@ -38,3 +38,13 @@ extension Animation {
     /// `accessibilityReduceMotion` when it drives layout movement.
     static var uiSpring: Animation { .spring(response: 0.35, dampingFraction: 1.0) }
 }
+
+extension AnyTransition {
+    /// An opacity cross-fade that survives Reduce Motion (F116). The transition carries its own
+    /// animation: the spring when motion is allowed, a short linear fade when the surrounding
+    /// layout animation is gated to `nil` — so state swaps always fade, and only the layout
+    /// movement is dropped for Reduce Motion users.
+    static func gentleFade(reduceMotion: Bool) -> AnyTransition {
+        .opacity.animation(reduceMotion ? .linear(duration: 0.2) : .uiSpring)
+    }
+}

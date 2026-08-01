@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var selection: SidebarItem? = .record
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: AppModel, dictation: DictationController) {
         self.model = model
@@ -79,7 +80,12 @@ struct ContentView: View {
                             .tag(SidebarItem.meeting(meeting.id))
                             .contextMenu {
                                 Button((meeting.pinned ?? false) ? "Unpin" : "Pin to Top") {
-                                    store.togglePin(id: meeting.id)
+                                    // The row glides to its new position instead of teleporting
+                                    // (F116). Call-site animation, so search filtering stays
+                                    // instant.
+                                    withAnimation(reduceMotion ? nil : .uiSpring) {
+                                        store.togglePin(id: meeting.id)
+                                    }
                                 }
                                 Button("Delete Meeting", role: .destructive) {
                                     pendingDeletion = meeting
@@ -127,7 +133,11 @@ struct ContentView: View {
         ) {
             Button("Delete Recording and Transcript", role: .destructive) {
                 guard let meeting = pendingDeletion else { return }
-                model.deleteMeeting(id: meeting.id)
+                // Only the list mutation animates (the row collapses); the selection swap stays
+                // outside the transaction so the detail column changes instantly (F116).
+                withAnimation(reduceMotion ? nil : .uiSpring) {
+                    model.deleteMeeting(id: meeting.id)
+                }
                 if selection == .meeting(meeting.id) {
                     selection = .record
                 }
@@ -802,23 +812,44 @@ private struct PreflightTestSheet: View {
     @ScaledMetric(relativeTo: .title) private var statusSymbolSize: CGFloat = 32
 
     var body: some View {
-        VStack(spacing: 20) {
+        // A ZStack, not a VStack: during a phase cross-fade the outgoing and incoming views
+        // overlay in place instead of transiently stacking, so nothing slides (F116).
+        ZStack {
             switch model.preflightTest {
             case .idle:
                 // The sheet is dismissing; render nothing.
                 Color.clear.frame(height: 1)
             case let .recording(secondsRemaining):
                 recordingView(secondsRemaining)
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             case .analyzing:
                 analyzingView
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             case let .result(report, playbackURL):
                 resultView(report, playbackURL: playbackURL)
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             case let .failed(message):
                 failedView(message)
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             }
         }
         .padding(28)
         .frame(width: 470)
+        // Phases cross-fade instead of hard-swapping (F116). Keyed on a case discriminant, not
+        // the enum itself, so the per-second countdown never re-triggers the transition. The
+        // sheet's height settles with the same spring (it is not fixed); under Reduce Motion the
+        // resize is instant and only the fade remains.
+        .animation(reduceMotion ? nil : .uiSpring, value: phaseKey)
+    }
+
+    private var phaseKey: Int {
+        switch model.preflightTest {
+        case .idle: 0
+        case .recording: 1
+        case .analyzing: 2
+        case .result: 3
+        case .failed: 4
+        }
     }
 
     private func recordingView(_ secondsRemaining: Int) -> some View {
@@ -1347,6 +1378,7 @@ struct SettingsView: View {
 
 private struct VocabularyView: View {
     @ObservedObject var store: MeetingStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var manualTerms = ""
     @State private var showsImporter = false
     @State private var importMessage: String?
@@ -1405,7 +1437,9 @@ private struct VocabularyView: View {
                             Text(term)
                             Spacer()
                             Button {
-                                store.removeVocabulary(term)
+                                withAnimation(reduceMotion ? nil : .uiSpring) {
+                                    store.removeVocabulary(term)
+                                }
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                             }
@@ -1459,7 +1493,9 @@ private struct VocabularyView: View {
     private func addManualTerms() {
         let terms = manualTerms.components(separatedBy: CharacterSet(charactersIn: ",\n"))
         let before = Set(store.vocabulary)
-        store.addVocabulary(terms)
+        withAnimation(reduceMotion ? nil : .uiSpring) {
+            store.addVocabulary(terms)
+        }
         let added = Set(store.vocabulary).subtracting(before).count
         importMessage = added == 0
             ? "No terms were added. The prompt may already be at its 100-term limit."
@@ -1478,7 +1514,10 @@ private struct VocabularyView: View {
                 return
             }
             let before = Set(store.vocabulary)
-            store.addVocabulary(result.terms)
+            // One animated layout change for the whole batch — deliberately no stagger (F116).
+            withAnimation(reduceMotion ? nil : .uiSpring) {
+                store.addVocabulary(result.terms)
+            }
             let added = Set(store.vocabulary).subtracting(before).count
             var message = "Added \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
             if !result.failed.isEmpty {
@@ -1493,6 +1532,7 @@ private struct TranscriptDetailView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: MeetingStore
     let meetingID: UUID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
@@ -1555,12 +1595,19 @@ private struct TranscriptDetailView: View {
 
                     if meeting.status == .completed {
                         summarySection(meeting)
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
                         transcriptSection(meeting)
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
                     }
                 }
                 .frame(maxWidth: 860, alignment: .leading)
                 .padding(32)
                 .frame(maxWidth: .infinity)
+                // The status-card → transcript swap when transcription completes is the app's
+                // payoff moment — cross-fade and settle instead of hard-cutting (F116). Under
+                // Reduce Motion the layout spring is dropped; the cross-fade itself survives via
+                // gentleFade's own animation.
+                .animation(reduceMotion ? nil : .uiSpring, value: meeting.status)
             }
             .navigationTitle(meeting.title)
             .onAppear { normalizeTranscriptIfNeeded(meeting) }
@@ -1575,7 +1622,9 @@ private struct TranscriptDetailView: View {
                 set: { if !$0 { vocabularySuggestions = nil } }
             )) {
                 VocabularySuggestionSheet(suggestions: vocabularySuggestions ?? []) { chosen in
-                    store.addVocabulary(chosen)
+                    withAnimation(reduceMotion ? nil : .uiSpring) {
+                        store.addVocabulary(chosen)
+                    }
                 }
             }
         }
@@ -1605,13 +1654,20 @@ private struct TranscriptDetailView: View {
 
             if isSummarizing {
                 ProgressView("Summarizing with Claude…").controlSize(.small)
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
                 summaryBody(summary)
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if !model.hasClaudeAPIKey {
                 Text("Add a Claude API key in Settings to turn this transcript into a summary, key points, and action items.")
                     .foregroundStyle(.secondary)
             }
         }
+        // The spinner → summary swap after a multi-second Claude wait fades and settles instead
+        // of cutting (F116). Keyed on both the in-flight flag and summary presence because they
+        // can change in separate renders.
+        .animation(reduceMotion ? nil : .uiSpring, value: isSummarizing)
+        .animation(reduceMotion ? nil : .uiSpring, value: meeting.summary == nil)
     }
 
     @ViewBuilder
@@ -1740,6 +1796,7 @@ private struct TranscriptDetailView: View {
             }
             .padding(18)
             .cardSurface()
+            .transition(.gentleFade(reduceMotion: reduceMotion))
         }
     }
 

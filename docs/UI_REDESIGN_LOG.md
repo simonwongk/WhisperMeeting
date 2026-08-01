@@ -207,3 +207,37 @@ overshoot, and motion already respects Reduce Motion. What remains is a handful 
 state* seams, not a style gap. The single highest-leverage item is **#1** — transcription
 completing is the product's payoff moment and currently the most jarring cut in the app. Items
 2–5 are small, same-vocabulary refinements; nothing here justifies new tokens, bounce, or stagger.
+
+## Implementation notes (F116, 2026-07-31)
+
+An adversarial verification workflow over the implementation diff confirmed two defects in the
+recipes as written above; both were fixed before the close:
+
+1. **The recipe snippets contradicted their own prose on Reduce Motion.** A bare
+   `.transition(.opacity)` never fires when the transaction animation is gated to `nil`, so the
+   promised "the opacity cross-fade stays, the layout spring goes" was unachievable as coded. Fix:
+   `AnyTransition.gentleFade(reduceMotion:)` in `DesignSystem.swift` — the transition carries its
+   own animation (`.uiSpring` normally, `.linear(duration: 0.2)` under Reduce Motion), so seams 1,
+   3, and 5 always cross-fade and only layout movement is dropped. Seams 2 and 4 are pure layout
+   (no fade to preserve) and correctly stay instant under Reduce Motion.
+2. **Seam 5's "the sheet frame is fixed, nothing should slide" premise was false** — only the
+   width is fixed, and the conditional phase views were `VStack` siblings, so a cross-fade would
+   transiently stack them and bounce the sheet height. Fix: the phase container is a `ZStack`
+   (outgoing/incoming phases overlay in place) and the height change settles with the same spring —
+   instant under Reduce Motion.
+
+A second, fix-focused verification round returned four residual observations; disposition, recorded
+here for the F117 manual pass to arbitrate:
+
+- Two claims (seams 1 and 3 "hold their layout slot during the fade, then snap unanimated when the
+  removal transition completes") assume a transition-layout model that contradicts established
+  SwiftUI behavior — a transitioning-out view renders at its pre-removal frame while sibling
+  reflow animates *concurrently* with the transaction (this is the mechanism behind every animated
+  list removal). Expected behavior: the reflow springs while the outgoing view fades in place,
+  with a brief overlap. **Not fixed; if the F117 eyeball pass sees a snap or stacking at the
+  status-card → transcript swap or the spinner → summary swap, reopen.**
+- Two observations about the preflight sheet height on shrinking phase changes (taller outgoing
+  phase ghost briefly overflowing / instant resize under Reduce Motion while the 0.2 s fade
+  completes) are transient sub-half-second cosmetic artifacts inherent to a cross-fade between
+  different-height views; the verifier itself judged the Reduce Motion case "consistent with the
+  documented design, not a blocker." **Accepted.**
