@@ -14,6 +14,53 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F84 — Wire tag click-to-filter into the sidebar (delivers F67)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** a sidebar meeting-row tag chip (`MeetingRow`, `ContentView.swift`) toggles
+  `ContentView.selectedTags` → `filteredMeetings` composes the tested predicate via
+  `MeetingLibraryFilter.includes(query:facets:meetingTags:selectedTags:tagMode:)`. The red-green test
+  lands on `MeetingLibraryFilter` (WhisperCore), the composition layer carrying the logic risk; the
+  chip tap, selected highlight, and VoiceOver actions are presentation.
+- **Follow-up:** F130 (needs-human — the on-screen gesture/VoiceOver check).
+
+**Root cause.** F67 shipped tags (editor, chips, persistence) and `MeetingTags.matches` was tested, but
+the sidebar chips were non-interactive `Text` and `filteredMeetings` composed only `MeetingQuery` — so
+tags decorated rows without letting you retrieve by them.
+
+**Fix.** A new pure `MeetingLibraryFilter.includes` (`Sources/WhisperCore/MeetingLibraryFilter.swift`)
+ANDs the tested text-query matcher (pass-through when the search box is empty) with the tested
+`MeetingTags.matches` (pass-through when no tags are selected), so search and tag filtering stack;
+`filteredMeetings` uses it against a `selectedTags` set. The per-row chips became `.plain` `Button`s
+that toggle `selectedTags` with a selected highlight, plus row-level `.accessibilityActions` so
+VoiceOver can filter too (the chips group into the row's single accessibility element from F87).
+
+**Evidence.**
+
+Fails before the filter exists (feature missing):
+
+```text
+MeetingLibraryFilterTests.swift:22: error: cannot find 'MeetingLibraryFilter' in scope
+```
+
+Passes after; suite grew 260 → 262 (+2) and the release warnings-as-errors build is clean:
+
+```text
+✔ Test run with 262 tests passed after 5.835 seconds.
+Build complete! (10.20s)   # swift build -c release -Xswiftc -warnings-as-errors
+```
+
+The tests prove a selected tag narrows the library (empty selection keeps everything), the `.all`/`.any`
+modes, and that the query and tag filters compose with AND. (F121's intermittent test-helper stall hit
+the first run; killed and re-ran clean.)
+
+**Gaps.** The on-screen behaviour — a chip tap filters without stealing the row's selection, and the
+VoiceOver tag actions fire — is not automatically testable (no SwiftUI render harness) and is filed as
+**F130** (needs-human). Whatever a visual pass finds is fixed there.
+
+---
+
 ## F86 — Add a Settings "Export diagnostics…" action for the diagnostics bundle (delivers F70)
 
 - **Outcome:** fixed

@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F130`.**
+**Next free ID: `F131`.**
 
 ---
 
@@ -372,36 +372,6 @@ it in WhisperCore. Sheet is SwiftUI with no harness — do not fake a view test.
 to vocabulary, open a meeting whose segment says "cooper netties", run the action, confirm one proposal
 "cooper netties" → "Kubernetes", accept, confirm the segment updates in place and `meeting.wav` is
 unmodified.
-
-### F84 — Wire tag click-to-filter into the sidebar (delivers F67)
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Opus 4.8)
-- **Severity:** medium
-- **Area:** meetings
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `MeetingTags.matches(meetingTags:selected:mode:)` (`Sources/WhisperCore/MeetingTags.swift:34`;
-`MeetingTagsTests.swift:18-25`) has no user surface. `filteredMeetings` (`ContentView.swift:36-49`)
-composes only `MeetingQuery.matches` and never references tags; there is no `selectedTags` state and
-the sidebar tag chips (`ContentView.swift:203-213`) are non-interactive `Text`. Tags can be written
-(`store.setTags`, `:1449-1457`) and shown, but cannot filter. (Editor + chips + persistence ARE wired;
-only the filter is unshipped.)
-
-**Impact.** Users can label meetings but cannot retrieve by label — clicking a tag does nothing, and
-tags are excluded from the free-text search fields (`ContentView.swift:46`). The headline
-"click-to-filter" axis is absent; tagging only decorates rows.
-
-**Proposed fix.** Add `@State selectedTags: Set<String>` (+ optional `MatchMode`, default `.any`) near
-`ContentView.swift:28`; make the chips tappable to toggle membership; AND the tested predicate into
-`filteredMeetings` via `MeetingTags.matches(meetingTags: $0.tags ?? [], selected:..., mode:...)`. Empty
-selection returns true, so it stacks with free-text search.
-
-**Verification.** `matches` covered by `MeetingTagsTests`. `filteredMeetings` is a private SwiftUI
-computed property with no seam — either extract the composition into a pure `MeetingLibraryFilter`
-(WhisperCore) and test that a selected tag narrows a fixture, or verify manually: tag one meeting
-`budget` and another `hiring`, click `budget`, confirm only that meeting remains, clear, confirm both
-return.
 
 ### F85 — Wire the command catalog into a Commands menu + Keyboard Shortcuts sheet (delivers F69)
 

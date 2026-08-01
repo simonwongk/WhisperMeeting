@@ -45,7 +45,7 @@
 <body>
 <main>
 <h1>WhisperMeet Ticket Board</h1>
-<p class="sub">18 active — 15 open · 2 in progress · 1 blocked</p>
+<p class="sub">18 active — 14 open · 2 in progress · 1 blocked · 1 needs human</p>
 <p class="sub">Generated August 1, 2026 from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
 <table>
 <thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
@@ -54,7 +54,6 @@
 <tr><td class="id">F40</td><td><div class="title">Transcript Edit view double-writes the whole meetings index on every keystroke</div><div class="summary">The transcript editor binding's setter calls store.update(id:) { $0.transcriptText = value } on every keystroke (Sources/WhisperMeet/ContentView.swift:1709-1712).</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · —</td></tr>
 <tr><td class="id">F79</td><td><div class="title">Wire the recording-health report into stop → store → meeting detail</div><div class="summary">F58 shipped and tested RecordingHealthReport + RecordingHealthMonitor.report() (Sources/WhisperCore/RecordingHealthMonitor.swift:87,211; RecordingHealthReportTests.swift), but nothing calls it.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F58</td></tr>
 <tr><td class="id">F82</td><td><div class="title">Add the glossary-correction review sheet and call site</div><div class="summary">GlossaryCorrector.corrections(vocabulary:segments:) (Sources/WhisperCore/GlossaryCorrector.swift:24; GlossaryCorrectorTests.swift) is never invoked — grep GlossaryCorrector Sources/WhisperMeet is empt…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · Delivers F65</td></tr>
-<tr><td class="id">F84</td><td><div class="title">Wire tag click-to-filter into the sidebar</div><div class="summary">MeetingTags.matches(meetingTags:selected:mode:) (Sources/WhisperCore/MeetingTags.swift:34; MeetingTagsTests.swift:18-25) has no user surface.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F67</td></tr>
 <tr><td class="id">F85</td><td><div class="title">Wire the command catalog into a Commands menu + Keyboard Shortcuts sheet</div><div class="summary">CommandCatalog (Sources/WhisperCore/CommandCatalog.swift:62,76; CommandCatalogTests.swift) — ⌘R toggle, ⇧⌘M Add Marker, Cancel Recording…, ⌘/ Shortcuts — is never referenced.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F69</td></tr>
 <tr><td class="id">F90</td><td><div class="title">Add the BackupCoordinator + Settings "Back up library…" action</div><div class="summary">BackupPlan.compute / BackupRetention.prune / BackupVerification.succeeded (Sources/WhisperCore/BackupPlan.swift:28,57,71; BackupPlanTests.swift) have no wiring.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">recovery</td><td class="hide-sm muted">Unowned · Delivers F75</td></tr>
 <tr><td class="id">F101</td><td><div class="title">Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar</div><div class="summary">F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits no progress signal to parse.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
@@ -68,10 +67,12 @@
 <tr><td class="id">F89</td><td><div class="title">Build the compact recording HUD overlay</div><div class="summary">RecordingHUD.make(...) -&gt; RecordingHUDState (Sources/WhisperCore/RecordingHUD.swift:19; RecordingHUDTests.swift) has zero callers in Sources/WhisperMeet.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F74</td></tr>
 <tr><td class="id">F91</td><td><div class="title">Add the EventKit bridge so calendar titles pre-fill</div><div class="summary">CalendarTitleMatcher.bestTitle(...) over CalendarEventSummary (Sources/WhisperCore/CalendarTitleMatcher.swift:17,5; CalendarTitleMatcherTests.swift) has no caller.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F76</td></tr>
 <tr><td class="id">F92</td><td><div class="title">Wire per-segment re-run into the transcript segment menu</div><div class="summary">SegmentAudioRange.byteRange + TranscriptSegmentSplice.splice (Sources/WhisperCore/SegmentRerun.swift:10,20; SegmentRerunTests.swift) have no callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
+<tr><td class="id">F130</td><td><div class="title">Visually verify tag click-to-filter and its VoiceOver actions (F84)</div><div class="summary">F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Needs a human · —</td></tr>
 </tbody>
 </table>
 <h2>Recently closed</h2>
 <ul class="recent">
+<li><span class="id">F84</span>Wire tag click-to-filter into the sidebar <em>— fixed</em></li>
 <li><span class="id">F86</span>Add a Settings "Export diagnostics…" action for the diagnostics bu… <em>— fixed</em></li>
 <li><span class="id">F117</span>Eyeball the five F116 motion seams (and arbitrate one verifier dis… <em>— fixed</em></li>
 <li><span class="id">F124</span>Feel-check the five executed motion plans (F119) <em>— fixed</em></li>
@@ -79,7 +80,6 @@
 <li><span class="id">F122</span>Correction to the F115 close: unclaimed ticket, incomplete evidenc… <em>— fixed</em></li>
 <li><span class="id">F100</span>Qwen alignment is all-or-nothing; consider keeping the sentences t… <em>— wontfix</em></li>
 <li><span class="id">F129</span>Vocabulary screen showed the app-level title in its toolbar <em>— fixed</em></li>
-<li><span class="id">F127</span>Ad-hoc signing resets every TCC permission on each rebuild <em>— fixed</em></li>
 </ul>
 </main>
 </body>

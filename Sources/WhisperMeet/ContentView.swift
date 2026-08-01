@@ -24,6 +24,7 @@ struct ContentView: View {
     @ObservedObject var dictation: DictationController
     @ObservedObject private var store: MeetingStore
     @State private var selection: SidebarItem? = .record
+    @State private var selectedTags: Set<String> = []
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -36,16 +37,23 @@ struct ContentView: View {
 
     private var filteredMeetings: [MeetingRecord] {
         let raw = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return store.meetings }
-        let query = MeetingQuery.parse(raw)
-        return store.meetings.filter {
-            query.matches(MeetingFacets(
-                languageCode: $0.languageCode,
-                status: $0.status.rawValue,
-                durationSeconds: $0.duration,
-                createdAt: $0.createdAt,
-                textFields: [$0.title, $0.transcriptText, $0.notes ?? ""]
-            ))
+        let query = raw.isEmpty ? nil : MeetingQuery.parse(raw)
+        let selected = Array(selectedTags)
+        guard query != nil || !selected.isEmpty else { return store.meetings }
+        return store.meetings.filter { meeting in
+            MeetingLibraryFilter.includes(
+                query: query,
+                facets: MeetingFacets(
+                    languageCode: meeting.languageCode,
+                    status: meeting.status.rawValue,
+                    durationSeconds: meeting.duration,
+                    createdAt: meeting.createdAt,
+                    textFields: [meeting.title, meeting.transcriptText, meeting.notes ?? ""]
+                ),
+                meetingTags: meeting.tags ?? [],
+                selectedTags: selected,
+                tagMode: .any
+            )
         }
     }
 
@@ -76,7 +84,7 @@ struct ContentView: View {
                             .listRowSeparator(.hidden)
                     }
                     ForEach(filteredMeetings) { meeting in
-                        MeetingRow(meeting: meeting)
+                        MeetingRow(meeting: meeting, selectedTags: $selectedTags)
                             .tag(SidebarItem.meeting(meeting.id))
                             .contextMenu {
                                 Button((meeting.pinned ?? false) ? "Unpin" : "Pin to Top") {
@@ -183,6 +191,7 @@ struct ContentView: View {
 
 private struct MeetingRow: View {
     let meeting: MeetingRecord
+    @Binding var selectedTags: Set<String>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -216,11 +225,21 @@ private struct MeetingRow: View {
             if let tags = meeting.tags, !tags.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(tags.prefix(4), id: \.self) { tag in
-                        Text(tag)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+                        let isSelected = selectedTags.contains(tag)
+                        Button {
+                            if isSelected { selectedTags.remove(tag) } else { selectedTags.insert(tag) }
+                        } label: {
+                            Text(tag)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    isSelected ? Color.accentColor : Color.secondary.opacity(0.18),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -232,6 +251,16 @@ private struct MeetingRow: View {
             statusRaw: meeting.status.rawValue,
             duration: meeting.duration
         ))
+        .accessibilityActions {
+            // The tag chips group into the row's single accessibility element, so expose tag
+            // filtering as VoiceOver actions rather than leaving it mouse-only (F84).
+            ForEach(meeting.tags ?? [], id: \.self) { tag in
+                let isSelected = selectedTags.contains(tag)
+                Button(isSelected ? "Remove tag filter \(tag)" : "Filter by tag \(tag)") {
+                    if isSelected { selectedTags.remove(tag) } else { selectedTags.insert(tag) }
+                }
+            }
+        }
     }
 
     private var statusColor: Color {
