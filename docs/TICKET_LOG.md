@@ -14,6 +14,63 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F123 — Offline local dashboard for the ticket board
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Codex /root
+- **Commits:** `2a2d1e8` (file + claim), `f310d5f` (dashboard)
+- **Reachability:** Open `docs/tickets-dashboard.html` locally → scan status totals and priority
+  order → search or filter by status/area/severity → open a ticket detail → follow its local link to
+  the authoritative Markdown source. The page makes no network requests and cannot touch recordings
+  or transcripts.
+
+**Root cause.** The live work was split across `TICKETS.md` and `NEEDS_HUMAN.md`, with recent
+context in `TICKET_LOG.md`. That representation is authoritative and reviewable but requires a
+maintainer to read several long files to compare severity, ownership, blockers, and recent outcomes.
+
+**Fix.** Added one self-contained, responsive HTML snapshot with 21 live tickets, status totals,
+fixed priority sorting, text search, status/area/severity filters, and an accessible ticket-detail
+dialog. It embeds its CSS and JavaScript, uses no dependencies or remote resources, links each item
+back to the local Markdown, and labels those source files as authoritative. Recent F120 and F123
+outcomes are included as context without mixing them into active totals.
+
+**Evidence.** Source-to-dashboard validation after removing F123 from the live board:
+
+```text
+{"javascript":"valid","active":21,"counts":{"open":18,"in-progress":1,"blocked":1,"needs-human":1},"uniqueIDs":true,"localLinks":true}
+```
+
+Real browser interactions:
+
+```text
+Search "qwen": Showing 4 of 21 active tickets
+Search "qwen" + status "blocked": Showing 1 of 21 active tickets
+Area "ui": Showing 8 of 21 active tickets
+F31 detail: {"detailVisibility":true,"detailTitleText":"Qwen meeting transcription reports no progress or ETA"}
+Browser errors: []
+Narrow viewport: {"controlsColumns":"362px","scrollWidth":390,"statsColumns":"175px 175px","width":390}
+```
+
+Complete repository gate:
+
+```text
+✔ Test run with 259 tests passed after 5.297 seconds.
+Build complete! (0.20s)
+Build complete! (14.05s)
+.build/WhisperMeet.app: replacing existing signature
+/Users/simonwang/Documents/Whisper/.build/WhisperMeet.app
+Quality check passed. Review the behavioral diff before committing:
+A  docs/tickets-dashboard.html
+```
+
+**Gaps.** Not planned: automatic live regeneration. The requested artifact is an offline snapshot;
+it visibly identifies the Markdown files as authoritative and links to them. Not used as evidence:
+macOS's legacy `/usr/bin/tidy`, which rejects standard HTML5 semantic elements; the successful
+browser DOM load, JavaScript compilation check, interactions, and zero browser errors cover the
+actual runtime instead. No user recording or transcript was accessed or modified.
+
+---
+
 ## F120 — Dictation pill level quantizer disagreed with the rendered bar thresholds
 
 - **Outcome:** fixed
