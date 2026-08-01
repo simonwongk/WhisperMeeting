@@ -14,8 +14,8 @@ Read them before touching this file.** This file holds **open** work only; close
 
 ### F119 — Execute the motion-audit plans (plans/001–005)
 
-- **Status:** open
-- **Owner:** —
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5, apple-design redesign session 2026-07-31)
 - **Severity:** medium
 - **Area:** ui
 - **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
