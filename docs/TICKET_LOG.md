@@ -14,6 +14,67 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F115 — CI never completed on `main`: concurrency cancels, a hung test, and thread-pool exhaustion
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Opus 4.8)
+- **Commits:** `b0b00c5` (concurrency + checkout), `e1d013f` (timeout), `4d82c17` (busy-loop fakes), `a4e5030` (serial tests)
+- **Reachability:** n/a — CI-infrastructure fix. The surface restored is `main`'s own quality gate: a push to `main` now runs to a real pass/fail. First green completion was the run for `a4e5030`.
+
+**Root cause.** "The gate never completes on `main`" had **three compounding causes**, only the first
+visible when the ticket was filed:
+
+1. **Concurrency cancels.** `quality.yml` had `cancel-in-progress: true` for every ref, so each push
+   to `main` cancelled the previous in-progress run; at the repo's push cadence none survived.
+   (`actions/checkout@v4` was also on deprecated Node 20.)
+2. **A hung test — the real blocker.** Once runs stopped cancelling each other they still died at the
+   job timeout, because `swift test` **hung** and never produced results. Three cancellation tests
+   (`cancelsLocalProcess`, `cancellationDuringLaunchHandoff`, `qwenClientCancellation`) spawned a fake
+   whisper/qwen executable running `while true; do :; done` — an infinite loop pegging a full core. On
+   the **3-core** runner, run in parallel these saturate every core, so the Swift-concurrency pool
+   cannot schedule the tasks that cancel/terminate them; the processes never die and the suite hangs
+   until the timeout. It passed locally only because dev machines have spare cores. Proven with an
+   instrumented CI run: two fakes at 100% CPU, the test log frozen mid-run.
+3. **Thread-pool exhaustion.** With the busy-loops fixed the suite finally *ran*, but two tests still
+   failed: several tests block a cooperative thread on a real subprocess wait
+   (`QwenASRClient.readDataToEndOfFile`, `WarmWhisperDictationEngine`'s `readLine`). In parallel on 3
+   cores those blocking waits exhaust the pool, starving each test's own cancel/shutdown path, so the
+   assertions timed out at ~120 s.
+
+**Fix.**
+- `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` — feature branches/PRs still
+  fast-cancel; `main` runs always finish. `actions/checkout@v4` → `@v5` (Node 24).
+- `timeout-minutes: 20 → 40` — precautionary headroom; the real gate turned out to be ~1m42s once the
+  hang was gone (the 20-min deaths were the hang, not slow builds).
+- The three fake executables now `exec sleep 120` — a single directly-SIGTERM-killable process at
+  ~0% CPU, bounded so a future cancellation regression fails fast instead of hanging forever (matches
+  the existing sleeping-fake idiom in `WarmWhisperDictationEngineTests`).
+- `swift test --no-parallel` in the gate — at most one blocking test in flight, so a cancel/shutdown
+  path always has a free thread.
+
+**Evidence.**
+
+Before — every `main` run `cancelled` (killed mid-hung-test at the timeout); the gate step's log froze
+after ~34 s of test execution with two fake processes at 100% CPU. After — the run for `a4e5030`
+completes green end-to-end, the first successful `main` run in the repo's history:
+
+```text
+$ gh run view 30680552159 --json conclusion,jobs
+conclusion=success
+  Verify, test, build, and package -> success   (02:43:04Z -> 02:44:46Z, 1m42s)
+$ swift test --disable-sandbox --no-parallel     # locally
+✔ Test run with 257 tests passed after 5.578 seconds.
+```
+
+**Gaps.** The deeper anti-pattern — `QwenASRClient.transcribe` blocking a cooperative thread on
+`readDataToEndOfFile` rather than streaming — is unchanged; `--no-parallel` sidesteps it on CI and
+production is unaffected (transcription runs one-at-a-time via `Task.detached`). Converting that read
+to the streaming `AsyncStream`/`readabilityHandler` pattern `LocalWhisperClient` already uses is
+already tracked as part of **F101**. **Not planned:** re-enabling parallel test execution — the serial
+suite is 5.6 s and removes the whole class of subprocess-wait contention on constrained runners.
+
+---
+
 ## F27 — Whisper vs Qwen dictation is unverified with a real microphone
 
 - **Outcome:** fixed

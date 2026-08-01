@@ -95,29 +95,6 @@ the new guidance (fails before, passes after). Real-runtime: an `.mp4`/`.aiff` c
 bench clip (e.g. `afconvert -f m4af … && cp x.m4a x.mp4`) transcribes successfully on the Qwen path
 after the fix; a genuinely undecodable file produces the engine-switch guidance, not a traceback.
 
-### F115 — CI concurrency cancels every `main` run, so the gate never completes on `main`
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** build
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `.github/workflows/quality.yml` sets `concurrency.cancel-in-progress: true` for every
-ref. On `main` each push cancels the previous in-progress run, so at the repo's push cadence no main
-run ever reaches completion — `gh run list --workflow=quality.yml` shows the last several `main` runs
-all `cancelled`. Separately, `actions/checkout@v4` runs on the deprecated Node 20.
-
-**Impact.** `main` has no working CI signal: a genuinely red push is indistinguishable (both show
-`cancelled`) from one merely superseded. This is precisely how a red release build could sit unnoticed
-(cf. F70→F111, where the warnings-as-errors step went red for 40+ commits).
-
-**Proposed fix.** `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` — keep fast-cancel on
-feature branches/PRs, let `main` runs always finish. Bump `actions/checkout@v4` → `@v5` (Node 24).
-
-**Verification.** After the change, a push to `main` produces a run that runs to completion rather
-than being cancelled.
-
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
 - **Status:** blocked
