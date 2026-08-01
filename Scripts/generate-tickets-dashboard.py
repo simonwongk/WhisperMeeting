@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Regenerate docs/tickets-dashboard.html from the authoritative ticket files.
+"""Generate docs/tickets-dashboard.html as a plain, static HTML page from the board files.
 
-Parses docs/TICKETS.md (the open board), docs/NEEDS_HUMAN.md (human-blocked work),
-and the newest closed entries in docs/TICKET_LOG.md, then rewrites the marked data
-regions of the dashboard. The page stays a self-contained file:// document — the data
-is baked in as JSON, so it needs no server. Re-run this after any board change:
+Parses docs/TICKETS.md (open board), docs/NEEDS_HUMAN.md (human-blocked work), and the
+newest closed entries in docs/TICKET_LOG.md, and writes a self-contained, JS-free HTML
+table. No server and no client-side scripting — the rows are rendered here. To refresh
+after any board change, just run it again:
 
     python3 Scripts/generate-tickets-dashboard.py
 
-The dashboard's counts, filters, sorting, and detail view are computed in-page from
-the `tickets` array, so this script only refreshes the data between the gen: markers;
-it never touches the presentation. It aborts rather than emit an empty board.
+It aborts rather than emit an empty board.
 """
 from __future__ import annotations
 
 import datetime
-import json
+import html
 import re
 import sys
 from pathlib import Path
@@ -26,29 +24,28 @@ DASHBOARD = DOCS / "tickets-dashboard.html"
 
 TICKET_HEADER = re.compile(r"^### (F\d+) — (.+?)\s*$")
 LOG_HEADER = re.compile(r"^## (F\d+) — (.+?)\s*$")
-SECTION_HEADER = re.compile(r"^## ")  # batch headings that sit between tickets
+SECTION_HEADER = re.compile(r"^## ")
 FIELD = re.compile(r"^- \*\*([^:*]+?):\*\*\s*(.*)$")
 OUTCOME = re.compile(r"^- \*\*Outcome:\*\*\s*(\w+)")
 
+SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+STATUS_RANK = {"open": 0, "in-progress": 1, "blocked": 2, "needs-human": 3}
+
 
 def clean_md(text: str) -> str:
-    """Markdown span → single-spaced plain text."""
-    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # [label](url) -> label
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
     text = text.replace("**", "").replace("`", "").replace("*", "")
     return re.sub(r"\s+", " ", text).strip()
 
 
-def first_sentence(text: str, limit: int = 220) -> str:
+def first_sentence(text: str, limit: int = 200) -> str:
     text = clean_md(text)
     match = re.search(r"(.+?[.。!?！？])(\s|$)", text)
     sentence = match.group(1) if match else text
-    if len(sentence) > limit:
-        sentence = sentence[:limit].rstrip() + "…"
-    return sentence
+    return sentence[:limit].rstrip() + "…" if len(sentence) > limit else sentence
 
 
 def iter_ticket_blocks(md: str):
-    """Yield (id, title, body_lines) for each '### F<n> — title' block."""
     lines = md.splitlines()
     i, n = 0, len(lines)
     while i < n:
@@ -75,7 +72,6 @@ def field_map(body: list[str]) -> dict[str, str]:
 
 
 def named_section(body: list[str], name: str) -> str:
-    """Text of a '**Name.**'/'**Name:**' lead-in paragraph, up to the next lead-in."""
     head = re.compile(r"^\*\*" + re.escape(name) + r"[.:]?\*\*\s*(.*)$")
     lead = re.compile(r"^\*\*[A-Za-z][^*]*[.:]\*\*")
     out: list[str] = []
@@ -121,32 +117,33 @@ def dependency_hint(title: str, fields: dict[str, str]) -> str:
 
 def load_active() -> list[dict]:
     tickets: list[dict] = []
-    for filename, source in (("TICKETS.md", "TICKETS.md"), ("NEEDS_HUMAN.md", "NEEDS_HUMAN.md")):
+    for filename in ("TICKETS.md", "NEEDS_HUMAN.md"):
         path = DOCS / filename
         if not path.exists():
             continue
         for ticket_id, title, body in iter_ticket_blocks(path.read_text(encoding="utf-8")):
             fields = field_map(body)
             status = fields.get("status", "open").lower()
-            problem = named_section(body, "Problem") or named_section(body, "What I need from you") \
-                or named_section(body, "Impact")
-            verification = named_section(body, "Verification")
+            problem = (named_section(body, "Problem") or named_section(body, "What I need from you")
+                       or named_section(body, "Impact"))
             tickets.append({
                 "id": ticket_id,
+                "num": int(ticket_id[1:]),
                 "title": strip_title(clean_md(title)),
                 "status": status,
                 "severity": fields.get("severity", "low").lower(),
                 "area": fields.get("area", "docs").lower(),
                 "owner": owner_label(fields.get("owner", "—"), status),
                 "dependency": dependency_hint(title, fields),
-                "summary": first_sentence(problem) if problem else "(see source)",
-                "verification": first_sentence(verification, 260) if verification else "(see source)",
-                "source": source,
+                "summary": first_sentence(problem) if problem else "",
+                "source": filename,
             })
+    tickets.sort(key=lambda t: (SEVERITY_RANK.get(t["severity"], 9),
+                                STATUS_RANK.get(t["status"], 9), t["num"]))
     return tickets
 
 
-def load_recent_closed(limit: int = 6) -> list[tuple[str, str, str]]:
+def load_recent_closed(limit: int = 8) -> list[tuple[str, str, str]]:
     path = DOCS / "TICKET_LOG.md"
     if not path.exists():
         return []
@@ -163,25 +160,81 @@ def load_recent_closed(limit: int = 6) -> list[tuple[str, str, str]]:
                 outcome = match.group(1)
                 break
         title = strip_title(clean_md(header.group(2)))
-        if len(title) > 58:
-            title = title[:58].rstrip() + "…"
+        if len(title) > 66:
+            title = title[:66].rstrip() + "…"
         closed.append((header.group(1), title, outcome))
         if len(closed) >= limit:
             break
     return closed
 
 
-def esc(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def e(text: str) -> str:
+    return html.escape(text, quote=False)
 
 
-def replace_region(html: str, start: str, end: str, inner: str) -> str:
-    try:
-        a = html.index(start) + len(start)
-        b = html.index(end, a)
-    except ValueError:
-        sys.exit(f"Marker not found in {DASHBOARD.name}: {start!r} .. {end!r}. Aborting so nothing is wiped.")
-    return html[:a] + inner + html[b:]
+PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>WhisperMeet Ticket Board</title>
+<style>
+  :root {{ --bg:#f6f7f9; --panel:#fff; --text:#1f2430; --muted:#6b7280; --line:#e2e5ea;
+           --open:#2559d8; --open-bg:#e7edfd; --prog:#166534; --prog-bg:#e5f5ea;
+           --wait:#8a5800; --wait-bg:#fff2d4; --med:#b42318; --med-bg:#fdecea; --low:#6b7280; --low-bg:#eef0f3;
+           font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",sans-serif; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg:#111318; --panel:#1a1d23; --text:#eceef2; --muted:#9aa0ac; --line:#2c313a;
+             --open:#8fb0ff; --open-bg:#1e2a4d; --prog:#8bdca6; --prog-bg:#183a27; --wait:#ffce74; --wait-bg:#3d2f18;
+             --med:#ff9d93; --med-bg:#412220; --low:#9aa0ac; --low-bg:#262a31; }} }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:var(--bg); color:var(--text); }}
+  main {{ max-width:1080px; margin:0 auto; padding:28px 20px 56px; }}
+  h1 {{ margin:0 0 4px; font-size:1.7rem; letter-spacing:-0.02em; }}
+  h2 {{ margin:32px 0 10px; font-size:1.05rem; }}
+  .sub {{ margin:2px 0; color:var(--muted); font-size:0.88rem; }}
+  .sub a {{ color:var(--open); }}
+  table {{ width:100%; border-collapse:collapse; margin-top:16px; }}
+  th, td {{ text-align:left; padding:10px 10px; border-bottom:1px solid var(--line); vertical-align:top; }}
+  th {{ color:var(--muted); font-size:0.74rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; }}
+  tr:hover td {{ background:color-mix(in srgb, var(--line) 30%, transparent); }}
+  .id {{ font-weight:700; color:var(--open); white-space:nowrap; font-variant-numeric:tabular-nums; }}
+  .title {{ font-weight:600; }}
+  .summary {{ color:var(--muted); font-size:0.85rem; margin-top:2px; }}
+  .muted {{ color:var(--muted); font-size:0.85rem; white-space:nowrap; }}
+  .badge {{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.75rem; white-space:nowrap; }}
+  .st-open {{ background:var(--open-bg); color:var(--open); }}
+  .st-in-progress {{ background:var(--prog-bg); color:var(--prog); }}
+  .st-blocked, .st-needs-human {{ background:var(--wait-bg); color:var(--wait); }}
+  .sev-high, .sev-medium {{ background:var(--med-bg); color:var(--med); }}
+  .sev-low {{ background:var(--low-bg); color:var(--low); }}
+  ul.recent {{ margin:8px 0 0; padding:0; list-style:none; }}
+  ul.recent li {{ padding:7px 0; border-bottom:1px solid var(--line); font-size:0.9rem; }}
+  ul.recent .id {{ margin-right:6px; }}
+  ul.recent em {{ color:var(--muted); font-style:normal; }}
+  @media (max-width:640px) {{ .hide-sm {{ display:none; }} main {{ padding:20px 12px 40px; }} }}
+</style>
+</head>
+<body>
+<main>
+<h1>WhisperMeet Ticket Board</h1>
+<p class="sub">{count_line}</p>
+<p class="sub">Generated {date} from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
+<table>
+<thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+<h2>Recently closed</h2>
+<ul class="recent">
+{recent}
+</ul>
+</main>
+</body>
+</html>
+"""
 
 
 def main() -> None:
@@ -193,46 +246,46 @@ def main() -> None:
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         sys.exit(f"Duplicate ticket IDs parsed ({', '.join(dupes)}) — fix the board first.")
 
-    recent = load_recent_closed()
-    today = datetime.date.today().strftime("%B %-d, %Y")
-
-    # `tickets` array — JSON is valid JS; neutralize any '</' so a summary can't close <script>.
-    ticket_lines = [json.dumps(t, ensure_ascii=False) for t in active]
-    tickets_js = "const tickets = [\n" + ",\n".join("  " + line for line in ticket_lines) + "\n];"
-    tickets_js = tickets_js.replace("</", "<\\/")
-    tickets_block = "\n".join("    " + line for line in tickets_js.splitlines())
-
-    by_status: dict[str, list[str]] = {}
+    counts: dict[str, int] = {}
     for t in active:
-        by_status.setdefault(t["status"], []).append(t["id"])
-    focus = []
-    for status, heading in (("in-progress", "In progress"), ("blocked", "Blocked"), ("needs-human", "Needs a human")):
-        if by_status.get(status):
-            focus.append(f"{heading}: {', '.join(by_status[status])}")
-    review = " · ".join(focus) if focus else f"{len(active)} active tickets — all open and unassigned."
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    order = ["open", "in-progress", "blocked", "needs-human"]
+    parts = [f"{counts[s]} {s.replace('-', ' ')}" for s in order if counts.get(s)]
+    count_line = f"{len(active)} active — " + " · ".join(parts)
 
-    recent_html = "\n".join(
-        f'        <div class="recent-item"><strong>{esc(cid)} · {esc(title)}</strong>'
-        f'<span>Closed{(" " + esc(outcome)) if outcome else ""}.</span></div>'
-        for cid, title, outcome in recent
-    ) or '        <div class="recent-item"><span>No closed tickets recorded yet.</span></div>'
-
-    subtitle = (
-        "Offline snapshot of active engineering work — the Markdown files remain authoritative. "
-        f"Generated {today} from TICKETS.md, NEEDS_HUMAN.md, and TICKET_LOG.md by "
-        "Scripts/generate-tickets-dashboard.py."
+    rows = "\n".join(
+        "<tr>"
+        f'<td class="id">{e(t["id"])}</td>'
+        f'<td><div class="title">{e(t["title"])}</div>'
+        + (f'<div class="summary">{e(t["summary"])}</div>' if t["summary"] else "")
+        + "</td>"
+        f'<td><span class="badge st-{e(t["status"])}">{e(t["status"])}</span></td>'
+        f'<td><span class="badge sev-{e(t["severity"])}">{e(t["severity"])}</span></td>'
+        f'<td class="hide-sm">{e(t["area"])}</td>'
+        f'<td class="hide-sm muted">{e(t["owner"])} · {e(t["dependency"])}</td>'
+        "</tr>"
+        for t in active
     )
 
-    html = DASHBOARD.read_text(encoding="utf-8")
-    html = replace_region(html, "// gen:tickets:start\n", "    // gen:tickets:end", tickets_block + "\n")
-    html = replace_region(html, "<!-- gen:subtitle:start -->", "<!-- gen:subtitle:end -->", esc(subtitle))
-    html = replace_region(html, "<!-- gen:review:start -->", "<!-- gen:review:end -->", esc(review))
-    html = replace_region(html, "<!-- gen:recent:start -->", "<!-- gen:recent:end -->", "\n" + recent_html + "\n      ")
-    DASHBOARD.write_text(html, encoding="utf-8")
+    recent = load_recent_closed()
+    recent_html = "\n".join(
+        f'<li><span class="id">{e(cid)}</span>{e(title)}'
+        + (f' <em>— {e(outcome)}</em>' if outcome else "")
+        + "</li>"
+        for cid, title, outcome in recent
+    ) or "<li><em>No closed tickets recorded yet.</em></li>"
 
-    summary = ", ".join(f"{status}={len(v)}" for status, v in sorted(by_status.items()))
-    print(f"Refreshed {DASHBOARD.relative_to(ROOT)}: {len(active)} active tickets ({summary}); "
-          f"{len(recent)} recent closes; generated {today}.")
+    page = PAGE.format(
+        count_line=e(count_line),
+        date=datetime.date.today().strftime("%B %-d, %Y"),
+        rows=rows,
+        recent=recent_html,
+    )
+    DASHBOARD.write_text(page, encoding="utf-8")
+
+    summary = ", ".join(f"{s}={counts[s]}" for s in order if counts.get(s))
+    print(f"Wrote {DASHBOARD.relative_to(ROOT)}: {len(active)} active tickets ({summary}); "
+          f"{len(recent)} recent closes.")
 
 
 if __name__ == "__main__":

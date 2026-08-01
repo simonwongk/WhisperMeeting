@@ -1,343 +1,90 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>WhisperMeet Ticket Board</title>
-  <style>
-    :root {
-      --bg: #f5f6f8;
-      --panel: #ffffff;
-      --text: #202124;
-      --muted: #656a73;
-      --line: #d9dce2;
-      --soft: #eceef2;
-      --accent: #315efb;
-      --accent-soft: #e7edff;
-      --danger: #b42318;
-      --danger-soft: #feeceb;
-      --warning: #8a5800;
-      --warning-soft: #fff3d6;
-      --success: #166534;
-      --success-soft: #e6f5ea;
-      --radius: 14px;
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #111317;
-        --panel: #1b1e24;
-        --text: #f2f3f5;
-        --muted: #a8adb7;
-        --line: #363b45;
-        --soft: #252a32;
-        --accent: #8eabff;
-        --accent-soft: #202d52;
-        --danger: #ff9b91;
-        --danger-soft: #44231f;
-        --warning: #ffd17a;
-        --warning-soft: #3f3119;
-        --success: #8ddeaa;
-        --success-soft: #193a27;
-      }
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); }
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 56px; }
-    a { color: var(--accent); }
-    h1, h2, p { margin-top: 0; }
-    h1 { margin-bottom: 8px; font-size: clamp(1.7rem, 4vw, 2.35rem); letter-spacing: -0.035em; }
-    h2 { margin-bottom: 14px; font-size: 1.05rem; }
-    .topline, .controls, .stats, .review-strip, .detail-meta { display: flex; gap: 12px; flex-wrap: wrap; }
-    .topline { justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
-    .subtitle { margin: 0; color: var(--muted); max-width: 720px; }
-    .source-links { display: flex; gap: 12px; white-space: nowrap; }
-    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 22px; }
-    .stat, .detail, .recent { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
-    .stat { padding: 16px; }
-    .stat-label { color: var(--muted); font-size: 0.82rem; }
-    .stat-value { display: block; margin-top: 5px; font-size: 1.65rem; font-weight: 650; }
-    .review-strip { align-items: center; padding: 12px 14px; margin-bottom: 22px; background: var(--warning-soft); border-left: 4px solid var(--warning); border-radius: 8px; }
-    .review-strip strong { color: var(--warning); }
-    .review-strip span { color: var(--text); }
-    .controls { align-items: end; margin-bottom: 14px; }
-    label { display: grid; gap: 6px; color: var(--muted); font-size: 0.8rem; }
-    input, select, button {
-      font: inherit;
-      color: var(--text);
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 9px 11px;
-    }
-    input { width: min(340px, 100%); }
-    input:focus, select:focus, button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 1px; }
-    button { cursor: pointer; }
-    button:hover { background: var(--soft); }
-    .result-count { margin: 0 0 10px; color: var(--muted); font-size: 0.86rem; }
-    .table-wrap { overflow-x: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-    table { width: 100%; border-collapse: collapse; min-width: 860px; }
-    th { color: var(--muted); font-size: 0.76rem; font-weight: 600; text-align: left; letter-spacing: 0.02em; }
-    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    tbody tr:last-child td { border-bottom: 0; }
-    tbody tr:hover { background: color-mix(in srgb, var(--soft) 55%, transparent); }
-    .ticket-button { padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; }
-    .ticket-button:hover { color: var(--accent); background: transparent; }
-    .id { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--accent); white-space: nowrap; }
-    .muted { color: var(--muted); }
-    .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; font-size: 0.75rem; white-space: nowrap; }
-    .status-open { background: var(--accent-soft); color: var(--accent); }
-    .status-in-progress { background: var(--success-soft); color: var(--success); }
-    .status-blocked, .status-needs-human { background: var(--warning-soft); color: var(--warning); }
-    .severity-medium { background: var(--danger-soft); color: var(--danger); }
-    .severity-low { background: var(--soft); color: var(--muted); }
-    .detail { margin-top: 18px; padding: 18px; }
-    .detail[hidden] { display: none; }
-    .detail-head { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
-    .detail h2 { margin-bottom: 8px; }
-    .detail p { color: var(--muted); max-width: 920px; }
-    .detail-meta { margin: 14px 0; }
-    .detail-meta span { background: var(--soft); padding: 6px 9px; border-radius: 8px; font-size: 0.8rem; }
-    .detail-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-    .recent { margin-top: 28px; padding: 18px; }
-    .recent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .recent-item { padding-left: 12px; border-left: 3px solid var(--success); }
-    .recent-item strong { display: block; margin-bottom: 4px; }
-    .recent-item span { color: var(--muted); font-size: 0.86rem; }
-    .empty { padding: 28px 10px; text-align: center; color: var(--muted); }
-    @media (max-width: 760px) {
-      main { padding: 22px 14px 40px; }
-      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .topline { align-items: start; }
-      .source-links { white-space: normal; }
-      .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .controls label:first-child { grid-column: 1 / -1; }
-      input, select { width: 100%; }
-      .recent-grid { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 420px) {
-      .controls { grid-template-columns: 1fr; }
-      .controls label:first-child { grid-column: auto; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>WhisperMeet Ticket Board</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1f2430; --muted:#6b7280; --line:#e2e5ea;
+           --open:#2559d8; --open-bg:#e7edfd; --prog:#166534; --prog-bg:#e5f5ea;
+           --wait:#8a5800; --wait-bg:#fff2d4; --med:#b42318; --med-bg:#fdecea; --low:#6b7280; --low-bg:#eef0f3;
+           font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111318; --panel:#1a1d23; --text:#eceef2; --muted:#9aa0ac; --line:#2c313a;
+             --open:#8fb0ff; --open-bg:#1e2a4d; --prog:#8bdca6; --prog-bg:#183a27; --wait:#ffce74; --wait-bg:#3d2f18;
+             --med:#ff9d93; --med-bg:#412220; --low:#9aa0ac; --low-bg:#262a31; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); }
+  main { max-width:1080px; margin:0 auto; padding:28px 20px 56px; }
+  h1 { margin:0 0 4px; font-size:1.7rem; letter-spacing:-0.02em; }
+  h2 { margin:32px 0 10px; font-size:1.05rem; }
+  .sub { margin:2px 0; color:var(--muted); font-size:0.88rem; }
+  .sub a { color:var(--open); }
+  table { width:100%; border-collapse:collapse; margin-top:16px; }
+  th, td { text-align:left; padding:10px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:0.74rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; }
+  tr:hover td { background:color-mix(in srgb, var(--line) 30%, transparent); }
+  .id { font-weight:700; color:var(--open); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .title { font-weight:600; }
+  .summary { color:var(--muted); font-size:0.85rem; margin-top:2px; }
+  .muted { color:var(--muted); font-size:0.85rem; white-space:nowrap; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.75rem; white-space:nowrap; }
+  .st-open { background:var(--open-bg); color:var(--open); }
+  .st-in-progress { background:var(--prog-bg); color:var(--prog); }
+  .st-blocked, .st-needs-human { background:var(--wait-bg); color:var(--wait); }
+  .sev-high, .sev-medium { background:var(--med-bg); color:var(--med); }
+  .sev-low { background:var(--low-bg); color:var(--low); }
+  ul.recent { margin:8px 0 0; padding:0; list-style:none; }
+  ul.recent li { padding:7px 0; border-bottom:1px solid var(--line); font-size:0.9rem; }
+  ul.recent .id { margin-right:6px; }
+  ul.recent em { color:var(--muted); font-style:normal; }
+  @media (max-width:640px) { .hide-sm { display:none; } main { padding:20px 12px 40px; } }
+</style>
 </head>
 <body>
-  <main>
-    <header class="topline">
-      <div>
-        <h1>WhisperMeet Ticket Board</h1>
-        <p class="subtitle"><!-- gen:subtitle:start -->Offline snapshot of active engineering work — the Markdown files remain authoritative. Generated August 1, 2026 from TICKETS.md, NEEDS_HUMAN.md, and TICKET_LOG.md by Scripts/generate-tickets-dashboard.py.<!-- gen:subtitle:end --></p>
-      </div>
-      <nav class="source-links" aria-label="Ticket source files">
-        <a href="TICKETS.md">Open board</a>
-        <a href="NEEDS_HUMAN.md">Needs human</a>
-        <a href="TICKET_LOG.md">Closed log</a>
-      </nav>
-    </header>
-
-    <section class="stats" aria-label="Ticket summary">
-      <div class="stat"><span class="stat-label">Active tickets</span><strong class="stat-value" id="activeCount">21</strong></div>
-      <div class="stat"><span class="stat-label">Open and unowned</span><strong class="stat-value" id="openCount">18</strong></div>
-      <div class="stat"><span class="stat-label">In progress</span><strong class="stat-value" id="progressCount">1</strong></div>
-      <div class="stat"><span class="stat-label">Blocked or human</span><strong class="stat-value" id="blockedCount">2</strong></div>
-    </section>
-
-    <aside class="review-strip" aria-label="Current review focus">
-      <strong>Review focus</strong>
-      <span><!-- gen:review:start -->In progress: F125, F126 · Blocked: F31 · Needs a human: F128, F124, F117<!-- gen:review:end --></span>
-    </aside>
-
-    <section aria-labelledby="activeHeading">
-      <h2 id="activeHeading">Active work</h2>
-      <div class="controls">
-        <label>Search
-          <input id="search" type="search" placeholder="ID, title, area, owner, blocker…" autocomplete="off">
-        </label>
-        <label>Status
-          <select id="statusFilter"><option value="all">All statuses</option></select>
-        </label>
-        <label>Area
-          <select id="areaFilter"><option value="all">All areas</option></select>
-        </label>
-        <label>Severity
-          <select id="severityFilter"><option value="all">All severities</option></select>
-        </label>
-      </div>
-      <p class="result-count" id="resultCount" aria-live="polite"></p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Severity</th><th>Area</th><th>Owner / dependency</th></tr></thead>
-          <tbody id="ticketRows"></tbody>
-        </table>
-      </div>
-      <div class="detail" id="ticketDetail" hidden aria-live="polite">
-        <div class="detail-head">
-          <div><span class="id" id="detailID"></span><h2 id="detailTitle"></h2></div>
-          <button type="button" id="closeDetail" aria-label="Close ticket detail">Close</button>
-        </div>
-        <p id="detailSummary"></p>
-        <div class="detail-meta" id="detailMeta"></div>
-        <p><strong>Verification:</strong> <span id="detailVerification"></span></p>
-        <div class="detail-actions"><a id="detailSource" href="TICKETS.md">Open authoritative source</a></div>
-      </div>
-    </section>
-
-    <section class="recent" aria-labelledby="recentHeading">
-      <h2 id="recentHeading">Recently reviewed and closed</h2>
-      <div class="recent-grid"><!-- gen:recent:start -->
-        <div class="recent-item"><strong>F122 · Correction to the F115 close: unclaimed ticket, incomplete…</strong><span>Closed fixed.</span></div>
-        <div class="recent-item"><strong>F100 · Qwen alignment is all-or-nothing; consider keeping the sen…</strong><span>Closed wontfix.</span></div>
-        <div class="recent-item"><strong>F129 · Vocabulary screen showed the app-level title in its toolba…</strong><span>Closed fixed.</span></div>
-        <div class="recent-item"><strong>F127 · Ad-hoc signing resets every TCC permission on each rebuild</strong><span>Closed fixed.</span></div>
-        <div class="recent-item"><strong>F119 · Execute the motion-audit plans (plans/001–005)</strong><span>Closed fixed.</span></div>
-        <div class="recent-item"><strong>F123 · Offline local dashboard for the ticket board</strong><span>Closed fixed.</span></div>
-      <!-- gen:recent:end --></div>
-    </section>
-  </main>
-
-  <script>
-    // gen:tickets:start
-    const tickets = [
-      {"id": "F125", "title": "Record screen is not scrollable; the Stop button can be unreachable while recording", "status": "in-progress", "severity": "high", "area": "ui", "owner": "Claude Code (Fable 5, apple-design redesign session 2026-07-31)", "dependency": "—", "summary": "RecordMeetingView.body is a fixed VStack with top/bottom Spacer()s and no ScrollView (Sources/WhisperMeet/ContentView.swift:252 area).", "verification": "Build/test green; manual — shrink the window to minHeight while recording and confirm the Stop button is always reachable by scrolling; content still centers on a tall window.", "source": "TICKETS.md"},
-      {"id": "F126", "title": "Sidebar search field renders on top of the window controls", "status": "in-progress", "severity": "medium", "area": "ui", "owner": "Claude Code (Fable 5, apple-design redesign session 2026-07-31)", "dependency": "—", "summary": ".searchable(text:placement:.sidebar,…) (Sources/WhisperMeet/ContentView.swift:100 area) renders the search field pinned at the very top of the sidebar above the traffic-light window controls, overlapping the title-bar ro…", "verification": "Build/test green; manual — the search field sits in the window toolbar, the traffic lights are back in their normal single title-bar row, and lang:zh-style queries still filter the sidebar list.", "source": "TICKETS.md"},
-      {"id": "F121", "title": "Serial quality gate can still hang inside the Swift test helper", "status": "open", "severity": "medium", "area": "build", "owner": "Unowned", "dependency": "—", "summary": "The first post-F120 Scripts/quality-check.sh run completed its build and started the serial Swift suite, then stopped emitting output for more than a minute.", "verification": "Repeated serial full-suite runs complete under a bounded timeout and a deliberately wedged fixture produces the diagnostic/timeout path.", "source": "TICKETS.md"},
-      {"id": "F118", "title": "Qwen cannot transcribe imported mp4/mov/aiff/caf recordings; failure message calls it transient", "status": "open", "severity": "medium", "area": "transcription", "owner": "Unowned", "dependency": "—", "summary": "The import feature accepts audio and video (fileImporter(allowedContentTypes: [.audio, .movie, .audiovisualContent]), Sources/WhisperMeet/ContentView.swift:333) and copies the file byte-for-byte with its original extensi…", "verification": "Red-green: a TranscriptionFailureClassifier test mapping the captured stderr to the new guidance (fails before, passes after).", "source": "TICKETS.md"},
-      {"id": "F31", "title": "Qwen meeting transcription reports no progress or ETA", "status": "blocked", "severity": "medium", "area": "transcription", "owner": "Unowned", "dependency": "Blocked by F101", "summary": "QwenASRClient.transcribe (Sources/WhisperCore/QwenASRClient.swift:117-118) emits only .preparing / .loadingModel and never .transcribing with a fraction, and its run(...) (:174) reads the subprocess output only at EOF (r…", "verification": "A long Qwen run advances a determinate bar.", "source": "TICKETS.md"},
-      {"id": "F101", "title": "Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar", "status": "open", "severity": "medium", "area": "build", "owner": "Unowned", "dependency": "—", "summary": "F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits no progress signal to parse.", "verification": "With the helper change in place, a multi-chunk Qwen run advances a determinate bar (fraction increases per completed chunk) and the label reads \"Transcribing locally…\"; a QwenProgressParser unit test maps a captured progress line/tqdm frame to the expected fra…", "source": "TICKETS.md"},
-      {"id": "F40", "title": "Transcript Edit view double-writes the whole meetings index on every keystroke", "status": "open", "severity": "medium", "area": "ui", "owner": "Unowned", "dependency": "—", "summary": "The transcript editor binding's setter calls store.update(id:) { $0.transcriptText = value } on every keystroke (Sources/WhisperMeet/ContentView.swift:1709-1712).", "verification": "Count meetingFiles.save calls while applying N keystrokes and assert it coalesces to roughly one write after idle rather than N.", "source": "TICKETS.md"},
-      {"id": "F79", "title": "Wire the recording-health report into stop → store → meeting detail", "status": "open", "severity": "medium", "area": "meetings", "owner": "Unowned", "dependency": "Delivers F58", "summary": "F58 shipped and tested RecordingHealthReport + RecordingHealthMonitor.report() (Sources/WhisperCore/RecordingHealthMonitor.swift:87,211; RecordingHealthReportTests.swift), but nothing calls it.", "verification": "Core fold already covered by RecordingHealthReportTests.", "source": "TICKETS.md"},
-      {"id": "F80", "title": "Render the menu-bar recording controls from the tested presentation core", "status": "open", "severity": "low", "area": "ui", "owner": "Unowned", "dependency": "Delivers F62", "summary": "MenuBarRecording.make(...) -> MenuBarRecordingPresentation (Sources/WhisperCore/MenuBarRecording.swift:17-48; MenuBarRecordingTests.swift) is never rendered.", "verification": "Decision logic already covered by MenuBarRecordingTests.", "source": "TICKETS.md"},
-      {"id": "F81", "title": "Wire the summary-style picker into the summary UI and AppModel.summarize", "status": "open", "severity": "low", "area": "ui", "owner": "Unowned", "dependency": "Delivers F63", "summary": "SummaryStyle (Sources/WhisperCore/MeetingSummarizer.swift:53) and the style-threaded summarize(transcript:language:style:) / ClaudeSummarizer.systemPrompt(language:style:) (ClaudeSummarizer.swift:83,102) are tested, but…", "verification": "Core threading covered by ClaudeSummarizerTests.", "source": "TICKETS.md"},
-      {"id": "F82", "title": "Add the glossary-correction review sheet and call site", "status": "open", "severity": "medium", "area": "transcription", "owner": "Unowned", "dependency": "Delivers F65", "summary": "GlossaryCorrector.corrections(vocabulary:segments:) (Sources/WhisperCore/GlossaryCorrector.swift:24; GlossaryCorrectorTests.swift) is never invoked — grep GlossaryCorrector Sources/WhisperMeet is empty.", "verification": "Matcher covered by GlossaryCorrectorTests; if an apply-helper is added, unit-test it in WhisperCore.", "source": "TICKETS.md"},
-      {"id": "F84", "title": "Wire tag click-to-filter into the sidebar", "status": "open", "severity": "medium", "area": "meetings", "owner": "Unowned", "dependency": "Delivers F67", "summary": "MeetingTags.matches(meetingTags:selected:mode:) (Sources/WhisperCore/MeetingTags.swift:34; MeetingTagsTests.swift:18-25) has no user surface.", "verification": "matches covered by MeetingTagsTests.", "source": "TICKETS.md"},
-      {"id": "F85", "title": "Wire the command catalog into a Commands menu + Keyboard Shortcuts sheet", "status": "open", "severity": "medium", "area": "ui", "owner": "Unowned", "dependency": "Delivers F69", "summary": "CommandCatalog (Sources/WhisperCore/CommandCatalog.swift:62,76; CommandCatalogTests.swift) — ⌘R toggle, ⇧⌘M Add Marker, Cancel Recording…, ⌘/ Shortcuts — is never referenced.", "verification": "CommandCatalogTests stays green; no .commands{}/sheet harness exists — do not fake a view test.", "source": "TICKETS.md"},
-      {"id": "F86", "title": "Add a Settings \"Export diagnostics…\" action for the diagnostics bundle", "status": "open", "severity": "low", "area": "ui", "owner": "Unowned", "dependency": "Delivers F70", "summary": "DiagnosticsBundleBuilder.json over DiagnosticsInput (Sources/WhisperCore/DiagnosticsBundleBuilder.swift:52,6; DiagnosticsBundleBuilderTests.swift) has zero callers.", "verification": "Exclusion/determinism covered by DiagnosticsBundleBuilderTests.", "source": "TICKETS.md"},
-      {"id": "F88", "title": "Wire the \"Second opinion\" cross-engine comparison", "status": "open", "severity": "low", "area": "transcription", "owner": "Unowned", "dependency": "F30 resolved", "summary": "TranscriptComparison.compare(_:_:) (Sources/WhisperCore/TranscriptComparison.swift:26; TranscriptComparisonTests.swift) has no callers — grep TranscriptComparison Sources/WhisperMeet is empty.", "verification": "Add a WhisperMeetTests case asserting a second-opinion run does NOT mutate the stored transcript and that the single-run guard rejects a concurrent normal transcription.", "source": "TICKETS.md"},
-      {"id": "F89", "title": "Build the compact recording HUD overlay", "status": "open", "severity": "low", "area": "ui", "owner": "Unowned", "dependency": "Delivers F74", "summary": "RecordingHUD.make(...) -> RecordingHUDState (Sources/WhisperCore/RecordingHUD.swift:19; RecordingHUDTests.swift) has zero callers in Sources/WhisperMeet.", "verification": "State core covered by RecordingHUDTests.", "source": "TICKETS.md"},
-      {"id": "F90", "title": "Add the BackupCoordinator + Settings \"Back up library…\" action", "status": "open", "severity": "medium", "area": "recovery", "owner": "Unowned", "dependency": "Delivers F75", "summary": "BackupPlan.compute / BackupRetention.prune / BackupVerification.succeeded (Sources/WhisperCore/BackupPlan.swift:28,57,71; BackupPlanTests.swift) have no wiring.", "verification": "The coordinator is headless-testable in WhisperMeetTests with injected temp source/dest dirs: unchanged→skip, changed/new→copy, each copy verifies, source bytes untouched, retention drops only oldest dest generations.", "source": "TICKETS.md"},
-      {"id": "F91", "title": "Add the EventKit bridge so calendar titles pre-fill", "status": "open", "severity": "low", "area": "meetings", "owner": "Unowned", "dependency": "Delivers F76", "summary": "CalendarTitleMatcher.bestTitle(...) over CalendarEventSummary (Sources/WhisperCore/CalendarTitleMatcher.swift:17,5; CalendarTitleMatcherTests.swift) has no caller.", "verification": "Matcher covered by CalendarTitleMatcherTests.", "source": "TICKETS.md"},
-      {"id": "F92", "title": "Wire per-segment re-run into the transcript segment menu", "status": "open", "severity": "low", "area": "transcription", "owner": "Unowned", "dependency": "F30 resolved", "summary": "SegmentAudioRange.byteRange + TranscriptSegmentSplice.splice (Sources/WhisperCore/SegmentRerun.swift:10,20; SegmentRerunTests.swift) have no callers.", "verification": "Extract the read→temp-clip→run→splice orchestration into an injectable engine seam so a WhisperMeetTests lifecycle test asserts spliced-back segments against a stub without real audio/GUI.", "source": "TICKETS.md"},
-      {"id": "F128", "title": "Create the one-time \"WhisperMeet Dev\" signing certificate (ends the re-grant loop)", "status": "needs-human", "severity": "medium", "area": "build", "owner": "Needs a human", "dependency": "—", "summary": "macOS keys permission grants to the app's signing identity.", "verification": "After creating it: Scripts/install-app.sh, grant once, rebuild + reinstall again — the app should launch with all permissions intact, no prompts.", "source": "NEEDS_HUMAN.md"},
-      {"id": "F124", "title": "Feel-check the five executed motion plans (F119)", "status": "needs-human", "severity": "low", "area": "ui", "owner": "Needs a human", "dependency": "—", "summary": "All five F119 plans are executed, workflow-verified, and green on build/tests, but SwiftUI has no render harness — feel is verifiable only on screen.", "verification": "The checklist above; anything off is filed as its own ticket.", "source": "NEEDS_HUMAN.md"},
-      {"id": "F117", "title": "Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)", "status": "needs-human", "severity": "low", "area": "ui", "owner": "Needs a human", "dependency": "—", "summary": "The F116 seams are build/test/workflow-verified but SwiftUI has no render harness, and one round-2 verifier claim about transition layout mechanics contradicts established SwiftUI behavior — only looking at the running a…", "verification": "The checklist above; any artifact seen is filed as its own ticket.", "source": "NEEDS_HUMAN.md"}
-    ];
-    // gen:tickets:end
-
-    const rows = document.getElementById("ticketRows");
-    const search = document.getElementById("search");
-    const statusFilter = document.getElementById("statusFilter");
-    const areaFilter = document.getElementById("areaFilter");
-    const severityFilter = document.getElementById("severityFilter");
-    const resultCount = document.getElementById("resultCount");
-    const detail = document.getElementById("ticketDetail");
-
-    const label = value => value === "ui"
-      ? "UI"
-      : value.split("-").map(part => part[0].toUpperCase() + part.slice(1)).join(" ");
-    const fillOptions = (select, values) => [...new Set(values)].sort().forEach(value => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label(value);
-      select.append(option);
-    });
-    fillOptions(statusFilter, tickets.map(ticket => ticket.status));
-    fillOptions(areaFilter, tickets.map(ticket => ticket.area));
-    fillOptions(severityFilter, tickets.map(ticket => ticket.severity));
-
-    const severityRank = {medium: 0, low: 1};
-    const statusRank = {open: 0, "in-progress": 1, blocked: 2, "needs-human": 3};
-    const numericID = id => Number(id.slice(1));
-
-    function showDetail(ticket) {
-      document.getElementById("detailID").textContent = ticket.id;
-      document.getElementById("detailTitle").textContent = ticket.title;
-      document.getElementById("detailSummary").textContent = ticket.summary;
-      document.getElementById("detailVerification").textContent = ticket.verification;
-      const meta = document.getElementById("detailMeta");
-      meta.replaceChildren();
-      [label(ticket.status), label(ticket.severity), label(ticket.area), ticket.owner, ticket.dependency].forEach(value => {
-        const item = document.createElement("span");
-        item.textContent = value;
-        meta.append(item);
-      });
-      const source = document.getElementById("detailSource");
-      source.href = ticket.source;
-      source.textContent = `Open ${ticket.source}`;
-      detail.hidden = false;
-      detail.scrollIntoView({behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest"});
-    }
-
-    function render() {
-      const query = search.value.trim().toLowerCase();
-      const filtered = tickets.filter(ticket => {
-        const haystack = Object.values(ticket).join(" ").toLowerCase();
-        return (!query || haystack.includes(query))
-          && (statusFilter.value === "all" || ticket.status === statusFilter.value)
-          && (areaFilter.value === "all" || ticket.area === areaFilter.value)
-          && (severityFilter.value === "all" || ticket.severity === severityFilter.value);
-      }).sort((a, b) =>
-        severityRank[a.severity] - severityRank[b.severity]
-        || statusRank[a.status] - statusRank[b.status]
-        || numericID(a.id) - numericID(b.id)
-      );
-
-      rows.replaceChildren();
-      filtered.forEach(ticket => {
-        const row = document.createElement("tr");
-        const idCell = document.createElement("td");
-        idCell.className = "id";
-        idCell.textContent = ticket.id;
-
-        const titleCell = document.createElement("td");
-        const titleButton = document.createElement("button");
-        titleButton.type = "button";
-        titleButton.className = "ticket-button";
-        titleButton.textContent = ticket.title;
-        titleButton.addEventListener("click", () => showDetail(ticket));
-        titleCell.append(titleButton);
-
-        const statusCell = document.createElement("td");
-        const status = document.createElement("span");
-        status.className = `badge status-${ticket.status}`;
-        status.textContent = label(ticket.status);
-        statusCell.append(status);
-
-        const severityCell = document.createElement("td");
-        const severity = document.createElement("span");
-        severity.className = `badge severity-${ticket.severity}`;
-        severity.textContent = label(ticket.severity);
-        severityCell.append(severity);
-
-        const areaCell = document.createElement("td");
-        areaCell.textContent = label(ticket.area);
-        const contextCell = document.createElement("td");
-        contextCell.className = "muted";
-        contextCell.textContent = `${ticket.owner} · ${ticket.dependency}`;
-        row.append(idCell, titleCell, statusCell, severityCell, areaCell, contextCell);
-        rows.append(row);
-      });
-
-      if (!filtered.length) {
-        const row = document.createElement("tr");
-        const cell = document.createElement("td");
-        cell.colSpan = 6;
-        cell.className = "empty";
-        cell.textContent = "No tickets match these filters.";
-        row.append(cell);
-        rows.append(row);
-      }
-      resultCount.textContent = `Showing ${filtered.length} of ${tickets.length} active tickets`;
-    }
-
-    [search, statusFilter, areaFilter, severityFilter].forEach(control => control.addEventListener("input", render));
-    document.getElementById("closeDetail").addEventListener("click", () => { detail.hidden = true; });
-
-    document.getElementById("activeCount").textContent = tickets.length;
-    document.getElementById("openCount").textContent = tickets.filter(ticket => ticket.status === "open").length;
-    document.getElementById("progressCount").textContent = tickets.filter(ticket => ticket.status === "in-progress").length;
-    document.getElementById("blockedCount").textContent = tickets.filter(ticket => ["blocked", "needs-human"].includes(ticket.status)).length;
-    render();
-  </script>
+<main>
+<h1>WhisperMeet Ticket Board</h1>
+<p class="sub">22 active — 16 open · 2 in progress · 1 blocked · 3 needs human</p>
+<p class="sub">Generated August 1, 2026 from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
+<table>
+<thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
+<tbody>
+<tr><td class="id">F125</td><td><div class="title">Record screen is not scrollable; the Stop button can be unreachable while recording</div><div class="summary">RecordMeetingView.body is a fixed VStack with top/bottom Spacer()s and no ScrollView (Sources/WhisperMeet/ContentView.swift:252 area).</div></td><td><span class="badge st-in-progress">in-progress</span></td><td><span class="badge sev-high">high</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Claude Code (Fable 5, apple-design redesign session 2026-07-31) · —</td></tr>
+<tr><td class="id">F40</td><td><div class="title">Transcript Edit view double-writes the whole meetings index on every keystroke</div><div class="summary">The transcript editor binding's setter calls store.update(id:) { $0.transcriptText = value } on every keystroke (Sources/WhisperMeet/ContentView.swift:1709-1712).</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · —</td></tr>
+<tr><td class="id">F79</td><td><div class="title">Wire the recording-health report into stop → store → meeting detail</div><div class="summary">F58 shipped and tested RecordingHealthReport + RecordingHealthMonitor.report() (Sources/WhisperCore/RecordingHealthMonitor.swift:87,211; RecordingHealthReportTests.swift), but nothing calls it.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F58</td></tr>
+<tr><td class="id">F82</td><td><div class="title">Add the glossary-correction review sheet and call site</div><div class="summary">GlossaryCorrector.corrections(vocabulary:segments:) (Sources/WhisperCore/GlossaryCorrector.swift:24; GlossaryCorrectorTests.swift) is never invoked — grep GlossaryCorrector Sources/WhisperMeet is empt…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · Delivers F65</td></tr>
+<tr><td class="id">F84</td><td><div class="title">Wire tag click-to-filter into the sidebar</div><div class="summary">MeetingTags.matches(meetingTags:selected:mode:) (Sources/WhisperCore/MeetingTags.swift:34; MeetingTagsTests.swift:18-25) has no user surface.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F67</td></tr>
+<tr><td class="id">F85</td><td><div class="title">Wire the command catalog into a Commands menu + Keyboard Shortcuts sheet</div><div class="summary">CommandCatalog (Sources/WhisperCore/CommandCatalog.swift:62,76; CommandCatalogTests.swift) — ⌘R toggle, ⇧⌘M Add Marker, Cancel Recording…, ⌘/ Shortcuts — is never referenced.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F69</td></tr>
+<tr><td class="id">F90</td><td><div class="title">Add the BackupCoordinator + Settings "Back up library…" action</div><div class="summary">BackupPlan.compute / BackupRetention.prune / BackupVerification.succeeded (Sources/WhisperCore/BackupPlan.swift:28,57,71; BackupPlanTests.swift) have no wiring.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">recovery</td><td class="hide-sm muted">Unowned · Delivers F75</td></tr>
+<tr><td class="id">F101</td><td><div class="title">Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar</div><div class="summary">F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits no progress signal to parse.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
+<tr><td class="id">F118</td><td><div class="title">Qwen cannot transcribe imported mp4/mov/aiff/caf recordings; failure message calls it transient</div><div class="summary">The import feature accepts audio and video (fileImporter(allowedContentTypes: [.audio, .movie, .audiovisualContent]), Sources/WhisperMeet/ContentView.swift:333) and copies the file byte-for-byte with…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · —</td></tr>
+<tr><td class="id">F121</td><td><div class="title">Serial quality gate can still hang inside the Swift test helper</div><div class="summary">The first post-F120 Scripts/quality-check.sh run completed its build and started the serial Swift suite, then stopped emitting output for more than a minute.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
+<tr><td class="id">F126</td><td><div class="title">Sidebar search field renders on top of the window controls</div><div class="summary">.searchable(text:placement:.sidebar,…) (Sources/WhisperMeet/ContentView.swift:100 area) renders the search field pinned at the very top of the sidebar above the traffic-light window controls, overlapp…</div></td><td><span class="badge st-in-progress">in-progress</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Claude Code (Fable 5, apple-design redesign session 2026-07-31) · —</td></tr>
+<tr><td class="id">F31</td><td><div class="title">Qwen meeting transcription reports no progress or ETA</div><div class="summary">QwenASRClient.transcribe (Sources/WhisperCore/QwenASRClient.swift:117-118) emits only .preparing / .loadingModel and never .transcribing with a fraction, and its run(...) (:174) reads the subprocess o…</div></td><td><span class="badge st-blocked">blocked</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · Blocked by F101</td></tr>
+<tr><td class="id">F128</td><td><div class="title">Create the one-time "WhisperMeet Dev" signing certificate (ends the re-grant loop)</div><div class="summary">macOS keys permission grants to the app's signing identity.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Needs a human · —</td></tr>
+<tr><td class="id">F80</td><td><div class="title">Render the menu-bar recording controls from the tested presentation core</div><div class="summary">MenuBarRecording.make(...) -&gt; MenuBarRecordingPresentation (Sources/WhisperCore/MenuBarRecording.swift:17-48; MenuBarRecordingTests.swift) is never rendered.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F62</td></tr>
+<tr><td class="id">F81</td><td><div class="title">Wire the summary-style picker into the summary UI and AppModel.summarize</div><div class="summary">SummaryStyle (Sources/WhisperCore/MeetingSummarizer.swift:53) and the style-threaded summarize(transcript:language:style:) / ClaudeSummarizer.systemPrompt(language:style:) (ClaudeSummarizer.swift:83,1…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F63</td></tr>
+<tr><td class="id">F86</td><td><div class="title">Add a Settings "Export diagnostics…" action for the diagnostics bundle</div><div class="summary">DiagnosticsBundleBuilder.json over DiagnosticsInput (Sources/WhisperCore/DiagnosticsBundleBuilder.swift:52,6; DiagnosticsBundleBuilderTests.swift) has zero callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F70</td></tr>
+<tr><td class="id">F88</td><td><div class="title">Wire the "Second opinion" cross-engine comparison</div><div class="summary">TranscriptComparison.compare(_:_:) (Sources/WhisperCore/TranscriptComparison.swift:26; TranscriptComparisonTests.swift) has no callers — grep TranscriptComparison Sources/WhisperMeet is empty.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
+<tr><td class="id">F89</td><td><div class="title">Build the compact recording HUD overlay</div><div class="summary">RecordingHUD.make(...) -&gt; RecordingHUDState (Sources/WhisperCore/RecordingHUD.swift:19; RecordingHUDTests.swift) has zero callers in Sources/WhisperMeet.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Unowned · Delivers F74</td></tr>
+<tr><td class="id">F91</td><td><div class="title">Add the EventKit bridge so calendar titles pre-fill</div><div class="summary">CalendarTitleMatcher.bestTitle(...) over CalendarEventSummary (Sources/WhisperCore/CalendarTitleMatcher.swift:17,5; CalendarTitleMatcherTests.swift) has no caller.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Unowned · Delivers F76</td></tr>
+<tr><td class="id">F92</td><td><div class="title">Wire per-segment re-run into the transcript segment menu</div><div class="summary">SegmentAudioRange.byteRange + TranscriptSegmentSplice.splice (Sources/WhisperCore/SegmentRerun.swift:10,20; SegmentRerunTests.swift) have no callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
+<tr><td class="id">F117</td><td><div class="title">Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)</div><div class="summary">The F116 seams are build/test/workflow-verified but SwiftUI has no render harness, and one round-2 verifier claim about transition layout mechanics contradicts established SwiftUI behavior — only look…</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Needs a human · —</td></tr>
+<tr><td class="id">F124</td><td><div class="title">Feel-check the five executed motion plans (F119)</div><div class="summary">All five F119 plans are executed, workflow-verified, and green on build/tests, but SwiftUI has no render harness — feel is verifiable only on screen.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">ui</td><td class="hide-sm muted">Needs a human · —</td></tr>
+</tbody>
+</table>
+<h2>Recently closed</h2>
+<ul class="recent">
+<li><span class="id">F122</span>Correction to the F115 close: unclaimed ticket, incomplete evidenc… <em>— fixed</em></li>
+<li><span class="id">F100</span>Qwen alignment is all-or-nothing; consider keeping the sentences t… <em>— wontfix</em></li>
+<li><span class="id">F129</span>Vocabulary screen showed the app-level title in its toolbar <em>— fixed</em></li>
+<li><span class="id">F127</span>Ad-hoc signing resets every TCC permission on each rebuild <em>— fixed</em></li>
+<li><span class="id">F119</span>Execute the motion-audit plans (plans/001–005) <em>— fixed</em></li>
+<li><span class="id">F123</span>Offline local dashboard for the ticket board <em>— fixed</em></li>
+<li><span class="id">F120</span>Dictation pill level quantizer disagreed with the rendered bar thr… <em>— fixed</em></li>
+<li><span class="id">F115</span>CI never completed on main: concurrency cancels, a hung test, and… <em>— fixed</em></li>
+</ul>
+</main>
 </body>
 </html>
