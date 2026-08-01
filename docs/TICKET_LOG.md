@@ -14,6 +14,49 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F119 — Execute the motion-audit plans (plans/001–005)
+
+- **Outcome:** fixed
+- **Closed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+- **Commits:** `cf5e9f9` (001), `49442af` (004), `7329154` (002), `d4a9716` (003), `80e75fd`
+  (005), `61d593f` (post-verification fixes)
+- **Reachability:** all five plans restyle existing user-visible surfaces — the playable
+  transcript's scroll system, the dictation pill, fourteen custom-styled buttons/chips, the live
+  volume meter, and the recording-health banner. No new call paths; two documented interaction
+  refinements (review jumps disengage Follow; pill level publishes per lit-bar change).
+- **Follow-up:** F124 (needs-human — on-screen feel checks, combined with F117's pass)
+
+**Root cause.** The audit found the layer below F113/F116's transitions untouched: pre-design-system
+scroll tweens, budget-blind pill timing, absent press feedback, layout-animating meters, and a
+hard-swapping status banner.
+
+**Fix.** Each plan executed by a zero-context executor agent in the plans' dependency order, every
+diff reviewed against its plan before commit. Post-execution adversarial verification (4 lenses +
+refutation) confirmed two spec gaps in the plans themselves, both fixed: custom `ButtonStyle`s now
+render the disabled state (`\.isEnabled` dim — built-ins do this for free, customs must opt in),
+and the pill's floor-based level bucket disagreed with the bars' strict-`>` lighting — that one was
+independently caught and fixed by a parallel session as **F120** (`bc1f527`, with red-green tests)
+while this session's verification was in flight; this session added the per-session level reset.
+Execution record: `plans/README.md`.
+
+**Evidence.**
+
+```text
+Per-plan (executor-reported, reviewer-verified): swift build clean and
+✔ Test run with 257 tests passed  — after each of the five plans.
+Final state (with F120's tests from the parallel session):
+$ swift build            → Build complete! (4.40s)
+$ swift test             → ✔ Test run with 259 tests passed after 1.143 seconds.
+$ Scripts/build-app.sh   → Build complete! + signed (run at plan-005 close)
+Verification workflow: 7 raw findings → 2 confirmed real (both fixed), 2 refuted with
+grounds this session accepted on its own review.
+```
+
+**Gaps.** Three refutation agents in the verification workflow died on an API usage limit; their
+findings were duplicates/extensions of the two confirmed defects and were vetted directly by this
+session (recorded in `plans/README.md`). On-screen feel checks are F124 (needs-human). Not
+planned: an automated SwiftUI render/animation harness — standing limitation per AGENTS.md.
+
 ## F123 — Offline local dashboard for the ticket board
 
 - **Outcome:** fixed

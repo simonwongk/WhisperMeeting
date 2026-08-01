@@ -8,11 +8,32 @@ self-contained — an executor needs zero context beyond the plan file and `AGEN
 
 | # | Plan | Severity | Status |
 | --- | --- | --- | --- |
-| 001 | [Unify the transcript scroll system](001-transcript-scroll-system.md) | MEDIUM | TODO |
-| 002 | [Dictation pill: instant feedback](002-dictation-pill-feedback.md) | MEDIUM | TODO |
-| 003 | [Press feedback for custom controls](003-press-feedback-styles.md) | MEDIUM | TODO |
-| 004 | [Live meter transform-only](004-live-meter-transform-only.md) | MEDIUM | TODO |
-| 005 | [Health-banner status fades](005-health-banner-transition.md) | MEDIUM | TODO |
+| 001 | [Unify the transcript scroll system](001-transcript-scroll-system.md) | MEDIUM | DONE (`cf5e9f9`) |
+| 002 | [Dictation pill: instant feedback](002-dictation-pill-feedback.md) | MEDIUM | DONE (`7329154` + amendments) |
+| 003 | [Press feedback for custom controls](003-press-feedback-styles.md) | MEDIUM | DONE (`d4a9716` + amendments) |
+| 004 | [Live meter transform-only](004-live-meter-transform-only.md) | MEDIUM | DONE (`49442af`) |
+| 005 | [Health-banner status fades](005-health-banner-transition.md) | MEDIUM | DONE (`80e75fd`) |
+
+## Execution record (2026-07-31, F119)
+
+Executed in the recommended order by zero-context executor agents, each diff reviewed against its
+plan before commit; `swift build` + `swift test` green after every plan. Post-execution
+amendments, found by the adversarial verification pass over the cumulative diff:
+
+- **Plan 001** (reviewer, at commit time): `recomputeVisible()` now clears
+  `animateNextSearchScroll`, closing a same-segment chevron staleness hole the plan's comment
+  assumed away.
+- **Plan 002** (two spec gaps in the plan itself): the floor-based bucket quantizer disagreed with
+  `LevelBars`' strict-`>` lighting at the 0-bars/1-bar boundary and could latch a wrong bar state —
+  independently caught and fixed by a parallel session as **F120** (`bc1f527`, ceil-based
+  `DictationPillLevelBucket` + red-green tests); the pill's level state is now also reset per
+  session (`61d593f`).
+- **Plan 003** (spec gap): custom `ButtonStyle`s don't inherit the built-ins' disabled dim — both
+  styles now read `\.isEnabled` and dim to 0.4 when disabled (`61d593f`).
+
+Verification caveat, recorded honestly: three refutation agents in the final workflow died on a
+usage limit; their findings (duplicates/extensions of the two confirmed defects above) were vetted
+by the session directly. On-screen feel checks: **F124** (needs-human).
 
 ## Execution order and dependencies
 

@@ -6,6 +6,33 @@ the ticket rules in [`../AGENTS.md`](../AGENTS.md); open work stays in [`TICKETS
 
 ---
 
+### F124 — Feel-check the five executed motion plans (F119)
+
+- **Status:** needs-human
+- **Owner:** —
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session)
+
+**What I need from you:** run `Scripts/build-app.sh && open .build/WhisperMeet.app` and walk the
+per-plan feel checks (full lists in each `plans/00N-*.md` § Verification; combine with F117's pass
+— same app session works for both): (1) scrub playback with Follow on — smooth chase, no
+stutter-restarts; typing in Find snaps, chevrons glide; a review-banner tap turns Follow off and is
+not yanked back; (2) dictate — "Pasted" lands crisply, the pill label never shifts sideways, bars
+track; (3) click-and-hold a marker chip and a link-style button — instant press acknowledgment;
+while a runtime installs, "Test Recording…" looks dimmed/disabled; (4) the live meter tracks
+speech with the gradient revealed (quiet = green only); (5) mute system audio during a recording —
+the health banner cross-fades to the warning instead of snapping. Repeat 1, 2, 5 with Reduce
+Motion on: fades stay, movement stops. Report findings (or "all good") in chat.
+
+**Problem.** All five F119 plans are executed, workflow-verified, and green on build/tests, but
+SwiftUI has no render harness — feel is verifiable only on screen.
+
+**Impact.** Craft only; a mis-judged value (press-dim depth, scroll spring, meter reveal) would
+ship unnoticed.
+
+**Verification.** The checklist above; anything off is filed as its own ticket.
+
 ### F117 — Eyeball the five F116 motion seams (and arbitrate one verifier disagreement)
 
 - **Status:** needs-human
