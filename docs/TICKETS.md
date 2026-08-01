@@ -6,11 +6,55 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F118`.**
+**Next free ID: `F119`.**
 
 ---
 
 # Open tickets
+
+### F118 — Qwen cannot transcribe imported mp4/mov/aiff/caf recordings; failure message calls it transient
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** medium
+- **Area:** transcription
+- **Filed:** 2026-07-31 by Claude Code (Fable 5, apple-design redesign session; user-reported failure)
+
+**Problem.** The import feature accepts audio *and video* (`fileImporter(allowedContentTypes:
+[.audio, .movie, .audiovisualContent])`, `Sources/WhisperMeet/ContentView.swift:333`) and copies the
+file byte-for-byte with its original extension (`AppModel.copyImportedRecording`,
+`AppModel.swift:811-817`). But the Qwen helper loads audio via mlx-audio's `load_audio`
+(`Scripts/qwen_transcribe.py:126` → installed `mlx_audio/stt/utils.py:53` → `audio_io.py read()`),
+which routes **only `.m4a`/`.aac` to ffmpeg** and everything else to **miniaudio**
+(`…/site-packages/mlx_audio/audio_io.py:196-223`, pinned mlx-audio 0.3.1), which decodes only
+wav/flac/mp3/ogg-vorbis. Any imported `.mp4`/`.mov`/`.aiff`/`.caf`/… therefore fails
+deterministically at load with `miniaudio.DecodeError: unsupported file format` — reproduced
+byte-for-byte against the installed runtime with synthetic fixtures (bench-clip conversions; user
+recordings untouched). The same `.mp4` fixture transcribes cleanly through the installed Whisper
+turbo (ffmpeg decode, `…/Runtime/venv/…/whisper/audio.py:43-46`). Corrupt/truncated WAVs produce a
+*different* message ("could not open/decode file"), so this error signature specifically indicates
+the format-dispatch case, not a damaged file. In-app recordings (16-bit PCM `meeting.wav`) are
+unaffected.
+
+**Impact.** A user who imports a video or mac-audio recording and selects (or defaults to) the
+Qwen engine gets a guaranteed failure dressed as a transient one: the classifier fallback
+(`Sources/WhisperCore/TranscriptionFailureClassifier.swift:49`) says "Transcription failed partway
+through … try transcribing again", though it failed at 0% and retrying the same engine can never
+succeed — plus a raw Python traceback. Nothing tells the user the file is fine and Whisper would
+transcribe it.
+
+**Proposed fix (fixer's choice; verify against the pinned mlx-audio source per AGENTS.md).**
+Options, roughly by preference: (1) transcode imports to 16 kHz mono WAV at import time
+(AVFoundation), making every engine uniform; (2) Qwen-client preflight: for extensions outside
+{wav, flac, mp3, ogg, m4a, aac}, transcode a temp WAV (or fail fast with an accurate message
+steering to Whisper); (3) teach the helper to decode via ffmpeg for all formats. Independently:
+classify the `unsupported file format` stderr signature in `TranscriptionFailureClassifier` to say
+the format isn't supported by Qwen3-ASR and that Whisper or conversion will work — not "try again".
+
+**Verification.** Red-green: a `TranscriptionFailureClassifier` test mapping the captured stderr to
+the new explanation (fails before, passes after); plus a real-runtime run — an `.mp4` conversion of
+a bench clip (e.g. `afconvert -f m4af … && cp x.m4a x.mp4`) transcribes on the Qwen path after the
+fix, or fails fast with the accurate message, per the chosen option.
 
 ### F115 — CI concurrency cancels every `main` run, so the gate never completes on `main`
 
