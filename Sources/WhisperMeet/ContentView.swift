@@ -95,7 +95,9 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("WhisperMeet")
-            .searchable(text: $searchText, placement: .sidebar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
+            // Toolbar placement, not .sidebar: the sidebar variant rendered the field on top of
+            // the window controls (F126); the toolbar is the macOS-conventional home anyway.
+            .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
             .navigationSplitViewColumnWidth(min: 245, ideal: 290)
         } detail: {
             detail
@@ -250,9 +252,9 @@ private struct RecordMeetingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .largeTitle) private var heroIconSize: CGFloat = 44
 
-    var body: some View {
+    /// The record screen's content column, hosted in `body`'s ScrollView (F125).
+    private var recordContent: some View {
         VStack(spacing: 28) {
-            Spacer()
             VStack(spacing: 12) {
                 heroBadge
                 Text(recordingTitle)
@@ -307,9 +309,20 @@ private struct RecordMeetingView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .frame(maxWidth: 560)
-            Spacer()
         }
-        .padding(40)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                recordContent
+                    .padding(40)
+                    .frame(maxWidth: .infinity)
+                    // Center when the content fits the window; scroll when it does not — the
+                    // Stop button must always be reachable (F125).
+                    .frame(minHeight: geometry.size.height)
+            }
+        }
         // One critically-damped spring for the idle ⇄ recording layout swap; disabled entirely
         // under Reduce Motion.
         .animation(reduceMotion ? nil : .uiSpring, value: model.recordingState)
