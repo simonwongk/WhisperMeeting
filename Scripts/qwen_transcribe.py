@@ -131,6 +131,10 @@ def main() -> int:
         language=args.language,
         chunk_duration=ALIGNMENT_CHUNK_SECONDS,
         min_chunk_duration=0.1,
+        # verbose=True streams mlx-audio's "Processing chunks" tqdm bar to stderr so the app can show a
+        # determinate progress bar for long meetings (F101). It only affects the progress display, not
+        # the transcription output; the bar is suppressed for single-chunk (short) runs.
+        verbose=True,
     )
     text = transcription.text.strip()
     if not text:

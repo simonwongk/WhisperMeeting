@@ -142,7 +142,7 @@ public struct QwenASRClient: Sendable {
             "--output", outputURL.path,
             "--language", language.commandLineValue ?? "auto",
         ]
-        let log = try await run(arguments: arguments)
+        let log = try await run(arguments: arguments, onProgress: onProgress)
         try Task.checkCancellation()
 
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
@@ -224,10 +224,18 @@ public struct QwenASRClient: Sendable {
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
         environment["HF_HUB_OFFLINE"] = "1"
         environment["TRANSFORMERS_OFFLINE"] = "1"
+        // Stream the helper's tqdm progress live rather than only at EOF (F101).
+        environment["PYTHONUNBUFFERED"] = "1"
         return environment
     }
 
-    private func run(arguments: [String]) async throws -> String {
+    /// Runs the helper, streaming its stderr so per-chunk `tqdm` progress reaches `onProgress` live and
+    /// no cooperative thread blocks on a full read (the streaming pattern from `LocalWhisperClient.run`;
+    /// replacing the old `readDataToEndOfFile` also removes the blocking wait behind the F121 hang).
+    private func run(
+        arguments: [String],
+        onProgress: @escaping ProgressHandler = { _ in }
+    ) async throws -> String {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = pythonExecutableURL
@@ -236,15 +244,42 @@ public struct QwenASRClient: Sendable {
         process.standardError = pipe
         process.environment = Self.makeEnvironment()
         let cancellation = ProcessCancellationController(process: process)
+
         let handle = pipe.fileHandleForReading
+        let dataStream = AsyncStream<Data> { continuation in
+            handle.readabilityHandler = { fileHandle in
+                let data = fileHandle.availableData
+                if data.isEmpty {
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
+                }
+            }
+            continuation.onTermination = { _ in
+                handle.readabilityHandler = nil
+            }
+        }
 
         return try await withTaskCancellationHandler {
             try cancellation.runUnlessCancelled()
-            let data = handle.readDataToEndOfFile()
+
+            var parser = QwenProgressParser()
+            var logData = Data()
+            for await data in dataStream {
+                logData.append(data)
+                if logData.count > 200_000 {
+                    logData = logData.suffix(100_000)
+                }
+                if let progress = parser.consume(String(decoding: data, as: UTF8.self)) {
+                    await onProgress(progress)
+                }
+            }
             process.waitUntilExit()
-            try Task.checkCancellation()
-            let log = String(decoding: data.suffix(100_000), as: UTF8.self)
+            handle.readabilityHandler = nil
+
+            let log = String(decoding: logData, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            try Task.checkCancellation()
             guard process.terminationStatus == 0 else {
                 throw QwenASRError.processFailed(
                     log.isEmpty

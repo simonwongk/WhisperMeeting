@@ -14,6 +14,81 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F101 — Qwen helper emits per-chunk progress; QwenASRClient streams it (unblocks F31, root-fixes F121)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `QwenASRClient.transcribe` now streams the helper's stderr through `QwenProgressParser`
+  and calls `onProgress(.transcribing(fraction, eta))`; in `AppModel.performTranscription` that handler
+  is `apply(progress:to:)` → `transcriptionProgress[id]` → `ContentView.transcriptionProgressBar`'s
+  `ProgressView(value: fraction)`. So a long Qwen meeting shows a determinate, advancing bar.
+
+**Root cause.** The helper ran `asr.generate(...)` with `verbose` defaulting to `False`, and mlx-audio
+0.3.1 only shows its "Processing chunks" `tqdm` bar when `verbose and len(chunks) > 1` — so a real run
+emitted zero progress. And `QwenASRClient.run` read the subprocess only at EOF (`readDataToEndOfFile`),
+so even if progress were emitted there was nothing streaming it.
+
+**Fix (both halves, coordinated).**
+- Helper (`Scripts/qwen_transcribe.py`): pass `verbose=True` to `generate`. Verified against the pinned
+  mlx-audio 0.3.1 source (`qwen3_asr.py:1108-1111`): `verbose` only controls the tqdm display, not the
+  transcription — confirmed empirically (below). The bar is suppressed for single-chunk (short) runs,
+  which finish in seconds; that's acceptable.
+- `QwenProgressParser` (WhisperCore, new): parses the "Processing chunks" tqdm frames (`n/total`
+  fraction + `[elapsed<remaining]` ETA), mirroring `WhisperProgressParser`.
+- `QwenASRClient.run` (WhisperCore): replaced `readDataToEndOfFile` with the streaming
+  `AsyncStream<Data>` + `readabilityHandler` pattern from `LocalWhisperClient.run`, feeding each chunk to
+  the parser and emitting `.transcribing`. Added `PYTHONUNBUFFERED=1`. **This removes the blocking
+  cooperative-thread wait that F121 named as the residual hang's root cause** — the watchdog stays as a
+  belt-and-braces bound.
+
+**Evidence.**
+- Red-green unit (`QwenProgressParserTests`) over frames captured verbatim from the installed mlx-audio:
+  `1/3 → 0.333`, `2/3 → 0.667`, `3/3 → 1.0`, `0/3 [..<?..] → 0.0` with nil ETA; noise → nil.
+- **verbose output-invariance (installed model):** `en2.wav` transcribes to the identical text with
+  `verbose=True` as the earlier non-verbose run ("Let's schedule the design review for next Tuesday at
+  ten.").
+- **Real multi-chunk run (installed model, synthesized 260 s clip → 2 chunks):** the helper streamed the
+  determinate bar and the parser's fractions advance:
+
+```text
+Processing chunks:   0%|          | 0/2 [00:00<?, ?it/s]        → fraction 0.0
+Processing chunks:  50%|█████     | 1/2 [03:00<03:00, …]        → fraction 0.5
+Processing chunks: 100%|██████████| 2/2 [03:02<00:00, …]        → fraction 1.0
+```
+
+  The run completed with a full payload (39 939 chars, 6 887 aligned items, no alignment warning) —
+  proving the streaming rewrite doesn't break transcription or alignment. Full gate green.
+
+**Gaps.** **Not planned:** a GUI test of the bar render (no view harness); the fraction→bar chain is the
+same one F31 verifies. Single-chunk (short) runs still show no determinate bar by design — they complete
+in seconds.
+
+---
+
+## F31 — Qwen meeting transcription now shows a determinate progress bar (delivered by F101)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `QwenASRClient.transcribe` `onProgress` (F101) → `AppModel.apply(progress:to:)`
+  (`AppModel.swift:1041`) → `transcriptionProgress[id]` → `ContentView.transcriptionProgressBar`
+  (`ContentView.swift:1951`) `ProgressView(value: fraction)` + `transcriptionPhaseLabel` "Transcribing
+  locally… N%".
+
+**Resolution.** F31 was blocked solely on the Qwen helper emitting a parseable progress signal; the
+Swift consumer chain was already built. F101 delivered that signal (verbose tqdm + streaming
+`QwenASRClient` + `QwenProgressParser`), so the determinate bar now advances for a long Qwen meeting with
+no further UI change. The 260 s multi-chunk run under F101 exercised the exact fractions this bar
+consumes (0.0 → 0.5 → 1.0).
+
+**Evidence.** The reachability chain above reads `progress.fractionCompleted` into `ProgressView(value:)`
+(verified in source); the fractions are proven real by F101's multi-chunk run. Full gate green.
+
+**Gaps.** **Not planned:** an on-screen GUI check of the bar (no view-render harness) — the manual glance
+is: run a long meeting on Qwen and watch the bar advance with a percentage instead of an indeterminate
+spinner.
+
+---
+
 ## F90 — BackupCoordinator + Settings "Back up library…" wired in (delivers F75)
 
 - **Outcome:** fixed
