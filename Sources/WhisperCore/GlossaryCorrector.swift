@@ -58,6 +58,22 @@ public enum GlossaryCorrector {
         return results
     }
 
+    /// Applies reviewed corrections to a copy of the segments: within each correction's segment,
+    /// replaces the first occurrence of its `from` phrase with `to`. Segments without a correction are
+    /// unchanged; corrections are order-independent (each targets a specific segment index).
+    public static func apply(
+        _ corrections: [GlossaryCorrection],
+        to segments: [TranscriptSegment]
+    ) -> [TranscriptSegment] {
+        var result = segments
+        for correction in corrections {
+            guard result.indices.contains(correction.segmentIndex),
+                  let range = result[correction.segmentIndex].text.range(of: correction.from) else { continue }
+            result[correction.segmentIndex].text.replaceSubrange(range, with: correction.to)
+        }
+        return result
+    }
+
     /// Alphanumerics-lowercase, separator-free — CJK-safe (ideographs are alphanumeric).
     static func normalize(_ text: String) -> String {
         text.lowercased()

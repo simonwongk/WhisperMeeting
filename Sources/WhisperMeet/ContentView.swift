@@ -1609,8 +1609,10 @@ private struct TranscriptDetailView: View {
     let meetingID: UUID
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
+    @AppStorage("summaryStyle") private var summaryStyle: SummaryStyle = .balanced
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
+    @State private var glossaryProposals: [GlossaryCorrection]?
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
@@ -1691,7 +1693,7 @@ private struct TranscriptDetailView: View {
             .onAppear { normalizeTranscriptIfNeeded(meeting) }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
-                Button("Send to Claude") { model.summarize(id: meetingID) }
+                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle) }
             } message: {
                 Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
             }
@@ -1705,6 +1707,23 @@ private struct TranscriptDetailView: View {
                     }
                 }
             }
+            .sheet(isPresented: Binding(
+                get: { glossaryProposals != nil },
+                set: { if !$0 { glossaryProposals = nil } }
+            )) {
+                GlossarySuggestionSheet(proposals: glossaryProposals ?? []) { accepted in
+                    model.applyGlossaryCorrections(accepted, to: meetingID)
+                }
+            }
+        }
+    }
+
+    private static func summaryStyleName(_ style: SummaryStyle) -> String {
+        switch style {
+        case .balanced: return "Balanced"
+        case .brief: return "Brief"
+        case .detailed: return "Detailed"
+        case .actionItemsFocused: return "Action items"
         }
     }
 
@@ -1719,6 +1738,15 @@ private struct TranscriptDetailView: View {
                     Button("Copy") { copy(Self.summaryText(summary)) }
                     Button("Export…") { export(meeting: meeting, text: Self.summaryText(summary)) }
                 }
+                Picker("Summary style", selection: $summaryStyle) {
+                    ForEach(SummaryStyle.allCases, id: \.self) { style in
+                        Text(Self.summaryStyleName(style)).tag(style)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 150)
+                .disabled(isSummarizing)
+                .help("Choose how detailed the Claude summary should be.")
                 Button(meeting.summary == nil ? "Summarize with Claude" : "Re-summarize") {
                     if model.hasClaudeAPIKey {
                         confirmSummarize = true
@@ -1982,6 +2010,18 @@ private struct TranscriptDetailView: View {
                 }
                 .disabled(isSuggestingVocab)
                 .help("Find names and key terms in this transcript to add to your business vocabulary")
+                Button {
+                    let proposals = model.glossaryCorrections(for: meetingID)
+                    if proposals.isEmpty {
+                        model.alertMessage = "No transcript spans look close to a vocabulary term."
+                    } else {
+                        glossaryProposals = proposals
+                    }
+                } label: {
+                    Label("Correct toward Vocabulary", systemImage: "wand.and.stars")
+                }
+                .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
+                .help("Propose spelling corrections in this transcript toward your business vocabulary")
                 Button("Copy") { copy(currentTranscript()) }
                 Menu("Export…") {
                     Button("Meeting Notes — Summary + Transcript (.md)") {
@@ -2224,6 +2264,66 @@ private struct VocabularySuggestionSheet: View {
                 Button("Cancel") { dismiss() }
                 Button("Add \(selected.count) Term\(selected.count == 1 ? "" : "s")") {
                     onAdd(suggestions.filter(selected.contains))
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selected.isEmpty)
+            }
+            .padding()
+        }
+        .frame(width: 440, height: 540)
+    }
+}
+
+/// Presents proposed spelling corrections toward the user's vocabulary for review. Nothing is applied
+/// until the user confirms — corrections only take effect after explicit review (F82/F65).
+private struct GlossarySuggestionSheet: View {
+    let proposals: [GlossaryCorrection]
+    let onApply: ([GlossaryCorrection]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<Int>
+
+    init(proposals: [GlossaryCorrection], onApply: @escaping ([GlossaryCorrection]) -> Void) {
+        self.proposals = proposals
+        self.onApply = onApply
+        _selected = State(initialValue: Set(proposals.indices))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Correct toward Vocabulary").font(.headline)
+                Text("Proposed spelling corrections that nudge transcript spans toward your business vocabulary. Apply the ones you want — the audio is never changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            List {
+                ForEach(Array(proposals.enumerated()), id: \.offset) { index, proposal in
+                    Toggle(isOn: Binding(
+                        get: { selected.contains(index) },
+                        set: { isOn in
+                            if isOn { selected.insert(index) } else { selected.remove(index) }
+                        }
+                    )) {
+                        HStack(spacing: 6) {
+                            Text(proposal.from).foregroundStyle(.secondary)
+                            Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                            Text(proposal.to).fontWeight(.medium)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Button(selected.count == proposals.count ? "Deselect All" : "Select All") {
+                    selected = selected.count == proposals.count ? [] : Set(proposals.indices)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Apply \(selected.count) Correction\(selected.count == 1 ? "" : "s")") {
+                    onApply(selected.sorted().map { proposals[$0] })
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)

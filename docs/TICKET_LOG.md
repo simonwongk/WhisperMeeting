@@ -14,6 +14,69 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F81 — Summary-style picker wired into the summary UI and AppModel.summarize (delivers F63)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `summarySection`'s Picker (`ContentView.swift`, `@AppStorage("summaryStyle")`) →
+  `AppModel.summarize(id:style:)` → `performSummarization(…style:)` → the injectable `makeSummarizer`
+  seam → `ClaudeSummarizer.summarize(transcript:language:style:)`. Layer 2 (`performSummarization`) is
+  headlessly tested.
+
+**Root cause.** F63's `SummaryStyle` + the 3-arg `summarize(...style:)` were tested but unreachable:
+`performSummarization` built `ClaudeSummarizer` inline and called the 2-arg convenience, pinning every
+summary to `.balanced`; `.brief`/`.detailed`/`.actionItemsFocused` were dead.
+
+**Fix (three layers).**
+- Layer 1 (WhisperCore, unchanged): `SummaryStyle`, `ClaudeSummarizer.summarize(...style:)`.
+- Layer 2 (AppModel, tested): added a `makeSummarizer` `@Sendable` seam (defaults to the real
+  `ClaudeSummarizer`); `summarize(id:style:)` threads the style into `performSummarization(…style:)`,
+  which now calls `makeSummarizer(apiKey)` and the 3-arg `summarize(...style:)`.
+- Layer 3 (ContentView): a compact `Picker` over `SummaryStyle.allCases` bound to
+  `@AppStorage("summaryStyle")`, beside Summarize/Re-summarize; the confirm alert passes the style.
+
+**Evidence.** Red-green (`SummaryStyleWiringTests.swift`): injected a recording `MeetingSummarizer`,
+called `performSummarization(…style:.brief)`, asserted the summarizer received `.brief` and the summary
+was stored. Failed before ("no member 'makeSummarizer'"); passes after. Full gate green (270 tests).
+
+**Gaps.** **Not planned:** a GUI test of the Picker (no view-render harness). Manual: with an API key,
+Summarize with "Brief" (markedly shorter) then Re-summarize with "Action items" (task-focused).
+
+---
+
+## F82 — Glossary-correction review sheet + call site wired in (delivers F65)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the transcript toolbar "Correct toward Vocabulary" button (`ContentView.swift`) →
+  `AppModel.glossaryCorrections(for:)` → `GlossaryCorrector.corrections`; the review sheet's Apply →
+  `AppModel.applyGlossaryCorrections(_:to:)` → `GlossaryCorrector.apply` → `store.update`. Both AppModel
+  methods are headlessly tested.
+
+**Root cause.** F65's `GlossaryCorrector.corrections` was tested but never invoked from the app — no
+toolbar action, no review sheet. Users (especially on Qwen, which ignores Whisper's `--initial_prompt`)
+had no in-app way to normalize e.g. "cooper netties" → "Kubernetes" in a transcript.
+
+**Fix (three layers).**
+- Layer 1 (WhisperCore): added a pure `GlossaryCorrector.apply(_:to:)` that replaces each correction's
+  `from` phrase with `to` in only its target segment (unit-tested).
+- Layer 2 (AppModel, tested): `glossaryCorrections(for:)` (read-only proposals) and
+  `applyGlossaryCorrections(_:to:)`, which rebuilds the timestamped text from corrected segments, guarded
+  by `!isTranscriptEdited`; the recording is never opened.
+- Layer 3 (ContentView): a "Correct toward Vocabulary" toolbar button (disabled when vocabulary is empty
+  or the transcript was hand-edited) presenting a `GlossarySuggestionSheet` (per-row "from → to" toggles,
+  Cancel/Apply), mirroring `VocabularySuggestionSheet`.
+
+**Evidence.** Red-green: `GlossaryCorrectorApplyTests` (apply targets only the named segment) +
+`GlossaryWiringTests` (through AppModel: proposal computed, applied to the transcript, `meeting.wav` never
+created). Failed before ("no member 'apply'"); pass after. Full gate green (270 tests).
+
+**Gaps.** **Not planned:** a GUI test of the sheet (no view harness). Manual: add "Kubernetes" to
+vocabulary, open a meeting whose segment says "cooper netties", run the action, accept, confirm the
+segment updates in place and the recording is unchanged.
+
+---
+
 ## F40 — Transcript editor double-wrote the whole meetings index on every keystroke
 
 - **Outcome:** fixed

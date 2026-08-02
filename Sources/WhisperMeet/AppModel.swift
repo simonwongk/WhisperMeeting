@@ -253,6 +253,10 @@ final class AppModel: ObservableObject {
         await AppModel.spawnQwenInstallRecovery(runtimeDirectory: runtimeDirectory)
     }
 
+    /// Builds the summarizer for a meeting summary. Injectable so the style-threading wiring is
+    /// testable without the Claude network call; defaults to the real `ClaudeSummarizer` (F81).
+    var makeSummarizer: @Sendable (String) -> MeetingSummarizer = { ClaudeSummarizer(apiKey: $0) }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
@@ -887,7 +891,7 @@ final class AppModel: ObservableObject {
         store.delete(id: id)
     }
 
-    func summarize(id: UUID) {
+    func summarize(id: UUID, style: SummaryStyle = .balanced) {
         guard summarizationTasks[id] == nil else { return }
         guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
             alertMessage = SummarizerError.missingAPIKey.localizedDescription
@@ -903,25 +907,45 @@ final class AppModel: ObservableObject {
         let transcript = meeting.transcriptText
         let language = meeting.languageCode
         let task = Task {
-            await performSummarization(id: id, apiKey: key, transcript: transcript, language: language)
+            await performSummarization(id: id, apiKey: key, transcript: transcript, language: language, style: style)
             summarizationTasks[id] = nil
             activeSummarizationID = nil
         }
         summarizationTasks[id] = task
     }
 
-    private func performSummarization(
+    func performSummarization(
         id: UUID,
         apiKey: String,
         transcript: String,
-        language: String?
+        language: String?,
+        style: SummaryStyle
     ) async {
-        let summarizer = ClaudeSummarizer(apiKey: apiKey)
+        let summarizer = makeSummarizer(apiKey)
         do {
-            let summary = try await summarizer.summarize(transcript: transcript, language: language)
+            let summary = try await summarizer.summarize(transcript: transcript, language: language, style: style)
             store.update(id: id) { $0.summary = summary }
         } catch {
             alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Proposed spelling corrections toward the user's vocabulary for a meeting's transcript (F82).
+    /// Read-only — computes over the stored segments; the user reviews before any apply.
+    func glossaryCorrections(for id: UUID) -> [GlossaryCorrection] {
+        guard let meeting = store.meeting(id: id) else { return [] }
+        return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
+    }
+
+    /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped
+    /// text from the corrected segments. Skipped when the transcript was hand-edited (segment-derived
+    /// text no longer matches what's shown). The recording is never opened (F82).
+    func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) {
+        guard let meeting = store.meeting(id: id), !meeting.isTranscriptEdited, !corrections.isEmpty else { return }
+        let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments)
+        store.update(id: id) {
+            $0.segments = corrected
+            $0.transcriptText = TranscriptFormatter.timestamped(corrected)
         }
     }
 
