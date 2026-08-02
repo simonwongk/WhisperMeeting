@@ -205,66 +205,6 @@ known report; assert `store.meeting(id:)?.healthReport`). The advisory is SwiftU
 — manual: `Scripts/build-app.sh`, record with system audio muted so `.systemAudioNotDetected` fires,
 stop, open the meeting, confirm the advisory appears (and none for a clean recording).
 
-### F80 — Render the menu-bar recording controls from the tested presentation core (delivers F62)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `MenuBarRecording.make(...) -> MenuBarRecordingPresentation`
-(`Sources/WhisperCore/MenuBarRecording.swift:17-48`; `MenuBarRecordingTests.swift`) is never rendered.
-The only `MenuBarExtra` scene (`Sources/WhisperMeet/AppEntry.swift:30-32`) renders `DictationMenu`
-(`:51-63`) — Quick Dictation toggle, Settings, Quit only. No file under `Sources/WhisperMeet`
-references `MenuBarRecording`, so the promised menu-bar recording controls do not exist.
-
-**Impact.** With the main window minimized, a user cannot start/stop a recording, drop a marker, or
-see live "Recording MM:SS" from the menu bar. No data is at risk (recording stays controllable from
-the main window); the menu-bar convenience/awareness surface is simply absent. This is the **preferred**
-background-awareness surface — see F89 (the HUD overlap), which is subordinate to this.
-
-**Proposed fix.** In `AppEntry.swift`, pass `model` into the menu-bar view and drive it from
-`MenuBarRecording.make(...)` (derive `isRecording`/`isStopping`/`elapsedSeconds` from
-`AppModel.recordingState`; pass `isMicrophoneBusy` `:203`, `hasActiveTranscription` `:218`). Map the
-presentation's enablement/titles to `startRecording()` `:411`, `stopRecording(title:)` `:472`,
-`addLiveMarker()` `:551`, and `cancelRecording()` `:537` behind confirmation. Keep the dictation items
-below a Divider. No core change.
-
-**Verification.** Decision logic already covered by `MenuBarRecordingTests`. Scene wiring is SwiftUI
-with no harness in `WhisperMeetTests` — manual: `Scripts/build-app.sh`; hide the main window; confirm
-the menu shows "Not recording" (Start enabled, others disabled); Start → status ticks and actions
-enable; Add Marker drops a marker; Cancel prompts; Stop & Transcribe finalizes. Cross-check the
-menu-bar state agrees with the main window.
-
-### F85 — Wire the command catalog into a Commands menu + Keyboard Shortcuts sheet (delivers F69)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `CommandCatalog` (`Sources/WhisperCore/CommandCatalog.swift:62,76`; `CommandCatalogTests.swift`)
-— ⌘R toggle, ⇧⌘M Add Marker, Cancel Recording…, ⌘/ Shortcuts — is never referenced. The App scene
-(`Sources/WhisperMeet/AppEntry.swift:9-39`) has no `.commands { }` and there is no shortcuts sheet.
-
-**Impact.** No Commands menu and no app-wide shortcuts: no ⌘R start/stop, no ⌘/ help sheet, Cancel has
-no menu presence; ⇧⌘M works only via a local button (`ContentView.swift:424`). The single tested source
-of shortcut truth cannot prevent collisions because nothing consumes it.
-
-**Proposed fix.** Add `.commands { }` to the `WindowGroup` building a `CommandMenu` from
-`CommandCatalog.all`: derive each `.keyboardShortcut` from `keyEquivalent` + a `CommandModifiers`
-mapping and `.disabled(!enablement.isEnabled(state))` from an observable `AppCommandState`. Route ids
-to existing actions (`startRecording`/`stopRecording` `:411/:472`, `addLiveMarker` `:551`,
-`cancelRecording` `:537`), and add a `KeyboardShortcutsView` sheet rendering `displayShortcut(for:)`.
-Reconcile the hand-wired ⇧⌘M (`ContentView.swift:424`) so it is not double-registered.
-
-**Verification.** `CommandCatalogTests` stays green; no `.commands{}`/sheet harness exists — do not
-fake a view test. Manual: confirm a Recording menu with ⌘R and ⇧⌘M (enabled only while recording),
-Help ▸ Keyboard Shortcuts (⌘/) lists every entry with its shortcut, ⌘R toggles recording, and no
-"ambiguous shortcut" console warning.
-
 ### F88 — Wire the "Second opinion" cross-engine comparison (delivers F73)
 
 - **Status:** open
@@ -294,32 +234,6 @@ spans in a `ContentView` sheet with per-span replace/keep. Both engines only rea
 stored transcript and that the single-run guard rejects a concurrent normal transcription. Sheet is
 SwiftUI (manual): transcribe with Whisper, "Second opinion", confirm the span sheet, that replace/keep
 applies only on confirm, and keeping leaves the transcript byte-for-byte unchanged.
-
-### F89 — Build the compact recording HUD overlay (delivers F74; subordinate to F80)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `RecordingHUD.make(...) -> RecordingHUDState`
-(`Sources/WhisperCore/RecordingHUD.swift:19`; `RecordingHUDTests.swift`) has zero callers in
-`Sources/WhisperMeet`. No `NonActivatingPanel`-based overlay renders it.
-
-**Impact.** A backgrounded meeting shows no compact always-on HUD (elapsed, status, most-severe
-warning). **Overlaps F80** (menu-bar controls): both are background-awareness surfaces. Per F74's own
-warning, **if only one is funded, F80 (menu bar) wins** and this should be closed `wontfix`. Kept a
-notch below F80 for that reason.
-
-**Proposed fix.** Add a `NonActivatingPanel`-based overlay (mirroring
-`Sources/WhisperMeet/Dictation/DictationOverlay.swift`) driven by `RecordingHUD.make(...)`, gated on
-`shouldPresent` (recording AND backgrounded). Display-only; reads state, never mutates audio.
-
-**Verification.** State core covered by `RecordingHUDTests`. Overlay is SwiftUI/`NonActivatingPanel`
-with no harness — manual: start recording, background the app, confirm the HUD shows elapsed time and
-the most-severe warning, and disappears on foreground/stop. First re-confirm F80 is not the chosen
-single surface.
 
 ### F90 — Add the BackupCoordinator + Settings "Back up library…" action (delivers F75)
 

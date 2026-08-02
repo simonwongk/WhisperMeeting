@@ -14,6 +14,79 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F80 — Menu-bar recording controls rendered from the tested presentation core (delivers F62)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the `MenuBarExtra` scene (`AppEntry.swift`) now hosts `RecordingMenu(model:dictation:)`,
+  which renders `MenuBarRecording.make(isRecording:isStopping:elapsedSeconds:isMicrophoneBusy:hasActiveTranscription:)`
+  and maps its enablement/titles to `AppModel.startRecording()` / `stopRecording(title:)` / `addLiveMarker()`
+  / `cancelRecording()`. User surface: the menu-bar icon.
+
+**Root cause.** F62's `MenuBarRecording` presentation was tested but unrendered; the `MenuBarExtra` showed
+only `DictationMenu` (dictation toggle, Settings, Quit). With the window hidden there was no way to
+start/stop, drop a marker, or see "Recording MM:SS".
+
+**Fix (layer 3).** New `RecordingMenu` view drives the tested presentation: a disabled status line, and
+Start / Stop & Transcribe / Add Marker buttons gated by the presentation's `*Enabled` flags; Cancel behind
+a two-step submenu (`cancelNeedsConfirmation`); the dictation + app items kept below a divider.
+`DictationMenu` folded in and removed. No core change.
+
+**Evidence.** Decision logic covered by `MenuBarRecordingTests` (WhisperCore). Full gate green (270 tests),
+release build clean.
+
+**Gaps.** **Not planned:** a GUI test of the menu scene (no view-render harness). Live "MM:SS" ticking
+inside an open NSMenu is a known macOS limitation — the elapsed time is accurate as of menu open. Manual:
+hide the window; confirm "Not recording" (Start enabled, rest disabled) → Start enables actions → Add
+Marker → Cancel prompts → Stop & Transcribe finalizes; cross-check the main window.
+
+---
+
+## F85 — Command catalog wired into a Commands menu + Keyboard Shortcuts sheet (delivers F69)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** the `WindowGroup`'s `.commands { RecordingCommands(model:) }` (`AppEntry.swift`) builds
+  a Recording `CommandMenu` + a Help ▸ Keyboard Shortcuts item from `CommandCatalog.all`, routing ids to
+  `AppModel.startRecording`/`stopRecording`/`addLiveMarker`/`cancelRecording` and toggling
+  `showsShortcutsSheet`; `ContentView` presents `KeyboardShortcutsView` on that flag.
+
+**Root cause.** F69's `CommandCatalog` was tested but unconsumed: no `.commands {}`, no ⌘R/⌘/, and ⇧⌘M
+existed only as a local button binding — so the single source of shortcut truth couldn't prevent
+collisions.
+
+**Fix (layer 3).** `RecordingCommands: Commands` reads live enablement via an `AppCommandState` computed
+from the observed model; each item derives `.keyboardShortcut` from `keyEquivalent` + a
+`CommandModifiers`→`EventModifiers` map and `.disabled` from `enablement.isEnabled(state)`. Added
+`AppModel.showsShortcutsSheet` + a `KeyboardShortcutsView` rendering `displayShortcut(for:)`. Reconciled
+the collision by removing the marker button's hand-wired ⇧⌘M (`ContentView.swift`) so the shortcut is
+owned solely by the menu.
+
+**Evidence.** Value logic covered by `CommandCatalogTests` (WhisperCore). Full gate green (270 tests),
+release build clean.
+
+**Gaps.** **Not planned:** a GUI test of the `.commands` scene / sheet (no harness). Manual: Recording menu
+shows ⌘R and ⇧⌘M (enabled only while recording); Help ▸ Keyboard Shortcuts (⌘/) lists every entry; ⌘R
+toggles; no "ambiguous shortcut" console warning (proves the ⇧⌘M reconciliation).
+
+---
+
+## F89 — Compact recording HUD overlay (delivers F74; subordinate to F80)
+
+- **Outcome:** wontfix
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+
+**Decision.** F89 and F80 are both background-awareness surfaces; F74/F89 state up front that if only one
+is funded, **F80 (the menu bar) wins and F89 closes `wontfix`.** F80 shipped this session — the menu-bar
+menu now shows live "Recording MM:SS", the most-severe state, and full controls, always reachable without
+the main window. A second always-on `NonActivatingPanel` overlay would duplicate that surface for marginal
+gain while adding a floating window + an app-active tracker. Closing `wontfix` per the ticket's own rule.
+
+**Gaps.** The tested `RecordingHUD` core (`RecordingHUD.make`/`shouldPresent`, `RecordingHUDTests`) remains
+in WhisperCore, unused — harmless, and available if a future HUD surface is ever funded.
+
+---
+
 ## F81 — Summary-style picker wired into the summary UI and AppModel.summarize (delivers F63)
 
 - **Outcome:** fixed

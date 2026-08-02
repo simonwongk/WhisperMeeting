@@ -114,6 +114,8 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(selectedLanguage.rawValue, forKey: Self.languageKey) }
     }
     @Published var alertMessage: String?
+    /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
+    @Published var showsShortcutsSheet = false
 
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()

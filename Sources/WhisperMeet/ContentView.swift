@@ -111,6 +111,7 @@ struct ContentView: View {
         // renders inside the sidebar and scrolls beneath the window controls (observed live,
         // F126); at this level it lands in the window toolbar like Finder/Mail.
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
+        .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
             "WhisperMeet",
             isPresented: Binding(
@@ -507,7 +508,8 @@ private struct RecordMeetingView: View {
                     .frame(minWidth: 150)
             }
             .buttonStyle(.bordered)
-            .keyboardShortcut("m", modifiers: [.command, .shift])
+            // ⇧⌘M is owned by the Recording command menu (F85) — a second registration here would
+            // make it an ambiguous shortcut. The button remains; only its duplicate binding is removed.
             .help("Flag this moment (⇧⌘M). Markers are timestamps only — they never change the recording.")
             Text(model.pendingMarkers.isEmpty
                 ? "No markers yet — press ⇧⌘M to flag an important moment."
