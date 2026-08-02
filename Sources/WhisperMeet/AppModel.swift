@@ -510,7 +510,8 @@ final class AppModel: ObservableObject {
                 title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
                 duration: artifact.duration,
                 recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL),
-                markers: pendingMarkers.isEmpty ? nil : pendingMarkers
+                markers: pendingMarkers.isEmpty ? nil : pendingMarkers,
+                healthReport: artifact.healthReport
             )
             store.upsert(meeting)
             pendingMarkers = []

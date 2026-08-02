@@ -11,6 +11,9 @@ struct RecordingArtifact: Sendable {
     let systemTrackURL: URL
     let microphoneTrackURL: URL
     let duration: TimeInterval
+    /// The capture's health rollup (nil when no monitor ran, e.g. an injected test capture). Surfaced
+    /// on the meeting as a channel-level advisory (F79).
+    let healthReport: RecordingHealthReport?
 }
 
 enum AudioCaptureError: LocalizedError {
@@ -255,11 +258,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             sampleRate: Self.targetSampleRate,
             to: directory.appendingPathComponent("source-tracks.json")
         )
+        // Capture the health rollup before `reset()` (deferred) nils the monitor.
         let artifact = RecordingArtifact(
             mixedRecordingURL: mixedURL,
             systemTrackURL: systemTrack.url,
             microphoneTrackURL: microphoneTrack.url,
-            duration: duration
+            duration: duration,
+            healthReport: healthMonitor?.report()
         )
         return artifact
     }

@@ -172,39 +172,6 @@ are the deferred user-facing halves of the F55–F77 feature batch, filed under 
 definition-of-done rule; the source log entry cross-references each. (Remove this header when its
 last ticket closes.)
 
-### F79 — Wire the recording-health report into stop → store → meeting detail (delivers F58)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** meetings
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** F58 shipped and tested `RecordingHealthReport` + `RecordingHealthMonitor.report()`
-(`Sources/WhisperCore/RecordingHealthMonitor.swift:87,211`; `RecordingHealthReportTests.swift`), but
-nothing calls it. `AudioCaptureEngine.stop()` (`Sources/WhisperMeet/AudioCaptureEngine.swift:200-265`)
-never calls `report()` and `RecordingArtifact` has no health field, so the fold is discarded before
-`defer { reset() }` (`:205`) nils the monitor; `AppModel.stopRecording` (`AppModel.swift:480-487`)
-builds the `MeetingRecord` without a `healthReport`, so `MeetingRecord.healthReport`
-(`MeetingStore.swift:63`) is always nil; `MeetingDetailView.body` (`ContentView.swift:1467-1484`)
-never reads it.
-
-**Impact.** A meeting that recorded badly (no system audio, long mic stalls, clipping) shows no
-explanation, so the user blames the model for a capture problem. The trust diagnostic F58 built is
-invisible in the running app.
-
-**Proposed fix.** Add `healthReport: RecordingHealthReport?` to `RecordingArtifact`; capture
-`healthMonitor?.report()` in `stop()` before the deferred reset and carry it into the artifact
-(~`:258`); pass `artifact.healthReport` into the `MeetingRecord` init (`AppModel.swift:480`); render a
-one-line, channel-level advisory in `MeetingDetailView` after `statusCard` (`ContentView.swift:1472`)
-when `worstStatus != .good`. Advisory-only; never speaker identity.
-
-**Verification.** Core fold already covered by `RecordingHealthReportTests`. The persistence hop is
-headless-testable in `WhisperMeetTests` (inject a recorder whose `stop()` returns an artifact with a
-known report; assert `store.meeting(id:)?.healthReport`). The advisory is SwiftUI with no view harness
-— manual: `Scripts/build-app.sh`, record with system audio muted so `.systemAudioNotDetected` fires,
-stop, open the meeting, confirm the advisory appears (and none for a clean recording).
-
 ### F88 — Wire the "Second opinion" cross-engine comparison (delivers F73)
 
 - **Status:** open
@@ -264,37 +231,6 @@ source/dest dirs: unchanged→skip, changed/new→copy, each copy verifies, sour
 retention drops only oldest dest generations. Settings button/`NSOpenPanel` have no harness — manual:
 "Back up library…", pick an empty folder, confirm files appear; run again, confirm unchanged files
 skip; confirm the source Recordings/ folder is byte-for-byte unchanged.
-
-### F91 — Add the EventKit bridge so calendar titles pre-fill (delivers F76)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** meetings
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `CalendarTitleMatcher.bestTitle(...)` over `CalendarEventSummary`
-(`Sources/WhisperCore/CalendarTitleMatcher.swift:17,5`; `CalendarTitleMatcherTests.swift`) has no
-caller. `AppModel.stopRecording(title:)` titles from the user field or a timestamp fallback
-(`AppModel.swift:478-482`) and captures the start (`:459`) but never queries the calendar; there is no
-EventKit bridge mapping `EKEvent` → `[CalendarEventSummary]`.
-
-**Impact.** Users get a generic timestamp title even when the recording clearly matches a known
-scheduled event. Convenience only — the auto-title fallback keeps working — so this is a **deliberately
-deferred** item: adding EventKit is a new dependency and a privacy-sensitive Calendar permission (an
-explicit product choice), which is why it is severity-low and gated on an opt-in.
-
-**Proposed fix.** Add `Sources/WhisperMeet/CalendarTitleProvider.swift`: lazily authorize Calendar
-access, fetch events around the recording start, map to `CalendarEventSummary`, and call
-`bestTitle(forRecordingStartedAt: <startedAt at AppModel.swift:459>, in:, tolerance: ~15min)` to
-pre-fill the title. Gate behind an **opt-in Settings toggle (default off)**; add
-`NSCalendarsUsageDescription`. On denied/no-match, silently keep the timestamp title.
-
-**Verification.** Matcher covered by `CalendarTitleMatcherTests`. EventKit needs live permission and
-`WhisperMeetTests` has no seam for it — manual: with the toggle ON and access granted, create an event
-spanning "now", record, confirm the title pre-fills; with no nearby event, confirm timestamp fallback;
-deny access, confirm recording still starts and titles fall back with no error. Optionally inject a
-fake provider seam for a headless pre-fill test.
 
 ### F92 — Wire per-segment re-run into the transcript segment menu (delivers F77)
 

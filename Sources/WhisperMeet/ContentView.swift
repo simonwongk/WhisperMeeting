@@ -1672,6 +1672,14 @@ private struct TranscriptDetailView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     header(meeting)
                     statusCard(meeting)
+                    if let advisory = meeting.healthReport.flatMap(RecordingHealthAdvisory.message) {
+                        Label(advisory, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.yellow.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
                     tagsEditor
                     notesSection
 

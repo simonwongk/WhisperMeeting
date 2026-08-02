@@ -14,6 +14,60 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F79 — Recording-health report wired into stop → store → meeting detail (delivers F58)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** `AudioCaptureEngine.stop()` captures `healthMonitor?.report()` into
+  `RecordingArtifact.healthReport`; `AppModel.stopRecording` passes it into the `MeetingRecord` init;
+  `MeetingDetailView.body` renders a one-line advisory after `statusCard` when
+  `RecordingHealthAdvisory.message(for:)` returns non-nil. User surface: the meeting detail after any
+  recording.
+
+**Root cause.** F58's `RecordingHealthReport` / `RecordingHealthMonitor.report()` were tested but never
+called: `stop()` discarded the fold (no health field on the artifact; `defer { reset() }` nils the
+monitor), `stopRecording` built the meeting without a `healthReport`, and the detail view never read it.
+So a badly-captured meeting (no system audio, mic stalls, clipping) showed no explanation.
+
+**Fix.**
+- WhisperCore: added `RecordingHealthAdvisory.message(for:)` — a pure, channel-level advisory string
+  (nil when healthy), never speaker identity.
+- Capture: `RecordingArtifact` gains `healthReport`, populated from `healthMonitor?.report()` in `stop()`
+  before the deferred reset — a field addition, not a change to the finalization control flow.
+- Persistence: `stopRecording` passes `artifact.healthReport` into `MeetingRecord`.
+- Detail: an advisory `Label` after `statusCard`, shown only when the helper returns a message.
+
+**Evidence.** Red-green on the new advisory logic (`RecordingHealthAdvisoryTests.swift`): a healthy
+report → nil; an at-risk `.systemAudioNotDetected` report → a message naming the system-audio channel.
+Failed before ("cannot find 'RecordingHealthAdvisory'"), passes after. The report fold itself is covered
+by `RecordingHealthReportTests`. Full gate green (271 tests).
+
+**Gaps.** The capture→meeting field-passing is verified by compile + the existing `stop()` / report
+tests rather than a new end-to-end drive: `AppModel.startRecording` bails on microphone/storage preflight
+in a headless test and `activeMeetingID` has a private setter, so a full record→stop cycle is **not**
+headlessly drivable without a test-only seam in the safety-critical `stop()` path — deliberately not
+added. **Not planned:** a GUI test of the advisory (no view harness). Manual: record with system audio
+muted so `.systemAudioNotDetected` fires, stop, open the meeting, confirm the advisory appears and is
+absent for a clean recording.
+
+---
+
+## F91 — EventKit bridge for calendar-title pre-fill (delivers F76)
+
+- **Outcome:** wontfix
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8) / Simon
+
+**Decision.** Simon declined this feature: pre-filling meeting titles from the calendar would require
+adding the EventKit framework and a privacy-sensitive macOS **Calendar permission** (even gated behind
+an opt-in, default-off toggle). The timestamp / user-typed title fallback is entirely adequate, and the
+app's value is local-only capture — a new personal-data permission is not worth the convenience.
+Closing `wontfix` per that product call.
+
+**Gaps.** The tested `CalendarTitleMatcher` core (`CalendarTitleMatcherTests`) stays in WhisperCore,
+unused and framework-free — harmless, and available if the decision is ever revisited.
+
+---
+
 ## F80 — Menu-bar recording controls rendered from the tested presentation core (delivers F62)
 
 - **Outcome:** fixed
