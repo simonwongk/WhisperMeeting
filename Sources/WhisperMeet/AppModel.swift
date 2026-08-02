@@ -259,6 +259,27 @@ final class AppModel: ObservableObject {
     /// testable without the Claude network call; defaults to the real `ClaudeSummarizer` (F81).
     var makeSummarizer: @Sendable (String) -> MeetingSummarizer = { ClaudeSummarizer(apiKey: $0) }
 
+    /// Backs the library up to a destination as a verified generation snapshot. Injectable so the
+    /// Settings wiring is testable without touching a real disk destination; defaults to the real
+    /// `BackupCoordinator` (F90). `now` is the generation stamp (epoch seconds).
+    var runLibraryBackup: @Sendable (_ source: URL, _ destination: URL, _ now: Int, _ retain: Int) throws -> BackupSummary = {
+        try BackupCoordinator.backUp(source: $0, destination: $1, now: $2, retain: $3)
+    }
+    /// Newest N backup generations to keep at the destination (Settings-controlled, F90).
+    @Published var backupRetention = 5
+
+    /// Copy the whole library to a chosen backup folder as a new verified snapshot. Read-only on the
+    /// source; surfaces success or the failure reason through `alertMessage` (F90).
+    func backUpLibrary(to destination: URL, now: Int = Int(Date().timeIntervalSince1970)) {
+        do {
+            let summary = try runLibraryBackup(store.rootDirectory, destination, now, backupRetention)
+            alertMessage = "Library backed up: \(summary.copied) file(s) copied, \(summary.skipped) unchanged."
+                + (summary.prunedGenerations.isEmpty ? "" : " Removed \(summary.prunedGenerations.count) old backup(s).")
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true

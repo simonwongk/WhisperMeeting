@@ -14,6 +14,44 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F90 — BackupCoordinator + Settings "Back up library…" wired in (delivers F75)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** Settings → **Meeting library** → "Back up library…" (`ContentView.backUpLibrary()`,
+  `NSOpenPanel`) → `AppModel.backUpLibrary(to:)` → the injectable `runLibraryBackup` seam →
+  `BackupCoordinator.backUp` → `BackupPlan.compute` / `BackupVerification` / `BackupRetention.prune`. A
+  retention `Picker` (Keep 3/5/10/20) binds `AppModel.backupRetention`.
+
+**Root cause.** F75's `BackupPlan` / `BackupRetention` / `BackupVerification` were tested but had no
+caller — no `BackupCoordinator`, no Settings action. A user could not back the library up in-app, so a
+disk failure would lose the recordings (the declared source of truth) with no built-in escape hatch.
+
+**Fix (three layers).**
+- Layer 1 (WhisperCore, unchanged): the tested `BackupPlan` core.
+- New `BackupCoordinator` (WhisperMeet, `import CryptoKit` for SHA-256): enumerates the library into
+  `[BackupFile]` (relative path, size, hash), computes the plan against the most recent existing
+  generation, writes a new timestamped generation directory — a changed/new file is **copied and
+  hash-verified**, an unchanged file is **hardlinked** from the previous generation (no bytes re-copied,
+  yet each generation is a complete snapshot) — checks free space before copying, then prunes old
+  generations via `BackupRetention.prune(.keepLatest(retain))`. The source is only ever read.
+- Layer 2 (AppModel, tested): `backUpLibrary(to:)` behind an injectable `runLibraryBackup` seam;
+  surfaces the copied/skipped/pruned summary through `alertMessage`.
+- Layer 3 (ContentView): the "Back up library…" button (`NSOpenPanel`, directories) + retention picker.
+
+**Evidence.** Red-green: `BackupCoordinatorTests` — (1) coordinator over real temp dirs: gen 1 copies +
+verifies all; after changing one file and adding one, gen 2 skips the unchanged (hardlinked) and
+copies/verifies the changed+new, and the snapshot is complete; gen 3 with retain 2 prunes exactly the
+oldest; the source library is byte-for-byte unchanged throughout. (2) AppModel seam test: `backUpLibrary`
+passes the store's real root + the Settings retention through to the coordinator and reports the summary.
+Failed before ("cannot find 'BackupCoordinator'"), pass after. Full gate green.
+
+**Gaps.** **Not planned:** a GUI test of the button/`NSOpenPanel` (no view harness). Manual: "Back up
+library…", pick an empty folder, confirm a dated snapshot appears; run again with no change, confirm
+files skip; confirm the source `Recordings/` is byte-for-byte unchanged.
+
+---
+
 ## F121 — Bounded watchdog around the serial test step: the helper hang is now diagnosed, not silent
 
 - **Outcome:** fixed

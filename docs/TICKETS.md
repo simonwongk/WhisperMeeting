@@ -121,36 +121,6 @@ stored transcript and that the single-run guard rejects a concurrent normal tran
 SwiftUI (manual): transcribe with Whisper, "Second opinion", confirm the span sheet, that replace/keep
 applies only on confirm, and keeping leaves the transcript byte-for-byte unchanged.
 
-### F90 — Add the BackupCoordinator + Settings "Back up library…" action (delivers F75)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** recovery
-- **Filed:** 2026-07-31 by Claude Code (Opus 4.8)
-
-**Problem.** `BackupPlan.compute` / `BackupRetention.prune` / `BackupVerification.succeeded`
-(`Sources/WhisperCore/BackupPlan.swift:28,57,71`; `BackupPlanTests.swift`) have no wiring. There is no
-`BackupCoordinator` in the tree and `SettingsView` (`ContentView.swift:1049`) has no backup action.
-The source root already exists (`MeetingStore.rootDirectory`, `MeetingStore.swift:131`).
-
-**Impact.** Users cannot back up recordings/indexes to a chosen folder from the app. The hash-verified,
-retention-aware capability ships as dead code; if the primary disk fails, the recordings — the declared
-source of truth — are lost with no in-app backup, undercutting the "be trusted" premise.
-
-**Proposed fix.** Add `Sources/WhisperMeet/BackupCoordinator.swift`: enumerate `rootDirectory` into
-`[BackupFile]` (path, size, SHA-256), read destination descriptors, `BackupPlan.compute`, copy `.copy`
-items in `Task.detached` with a pre-copy free-space check, verify each via `BackupVerification`, and
-`BackupRetention.prune` old destination generations. Add a "Back up library…" button + retention picker
-to `SettingsView` (`NSOpenPanel`, `canChooseDirectories`). Only copy from the source; never modify/delete
-it.
-
-**Verification.** The coordinator is headless-testable in `WhisperMeetTests` with injected temp
-source/dest dirs: unchanged→skip, changed/new→copy, each copy verifies, source bytes untouched,
-retention drops only oldest dest generations. Settings button/`NSOpenPanel` have no harness — manual:
-"Back up library…", pick an empty folder, confirm files appear; run again, confirm unchanged files
-skip; confirm the source Recordings/ folder is byte-for-byte unchanged.
-
 ### F92 — Wire per-segment re-run into the transcript segment menu (delivers F77)
 
 - **Status:** open

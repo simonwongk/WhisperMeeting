@@ -1299,6 +1299,20 @@ struct SettingsView: View {
                 Text("Writes a support file with only structural details — meeting counts, durations, statuses, byte sizes, and any error messages. It never includes transcript text, summaries, vocabulary terms, or file paths.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Label("Back up recordings and indexes to a folder", systemImage: "externaldrive.badge.timemachine")
+                    Spacer()
+                    Picker("Keep", selection: $model.backupRetention) {
+                        ForEach([3, 5, 10, 20], id: \.self) { Text("Keep \($0)").tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    Button("Back up library…") { backUpLibrary() }
+                        .buttonStyle(.bordered)
+                }
+                Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(header: Label("Transcription", systemImage: "captions.bubble")) {
@@ -1429,6 +1443,17 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? Data(model.diagnosticsJSON().utf8).write(to: url)
+    }
+
+    private func backUpLibrary() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Back Up Here"
+        panel.message = "Choose a folder to back up your WhisperMeet library into."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.backUpLibrary(to: url)
     }
 
     private func toggleKeyCapture() {
