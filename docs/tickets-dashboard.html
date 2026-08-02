@@ -45,14 +45,13 @@
 <body>
 <main>
 <h1>WhisperMeet Ticket Board</h1>
-<p class="sub">7 active — 5 open · 1 blocked · 1 needs human</p>
+<p class="sub">6 active — 4 open · 1 blocked · 1 needs human</p>
 <p class="sub">Generated August 1, 2026 from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
 <table>
 <thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
 <tbody>
 <tr><td class="id">F90</td><td><div class="title">Add the BackupCoordinator + Settings "Back up library…" action</div><div class="summary">BackupPlan.compute / BackupRetention.prune / BackupVerification.succeeded (Sources/WhisperCore/BackupPlan.swift:28,57,71; BackupPlanTests.swift) have no wiring.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">recovery</td><td class="hide-sm muted">Unowned · Delivers F75</td></tr>
 <tr><td class="id">F101</td><td><div class="title">Qwen helper must emit per-chunk progress so a meeting run can show a determinate bar</div><div class="summary">F31 needs a determinate progress bar for a long Qwen meeting, but the Qwen helper emits no progress signal to parse.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F121</td><td><div class="title">Serial quality gate can still hang inside the Swift test helper</div><div class="summary">The first post-F120 Scripts/quality-check.sh run completed its build and started the serial Swift suite, then stopped emitting output for more than a minute.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">build</td><td class="hide-sm muted">Unowned · —</td></tr>
 <tr><td class="id">F31</td><td><div class="title">Qwen meeting transcription reports no progress or ETA</div><div class="summary">QwenASRClient.transcribe (Sources/WhisperCore/QwenASRClient.swift:117-118) emits only .preparing / .loadingModel and never .transcribing with a fraction, and its run(...) (:174) reads the subprocess o…</div></td><td><span class="badge st-blocked">blocked</span></td><td><span class="badge sev-medium">medium</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · Blocked by F101</td></tr>
 <tr><td class="id">F88</td><td><div class="title">Wire the "Second opinion" cross-engine comparison</div><div class="summary">TranscriptComparison.compare(_:_:) (Sources/WhisperCore/TranscriptComparison.swift:26; TranscriptComparisonTests.swift) has no callers — grep TranscriptComparison Sources/WhisperMeet is empty.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
 <tr><td class="id">F92</td><td><div class="title">Wire per-segment re-run into the transcript segment menu</div><div class="summary">SegmentAudioRange.byteRange + TranscriptSegmentSplice.splice (Sources/WhisperCore/SegmentRerun.swift:10,20; SegmentRerunTests.swift) have no callers.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · F30 resolved</td></tr>
@@ -61,6 +60,7 @@
 </table>
 <h2>Recently closed</h2>
 <ul class="recent">
+<li><span class="id">F121</span>Bounded watchdog around the serial test step: the helper hang is n… <em>— fixed</em></li>
 <li><span class="id">F118</span>Qwen decode-first: imported mp4/mov/aiff/caf now transcribe (no tr… <em>— fixed</em></li>
 <li><span class="id">F79</span>Recording-health report wired into stop → store → meeting detail <em>— fixed</em></li>
 <li><span class="id">F91</span>EventKit bridge for calendar-title pre-fill <em>— wontfix</em></li>
@@ -68,7 +68,6 @@
 <li><span class="id">F85</span>Command catalog wired into a Commands menu + Keyboard Shortcuts sh… <em>— fixed</em></li>
 <li><span class="id">F89</span>Compact recording HUD overlay <em>— wontfix</em></li>
 <li><span class="id">F81</span>Summary-style picker wired into the summary UI and AppModel.summar… <em>— fixed</em></li>
-<li><span class="id">F82</span>Glossary-correction review sheet + call site wired in <em>— fixed</em></li>
 </ul>
 </main>
 </body>

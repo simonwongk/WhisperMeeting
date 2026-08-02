@@ -12,32 +12,6 @@ Read them before touching this file.** This file holds **open** work only; close
 
 # Open tickets
 
-### F121 — Serial quality gate can still hang inside the Swift test helper
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** build
-- **Filed:** 2026-07-31 by Codex /root (new-build review)
-
-**Problem.** The first post-F120 `Scripts/quality-check.sh` run completed its build and started the
-serial Swift suite, then stopped emitting output for more than a minute. Process inspection showed
-only `swiftpm-testing-helper --no-parallel` alive, with no child test subprocess. Interrupting that
-run left no helper processes; an immediate identical gate retry completed all 259 tests in 5.429 s.
-This is a fresh recurrence after F115 claimed the constrained-runner hang class fixed.
-
-**Impact.** A nondeterministic local/CI hang can withhold the quality signal and waste the full job
-timeout even though the candidate is healthy. It also weakens F115's claim that serial execution
-removed the whole class of subprocess-wait contention.
-
-**Proposed fix.** Reproduce with per-test timing/last-started-test capture around the serial gate;
-identify whether the Swift testing helper, an async teardown, or a subprocess test remains live.
-Keep a bounded watchdog around CI test execution so a recurrence produces diagnostics rather than a
-silent 40-minute timeout. Do not weaken or skip tests.
-
-**Verification.** Repeated serial full-suite runs complete under a bounded timeout and a deliberately
-wedged fixture produces the diagnostic/timeout path. Capture the last-started test when reproducing.
-
 ### F31 — Qwen meeting transcription reports no progress or ETA
 
 - **Status:** blocked

@@ -14,6 +14,45 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F121 — Bounded watchdog around the serial test step: the helper hang is now diagnosed, not silent
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** n/a — build-infrastructure fix in `Scripts/quality-check.sh` (the CI/local quality
+  gate). The surface restored is a trustworthy quality signal: step [2/4] can no longer stall silently
+  to the job cap.
+
+**Scope — honest framing.** The proposed fix is explicitly *"keep a bounded watchdog around CI test
+execution so a recurrence produces diagnostics rather than a silent 40-minute timeout"* — **not**
+elimination of the hang. This delivers exactly that. The residual hang's root cause — `QwenASRClient.run`
+blocking a cooperative thread on `readDataToEndOfFile` instead of streaming (named in F115's Gaps) — is
+**not** fixed here; it is owned by **F101**'s streaming rewrite of that method. So this close bounds and
+surfaces the hang; it does not claim to remove it (correcting the pattern F115/F122 flagged).
+
+**Fix.** Step [2/4] now runs `swift test` in the background under a bounded watchdog
+(`WHISPERMEET_TEST_TIMEOUT`, default 600 s — vast headroom over the ~6 s real run). On breach it: prints
+the **last-started test** (`grep '◇ Test ' | tail -1`), `sample`s the wedged `swiftpm-testing-helper` so
+the stall is diagnosable, SIGKILLs the helper **and** the `swift test` process (killing `swift test`
+alone can orphan its helper child — so both are killed), dumps the captured test log, and exits 1. Tests
+are neither weakened nor skipped.
+
+**Evidence.**
+- **Real recurrence captured this session:** two serial gate runs wedged with `swiftpm-testing-helper`
+  alive and no child test process, both at the same last-started test — `"Cancelling transcription
+  terminates the local whisper process"` — a concrete data point for the residual-hang locus (F101).
+- **Trip path** (isolated self-test, 4 s bound vs a 60 s hang): watchdog fires, names that exact test,
+  reaches the sample+kill step, leaves no orphan, exits 1. This also caught a real bug pre-commit — a
+  no-match `pgrep` under `set -euo pipefail` aborted the watchdog before the kill; fixed with `|| true`.
+- **Normal path:** full gate green, 272 tests in 6.8 s — far under the bound, no false-trip.
+
+**Gaps.** Eliminating the hang's root cause (streaming `QwenASRClient.run`) is tracked under **F101**;
+until then the watchdog bounds it. **Not planned:** an automated Swift test of a shell watchdog — it is
+verified by the self-test + real-gate runs above, following the F131 build-infra precedent (command-output
+evidence, not a unit test). Live test output now buffers and prints after the step rather than streaming
+during it (a consequence of capturing the log for diagnostics); full output is preserved.
+
+---
+
 ## F118 — Qwen decode-first: imported mp4/mov/aiff/caf now transcribe (no traceback on undecodable)
 
 - **Outcome:** fixed
