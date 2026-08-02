@@ -14,6 +14,48 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F118 — Qwen decode-first: imported mp4/mov/aiff/caf now transcribe (no traceback on undecodable)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-01 by Claude Code (Opus 4.8)
+- **Reachability:** import → select Qwen → `AppModel.performTranscription` → `QwenASRClient.transcribe`,
+  which now transcodes any container mlx-audio can't natively read into a 16 kHz mono WAV
+  (`AudioTranscoder.transcodeToWAV`, `afconvert`) in the per-run temp dir before invoking the helper.
+
+**Root cause.** mlx-audio's `load_audio` routes .m4a/.aac to ffmpeg and everything else to miniaudio,
+which decodes only wav/flac/mp3/ogg — so imported .mp4/.mov/.aiff/.caf failed deterministically with
+`miniaudio.DecodeError: unsupported file format`. The classifier/no-traceback slice landed earlier
+(0eb1a48); the decode-first conversion — the piece that makes these formats actually work — was absent.
+
+**Fix (decode-first, per Simon's decided direction).** New `AudioTranscoder` (WhisperCore): `afconvert
+-f WAVE -d LEI16@16000 -c 1` (the proven bench recipe, no ffmpeg). `QwenASRClient.transcribe` transcodes
+`fileURL` to a temp `decoded.wav` when `needsTranscoding` (extension outside wav/flac/mp3/ogg/m4a/aac)
+and feeds the engine that; the original recording is never touched. If afconvert can't decode it either
+(e.g. a video-only .mov), the thrown error carries "unsupported file format", which the existing
+`TranscriptionFailureClassifier` maps to switch-engine guidance — no raw traceback.
+
+**Evidence.**
+- Red-green unit (`AudioTranscoderTests`): afconvert an `.aiff` (miniaudio can't read it) → the transcoder
+  produces a 16 kHz **mono** WAV (fmt chunk asserts channels=1, rate=16000). Failed before ("cannot find
+  'AudioTranscoder'"), passes after.
+- Real runtime against the **installed** mlx-audio 0.3.1:
+
+```text
+$ load_audio(en2.aiff)                                  → miniaudio.DecodeError: unsupported file format
+$ afconvert en2.aiff → decoded.wav (16k mono); load_audio(decoded.wav) → LOADED (49110,)
+```
+
+- The undecodable → switch-engine mapping is covered by `TranscriptionFailureClassifierTests`.
+- Full gate green (272 tests).
+
+**Gaps.** **Not planned:** video-only `.mov` where even AudioToolbox/afconvert finds no audio track — those
+(correctly) fall through to switch-engine guidance rather than a crash, per the decided direction. The
+in-app end-to-end (import a video in the GUI → Qwen transcript) is verified by the mlx-audio decode check
+above plus the classifier tests rather than a full model run, since that path is the same `transcribe`
+call the unit + runtime checks exercise.
+
+---
+
 ## F79 — Recording-health report wired into stop → store → meeting detail (delivers F58)
 
 - **Outcome:** fixed

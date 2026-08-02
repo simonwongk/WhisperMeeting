@@ -115,12 +115,30 @@ public struct QwenASRClient: Sendable {
         let outputURL = workingDirectory.appendingPathComponent("transcript.json")
 
         await onProgress(.preparing)
+
+        // Decode-first (F118): mlx-audio's miniaudio can't read containers like .mp4/.mov/.aiff/.caf.
+        // Transcode anything it doesn't natively decode into a 16 kHz mono WAV via afconvert (no ffmpeg
+        // needed) and feed the engine that; the original recording is never touched (temp file in the
+        // per-run working directory). If afconvert can't decode it either (e.g. a video-only .mov),
+        // surface an "unsupported file format" error the classifier maps to switch-engine guidance.
+        var audioURL = fileURL
+        if AudioTranscoder.needsTranscoding(fileURL) {
+            let decodedURL = workingDirectory.appendingPathComponent("decoded.wav")
+            do {
+                try AudioTranscoder.transcodeToWAV(input: fileURL, output: decodedURL)
+                audioURL = decodedURL
+            } catch {
+                throw QwenASRError.processFailed(error.localizedDescription)
+            }
+            try Task.checkCancellation()
+        }
+
         await onProgress(.loadingModel)
         let arguments = [
             helperScriptURL.path,
             "--model", modelDirectory.path,
             "--aligner", alignerDirectory.path,
-            "--audio", fileURL.path,
+            "--audio", audioURL.path,
             "--output", outputURL.path,
             "--language", language.commandLineValue ?? "auto",
         ]
