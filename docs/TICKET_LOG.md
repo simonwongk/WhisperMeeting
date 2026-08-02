@@ -14,6 +14,69 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F88 — "Second opinion" cross-engine comparison wired in (delivers F73)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-02 by Claude Code (Opus 4.8)
+- **Reachability:** transcript toolbar "Second opinion" button (`ContentView.swift`) →
+  `AppModel.requestSecondOpinion(id:)` → `computeSecondOpinion` → `executeEngine`(the non-selected
+  engine) → `TranscriptComparison.compare(stored, other)` → `secondOpinionSpans` →
+  `SecondOpinionSheet`; Replace → `applySecondOpinionSpan`.
+
+**Root cause.** F73's `TranscriptComparison.compare` was tested but had no caller — nothing ran the other
+engine on the same recording to cross-check where the two disagree.
+
+**Fix (shared engine-runner + F88).** Extracted `performTranscription`'s inline Qwen/Whisper dispatch
+into `AppModel.executeEngine(_:on:onProgress:)` (behaviour-preserving; the normal transcription path now
+calls it) behind an injectable `runTranscriptionEngineOverride` seam. `computeSecondOpinion` runs the
+non-selected engine on the meeting's WAV into a scratch result and stores `TranscriptComparison.compare`
+spans — **never** overwriting the stored transcript; only `applySecondOpinionSpan` mutates, on explicit
+Replace. Guarded by `hasActiveTranscription`/`isRunningAuxiliaryEngine`. New `SecondOpinionSheet` shows
+agree/diverge/only-here rows with per-span Replace.
+
+**Evidence.** Red-green (`SecondOpinionTests`): with a stub "other engine" that disagrees on one segment,
+`computeSecondOpinion` yields 2 spans (one `.agree`, one `.diverge`) and the stored transcript is
+byte-for-byte unchanged; a subsequent `applySecondOpinionSpan` replaces only that segment's text. Failed
+before ("no member 'runTranscriptionEngineOverride'"), passes after. Full gate green.
+
+**Gaps.** **Not planned:** a GUI test of the sheet (no view harness). Manual: transcribe, "Second
+opinion", confirm the span sheet, that Replace changes only that line, and that not replacing leaves the
+transcript unchanged.
+
+---
+
+## F92 — Per-segment re-run wired into the transcript segment menu (delivers F77)
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-02 by Claude Code (Opus 4.8)
+- **Reachability:** segment context menu "Re-transcribe this segment" (`ContentView.swift`, in
+  `PlayableTranscriptView.segmentRow`) → `AppModel.requestSegmentReTranscription(id:index:)` →
+  `reTranscribeSegment` → `makeSegmentClip` (slice) + `executeEngine` + `TranscriptSegmentSplice.splice`
+  → `store.update`.
+
+**Root cause.** F77's `SegmentAudioRange.byteRange` + `TranscriptSegmentSplice.splice` had no callers,
+and the segment menu offered only Copy — no way to fix one garbled span short of re-running the whole
+meeting or hand-editing.
+
+**Fix.** `makeSegmentClip` reads the **actual** sample rate from the WAV header (the recording is 48 kHz,
+not the 16 kHz a naive read would assume — the planning note's key correction), computes the byte range,
+slices the PCM sub-range past the 44-byte header, and re-wraps it with a fresh `WAVWriter.header` into a
+temp clip. `reTranscribeSegment` runs the selected engine (via the shared `executeEngine` seam) on that
+clip and splices the result back with `TranscriptSegmentSplice.splice` (re-anchored to the segment's
+start). The recording and its `source-tracks.json` are never modified; the temp clip is deleted.
+
+**Evidence.** Red-green (`SegmentRerunWiringTests`) over a real 48 kHz mono `meeting.wav`: with a stub
+engine returning corrected clip-relative text, re-running segment 1 splices "second right" in place
+(3 segments preserved, re-anchored to start 1.0, neighbours untouched); the injected engine confirms a
+real clip file was written; and `meeting.wav` + `source-tracks.json` are byte-for-byte unchanged. Failed
+before ("no member 'reTranscribeSegment'"), passes after. Full gate green.
+
+**Gaps.** **Not planned:** a GUI test of the context menu (no view harness). Manual: right-click a
+segment → "Re-transcribe this segment", confirm the line updates with ordered timestamps and the
+recording is unchanged.
+
+---
+
 ## F101 — Qwen helper emits per-chunk progress; QwenASRClient streams it (unblocks F31, root-fixes F121)
 
 - **Outcome:** fixed

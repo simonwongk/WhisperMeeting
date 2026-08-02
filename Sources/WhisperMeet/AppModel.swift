@@ -259,6 +259,151 @@ final class AppModel: ObservableObject {
     /// testable without the Claude network call; defaults to the real `ClaudeSummarizer` (F81).
     var makeSummarizer: @Sendable (String) -> MeetingSummarizer = { ClaudeSummarizer(apiKey: $0) }
 
+    /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
+    /// second-opinion (F88) and per-segment re-run (F92) flows are testable with a stub engine; when nil,
+    /// `executeEngine` performs the real Qwen/Whisper dispatch.
+    var runTranscriptionEngineOverride: ((MeetingTranscriptionSelection, URL) async throws -> TranscriptionResult)?
+
+    /// Spans of the most recent cross-engine "second opinion", for the review sheet (F88).
+    @Published var secondOpinionSpans: [TranscriptComparisonSpan]?
+    /// True while a second-opinion or segment re-run engine pass is in flight (F88/F92).
+    @Published private(set) var isRunningAuxiliaryEngine = false
+
+    /// Runs the given engine selection on a recording (or clip) and returns the result without touching
+    /// the store. Extracted from `performTranscription` so second-opinion/segment-rerun share one code
+    /// path; the override seam lets tests substitute a stub.
+    func executeEngine(
+        _ selection: MeetingTranscriptionSelection,
+        on url: URL,
+        onProgress: @escaping @Sendable (LocalTranscriptionProgress) async -> Void = { _ in }
+    ) async throws -> TranscriptionResult {
+        if let override = runTranscriptionEngineOverride {
+            return try await override(selection, url)
+        }
+        if selection.engine == .qwenBalanced {
+            guard isQwenInstalled else { throw QwenASRError.runtimeNotInstalled }
+            let client = QwenASRClient(
+                pythonExecutableURL: QwenASRRuntime.pythonExecutable(),
+                helperScriptURL: QwenASRRuntime.helperScript(),
+                modelDirectory: QwenASRRuntime.modelDirectory(),
+                alignerDirectory: QwenASRRuntime.alignerDirectory()
+            )
+            return try await client.transcribe(recordingAt: url, language: selection.language, onProgress: onProgress)
+        } else {
+            guard let executableURL = runtimeExecutableURL,
+                  let whisperModel = selection.engine.whisperModel else {
+                throw LocalWhisperError.runtimeNotInstalled
+            }
+            let client = LocalWhisperClient(
+                executableURL: executableURL,
+                modelDirectory: LocalWhisperRuntime.modelDirectory()
+            )
+            return try await client.transcribe(
+                recordingAt: url,
+                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.vocabulary),
+                onProgress: onProgress
+            )
+        }
+    }
+
+    /// Kick off a second opinion (F88); guarded so it never runs alongside a transcription or another
+    /// auxiliary pass. The heavy work is in `computeSecondOpinion`, which tests await directly.
+    func requestSecondOpinion(id: UUID) {
+        guard !hasActiveTranscription, !isRunningAuxiliaryEngine else {
+            alertMessage = "Finish the current transcription before requesting a second opinion."
+            return
+        }
+        isRunningAuxiliaryEngine = true
+        Task {
+            await computeSecondOpinion(id: id)
+            isRunningAuxiliaryEngine = false
+        }
+    }
+
+    /// Runs the non-selected engine on the meeting's recording and stores the comparison spans. Never
+    /// overwrites the stored transcript — only `applySecondOpinionSpan` does, on explicit user action.
+    func computeSecondOpinion(id: UUID) async {
+        guard let meeting = store.meeting(id: id), meeting.status == .completed, !meeting.segments.isEmpty else { return }
+        let other: MeetingTranscriptionEngine = selectedEngine == .qwenBalanced ? .whisperLarge : .qwenBalanced
+        let selection = MeetingTranscriptionSelection(engine: other, language: selectedLanguage)
+        do {
+            let result = try await executeEngine(selection, on: store.recordingURL(for: meeting))
+            secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Replace one diverging segment's text with the other engine's reading (F88), on explicit apply.
+    func applySecondOpinionSpan(_ span: TranscriptComparisonSpan, to id: UUID) {
+        guard let secondary = span.secondaryText else { return }
+        store.update(id: id) { meeting in
+            guard let index = meeting.segments.firstIndex(where: { $0.start == span.start && $0.text == span.primaryText }) else { return }
+            meeting.segments[index].text = secondary
+            meeting.transcriptText = TranscriptFormatter.timestamped(meeting.segments)
+        }
+    }
+
+    /// Re-transcribe a single segment (F92): slice that segment's audio from `meeting.wav`, run the
+    /// selected engine on the clip, and splice the result back — the recording is never modified. The
+    /// heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards + wraps.
+    func reTranscribeSegment(id: UUID, index: Int) async {
+        guard let meeting = store.meeting(id: id),
+              meeting.segments.indices.contains(index),
+              let start = meeting.segments[index].start,
+              let end = meeting.segments[index].end else { return }
+        let selection = MeetingTranscriptionSelection(engine: selectedEngine, language: selectedLanguage)
+        do {
+            let clipURL = try Self.makeSegmentClip(
+                from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
+            )
+            defer { try? FileManager.default.removeItem(at: clipURL) }
+            let result = try await executeEngine(selection, on: clipURL)
+            store.update(id: id) { meeting in
+                guard meeting.segments.indices.contains(index) else { return }
+                let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: result.segments)
+                meeting.segments = merged
+                meeting.transcriptText = TranscriptFormatter.timestamped(merged)
+            }
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    func requestSegmentReTranscription(id: UUID, index: Int) {
+        guard !hasActiveTranscription, !isRunningAuxiliaryEngine else {
+            alertMessage = "Finish the current transcription before re-transcribing a segment."
+            return
+        }
+        isRunningAuxiliaryEngine = true
+        Task {
+            await reTranscribeSegment(id: id, index: index)
+            isRunningAuxiliaryEngine = false
+        }
+    }
+
+    /// Writes a temp WAV holding just one segment's audio, sliced from `meeting.wav`. Reads the real
+    /// sample rate from the WAV header (the recording is 48 kHz, not 16 kHz) so the byte range is
+    /// correct, then re-wraps the PCM slice with a fresh header. Never modifies the source (F92).
+    static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
+        let data = try Data(contentsOf: wavURL)
+        guard data.count >= SegmentAudioRange.headerBytes else { throw QwenASRError.recordingNotFound }
+        let sampleRate = data.withUnsafeBytes { raw -> UInt32 in
+            raw.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian
+        }
+        let range = SegmentAudioRange.byteRange(
+            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate)
+        )
+        let clamped = range.clamped(to: SegmentAudioRange.headerBytes..<data.count)
+        let pcm = data.subdata(in: clamped)
+        var clip = WAVWriter.header(sampleRate: sampleRate, dataByteCount: UInt32(pcm.count))
+        clip.append(pcm)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")
+        try clip.write(to: url)
+        return url
+    }
+
     /// Backs the library up to a destination as a verified generation snapshot. Injectable so the
     /// Settings wiring is testable without touching a real disk destination; defaults to the real
     /// `BackupCoordinator` (F90). `now` is the generation stamp (epoch seconds).
@@ -995,40 +1140,8 @@ final class AppModel: ObservableObject {
 
         do {
             let recordingURL = store.recordingURL(for: meeting)
-            let result: TranscriptionResult
-            if settings.engine == .qwenBalanced {
-                guard isQwenInstalled else { throw QwenASRError.runtimeNotInstalled }
-                let client = QwenASRClient(
-                    pythonExecutableURL: QwenASRRuntime.pythonExecutable(),
-                    helperScriptURL: QwenASRRuntime.helperScript(),
-                    modelDirectory: QwenASRRuntime.modelDirectory(),
-                    alignerDirectory: QwenASRRuntime.alignerDirectory()
-                )
-                result = try await client.transcribe(
-                    recordingAt: recordingURL,
-                    language: settings.language
-                ) { progress in
-                    await self.apply(progress: progress, to: id)
-                }
-            } else {
-                guard let executableURL = runtimeExecutableURL,
-                      let whisperModel = settings.engine.whisperModel else {
-                    throw LocalWhisperError.runtimeNotInstalled
-                }
-                let client = LocalWhisperClient(
-                    executableURL: executableURL,
-                    modelDirectory: LocalWhisperRuntime.modelDirectory()
-                )
-                result = try await client.transcribe(
-                    recordingAt: recordingURL,
-                    options: .accuracyFirst(
-                        model: whisperModel,
-                        language: settings.language,
-                        keyterms: store.vocabulary
-                    )
-                ) { progress in
-                    await self.apply(progress: progress, to: id)
-                }
+            let result = try await executeEngine(settings, on: recordingURL) { progress in
+                await self.apply(progress: progress, to: id)
             }
             apply(result: result, to: id, requestedLanguage: settings.language)
         } catch is CancellationError {

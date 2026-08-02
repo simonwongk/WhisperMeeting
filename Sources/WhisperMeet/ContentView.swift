@@ -1640,6 +1640,7 @@ private struct TranscriptDetailView: View {
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
     @State private var glossaryProposals: [GlossaryCorrection]?
+    @State private var showSecondOpinion = false
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
@@ -1749,6 +1750,13 @@ private struct TranscriptDetailView: View {
                 GlossarySuggestionSheet(proposals: glossaryProposals ?? []) { accepted in
                     model.applyGlossaryCorrections(accepted, to: meetingID)
                 }
+            }
+            .sheet(isPresented: $showSecondOpinion) {
+                SecondOpinionSheet(
+                    spans: model.secondOpinionSpans,
+                    isRunning: model.isRunningAuxiliaryEngine,
+                    onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
+                )
             }
         }
     }
@@ -2057,6 +2065,19 @@ private struct TranscriptDetailView: View {
                 }
                 .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
                 .help("Propose spelling corrections in this transcript toward your business vocabulary")
+                Button {
+                    model.secondOpinionSpans = nil
+                    model.requestSecondOpinion(id: meetingID)
+                    showSecondOpinion = true
+                } label: {
+                    if model.isRunningAuxiliaryEngine {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Second opinion", systemImage: "person.2.wave.2")
+                    }
+                }
+                .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
+                .help("Transcribe this recording with the other local engine and compare where they differ")
                 Button("Copy") { copy(currentTranscript()) }
                 Menu("Export…") {
                     Button("Meeting Notes — Summary + Transcript (.md)") {
@@ -2367,6 +2388,92 @@ private struct GlossarySuggestionSheet: View {
             .padding()
         }
         .frame(width: 440, height: 540)
+    }
+}
+
+/// Presents a cross-engine "second opinion" comparison: where the other local engine agrees with or
+/// diverges from the stored transcript. Replacing a diverging span is explicit — nothing changes the
+/// transcript until the user taps Replace (F88/F73).
+private struct SecondOpinionSheet: View {
+    let spans: [TranscriptComparisonSpan]?
+    let isRunning: Bool
+    let onReplace: (TranscriptComparisonSpan) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var replaced: Set<Int> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Second Opinion").font(.headline)
+                Text("The other local engine's reading of this recording. Replace a line only where you prefer it — the audio is never changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            if isRunning && spans == nil {
+                Spacer()
+                ProgressView("Transcribing with the other engine…").controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+            } else if let spans, !spans.isEmpty {
+                List {
+                    ForEach(Array(spans.enumerated()), id: \.offset) { index, span in
+                        secondOpinionRow(index: index, span: span)
+                    }
+                }
+            } else {
+                Spacer()
+                Text("No differences to show.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                Spacer()
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+        }
+        .frame(width: 520, height: 560)
+    }
+
+    @ViewBuilder
+    private func secondOpinionRow(index: Int, span: TranscriptComparisonSpan) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label(span.kind)).font(.caption).foregroundStyle(color(span.kind))
+                Spacer()
+                if span.kind == .diverge, span.secondaryText != nil {
+                    Button(replaced.contains(index) ? "Replaced" : "Replace") {
+                        onReplace(span)
+                        replaced.insert(index)
+                    }
+                    .disabled(replaced.contains(index))
+                    .controlSize(.small)
+                }
+            }
+            Text(span.primaryText)
+            if let secondary = span.secondaryText, span.kind == .diverge {
+                Text(secondary).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func label(_ kind: TranscriptComparisonSpan.Kind) -> String {
+        switch kind {
+        case .agree: return "Both engines agree"
+        case .diverge: return "Engines differ"
+        case .nonOverlapping: return "Only in this transcript"
+        }
+    }
+
+    private func color(_ kind: TranscriptComparisonSpan.Kind) -> Color {
+        switch kind {
+        case .agree: return .secondary
+        case .diverge: return .orange
+        case .nonOverlapping: return .secondary
+        }
     }
 }
 
@@ -2858,6 +2965,13 @@ private struct PlayableTranscriptView: View {
                 Button("Copy with Timestamp") {
                     copyToPasteboard("\(TranscriptFormatter.timestamp(start))  \(segment.text)")
                 }
+            }
+            if segment.start != nil, segment.end != nil {
+                Divider()
+                Button("Re-transcribe this segment") {
+                    model.requestSegmentReTranscription(id: meetingID, index: index)
+                }
+                .disabled(model.hasActiveTranscription || model.isRunningAuxiliaryEngine)
             }
         }
     }
