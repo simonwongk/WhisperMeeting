@@ -14,6 +14,32 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F149 — System audio not captured: stale Screen-Recording TCC after the re-sign (resolved by re-grant)
+
+- **Outcome:** fixed (environment/permission — no code change)
+- **Closed:** 2026-08-03 by Claude Code (Opus 4.8) / Simon
+- **Origin:** user-reported — mic meter reacted to computer sound while the System-audio meter stayed
+  flat (on speakers).
+
+**Diagnosis.** The mic bar moving was acoustic bleed (the mic hearing the speakers); the real problem was
+that **system audio wasn't being captured**. The full capture path was verified correct and unchanged
+this session — `stream(_:didOutputSampleBuffer:of:)` routes `.audio`→system and `.microphone`→mic; the
+`SCStreamConfiguration` enables `capturesAudio`/`captureMicrophone`; the meter + both UI bars map channels
+correctly. So it was a runtime TCC condition, not a wiring bug: the "Screen & System Audio Recording"
+permission was stale for the newly stable-signed build (F131 changed the identity ad-hoc→"WhisperMeet
+Dev", which TCC treats as a new app). Microphone (a separate permission) was re-granted, so the stream
+started and captured mic, but no system `.audio` was delivered.
+
+**Resolution.** The user re-granted "Screen & System Audio Recording" for WhisperMeet (toggle off/on, full
+quit + reopen); the System-audio meter now moves on computer sound. No code change required.
+
+**Gaps.** Meetings recorded before the re-grant contain only the microphone (+ faint bleed), not the
+other participants — unrecoverable. **Not planned as part of this ticket**, but worth a future hardening:
+the app already warns "No system audio has been detected yet…" during recording; a louder/blocking
+prompt when a re-sign invalidates the grant could catch this sooner (candidate follow-up, not filed).
+
+---
+
 ## F137 — Backup safety redesign: dedicated subfolder, overlap refusal, completion markers, library scope
 
 - **Outcome:** fixed
