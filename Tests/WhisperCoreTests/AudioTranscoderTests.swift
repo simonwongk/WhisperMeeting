@@ -39,7 +39,10 @@ func audioTranscoderDecodesToWav() throws {
     #expect(AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.aiff")))
     #expect(AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.caf")))
     #expect(!AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.wav")))
-    #expect(!AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.m4a")))
+    // .m4a/.aac now route through decode-first (afconvert) too, so Qwen doesn't depend on ffmpeg (F145).
+    #expect(AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.m4a")))
+    #expect(AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.aac")))
+    #expect(!AudioTranscoder.needsTranscoding(URL(fileURLWithPath: "/x/clip.mp3")))
 
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("AudioTranscoderTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -85,22 +85,27 @@ public enum MeetingIntegrityChecker {
             let actualBytes = fileSize(descriptor.recordingURL)
             if actualBytes == 0 {
                 findings.append(.recordingEmpty)
-            } else if let header = WAVInspection.header(at: descriptor.recordingURL) {
-                let requiredBytes = Int64(44) + Int64(header.declaredDataBytes)
-                if requiredBytes > actualBytes {
-                    findings.append(.wavTruncated(declaredBytes: requiredBytes, actualBytes: actualBytes))
-                }
-                if let indexDuration = descriptor.indexDurationSeconds {
-                    let bytesPerSecond = Double(header.sampleRate * header.channels * header.bitsPerSample / 8)
-                    if bytesPerSecond > 0 {
-                        let headerDuration = Double(header.declaredDataBytes) / bytesPerSecond
-                        if abs(headerDuration - indexDuration) > durationToleranceSeconds {
-                            findings.append(.durationInconsistent(headerSeconds: headerDuration, indexSeconds: indexDuration))
+            } else if descriptor.recordingURL.pathExtension.lowercased() == "wav" {
+                // WAV inspection (header/truncation/duration) only applies to in-app WAV recordings.
+                // Imported non-WAV containers (.m4a/.mp3/.mp4/…) are opaque here — existence + non-empty
+                // only — so a valid import is never mislabeled as a corrupt WAV (F143).
+                if let header = WAVInspection.header(at: descriptor.recordingURL) {
+                    let requiredBytes = Int64(44) + Int64(header.declaredDataBytes)
+                    if requiredBytes > actualBytes {
+                        findings.append(.wavTruncated(declaredBytes: requiredBytes, actualBytes: actualBytes))
+                    }
+                    if let indexDuration = descriptor.indexDurationSeconds {
+                        let bytesPerSecond = Double(header.sampleRate * header.channels * header.bitsPerSample / 8)
+                        if bytesPerSecond > 0 {
+                            let headerDuration = Double(header.declaredDataBytes) / bytesPerSecond
+                            if abs(headerDuration - indexDuration) > durationToleranceSeconds {
+                                findings.append(.durationInconsistent(headerSeconds: headerDuration, indexSeconds: indexDuration))
+                            }
                         }
                     }
+                } else {
+                    findings.append(.wavHeaderUnreadable)
                 }
-            } else {
-                findings.append(.wavHeaderUnreadable)
             }
         }
 

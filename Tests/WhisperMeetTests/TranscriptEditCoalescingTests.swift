@@ -37,3 +37,26 @@ func transcriptEditsCoalesceIntoOneWrite() throws {
     let reloaded = MeetingStore(rootDirectory: root)
     #expect(reloaded.meeting(id: id)?.transcriptText == "edit 19")
 }
+
+// F138 — a pending debounced edit must be flushed on app termination/resign, not only on editor
+// disappearance. AppModel.flushPendingWrites() is the hook the app-lifecycle observer calls.
+@MainActor
+@Test("AppModel.flushPendingWrites persists a pending debounced edit (F138)")
+func flushPendingWritesPersistsBeforeTermination() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FlushOnQuitTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = UserDefaults(suiteName: "F138.\(UUID().uuidString)")!
+    let model = AppModel(store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60), recorder: AudioCaptureEngine(), defaults: defaults)
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "start"))
+    model.store.editTranscript(id: id, text: "unsaved edit")
+    #expect(model.store.meeting(id: id)?.transcriptText == "unsaved edit") // in memory
+
+    model.flushPendingWrites()
+
+    let reloaded = MeetingStore(rootDirectory: root)
+    #expect(reloaded.meeting(id: id)?.transcriptText == "unsaved edit") // reached disk
+}

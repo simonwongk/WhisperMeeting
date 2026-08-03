@@ -216,6 +216,10 @@ final class MeetingStore: ObservableObject {
         let indexedDirectories = Set(meetings.map {
             recordingURL(for: $0).deletingLastPathComponent().standardizedFileURL.path
         })
+        // A folder whose UUID already belongs to a meeting is NOT an orphan even if that meeting's
+        // recordingPath is wrong — otherwise "recovery" would upsert a blank stub under the same id and
+        // overwrite the saved title/transcript/notes/tags/summary (F148 #1).
+        let indexedIDs = Set(meetings.map(\.id))
         let urls = try FileManager.default.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: [.isDirectoryKey, .creationDateKey],
@@ -225,7 +229,8 @@ final class MeetingStore: ObservableObject {
             guard !indexedDirectories.contains(url.standardizedFileURL.path),
                   let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .creationDateKey]),
                   values.isDirectory == true,
-                  let id = UUID(uuidString: url.lastPathComponent) else {
+                  let id = UUID(uuidString: url.lastPathComponent),
+                  !indexedIDs.contains(id) else {
                 return nil
             }
             return OrphanedRecording(
@@ -310,12 +315,44 @@ final class MeetingStore: ObservableObject {
         meetings.first { $0.id == id }
     }
 
+    /// Removes a recording directory. Injectable so the failure path is testable (F146).
+    var removeRecordingDirectory: (URL) throws -> Void = { url in
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// True when `url` is the library root or a path inside it — the containment check that stops a
+    /// corrupt/tampered `recordingPath` (e.g. one with `../`) from reaching outside the library (F148 #6).
+    func isWithinLibrary(_ url: URL) -> Bool {
+        let base = rootDirectory.standardizedFileURL.path
+        let target = url.standardizedFileURL.path
+        return target == base || target.hasPrefix(base + "/")
+    }
+
     func delete(id: UUID) {
         guard let meeting = meeting(id: id) else { return }
         let directory = recordingURL(for: meeting).deletingLastPathComponent()
-        try? FileManager.default.removeItem(at: directory)
+        // Never delete outside the library, and never delete the library root itself — a corrupt index
+        // with a `../` or empty `recordingPath` could otherwise resolve to an external or top-level dir
+        // (F148 #6). In that case remove only the index entry and say the on-disk files were left alone.
+        guard isWithinLibrary(directory),
+              directory.standardizedFileURL != rootDirectory.standardizedFileURL else {
+            meetings.removeAll { $0.id == id }
+            persistMeetings()
+            storageErrorMessage = "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
+            return
+        }
+        do {
+            try removeRecordingDirectory(directory)
+        } catch {
+            // Don't half-delete: keep the meeting so the library stays consistent, and surface why.
+            storageErrorMessage = "This meeting's recording could not be removed, so it was kept to avoid an inconsistent library. \(error.localizedDescription)"
+            return
+        }
         meetings.removeAll { $0.id == id }
         persistMeetings()
+        storageErrorMessage = nil
     }
 
     func addVocabulary(_ terms: [String]) {

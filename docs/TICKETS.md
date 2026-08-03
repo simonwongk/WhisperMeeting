@@ -16,22 +16,6 @@ _Filed 2026-08-03 from an external read-only audit of this session's work (at `2
 most urgent (F92 transcript loss, F92 non-WAV slicing, backup free-space false-reject) were fixed
 immediately — see F134/F135/F136 in [`TICKET_LOG.md`](TICKET_LOG.md). The rest are below._
 
-### F138 — Transcript/notes edits can be lost on app termination (debounce not flushed on quit)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** high
-- **Area:** ui
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** F40/F133 debounce index writes (0.5 s) and flush only on editor `.onDisappear`
-(`MeetingStore.swift:276`), not on app termination (`AppEntry.swift`). A normal quit within the debounce
-window — or a crash/force-quit — loses the last edit.
-
-**Proposed fix.** Flush pending edits on `applicationWillTerminate`/scene-inactive; consider a shorter
-debounce or write-through on focus change. **Verification.** Test that a pending edit is flushed by the
-termination hook; manual quit-after-typing check.
-
 ### F139 — Keyboard-command cancel has no confirmation and can race Stop/finalization
 
 - **Status:** open
@@ -47,23 +31,6 @@ cancel/stop are not serialized against a simultaneous finalization (`AudioCaptur
 **Proposed fix.** Route the command through the same confirmation as the UI; serialize stop/cancel so a
 cancel during `.stopping` can't corrupt finalization. **Verification.** Test the guard rejects/serializes;
 manual race check.
-
-### F140 — Normal transcription and the runtime installer don't guard against an active auxiliary run
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** high
-- **Area:** transcription
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** Second-opinion/segment-rerun (F88/F92) guard against each other and normal transcription via
-`isRunningAuxiliaryEngine`, but `beginTranscription`/`performTranscription` (`AppModel.swift:1002`) and the
-Qwen installer do **not** check `isRunningAuxiliaryEngine` — so a normal transcription or model install can
-start atop an in-flight auxiliary engine run, contending for CPU/model.
-
-**Proposed fix.** Make the busy-guard symmetric: normal transcription + installer also refuse while an
-auxiliary run is active. **Verification.** Test that begin/install is rejected while an auxiliary run is in
-flight.
 
 ### F141 — Diagnostics export can leak absolute paths despite the "path-free" promise
 
@@ -99,59 +66,6 @@ engine or a changed language (`AppModel.swift:327`).
 meeting's engine/language (or snapshot at transcription time) and compare against that.
 **Verification.** Test the failure state doesn't read as agreement; test the compared engine is the
 genuine alternative.
-
-### F143 — Library integrity flags valid imported (non-WAV) media as corrupt
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** meetings
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** `MeetingIntegrityChecker` (`:78`) assumes every recording is a RIFF/WAV; an imported
-`.m4a/.mp3/.mp4/…` meeting is reported as a truncated/corrupt WAV. **Proposed fix.** Only apply WAV
-inspection to `.wav` recordings; treat other containers as opaque (existence/size only).
-**Verification.** Red-green: an imported non-WAV meeting produces no false corruption finding.
-
-### F144 — A partial-segment transcription result can discard its fuller `text`
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** transcription
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** `apply(result:to:)` (`AppModel.swift:1168`) renders segments whenever there is ≥1, without
-checking they reconstruct the full `text`; a result with a few segments but a fuller `text` loses content.
-**Proposed fix.** When segments don't cover `text`, fall back to (or reconcile with) the full text.
-**Verification.** Red-green over a result whose segments are shorter than `text`.
-
-### F145 — Qwen-only user can still fail to import .m4a/.aac (ffmpeg not verified by installer)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** transcription
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** mlx-audio delegates `.m4a/.aac` to ffmpeg (`AudioTranscoder.swift:9` treats them as native),
-but `setup-qwen-asr.sh` (`:123`) neither installs nor verifies ffmpeg — so a Qwen-only user importing those
-still fails. **Proposed fix.** Either have the Qwen installer ensure ffmpeg, or add `.m4a/.aac` to the
-decode-first (afconvert) set so they don't depend on ffmpeg. **Verification.** Real-runtime: `.m4a` import
-transcribes on a Qwen-only setup.
-
-### F146 — Cancel/Delete swallow filesystem errors (may claim success or orphan audio)
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** medium
-- **Area:** meetings
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** Deletion paths (`MeetingStore.swift:313`, `AudioCaptureEngine.swift:280`) `try?`-swallow
-errors, so a failed audio removal can still report success or leave the index/audio inconsistent.
-**Proposed fix.** Surface removal failures; keep index and audio consistent on partial failure.
-**Verification.** Red-green with an un-removable file (e.g. permissions) → error surfaced, no false success.
 
 ### F147 — Dashboard generator refuses the valid zero-open-tickets state; F123 log stale
 

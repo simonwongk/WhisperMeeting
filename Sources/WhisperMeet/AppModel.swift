@@ -613,6 +613,7 @@ final class AppModel: ObservableObject {
               !isMicrophoneBusy,
               !isImporting,
               !hasActiveTranscription,
+              !isRunningAuxiliaryEngine, // don't install atop a second-opinion / segment re-run (F140)
               !isDictationActive() else {
             return
         }
@@ -1051,6 +1052,11 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before transcribing."
             return
         }
+        // A second-opinion or segment re-run is holding the engine; don't start a normal run atop it (F140).
+        guard !isRunningAuxiliaryEngine else {
+            alertMessage = "Finish the second-opinion or segment re-run before transcribing this meeting."
+            return
+        }
         refreshRuntime()
         let settings = MeetingTranscriptionSelection(
             engine: selectedEngine,
@@ -1165,6 +1171,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Whether the segments reconstruct the full text (by alphanumeric character count). Segments are
+    /// derived from the text, so equal-or-greater coverage means no content is lost; a shortfall means
+    /// the alignment was partial and the segment-derived text would drop content (F144).
+    private static func segmentsCoverText(_ segments: [TranscriptSegment], _ fullText: String) -> Bool {
+        func alphanumericCount(_ s: String) -> Int {
+            s.unicodeScalars.reduce(0) { CharacterSet.alphanumerics.contains($1) ? $0 + 1 : $0 }
+        }
+        let full = alphanumericCount(fullText)
+        guard full > 0 else { return true } // no text to lose
+        return alphanumericCount(segments.map(\.text).joined()) >= full
+    }
+
+    /// Flush any pending debounced transcript/notes write immediately. Called from the app-lifecycle
+    /// observers (termination, resign-active) so an edit made in the last debounce window is not lost on
+    /// a normal quit — the editor's `.onDisappear` flush doesn't fire reliably on app termination (F138).
+    func flushPendingWrites() {
+        store.flushPendingEdits()
+    }
+
     func recoverInterruptedTranscriptions() {
         for meeting in store.meetings where meeting.status == .processing {
             store.update(id: meeting.id) {
@@ -1213,17 +1238,22 @@ final class AppModel: ObservableObject {
     /// `requestedLanguage` is the engine snapshot's selected language, used for the
     /// "original language only" advisory (F32); it defaults to `.automatic`, which never flags.
     func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic) {
+        // Only use segment-derived (timestamped) text when the segments actually reconstruct the full
+        // text; otherwise a partially-aligned result would drop content. Fall back to the complete
+        // text and drop the incomplete segments so text and segments stay consistent (F144).
+        let covers = !result.segments.isEmpty && Self.segmentsCoverText(result.segments, result.text)
+        let effectiveSegments = covers ? result.segments : []
         store.update(id: id) {
             $0.status = .completed
-            $0.transcriptText = result.segments.isEmpty
+            $0.transcriptText = effectiveSegments.isEmpty
                 ? result.text
-                : TranscriptFormatter.timestamped(result.segments)
+                : TranscriptFormatter.timestamped(effectiveSegments)
             $0.languageCode = result.languageCode
             // Revive the header confidence label from the quality review; nil (no claim) when the
             // transcript carries no scorable segments (F56).
-            let quality = TranscriptQuality.review(result.segments)
+            let quality = TranscriptQuality.review(effectiveSegments)
             $0.confidence = quality.isUnscored ? nil : quality.confidence
-            $0.segments = result.segments
+            $0.segments = effectiveSegments
             $0.errorMessage = nil
             // Carry the alignment warning onto the meeting so the detail view can explain why a
             // Qwen transcript has no seekable timestamps, instead of dropping it silently (F30).

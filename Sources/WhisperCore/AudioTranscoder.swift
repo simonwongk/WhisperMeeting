@@ -6,9 +6,10 @@ import Foundation
 /// read .mp4/.mov/.aiff/.caf, and afconvert can (F118). The original recording is never modified — the
 /// transcode always writes to a fresh temp file.
 public enum AudioTranscoder {
-    /// Extensions mlx-audio decodes natively: miniaudio handles wav/flac/mp3/ogg and its ffmpeg branch
-    /// handles m4a/aac. Anything else is transcoded first.
-    public static let nativelyDecodableExtensions: Set<String> = ["wav", "flac", "mp3", "ogg", "m4a", "aac"]
+    /// Extensions mlx-audio's miniaudio decodes WITHOUT ffmpeg (wav/flac/mp3/ogg). Everything else —
+    /// including .m4a/.aac (which mlx-audio would otherwise hand to ffmpeg) and video/other containers —
+    /// is transcoded first via afconvert, so a Qwen-only user doesn't need ffmpeg installed at all (F145).
+    public static let nativelyDecodableExtensions: Set<String> = ["wav", "flac", "mp3", "ogg"]
 
     public static func needsTranscoding(_ url: URL) -> Bool {
         !nativelyDecodableExtensions.contains(url.pathExtension.lowercased())

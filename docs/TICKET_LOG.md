@@ -14,6 +14,62 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F138 — Debounced transcript/notes edits now flush on quit/resign, not only on editor disappear
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Reachability:** `AppEntry` observes `NSApplication.willTerminate`/`willResignActive` → `AppModel.flushPendingWrites()` → `MeetingStore.flushPendingEdits()`.
+- **Root cause.** F40/F133's 0.5 s debounce flushed only on the editor's `.onDisappear`, which doesn't fire reliably on app quit — a normal quit within the window lost the last edit.
+- **Fix.** Added `AppModel.flushPendingWrites()` and wired the two lifecycle notifications to it.
+- **Evidence.** Red-green (`flushPendingWritesPersistsBeforeTermination`): a pending `editTranscript` is on disk after `flushPendingWrites()`. Gate green (296 tests). **Gaps.** GUI-lifecycle wiring verified by the store-level test + compile; **Not planned:** a full app-termination harness (none exists).
+
+---
+
+## F140 — Normal transcription + Qwen installer now refuse while an auxiliary engine run is active
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Reachability:** `AppModel.beginTranscription` and `installQwenASR` now include `!isRunningAuxiliaryEngine` in their guards.
+- **Root cause.** Second-opinion/segment-rerun (F88/F92) guarded against each other and normal transcription, but the reverse wasn't true — a normal run or model install could start atop an in-flight auxiliary engine run, contending for CPU/model.
+- **Fix.** Symmetric guard: both refuse (with guidance) while `isRunningAuxiliaryEngine`.
+- **Evidence.** Red-green (`beginTranscriptionRefusesDuringAuxiliaryRun`): with a live auxiliary run, `beginTranscription` is rejected and the meeting isn't enqueued. Gate green.
+
+---
+
+## F144 — apply(result:) no longer discards fuller text when segments don't reconstruct it
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit (defensive hardening).
+- **Root cause.** `apply(result:)` used segment-derived timestamped text whenever ≥1 segment existed, without checking the segments reconstruct the full `text`. The current engines never produce partial-coverage segments (`QwenAlignedTranscript.segments` is all-or-nothing; Whisper segments == text), so this wasn't a live loss — but `apply()` is a public method that trusted coverage blindly.
+- **Fix.** `segmentsCoverText` (alphanumeric-count coverage); on a shortfall, use the full `text` and drop the incomplete segments so text/segments stay consistent.
+- **Evidence.** Red-green (`applyPreservesFullTextOnUnderCoveringSegments` + a happy-path guard). Gate green.
+
+---
+
+## F143 — Library integrity no longer flags imported non-WAV media as a corrupt WAV
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** `MeetingIntegrityChecker.check` ran WAV header/truncation/duration checks on every recording; an imported `.m4a/.mp3/.mp4/…` (unreadable as WAV) was reported `.wavHeaderUnreadable`.
+- **Fix.** Apply WAV inspection only when the recording extension is `.wav`; other containers get existence + non-empty checks only.
+- **Evidence.** Red-green (`integrityIgnoresNonWavContainers` + a `.wav`-still-flagged regression guard). Gate green.
+
+---
+
+## F145 — Qwen .m4a/.aac imports now decode via afconvert (no ffmpeg dependency)
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** `AudioTranscoder.nativelyDecodableExtensions` included `m4a`/`aac`, so they were passed straight to mlx-audio, which routes them to ffmpeg — a Qwen-only user without ffmpeg still failed.
+- **Fix.** Dropped `m4a`/`aac` from the native set (now just wav/flac/mp3/ogg) so they go through decode-first (`afconvert`), which handles AAC via AudioToolbox — no ffmpeg.
+- **Evidence.** Real runtime: `afconvert` decodes a bench-clip `.m4a` → 16 kHz WAV that mlx-audio loads (shape 49110). Red-green (`audioTranscoderDecodesToWav` — `needsTranscoding(.m4a/.aac)` now true, `.mp3` still native). Gate green.
+
+---
+
+## F146 — Delete surfaces removal failures and never deletes outside the library (incl. path traversal)
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit (F146 + F148 #6).
+- **Root cause.** `MeetingStore.delete` used `try?` to remove the recording dir then removed the index entry regardless — a failed removal orphaned audio while the library claimed it was gone. And it appended `recordingPath` with no containment check, so a corrupt/tampered index with `../` (or an empty path → library root's parent) could `removeItem` outside the library.
+- **Fix.** Injectable `removeRecordingDirectory` seam; on failure, keep the meeting and surface the error (consistent state). `isWithinLibrary` containment guard refuses any directory outside the library or the root itself — in that case only the index entry is removed and it's explained.
+- **Evidence.** Red-green (`deleteSurfacesRemovalFailure`, `deleteSucceedsNormally`, `deleteRefusesPathTraversal`, `deleteRefusesRootPath`). Gate green.
+
+---
+
 ## F149 — System audio not captured: stale Screen-Recording TCC after the re-sign (resolved by re-grant)
 
 - **Outcome:** fixed (environment/permission — no code change)

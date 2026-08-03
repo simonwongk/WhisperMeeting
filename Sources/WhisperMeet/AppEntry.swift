@@ -11,6 +11,14 @@ struct WhisperMeetApp: App {
         WindowGroup {
             ContentView(model: model, dictation: dictation)
                 .frame(minWidth: 900, minHeight: 620)
+                // Flush any pending debounced transcript/notes edit on quit or when the app resigns
+                // active, so the last edit isn't lost within the debounce window (F138).
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    model.flushPendingWrites()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                    model.flushPendingWrites()
+                }
                 .task {
                     dictation.configure(isMicrophoneBusy: { [weak model] in
                         model?.isMicrophoneBusy ?? false
