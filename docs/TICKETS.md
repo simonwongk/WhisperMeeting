@@ -16,36 +16,6 @@ _Filed 2026-08-03 from an external read-only audit of this session's work (at `2
 most urgent (F92 transcript loss, F92 non-WAV slicing, backup free-space false-reject) were fixed
 immediately — see F134/F135/F136 in [`TICKET_LOG.md`](TICKET_LOG.md). The rest are below._
 
-### F137 — Backup safety: numeric-folder pruning can delete unrelated user data; no source/dest guard
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** critical
-- **Area:** recovery
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from audit
-
-**Problem.** `BackupCoordinator` (F90) writes generations as top-level integer-named dirs directly under
-the chosen folder and prunes **any** numeric subfolder there — so backing up into a folder that contains
-e.g. `2024/` can delete it (`BackupCoordinator.swift:80,122`). There is also no check that the destination
-is inside the source library (or vice versa), so backing up into the library recursively grows future
-backups (`:35`). A failed run leaves a partial numeric dir that later looks like a complete generation
-(`:52`). Related: backup runs on the main actor and can run mid-recording over changing files, and it
-enumerates the **whole** Application Support dir (models/runtimes), not just the meeting library
-(`MeetingStore.swift:155`).
-
-**Impact.** Potential deletion of unrelated user files (critical), corrupt/huge backups, UI stalls. F90 is
-**live in the installed app**, so this risk is real now.
-
-**Proposed fix (on-disk layout change — needs owner sign-off).** Write generations only under a dedicated
-managed subfolder (e.g. `<chosen>/WhisperMeet Backups/`) and prune only generations there; refuse when
-source/dest overlap; stage each generation and mark it `.complete`, pruning only marked generations and
-cleaning stale partials; scope the source to the meeting library (Recordings/ + meetings.json +
-vocabulary.json); guard against running while recording; move copy/hash off the main actor.
-
-**Verification.** Red-green: a destination containing a non-generation numeric folder is never pruned;
-overlapping source/dest is refused; an interrupted generation is not treated as complete; the library is
-scoped correctly. Manual: back up, confirm only the managed subfolder is touched.
-
 ### F138 — Transcript/notes edits can be lost on app termination (debounce not flushed on quit)
 
 - **Status:** open

@@ -14,6 +14,45 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F137 — Backup safety redesign: dedicated subfolder, overlap refusal, completion markers, library scope
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-03 by Claude Code (Opus 4.8), owner-approved on-disk layout change
+- **Origin:** external audit of this session's F90 work (critical data-deletion risk, live in the app).
+- **Reachability:** Settings → "Back up library…" → `AppModel.backUpLibrary` → `BackupCoordinator.backUp`.
+
+**Root cause.** F90 wrote generations as top-level integer-named dirs directly under the chosen folder and
+pruned **any** numeric subfolder there — so a chosen folder containing e.g. `2024/` could have it deleted.
+No source/dest overlap check (backing up into the library grew recursively); a failed run left a partial
+dir that looked complete; work ran on the main actor mid-recording; and it enumerated the whole
+Application Support dir (models/runtimes), not just the library.
+
+**Fix (owner approved the layout change).**
+- **Dedicated managed subfolder:** all generations live under `<chosen>/WhisperMeet Backups/`; only that
+  subtree is ever scanned or pruned — the chosen folder's other contents are never touched.
+- **Completion markers:** each generation is marked `.backup-complete` only after every file is copied and
+  verified; only marked generations are counted as prior snapshots or pruned; unmarked (partial) dirs are
+  cleaned up.
+- **Overlap refusal:** `pathsOverlap` refuses when destination and source are equal or nested either way.
+- **Library scope:** only `Recordings/`, `meetings.json`, `vocabulary.json` are backed up — never
+  installed runtimes/models.
+- **Not-while-changing + off-main:** `backUpLibrary` refuses while recording/importing and runs the
+  copy/hash in a detached task so the UI doesn't stall.
+
+**Evidence.** Red-green (`BackupCoordinatorTests`, all 12 pass):
+- `backupNeverPrunesUnrelatedNumericFolders` — a user `2024/receipts.txt` survives three retain:1 backups.
+- `backupRefusesOverlappingSourceAndDestination` — dest-in-source, dest==source, source-in-dest all throw.
+- `backupMarksCompleteAndIgnoresPartials` — a leftover unmarked `500/` is not treated as a prior generation
+  and is cleaned up; the new generation carries the marker.
+- `backupScopesToLibraryEntries` — `Runtime/model.safetensors` is excluded; library entries included.
+- The snapshot/prune + free-space (F136) + AppModel-seam tests still pass. Full gate green.
+
+**Gaps.** **Not planned:** cross-volume atomic staging beyond the completion marker (the marker already
+prevents a partial from ever being treated as complete). Off-main execution is via a detached task; the
+core file IO remains synchronous inside it.
+
+---
+
 ## F134 — Per-segment re-run could DELETE a segment's text when the re-run had no timestamps
 
 - **Outcome:** fixed

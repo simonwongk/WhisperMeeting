@@ -1453,7 +1453,7 @@ struct SettingsView: View {
         panel.prompt = "Back Up Here"
         panel.message = "Choose a folder to back up your WhisperMeet library into."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.backUpLibrary(to: url)
+        Task { await model.backUpLibrary(to: url) }
     }
 
     private func toggleKeyCapture() {

@@ -449,11 +449,22 @@ final class AppModel: ObservableObject {
     /// Newest N backup generations to keep at the destination (Settings-controlled, F90).
     @Published var backupRetention = 5
 
-    /// Copy the whole library to a chosen backup folder as a new verified snapshot. Read-only on the
-    /// source; surfaces success or the failure reason through `alertMessage` (F90).
-    func backUpLibrary(to destination: URL, now: Int = Int(Date().timeIntervalSince1970)) {
+    /// Copy the meeting library to a chosen backup folder as a new verified snapshot. Read-only on the
+    /// source; surfaces success or the failure reason through `alertMessage` (F90). Refuses while a
+    /// recording or import is active so it never snapshots changing files, and runs the copy/hash work
+    /// off the main actor so the UI doesn't stall (F137).
+    func backUpLibrary(to destination: URL, now: Int = Int(Date().timeIntervalSince1970)) async {
+        guard !isRecordingActive, !isImporting else {
+            alertMessage = "Finish recording or importing before backing up the library."
+            return
+        }
+        let source = store.rootDirectory
+        let retain = backupRetention
+        let run = runLibraryBackup
         do {
-            let summary = try runLibraryBackup(store.rootDirectory, destination, now, backupRetention)
+            let summary = try await Task.detached(priority: .userInitiated) {
+                try run(source, destination, now, retain)
+            }.value
             alertMessage = "Library backed up: \(summary.copied) file(s) copied, \(summary.skipped) unchanged."
                 + (summary.prunedGenerations.isEmpty ? "" : " Removed \(summary.prunedGenerations.count) old backup(s).")
         } catch {
