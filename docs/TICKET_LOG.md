@@ -14,6 +14,85 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F141 — Diagnostics export now redacts absolute paths from error messages
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** The bundle promised path-free diagnostics but emitted the raw `errorMessage`, which can
+  carry absolute paths (Qwen traceback, afconvert stderr, recovery text).
+- **Fix.** `DiagnosticsBundleBuilder.redactPaths` replaces absolute POSIX paths (2+ `/name` components)
+  with `<path>`; applied to `errorMessage` before emission.
+- **Evidence.** Red-green (`diagnosticsRedactsAbsolutePaths`, `redactPathsKeepsPlainText`): a `/Users/…`
+  path is gone from the JSON, message text preserved, and "3/4"/"read/write" untouched. Gate green.
+- **Gaps.** OSLog `.public` error interpolations (F148 #7) are separate — filed as F154.
+
+---
+
+## F142 — Second opinion: distinct failure state + runs the engine the meeting was NOT transcribed with
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** On engine-launch failure, `computeSecondOpinion` left `secondOpinionSpans` nil and the
+  sheet rendered nil as "No differences to show". It also chose the "other" engine relative to current
+  Settings, so a Settings change could re-run the SAME engine that produced the transcript.
+- **Fix.** Added `secondOpinionFailed` (set on catch, reset on start); the sheet shows an explicit error
+  state. Recorded the producing engine on `MeetingRecord.transcriptionEngine` (threaded through
+  `apply(result:…engine:)` from `performTranscription`); `computeSecondOpinion` now picks the other engine
+  relative to `meeting.transcriptionEngine ?? selectedEngine`.
+- **Evidence.** Red-green (`secondOpinionSignalsFailure`, `secondOpinionUsesMeetingEngineSnapshot`): a
+  failing engine sets `secondOpinionFailed` with nil spans; with a Whisper-recorded meeting and Settings
+  also on Whisper, the run uses Qwen. Gate green.
+- **Gaps.** The second-opinion still uses the current `selectedLanguage` (not the meeting's original
+  language). **Not planned** for now: language pins decoding but the comparison stays meaningful; a
+  per-meeting language snapshot is a minor follow-up.
+
+---
+
+## F139 — ⌘ Cancel command routes through confirmation; cancel can't race finalization
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** The ⌘ "Cancel Recording" command called `cancelRecording()` outright — no confirmation
+  (unlike the button/menu-bar) — and cancel wasn't guarded against a simultaneous Stop/finalization.
+- **Fix.** Model-owned `isConfirmingCancellation` + `requestCancelConfirmation()`; both the in-window
+  button and the ⌘ command route through it. `canCancelRecording` (true only in `.recording`/`.starting`)
+  guards `requestCancelConfirmation` and `cancelRecording`, so a cancel during `.stopping` or `.idle` is a
+  no-op.
+- **Evidence.** Red-green (`cancelGuardWhenIdle`): idle → `canCancelRecording` false, no prompt, cancel is
+  a no-op. Gate green. **Gaps.** The confirmation dialog / command wiring is verified by the state-guard
+  test + compile; **Not planned:** a view/command GUI harness (none exists).
+
+---
+
+## F147 — Ticket dashboard renders a valid empty board; aborts only on an unparsed source
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **Root cause.** `generate-tickets-dashboard.py` aborted on zero active tickets, conflating a genuinely
+  empty (all-resolved) board with a parse failure — so once the board emptied it couldn't refresh.
+- **Fix.** Abort only when `TICKETS.md` is missing or lacks the `# Open tickets` marker (a real parse
+  failure); otherwise render a valid "no open tickets" dashboard (count line + placeholder row). See the
+  F123 correction note below.
+- **Evidence.** Ran the generator on the live board (regression OK) and against a temp empty board
+  (renders "0 active" / "No open tickets", exit 0). **Gaps.** none.
+
+---
+
+## F148 — Suspicious-risk audit: 8 verified; 2 fixed (data-safety), 6 filed Low
+
+- **Outcome:** fixed (investigation complete) · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
+- **What happened.** A read-only agent reproduced/refuted the 8 "suspicious" audit risks against the code.
+  All 8 were CONFIRMED as code behaviors; two are real data-safety defects (fixed immediately), the rest
+  are Low (bounded impact / needs-runtime), filed as tickets.
+- **Fixed here (batch 1):** #1 — startup recovery could overwrite a meeting's title/transcript/notes when
+  its `recordingPath` was wrong (its own folder looked orphaned → stub upsert); fixed by skipping folders
+  whose id already has a meeting. #6 — `../` (or empty) `recordingPath` could make `delete()` remove a
+  directory outside the library; fixed with an `isWithinLibrary` containment guard. Both red-green tested.
+- **Filed Low (F150–F155):** #2 WAV UInt32 data-size overflow >~12.4 h; #3 mid-recording capture-gap
+  timestamp drift; #4 Qwen helper eager full-file load (+ pending 30–60 min validation); #5 cancellation
+  doesn't kill descendant ffmpeg/afconvert; #7 OSLog `.public` error text may include paths; #8 aligner
+  treats any CJK char as Chinese on English-dominant chunks.
+- **Evidence.** Per-risk verdicts with file:line in the investigation; #1/#6 fixes verified by tests in
+  batch 1. **Gaps:** the 6 Low items are tracked as F150–F155.
+
+---
+
 ## F138 — Debounced transcript/notes edits now flush on quit/resign, not only on editor disappear
 
 - **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.
@@ -1202,6 +1281,11 @@ planned: an automated SwiftUI render/animation harness — standing limitation p
 - **Outcome:** fixed
 - **Closed:** 2026-07-31 by Codex /root
 - **Commits:** `2a2d1e8` (file + claim), `f310d5f` (dashboard)
+- **Correction (2026-08-03, F147):** this entry describes the ORIGINAL JavaScript/filterable dashboard.
+  That approach was later replaced (this session) by a generated **static** HTML table produced by
+  `Scripts/generate-tickets-dashboard.py` — no JS, no client-side filtering; it is regenerated from the
+  Markdown board on demand. The description above is retained as historical record; the current dashboard
+  is the static generated one.
 - **Reachability:** Open `docs/tickets-dashboard.html` locally → scan status totals and priority
   order → search or filter by status/area/severity → open a ticket detail → follow its local link to
   the authoritative Markdown source. The page makes no network requests and cannot touch recordings

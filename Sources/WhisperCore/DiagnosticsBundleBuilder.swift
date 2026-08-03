@@ -50,6 +50,17 @@ public struct DiagnosticsInput: Sendable {
 /// metadata — ids, timestamps, durations, status, language code, counts, byte sizes, and error
 /// messages — never transcript text, summaries, vocabulary terms, or absolute paths (F70).
 public enum DiagnosticsBundleBuilder {
+    /// Replaces absolute POSIX paths (two or more `/name` components) with `<path>` so a raw error
+    /// message — a Qwen traceback, afconvert stderr, recovery text — can't leak home/absolute paths into
+    /// the "path-free" bundle. Non-path text (e.g. "3/4", "read/write") is untouched (F141).
+    public static func redactPaths(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._%+~-]+)+"#) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "<path>")
+    }
+
     public static func json(_ input: DiagnosticsInput) -> String {
         let meetings: [[String: Any]] = input.meetings.map { meeting in
             // Bind the nil-coalesced values to explicitly-typed locals so `??` resolves to the
@@ -59,7 +70,7 @@ public enum DiagnosticsBundleBuilder {
             // an error (F111). Output bytes are unchanged.
             let languageCode: String = meeting.languageCode ?? ""
             let recordingBytes: Int64 = meeting.recordingBytes ?? -1
-            let errorMessage: String = meeting.errorMessage ?? ""
+            let errorMessage: String = redactPaths(meeting.errorMessage ?? "")
             return [
                 "id": meeting.id,
                 "createdAt": meeting.createdAtEpoch,

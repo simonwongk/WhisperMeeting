@@ -153,7 +153,9 @@ private struct RecordingCommands: Commands {
         case "addMarker":
             model.addLiveMarker()
         case "cancelRecording":
-            Task { await model.cancelRecording() }
+            // Route through the same confirmation as the in-window Cancel button (F139) — never cancel
+            // outright, and never prompt when there's nothing to cancel.
+            model.requestCancelConfirmation()
         case "keyboardShortcuts":
             model.showsShortcutsSheet = true
         default:

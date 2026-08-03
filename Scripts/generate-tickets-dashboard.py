@@ -240,7 +240,13 @@ PAGE = """<!doctype html>
 def main() -> None:
     active = load_active()
     if not active:
-        sys.exit("Parsed zero active tickets — aborting rather than emit an empty dashboard.")
+        # A genuinely empty board (every ticket resolved) is a valid state and must still refresh.
+        # Only abort when the source looks UNPARSED — missing file or a structure we don't recognize —
+        # which is what the original guard was really protecting against (F147).
+        tickets_md = DOCS / "TICKETS.md"
+        if not tickets_md.exists() or "# Open tickets" not in tickets_md.read_text(encoding="utf-8"):
+            sys.exit("Could not parse docs/TICKETS.md (missing or unrecognized) — aborting.")
+        # else: fall through and render a valid "no open tickets" dashboard.
     ids = [t["id"] for t in active]
     if len(ids) != len(set(ids)):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
@@ -251,7 +257,7 @@ def main() -> None:
         counts[t["status"]] = counts.get(t["status"], 0) + 1
     order = ["open", "in-progress", "blocked", "needs-human"]
     parts = [f"{counts[s]} {s.replace('-', ' ')}" for s in order if counts.get(s)]
-    count_line = f"{len(active)} active — " + " · ".join(parts)
+    count_line = f"{len(active)} active" + (" — " + " · ".join(parts) if parts else " — all resolved")
 
     rows = "\n".join(
         "<tr>"
@@ -265,7 +271,7 @@ def main() -> None:
         f'<td class="hide-sm muted">{e(t["owner"])} · {e(t["dependency"])}</td>'
         "</tr>"
         for t in active
-    )
+    ) or '<tr><td colspan="6" class="muted">No open tickets — all resolved. 🎉</td></tr>'
 
     recent = load_recent_closed()
     recent_html = "\n".join(

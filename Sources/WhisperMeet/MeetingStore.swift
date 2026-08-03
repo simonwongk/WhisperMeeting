@@ -70,6 +70,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
     var languageWarning: String?
+    /// The engine that produced this meeting's transcript, recorded so a "second opinion" can run the
+    /// genuine other engine regardless of current Settings (F142). Optional for backward compatibility.
+    var transcriptionEngine: MeetingTranscriptionEngine?
 
     init(
         id: UUID = UUID(),
@@ -91,7 +94,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         tags: [String]? = nil,
         healthReport: RecordingHealthReport? = nil,
         alignmentWarning: String? = nil,
-        languageWarning: String? = nil
+        languageWarning: String? = nil,
+        transcriptionEngine: MeetingTranscriptionEngine? = nil
     ) {
         self.id = id
         self.title = title
@@ -113,6 +117,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.healthReport = healthReport
         self.alignmentWarning = alignmentWarning
         self.languageWarning = languageWarning
+        self.transcriptionEngine = transcriptionEngine
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

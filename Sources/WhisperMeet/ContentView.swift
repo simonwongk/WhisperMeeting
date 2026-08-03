@@ -278,7 +278,6 @@ private struct RecordMeetingView: View {
     @ObservedObject var model: AppModel
     let onMeetingSaved: (UUID) -> Void
     @State private var title = ""
-    @State private var isConfirmingCancellation = false
     @State private var showsImporter = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .largeTitle) private var heroIconSize: CGFloat = 44
@@ -328,7 +327,7 @@ private struct RecordMeetingView: View {
 
             if isRecording {
                 Button("Cancel Recording", role: .destructive) {
-                    isConfirmingCancellation = true
+                    model.requestCancelConfirmation()
                 }
                 .buttonStyle(LinkPressStyle())
             }
@@ -365,7 +364,7 @@ private struct RecordMeetingView: View {
         .onAppear { model.refreshRecordingPreflight() }
         .confirmationDialog(
             "Discard this recording?",
-            isPresented: $isConfirmingCancellation,
+            isPresented: $model.isConfirmingCancellation,
             titleVisibility: .visible
         ) {
             Button("Discard Recording", role: .destructive) {
@@ -1755,6 +1754,7 @@ private struct TranscriptDetailView: View {
                 SecondOpinionSheet(
                     spans: model.secondOpinionSpans,
                     isRunning: model.isRunningAuxiliaryEngine,
+                    failed: model.secondOpinionFailed,
                     onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
                 )
             }
@@ -2397,6 +2397,7 @@ private struct GlossarySuggestionSheet: View {
 private struct SecondOpinionSheet: View {
     let spans: [TranscriptComparisonSpan]?
     let isRunning: Bool
+    let failed: Bool
     let onReplace: (TranscriptComparisonSpan) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var replaced: Set<Int> = []
@@ -2411,7 +2412,12 @@ private struct SecondOpinionSheet: View {
             }
             .padding()
 
-            if isRunning && spans == nil {
+            if failed {
+                Spacer()
+                Label("The other engine couldn't run, so there's no comparison. Make sure it's installed, then try again.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.horizontal)
+                Spacer()
+            } else if isRunning && spans == nil {
                 Spacer()
                 ProgressView("Transcribing with the other engine…").controlSize(.small)
                     .frame(maxWidth: .infinity)
@@ -2422,9 +2428,13 @@ private struct SecondOpinionSheet: View {
                         secondOpinionRow(index: index, span: span)
                     }
                 }
+            } else if spans != nil {
+                Spacer()
+                Text("Both engines agree — no differences to show.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                Spacer()
             } else {
                 Spacer()
-                Text("No differences to show.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                Text("Preparing…").foregroundStyle(.secondary).frame(maxWidth: .infinity)
                 Spacer()
             }
 

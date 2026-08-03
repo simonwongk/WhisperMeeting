@@ -281,6 +281,9 @@ final class AppModel: ObservableObject {
 
     /// Spans of the most recent cross-engine "second opinion", for the review sheet (F88).
     @Published var secondOpinionSpans: [TranscriptComparisonSpan]?
+    /// True when the most recent second-opinion run failed to produce a comparison — so the sheet can
+    /// show an error instead of rendering nil spans as "no differences" (F142).
+    @Published var secondOpinionFailed = false
     /// True while a second-opinion or segment re-run engine pass is in flight (F88/F92).
     @Published private(set) var isRunningAuxiliaryEngine = false
 
@@ -328,6 +331,8 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before requesting a second opinion."
             return
         }
+        secondOpinionFailed = false
+        secondOpinionSpans = nil
         isRunningAuxiliaryEngine = true
         Task {
             await computeSecondOpinion(id: id)
@@ -339,12 +344,17 @@ final class AppModel: ObservableObject {
     /// overwrites the stored transcript — only `applySecondOpinionSpan` does, on explicit user action.
     func computeSecondOpinion(id: UUID) async {
         guard let meeting = store.meeting(id: id), meeting.status == .completed, !meeting.segments.isEmpty else { return }
-        let other: MeetingTranscriptionEngine = selectedEngine == .qwenBalanced ? .whisperLarge : .qwenBalanced
+        secondOpinionFailed = false
+        // Run the genuine OTHER engine relative to the engine that produced this transcript (recorded on
+        // the meeting), not current Settings — otherwise a Settings change could re-run the same engine (F142).
+        let producedBy = meeting.transcriptionEngine ?? selectedEngine
+        let other: MeetingTranscriptionEngine = producedBy == .qwenBalanced ? .whisperLarge : .qwenBalanced
         let selection = MeetingTranscriptionSelection(engine: other, language: selectedLanguage)
         do {
             let result = try await executeEngine(selection, on: store.recordingURL(for: meeting))
             secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
         } catch {
+            secondOpinionFailed = true
             alertMessage = error.localizedDescription
         }
     }
@@ -777,7 +787,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Presents the discard-recording confirmation. Owned by the model so both the in-window button and
+    /// the ⌘ Cancel command route through the SAME confirmation, and never prompt when nothing is being
+    /// recorded (F139).
+    @Published var isConfirmingCancellation = false
+    /// Cancel is only valid while capturing or starting — NOT during finalization (`.stopping`), where a
+    /// cancel would race the Stop, nor when idle (F139).
+    var canCancelRecording: Bool {
+        switch recordingState {
+        case .recording, .starting: return true
+        case .stopping, .idle: return false
+        }
+    }
+    func requestCancelConfirmation() {
+        guard canCancelRecording else { return }
+        isConfirmingCancellation = true
+    }
+
     func cancelRecording() async {
+        // A cancel that arrives during finalization (`.stopping`) or when idle must be a no-op so it
+        // can't race/corrupt a simultaneous Stop (F139).
+        guard canCancelRecording else { return }
         await recorder.cancel()
         recordingState = .idle
         activeMeetingID = nil
@@ -1215,7 +1245,7 @@ final class AppModel: ObservableObject {
             let result = try await executeEngine(settings, on: recordingURL) { progress in
                 await self.apply(progress: progress, to: id)
             }
-            apply(result: result, to: id, requestedLanguage: settings.language)
+            apply(result: result, to: id, requestedLanguage: settings.language, engine: settings.engine)
         } catch is CancellationError {
             handleCancellation(id: id)
         } catch {
@@ -1237,7 +1267,7 @@ final class AppModel: ObservableObject {
     /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30). The
     /// `requestedLanguage` is the engine snapshot's selected language, used for the
     /// "original language only" advisory (F32); it defaults to `.automatic`, which never flags.
-    func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic) {
+    func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic, engine: MeetingTranscriptionEngine? = nil) {
         // Only use segment-derived (timestamped) text when the segments actually reconstruct the full
         // text; otherwise a partially-aligned result would drop content. Fall back to the complete
         // text and drop the incomplete segments so text and segments stay consistent (F144).
@@ -1267,6 +1297,9 @@ final class AppModel: ObservableObject {
             )
             // Freshly produced text is already final; never rebuild it from segments later.
             $0.transcriptNormalized = true
+            // Record which engine produced this transcript so a later "second opinion" runs the genuine
+            // other engine regardless of current Settings (F142).
+            if let engine { $0.transcriptionEngine = engine }
         }
         transcriptionProgress[id] = nil
         postTranscriptionNotification(
