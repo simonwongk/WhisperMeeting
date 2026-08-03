@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F149`.**
+**Next free ID: `F150`.**
 
 ---
 
@@ -15,6 +15,38 @@ Read them before touching this file.** This file holds **open** work only; close
 _Filed 2026-08-03 from an external read-only audit of this session's work (at `22d60bd`). The three
 most urgent (F92 transcript loss, F92 non-WAV slicing, backup free-space false-reject) were fixed
 immediately — see F134/F135/F136 in [`TICKET_LOG.md`](TICKET_LOG.md). The rest are below._
+
+### F149 — System audio not captured (only mic + speaker bleed recorded); likely stale TCC after re-sign
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** high
+- **Area:** recording
+- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), user-reported
+
+**Problem.** On the meeting-recording page, when the computer plays sound the **microphone** meter reacts
+but the **System audio (others)** meter stays flat (user confirmed: on speakers, system bar flat). The
+mic bar moving is acoustic bleed (the mic hears the speakers); the real issue is that **system audio is
+not being captured**, so remote participants are absent from the recording/transcript.
+
+**Investigation (code path verified correct).** No channel swap: `AudioCaptureEngine.stream(_:didOutputSampleBuffer:of:)`
+maps `.audio`→system writer/channel and `.microphone`→mic (`AudioCaptureEngine.swift:294-306`); the
+`SCStreamConfiguration` sets `capturesAudio = true`, `captureMicrophone = true`,
+`excludesCurrentProcessAudio = true` and registers both `.audio` and `.microphone` outputs (`:151-164`);
+`RecordingLevelMeter` and the two UI bars (`ContentView.swift:547-559`) map channels correctly. The app
+already warns "No system audio has been detected yet…" (`ContentView.swift:704`). So this is a runtime/
+capture condition, not a wiring bug, and it is NOT a regression from this session (capture code untouched).
+
+**Prime suspect.** The "Screen & System Audio Recording" TCC permission is stale/ineffective for the
+newly stable-signed build (F131 changed the signing identity ad-hoc→"WhisperMeet Dev"; TCC treats a
+re-signed app as new). Mic (separate permission) was re-granted; system-audio/screen-recording was not
+fully re-applied — the stream still starts (mic captured) but delivers no `.audio`.
+
+**Next steps.** (1) User re-grants permission and reports (see NEEDS_HUMAN F149). (2) If system audio is
+still flat after a clean re-grant, instrument `stream(_:didOutputSampleBuffer:)` to log whether any
+`.audio` buffers arrive vs arrive-but-silent, and diagnose the real cause (SCK config/filter, macOS
+version behavior). **Verification.** System bar moves on computer sound; `systemAudioEverDetected` true;
+a recorded meeting contains the other participants.
 
 ### F138 — Transcript/notes edits can be lost on app termination (debounce not flushed on quit)
 
