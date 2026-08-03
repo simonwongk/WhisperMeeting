@@ -68,3 +68,69 @@ func segmentReRunSplicesWithoutTouchingAudio() async throws {
     #expect(try Data(contentsOf: wavURL) == wavBefore)
     #expect(try Data(contentsOf: manifestURL) == manifestBefore)
 }
+
+// F92 (audit fix) — if the re-run returns no timestamped segments (a valid Qwen outcome when alignment
+// fails), the original segment's text must be PRESERVED, never replaced with nothing.
+@MainActor
+@Test("Per-segment re-run with an empty result keeps the original segment (no transcript loss)")
+func segmentReRunWithEmptyResultPreservesOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("SegRerunEmpty-\(UUID().uuidString)")
+    let id = UUID()
+    let dir = root.appendingPathComponent("Recordings/\(id.uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try writeSilentWav(seconds: 3, to: dir.appendingPathComponent("meeting.wav"))
+
+    let defaults = UserDefaults(suiteName: "F92e.\(UUID().uuidString)")!
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
+    let segments = [seg("first", 0, 1), seg("keep me", 1, 2), seg("third", 2, 3)]
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .completed, transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    // The engine returns text but no timestamped segments.
+    model.runTranscriptionEngineOverride = { _, _ in
+        TranscriptionResult(id: "x", text: "unaligned text", languageCode: "en",
+                            audioDuration: 1, confidence: nil, segments: [])
+    }
+
+    await model.reTranscribeSegment(id: id, index: 1)
+
+    let updated = model.store.meeting(id: id)
+    #expect(updated?.segments.count == 3)
+    #expect(updated?.segments[1].text == "keep me")   // preserved, not deleted
+}
+
+// F92 (audit fix) — an imported recording that isn't a PCM WAV must not be sliced as raw WAV bytes;
+// re-run leaves the transcript untouched and surfaces guidance instead of producing garbage.
+@MainActor
+@Test("Per-segment re-run refuses a non-WAV recording and leaves the transcript intact")
+func segmentReRunRefusesNonWavRecording() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("SegRerunNonWav-\(UUID().uuidString)")
+    let id = UUID()
+    let dir = root.appendingPathComponent("Recordings/\(id.uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // An imported file kept its original container: no RIFF/WAVE header.
+    let recURL = dir.appendingPathComponent("meeting.m4a")
+    try Data(repeating: 0x41, count: 4_096).write(to: recURL)
+
+    let defaults = UserDefaults(suiteName: "F92n.\(UUID().uuidString)")!
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
+    let segments = [seg("first", 0, 1), seg("second", 1, 2)]
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.m4a",
+        status: .completed, transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    var engineRan = false
+    model.runTranscriptionEngineOverride = { _, _ in
+        engineRan = true
+        return TranscriptionResult(id: "x", text: "junk", languageCode: "en", audioDuration: 1, confidence: nil, segments: [seg("junk", 0, 1)])
+    }
+
+    await model.reTranscribeSegment(id: id, index: 1)
+
+    #expect(engineRan == false)                                   // never fed garbage bytes to an engine
+    #expect(model.store.meeting(id: id)?.segments[1].text == "second")   // transcript intact
+    #expect(model.alertMessage != nil)                            // guidance surfaced
+}

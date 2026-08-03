@@ -69,6 +69,21 @@ final class RecordingMeterViewModel: ObservableObject {
     }
 }
 
+/// Why a per-segment re-run could not slice a clip (F92 audit fixes).
+enum SegmentReRunError: LocalizedError {
+    case unsupportedRecordingFormat
+    case unreadableRecording
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedRecordingFormat:
+            return "This recording isn't a native WAV, so a single segment can't be re-transcribed in place. Re-transcribe the whole meeting instead."
+        case .unreadableRecording:
+            return "The recording could not be read for re-transcription."
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum RecordingState: Equatable {
@@ -359,6 +374,12 @@ final class AppModel: ObservableObject {
             )
             defer { try? FileManager.default.removeItem(at: clipURL) }
             let result = try await executeEngine(selection, on: clipURL)
+            // A re-run can validly return text with no timestamped segments (alignment failure). Splicing
+            // an empty array would DELETE the segment's text — keep the original instead (F92 audit fix).
+            guard !result.segments.isEmpty else {
+                alertMessage = "Re-transcribing that segment produced no timestamped text, so the original was kept."
+                return
+            }
             store.update(id: id) { meeting in
                 guard meeting.segments.indices.contains(index) else { return }
                 let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: result.segments)
@@ -386,16 +407,31 @@ final class AppModel: ObservableObject {
     /// sample rate from the WAV header (the recording is 48 kHz, not 16 kHz) so the byte range is
     /// correct, then re-wraps the PCM slice with a fresh header. Never modifies the source (F92).
     static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
-        let data = try Data(contentsOf: wavURL)
-        guard data.count >= SegmentAudioRange.headerBytes else { throw QwenASRError.recordingNotFound }
-        let sampleRate = data.withUnsafeBytes { raw -> UInt32 in
+        let handle = try FileHandle(forReadingFrom: wavURL)
+        defer { try? handle.close() }
+        guard let header = try handle.read(upToCount: SegmentAudioRange.headerBytes),
+              header.count >= SegmentAudioRange.headerBytes else {
+            throw SegmentReRunError.unreadableRecording
+        }
+        // Only a canonical PCM WAV can be byte-sliced. Imported recordings keep their original container
+        // (.m4a/.mp3/.mp4/.mov/.aiff/.caf); slicing those as raw WAV bytes would produce garbage, so
+        // refuse and let the caller guide the user (F92 audit fix).
+        guard header.prefix(4).elementsEqual(Array("RIFF".utf8)),
+              header.subdata(in: 8..<12).elementsEqual(Array("WAVE".utf8)) else {
+            throw SegmentReRunError.unsupportedRecordingFormat
+        }
+        let sampleRate = header.withUnsafeBytes { raw -> UInt32 in
             raw.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian
         }
+        let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? SegmentAudioRange.headerBytes
         let range = SegmentAudioRange.byteRange(
             startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate)
         )
-        let clamped = range.clamped(to: SegmentAudioRange.headerBytes..<data.count)
-        let pcm = data.subdata(in: clamped)
+        let clamped = range.clamped(to: SegmentAudioRange.headerBytes..<max(SegmentAudioRange.headerBytes, fileSize))
+        // Partial read: seek to the clip's byte range and read only those bytes — never the whole file,
+        // so a multi-hundred-MB recording doesn't load into memory on the main actor (F92 audit fix).
+        try handle.seek(toOffset: UInt64(clamped.lowerBound))
+        let pcm = (try handle.read(upToCount: clamped.count)) ?? Data()
         var clip = WAVWriter.header(sampleRate: sampleRate, dataByteCount: UInt32(pcm.count))
         clip.append(pcm)
         let url = FileManager.default.temporaryDirectory

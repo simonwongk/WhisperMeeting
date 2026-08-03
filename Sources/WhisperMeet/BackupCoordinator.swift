@@ -43,10 +43,12 @@ enum BackupCoordinator {
         let previousFiles = previousDir.map { (try? descriptors(of: $0)) ?? [] } ?? []
         let plan = BackupPlan.compute(source: sourceFiles, destination: previousFiles)
 
-        // Pre-copy free-space check for the bytes that will actually be copied.
+        // Pre-copy free-space check for the bytes that will actually be copied. Only reject on a
+        // credible positive reading below the need — see `shouldRejectForSpace` (F90 audit fix).
         let bytesToCopy = plan.filter { $0.action == .copy }.reduce(Int64(0)) { $0 + $1.file.size }
-        if let available = availableCapacity(at: destination), available < bytesToCopy {
-            throw BackupCoordinatorError.insufficientSpace(needed: bytesToCopy, available: available)
+        let available = availableCapacity(at: destination)
+        if shouldRejectForSpace(available: available, needed: bytesToCopy) {
+            throw BackupCoordinatorError.insufficientSpace(needed: bytesToCopy, available: available ?? 0)
         }
 
         let generationDir = destination.appendingPathComponent(String(now), isDirectory: true)
@@ -134,6 +136,14 @@ enum BackupCoordinator {
     private static func sha256(of url: URL) throws -> String {
         let digest = SHA256.hash(data: try Data(contentsOf: url))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Whether to reject a backup for lack of space. Rejects ONLY on a credible positive capacity
+    /// reading below the need; a nil (unknown) or non-positive reading — which macOS returns for
+    /// `volumeAvailableCapacityForImportantUsage` on some volumes — never blocks (F90 audit fix).
+    static func shouldRejectForSpace(available: Int64?, needed: Int64) -> Bool {
+        guard needed > 0, let available, available > 0 else { return false }
+        return available < needed
     }
 
     private static func availableCapacity(at url: URL) -> Int64? {

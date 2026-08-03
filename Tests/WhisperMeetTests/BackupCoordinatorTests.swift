@@ -8,6 +8,18 @@ import Testing
 // skip (hardlinked, not re-copied), changed/new files copy and verify, the source is never modified,
 // and old generations prune under the retention policy.
 
+// F90 (audit fix) — the free-space check must only reject on a CREDIBLE positive reading below the need.
+// macOS reports 0/unknown for volumeAvailableCapacityForImportantUsage on some volumes, which was
+// false-rejecting valid backups (and made this suite flaky).
+@Test("Backup free-space check treats 0/unknown capacity as 'do not block' (F90 audit)")
+func backupFreeSpaceCheckTreatsUnknownAsAvailable() {
+    #expect(BackupCoordinator.shouldRejectForSpace(available: nil, needed: 100) == false)   // unknown
+    #expect(BackupCoordinator.shouldRejectForSpace(available: 0, needed: 100) == false)      // the bug case
+    #expect(BackupCoordinator.shouldRejectForSpace(available: 50, needed: 100) == true)      // real shortfall
+    #expect(BackupCoordinator.shouldRejectForSpace(available: 200, needed: 100) == false)    // enough
+    #expect(BackupCoordinator.shouldRejectForSpace(available: 100, needed: 0) == false)      // nothing to copy
+}
+
 private func write(_ text: String, to url: URL) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data(text.utf8).write(to: url)

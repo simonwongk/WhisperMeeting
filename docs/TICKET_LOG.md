@@ -14,6 +14,83 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F134 — Per-segment re-run could DELETE a segment's text when the re-run had no timestamps
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-03 by Claude Code (Opus 4.8)
+- **Origin:** external audit of this session's F92 work (read-only review at `22d60bd`).
+- **Reachability:** meeting detail → segment context menu "Re-transcribe this segment" →
+  `AppModel.reTranscribeSegment` (`AppModel.swift`).
+
+**Root cause.** A re-run can validly return text with **no** timestamped segments (alignment failure).
+`reTranscribeSegment` spliced `result.segments` in unconditionally, so
+`TranscriptSegmentSplice.splice(_, replacingIndex:, with: [])` replaced the targeted segment with
+nothing — silently deleting that line of the transcript.
+
+**Fix.** Guard: if `result.segments.isEmpty`, keep the original segment and surface a note instead of
+splicing. Critical data-loss fix on a feature that is live in the installed app.
+
+**Evidence.** Red-green (`SegmentRerunWiringTests.segmentReRunWithEmptyResultPreservesOriginal`): with a
+stub engine returning `segments: []`, before the fix the segment count dropped 3→2 and "keep me" was
+lost (`(segments.count → 2) == 3` failed); after, all 3 segments remain and the text is preserved. Full
+gate green.
+
+**Gaps.** None. The empty-result path now preserves data.
+
+---
+
+## F135 — Per-segment re-run sliced non-WAV imports as raw bytes and loaded the whole recording
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-03 by Claude Code (Opus 4.8)
+- **Origin:** external audit of F92.
+- **Reachability:** same path as F134 → `AppModel.makeSegmentClip`.
+
+**Root cause.** `makeSegmentClip` assumed a 44-byte PCM WAV, but imported recordings keep their original
+container (`.m4a/.mp3/.mp4/.mov/.aiff/.caf`) — slicing those as raw WAV bytes fed garbage to the engine.
+It also `Data(contentsOf:)`-loaded the *entire* recording on the main actor (a 1-hour 48 kHz mono file is
+~346 MB), risking a UI stall / memory spike.
+
+**Fix.** `makeSegmentClip` now validates the `RIFF`/`WAVE` header and throws
+`SegmentReRunError.unsupportedRecordingFormat` for anything else (the caller surfaces "re-transcribe the
+whole meeting instead"); and it reads only the clip's byte range via `FileHandle` seek+read rather than
+loading the whole file.
+
+**Evidence.** Red-green (`SegmentRerunWiringTests.segmentReRunRefusesNonWavRecording`): with a `.m4a`
+recording (no RIFF header), before the fix the engine ran on garbage and the transcript was corrupted;
+after, the engine never runs, the transcript is intact, and guidance is surfaced. The original
+splice-and-verify test still passes with the partial read. Full gate green.
+
+**Gaps.** **Not planned:** decode-first for segment re-run of imported non-WAV containers — the whole
+meeting can be re-transcribed (which uses the F118 decode-first path); per-segment slicing stays
+WAV-only.
+
+---
+
+## F136 — Backup free-space check false-rejected valid backups when capacity read as 0/unknown
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-03 by Claude Code (Opus 4.8)
+- **Origin:** external audit — the check also made `BackupCoordinatorTests` flaky
+  (`insufficientSpace(needed: 23, available: 0)`).
+- **Reachability:** Settings → "Back up library…" → `AppModel.backUpLibrary` → `BackupCoordinator.backUp`.
+
+**Root cause.** `if let available = availableCapacity(...), available < bytesToCopy { throw }` rejected a
+backup whenever `volumeAvailableCapacityForImportantUsage` returned **0** (which macOS does on some
+volumes), because `0 < needed` — a false rejection, and the cause of the flaky test.
+
+**Fix.** Extracted a pure `BackupCoordinator.shouldRejectForSpace(available:needed:)` that rejects **only**
+on a credible positive reading below the need; nil/0/unknown never blocks.
+
+**Evidence.** Red-green (`backupFreeSpaceCheckTreatsUnknownAsAvailable`): `(nil,100)→false`, `(0,100)→false`,
+`(50,100)→true`, `(200,100)→false`, `(100,0)→false`. The previously-flaky
+`backupCoordinatorSnapshotsAndPrunes` now passes reliably. Full gate green.
+
+**Gaps.** Broader backup-safety issues (numeric-folder pruning, source/dest overlap, incomplete-generation
+markers, backup-while-recording, App-Support scope, off-main work) are tracked separately in **F137**.
+
+---
+
 ## F88 — "Second opinion" cross-engine comparison wired in (delivers F73)
 
 - **Outcome:** fixed
