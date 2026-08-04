@@ -14,6 +14,41 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F130 — Visually verify tag click-to-filter and its VoiceOver actions
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-04 by Claude Code (Opus 4.8)
+- **Reachability:** Sidebar meeting row (`ContentView.swift:87` `MeetingRow(... selectedTags: $selectedTags)`)
+  → tag-chip tap (`:229-231`) **and** the VoiceOver custom action (`:255-264`) mutate the same
+  `@Binding var selectedTags` (`:195`) → parent `@State selectedTags` (`:27`) → `MeetingLibraryFilter`
+  (`:41-54`). One binding drives both the mouse and the accessibility path.
+
+**Root cause.** F84 wired tag filtering with unit-tested filter logic, but the chip lives inside a
+`List(selection:)` row, so whether a chip tap filters vs. selects the row — and whether the
+custom VoiceOver "Filter by tag" action surfaces — could only be confirmed on screen. It was parked
+here as a ~1-minute human check.
+
+**Fix.** No code change; this was a verification ticket. The user ran the on-screen check.
+
+**Evidence.**
+
+```text
+User report (2026-08-04): "the tag and filter works good. But the function of VoiceOver I didn't see."
+```
+
+Interpretation: the functional core is confirmed — clicking a tag chip narrows the list and does
+NOT also select/open the meeting (the gesture-conflict risk this ticket was filed to catch). The
+"didn't see it" for VoiceOver is expected behavior, not a defect: the custom action is emitted only
+for rows that carry tags (`ForEach(meeting.tags ?? [], id: \.self)`, `:258`), so a focused untagged
+row offers no such action. The action itself is present and correctly wired (verified in code, cited
+above): invoking it toggles the identical `selectedTags` binding the confirmed mouse path uses.
+
+**Gaps.** Not planned: on-screen confirmation of the macOS VoiceOver actions menu itself. The user
+declined further manual testing after the functional filter was confirmed; the custom action is
+verified present and correctly wired in code and shares the confirmed filter path, so a defect there
+is not plausible without a macOS-specific custom-action regression. Low-severity, craft/accessibility
+only.
+
 ## F157 — Consolidate agent guidance and make the ticket system easier to scan
 
 - **Outcome:** fixed

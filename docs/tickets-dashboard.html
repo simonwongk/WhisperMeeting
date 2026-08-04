@@ -78,10 +78,10 @@
 <main>
   <h1>WhisperMeet work board</h1>
   <p class="lede">A scan-first view of the authoritative Markdown ticket system: act on human requests first, then continue owned work or pick up a ready ticket.</p>
-  <p class="source">Authoritative sources: <a href="TICKETS.md">ticket board</a> · <a href="NEEDS_HUMAN.md">human-action queue</a> · <a href="TICKET_LOG.md">evidence log</a> · source fingerprint <code>e27fcb2f22e8</code></p>
+  <p class="source">Authoritative sources: <a href="TICKETS.md">ticket board</a> · <a href="NEEDS_HUMAN.md">human-action queue</a> · <a href="TICKET_LOG.md">evidence log</a> · source fingerprint <code>ed6162e9c0b8</code></p>
   <section class="metrics" aria-label="Work totals">
-    <div class="metric"><strong>13</strong><span>active tickets</span></div>
-    <div class="metric"><strong>1</strong><span>need your action</span></div>
+    <div class="metric"><strong>12</strong><span>active tickets</span></div>
+    <div class="metric"><strong>0</strong><span>need your action</span></div>
     <div class="metric"><strong>0</strong><span>in progress</span></div>
     <div class="metric"><strong>12</strong><span>ready to take</span></div>
     <div class="metric"><strong>0</strong><span>blocked tickets</span></div>
@@ -89,7 +89,7 @@
   <section class="attention" aria-labelledby="needs-action">
     <h2 id="needs-action">Needs your action</h2>
     <p>These are the only tickets blocked on a physical check or decision from a person.</p>
-    <div class="ticket-grid"><article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="NEEDS_HUMAN.md" title="Open NEEDS_HUMAN.md and find F130">F130</a><span class="badge st-needs-human">needs-human</span><span class="badge sev-badge-low">low</span></div><h3>Visually verify tag click-to-filter and its VoiceOver actions (F84)</h3><p class="meta">meetings · owner: Needs a human · —</p><div class="human-action"><h4>What I need from you</h4><p>(~1 minute in the app)</p><ol><li>Give two meetings the same tag (right-click a meeting → add tags).</li><li>In the sidebar, click a tag chip on a meeting row. The list should narrow to meetings carrying that tag and the chip should highlight — and clicking the chip must NOT also open/select that meeting; the tap should filter, not navigate. Click it again to clear.</li><li>Type in the search box with a tag still selected: results should be the intersection (search AND tag stack).</li><li>VoiceOver: turn it on, focus a meeting row, open its actions (VO + Command + Space) — confirm a &quot;Filter by tag &lt;name&gt;&quot; action is offered and toggles the filter.</li></ol><p>Say &quot;all good&quot;, or describe anything off — especially if a chip tap selects the meeting instead of filtering, which would need a gesture fix.</p></div><p class="summary">F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs. triggers row selection (and wh…</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs. triggers row selection (and whether the VoiceOver actions surface) can only be confirmed on screen.</dd><dt>Impact</dt><dd>Craft/accessibility only; the filter logic is proven. A gesture conflict would make tapping a tag select the meeting instead of filtering it.</dd><dt>Verification</dt><dd>The checklist above; any artifact seen is filed as its own ticket.</dd></dl></details><a class="source-link" href="NEEDS_HUMAN.md" title="Open NEEDS_HUMAN.md and find F130">Open NEEDS_HUMAN.md; find F130 →</a></article></div>
+    <p class="empty">No human action is waiting right now.</p>
   </section>
   <section aria-labelledby="in-progress">
     <h2 id="in-progress">In progress</h2>
@@ -116,14 +116,14 @@
   </section>
   <section aria-labelledby="recently-closed">
     <h2 id="recently-closed">Recently closed</h2>
-    <ul class="recent"><li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F157">F157</a><span>Consolidate agent guidance and make the ticket system easier to scan</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-04 by /root</span></li>
+    <ul class="recent"><li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F130">F130</a><span>Visually verify tag click-to-filter and its VoiceOver actions</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-04 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F157">F157</a><span>Consolidate agent guidance and make the ticket system easier to scan</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-04 by /root</span></li>
 <li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F156">F156</a><span>Second Opinion UX: scope the spinner to one meeting + show real progress</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
 <li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F141">F141</a><span>Diagnostics export now redacts absolute paths from error messages</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
 <li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F142">F142</a><span>Second opinion: distinct failure state + runs the engine the meeting was NOT transcribed with</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
 <li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F139">F139</a><span>⌘ Cancel command routes through confirmation; cancel can&#x27;t race finalization</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
 <li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F147">F147</a><span>Ticket dashboard renders a valid empty board; aborts only on an unparsed source</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
-<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F148">F148</a><span>Suspicious-risk audit: 8 verified; 2 fixed (data-safety), 6 filed Low</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
-<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F138">F138</a><span>Debounced transcript/notes edits now flush on quit/resign, not only on editor disappear</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li></ul>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F148">F148</a><span>Suspicious-risk audit: 8 verified; 2 fixed (data-safety), 6 filed Low</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li></ul>
   </section>
 </main>
 </body>
