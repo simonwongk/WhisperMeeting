@@ -2,6 +2,12 @@
 .DS_Store
 *.xcuserstate
 
+# Local AI-tool state and generated work reports
+.claude/
+.superpowers/
+# AGENTS.md is the single agent guide; do not restore the retired pointer.
+CLAUDE.md
+
 # Python bytecode
 __pycache__/
 *.pyc

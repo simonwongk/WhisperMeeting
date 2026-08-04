@@ -4,72 +4,127 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>WhisperMeet Ticket Board</title>
+<title>WhisperMeet Work Board</title>
 <style>
-  :root { --bg:#f6f7f9; --panel:#fff; --text:#1f2430; --muted:#6b7280; --line:#e2e5ea;
-           --open:#2559d8; --open-bg:#e7edfd; --prog:#166534; --prog-bg:#e5f5ea;
-           --wait:#8a5800; --wait-bg:#fff2d4; --med:#b42318; --med-bg:#fdecea; --low:#6b7280; --low-bg:#eef0f3;
-           font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",sans-serif; }
+  :root {
+    --bg:#f5f7fa; --panel:#fff; --text:#20242c; --muted:#667085; --line:#dfe3ea;
+    --accent:#2559d8; --accent-bg:#e9efff; --progress:#14723d; --progress-bg:#e4f5e9;
+    --attention:#9a6100; --attention-bg:#fff3d6; --danger:#b42318; --danger-bg:#fdecea;
+    --low:#596273; --low-bg:#eef1f5;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",sans-serif;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#111318; --panel:#1a1d23; --text:#eceef2; --muted:#9aa0ac; --line:#2c313a;
-             --open:#8fb0ff; --open-bg:#1e2a4d; --prog:#8bdca6; --prog-bg:#183a27; --wait:#ffce74; --wait-bg:#3d2f18;
-             --med:#ff9d93; --med-bg:#412220; --low:#9aa0ac; --low-bg:#262a31; } }
+    :root {
+      --bg:#111318; --panel:#1a1d23; --text:#edf0f5; --muted:#a1a8b5; --line:#2d323b;
+      --accent:#97b5ff; --accent-bg:#1c2b4e; --progress:#8de0aa; --progress-bg:#163c28;
+      --attention:#ffd279; --attention-bg:#41321a; --danger:#ffaaa2; --danger-bg:#452321;
+      --low:#b2bac7; --low-bg:#292e36;
+    }
+  }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); }
-  main { max-width:1080px; margin:0 auto; padding:28px 20px 56px; }
-  h1 { margin:0 0 4px; font-size:1.7rem; letter-spacing:-0.02em; }
-  h2 { margin:32px 0 10px; font-size:1.05rem; }
-  .sub { margin:2px 0; color:var(--muted); font-size:0.88rem; }
-  .sub a { color:var(--open); }
-  table { width:100%; border-collapse:collapse; margin-top:16px; }
-  th, td { text-align:left; padding:10px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-size:0.74rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; }
-  tr:hover td { background:color-mix(in srgb, var(--line) 30%, transparent); }
-  .id { font-weight:700; color:var(--open); white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .title { font-weight:600; }
-  .summary { color:var(--muted); font-size:0.85rem; margin-top:2px; }
-  .muted { color:var(--muted); font-size:0.85rem; white-space:nowrap; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.75rem; white-space:nowrap; }
-  .st-open { background:var(--open-bg); color:var(--open); }
-  .st-in-progress { background:var(--prog-bg); color:var(--prog); }
-  .st-blocked, .st-needs-human { background:var(--wait-bg); color:var(--wait); }
-  .sev-high, .sev-medium { background:var(--med-bg); color:var(--med); }
-  .sev-low { background:var(--low-bg); color:var(--low); }
-  ul.recent { margin:8px 0 0; padding:0; list-style:none; }
-  ul.recent li { padding:7px 0; border-bottom:1px solid var(--line); font-size:0.9rem; }
-  ul.recent .id { margin-right:6px; }
-  ul.recent em { color:var(--muted); font-style:normal; }
-  @media (max-width:640px) { .hide-sm { display:none; } main { padding:20px 12px 40px; } }
+  main { max-width:1120px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { margin:0; font-size:clamp(1.7rem, 4vw, 2.25rem); letter-spacing:-.035em; }
+  h2 { margin:36px 0 12px; font-size:1.15rem; letter-spacing:-.01em; }
+  h3 { margin:10px 0 5px; font-size:1rem; line-height:1.3; }
+  h4 { margin:0 0 6px; font-size:.83rem; }
+  p { line-height:1.45; }
+  a { color:var(--accent); }
+  .lede { margin:8px 0 0; color:var(--muted); max-width:72ch; }
+  .source { margin:8px 0 0; color:var(--muted); font-size:.85rem; }
+  .source code { font-size:.9em; }
+  .metrics { display:grid; grid-template-columns:repeat(auto-fit, minmax(145px, 1fr)); gap:10px; margin-top:24px; }
+  .metric { padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+  .metric strong { display:block; font-size:1.45rem; font-variant-numeric:tabular-nums; }
+  .metric span { color:var(--muted); font-size:.84rem; }
+  .attention { margin-top:28px; padding:18px; border:1px solid color-mix(in srgb, var(--attention) 35%, var(--line)); border-radius:14px; background:var(--attention-bg); }
+  .attention h2 { margin:0 0 4px; }
+  .attention > p { margin:0 0 14px; color:var(--muted); }
+  .ticket-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }
+  .ticket-card { padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel); box-shadow:0 1px 1px color-mix(in srgb, var(--text) 4%, transparent); }
+  .ticket-card.sev-high, .ticket-card.sev-medium { border-left:4px solid var(--danger); }
+  .ticket-card.sev-low { border-left:4px solid var(--low); }
+  .ticket-top { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .id { font-weight:750; text-decoration:none; font-variant-numeric:tabular-nums; }
+  .badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:.72rem; font-weight:650; white-space:nowrap; }
+  .st-open { color:var(--accent); background:var(--accent-bg); }
+  .st-in-progress { color:var(--progress); background:var(--progress-bg); }
+  .st-blocked, .st-needs-human { color:var(--attention); background:var(--attention-bg); }
+  .sev-badge-high, .sev-badge-medium { color:var(--danger); background:var(--danger-bg); }
+  .sev-badge-low { color:var(--low); background:var(--low-bg); }
+  .meta, .summary { margin:4px 0 0; color:var(--muted); font-size:.86rem; }
+  .human-action { margin-top:12px; padding:11px 12px; border-radius:9px; background:color-mix(in srgb, var(--attention-bg) 72%, var(--panel)); }
+  .human-action p { margin:0 0 7px; font-size:.9rem; }
+  .human-action ol { margin:0; padding-left:20px; font-size:.9rem; line-height:1.45; }
+  details { margin-top:12px; color:var(--muted); font-size:.86rem; }
+  summary { cursor:pointer; color:var(--accent); }
+  dl { margin:9px 0 0; }
+  dt { margin-top:8px; color:var(--text); font-weight:650; }
+  dd { margin:2px 0 0; }
+  .source-link { display:inline-block; margin-top:13px; font-size:.86rem; font-weight:600; }
+  .empty { margin:0; padding:15px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); }
+  .recent { margin:0; padding:0; list-style:none; border-top:1px solid var(--line); }
+  .recent li { display:flex; gap:8px; align-items:baseline; padding:10px 0; border-bottom:1px solid var(--line); }
+  .recent .outcome, .recent .closed { color:var(--muted); font-size:.86rem; }
+  @media (max-width:700px) {
+    main { padding:24px 14px 48px; }
+    .metrics { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .ticket-grid { grid-template-columns:1fr; }
+    .recent li { align-items:flex-start; flex-wrap:wrap; }
+  }
 </style>
 </head>
 <body>
 <main>
-<h1>WhisperMeet Ticket Board</h1>
-<p class="sub">7 active — 6 open · 1 needs human</p>
-<p class="sub">Generated August 3, 2026 from <a href="TICKETS.md">TICKETS.md</a>, <a href="NEEDS_HUMAN.md">NEEDS_HUMAN.md</a>, and <a href="TICKET_LOG.md">TICKET_LOG.md</a> · refresh with <code>Scripts/generate-tickets-dashboard.py</code></p>
-<table>
-<thead><tr><th>ID</th><th>Ticket</th><th>Status</th><th>Sev</th><th class="hide-sm">Area</th><th class="hide-sm">Owner / dependency</th></tr></thead>
-<tbody>
-<tr><td class="id">F150</td><td><div class="title">WAV UInt32 data-size field overflows for a single meeting longer than ~12.4 h</div><div class="summary">meeting.wav is 48 kHz mono 16-bit (96 000 B/s), so the UInt32 data-chunk size (AudioCaptureEngine.swift:686, clamped) and the wrapping RIFF size (WAVWriter.swift:14) overflow at ~44 739 s ≈ 12.43 h.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">recording</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F151</td><td><div class="title">Mid-recording capture gaps drift because only the initial presentation offset is applied</div><div class="summary">FloatTrackWriter records a presentation time only for the first buffer (AudioCaptureEngine.swift:587-589) and writes subsequent buffers contiguously with no gap detection; the mixer pads only by the i…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">recording</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F152</td><td><div class="title">Qwen helper loads the whole decoded recording before chunking; long-meeting validation pending</div><div class="summary">Scripts/qwen_transcribe.py:126 decodes the entire file into one array before chunking, and retains it for alignment slicing (~230 MB for 60 min @16 kHz mono float32, plus decode/model working set).</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F153</td><td><div class="title">Cancellation doesn't kill descendant processes (ffmpeg/afconvert)</div><div class="summary">ProcessCancellationController.cancel sends SIGTERM to the direct child PID only (LocalWhisperClient.swift:321-328); no process group is created/signaled, so a grandchild ffmpeg/ afconvert spawned by t…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F154</td><td><div class="title">OSLog logs .public error text that can include absolute paths</div><div class="summary">Capture/dictation failures log \(error.localizedDescription, privacy: .public) (AudioCaptureEngine.swift:187-189, Dictation/DictationController.swift:212,270,372,433), which can embed absolute paths i…</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">privacy</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F155</td><td><div class="title">Qwen aligner treats any CJK character as Chinese on English-dominant chunks</div><div class="summary">The per-chunk aligner language is Chinese if a chunk contains ANY CJK scalar (Scripts/qwen_transcribe.py:25-28), unlike top-level detection's majority rule.</div></td><td><span class="badge st-open">open</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">transcription</td><td class="hide-sm muted">Unowned · —</td></tr>
-<tr><td class="id">F130</td><td><div class="title">Visually verify tag click-to-filter and its VoiceOver actions (F84)</div><div class="summary">F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs.</div></td><td><span class="badge st-needs-human">needs-human</span></td><td><span class="badge sev-low">low</span></td><td class="hide-sm">meetings</td><td class="hide-sm muted">Needs a human · —</td></tr>
-</tbody>
-</table>
-<h2>Recently closed</h2>
-<ul class="recent">
-<li><span class="id">F156</span>Second Opinion UX: scope the spinner to one meeting + show real pr… <em>— fixed</em></li>
-<li><span class="id">F141</span>Diagnostics export now redacts absolute paths from error messages <em>— fixed</em></li>
-<li><span class="id">F142</span>Second opinion: distinct failure state + runs the engine the meeti… <em>— fixed</em></li>
-<li><span class="id">F139</span>⌘ Cancel command routes through confirmation; cancel can't race fi… <em>— fixed</em></li>
-<li><span class="id">F147</span>Ticket dashboard renders a valid empty board; aborts only on an un… <em>— fixed</em></li>
-<li><span class="id">F148</span>Suspicious-risk audit: 8 verified; 2 fixed (data-safety), 6 filed… <em>— fixed</em></li>
-<li><span class="id">F138</span>Debounced transcript/notes edits now flush on quit/resign, not onl… <em>— fixed</em></li>
-<li><span class="id">F140</span>Normal transcription + Qwen installer now refuse while an auxiliar… <em>— fixed</em></li>
-</ul>
+  <h1>WhisperMeet work board</h1>
+  <p class="lede">A scan-first view of the authoritative Markdown ticket system: act on human requests first, then continue owned work or pick up a ready ticket.</p>
+  <p class="source">Authoritative sources: <a href="TICKETS.md">ticket board</a> · <a href="NEEDS_HUMAN.md">human-action queue</a> · <a href="TICKET_LOG.md">evidence log</a> · source fingerprint <code>e27fcb2f22e8</code></p>
+  <section class="metrics" aria-label="Work totals">
+    <div class="metric"><strong>13</strong><span>active tickets</span></div>
+    <div class="metric"><strong>1</strong><span>need your action</span></div>
+    <div class="metric"><strong>0</strong><span>in progress</span></div>
+    <div class="metric"><strong>12</strong><span>ready to take</span></div>
+    <div class="metric"><strong>0</strong><span>blocked tickets</span></div>
+  </section>
+  <section class="attention" aria-labelledby="needs-action">
+    <h2 id="needs-action">Needs your action</h2>
+    <p>These are the only tickets blocked on a physical check or decision from a person.</p>
+    <div class="ticket-grid"><article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="NEEDS_HUMAN.md" title="Open NEEDS_HUMAN.md and find F130">F130</a><span class="badge st-needs-human">needs-human</span><span class="badge sev-badge-low">low</span></div><h3>Visually verify tag click-to-filter and its VoiceOver actions (F84)</h3><p class="meta">meetings · owner: Needs a human · —</p><div class="human-action"><h4>What I need from you</h4><p>(~1 minute in the app)</p><ol><li>Give two meetings the same tag (right-click a meeting → add tags).</li><li>In the sidebar, click a tag chip on a meeting row. The list should narrow to meetings carrying that tag and the chip should highlight — and clicking the chip must NOT also open/select that meeting; the tap should filter, not navigate. Click it again to clear.</li><li>Type in the search box with a tag still selected: results should be the intersection (search AND tag stack).</li><li>VoiceOver: turn it on, focus a meeting row, open its actions (VO + Command + Space) — confirm a &quot;Filter by tag &lt;name&gt;&quot; action is offered and toggles the filter.</li></ol><p>Say &quot;all good&quot;, or describe anything off — especially if a chip tap selects the meeting instead of filtering, which would need a gesture fix.</p></div><p class="summary">F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs. triggers row selection (and wh…</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>F84 wired tag filtering — the filter logic (MeetingLibraryFilter) is unit-tested and the build is green — but the chip lives inside a List(selection:) row, so whether a chip tap filters vs. triggers row selection (and whether the VoiceOver actions surface) can only be confirmed on screen.</dd><dt>Impact</dt><dd>Craft/accessibility only; the filter logic is proven. A gesture conflict would make tapping a tag select the meeting instead of filtering it.</dd><dt>Verification</dt><dd>The checklist above; any artifact seen is filed as its own ticket.</dd></dl></details><a class="source-link" href="NEEDS_HUMAN.md" title="Open NEEDS_HUMAN.md and find F130">Open NEEDS_HUMAN.md; find F130 →</a></article></div>
+  </section>
+  <section aria-labelledby="in-progress">
+    <h2 id="in-progress">In progress</h2>
+    <p class="empty">No ticket is currently claimed.</p>
+  </section>
+  <section aria-labelledby="ready">
+    <h2 id="ready">Ready to take</h2>
+    <div class="ticket-grid"><article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F150">F150</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>WAV UInt32 data-size field overflows for a single meeting longer than ~12.4 h</h3><p class="meta">recording · owner: Unowned · —</p><p class="summary">meeting.wav is 48 kHz mono 16-bit (96 000 B/s), so the UInt32 data-chunk size (AudioCaptureEngine.swift:686, clamped) and the wrapping RIFF size (WAVWriter.swift:14) overflow at ~44 739 s ≈ 12.43 h.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>meeting.wav is 48 kHz mono 16-bit (96 000 B/s), so the UInt32 data-chunk size (AudioCaptureEngine.swift:686, clamped) and the wrapping RIFF size (WAVWriter.swift:14) overflow at ~44 739 s ≈ 12.43 h. Samples are still written to disk, but strict readers (incl. ffmpeg) honor the declared size and would ignore everything past ~4 GB. No meeting-duration cap exists.</dd><dt>Impact</dt><dd>A very long meeting can appear truncated when exported, played, or transcribed by a strict WAV reader even though its later samples remain on disk.</dd><dt>Proposed fix</dt><dd>Cap/segment continuous recordings before 4 GB, or write RF64/WAVE-with-extended-size; at minimum warn near the limit.</dd><dt>Verification</dt><dd>A synthetic &gt;4 GB write is read back fully (or split).</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F150">Open TICKETS.md; find F150 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F151">F151</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Mid-recording capture gaps drift because only the initial presentation offset is applied</h3><p class="meta">recording · owner: Unowned · —</p><p class="summary">FloatTrackWriter records a presentation time only for the first buffer (AudioCaptureEngine.swift:587-589) and writes subsequent buffers contiguously with no gap detection; the mixer pads only by the initial offset (:641-…</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>FloatTrackWriter records a presentation time only for the first buffer (AudioCaptureEngine.swift:587-589) and writes subsequent buffers contiguously with no gap detection; the mixer pads only by the initial offset (:641-654). If ScreenCaptureKit drops/stalls buffers mid-recording, post-gap samples pack earlier than their true time and the two channels desync for the rest of the meeting. Magnitude is runtime-dependent (needs a buffer-drop repro).</dd><dt>Impact</dt><dd>A capture interruption can permanently misalign microphone and system audio after the gap, degrading the accuracy of the resulting meeting recording and transcript.</dd><dt>Proposed fix</dt><dd>Detect inter-buffer PTS gaps and insert silence to preserve alignment.</dd><dt>Verification</dt><dd>Induce a mid-capture drop and compare channel alignment vs wall-clock.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F151">Open TICKETS.md; find F151 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F152">F152</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Qwen helper loads the whole decoded recording before chunking; long-meeting validation pending</h3><p class="meta">transcription · owner: Unowned · —</p><p class="summary">Scripts/qwen_transcribe.py:126 decodes the entire file into one array before chunking, and retains it for alignment slicing (~230 MB for 60 min @16 kHz mono float32, plus decode/model working set).</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>Scripts/qwen_transcribe.py:126 decodes the entire file into one array before chunking, and retains it for alignment slicing (~230 MB for 60 min @16 kHz mono float32, plus decode/model working set). No 30–60 min real-meeting run with peak-RSS measurement exists.</dd><dt>Impact</dt><dd>Long recordings may consume enough memory to slow, fail, or make the opt-in Qwen path unreliable before its real-meeting envelope is known.</dd><dt>Proposed fix</dt><dd>Validate a 30–60 min real run (measure peak RSS); if needed, stream/downcast.</dd><dt>Verification</dt><dd>Record peak RSS for a 60-min transcription within an acceptable envelope.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F152">Open TICKETS.md; find F152 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F153">F153</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Cancellation doesn&#x27;t kill descendant processes (ffmpeg/afconvert)</h3><p class="meta">transcription · owner: Unowned · —</p><p class="summary">ProcessCancellationController.cancel sends SIGTERM to the direct child PID only (LocalWhisperClient.swift:321-328); no process group is created/signaled, so a grandchild ffmpeg/ afconvert spawned by the helper can surviv…</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>ProcessCancellationController.cancel sends SIGTERM to the direct child PID only (LocalWhisperClient.swift:321-328); no process group is created/signaled, so a grandchild ffmpeg/ afconvert spawned by the helper can survive a cancel (transient stray CPU/IO; no data loss).</dd><dt>Impact</dt><dd>A canceled transcription can continue consuming CPU, storage, or audio-decoding resources until its descendant process exits on its own.</dd><dt>Proposed fix</dt><dd>Start the child in its own process group and killpg on cancel.</dd><dt>Verification</dt><dd>Cancel mid-decode and confirm no orphaned decoder remains.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F153">Open TICKETS.md; find F153 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F154">F154</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>OSLog logs .public error text that can include absolute paths</h3><p class="meta">privacy · owner: Unowned · —</p><p class="summary">Capture/dictation failures log \(error.localizedDescription, privacy: .public) (AudioCaptureEngine.swift:187-189, Dictation/DictationController.swift:212,270,372,433), which can embed absolute paths in the unified system…</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>Capture/dictation failures log \(error.localizedDescription, privacy: .public) (AudioCaptureEngine.swift:187-189, Dictation/DictationController.swift:212,270,372,433), which can embed absolute paths in the unified system log (Console/sysdiagnose). F141 redacted the diagnostics bundle; this is the separate OSLog surface.</dd><dt>Impact</dt><dd>A local support or system-diagnostic log can expose private filesystem structure even though exported diagnostics already redact it.</dd><dt>Proposed fix</dt><dd>Drop .public on localizedDescription or log a redacted/last-path-component form (reuse DiagnosticsBundleBuilder.redactPaths).</dd><dt>Verification</dt><dd>A capture error logs without the absolute path.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F154">Open TICKETS.md; find F154 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F155">F155</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Qwen aligner treats any CJK character as Chinese on English-dominant chunks</h3><p class="meta">transcription · owner: Unowned · —</p><p class="summary">The per-chunk aligner language is Chinese if a chunk contains ANY CJK scalar (Scripts/qwen_transcribe.py:25-28), unlike top-level detection&#x27;s majority rule.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>The per-chunk aligner language is Chinese if a chunk contains ANY CJK scalar (Scripts/qwen_transcribe.py:25-28), unlike top-level detection&#x27;s majority rule. An English sentence with one CJK token is aligned as Chinese, possibly degrading its word timings. Bounded: on alignment failure the full text is preserved (no dropped text). Reliability impact needs a runtime repro.</dd><dt>Impact</dt><dd>Code-switched or English-dominant meetings can receive less accurate word timestamps for affected chunks, weakening transcript navigation without losing their text.</dd><dt>Proposed fix</dt><dd>Use the majority-script rule per chunk too (or a threshold).</dd><dt>Verification</dt><dd>Compare aligner timing quality on an English-dominant single-CJK chunk under both heuristics.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F155">Open TICKETS.md; find F155 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F158">F158</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Centralize the remaining shared motion durations</h3><p class="meta">ui · owner: Unowned · —</p><p class="summary">DesignSystem.swift:57 hard-codes the reduced-motion fade duration and ContentView.swift:2996 separately hard-codes a segment-highlight duration.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>DesignSystem.swift:57 hard-codes the reduced-motion fade duration and ContentView.swift:2996 separately hard-codes a segment-highlight duration. The existing design system already centralizes other motion values, so these two values can drift without a named semantic role.</dd><dt>Impact</dt><dd>Small visual changes can become inconsistent and harder to tune accessibly across the app.</dd><dt>Proposed fix</dt><dd>Add named design-system motion tokens and replace the two inline durations.</dd><dt>Verification</dt><dd>Exercise the relevant state changes with and without Reduce Motion and confirm no raw duplicate duration remains at the cited call sites.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F158">Open TICKETS.md; find F158 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F159">F159</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Prevent an older copy-prompt task from clearing newer feedback</h3><p class="meta">ui · owner: Unowned · —</p><p class="summary">Every press in ContentView.swift:1583-1591 starts an independent two-second task that sets didCopyPrompt to false.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>Every press in ContentView.swift:1583-1591 starts an independent two-second task that sets didCopyPrompt to false. A task from an earlier press can therefore clear the confirmation shortly after a later press.</dd><dt>Impact</dt><dd>The &quot;Prompt Copied&quot; acknowledgement can disappear too early during repeated use.</dd><dt>Proposed fix</dt><dd>Store and cancel the pending reset task before scheduling a replacement.</dd><dt>Verification</dt><dd>A focused state test proves a second press keeps the confirmation visible for its full window; manually press the control twice in quick succession.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F159">Open TICKETS.md; find F159 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F160">F160</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Avoid recomputing find-highlight ranges on every playback redraw</h3><p class="meta">ui · owner: Unowned · —</p><p class="summary">ContentView.swift:3021-3033 recalculates TextSearch.occurrenceRanges and rebuilds an AttributedString for every visible matching segment.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>ContentView.swift:3021-3033 recalculates TextSearch.occurrenceRanges and rebuilds an AttributedString for every visible matching segment. Playback updates the active state repeatedly, so a long searched transcript can repeat this work on each redraw.</dd><dt>Impact</dt><dd>Long transcripts may spend unnecessary CPU time while playing back with search active.</dd><dt>Proposed fix</dt><dd>Cache occurrence ranges or highlighted text when the search query/segments change, not when playback position changes.</dd><dt>Verification</dt><dd>Profile or instrument a long searched transcript during playback and show the range work does not repeat per playback tick.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F160">Open TICKETS.md; find F160 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F161">F161</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Give async self-test and installer results a gentle entrance</h3><p class="meta">ui · owner: Unowned · —</p><p class="summary">The self-test result in DictationView.swift:52-56 and installer completion messages in ContentView.swift:1233-1238,1262-1266 appear without the app&#x27;s existing gentleFade transition.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>The self-test result in DictationView.swift:52-56 and installer completion messages in ContentView.swift:1233-1238,1262-1266 appear without the app&#x27;s existing gentleFade transition.</dd><dt>Impact</dt><dd>Completion feedback arrives as an abrupt layout change rather than a readable payoff moment.</dd><dt>Proposed fix</dt><dd>Apply the established Reduce-Motion-safe transition at these async state boundaries.</dd><dt>Verification</dt><dd>Manually complete each action with Reduce Motion both on and off; the result should fade in without unwanted layout motion.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F161">Open TICKETS.md; find F161 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F162">F162</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Animate the meeting-row status-color handoff</h3><p class="meta">ui · owner: Unowned · —</p><p class="summary">The meeting-row status dot changes directly from the status switch at ContentView.swift:211-213,267-273 with no value-scoped color animation when a meeting moves between recorded, processing, completed, or failed.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>The meeting-row status dot changes directly from the status switch at ContentView.swift:211-213,267-273 with no value-scoped color animation when a meeting moves between recorded, processing, completed, or failed.</dd><dt>Impact</dt><dd>A meaningful state change has no visual continuity in the primary meeting list.</dd><dt>Proposed fix</dt><dd>Add a short color-only animation scoped to meeting.status.</dd><dt>Verification</dt><dd>Manually observe each reachable status transition and confirm the list does not animate unrelated filtering or selection changes.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F162">Open TICKETS.md; find F162 →</a></article>
+<article class="ticket-card sev-low"><div class="ticket-top"><a class="id" href="TICKETS.md" title="Open TICKETS.md and find F163">F163</a><span class="badge st-open">open</span><span class="badge sev-badge-low">low</span></div><h3>Make the documentation formatter preserve the Quick Dictation design guide</h3><p class="meta">docs · owner: Unowned · —</p><p class="summary">python3 Scripts/format-docs.py refuses docs/QUICK_DICTATION_DESIGN.md with content drift at token 161: &#x27;now&#x27; -&gt; &#x27;&gt;&#x27;, so its safety check cannot format that durable guide.</p><details><summary>Ticket details</summary><dl><dt>Problem</dt><dd>python3 Scripts/format-docs.py refuses docs/QUICK_DICTATION_DESIGN.md with content drift at token 161: &#x27;now&#x27; -&gt; &#x27;&gt;&#x27;, so its safety check cannot format that durable guide.</dd><dt>Impact</dt><dd>A routine documentation-format pass exits nonzero even when all requested edits are safe.</dd><dt>Proposed fix</dt><dd>Reproduce the tokenization edge case with a focused test and correct the formatter without weakening its word-stream safety guarantee.</dd><dt>Verification</dt><dd>The focused regression test fails before the fix and passes after; the formatter then completes successfully without changing the guide&#x27;s non-code word stream.</dd></dl></details><a class="source-link" href="TICKETS.md" title="Open TICKETS.md and find F163">Open TICKETS.md; find F163 →</a></article></div>
+  </section>
+  <section aria-labelledby="blocked">
+    <h2 id="blocked">Blocked</h2>
+    <p class="empty">No ticket is blocked on another dependency.</p>
+  </section>
+  <section aria-labelledby="recently-closed">
+    <h2 id="recently-closed">Recently closed</h2>
+    <ul class="recent"><li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F157">F157</a><span>Consolidate agent guidance and make the ticket system easier to scan</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-04 by /root</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F156">F156</a><span>Second Opinion UX: scope the spinner to one meeting + show real progress</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F141">F141</a><span>Diagnostics export now redacts absolute paths from error messages</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F142">F142</a><span>Second opinion: distinct failure state + runs the engine the meeting was NOT transcribed with</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F139">F139</a><span>⌘ Cancel command routes through confirmation; cancel can&#x27;t race finalization</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F147">F147</a><span>Ticket dashboard renders a valid empty board; aborts only on an unparsed source</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F148">F148</a><span>Suspicious-risk audit: 8 verified; 2 fixed (data-safety), 6 filed Low</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li>
+<li><a class="id" href="TICKET_LOG.md" title="Open TICKET_LOG.md and find F138">F138</a><span>Debounced transcript/notes edits now flush on quit/resign, not only on editor disappear</span><span class="outcome">— fixed</span><span class="closed">closed 2026-08-03 by Claude Code (Opus 4.8)</span></li></ul>
+  </section>
 </main>
 </body>
 </html>

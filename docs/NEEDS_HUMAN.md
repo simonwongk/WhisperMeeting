@@ -14,7 +14,9 @@ the ticket rules in [`../AGENTS.md`](../AGENTS.md); open work stays in [`TICKETS
 - **Area:** meetings
 - **Filed:** 2026-08-01 by Claude Code (Opus 4.8)
 
-**What I need from you** (~1 minute in the app):
+**What I need from you:**
+
+(~1 minute in the app)
 
 1. Give two meetings the same tag (right-click a meeting → add tags).
 2. In the sidebar, **click a tag chip** on a meeting row. The list should narrow to meetings carrying

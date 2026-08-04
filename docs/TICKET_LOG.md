@@ -14,6 +14,85 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F157 — Consolidate agent guidance and make the ticket system easier to scan
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-04 by /root
+- **Reachability:** `README.md` Documentation → `docs/README.md` → dashboard/authoritative work
+  sources; `AGENTS.md` Start every task → ticket workflow → dashboard validation command.
+
+**Root cause.** Durable process guidance was split across `AGENTS.md` and a redundant Claude-only
+pointer, while the generated board was a stale, dense table with permissive parsing. Humans had to infer
+what needed attention; agents could not reliably detect malformed metadata or a stale snapshot.
+
+**Fix.** Merged the Claude guide's project context into a scan-first `AGENTS.md` and deleted
+`CLAUDE.md`. Added a documentation map, a neutral active-board orientation, status-aware templates, and
+a correct product-spec/roadmap record. Rebuilt the static dashboard as an action-first view with direct
+source-file links plus an F-ID find cue, responsive cards, a human-action checklist, deterministic
+fingerprinting, strict source validation, `--check`, and `--brief`. The normal quality gate now checks
+the snapshot and both Python regression suites before Swift tests. Filed F158–F163 for newly verified
+low-priority UI/doc follow-ups; removed only confirmed local build/editor/tool/cache artifacts and
+protected the agent-tool directories in `.gitignore`.
+
+**Evidence.**
+
+```text
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # before
+FAIL: test_check_mode_detects_a_stale_snapshot_without_rewriting_it
+AssertionError: SystemExit not raised
+FAIL: test_dashboard_puts_human_actions_first_and_links_to_the_source
+AssertionError: 'Needs your action' not found
+FAILED (failures=2)
+
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # after
+Ran 2 tests in 0.030s
+OK
+
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # before supplemental contract/UI checks
+.FFFFFF
+Ran 7 tests in 0.070s
+FAILED (failures=6)
+
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # after supplemental contract/UI checks
+.......
+Ran 7 tests in 0.066s
+OK
+
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # before wrapped-action paragraph regression
+.F.....
+Ran 7 tests in 0.047s
+FAILED (failures=1)
+
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py  # after wrapped-action paragraph regression
+.......
+Ran 7 tests in 0.060s
+OK
+
+$ python3 Scripts/tests/test_qwen_transcribe.py
+Ran 7 tests in 0.004s
+OK
+
+$ python3 Scripts/generate-tickets-dashboard.py --check
+Ticket dashboard is current.
+
+$ swift build
+Build complete! (0.78s)
+
+$ swift test
+Test run with 302 tests passed after 2.903 seconds.
+
+$ link validation over updated guides
+Validated 75 local Markdown links across the updated guides.
+
+$ find . -maxdepth 3 \( -path './.build' -o -path './.claude' -o -path './.superpowers' -o -name '.DS_Store' -o -name '__pycache__' \) -print
+
+$ find Scripts/bench/clips -maxdepth 1 -type f -name '*.wav' | wc -l
+      10
+```
+
+**Gaps.** F163 tracks the pre-existing `format-docs.py` tokenization edge case in
+`QUICK_DICTATION_DESIGN.md`; it remains intentionally open for a focused formatter fix.
+
 ## F156 — Second Opinion UX: scope the spinner to one meeting + show real progress
 
 - **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** user-reported.

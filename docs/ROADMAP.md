@@ -36,11 +36,18 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - **Round 11** — Recording markers (`RecordingMarker` + `RecordingMarkers`, pure/tested): flag key
   moments during a meeting (⇧⌘M) or from playback, jump back via a seek strip, rename/delete, and
   export a `## Markers` section in Meeting Notes. Timestamps only — audio never touched.
+- **Operational controls and safety** — menu-bar recording controls and shortcuts, verified local
+  library backups with retention, and a privacy-safe diagnostics export are reachable from the app.
 - **Alternative local ASR, synthetic phase** — Qwen3-ASR 1.7B MLX 8-bit plus its aligner won the
   10-clip English/Mandarin/code-switch comparison and is available as an opt-in model. Whisper Large
   remains the default until Qwen passes the real, long-meeting gate.
 
-## Round 1 — Extract & organize (mostly pure logic, low risk) — DONE
+## Historical delivery detail (shipped rounds 1–3)
+
+The entries below are retained as a record of what each completed round delivered. They are not
+open roadmap work; use **Next candidates** for work that could become a ticket.
+
+### Round 1 — Extract & organize (mostly pure logic, low risk)
 - **Subtitle & document export (SRT, VTT, Markdown, JSON)** — H/L/L. Pure `TranscriptExporter` in
   `WhisperCore`, unit-tested; wire into the existing Export button as a format menu. Turns
   transcripts into deliverables (captions, docs) without leaving the Mac.
@@ -51,14 +58,14 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
 - **Pre-transcription disk-space guard for large imports** — M/L/L. Warn before transcribing when
   free space is tight, consistent with the recording storage guard.
 
-## Round 2 — Read & navigate
+### Round 2 — Read & navigate
 - **Segment-synced playback** — H/M/M. A read mode that lists timestamped segments; clicking one
   seeks the audio player, and the current segment highlights during playback. Segments already carry
   start/end times; no diarization implied.
 - **Find-in-transcript** — M/M/L. In-detail search with match highlighting and next/prev. — DONE
 - **Copy a single segment / copy with timestamps toggle** — M/L/L.
 
-## Round 3 — Throughput & automation
+### Round 3 — Throughput & automation
 - **Transcription queue** — H/M/M. Queue multiple recorded/imported meetings and transcribe them one
   at a time automatically (still single-process, honoring `activeTranscriptionID`).
 - **Batch import** — H/L/L. Allow selecting several files at once; enqueue each.
@@ -77,13 +84,7 @@ Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
    recordings. Measure vocabulary recall, hallucinations, timestamp accuracy, real-time factor, peak
    memory, and chunk-boundary correctness. Keep Whisper as default unless every gate in
    [`ASR_MODEL_ALTERNATIVES.md`](ASR_MODEL_ALTERNATIVES.md) passes.
-2. **Menu-bar controls and keyboard shortcuts** — show status and provide start/stop/marker actions
-   while another meeting app is frontmost, with explicit confirmation before destructive cancel.
-3. **Local automatic backups** — configurable copy of recordings, source manifests, indexes, and
-   transcripts to a user-selected folder, with verification and retention controls.
-4. **Diagnostics bundle** — export privacy-safe app logs and recording manifests without audio for
-   support, including the recording-start timings and recovery decisions.
-5. **Signed release updates** — add a signed update feed only after an Apple signing identity and
+2. **Signed release updates** — add a signed update feed only after an Apple signing identity and
    release channel exist; keep the guarded local installer for development builds.
 
 ## Explicitly deferred (cost/risk vs. identity)

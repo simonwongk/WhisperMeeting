@@ -1,8 +1,9 @@
-# Animation improvement plans
+# Historical animation implementation plans
 
-Output of the 2026-07-31 `improve-animations` audit (eight-category workflow audit, every finding
-hand-vetted at its cited line; commit `c2230fa`). Board ticket: **F119**. Each plan is
-self-contained — an executor needs zero context beyond the plan file and `AGENTS.md`.
+Archived execution record from the 2026-07-31 `improve-animations` audit (eight-category workflow
+audit, every finding hand-vetted at its cited line; commit `c2230fa`). Board ticket: **F119**. All five
+plans below are complete. This directory is **not** an active work queue: re-verify current code and use
+the ticket board before acting on any historical observation.
 
 ## Plans
 
@@ -50,24 +51,25 @@ both add tokens to `DesignSystem.swift`).
   (baseline 257), commits reference **F119**, and the feel checks are mandatory (a human or an
   agent driving the built app must actually look).
 
-## Audit record — findings not planned (so they don't die in chat)
+## Historical audit observations — now tracked
 
-Recorded LOW findings, valid but below the cut the user selected (all five MEDIUMs). Re-audit or
-promote to plans as desired:
+The audit's five low-priority observations were re-verified against the current tree and filed as
+[`F158`–`F162`](../docs/TICKETS.md) on 2026-08-03. The notes remain below as historical context only;
+their tickets, not this document, define any future work.
 
-- **E — token completion** (`DesignSystem.swift`): `.smooth(0.22)` hand-typed at
-  `ContentView.swift:2621`; gentleFade's `0.2` hardcoded. Plans 001/004 add `transcriptScroll` and
+- **E — token completion** ([`F158`](../docs/TICKETS.md), `DesignSystem.swift`): `.smooth(0.22)` hand-typed at
+  `ContentView.swift:2996`; gentleFade's `0.2` hardcoded. Plans 001/004 add `transcriptScroll` and
   `meterTracking`; `segmentHighlight` and `reducedMotionFade` tokens remain unadded.
-- **F — copy-prompt revert race** (`ContentView.swift:1487`): each "Copy AI Prompt" press spawns
+- **F — copy-prompt revert race** ([`F159`](../docs/TICKETS.md), `ContentView.swift:1583`): each "Copy AI Prompt" press spawns
   an independent 2 s revert Task; a stale task can cut a newer confirmation short after ~0.1 s.
   Fix: store and cancel the revert task.
-- **G — find-highlight recompute** (`ContentView.swift:2642`): during find + playback, every
+- **G — find-highlight recompute** ([`F160`](../docs/TICKETS.md), `ContentView.swift:3021`): during find + playback, every
   visible row re-runs `TextSearch.occurrenceRanges` and rebuilds an `AttributedString` on each
   4 Hz playback tick. Fix: cache occurrence ranges per segment in `recomputeVisible()`.
-- **M2 — waiting-payoff fades**: dictation self-test result line (`DictationView.swift:52`) and
-  runtime-install completion rows (`ContentView.swift:1175` area) pop in with a layout jump; both
+- **M2 — waiting-payoff fades** ([`F161`](../docs/TICKETS.md)): dictation self-test result line (`DictationView.swift:52`) and
+  runtime-install completion rows (`ContentView.swift:1233,1262`) pop in with a layout jump; both
   fit the F116 `gentleFade` recipe.
-- **M3 — sidebar status dot** (`ContentView.swift:198`): processing → completed snaps blue→green;
+- **M3 — sidebar status dot** ([`F162`](../docs/TICKETS.md), `ContentView.swift:211,267`): processing → completed snaps blue→green;
   a `.smooth(0.22)` color fade (value-scoped to `meeting.status`) would acknowledge the moment
   without touching filtering.
 

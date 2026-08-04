@@ -145,10 +145,13 @@ def format_text(source):
 
 
 def targets():
-    """Every Markdown doc in the repo: docs/ plus the top-level guides."""
+    """Every editable Markdown guide: docs/ except the append-only ticket evidence log."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    paths = sorted(glob.glob(os.path.join(root, "docs", "*.md")))
-    paths += [os.path.join(root, name) for name in ("README.md", "CLAUDE.md", "AGENTS.md")]
+    paths = sorted(
+        path for path in glob.glob(os.path.join(root, "docs", "*.md"))
+        if os.path.basename(path) != "TICKET_LOG.md"
+    )
+    paths += [os.path.join(root, name) for name in ("README.md", "AGENTS.md")]
     return [p for p in paths if os.path.exists(p)]
 
 

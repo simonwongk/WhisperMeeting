@@ -1,15 +1,54 @@
-# AGENTS.md
+# AGENTS.md — operating guide
 
-**This file is normative.** Every rule for a coding agent working in this repository — Claude Code,
-Codex, or any other — lives here. Read it before doing anything. Every other document is data or
-narrative, and when any of them disagrees with this file, this file wins:
+**This file is normative.** Every rule for a coding agent working in this repository — Codex, Claude
+Code, or any other — lives here. Read it before doing anything. When this file conflicts with a
+narrative document, this file wins.
 
-- `docs/TICKETS.md` — the live board of **open** work.
-- `docs/TICKET_LOG.md` — the append-only archive of closed tickets, with evidence.
-- `docs/NEEDS_HUMAN.md` — tickets blocked on a human action or decision (capped at 5).
-- `docs/PRODUCT_SPEC.md` — the non-negotiable product requirements.
-- `docs/ROADMAP.md` — the aspirational feature backlog.
-- `docs/CHANGELOG.md` — the human-facing narrative of shipped cycles.
+## Project snapshot
+
+WhisperMeet is a native macOS app (SwiftPM, no Xcode project) that records a meeting's microphone
+and Mac system audio, then produces an accurate **post-meeting** transcript using a selected local
+subprocess. OpenAI Whisper Large is the default; Apple-silicon Macs may opt into Qwen3-ASR 1.7B MLX
+8-bit plus its forced aligner. Recording and transcription use no API key, no cloud upload, and no
+realtime transcription; transcripts remain in their original spoken language (English or Mandarin).
+
+The one exception is **opt-in Claude summaries**: only after a user saves a Claude API key and
+confirms an explicit Summarize action is the transcript sent to Anthropic. The recording is never
+mutated, failures remain retryable, and evidence always beats assertion.
+
+## Start every task
+
+| Step | Do this | Stop or continue when… |
+|---|---|---|
+| 1. Orient | Read [`docs/TICKETS.md`](docs/TICKETS.md), [`docs/NEEDS_HUMAN.md`](docs/NEEDS_HUMAN.md), and the relevant product docs from [`docs/README.md`](docs/README.md). | Never rely on an old chat description over the current tree. |
+| 2. Find or file | Locate the ticket. If none covers the work, take the next free `F<n>` and file it. | Do not start an untracked task. |
+| 3. Verify and claim | Re-check cited code, then set it `in-progress` with an owner and commit that claim. | Never take another agent's `in-progress` ticket. |
+| 4. Build evidence | Make the smallest coherent change; keep a failing-before/passing-after test when behavior changes. | Use synthetic clips, never a user's data. |
+| 5. Hand off cleanly | Run the required verification, refresh/check the dashboard, then close in the append-only log. | Mention the ticket ID in every related commit. |
+
+```mermaid
+flowchart LR
+    A["Read board + product docs"] --> B{"Ticket exists?"}
+    B -->|"no"| C["File next F<n>"]
+    B -->|"yes"| D["Re-verify cited tree"]
+    C --> D
+    D --> E["Claim + commit"]
+    E --> F["Implement + prove"]
+    F --> G["Refresh dashboard + close in log"]
+```
+
+## Sources at a glance
+
+| Source | Use it for |
+|---|---|
+| [`docs/README.md`](docs/README.md) | The human and agent documentation map. |
+| [`docs/tickets-dashboard.html`](docs/tickets-dashboard.html) | Fast, static visual view of active work; Markdown below remains authoritative. |
+| [`docs/TICKETS.md`](docs/TICKETS.md) | Active work only. |
+| [`docs/NEEDS_HUMAN.md`](docs/NEEDS_HUMAN.md) | Actions or decisions only a person can make (maximum five). |
+| [`docs/TICKET_LOG.md`](docs/TICKET_LOG.md) | Append-only closures and real evidence. |
+| [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) | Non-negotiable product requirements. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Aspirational backlog, not a commitment. |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Human-facing shipped history. |
 
 ## Ticket rules
 
@@ -19,9 +58,9 @@ source of truth for the **rules** that govern it. Both are binding.
 1. **Read the board first.** Read `docs/TICKETS.md` before starting any task. If the work you are
    about to do is not on the board, file it as a ticket before you start, so parallel agents can see
    it.
-2. **File what you find.** Every defect, regression, unverified claim, or follow-up you notice — from
-   code review as much as from implementation — gets a ticket, even one you are not going to fix. A
-   finding that lives only in a chat reply dies with the session.
+2. **File what you find.** Every defect, regression, unverified claim, or follow-up you notice —
+   from code review as much as from implementation — gets a ticket, even one you are not going to
+   fix. A finding that lives only in a chat reply dies with the session.
 3. **Verify before you claim.** Before claiming a ticket, re-verify that the cited `file:line` still
    shows the described problem in the current tree. If the code has moved or the issue is already
    gone, close the ticket `invalid` with that evidence and move on — do not fix from the ticket's
@@ -32,17 +71,17 @@ source of truth for the **rules** that govern it. Both are binding.
    to `docs/TICKET_LOG.md` with an outcome — `fixed`, `partial`, `wontfix`, `invalid`, or
    `duplicate`. Deleting loses the reasoning.
 6. **Log on close with real evidence.** Append to `docs/TICKET_LOG.md` with real command output —
-   the test failing before the fix, the test passing after, the build, and any real-model run — not a
-   summary of intent. The repo's culture is evidence over assertion. The log is **append-only**: never
-   edit or delete a closed entry. The one sanctioned exception is appending a follow-up ticket's
-   `F<n>` cross-reference to an existing entry's **Gaps** line, so deferred work it named stays
-   traceable to the board.
-7. **One ticket, one commit trail.** Reference the ID in **every** commit message that touches it, in
-   the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
+   the test failing before the fix, the test passing after, the build, and any real-model run — not
+   a summary of intent. The repo's culture is evidence over assertion. The log is **append-only**:
+   never edit or delete a closed entry. The one sanctioned exception is appending a follow-up
+   ticket's `F<n>` cross-reference to an existing entry's **Gaps** line, so deferred work it named
+   stays traceable to the board.
+7. **One ticket, one commit trail.** Reference the ID in **every** commit message that touches it,
+   in the existing repo style: `fix(dictation): keep helper stdout pure JSON (F24)`.
 8. **Escalate human-blocked work.** When you set a ticket to `needs-human`, move the entry to
-   `docs/NEEDS_HUMAN.md` in the **same commit**, adding a `**What I need from you:**` line that states
-   the single concrete action required. That file is capped at 5 entries; when it is full, stop
-   escalating and work open tickets instead.
+   `docs/NEEDS_HUMAN.md` in the **same commit**, adding a `**What I need from you:**` line that
+   states the single concrete action required. That file is capped at 5 entries; when it is full,
+   stop escalating and work open tickets instead.
 9. **Remove empty scaffolding.** A section header on the board with no tickets under it must be
    removed when its last ticket closes — do not leave orphaned batch headings behind.
 
@@ -68,8 +107,8 @@ another agent raced you to an ID, take the next free one and move on.
 
 Closed states (`fixed`, `partial`, `wontfix`, `invalid`, `duplicate`) exist only in
 `docs/TICKET_LOG.md`. **`partial`** means the tested core landed but the user cannot reach it yet. A
-`partial` close is **invalid** unless a follow-up ticket for the remaining (reachability/wiring) work
-is filed in the **same commit** and that follow-up's `F<n>` appears in the log entry.
+`partial` close is **invalid** unless a follow-up ticket for the remaining (reachability/wiring)
+work is filed in the **same commit** and that follow-up's `F<n>` appears in the log entry.
 
 ## Definition of done
 
@@ -78,20 +117,20 @@ A ticket may only be closed `fixed` when all of these hold:
 - `swift build` and `swift test` both pass, and the test count did not silently drop.
 - Behaviour changes are covered by a test that **fails before the fix and passes after**. State both
   results in the log. A fix with no failing-test-first evidence is not done.
-- **Reachability.** A ticket that adds user-facing behaviour closes `fixed` only when the new code is
-  **reachable from the running app** — there is a call path from a user-triggerable surface (a
+- **Reachability.** A ticket that adds user-facing behaviour closes `fixed` only when the new code
+  is **reachable from the running app** — there is a call path from a user-triggerable surface (a
   SwiftUI view, menu command, hotkey, or app-lifecycle hook) to the new type, and that call path is
   **named in the log entry**. A tested pure core with no caller is not user-facing behaviour: it
-  closes `partial`, not `fixed` (see the status vocabulary), and the follow-up wiring ticket is filed
-  in the same commit. A cheap WhisperCore test does not by itself satisfy this — the incentive to
-  ship an unreachable core is exactly what this rule closes.
+  closes `partial`, not `fixed` (see the status vocabulary), and the follow-up wiring ticket is
+  filed in the same commit. A cheap WhisperCore test does not by itself satisfy this — the incentive
+  to ship an unreachable core is exactly what this rule closes.
 - If the change touches the Whisper or Qwen subprocess contract, the live official docs were fetched
   and checked per the **Upstream documentation** rules below — flags and model names are never
   guessed.
 - If the change touches a runtime helper or model adapter, it was exercised against the **real
   installed model**, not only a stub. Stubs cannot catch upstream API drift.
-- The non-negotiable invariants in `docs/PRODUCT_SPEC.md` are intact: local-only except opt-in Claude
-  summaries, the recording is the source of truth, no diarization, original language only.
+- The non-negotiable invariants in `docs/PRODUCT_SPEC.md` are intact: local-only except opt-in
+  Claude summaries, the recording is the source of truth, no diarization, original language only.
 - No user meeting, recording, index, or transcript was read or modified for testing. Use
   `Scripts/bench/clips`.
 - **Traceable by ticket ID.** Traceability runs through the **ticket ID in the commit message**, not
@@ -113,7 +152,7 @@ A ticket may only be closed `fixed` when all of these hold:
 - **Status:** open
 - **Owner:** —
 - **Severity:** high | medium | low
-- **Area:** dictation | meetings | transcription | recovery | ui | build | docs
+- **Area:** dictation | meetings | recording | transcription | recovery | ui | privacy | build | docs
 - **Filed:** YYYY-MM-DD by <agent/session>
 
 **Problem.** What is wrong, and the evidence it is wrong. Cite `file.swift:line`.
@@ -124,6 +163,28 @@ A ticket may only be closed `fixed` when all of these hold:
 
 **Verification.** How the fixer will prove it is done.
 ```
+
+### Status-specific fields
+
+| Status | Where it lives | Required addition |
+|---|---|---|
+| `open` | `docs/TICKETS.md` | `Owner: —`; ready for an agent to claim. |
+| `in-progress` | `docs/TICKETS.md` | A non-empty `Owner`; the claiming commit exists. |
+| `blocked` | `docs/TICKETS.md` | `**Blocked by:**` names the exact dependency and person/system. |
+| `needs-human` | `docs/NEEDS_HUMAN.md` | `**What I need from you:**` gives one concrete action; keep the queue at five or fewer. |
+
+## Ticket dashboard integrity
+
+`docs/tickets-dashboard.html` is a checked-in, static projection of the Markdown sources, not a
+second tracker. After changing `TICKETS.md`, `NEEDS_HUMAN.md`, or `TICKET_LOG.md`, run:
+
+```bash
+python3 Scripts/generate-tickets-dashboard.py
+python3 Scripts/generate-tickets-dashboard.py --check
+```
+
+`--check` validates ticket metadata, state/file placement, IDs, and the current snapshot. Agents can
+use `--brief` for a compact validated handoff; it never writes files.
 
 ## Log entry template (`docs/TICKET_LOG.md`)
 
@@ -157,11 +218,12 @@ without regressing testability, build it in three layers — the middle layer is
 
 1. **WhisperCore core** — already exists and is tested. Do not change it.
 2. **AppModel wiring layer** — the reachable logic, headlessly testable through an injected seam in
-   the F47 style: a mutable `@Sendable` closure property defaulting to the real core call, assigned by
-   a test after construction (see `AppModel.recoverInterruptedRecording`). The layer builds the core's
-   inputs from the store/disk and collects its outputs. **The red-green test lands here**, over a real
-   fixture library in a temp `MeetingStore(rootDirectory:)` (the `WhisperMeetTests` precedent),
-   asserting the core's results come back *through the app-level call* — never a direct core call.
+   the F47 style: a mutable `@Sendable` closure property defaulting to the real core call, assigned
+   by a test after construction (see `AppModel.recoverInterruptedRecording`). The layer builds the
+   core's inputs from the store/disk and collects its outputs. **The red-green test lands here**,
+   over a real fixture library in a temp `MeetingStore(rootDirectory:)` (the `WhisperMeetTests`
+   precedent), asserting the core's results come back *through the app-level call* — never a direct
+   core call.
 3. **SwiftUI binding** — the thinnest possible: a control that calls one AppModel method, and/or a
    fold into an existing lifecycle hook. Nothing but presentation lives here. Verified manually (the
    `WhisperMeet` target has no view-render harness); state the manual steps in the log and mark the
@@ -171,11 +233,11 @@ Name the exact call path from a user-triggerable surface to the core in the log'
 field (see the Definition of done). If only the core lands and layers 2–3 are deferred, the ticket
 closes `partial`, not `fixed`.
 
-**Worked example — F83** (in `docs/TICKET_LOG.md`): wired F66's `MeetingIntegrityChecker` in. Layer 2
-is `AppModel.verifyLibraryIntegrity()` with an injectable `checkMeetingIntegrity` seam, folded into
-`performStartupRecovery`; layer 3 is a Settings "Verify Library" button. Three red-green tests land on
-layer 2 (`Tests/WhisperMeetTests/LibraryIntegrityTests.swift`); the button and launch alert are
-manual. Sibling tickets F79–F92 should cite this section rather than re-deriving the shape.
+**Worked example — F83** (in `docs/TICKET_LOG.md`): wired F66's `MeetingIntegrityChecker` in. Layer
+2 is `AppModel.verifyLibraryIntegrity()` with an injectable `checkMeetingIntegrity` seam, folded
+into `performStartupRecovery`; layer 3 is a Settings "Verify Library" button. Three red-green tests
+land on layer 2 (`Tests/WhisperMeetTests/LibraryIntegrityTests.swift`); the button and launch alert
+are manual. Sibling tickets F79–F92 should cite this section rather than re-deriving the shape.
 
 ## Upstream documentation
 
@@ -190,27 +252,11 @@ Before changing the **Qwen3-ASR** subprocess contract (`Scripts/qwen_transcribe.
 `Scripts/qwen_dictate_server.py` — the `generate(language=, chunk_duration=, min_chunk_duration=)`
 call and the segment / forced-alignment shapes it reads), verify against the **pinned `mlx-audio`
 package**. `Scripts/setup-qwen-asr.sh` pins `mlx-audio==0.3.1` from PyPI; there is no stable hosted
-API reference for it, so — exactly as the F24 entry cited `mlx_whisper/transcribe.py:175` — **cite the
-installed package source** for the pinned version (e.g. the relevant file under
+API reference for it, so — exactly as the F24 entry cited `mlx_whisper/transcribe.py:175` — **cite
+the installed package source** for the pinned version (e.g. the relevant file under
 `…/Runtime/Qwen3ASR/venv/lib/python*/site-packages/mlx_audio/stt/…`) rather than guessing a flag or
 key. If you bump the pin, re-verify the call and output shapes against the new version's source and
 record the citation in `docs/TICKET_LOG.md`.
-
-## What WhisperMeet is
-
-WhisperMeet is a native macOS app (SwiftPM, no Xcode project) that records a meeting's microphone +
-Mac system audio and produces an accurate **post-meeting** transcript by running an explicitly
-selected local subprocess. OpenAI Whisper Large remains the default; Apple-silicon Macs can opt into
-Qwen3-ASR 1.7B MLX 8-bit plus its forced aligner. No API key, no cloud upload, and no realtime
-transcription for the record/transcribe path. Transcripts stay in the original spoken language
-(English or Mandarin) — never translation.
-
-The **one exception** to local-only is the opt-in **Claude summaries** feature: with a saved Claude
-API key and an explicit Summarize press (behind a confirmation), the transcript is sent to
-Anthropic's Claude API for a summary + key points + action items. Nothing is uploaded without a saved
-key and an explicit press. See `docs/CLAUDE_SUMMARIES.md`. The product exists to be *trusted*: the
-recording is never mutated, failures are always retryable, and nothing is claimed verified without
-evidence.
 
 ## Repository map
 
@@ -223,6 +269,8 @@ evidence.
 | `Tests/WhisperMeetTests/` | Headless lifecycle tests for injected seams in the app target. |
 | `Scripts/` | Build/install/setup scripts and the Python subprocess helpers. |
 | `Scripts/bench/clips/` | Synthetic en/zh/code-switch clips — use these, never user recordings. |
+| `docs/README.md` | Human and agent documentation map. |
+| `docs/tickets-dashboard.html` | Generated visual projection of the active ticket queue. |
 | `docs/TICKETS.md` | Open work. Read before starting anything. |
 | `docs/TICKET_LOG.md` | Closed tickets, with real command output as evidence. |
 | `docs/NEEDS_HUMAN.md` | Tickets blocked on a human action or decision. Capped at 5. |
@@ -236,6 +284,7 @@ evidence.
 swift build                      # build the WhisperCore library + WhisperMeet executable
 swift test                       # run both Swift Testing suites (does NOT download a model)
 swift test --filter "original language"   # run a single test by name substring (Swift Testing)
+python3 Scripts/generate-tickets-dashboard.py --check  # validate the ticket snapshot
 Scripts/build-app.sh             # build + ad-hoc-sign .build/WhisperMeet.app (release)
 open .build/WhisperMeet.app      # run the GUI app
 Scripts/setup-local-whisper.sh   # install the local Whisper runtime from this checkout
@@ -297,8 +346,8 @@ to Homebrew/`~/.local/bin` installs.
 ### Non-negotiable invariants
 
 The product's non-negotiable invariants — what must never regress — live in `docs/PRODUCT_SPEC.md`.
-This file does not restate them; a second copy is a second thing to drift. The **Definition of done**
-above requires every change to leave them intact.
+This file does not restate them; a second copy is a second thing to drift. The **Definition of
+done** above requires every change to leave them intact.
 
 ### Build config note
 
@@ -310,14 +359,14 @@ concurrency. `WhisperMeet` links its Apple frameworks explicitly in `Package.swi
 
 `Sources/WhisperCore/` is pure, `Sendable`, framework-free logic: every file imports only
 `Foundation`, with a **single sanctioned exception** — `WarmWhisperDictationEngine.swift` imports
-`Darwin` solely for `SIGKILL` to force-stop a wedged helper process, for which there is no Foundation
-equivalent. Do not add AppKit/SwiftUI/`os`/other framework imports; surface diagnostics through
-return values instead, as `TranscriptionResult.alignmentWarning` does.
+`Darwin` solely for `SIGKILL` to force-stop a wedged helper process, for which there is no
+Foundation equivalent. Do not add AppKit/SwiftUI/`os`/other framework imports; surface diagnostics
+through return values instead, as `TranscriptionResult.alignmentWarning` does.
 
 Verified current state (`grep -rn '^import' Sources/WhisperCore`): every source imports `Foundation`
 only, plus the one `import Darwin` in `WarmWhisperDictationEngine.swift`. The earlier `import os` in
 `QwenASRClient.swift` was the F28 deviation; it was removed when F28 shipped (commit `2cea357`), so
-there is **no open purity defect today**. If you reintroduce a framework import, that is a new defect
-— file a ticket per the rules above.
+there is **no open purity defect today**. If you reintroduce a framework import, that is a new
+defect — file a ticket per the rules above.
 
 See `README.md` for the end-user workflow and `docs/RECOVERY.md` for exact recovery file locations.

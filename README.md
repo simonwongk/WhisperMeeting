@@ -26,21 +26,16 @@ Beyond meetings, a **Quick Dictation** hotkey transcribes short clips and pastes
 
 ## Documentation
 
-| Document | What it covers |
-|---|---|
-| [Product spec](docs/PRODUCT_SPEC.md) | The non-negotiable requirements and invariants. |
-| [Recording safety and recovery](docs/RECOVERY.md) | File locations and recovery behavior. |
-| [Recording health](docs/RECORDING_HEALTH.md) | Pre-flight checks, live monitoring, thresholds. |
-| [Preflight test](docs/PREFLIGHT_TEST.md) | Confirming capture works before a real meeting. |
-| [Quick Dictation](docs/QUICK_DICTATION_DESIGN.md) | Push-to-talk design and engine choices. |
-| [Recording markers](docs/RECORDING_MARKERS.md) | Flagging and revisiting key moments. |
-| [Transcript quality](docs/TRANSCRIPT_QUALITY.md) | How shaky segments are flagged. |
-| [Claude summaries](docs/CLAUDE_SUMMARIES.md) | The one opt-in non-local feature. |
-| [Changelog](docs/CHANGELOG.md) | Narrative history of shipped work. |
-| [Roadmap](docs/ROADMAP.md) | Prioritized feature backlog. |
-| [Tickets](docs/TICKETS.md) · [Ticket log](docs/TICKET_LOG.md) | Open defects and closed work. |
+Start with the [documentation map](docs/README.md) to find the right guide by task.
 
-Contributors and coding agents should start with [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
+| Area | Key documents |
+|---|---|
+| Product and recovery | [Product spec](docs/PRODUCT_SPEC.md) · [Recovery](docs/RECOVERY.md) · [Recording health](docs/RECORDING_HEALTH.md) · [Preflight test](docs/PREFLIGHT_TEST.md) |
+| Feature guides | [Quick Dictation](docs/QUICK_DICTATION_DESIGN.md) · [Recording markers](docs/RECORDING_MARKERS.md) · [Transcript quality](docs/TRANSCRIPT_QUALITY.md) · [Claude summaries](docs/CLAUDE_SUMMARIES.md) |
+| Project work | [Work dashboard](docs/tickets-dashboard.html) · [Tickets](docs/TICKETS.md) · [Needs human](docs/NEEDS_HUMAN.md) · [Ticket log](docs/TICKET_LOG.md) |
+| Direction and history | [Roadmap](docs/ROADMAP.md) · [Changelog](docs/CHANGELOG.md) |
+
+Contributors and coding agents should start with [AGENTS.md](AGENTS.md).
 
 ## Requirements
 
