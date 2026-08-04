@@ -1754,6 +1754,8 @@ private struct TranscriptDetailView: View {
                 SecondOpinionSheet(
                     spans: model.secondOpinionSpans,
                     isRunning: model.isRunningAuxiliaryEngine,
+                    engineName: model.secondOpinionEngine?.displayName,
+                    progress: model.secondOpinionProgress,
                     failed: model.secondOpinionFailed,
                     onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
                 )
@@ -2070,14 +2072,14 @@ private struct TranscriptDetailView: View {
                     model.requestSecondOpinion(id: meetingID)
                     showSecondOpinion = true
                 } label: {
-                    if model.isRunningAuxiliaryEngine {
-                        ProgressView().controlSize(.small)
+                    if model.secondOpinionRunningID == meetingID {
+                        ProgressView().controlSize(.small)   // spinner ONLY on the meeting being processed
                     } else {
                         Label("Second opinion", systemImage: "person.2.wave.2")
                     }
                 }
                 .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
-                .help("Transcribe this recording with the other local engine and compare where they differ")
+                .help("Re-transcribe this recording with the OTHER local engine and compare where they differ. This runs a full transcription, so it can take a while.")
                 Button("Copy") { copy(currentTranscript()) }
                 Menu("Export…") {
                     Button("Meeting Notes — Summary + Transcript (.md)") {
@@ -2397,6 +2399,8 @@ private struct GlossarySuggestionSheet: View {
 private struct SecondOpinionSheet: View {
     let spans: [TranscriptComparisonSpan]?
     let isRunning: Bool
+    let engineName: String?
+    let progress: LocalTranscriptionProgress?
     let failed: Bool
     let onReplace: (TranscriptComparisonSpan) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -2419,8 +2423,23 @@ private struct SecondOpinionSheet: View {
                 Spacer()
             } else if isRunning && spans == nil {
                 Spacer()
-                ProgressView("Transcribing with the other engine…").controlSize(.small)
-                    .frame(maxWidth: .infinity)
+                VStack(spacing: 10) {
+                    let engine = engineName ?? "the other engine"
+                    if let fraction = progress?.fractionCompleted, progress?.phase == .transcribing {
+                        ProgressView(value: fraction) {
+                            Text("Re-transcribing with \(engine)… \(Int((fraction * 100).rounded()))%")
+                        }
+                        .frame(maxWidth: 320)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text(secondOpinionPhaseText(engine))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text("This runs a full transcription with \(engine), so it can take a while. You can keep using the app.")
+                        .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 24)
+                .frame(maxWidth: .infinity)
                 Spacer()
             } else if let spans, !spans.isEmpty {
                 List {
@@ -2468,6 +2487,15 @@ private struct SecondOpinionSheet: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func secondOpinionPhaseText(_ engine: String) -> String {
+        switch progress?.phase {
+        case .loadingModel: return "Loading \(engine)…"
+        case .downloadingModel: return "Downloading \(engine) (first use)…"
+        case .transcribing: return "Re-transcribing with \(engine)…"
+        default: return "Starting \(engine)…"
+        }
     }
 
     private func label(_ kind: TranscriptComparisonSpan.Kind) -> String {

@@ -14,6 +14,29 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F156 — Second Opinion UX: scope the spinner to one meeting + show real progress
+
+- **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** user-reported.
+- **Reachability:** meeting detail → transcript toolbar "Second opinion" button + `SecondOpinionSheet`.
+
+**Root cause.** F88's button bound its loading spinner to the GLOBAL `isRunningAuxiliaryEngine`, so while
+any second opinion ran, EVERY meeting's button showed a spinner. And `computeSecondOpinion` ran the other
+engine's full re-transcription with NO progress handler, so the sheet showed a featureless indeterminate
+spinner for the (minutes-long) run — the user couldn't tell it was working.
+
+**Fix.** Added `secondOpinionRunningID` (the meeting being processed); the button spins only when it
+matches `meetingID`, and other meetings' buttons are merely disabled (can't run two engines at once).
+Wired the engine run's live progress into `secondOpinionProgress` + `secondOpinionEngine`; the sheet now
+shows a determinate bar "Re-transcribing with <engine>… N%" (fed by the F101/Whisper progress parsers),
+phase labels, and a note that it's a full transcription. The button help text now says so up front.
+
+**Evidence.** Red-green (`secondOpinionRunningStateIsScopedToMeeting`): `requestSecondOpinion(id1)` sets
+`secondOpinionRunningID == id1` (not global), cleared to nil when done. Existing second-opinion tests
+still pass. Build clean; full gate green. **Gaps.** **Not planned:** a GUI test of the sheet's progress
+rendering (no view harness) — verified by build + the AppModel-level scoping/progress plumbing.
+
+---
+
 ## F141 — Diagnostics export now redacts absolute paths from error messages
 
 - **Outcome:** fixed · **Closed:** 2026-08-03 by Claude Code (Opus 4.8) · **Origin:** audit.

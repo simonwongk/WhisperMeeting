@@ -284,6 +284,14 @@ final class AppModel: ObservableObject {
     /// True when the most recent second-opinion run failed to produce a comparison — so the sheet can
     /// show an error instead of rendering nil spans as "no differences" (F142).
     @Published var secondOpinionFailed = false
+    /// The meeting whose second opinion is currently running, so ONLY that meeting's button shows a
+    /// spinner (not every meeting's, which the global flag caused). nil when idle (F88 UX).
+    @Published private(set) var secondOpinionRunningID: UUID?
+    /// Live progress of the in-flight second-opinion engine run, so the sheet can show a determinate bar
+    /// instead of a featureless spinner (F88 UX).
+    @Published private(set) var secondOpinionProgress: LocalTranscriptionProgress?
+    /// The engine being run for the second opinion, for the progress label (F88 UX).
+    @Published private(set) var secondOpinionEngine: MeetingTranscriptionEngine?
     /// True while a second-opinion or segment re-run engine pass is in flight (F88/F92).
     @Published private(set) var isRunningAuxiliaryEngine = false
 
@@ -333,9 +341,14 @@ final class AppModel: ObservableObject {
         }
         secondOpinionFailed = false
         secondOpinionSpans = nil
+        secondOpinionProgress = nil
+        secondOpinionRunningID = id
         isRunningAuxiliaryEngine = true
         Task {
             await computeSecondOpinion(id: id)
+            secondOpinionRunningID = nil
+            secondOpinionProgress = nil
+            secondOpinionEngine = nil
             isRunningAuxiliaryEngine = false
         }
     }
@@ -349,14 +362,24 @@ final class AppModel: ObservableObject {
         // the meeting), not current Settings — otherwise a Settings change could re-run the same engine (F142).
         let producedBy = meeting.transcriptionEngine ?? selectedEngine
         let other: MeetingTranscriptionEngine = producedBy == .qwenBalanced ? .whisperLarge : .qwenBalanced
+        secondOpinionEngine = other
         let selection = MeetingTranscriptionSelection(engine: other, language: selectedLanguage)
         do {
-            let result = try await executeEngine(selection, on: store.recordingURL(for: meeting))
+            // Surface the other engine's live progress so the sheet shows real feedback, not a bare
+            // spinner, while it re-transcribes (F88 UX).
+            let result = try await executeEngine(selection, on: store.recordingURL(for: meeting)) { progress in
+                await self.apply(secondOpinionProgress: progress)
+            }
             secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
         } catch {
             secondOpinionFailed = true
             alertMessage = error.localizedDescription
         }
+    }
+
+    /// Publishes the second-opinion engine's live progress for the sheet (F88 UX).
+    func apply(secondOpinionProgress progress: LocalTranscriptionProgress) {
+        secondOpinionProgress = progress
     }
 
     /// Replace one diverging segment's text with the other engine's reading (F88), on explicit apply.
