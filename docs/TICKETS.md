@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F157`.**
+**Next free ID: `F158`.**
 
 ---
 
@@ -15,6 +15,28 @@ Read them before touching this file.** This file holds **open** work only; close
 _The audit's urgent/confirmed defects were fixed (F92 loss, backup safety F137, and F138–F148 in the log,
 including the two data-safety items F148 #1/#6). What remains below are the Low-severity, bounded-impact
 findings from the F148 suspicious-risk investigation._
+
+### F157 — Consolidate agent guidance and make the ticket system easier to scan
+
+- **Status:** in-progress
+- **Owner:** /root
+- **Severity:** medium
+- **Area:** docs
+- **Filed:** 2026-08-03 by /root
+
+**Problem.** Agent guidance is split between the normative `AGENTS.md` and a redundant `CLAUDE.md:1-8`,
+while the human ticket view is a dense generated page (`docs/tickets-dashboard.html`) with no concise
+orientation or operational handoff. Tool-generated repository artifacts also obscure the durable project
+documentation.
+
+**Impact.** Humans must infer ticket state and next actions from several files; agents have duplicated
+entry points and stale tool-specific context to navigate before they can safely work.
+
+**Proposed fix.** Keep one concise, authoritative agent guide; improve the generated ticket dashboard and
+its source workflow; retain durable project records while removing clearly redundant tool/editor artifacts.
+
+**Verification.** Regenerate the dashboard, validate documentation links and ticket parsing, and inspect
+the repository for removed stale `CLAUDE.md` references and tool artifacts.
 
 ### F150 — WAV UInt32 data-size field overflows for a single meeting longer than ~12.4 h
 
