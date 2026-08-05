@@ -23,9 +23,10 @@ post-meeting transcript in the meeting’s original language, with all speech pr
   timing is unavailable — never drop the transcript or the explanation silently.
 - Allow PDF, DOCX, TXT, Markdown, and CSV documents to supply a reviewable business-vocabulary list
   used as Whisper’s `initial_prompt`.
-- Keep recording and transcription local. The sole cloud exception is an optional Claude summary: it
-  requires a user-saved API key plus an explicit, confirmed Summarize press, sends only the
-  completed transcript, and never changes the recording or transcript.
+- Keep recording and transcription local, and summarize on-device by default: a local mlx_lm model
+  (Apple silicon) produces the summary with no API key and nothing uploaded. The one optional cloud
+  path is a Claude summary — it is opt-in, requires a user-saved API key plus an explicit, confirmed
+  Summarize press, sends only the completed transcript, and never changes the recording or transcript.
 - Store recordings and transcripts locally and provide meeting history, editing, copying, export,
   cancellation, and recovery after interruption.
 - Treat recorded audio as the source of truth: transcription failures and transcription cancellation
