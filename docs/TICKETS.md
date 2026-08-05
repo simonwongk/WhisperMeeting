@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F168`.**
+**Next free ID: `F169`.**
 
 ---
 
@@ -18,32 +18,29 @@ before starting work that depends on a person.
 
 ## Ready to claim
 
-### F166 — `swift test` / `quality-check.sh` can't resolve swift-testing on the current toolchain
+### F168 — `quality-check.sh` cold run: step [4] debug build trips the F121 watchdog
 
 - **Status:** open
 - **Owner:** —
-- **Severity:** medium
+- **Severity:** low
 - **Area:** build
-- **Filed:** 2026-08-04 by Claude Code (Opus 4.8), from F164
+- **Filed:** 2026-08-05 by Claude Code (Opus 4.8), from F166
 
-**Problem.** On this machine's Command Line Tools toolchain (`swift 6.3.3`, target `macosx26`; runtime
-libs under `.../usr/lib/swift-6.2`), plain `swift test` fails to compile the test targets with
-`error: no such module 'Testing'`, and once compiled the bundle fails to `dlopen`
-`Testing.framework` / `lib_TestingInterop.dylib` — neither is on the default rpath.
-`Scripts/quality-check.sh` step [4] runs plain `swift test --disable-sandbox --no-parallel`, so the
-gate cannot run as-is here. It works only with `-Xswiftc -F <CLT>/Library/Developer/Frameworks`,
-`-Xlinker -rpath -Xlinker <CLT>/Library/Developer/Frameworks`, and `-Xlinker -rpath -Xlinker
-<CLT>/Library/Developer/usr/lib`.
+**Problem.** Step [4] runs `swift test` against an isolated clang-module cache
+(`CLANG_MODULE_CACHE_PATH` / `XDG_CACHE_HOME` under `$TMPDIR/whispermeet-quality`). On a cold
+`.build/debug`, a from-scratch build of the project exceeds the 600 s F121 watchdog, so the watchdog
+fires and the gate exits 1 even though nothing hung — a false "F121 helper hang". The watchdog comment
+assumes a warm cache ("Normal runs finish in seconds").
 
-**Impact.** Any agent on this toolchain cannot run `swift test` or the quality gate without the extra
-flags; a real toolchain path problem reads as a broken build.
+**Impact.** A cold gate run (fresh checkout, or after `.build` is cleared) fails at step [4] on build
+time, not a real hang or test failure — misleading, and the run is wasted.
 
-**Proposed fix.** Either add the framework `-F`/`-rpath` flags to `quality-check.sh`'s `swift test`
-invocation (harmless where the paths already resolve), or repair the toolchain (full Xcode / matching
-swift-6.3 runtime libs). Confirm whether the user's normal environment already resolves this before
-changing the gate.
+**Proposed fix.** Warm the build before the timed section (e.g. build outside the watchdog), or scale
+the watchdog when the build is cold, or bump the default `WHISPERMEET_TEST_TIMEOUT` when no warm
+`.build/debug` exists — keeping the F121 hang protection for warm runs.
 
-**Verification.** `Scripts/quality-check.sh` completes step [4] on this machine without manual flags.
+**Verification.** A cold `quality-check.sh` run (after removing `.build/debug`) completes step [4]
+without a false watchdog kill.
 
 ### F167 — No startup reclaim for an interrupted local-summarizer install
 

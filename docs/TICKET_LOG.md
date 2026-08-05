@@ -14,6 +14,61 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F166 — `swift test` / `quality-check.sh` can't resolve swift-testing on the current toolchain
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-05 by Claude Code (Opus 4.8)
+
+**Root cause.** On this Command Line Tools toolchain (`swift 6.3.3`, target `macosx26`; runtime libs
+under `.../usr/lib/swift-6.2`), `Testing.framework` and `lib_TestingInterop.dylib` are not on the
+default search/rpath, so `swift test` fails at compile with `error: no such module 'Testing'` and, once
+`-F` is supplied, at runtime with a `dlopen` failure. `quality-check.sh` step [4] used plain `swift
+test`, so the gate could not run here.
+
+**Fix.** `quality-check.sh` now derives the active developer dir (`xcode-select -p`) and, when
+`.../Library/Developer/Frameworks` exists, adds `-Xswiftc -F <frameworks>` plus `-rpath` for both the
+frameworks dir and `.../Library/Developer/usr/lib` to the `swift test` invocation — guarded by `-d`, so
+the flags are harmless additive search paths where swift-testing already resolves, and applied only to
+the test step (never the release build). Also hardened the dashboard meta-test to anchor on the real
+`swift test --disable-sandbox` command (a comment now contains the string "swift test") and to check
+the F164 `test_summarize_local.py` suite.
+
+**Evidence.**
+
+```text
+# BEFORE (plain swift test, no flags):
+error: emit-module command failed with exit code 1
+Tests/WhisperCoreTests/AccessibilityPhraseTests.swift:1:8: error: no such module 'Testing'
+
+# AFTER — the gate now compiles AND executes the swift-testing suite at step [4] (qc3 run):
+[4/6] Running the complete Swift test suite
+✔ Test "Local summarizer surfaces a helper failure as helperFailed" passed after 0.159 seconds.
+… 108 swift-testing tests executed at step 4, 0 failures …
+
+# Full suite, warm cache (the flags in a stable wrapper):
+✔ Test run with 316 tests in 2 suites passed after 8.053 seconds.
+
+# meta-test after the anchor fix:
+$ python3 Scripts/tests/test_generate_tickets_dashboard.py
+Ran 7 tests … OK
+
+# Other gate steps verified individually this session: [1] git diff --check clean; [2] dashboard
+# --check current; [3] test_qwen_transcribe / test_summarize_local / test_generate_tickets all OK;
+# [5] swift build -c release -Xswiftc -warnings-as-errors → Build complete! exit 0;
+# [6] build-app.sh → WhisperMeet.app signed with the new resources bundled.
+```
+
+**Gaps.** I could **not** capture one uninterrupted end-to-end `quality-check.sh` run on this machine:
+step [4] does a from-scratch debug build against an **isolated** clang-module cache (the gate sets
+`CLANG_MODULE_CACHE_PATH`/`XDG_CACHE_HOME`), and a cold full build of this project exceeds the 600 s
+F121 watchdog (and this harness's ~10 min process-time limits). Every attempt was killed mid-build,
+which repeatedly emptied `.build/debug`, so each retry was cold again. This is a build-**time** issue
+orthogonal to the swift-testing fix: the fix itself is verified (108 tests compiled + ran green in the
+gate at step [4]; previously "no such module 'Testing'"), and every gate step passes individually.
+Making the gate robust to a cold run (warm the build first, or bump the watchdog when cold) is `F168`.
+Confirm whether the user's normal environment already resolves swift-testing before relying on the
+added flags — they are guarded and harmless if it does.
+
 ## F164 — Local LLM summarization as the default; Claude becomes opt-in cloud premium
 
 - **Outcome:** fixed
