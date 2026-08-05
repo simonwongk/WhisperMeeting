@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F164`.**
+**Next free ID: `F166`.**
 
 ---
 
@@ -16,7 +16,67 @@ Use the [work dashboard](tickets-dashboard.html) for a scan-first view. This Mar
 authoritative queue: claim only a ticket that is `open`, and read [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md)
 before starting work that depends on a person.
 
+## In progress
+
+### F164 — Local LLM summarization as the default; Claude becomes opt-in cloud premium
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Opus 4.8)
+- **Severity:** medium
+- **Area:** privacy
+- **Filed:** 2026-08-04 by Claude Code (Opus 4.8)
+
+**Problem.** Summarization is Claude-only. `AppModel.makeSummarizer`
+(`Sources/WhisperMeet/AppModel.swift:275`) hard-builds `ClaudeSummarizer`, and `summarize(id:style:)`
+(`Sources/WhisperMeet/AppModel.swift:1169-1174`) hard-requires a Keychain API key, so the one feature
+that leaves the Mac (`docs/PRODUCT_SPEC.md:26-28`) is the *only* way to summarize. No on-device
+summarizer exists, though `MeetingSummarizer` (`Sources/WhisperCore/MeetingSummarizer.swift:60-64`)
+was designed for one ("a local engine can adopt the same interface later"). `mlx_lm` (0.30.5) is
+already present as a required dependency of `mlx-audio`, but only inside the opt-in Qwen3-ASR venv.
+
+**Impact.** Users cannot summarize privately/offline; summarizing forces a paid cloud key and uploads
+the completed transcript. Local-first is the product's core promise (`docs/PRODUCT_SPEC.md:5-6`).
+
+**Proposed fix.** Add an on-device `MeetingSummarizer` (`LocalSummarizer`) backed by `mlx_lm` via a
+new `Scripts/summarize_local.py` (mirrors `Scripts/qwen_transcribe.py`) running under a **dedicated**
+`~/Library/Application Support/WhisperMeet/Runtime/Summarizer` venv (local summaries are the default,
+so they must not depend on the opt-in Qwen3-ASR runtime). Default model Qwen3-8B-4bit on ≥16 GB,
+Qwen3-4B-4bit fallback on <16 GB (RAM picked Swift-side via `ProcessInfo.physicalMemory`). Make
+`SummarizationEngine.local` the default, keep `.claude` as opt-in; reuse the `QwenASRClient`
+spawn/cancel pattern and the `setup-qwen-asr.sh` install pattern. Honest fallbacks: model-not-installed
+→ offer install; Claude-without-key → prompt (reuse the second-opinion failure UX).
+
+**Verification.** TDD: `Scripts/tests/test_summarize_local.py` (pure prompt/parse + `main()` with a
+fake `mlx_lm`); Swift engine-selection, install-required, and fallback tests (fail-before/pass-after);
+a real installed-model run (Qwen3-8B-4bit); `Scripts/quality-check.sh` green with the `@Test` count
+not dropping below 302; `docs/PRODUCT_SPEC.md` + `docs/CLAUDE_SUMMARIES.md` privacy boundary updated.
+
 ## Ready to claim
+
+### F165 — LLM transcript-correction pass using business vocabulary + a reference file
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** transcription
+- **Filed:** 2026-08-04 by Claude Code (Opus 4.8), from F164
+
+**Problem.** Transcripts contain domain terms (names, products, jargon) that ASR mis-hears. The
+business-vocabulary list already feeds Whisper's `initial_prompt` (`Sources/WhisperCore/VocabularyPrompt.swift`),
+but there is no post-transcription correction pass that uses that vocabulary — or a longer reference
+document — to fix recognized text after the fact.
+
+**Impact.** Recurring domain-specific mis-transcriptions persist even when the correct spelling is
+known, lowering transcript quality for specialized meetings.
+
+**Proposed fix.** A local LLM correction pass reusing the F164 `summarize_local.py` machinery: v1
+prompt-stuffs the vocabulary list + a user reference file into the same local model (Qwen3's 128K
+context covers transcript + vocab). Add embeddings (`mlx-community` Qwen3-Embedding-0.6B, Apache-2.0)
++ retrieval only when reference material outgrows the context window. Must never overwrite the raw
+recording or the user's manual edits; corrections are reviewable, like the second-opinion diff.
+
+**Verification.** A synthetic transcript with a known mis-transcription is corrected against a
+supplied vocabulary/reference; the raw recording and edited segments are untouched.
 
 ### F150 — WAV UInt32 data-size field overflows for a single meeting longer than ~12.4 h
 
