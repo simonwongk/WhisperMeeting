@@ -180,12 +180,14 @@ Otherwise, describe what changed.
         with self.assertRaisesRegex(ValueError, "at most 5"):
             self.generator.load_validated()
 
-    def test_quality_gate_checks_the_dashboard_and_both_python_suites_before_swift(self) -> None:
+    def test_quality_gate_checks_the_dashboard_and_python_suites_before_swift(self) -> None:
         source = QUALITY_GATE.read_text(encoding="utf-8")
-        swift_tests = source.index("swift test")
+        # Anchor on the real command, not any "swift test" substring — comments may mention it (F166).
+        swift_tests = source.index("swift test --disable-sandbox")
         for command in (
             "python3 Scripts/generate-tickets-dashboard.py --check",
             "python3 Scripts/tests/test_qwen_transcribe.py",
+            "python3 Scripts/tests/test_summarize_local.py",
             "python3 Scripts/tests/test_generate_tickets_dashboard.py",
         ):
             self.assertIn(command, source)

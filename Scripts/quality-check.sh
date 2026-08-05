@@ -7,6 +7,20 @@ cache_root="${TMPDIR:-/tmp}/whispermeet-quality"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$cache_root/clang}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$cache_root/xdg}"
 
+# swift-testing framework resolution (F166). Some Command Line Tools toolchains don't place
+# Testing.framework / lib_TestingInterop.dylib on the default search + rpath, so `swift test` fails
+# with "no such module 'Testing'" and then a dlopen error. Add the active developer dir's framework +
+# lib paths when they exist; these are harmless additive search paths on machines (e.g. full Xcode)
+# where swift-testing already resolves. Applied only to `swift test`, never to the release build.
+testing_flags=()
+developer_dir="$(xcode-select -p 2>/dev/null || true)"
+testing_frameworks="$developer_dir/Library/Developer/Frameworks"
+testing_libs="$developer_dir/Library/Developer/usr/lib"
+if [[ -n "$developer_dir" && -d "$testing_frameworks" ]]; then
+  testing_flags=(-Xswiftc -F -Xswiftc "$testing_frameworks" -Xlinker -rpath -Xlinker "$testing_frameworks")
+  [[ -d "$testing_libs" ]] && testing_flags+=(-Xlinker -rpath -Xlinker "$testing_libs")
+fi
+
 print "[1/6] Checking the candidate diff for whitespace errors"
 if [[ -n "${DIFF_BASE:-}" ]] && git cat-file -e "${DIFF_BASE}^{commit}" 2>/dev/null; then
   git diff --check "${DIFF_BASE}...HEAD"
@@ -42,7 +56,7 @@ print "[4/6] Running the complete Swift test suite"
 # diagnosable, not a silent timeout), print the last-started test, SIGKILL the helper, and fail loudly.
 # Normal runs finish in seconds — far under the bound.
 test_log="$(mktemp -t whispermeet-test.XXXXXX)"
-swift test --disable-sandbox --no-parallel >"$test_log" 2>&1 &
+swift test --disable-sandbox --no-parallel "${testing_flags[@]}" >"$test_log" 2>&1 &
 test_pid=$!
 test_timeout="${WHISPERMEET_TEST_TIMEOUT:-600}"
 elapsed=0
