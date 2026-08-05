@@ -24,6 +24,9 @@ cp "Scripts/setup-qwen-asr.sh" "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 chmod +x "$app_dir/Contents/Resources/setup-qwen-asr.sh"
 cp "Scripts/qwen_transcribe.py" "$app_dir/Contents/Resources/qwen_transcribe.py"
 cp "Scripts/qwen_dictate_server.py" "$app_dir/Contents/Resources/qwen_dictate_server.py"
+cp "Scripts/setup-local-summarizer.sh" "$app_dir/Contents/Resources/setup-local-summarizer.sh"
+chmod +x "$app_dir/Contents/Resources/setup-local-summarizer.sh"
+cp "Scripts/summarize_local.py" "$app_dir/Contents/Resources/summarize_local.py"
 # Sign with a stable identity when one exists, so macOS TCC keeps the user's permission grants
 # across rebuilds — an ad-hoc signature's identity changes every build, which resets microphone,
 # screen-recording, and accessibility grants each time (F127). Override with

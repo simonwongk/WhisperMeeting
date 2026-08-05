@@ -28,12 +28,12 @@ func summaryStyleReachesSummarizer() async throws {
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 
     let recorder = StyleRecordingSummarizer()
-    model.makeSummarizer = { _ in recorder }
+    model.makeSummarizer = { _, _ in recorder }
 
     let id = UUID()
     model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
 
-    await model.performSummarization(id: id, apiKey: "test-key", transcript: "hello world", language: "en", style: .brief)
+    await model.performSummarization(id: id, engine: .claude, apiKey: "test-key", transcript: "hello world", language: "en", style: .brief)
 
     #expect(recorder.recordedStyle == .brief)
     #expect(model.store.meeting(id: id)?.summary == recorder.stub)

@@ -119,6 +119,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var isQwenInstalled = false
     @Published private(set) var isInstallingQwenRuntime = false
     @Published private(set) var qwenInstallationMessage: String?
+    @Published private(set) var isSummarizerInstalled = false
+    @Published private(set) var isInstallingSummarizer = false
+    @Published private(set) var summarizerInstallationMessage: String?
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
     @Published private(set) var isImporting = false
@@ -127,6 +130,11 @@ final class AppModel: ObservableObject {
     }
     @Published var selectedLanguage: WhisperLanguage {
         didSet { defaults.set(selectedLanguage.rawValue, forKey: Self.languageKey) }
+    }
+    /// The summarization engine. `.local` (on-device, keyless) is the default; `.claude` is opt-in
+    /// cloud (F164). Persisted like `selectedEngine`.
+    @Published var summarizationEngine: SummarizationEngine {
+        didSet { defaults.set(summarizationEngine.rawValue, forKey: Self.summarizationEngineKey) }
     }
     @Published var alertMessage: String?
     /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
@@ -149,6 +157,7 @@ final class AppModel: ObservableObject {
     private static let modelKey = "localWhisperModel"
     private static let languageKey = "localWhisperLanguage"
     private static let claudeAPIKeyAccount = "claudeAPIKey"
+    private static let summarizationEngineKey = "summarizationEngine"
 
     convenience init() {
         self.init(
@@ -173,8 +182,12 @@ final class AppModel: ObservableObject {
         selectedLanguage = WhisperLanguage(
             rawValue: defaults.string(forKey: Self.languageKey) ?? ""
         ) ?? .automatic
+        summarizationEngine = SummarizationEngine(
+            rawValue: defaults.string(forKey: Self.summarizationEngineKey) ?? ""
+        ) ?? .local
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
         isQwenInstalled = QwenASRRuntime.isInstalled()
+        isSummarizerInstalled = isSummarizerModelInstalled()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
         refreshRecordingPreflight()
     }
@@ -243,6 +256,7 @@ final class AppModel: ObservableObject {
     func refreshRuntime() {
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
         isQwenInstalled = QwenASRRuntime.isInstalled()
+        isSummarizerInstalled = isSummarizerModelInstalled()
     }
 
     func refreshRecordingPreflight() {
@@ -270,9 +284,21 @@ final class AppModel: ObservableObject {
         await AppModel.spawnQwenInstallRecovery(runtimeDirectory: runtimeDirectory)
     }
 
-    /// Builds the summarizer for a meeting summary. Injectable so the style-threading wiring is
-    /// testable without the Claude network call; defaults to the real `ClaudeSummarizer` (F81).
-    var makeSummarizer: @Sendable (String) -> MeetingSummarizer = { ClaudeSummarizer(apiKey: $0) }
+    /// Builds the summarizer for the selected engine. Injectable so the engine-selection + style
+    /// wiring is testable without a network call or a local model; defaults to the real engines —
+    /// the keyless on-device `LocalSummarizer` for `.local`, `ClaudeSummarizer` for `.claude`
+    /// (F164 extends the F81 seam).
+    var makeSummarizer: @Sendable (SummarizationEngine, String) -> MeetingSummarizer = { engine, apiKey in
+        switch engine {
+        case .local: return LocalSummarizer()
+        case .claude: return ClaudeSummarizer(apiKey: apiKey)
+        }
+    }
+
+    /// Whether the on-device summarization model is installed. Injectable so the install-required
+    /// guard and the Settings state are testable without a real runtime; defaults to the real check
+    /// (F164). Mirrors the `isQwenInstalled` predicate but behind a seam for headless wiring tests.
+    var isSummarizerModelInstalled: @Sendable () -> Bool = { SummarizerRuntime.isInstalled() }
 
     /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
     /// second-opinion (F88) and per-segment re-run (F92) flows are testable with a stub engine; when nil,
@@ -680,6 +706,54 @@ final class AppModel: ObservableObject {
                 alertMessage = error.localizedDescription
             }
             isInstallingQwenRuntime = false
+        }
+    }
+
+    /// Installs the on-device summarization model, choosing 8B vs 4B by physical RAM (F164). Mirrors
+    /// `installQwenASR`: resolve the bundled installer, run it off-actor exporting the chosen model
+    /// repository, then refresh and report. The previous model is preserved on failure.
+    func installSummarizer() {
+        guard !isInstallingRecognitionRuntime,
+              !isInstallingSummarizer,
+              !isMicrophoneBusy,
+              !isImporting,
+              !hasActiveTranscription,
+              !isRunningAuxiliaryEngine,
+              !isDictationActive() else {
+            return
+        }
+        guard SummarizerRuntime.isSupportedOnCurrentMac else {
+            alertMessage = "Local summaries require an Apple-silicon Mac. Use Claude summaries on Intel Macs."
+            return
+        }
+        guard let scriptURL = Bundle.main.url(
+            forResource: "setup-local-summarizer",
+            withExtension: "sh"
+        ) else {
+            alertMessage = "The local-summarizer installer is missing. Rebuild the app and try again."
+            return
+        }
+        let repository = SummarizerRuntime.recommendedRepository()
+        isInstallingSummarizer = true
+        summarizerInstallationMessage = "Installing the local summarization model…"
+        Task {
+            do {
+                try await runSummarizerInstaller(
+                    scriptURL: scriptURL,
+                    runtimeDirectory: SummarizerRuntime.managedDirectory(),
+                    repository: repository
+                )
+                refreshRuntime()
+                if isSummarizerInstalled {
+                    summarizerInstallationMessage = "Local summaries are ready — private and offline."
+                } else {
+                    throw SummarizerError.modelNotInstalled
+                }
+            } catch {
+                summarizerInstallationMessage = "Installation failed. The previous model was preserved."
+                alertMessage = error.localizedDescription
+            }
+            isInstallingSummarizer = false
         }
     }
 
@@ -1168,9 +1242,23 @@ final class AppModel: ObservableObject {
 
     func summarize(id: UUID, style: SummaryStyle = .balanced) {
         guard summarizationTasks[id] == nil else { return }
-        guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
-            alertMessage = SummarizerError.missingAPIKey.localizedDescription
-            return
+        let engine = summarizationEngine
+        // Honest per-engine preconditions: local needs its model installed (offer to install rather
+        // than fail); Claude needs a saved key. Neither uploads anything for `.local` (F164).
+        let apiKey: String
+        switch engine {
+        case .local:
+            guard isSummarizerModelInstalled() else {
+                alertMessage = SummarizerError.modelNotInstalled.localizedDescription
+                return
+            }
+            apiKey = ""
+        case .claude:
+            guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
+                alertMessage = SummarizerError.missingAPIKey.localizedDescription
+                return
+            }
+            apiKey = key
         }
         guard activeSummarizationID == nil else {
             alertMessage = "Another meeting is being summarized. Try again when it finishes."
@@ -1182,7 +1270,10 @@ final class AppModel: ObservableObject {
         let transcript = meeting.transcriptText
         let language = meeting.languageCode
         let task = Task {
-            await performSummarization(id: id, apiKey: key, transcript: transcript, language: language, style: style)
+            await performSummarization(
+                id: id, engine: engine, apiKey: apiKey,
+                transcript: transcript, language: language, style: style
+            )
             summarizationTasks[id] = nil
             activeSummarizationID = nil
         }
@@ -1191,15 +1282,18 @@ final class AppModel: ObservableObject {
 
     func performSummarization(
         id: UUID,
+        engine: SummarizationEngine,
         apiKey: String,
         transcript: String,
         language: String?,
         style: SummaryStyle
     ) async {
-        let summarizer = makeSummarizer(apiKey)
+        let summarizer = makeSummarizer(engine, apiKey)
         do {
             let summary = try await summarizer.summarize(transcript: transcript, language: language, style: style)
             store.update(id: id) { $0.summary = summary }
+        } catch is CancellationError {
+            // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.
         } catch {
             alertMessage = error.localizedDescription
         }
@@ -1458,6 +1552,46 @@ final class AppModel: ObservableObject {
                 let tail = String(log.suffix(2_000))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw QwenASRError.processFailed(
+                    tail.isEmpty
+                        ? "The installer exited with status \(process.terminationStatus)."
+                        : tail
+                )
+            }
+        }.value
+    }
+
+    /// Runs the bundled `setup-local-summarizer.sh`, exporting the RAM-chosen model repository so the
+    /// script downloads the matching pinned model. Mirrors `runQwenInstaller` (F164).
+    private func runSummarizerInstaller(
+        scriptURL: URL,
+        runtimeDirectory: URL,
+        repository: String
+    ) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let parent = runtimeDirectory.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: parent,
+                withIntermediateDirectories: true
+            )
+            let logURL = parent.appendingPathComponent("summarizer-install.log")
+            try Data().write(to: logURL, options: .atomic)
+            let handle = try FileHandle(forWritingTo: logURL)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            var environment = ProcessInfo.processInfo.environment
+            environment["SUMMARIZER_REPOSITORY"] = repository
+            process.environment = environment
+            process.standardOutput = handle
+            process.standardError = handle
+            try process.run()
+            process.waitUntilExit()
+            try? handle.close()
+            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+            guard process.terminationStatus == 0 else {
+                let tail = String(log.suffix(2_000))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw SummarizerError.helperFailed(
                     tail.isEmpty
                         ? "The installer exited with status \(process.terminationStatus)."
                         : tail

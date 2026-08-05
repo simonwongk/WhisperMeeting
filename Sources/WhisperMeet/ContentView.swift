@@ -1404,31 +1404,76 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section(header: Label("Claude Summaries (optional)", systemImage: "sparkles")) {
-                HStack {
-                    Label(
-                        model.hasClaudeAPIKey ? "API key saved" : "No API key",
-                        systemImage: model.hasClaudeAPIKey ? "checkmark.circle.fill" : "key"
-                    )
-                    .foregroundStyle(model.hasClaudeAPIKey ? .green : .secondary)
-                    Spacer()
-                    if model.hasClaudeAPIKey {
-                        Button("Remove", role: .destructive) {
-                            model.setClaudeAPIKey(nil)
-                            apiKeyDraft = ""
-                        }
+            Section(header: Label("Summaries", systemImage: "sparkles")) {
+                Picker("Engine", selection: $model.summarizationEngine) {
+                    ForEach(SummarizationEngine.allCases, id: \.self) { engine in
+                        Text(engine.displayName).tag(engine)
                     }
                 }
-                SecureField("sk-ant-…", text: $apiKeyDraft)
-                Button("Save API Key") {
-                    model.setClaudeAPIKey(apiKeyDraft)
-                    apiKeyDraft = ""
+                if model.summarizationEngine == .local {
+                    if SummarizerRuntime.isSupportedOnCurrentMac {
+                        HStack {
+                            Label(
+                                model.isSummarizerInstalled ? "Local model ready" : "Local model not installed",
+                                systemImage: model.isSummarizerInstalled
+                                    ? "checkmark.circle.fill"
+                                    : "arrow.down.circle"
+                            )
+                            .foregroundStyle(model.isSummarizerInstalled ? .green : .orange)
+                            Spacer()
+                            Button(model.isSummarizerInstalled ? "Repair or Update" : "Install Local Model") {
+                                model.installSummarizer()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(
+                                model.isInstallingSummarizer
+                                    || model.isInstallingRuntime
+                                    || model.isInstallingQwenRuntime
+                                    || model.hasActiveTranscription
+                                    || model.isMicrophoneBusy
+                                    || model.isImporting
+                                    || dictation.isActive
+                            )
+                        }
+                        if model.isInstallingSummarizer {
+                            ProgressView("Downloading the local summarization model. This can take several minutes…")
+                        } else if let message = model.summarizerInstallationMessage {
+                            Text(message).foregroundStyle(.secondary)
+                        }
+                        Text("Local summaries run entirely on this Mac — no API key, and nothing leaves the device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Local summaries require an Apple-silicon Mac. Choose Claude to summarize on this Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    HStack {
+                        Label(
+                            model.hasClaudeAPIKey ? "API key saved" : "No API key",
+                            systemImage: model.hasClaudeAPIKey ? "checkmark.circle.fill" : "key"
+                        )
+                        .foregroundStyle(model.hasClaudeAPIKey ? .green : .secondary)
+                        Spacer()
+                        if model.hasClaudeAPIKey {
+                            Button("Remove", role: .destructive) {
+                                model.setClaudeAPIKey(nil)
+                                apiKeyDraft = ""
+                            }
+                        }
+                    }
+                    SecureField("sk-ant-…", text: $apiKeyDraft)
+                    Button("Save API Key") {
+                        model.setClaudeAPIKey(apiKeyDraft)
+                        apiKeyDraft = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Text("Claude summaries are the one feature that leaves this Mac: the transcript is sent to Anthropic's Claude API, which requires your own paid API key. Recording and transcription stay fully local.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Text("Summaries are the one feature that leaves this Mac: the transcript is sent to Anthropic's Claude API, which requires your own paid API key. Recording and transcription stay fully local.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -1791,12 +1836,20 @@ private struct TranscriptDetailView: View {
                 .labelsHidden()
                 .frame(maxWidth: 150)
                 .disabled(isSummarizing)
-                .help("Choose how detailed the Claude summary should be.")
-                Button(meeting.summary == nil ? "Summarize with Claude" : "Re-summarize") {
-                    if model.hasClaudeAPIKey {
-                        confirmSummarize = true
-                    } else {
-                        model.alertMessage = "Add a Claude API key in Settings to create summaries."
+                .help("Choose how detailed the summary should be.")
+                Button(meeting.summary == nil
+                    ? (model.summarizationEngine == .local ? "Summarize" : "Summarize with Claude")
+                    : "Re-summarize") {
+                    switch model.summarizationEngine {
+                    case .local:
+                        // The AppModel guard offers install if the model is missing (honest fallback).
+                        model.summarize(id: meetingID, style: summaryStyle)
+                    case .claude:
+                        if model.hasClaudeAPIKey {
+                            confirmSummarize = true
+                        } else {
+                            model.alertMessage = "Add a Claude API key in Settings to create summaries."
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1804,12 +1857,16 @@ private struct TranscriptDetailView: View {
             }
 
             if isSummarizing {
-                ProgressView("Summarizing with Claude…").controlSize(.small)
+                ProgressView(model.summarizationEngine == .local ? "Summarizing on this Mac…" : "Summarizing with Claude…")
+                    .controlSize(.small)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
                 summaryBody(summary)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
-            } else if !model.hasClaudeAPIKey {
+            } else if model.summarizationEngine == .local, !model.isSummarizerInstalled, SummarizerRuntime.isSupportedOnCurrentMac {
+                Text("Install the local summarization model in Settings to turn this transcript into a summary, key points, and action items — privately, on this Mac.")
+                    .foregroundStyle(.secondary)
+            } else if model.summarizationEngine == .claude, !model.hasClaudeAPIKey {
                 Text("Add a Claude API key in Settings to turn this transcript into a summary, key points, and action items.")
                     .foregroundStyle(.secondary)
             }
