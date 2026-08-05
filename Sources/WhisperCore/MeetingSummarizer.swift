@@ -22,6 +22,11 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case responseTruncated
     case unreadableResponse
     case emptyResponse
+    /// The on-device summarization model is not installed yet (F164). The user is offered an install
+    /// rather than a dead end — mirrors `QwenASRError.runtimeNotInstalled`.
+    case modelNotInstalled
+    /// The local summarizer subprocess failed; the string carries its captured diagnostics tail (F164).
+    case helperFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -43,7 +48,11 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
         case .unreadableResponse:
             return "Claude returned a summary the app could not read."
         case .emptyResponse:
-            return "Claude returned an empty summary."
+            return "The summarizer returned an empty summary."
+        case .modelNotInstalled:
+            return "Install the local summarization model in Settings to create summaries on this Mac."
+        case let .helperFailed(message):
+            return "The local summarizer could not finish: \(message)"
         }
     }
 }
@@ -57,8 +66,22 @@ public enum SummaryStyle: String, Sendable, Equatable, CaseIterable {
     case actionItemsFocused // emphasize concrete follow-up tasks
 }
 
-/// Produces a `MeetingSummary` from a transcript. Implemented by the cloud
-/// `ClaudeSummarizer` today; a local engine can adopt the same interface later.
+/// Which engine produces a meeting summary. `local` (on-device, keyless, private) is the default;
+/// `claude` is the opt-in cloud upgrade behind the same `MeetingSummarizer` protocol (F164).
+public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashable {
+    case local
+    case claude
+
+    public var displayName: String {
+        switch self {
+        case .local: return "Local (private, on-device)"
+        case .claude: return "Claude (cloud)"
+        }
+    }
+}
+
+/// Produces a `MeetingSummary` from a transcript. Implemented by the on-device `LocalSummarizer`
+/// (the keyless default) and the cloud `ClaudeSummarizer` (opt-in) behind one interface (F164).
 public protocol MeetingSummarizer: Sendable {
     func summarize(transcript: String, language: String?, style: SummaryStyle) async throws -> MeetingSummary
 }
