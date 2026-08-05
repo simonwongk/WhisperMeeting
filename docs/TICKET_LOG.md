@@ -14,6 +14,90 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F164 — Local LLM summarization as the default; Claude becomes opt-in cloud premium
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-04 by Claude Code (Opus 4.8)
+- **Reachability:** summary "Summarize" button (`ContentView.summarySection`) → `AppModel.summarize(id:style:)`
+  (per-engine guard) → `performSummarization(id:engine:apiKey:…)` → `makeSummarizer(engine, apiKey)` →
+  `LocalSummarizer.summarize` → `store.update { $0.summary = }`. Install path: Settings → Summaries →
+  "Install Local Model" → `AppModel.installSummarizer()` → `setup-local-summarizer.sh`. The reachable
+  AppModel path is proven headlessly by `SummarizationEngineWiringTests`; the live GUI click-through is
+  manual (no view-render harness — **Not planned**).
+
+**Root cause.** Summarization was Claude-only: `AppModel.makeSummarizer` hard-built `ClaudeSummarizer`
+and `summarize(id:)` hard-required a Keychain API key, so the one feature that leaves the Mac was also
+the only way to summarize — despite `mlx_lm` already being present and `MeetingSummarizer` designed for
+a local engine.
+
+**Fix.** Added a keyless, offline `LocalSummarizer` (WhisperCore, Foundation-only) that spawns
+`summarize_local.py` (mlx_lm `stream_generate`, thinking disabled) against a pinned Qwen3 model in a
+**dedicated** `Runtime/Summarizer` runtime — separate from the opt-in Qwen3-ASR runtime because local
+summaries are the default and must not depend on it. `SummarizerRuntime` picks 8B (≥16 GiB) vs 4B by
+`ProcessInfo.physicalMemory`. `SummarizationEngine.local` is the persisted default; `makeSummarizer`
+switches engine; `summarize()` offers install when the local model is missing and still prompts for a
+key under Claude (honest fallbacks). New installer `setup-local-summarizer.sh` mirrors
+`setup-qwen-asr.sh` (own mlx-lm venv, RAM-picked pinned model, sha256 gate, atomic activation). The
+local prompt reuses `ClaudeSummarizer.systemPrompt` (single source of truth) + a JSON directive; the
+helper's pure `parse_summary` degrades never-raises.
+
+**Evidence.**
+
+```text
+# TDD red → green (python helper)
+$ python3 Scripts/tests/test_summarize_local.py        # BEFORE implementation
+FileNotFoundError: [Errno 2] No such file or directory: '…/Scripts/tests/../summarize_local.py'
+$ python3 Scripts/tests/test_summarize_local.py        # AFTER
+Ran 11 tests in 0.005s
+OK
+
+# Full Swift suite (302 baseline → 316; +14 new, none dropped). Run via the F166 framework-path
+# workaround because this Command Line Tools toolchain can't resolve swift-testing on the default rpath.
+$ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc <CLT-Frameworks> \
+      -Xlinker -rpath -Xlinker <CLT-Frameworks> -Xlinker -rpath -Xlinker <CLT-Dev-usr-lib>
+✔ Test run with 316 tests in 2 suites passed after 8.053 seconds.
+
+# Release build, warnings-as-errors (quality-check step 5)
+$ swift build --disable-sandbox -c release -Xswiftc -warnings-as-errors
+Build complete! (70.40s)   # exit 0
+
+# Real installed-model install + run (user chose to download 8B). Installer end-to-end:
+$ SUMMARIZER_REPOSITORY=mlx-community/Qwen3-8B-4bit /bin/zsh Scripts/setup-local-summarizer.sh
+Local summarization model is ready at …/WhisperMeet/Runtime/Summarizer
+$ cat …/Runtime/Summarizer/MANIFEST
+mlx-lm=0.30.5
+summarizer_repository=mlx-community/Qwen3-8B-4bit
+summarizer_revision=545dc4251c05440727734bcd94334791f6ab0192
+summarizer_model_sha256=f2d29621aab300336ad645567ff38c42aac755513006ef4e8a579cf7ef5256d8
+
+# End-to-end via the INSTALLED runtime (exact command LocalSummarizer spawns), Mandarin in → Mandarin
+# out (do-not-translate honored), valid JSON, 15.6s:
+$ …/Runtime/Summarizer/venv/bin/python …/Runtime/Summarizer/summarize_local.py \
+      --model …/Runtime/Summarizer/model --input zh_in.json --output zh_out.json --max-tokens 700
+{"summary":"会议讨论了项目第一版的发布时间、测试工作安排以及招聘测试工程师的计划。…",
+ "keyPoints":["项目第一版计划在下周五发布。", …], "actionItems":[…],
+ "warning":null,"finishReason":"stop","generatedTokens":164}
+# (an English transcript likewise produced valid English JSON in 14.7s.)
+
+# mlx_lm API verified against the installed package source (AGENTS.md — not guessed):
+#   load(path)->(model,tokenizer);  stream_generate(model,tokenizer,prompt,max_tokens,sampler=…)
+#   yields GenerationResponse{text,finish_reason,generation_tokens};  make_sampler(temp=…)
+
+# Other gate steps: whitespace `git diff HEAD --check` clean; dashboard `--check` current;
+# test_qwen_transcribe.py / test_summarize_local.py / test_generate_tickets_dashboard.py all OK;
+# build-app.sh packaged + ad-hoc-signed WhisperMeet.app with setup-local-summarizer.sh + summarize_local.py bundled.
+```
+
+**Gaps.** `swift test` (and `quality-check.sh` step [4]) cannot resolve the swift-testing framework on
+this machine's Command Line Tools toolchain (compiler 6.3.3 vs runtime libs under `swift-6.2`;
+`Testing.framework` + `lib_TestingInterop.dylib` not on the default rpath) — the suite was run with the
+`-F` + `-rpath` workaround above (`F166`). No startup-time reclaim seam for an interrupted summarizer
+install; the installer self-reclaims orphaned artifacts on its next run and a failed install restores
+the prior model via its cleanup trap, so nothing is stranded permanently (`F167`). The local
+transcript-correction pass is the separate roadmap item `F165`. GUI render test — **Not planned**
+(WhisperMeet has no view-render harness); the summary button, engine picker, and install row are
+manual UI, verified through the headless AppModel wiring tests plus the real-model run.
+
 ## F130 — Visually verify tag click-to-filter and its VoiceOver actions
 
 - **Outcome:** fixed

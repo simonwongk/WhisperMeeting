@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F166`.**
+**Next free ID: `F168`.**
 
 ---
 
@@ -16,42 +16,58 @@ Use the [work dashboard](tickets-dashboard.html) for a scan-first view. This Mar
 authoritative queue: claim only a ticket that is `open`, and read [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md)
 before starting work that depends on a person.
 
-## In progress
-
-### F164 — Local LLM summarization as the default; Claude becomes opt-in cloud premium
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Opus 4.8)
-- **Severity:** medium
-- **Area:** privacy
-- **Filed:** 2026-08-04 by Claude Code (Opus 4.8)
-
-**Problem.** Summarization is Claude-only. `AppModel.makeSummarizer`
-(`Sources/WhisperMeet/AppModel.swift:275`) hard-builds `ClaudeSummarizer`, and `summarize(id:style:)`
-(`Sources/WhisperMeet/AppModel.swift:1169-1174`) hard-requires a Keychain API key, so the one feature
-that leaves the Mac (`docs/PRODUCT_SPEC.md:26-28`) is the *only* way to summarize. No on-device
-summarizer exists, though `MeetingSummarizer` (`Sources/WhisperCore/MeetingSummarizer.swift:60-64`)
-was designed for one ("a local engine can adopt the same interface later"). `mlx_lm` (0.30.5) is
-already present as a required dependency of `mlx-audio`, but only inside the opt-in Qwen3-ASR venv.
-
-**Impact.** Users cannot summarize privately/offline; summarizing forces a paid cloud key and uploads
-the completed transcript. Local-first is the product's core promise (`docs/PRODUCT_SPEC.md:5-6`).
-
-**Proposed fix.** Add an on-device `MeetingSummarizer` (`LocalSummarizer`) backed by `mlx_lm` via a
-new `Scripts/summarize_local.py` (mirrors `Scripts/qwen_transcribe.py`) running under a **dedicated**
-`~/Library/Application Support/WhisperMeet/Runtime/Summarizer` venv (local summaries are the default,
-so they must not depend on the opt-in Qwen3-ASR runtime). Default model Qwen3-8B-4bit on ≥16 GB,
-Qwen3-4B-4bit fallback on <16 GB (RAM picked Swift-side via `ProcessInfo.physicalMemory`). Make
-`SummarizationEngine.local` the default, keep `.claude` as opt-in; reuse the `QwenASRClient`
-spawn/cancel pattern and the `setup-qwen-asr.sh` install pattern. Honest fallbacks: model-not-installed
-→ offer install; Claude-without-key → prompt (reuse the second-opinion failure UX).
-
-**Verification.** TDD: `Scripts/tests/test_summarize_local.py` (pure prompt/parse + `main()` with a
-fake `mlx_lm`); Swift engine-selection, install-required, and fallback tests (fail-before/pass-after);
-a real installed-model run (Qwen3-8B-4bit); `Scripts/quality-check.sh` green with the `@Test` count
-not dropping below 302; `docs/PRODUCT_SPEC.md` + `docs/CLAUDE_SUMMARIES.md` privacy boundary updated.
-
 ## Ready to claim
+
+### F166 — `swift test` / `quality-check.sh` can't resolve swift-testing on the current toolchain
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** medium
+- **Area:** build
+- **Filed:** 2026-08-04 by Claude Code (Opus 4.8), from F164
+
+**Problem.** On this machine's Command Line Tools toolchain (`swift 6.3.3`, target `macosx26`; runtime
+libs under `.../usr/lib/swift-6.2`), plain `swift test` fails to compile the test targets with
+`error: no such module 'Testing'`, and once compiled the bundle fails to `dlopen`
+`Testing.framework` / `lib_TestingInterop.dylib` — neither is on the default rpath.
+`Scripts/quality-check.sh` step [4] runs plain `swift test --disable-sandbox --no-parallel`, so the
+gate cannot run as-is here. It works only with `-Xswiftc -F <CLT>/Library/Developer/Frameworks`,
+`-Xlinker -rpath -Xlinker <CLT>/Library/Developer/Frameworks`, and `-Xlinker -rpath -Xlinker
+<CLT>/Library/Developer/usr/lib`.
+
+**Impact.** Any agent on this toolchain cannot run `swift test` or the quality gate without the extra
+flags; a real toolchain path problem reads as a broken build.
+
+**Proposed fix.** Either add the framework `-F`/`-rpath` flags to `quality-check.sh`'s `swift test`
+invocation (harmless where the paths already resolve), or repair the toolchain (full Xcode / matching
+swift-6.3 runtime libs). Confirm whether the user's normal environment already resolves this before
+changing the gate.
+
+**Verification.** `Scripts/quality-check.sh` completes step [4] on this machine without manual flags.
+
+### F167 — No startup reclaim for an interrupted local-summarizer install
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** build
+- **Filed:** 2026-08-04 by Claude Code (Opus 4.8), from F164
+
+**Problem.** `Scripts/setup-local-summarizer.sh` reclaims orphaned `.Summarizer-backup-*` /
+`.Summarizer-install-*` artifacts on its next run, and a failed install restores the prior model via
+its cleanup trap, so nothing is stranded permanently. But unlike the Qwen3-ASR path (F33's
+`reclaimInterruptedQwenInstall` + `QWEN_INSTALL_RECOVERY_ONLY`), there is no launch-time reclaim seam
+for the summarizer runtime — an interrupted install is only reclaimed when the user next opens the
+installer.
+
+**Impact.** After a crash mid-install a `.Summarizer-backup-*` can sit until the next install attempt.
+Low severity: the activated model still works, and the backup is reclaimed on the next install.
+
+**Proposed fix.** Add a `runSummarizerInstallRecovery` seam + startup reclaim mirroring
+`reclaimInterruptedQwenInstall`, or a recovery-only mode invoked at launch.
+
+**Verification.** Simulate an interrupted install (leftover `.Summarizer-backup-*`) and confirm launch
+reclaim restores/cleans it.
 
 ### F165 — LLM transcript-correction pass using business vocabulary + a reference file
 
