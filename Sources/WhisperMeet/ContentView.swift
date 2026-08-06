@@ -2124,6 +2124,30 @@ private struct TranscriptDetailView: View {
                 }
                 .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
                 .help("Propose spelling corrections in this transcript toward your business vocabulary")
+                if SummarizerRuntime.isSupportedOnCurrentMac {
+                    Button {
+                        Task {
+                            let proposals = await model.proposeLocalCorrections(for: meetingID)
+                            if proposals.isEmpty {
+                                // Only speak up if the model ran and simply found nothing; the AppModel
+                                // guard already set a message for install-required / edited / errors.
+                                if model.alertMessage == nil {
+                                    model.alertMessage = "The local model found nothing to correct."
+                                }
+                            } else {
+                                glossaryProposals = proposals
+                            }
+                        }
+                    } label: {
+                        if model.isProposingCorrections {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Correct with local AI", systemImage: "wand.and.stars.inverse")
+                        }
+                    }
+                    .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
+                    .help("Use the on-device model to propose corrections toward your vocabulary. Reviewed before applying; the recording is never changed.")
+                }
                 Button {
                     model.secondOpinionSpans = nil
                     model.requestSecondOpinion(id: meetingID)

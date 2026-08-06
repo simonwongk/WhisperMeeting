@@ -14,6 +14,127 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F165 — LLM transcript-correction pass using business vocabulary + a reference file
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-05 by Claude Code (Opus 4.8)
+- **Reachability:** Transcript-detail toolbar **"Correct with local AI"** button
+  (`ContentView.swift` `TranscriptDetailView`, shown when `SummarizerRuntime.isSupportedOnCurrentMac`)
+  → `AppModel.proposeLocalCorrections(for:)` (guards: not already running, correction helper installed,
+  transcript **not** hand-edited) → injectable `proposeTranscriptCorrections` seam →
+  `LocalTranscriptCorrector.correct(transcript:vocabulary:reference:)` → spawns the installed runtime's
+  `correct_local.py` → `TranscriptCorrection.glossaryCorrections(from:segments:)` maps whole-transcript
+  fixes onto per-segment `GlossaryCorrection`s → `glossaryProposals` → `GlossarySuggestionSheet` review
+  → `AppModel.applyGlossaryCorrections(_:to:)` (the existing F82 apply path; the raw recording and audio
+  are never touched). Install path: Settings → "Install Local Model" → `setup-local-summarizer.sh`, which
+  now also stages `correct_local.py`. The AppModel path is proven headlessly by `CorrectionWiringTests`;
+  the live GUI click-through is manual (no view-render harness — **Not planned**).
+
+**What shipped.** A keyless, offline correction pass reusing the F164 `Runtime/Summarizer` model + venv.
+`correct_local.py` (sibling to `summarize_local.py`) runs the model greedily (temp 0, thinking disabled);
+its pure `parse_corrections` degrades-never-raises to `([{from,to}], warning|None)`. Swift
+`LocalTranscriptCorrector` builds a paraphrase-forbidding system prompt, assembles transcript +
+vocabulary (+ optional reference) into the user turn, and keeps only corrections whose `from` still
+appears **verbatim** in the transcript and differs from `to` — so a hallucinated or paraphrased span can
+never reach the apply path. `SummarizerRuntime.isCorrectionHelperInstalled` is deliberately separate from
+`isInstalled` so an F164-era summarizer install still summarizes but asks the user to update before
+correcting. Correction is proposal-only and flows through the same review sheet as F82's glossary
+corrections; a hand-edited transcript is refused (proposals would not match the segments).
+
+**Evidence.**
+
+```text
+# TDD red → green (Swift): remove the "from must be in the transcript" guard → a hallucinated span leaks.
+$ swift test … --filter correctorDecodesAndFiltersPayload        # guard removed
+✘ Test "Corrector decodes the helper payload …" recorded an issue at LocalTranscriptCorrectorTests.swift:29:5:
+  Expectation failed … ± inserted [TranscriptCorrection(from: "Hallucinated Term", to: "Nope")]
+✘ Test run with 1 test in 0 suites failed after 0.236 seconds with 1 issue.
+$ swift test … --filter correctorDecodesAndFiltersPayload        # guard restored
+✔ Test run with 1 test in 0 suites passed after 0.198 seconds.
+
+# Python helper suite (parse_corrections degradation + streamed end-to-end with a fake mlx_lm)
+$ python3 Scripts/tests/test_correct_local.py
+Ran 9 tests in 0.003s
+OK
+
+# Full Swift suite (316 baseline → 325; +9 net new, none dropped) via the F166 framework-path workaround
+$ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc <CLT-Frameworks> …
+✔ Test run with 325 tests in 2 suites passed after 7.129 seconds.
+
+# Release build (warnings-as-errors) + app packaging, via the full gate — exit 0
+$ ./Scripts/quality-check.sh
+[5/6] … Build complete! (21.92s)
+[6/6] Packaging and signing WhisperMeet.app … Build complete! (18.37s)
+Quality check passed.        # GATE_EXIT=0
+
+# Real INSTALLED-model run (exact command LocalTranscriptCorrector spawns), 8.0 s, valid JSON:
+$ …/Runtime/Summarizer/venv/bin/python Scripts/correct_local.py \
+      --model …/Runtime/Summarizer/model --input request.json --output corrections.json --max-tokens 2048
+{"corrections": [{"from": "Kew Bernetes", "to": "Kubernetes"}, {"from": "Post Grease", "to": "Postgres"}],
+ "warning": null, "finishReason": "stop", "generatedTokens": 37}
+# Transcript "Kew Bernetes runs the cluster and Post Grease stores the data. We'll deploy Project Aurora
+# next sprint." + vocab [Kubernetes, Postgres, Project Aurora]: both mis-hearings fixed, the already-correct
+# "Project Aurora" left alone, nothing paraphrased, and each `from` is verbatim (so it maps to a segment).
+```
+
+**Gaps.** The `reference:` document is plumbed end-to-end (helper, prompt, `correct(…reference:)` seam,
+and the `correctorIncludesReference` test), but no reference-file **picker** is surfaced in the UI yet —
+the button corrects toward the vocabulary only. Reference-file selection is the follow-up `F170`.
+Embeddings + retrieval for references that outgrow the context window remain future work under `F170`.
+Closing `fixed` (not `partial`) because the shipped vocabulary-guided correction is fully reachable and
+user-triggerable; the reference path is an additive enhancement, mirroring how F164 shipped summaries and
+deferred this correction pass to F165. Suite is run via the `-F`/`-rpath` swift-testing workaround
+(`F166`); the cold-cache gate caveat is `F168`. GUI render test — **Not planned** (no view-render harness).
+
+## F169 — Local subprocess `run()` paths wedge the test suite via blocking `waitUntilExit()` on a cooperative thread
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-05 by Claude Code (Opus 4.8)
+- **Filed:** 2026-08-05 by Claude Code (Opus 4.8), from F165 (found closing it)
+- **Reachability:** the four async engine run loops that spawn a Python helper and await its output —
+  `LocalWhisperClient.run`, `QwenASRClient.run`, `LocalSummarizer.run`, `LocalTranscriptCorrector.run`
+  (reached from meeting transcription, second-opinion, summaries, and the F165 correction button
+  respectively). All four called `Process.waitUntilExit()` after the `for await` output drain.
+
+**Root cause.** `Process.waitUntilExit()` blocks the *calling* thread by spinning a CFRunLoop until the
+child's termination wake-up arrives. After the `for await data in dataStream` suspension the continuation
+can resume on a **different** Swift-concurrency cooperative worker than the one that launched the process,
+so the termination wake-up is delivered to a run loop that is no longer running and the wait wedges
+forever. This is the F115/F121 hazard the suite already runs `--no-parallel` and wraps in a 600 s
+watchdog to survive; F165 added ~5 more subprocess-spawning tests, which shifted cooperative-pool
+scheduling enough to make the wedge **deterministic**. Isolation passed (0.8 s); the full suite hung
+> 600 s.
+
+**Fix.** Added `armedExitStream(for:)` (WhisperCore): it arms `process.terminationHandler` **before**
+launch and returns an `AsyncStream<Void>` that finishes on exit; `for await _ in exited {}` replaces the
+blocking `waitUntilExit()` — non-blocking, thread-agnostic, and race-free (a termination that lands
+before the await is buffered). Applied to all four `run()` paths. The one async test that itself called
+`waitUntilExit()` after a cross-thread `Task.detached` launch (`cancellationDuringLaunchHandoff`) now
+polls `process.isRunning` with a bounded wait. Synchronous same-thread `waitUntilExit()` calls (the
+helper-script tests, `AudioTranscoder`, the AppModel installers with no `await` between run/wait, and
+`WarmWhisperDictationEngine.terminateAndWait`'s 5 s SIGKILL-backed wait) are safe and were left alone.
+
+**Evidence.**
+
+```text
+# RED — full suite wedged deterministically; the F121 watchdog fired at 600 s. `sample` of the hung
+# swiftpm-testing-helper (before the fix):
+  … correctorIncludesReference()  LocalTranscriptCorrectorTests.swift:54
+    → LocalTranscriptCorrector.run  LocalTranscriptCorrector.swift:187
+      → -[NSConcreteTask waitUntilExit] → __CFRunLoopServiceMachPort → mach_msg   # blocked forever
+# After the production fix the wedge MOVED (confirming the mechanism) to a test's own waitUntilExit:
+  … cancellationDuringLaunchHandoff()  LocalWhisperClientTests.swift:183
+    → -[NSConcreteTask waitUntilExit] → mach_msg                                  # blocked forever
+
+# GREEN — after armedExitStream on all four run() paths + the test poll, the full suite completes in
+# seconds (no wedge, helper reaped), across two independent runs and the gate:
+✔ Test run with 325 tests in 2 suites passed after 8.476 seconds.
+✔ Test run with 325 tests in 2 suites passed after 7.129 seconds.   # quality-check.sh step [4]
+```
+
+**Gaps.** None. The safe synchronous `waitUntilExit()` sites are documented above and intentionally
+unchanged; converting them would be churn without a hazard to fix.
+
 ## F166 — `swift test` / `quality-check.sh` can't resolve swift-testing on the current toolchain
 
 - **Outcome:** fixed

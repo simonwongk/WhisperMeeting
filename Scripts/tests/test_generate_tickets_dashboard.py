@@ -188,6 +188,7 @@ Otherwise, describe what changed.
             "python3 Scripts/generate-tickets-dashboard.py --check",
             "python3 Scripts/tests/test_qwen_transcribe.py",
             "python3 Scripts/tests/test_summarize_local.py",
+            "python3 Scripts/tests/test_correct_local.py",
             "python3 Scripts/tests/test_generate_tickets_dashboard.py",
         ):
             self.assertIn(command, source)

@@ -38,6 +38,12 @@ public struct SummarizerRuntime: Sendable {
             .appendingPathComponent("summarize_local.py")
     }
 
+    /// The transcript-correction helper, installed alongside the summarizer in the same runtime (F165).
+    public static func correctionHelperScript(applicationSupport: URL? = nil) -> URL {
+        managedDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("correct_local.py")
+    }
+
     public static func modelDirectory(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("model", isDirectory: true)
@@ -54,6 +60,16 @@ public struct SummarizerRuntime: Sendable {
             && files.fileExists(atPath: modelDirectory(
                 applicationSupport: applicationSupport
             ).appendingPathComponent("model.safetensors").path)
+    }
+
+    /// Whether the runtime is installed AND carries the F165 correction helper. Kept separate from
+    /// `isInstalled` so an F164-era summarizer install (which predates `correct_local.py`) still reports
+    /// installed for summaries; correction just asks the user to update the model.
+    public static func isCorrectionHelperInstalled(applicationSupport: URL? = nil) -> Bool {
+        isInstalled(applicationSupport: applicationSupport)
+            && FileManager.default.fileExists(
+                atPath: correctionHelperScript(applicationSupport: applicationSupport).path
+            )
     }
 
     /// The mlx-community repo to install, chosen by physical RAM: the 8B default on ≥16 GiB Macs, the
@@ -201,6 +217,7 @@ public struct LocalSummarizer: MeetingSummarizer {
         let cancellation = ProcessCancellationController(process: process)
 
         let handle = pipe.fileHandleForReading
+        let processExited = armedExitStream(for: process)
         let dataStream = AsyncStream<Data> { continuation in
             handle.readabilityHandler = { fileHandle in
                 let data = fileHandle.availableData
@@ -225,7 +242,9 @@ public struct LocalSummarizer: MeetingSummarizer {
                     logData = logData.suffix(100_000)
                 }
             }
-            process.waitUntilExit()
+            // Wait for the child to exit via terminationHandler, not the blocking waitUntilExit()
+            // (which wedges a Swift cooperative thread under load — see armedExitStream).
+            for await _ in processExited {}
             handle.readabilityHandler = nil
 
             let log = String(decoding: logData, as: UTF8.self)

@@ -122,6 +122,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSummarizerInstalled = false
     @Published private(set) var isInstallingSummarizer = false
     @Published private(set) var summarizerInstallationMessage: String?
+    @Published private(set) var isProposingCorrections = false
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
     @Published private(set) var isImporting = false
@@ -299,6 +300,20 @@ final class AppModel: ObservableObject {
     /// guard and the Settings state are testable without a real runtime; defaults to the real check
     /// (F164). Mirrors the `isQwenInstalled` predicate but behind a seam for headless wiring tests.
     var isSummarizerModelInstalled: @Sendable () -> Bool = { SummarizerRuntime.isInstalled() }
+
+    /// Proposes transcript corrections with the on-device model (F165). Injectable so the correction
+    /// wiring is testable without a real model; defaults to the real `LocalTranscriptCorrector`.
+    var proposeTranscriptCorrections: @Sendable (
+        _ transcript: String, _ vocabulary: [String], _ reference: String?
+    ) async throws -> [TranscriptCorrection] = { transcript, vocabulary, reference in
+        try await LocalTranscriptCorrector().correct(
+            transcript: transcript, vocabulary: vocabulary, reference: reference
+        )
+    }
+
+    /// Whether the on-device correction helper (`correct_local.py`) is installed alongside the model
+    /// (F165). Injectable for headless tests; defaults to the real check.
+    var isCorrectionModelInstalled: @Sendable () -> Bool = { SummarizerRuntime.isCorrectionHelperInstalled() }
 
     /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
     /// second-opinion (F88) and per-segment re-run (F92) flows are testable with a stub engine; when nil,
@@ -1315,6 +1330,38 @@ final class AppModel: ObservableObject {
         store.update(id: id) {
             $0.segments = corrected
             $0.transcriptText = TranscriptFormatter.timestamped(corrected)
+        }
+    }
+
+    /// Proposes on-device LLM corrections for a meeting's transcript, guided by the business vocabulary
+    /// and an optional reference document (F165). Read-only: returns reviewable `GlossaryCorrection`s
+    /// that flow through the same F82 review sheet + `applyGlossaryCorrections` apply path — nothing is
+    /// applied here, and the recording is never opened. Skipped on a hand-edited transcript so proposals
+    /// can't be computed against text that no longer matches the segments.
+    func proposeLocalCorrections(for id: UUID, reference: String? = nil) async -> [GlossaryCorrection] {
+        guard !isProposingCorrections else { return [] }
+        guard isCorrectionModelInstalled() else {
+            alertMessage = "Install or update the local model in Settings to use AI transcript correction."
+            return []
+        }
+        guard let meeting = store.meeting(id: id) else { return [] }
+        guard !meeting.isTranscriptEdited else {
+            alertMessage = "This transcript was hand-edited, so AI correction is unavailable — it would not match your edits."
+            return []
+        }
+        // Feed the plain segment text (no timestamps) so a proposed `from` span matches a segment.
+        let plainText = meeting.segments.map(\.text).joined(separator: "\n")
+        let vocabulary = store.vocabulary
+        isProposingCorrections = true
+        defer { isProposingCorrections = false }
+        do {
+            let corrections = try await proposeTranscriptCorrections(plainText, vocabulary, reference)
+            return TranscriptCorrection.glossaryCorrections(from: corrections, segments: meeting.segments)
+        } catch is CancellationError {
+            return []
+        } catch {
+            alertMessage = error.localizedDescription
+            return []
         }
     }
 

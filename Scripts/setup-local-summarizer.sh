@@ -10,6 +10,7 @@ set -euo pipefail
 target_directory="${1:-${HOME}/Library/Application Support/WhisperMeet/Runtime/Summarizer}"
 script_directory="${0:A:h}"
 helper_source="$script_directory/summarize_local.py"
+correction_helper_source="$script_directory/correct_local.py"
 runtime_parent="${target_directory:h}"
 staging_directory="$runtime_parent/.Summarizer-install-$$"
 backup_directory="$runtime_parent/.Summarizer-backup-$$"
@@ -39,6 +40,10 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
 fi
 if [[ ! -f "$helper_source" ]]; then
   print -u2 "The bundled local-summarizer helper is missing."
+  exit 1
+fi
+if [[ ! -f "$correction_helper_source" ]]; then
+  print -u2 "The bundled transcript-correction helper is missing."
   exit 1
 fi
 
@@ -143,6 +148,8 @@ fi
 
 cp "$helper_source" "$staging_directory/summarize_local.py"
 chmod 644 "$staging_directory/summarize_local.py"
+cp "$correction_helper_source" "$staging_directory/correct_local.py"
+chmod 644 "$staging_directory/correct_local.py"
 {
   print "mlx-lm=$mlx_lm_version"
   print "summarizer_repository=$repository"
@@ -151,6 +158,7 @@ chmod 644 "$staging_directory/summarize_local.py"
 } > "$staging_directory/MANIFEST"
 
 "$staging_directory/venv/bin/python" "$staging_directory/summarize_local.py" --help >/dev/null
+"$staging_directory/venv/bin/python" "$staging_directory/correct_local.py" --help >/dev/null
 
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"

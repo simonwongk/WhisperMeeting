@@ -242,6 +242,7 @@ public struct LocalWhisperClient: Sendable {
         let cancellation = ProcessCancellationController(process: process)
 
         let handle = pipe.fileHandleForReading
+        let processExited = armedExitStream(for: process)
         let dataStream = AsyncStream<Data> { continuation in
             handle.readabilityHandler = { fileHandle in
                 let data = fileHandle.availableData
@@ -271,8 +272,9 @@ public struct LocalWhisperClient: Sendable {
                 }
             }
             // The pipe reached EOF, so the process has closed its handles; make sure it has fully
-            // exited before reading its termination status.
-            process.waitUntilExit()
+            // exited before reading its termination status — via terminationHandler, not the blocking
+            // waitUntilExit() (see armedExitStream).
+            for await _ in processExited {}
             handle.readabilityHandler = nil
 
             let log = String(decoding: logData, as: UTF8.self)
@@ -325,6 +327,20 @@ final class ProcessCancellationController: @unchecked Sendable {
             process.terminate()
         }
         lock.unlock()
+    }
+}
+
+/// Arms `process.terminationHandler` — call this BEFORE `process.run()` — and returns a stream that
+/// finishes when the child exits. After draining the process's output, `for await _ in stream {}` to
+/// wait for exit before reading `terminationStatus`. This replaces the blocking `Process.waitUntilExit()`,
+/// which spins a CFRunLoop on the *calling* thread; on a Swift-concurrency cooperative worker the child's
+/// termination wake-up is delivered to a different run loop and the wait can wedge forever under suite
+/// load — the F115/F121 hang the suite runs `--no-parallel` to dodge, which F165's extra subprocess tests
+/// tipped into a deterministic stall. A termination that lands before the await is buffered by the
+/// stream, so no exit is ever missed.
+func armedExitStream(for process: Process) -> AsyncStream<Void> {
+    AsyncStream { continuation in
+        process.terminationHandler = { _ in continuation.finish() }
     }
 }
 

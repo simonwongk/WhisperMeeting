@@ -41,6 +41,7 @@ python3 Scripts/generate-tickets-dashboard.py --check
 print "[3/6] Running script regression suites"
 python3 Scripts/tests/test_qwen_transcribe.py
 python3 Scripts/tests/test_summarize_local.py
+python3 Scripts/tests/test_correct_local.py
 python3 Scripts/tests/test_generate_tickets_dashboard.py
 
 print "[4/6] Running the complete Swift test suite"

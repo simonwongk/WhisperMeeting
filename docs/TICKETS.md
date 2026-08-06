@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F169`.**
+**Next free ID: `F171`.**
 
 ---
 
@@ -66,30 +66,33 @@ Low severity: the activated model still works, and the backup is reclaimed on th
 **Verification.** Simulate an interrupted install (leftover `.Summarizer-backup-*`) and confirm launch
 reclaim restores/cleans it.
 
-### F165 — LLM transcript-correction pass using business vocabulary + a reference file
+### F170 — Surface a reference-file picker for the local AI transcript-correction pass
 
 - **Status:** open
 - **Owner:** —
 - **Severity:** low
 - **Area:** transcription
-- **Filed:** 2026-08-04 by Claude Code (Opus 4.8), from F164
+- **Filed:** 2026-08-05 by Claude Code (Opus 4.8), from F165
 
-**Problem.** Transcripts contain domain terms (names, products, jargon) that ASR mis-hears. The
-business-vocabulary list already feeds Whisper's `initial_prompt` (`Sources/WhisperCore/VocabularyPrompt.swift`),
-but there is no post-transcription correction pass that uses that vocabulary — or a longer reference
-document — to fix recognized text after the fact.
+**Problem.** F165 shipped on-device transcript correction guided by the business vocabulary, but only
+the vocabulary reaches the model. The `reference:` document is fully plumbed —
+`LocalTranscriptCorrector.correct(transcript:vocabulary:reference:)`, the prompt assembly
+(`userContent`), `AppModel.proposeLocalCorrections(for:reference:)`, and the `correctorIncludesReference`
+test all carry it — but the "Correct with local AI" button (`ContentView.swift` `TranscriptDetailView`)
+passes `reference: nil`; there is no UI to choose a reference file.
 
-**Impact.** Recurring domain-specific mis-transcriptions persist even when the correct spelling is
-known, lowering transcript quality for specialized meetings.
+**Impact.** A user who has a spec/glossary document richer than the flat vocabulary list cannot use it to
+guide correction, even though the whole path already supports it — the stated v1 of F165 ("+ a reference
+file") is only half surfaced.
 
-**Proposed fix.** A local LLM correction pass reusing the F164 `summarize_local.py` machinery: v1
-prompt-stuffs the vocabulary list + a user reference file into the same local model (Qwen3's 128K
-context covers transcript + vocab). Add embeddings (`mlx-community` Qwen3-Embedding-0.6B, Apache-2.0)
-+ retrieval only when reference material outgrows the context window. Must never overwrite the raw
-recording or the user's manual edits; corrections are reviewable, like the second-opinion diff.
+**Proposed fix.** Add a file picker (`.fileImporter`) to the correction flow that reads a text/markdown
+file and passes its contents to `proposeLocalCorrections(for:reference:)`. Guard the size against the
+model's context window; the F165 ticket's embeddings + retrieval idea (`mlx-community`
+Qwen3-Embedding-0.6B) is the escalation only when a reference outgrows the context.
 
-**Verification.** A synthetic transcript with a known mis-transcription is corrected against a
-supplied vocabulary/reference; the raw recording and edited segments are untouched.
+**Verification.** A synthetic transcript is corrected toward a spelling that appears **only** in the
+supplied reference file (not the vocabulary); a headless wiring test threads the reference through the
+seam, and the raw recording and edited segments stay untouched.
 
 ### F150 — WAV UInt32 data-size field overflows for a single meeting longer than ~12.4 h
 

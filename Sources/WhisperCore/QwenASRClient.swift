@@ -246,6 +246,7 @@ public struct QwenASRClient: Sendable {
         let cancellation = ProcessCancellationController(process: process)
 
         let handle = pipe.fileHandleForReading
+        let processExited = armedExitStream(for: process)
         let dataStream = AsyncStream<Data> { continuation in
             handle.readabilityHandler = { fileHandle in
                 let data = fileHandle.availableData
@@ -274,7 +275,9 @@ public struct QwenASRClient: Sendable {
                     await onProgress(progress)
                 }
             }
-            process.waitUntilExit()
+            // Wait for the child to exit via terminationHandler, not the blocking waitUntilExit()
+            // (which wedges a Swift cooperative thread under load — see armedExitStream).
+            for await _ in processExited {}
             handle.readabilityHandler = nil
 
             let log = String(decoding: logData, as: UTF8.self)
