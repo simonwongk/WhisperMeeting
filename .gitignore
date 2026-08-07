@@ -11,3 +11,10 @@ CLAUDE.md
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Ticketing board + generated dashboard + generator — local-only agent work state (user request 2026-08-07)
+docs/tickets-dashboard.html
+docs/TICKETS.md
+docs/TICKET_LOG.md
+Scripts/generate-tickets-dashboard.py
+Scripts/tests/test_generate_tickets_dashboard.py
