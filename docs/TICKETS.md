@@ -16,6 +16,93 @@ Use the [work dashboard](tickets-dashboard.html) for a scan-first view. This Mar
 authoritative queue: claim only a ticket that is `open`, and read [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md)
 before starting work that depends on a person.
 
+## In progress
+
+### F154 — OSLog logs `.public` error text that can include absolute paths
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 2)
+- **Severity:** low
+- **Area:** privacy
+- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from F148 #7
+
+**Problem.** Capture/dictation failures log `\(error.localizedDescription, privacy: .public)`
+(`AudioCaptureEngine.swift:188`, `Dictation/DictationController.swift:212,372,433`), which
+can embed absolute paths in the unified system log (Console/sysdiagnose). F141 redacted the
+diagnostics *bundle*; this is the separate OSLog surface.
+
+**Impact.** A local support or system-diagnostic log can expose private filesystem structure even
+though exported diagnostics already redact it.
+
+**Proposed fix.** Route the four sites through a named
+`DiagnosticsBundleBuilder.publicLogDescription(_:)` that applies the tested F141 `redactPaths`,
+so future log sites cannot forget the redaction.
+
+**Verification.** Red-green test on the new entry point with a path-bearing error description; the
+four call sites adopt it.
+
+### F158 — Centralize the remaining shared motion durations
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 2)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-03 by /root, from F157 documentation audit
+
+**Problem.** `DesignSystem.swift:57` hard-codes the reduced-motion fade duration and
+`ContentView.swift:592,593,3311` hard-code the same 0.22 s color-shift duration inline (recording
+health tint and the active-segment highlight). The design system centralizes other motion values,
+so these can drift without a named semantic role.
+
+**Impact.** Small visual changes can become inconsistent and harder to tune accessibly across the
+app.
+
+**Proposed fix.** Add named design-system motion tokens (`reducedMotionFade`, `tintShift`) and
+replace the inline durations.
+
+**Verification.** No raw duplicate duration remains at the cited call sites; build and suite stay
+green; visual pass under Reduce Motion on/off.
+
+### F161 — Give async self-test and installer results a gentle entrance
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 2)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-03 by /root, from F157 documentation audit
+
+**Problem.** The self-test result in `DictationView.swift:52-57` and installer completion messages
+in `ContentView.swift:1233-1238,1262-1267` appear without the app's existing `gentleFade`
+transition.
+
+**Impact.** Completion feedback arrives as an abrupt layout change rather than a readable payoff
+moment.
+
+**Proposed fix.** Apply the established Reduce-Motion-safe transition at these async state
+boundaries.
+
+**Verification.** Manually complete each action with Reduce Motion both on and off; the result
+should fade in without unwanted layout motion.
+
+### F162 — Animate the meeting-row status-color handoff
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 2)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-03 by /root, from F157 documentation audit
+
+**Problem.** The meeting-row status dot changes directly from the status switch
+(`ContentView.swift:211-213` and the `statusColor` switch) with no value-scoped color animation
+when a meeting moves between recorded, processing, completed, or failed.
+
+**Impact.** A meaningful state change has no visual continuity in the primary meeting list.
+
+**Proposed fix.** Add a short color-only animation scoped to `meeting.status`.
+
+**Verification.** Manually observe each reachable status transition and confirm the list does not
+animate unrelated filtering or selection changes.
+
 ## Ready to claim
 
 ### F174 — Visually verify the tag chip editor and the transcript Improve menu (incl. VoiceOver)
@@ -206,27 +293,6 @@ resources until its descendant process exits on its own.
 
 **Verification.** Cancel mid-decode and confirm no orphaned decoder remains.
 
-### F154 — OSLog logs `.public` error text that can include absolute paths
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** privacy
-- **Filed:** 2026-08-03 by Claude Code (Opus 4.8), from F148 #7
-
-**Problem.** Capture/dictation failures log `\(error.localizedDescription, privacy: .public)`
-(`AudioCaptureEngine.swift:187-189`, `Dictation/DictationController.swift:212,270,372,433`), which
-can embed absolute paths in the unified system log (Console/sysdiagnose). F141 redacted the
-diagnostics *bundle*; this is the separate OSLog surface.
-
-**Impact.** A local support or system-diagnostic log can expose private filesystem structure even
-though exported diagnostics already redact it.
-
-**Proposed fix.** Drop `.public` on `localizedDescription` or log a redacted/last-path-component
-form (reuse `DiagnosticsBundleBuilder.redactPaths`).
-
-**Verification.** A capture error logs without the absolute path.
-
 ### F155 — Qwen aligner treats any CJK character as Chinese on English-dominant chunks
 
 - **Status:** open
@@ -248,67 +314,6 @@ for affected chunks, weakening transcript navigation without losing their text.
 
 **Verification.** Compare aligner timing quality on an English-dominant single-CJK chunk under both
 heuristics.
-
-### F158 — Centralize the remaining shared motion durations
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-03 by /root, from F157 documentation audit
-
-**Problem.** `DesignSystem.swift:57` hard-codes the reduced-motion fade duration and
-`ContentView.swift:2996` separately hard-codes a segment-highlight duration. The existing design
-system already centralizes other motion values, so these two values can drift without a named
-semantic role.
-
-**Impact.** Small visual changes can become inconsistent and harder to tune accessibly across the
-app.
-
-**Proposed fix.** Add named design-system motion tokens and replace the two inline durations.
-
-**Verification.** Exercise the relevant state changes with and without Reduce Motion and confirm no
-raw duplicate duration remains at the cited call sites.
-
-### F161 — Give async self-test and installer results a gentle entrance
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-03 by /root, from F157 documentation audit
-
-**Problem.** The self-test result in `DictationView.swift:52-56` and installer completion messages
-in `ContentView.swift:1233-1238,1262-1266` appear without the app's existing `gentleFade`
-transition.
-
-**Impact.** Completion feedback arrives as an abrupt layout change rather than a readable payoff
-moment.
-
-**Proposed fix.** Apply the established Reduce-Motion-safe transition at these async state
-boundaries.
-
-**Verification.** Manually complete each action with Reduce Motion both on and off; the result
-should fade in without unwanted layout motion.
-
-### F162 — Animate the meeting-row status-color handoff
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-03 by /root, from F157 documentation audit
-
-**Problem.** The meeting-row status dot changes directly from the status switch at
-`ContentView.swift:211-213,267-273` with no value-scoped color animation when a meeting moves
-between recorded, processing, completed, or failed.
-
-**Impact.** A meaningful state change has no visual continuity in the primary meeting list.
-
-**Proposed fix.** Add a short color-only animation scoped to `meeting.status`.
-
-**Verification.** Manually observe each reachable status transition and confirm the list does not
-animate unrelated filtering or selection changes.
 
 ### F163 — Make the documentation formatter preserve the Quick Dictation design guide
 
