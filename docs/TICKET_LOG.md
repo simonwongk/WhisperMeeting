@@ -14,6 +14,105 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F171 — Tag and notes editors lack direct add/remove affordances
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5)
+- **Reachability:** Meeting detail → `TranscriptDetailView.tagsEditor` → **`TagChipsEditor`**
+  (`ContentView.swift`): per-chip remove button / inline field `onSubmit` / live-comma `onChange` /
+  `onKeyPress(.delete)` → `MeetingTags.liveSplit` (WhisperCore) + `MeetingStore.setTags` (the F67
+  normalization stays the single persistence gatekeeper); the reuse row →
+  `MeetingTags.reuseSuggestions`. Notes hint: `TranscriptDetailView.notesSection` placeholder
+  overlay.
+
+**Root cause.** Tag editing shipped (F67) as a raw comma-separated `TextField` — that round
+focused on normalization and filtering, not editing ergonomics. A tag was a substring, not an
+object: removing one meant text-editing the whole line, and adding gave no acknowledgment until
+Return silently rewrote the field. The notes editor was an unlabeled empty box.
+
+**Fix.** A token-style chip editor, following the familiar macOS token-field grammar: every
+applied tag is a chip with an always-visible remove control (no hover-hunting), the inline field
+commits on Return **and** live on comma, Backspace in the empty field removes the last chip,
+focus loss commits pending text so a typed-but-not-Returned tag is never lost, and tags already
+used on other meetings appear as one-click "+" reuse chips so spellings stay consistent. At the
+F67 12-tag cap the field is replaced by a plain-language capacity note. Chip changes animate with
+the app's `uiSpring`, gated on Reduce Motion (F116 vocabulary). The input-splitting and
+suggestion logic is pure `WhisperCore` (`MeetingTags.liveSplit` / `reuseSuggestions`) per the
+three-layer rule; the SwiftUI layer holds only presentation. The notes editor gains placeholder
+text stating its purpose and that notes stay local.
+
+**Evidence.**
+
+New tests failing before the core existed:
+
+```text
+/Users/simonwang/Documents/Whisper/Tests/WhisperCoreTests/MeetingTagEditingTests.swift:9:29:
+error: type 'MeetingTags' has no member 'liveSplit'
+```
+
+Passing after:
+
+```text
+✔ Test "Live split holds input with no separator as the in-progress remainder" passed after 0.001 seconds.
+✔ Test "Live split commits completed parts and keeps the tail in the field" passed after 0.001 seconds.
+✔ Test "Live split treats a trailing separator as a commit with an empty remainder" passed after 0.001 seconds.
+✔ Test "Live split drops empty parts from repeated separators and handles newlines from pastes" passed after 0.001 seconds.
+✔ Test "Reuse suggestions offer unapplied library tags, first-seen spelling, in order, capped" passed after 0.001 seconds.
+```
+
+Full suite and builds:
+
+```text
+✔ Test run with 330 tests in 2 suites passed after 9.698 seconds.
+Build complete! (6.48s)                       # swift build
+Build complete! (20.03s)                      # Scripts/build-app.sh (release)
+.build/WhisperMeet.app: replacing existing signature
+```
+
+**Gaps.** The `WhisperMeet` target has no view-render harness, so the chip layout, focus
+behavior, and Reduce-Motion gating are not covered by an automated test — **Not planned:** a
+harness limitation, per the three-layer rule. The visual + VoiceOver confirmation pass in the
+running app (add via comma/Return, Backspace-delete, chip remove, reuse chip, notes placeholder)
+is F174.
+
+## F172 — Transcript header actions truncate into unreadable buttons
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5)
+- **Reachability:** Meeting detail (completed meeting) → `TranscriptDetailView.transcriptSection`
+  header → **`improveMenu(_:)`** pull-down ("Improve") → four full-label items — "Suggest
+  Vocabulary Terms…", "Correct Toward Vocabulary…", "Correct with Local AI…" (when
+  `SummarizerRuntime.isSupportedOnCurrentMac`), "Second Opinion (Other Engine)…" — driving the
+  unchanged existing model paths (`suggestVocabulary`, `glossaryCorrections`,
+  `proposeLocalCorrections`, `requestSecondOpinion`). Running work → `improvementStatus(_:)` row
+  under the header; Copy → `copyTranscriptAcknowledged()`.
+
+**Root cause.** Each improvement feature (F82 glossary corrections, F156 second opinion, F165
+local-AI corrections) appended another labeled button to the same header `HStack`. Inside the
+860 pt content column SwiftUI compressed every label, so all four actions rendered as identical
+truncated stubs ("Suggest…", "Correct to…", "Correct…", "Secon…") — per-feature growth with no
+grouping step.
+
+**Fix.** The four actions grouped under one labeled "Improve" menu — the common path (read,
+copy, export) stays top-level and `fixedSize`, the advanced tools one level deeper where items
+have room for full names. When items are disabled the menu explains why in plain language
+(manual edits / empty vocabulary) instead of leaving mystery-gray rows. The in-button spinners
+became a named status row with `gentleFade` + value-scoped `uiSpring` (F116), which also lets a
+dismissed Second Opinion sheet be reopened via "Show Progress". Copy now acknowledges
+("Copied", 1.5 s) with a cancellable reset so an older press can never clear a newer
+confirmation — the F159 failure mode, avoided in the new code (F159 itself, in VocabularyView,
+remains open and untouched).
+
+**Evidence.** Same build/suite runs as F171 above (`✔ Test run with 330 tests in 2 suites
+passed`; debug and release builds complete). The regroup is presentation-only: no model-layer
+call changed, and the suite count did not drop (325 → 330, all green).
+
+**Gaps.** The "Correct with local AI" busy state is still the global
+`AppModel.isProposingCorrections`, so the new status row (like the old spinner) shows in every
+meeting's view during a run — F173. The header-at-default-width visual check and menu
+walk-through in the running app is F174. **Not planned:** an automated view-render test of the
+header layout (harness limitation).
+
 ## F165 — LLM transcript-correction pass using business vocabulary + a reference file
 
 - **Outcome:** fixed

@@ -6,7 +6,7 @@ Read them before touching this file.** This file holds **open** work only; close
 [`TICKET_LOG.md`](TICKET_LOG.md), and tickets blocked on a human action or decision move to
 [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md).
 
-**Next free ID: `F174`.**
+**Next free ID: `F175`.**
 
 ---
 
@@ -16,61 +16,32 @@ Use the [work dashboard](tickets-dashboard.html) for a scan-first view. This Mar
 authoritative queue: claim only a ticket that is `open`, and read [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md)
 before starting work that depends on a person.
 
-## In progress
-
-### F171 — Tag and notes editors lack direct add/remove affordances
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5), session 2026-08-07
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-08-07 by Claude Code (Fable 5), from direct user feedback
-
-**Problem.** Tags are edited as one comma-separated `TextField`
-(`ContentView.swift:1721-1737`): removing a tag means text-editing the whole line, nothing presents
-a tag as a discrete removable object, and typed input only takes effect after Return with no visible
-acknowledgment. The notes editor (`ContentView.swift:1696-1717`) renders as an unlabeled empty box
-with no hint of its purpose. User feedback (2026-08-07): tagging and notes are "not easy to delete
-or add".
-
-**Impact.** Tagging — the library's main organization tool (F67) — is clumsy enough that users
-avoid it; the notes scratchpad is undiscoverable.
-
-**Proposed fix.** Replace the comma field with a token-style chip editor: each tag is a chip with a
-visible remove control; an inline field commits on Return or comma; Backspace in the empty field
-removes the last tag; tags already used on other meetings are offered for one-click reuse. Give the
-notes editor placeholder text. Pure input-splitting/suggestion logic lands in `WhisperCore`
-(`MeetingTags`) with red-green tests; the SwiftUI layer stays thin per the three-layer rule.
-
-**Verification.** New `MeetingTags` tests fail before / pass after; manual add/remove/reuse pass in
-the running app; `swift build` and `swift test` green.
-
-### F172 — Transcript header actions truncate into unreadable buttons
-
-- **Status:** in-progress
-- **Owner:** Claude Code (Fable 5), session 2026-08-07
-- **Severity:** medium
-- **Area:** ui
-- **Filed:** 2026-08-07 by Claude Code (Fable 5), from direct user feedback
-
-**Problem.** The transcript section header (`ContentView.swift:2092-2178`) lines up seven controls
-in one `HStack` — Read/Edit picker, Suggest Vocab, Correct toward Vocabulary, Correct with local
-AI, Second opinion, Copy, Export. Inside the 860 pt content column SwiftUI compresses the labels to
-"Suggest…", "Correct to…", "Correct…", "Secon…" (user screenshot, 2026-08-07), so which button does
-what is illegible.
-
-**Impact.** The transcript-improvement tools read as identical truncated stubs; users cannot tell
-them apart, so the features go unused.
-
-**Proposed fix.** Group the four improvement actions under one labeled "Improve" menu whose items
-carry full labels (plus plain-language explanations when items are disabled); keep Read/Edit, Copy,
-and Export as fixed-size top-level controls; replace the in-button spinners with an inline status
-row beneath the header so running work stays visible.
-
-**Verification.** Manual: default window width shows every label in full; menu items are fully
-readable; running states surface in the status row. `swift build` and `swift test` stay green.
-
 ## Ready to claim
+
+### F174 — Visually verify the tag chip editor and the transcript Improve menu (incl. VoiceOver)
+
+- **Status:** open
+- **Owner:** —
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-07 by Claude Code (Fable 5), from F171/F172 close
+
+**Problem.** F171 (token-style tag chips + notes placeholder) and F172 (grouped "Improve" menu +
+status row) shipped with headless tests for the pure logic only — the `WhisperMeet` target has no
+view-render harness, so the visual pass and a VoiceOver walk-through are outstanding.
+
+**Impact.** A layout or accessibility defect in the new editor/menu would go unnoticed until a
+user hits it.
+
+**Proposed fix.** In the running app, on a completed meeting: type `budget, hiring` in the Tags
+well (chips must form on the comma), press Return, press Backspace twice in the empty field (chips
+retract newest-first), click a chip's × control, click a "+" reuse chip, and confirm the notes
+placeholder shows and clears. Open "Improve" and confirm all four items read in full with no
+truncation at the default window width; trigger Suggest Vocabulary and confirm the named status
+row appears. Repeat the tag pass under VoiceOver (chips must announce "Remove tag …" / reuse chips
+"Add tag …") and with Reduce Motion on.
+
+**Verification.** Each step above passes; any failure gets its own ticket.
 
 ### F173 — "Correct with local AI" busy state is global, not scoped to the meeting being corrected
 
