@@ -9,14 +9,16 @@ while you talk; the completed audio is transcribed once with a large model inste
 with a small one, which is what makes the result worth trusting. Transcripts stay in the language
 actually spoken — English or Mandarin — and are never translated.
 
-**Your audio and transcripts stay on this Mac.** Recording, transcription, vocabulary, and export
-are fully local, with no account and no per-minute fee. There is exactly one exception, and it is
-opt-in: if you paste a Claude API key in Settings and press Summarize, that transcript is sent to
-Anthropic’s API to produce a summary. Nothing leaves the Mac without a saved key and an explicit,
-confirmed press — see [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+**Your audio and transcripts stay on this Mac.** Recording, transcription, vocabulary, meeting
+summaries, AI transcript correction, and export are fully local, with no account and no per-minute
+fee. There is exactly one exception, and it is opt-in: if you save a Claude API key in Settings and
+choose the Claude summary engine, that transcript is sent to Anthropic’s API to produce a summary.
+Summaries otherwise run on a model on this Mac by default, and nothing leaves the machine without a
+saved key and an explicit, confirmed press — see [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
 
-OpenAI Whisper is the default engine. Apple-silicon Macs can additionally install the opt-in
-open-source Qwen3-ASR engine.
+OpenAI Whisper is the default transcription engine; Apple-silicon Macs can additionally install the
+opt-in open-source Qwen3-ASR engine. A separate local language model (installed once) powers the
+on-device summaries and the AI transcript-correction pass.
 
 Two things the app deliberately will not do: it does not identify **who** is speaking (see [Speaker
 limitation](#speaker-limitation)), and it never modifies your recording — a failed or cancelled
@@ -44,7 +46,10 @@ Contributors and coding agents should start with [AGENTS.md](AGENTS.md).
 - Homebrew for the one-time local Whisper installation
 - Enough free memory for the chosen model: the official repository lists about 10 GB for `large` and
   6 GB for `turbo`
-- Qwen3-ASR is optional and requires Apple silicon plus about 4.5 GB of storage
+- Qwen3-ASR is optional and requires Apple silicon plus about 4.2 GB of storage
+- Local summaries and AI transcript correction are optional and require Apple silicon plus a one-time
+  model download (about 4.7 GB for the default Qwen3-8B; a smaller 4B model on Macs under 16 GB of RAM)
+- See [Disk space](#disk-space) for the full footprint of each optional component
 
 ## Build and run
 
@@ -53,15 +58,18 @@ Scripts/build-app.sh
 open .build/WhisperMeet.app
 ```
 
-The build script creates and ad-hoc signs `.build/WhisperMeet.app`. On first recording, macOS asks
-for Microphone and Screen & System Audio Recording permissions. If system audio is silent after
-granting permission, quit and reopen the app.
+The build script signs `.build/WhisperMeet.app` with a local **WhisperMeet Dev** code-signing
+certificate when one exists in your keychain, and falls back to an ad-hoc signature otherwise. On
+first recording, macOS asks for Microphone and Screen & System Audio Recording permissions. If
+system audio is silent after granting permission, quit and reopen the app.
 
-Because the local build is ad-hoc signed, rebuilding changes its code identity. macOS may leave the
-old **Screen & System Audio Recording** switch visibly enabled even though it belongs to the
-previous binary. After a rebuild, switch WhisperMeet **off and back on**, quit the app completely
-with **⌘Q**, and open the newly built app. A stable Apple Development or distribution signature
-avoids this repeated development-only permission step.
+A stable signing identity keeps your permission grants across rebuilds. With only an ad-hoc
+signature, each rebuild changes the app’s code identity, so macOS may leave the old **Screen &
+System Audio Recording** switch visibly enabled even though it belongs to the previous binary; after
+such a rebuild, switch WhisperMeet **off and back on**, quit with **⌘Q**, and reopen it. To create
+the stable certificate once: Keychain Access → Certificate Assistant → Create a Certificate, name it
+`WhisperMeet Dev`, Identity Type Self-Signed Root, Certificate Type Code Signing — then rebuild, and
+`build-app.sh` signs with it automatically.
 
 ## First-time setup
 
@@ -79,12 +87,38 @@ On Apple silicon, Settings also offers **Install Qwen3-ASR**. Its pinned, hash-v
 stored under `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR`. Qwen is opt-in; Whisper
 Large remains the default because Qwen still needs validation on long, real meetings.
 
+Settings also offers **Install Local Model** — a pinned, hash-verified language model (Qwen3, chosen
+by your Mac’s RAM) stored under `~/Library/Application Support/WhisperMeet/Runtime/Summarizer`. It
+powers on-device meeting summaries (the default) and AI transcript correction; both share this one
+runtime, so enabling correction after summaries needs no further download.
+
 For a manual installation from this checkout:
 
 ```bash
 Scripts/setup-local-whisper.sh
 Scripts/setup-qwen-asr.sh
+Scripts/setup-local-summarizer.sh
 ```
+
+## Disk space
+
+The app itself is a few MB; the speech and language models are the weight, and they download on
+first use into `~/Library/Application Support/WhisperMeet/`. Everything except the default Whisper
+engine is optional — install only what you use.
+
+| Component | When it installs | Approx. disk |
+|---|---|---|
+| App bundle | always | a few MB |
+| Local Whisper (default engine) | first transcription | ~1.2 GB Python environment + a Whisper model (Turbo ≈ 1.5 GB or Large ≈ 2.9 GB); also uses Homebrew FFmpeg and Python 3.11 |
+| Qwen3-ASR (opt-in, Apple silicon) | Settings → Install Qwen3-ASR | ≈ 4.2 GB (ASR + forced-aligner models ≈ 2.3 GB, MLX Python environment ≈ 0.7 GB) |
+| Local summaries + AI correction (opt-in, Apple silicon) | Settings → Install Local Model | ≈ 4.7 GB (Qwen3-8B-4bit ≈ 4.3 GB + Python environment ≈ 0.4 GB; a smaller 4B model on Macs under 16 GB of RAM). Summaries and correction share this one runtime. |
+| Your recordings | grows with use | 48 kHz mono audio ≈ 1 GB per ~11 hours |
+
+Rules of thumb: a minimal setup (default Whisper only) is about **3–4 GB**; installing everything —
+both ASR engines plus local summaries and AI correction — is roughly **12–16 GB** of models and
+runtimes, on top of your recordings. Enabling AI correction adds no download once local summaries
+are installed. Recordings are never auto-deleted and dominate long-term use, so keep an eye on
+`~/Library/Application Support/WhisperMeet/Recordings`.
 
 ## Workflow
 
@@ -121,10 +155,16 @@ Beyond the core record → transcribe flow:
 - **Transcript quality review** — flags low-confidence, likely-silence, and repetitive segments
   (using Whisper’s own metrics), ordered worst-first, so you can spot-check the shakiest parts. It
   never changes your transcript. See [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
-- **Claude meeting summaries (opt-in)** — the one non-local feature: paste a Claude API key in
-  Settings and press Summarize to send the transcript to Anthropic’s API for a summary, key points,
-  and action items. Nothing is uploaded without a saved key and an explicit, confirmed press. See
-  [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+- **Meeting summaries (local by default)** — Summarize produces a summary, key points, and action
+  items from a language model running on this Mac — no key, no upload. A **Claude** cloud engine is
+  available as an opt-in upgrade: save a Claude API key in Settings and select it to send that
+  transcript to Anthropic’s API instead — the one non-local feature, never used without a saved key
+  and an explicit, confirmed press. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+- **AI transcript correction (local)** — on Apple silicon, the transcript’s **Correct with local
+  AI** action asks the on-device model to fix domain terms (names, products, jargon) that speech
+  recognition mis-heard, guided by your Business Vocabulary. Corrections are proposed for your
+  review, not applied automatically; the recording is never modified, and a transcript you have
+  hand-edited is skipped. It reuses the same local model as summaries, so it needs no extra download.
 
 ## Recording safety and recovery
 
