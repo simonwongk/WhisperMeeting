@@ -14,6 +14,97 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F154 — OSLog logs `.public` error text that can include absolute paths
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 2
+- **Reachability:** Recording capture failure → `AudioCaptureEngine` `log.error` → 
+  **`DiagnosticsBundleBuilder.publicLogDescription`**; dictation warm-up / no-audio /
+  transcription-failure paths → `DictationController` `log.error`/`log.notice` → same entry point.
+
+**Root cause.** The OSLog sites marked raw `error.localizedDescription` as `.public` so failures
+are diagnosable in Console, but Foundation error text routinely embeds absolute paths — F141
+redacted the exported diagnostics bundle, and this second surface was left raw.
+
+**Fix.** A named `publicLogDescription(_:)` in `DiagnosticsBundleBuilder` applies the tested F141
+`redactPaths` to an error's description; all four `.public` interpolations route through it, and
+future log sites have one obvious entry point instead of a convention to remember.
+
+**Evidence.** Red: `error: type 'DiagnosticsBundleBuilder' has no member 'publicLogDescription'`.
+Green:
+
+```text
+✔ Test "Public log description strips absolute paths from a file-error description" passed after 0.001 seconds.
+✔ Test "Public log description leaves path-free error text untouched" passed after 0.001 seconds.
+✔ Test run with 338 tests in 2 suites passed after 7.991 seconds.
+```
+
+**Gaps.** The live Console check (trigger a real capture failure, inspect the unified log) was not
+run — no safe way to force a capture failure without touching real recording state; the redaction
+mechanism itself is test-covered. **Not planned:** an automated OSLog-capture test (no harness for
+the unified log).
+
+## F158 — Centralize the remaining shared motion durations
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 2
+- **Reachability:** `Animation.tintShift` / `Animation.reducedMotionFade`
+  (`DesignSystem.swift`) — used by `gentleFade`, the recording-health tint, the active-segment
+  highlight, and the F162 status dot.
+
+**Root cause.** Motion values added in different rounds hard-coded their durations inline before
+the F113 design system existed to name them.
+
+**Fix.** Two named tokens with stated roles — `.tintShift` (0.22 s color-only shifts) and
+`.reducedMotionFade` (the 0.2 s fade used when Reduce Motion suppresses the spring) — replace the
+four inline durations.
+
+**Evidence.** `grep -rn "smooth(duration: 0.22)\|linear(duration: 0.2)" Sources/WhisperMeet/`
+returns only the two token definitions; build + suite green (`✔ Test run with 338 tests`).
+
+**Gaps.** Visual pass joins F174. **Not planned:** none beyond that.
+
+## F161 — Give async self-test and installer results a gentle entrance
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 2
+- **Reachability:** Dictation tab → "Run self-test" → `dictation.selfTestResult` swap
+  (`DictationView.swift`, gentleFade + value-scoped spring); Settings → both installer
+  progress/completion swaps (`SettingsView`, same vocabulary, scoped to the four installer
+  states).
+
+**Root cause.** These async payoff moments predate the F116 transition vocabulary and were never
+retrofitted.
+
+**Fix.** `gentleFade(reduceMotion:)` transitions on the result views plus value-scoped
+`.uiSpring` animations on their containers, so only the result swap animates — Reduce Motion
+keeps the fade and drops the layout spring, matching the app-wide pattern.
+
+**Evidence.** Build + suite green (`✔ Test run with 338 tests in 2 suites passed`). Presentation
+only — no model-layer change.
+
+**Gaps.** Manual Reduce-Motion on/off pass joins F174. **Not planned:** a view-render test
+(harness limitation).
+
+## F162 — Animate the meeting-row status-color handoff
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 2
+- **Reachability:** Sidebar meeting list → `MeetingRow` status dot →
+  `.animation(.tintShift, value: meeting.status)`.
+
+**Root cause.** The status dot predates the design system's motion vocabulary; its fill switched
+colors with no continuity.
+
+**Fix.** The F158 `.tintShift` token, value-scoped to `meeting.status` so filtering and selection
+changes never animate the dot; color-only, safe under Reduce Motion.
+
+**Evidence.** Build + suite green (`✔ Test run with 338 tests in 2 suites passed`). Presentation
+only.
+
+**Gaps.** Manual observation of each reachable transition joins F174. **Not planned:** a
+view-render test (harness limitation).
+
 ## F159 — Prevent an older copy-prompt task from clearing newer feedback
 
 - **Outcome:** fixed
