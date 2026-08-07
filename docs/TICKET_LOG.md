@@ -14,6 +14,118 @@ The log entry template lives in [`../AGENTS.md`](../AGENTS.md).
 
 ---
 
+## F159 — Prevent an older copy-prompt task from clearing newer feedback
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 1
+- **Reachability:** Vocabulary tab → "Copy AI Prompt" → `VocabularyView.copyGenerationPrompt` →
+  **`TransientAcknowledgment.trigger()`** (`Sources/WhisperMeet/TransientAcknowledgment.swift`);
+  transcript header → "Copy" → the same holder (1.5 s hold) in
+  `TranscriptDetailView` — the F172 hand-rolled instance was replaced by the shared type.
+
+**Root cause.** Every press spawned an independent fire-and-forget reset task; the earliest
+press's timer fired on schedule and cleared `didCopyPrompt` regardless of newer presses.
+
+**Fix.** A small `@MainActor` `TransientAcknowledgment` holder: `trigger()` sets the flag and
+**cancels the pending reset** before scheduling its own, so only the newest press's window can
+clear the flag. The wait is an injected seam (F47 style), so the test drives both windows with
+continuations — no real sleeps, no flaky timing margins. Both copy buttons now share the one
+tested implementation instead of two hand-rolled copies.
+
+**Evidence.**
+
+The `WhisperMeetTests` target failed to compile before the type existed:
+
+```text
+Tests/WhisperMeetTests/TransientAcknowledgmentTests.swift:11:15:
+error: cannot find 'TransientAcknowledgment' in scope
+```
+
+Passing after:
+
+```text
+✔ Test "A second trigger keeps the acknowledgment visible for its own full window" passed after 0.001 seconds.
+✔ Test "A cancelled hold never resets a newer acknowledgment even if its wait reports elapsed late" passed after 0.001 seconds.
+```
+
+**Gaps.** The in-app double-press spot check joins the F174 visual pass (its checklist now
+includes it). **Not planned:** an automated view-render test (harness limitation).
+
+## F160 — Avoid recomputing find-highlight ranges on every playback redraw
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 1
+- **Reachability:** Meeting detail → transcript Read view search field →
+  `PlayableTranscriptView.recomputeVisible()` → **`TextSearch.occurrenceIndex`** (WhisperCore) →
+  cached `searchRangesByIndex` → `highlightedText(_:segmentIndex:)` reads the cache on redraw.
+
+**Root cause.** `highlightedText` called `TextSearch.occurrenceRanges(findText, in: text)` inline
+during rendering. The 4 Hz playback tick changes `activeIndex`, re-rendering the rows, so a long
+searched transcript re-scanned every visible matching segment several times per second. The
+occurrence list itself was already cached (the F43-era `recomputeVisible`), but the highlight
+ranges were not — and `occurrences()` internally scanned each field twice more (`matches` +
+`occurrenceRanges`).
+
+**Fix.** A pure one-pass `TextSearch.occurrenceIndex(_:in:)` returns both the stable occurrence
+list and per-field merged ranges with semantics identical to the two-call path (the F43
+all-terms-per-field rule is pinned by a test). `recomputeVisible()` — which already runs only on
+query change, never on the playback tick — stores the ranges in `searchRangesByIndex`;
+`highlightedText` reads the cache. Structurally, transcript text scanning now cannot happen on a
+playback redraw: no rendering path calls `occurrenceRanges` anymore.
+
+**Evidence.**
+
+Red — the filtered test run failed to compile before the core function existed (same run as the
+F159/F173 red output above; `TextSearch.occurrenceIndex` was among the missing symbols). Green:
+
+```text
+✔ Test "Occurrence index matches the occurrences list and per-field ranges of the two-call path" passed after 0.001 seconds.
+✔ Test "Occurrence index keeps the all-terms-per-field rule for multi-term queries" passed after 0.001 seconds.
+✔ Test "Occurrence index on an empty query is empty" passed after 0.001 seconds.
+✔ Test run with 336 tests in 2 suites passed after 8.162 seconds.
+Build complete! (19.69s)                     # Scripts/build-app.sh (release)
+```
+
+**Gaps.** No profiler trace was recorded; the claim rests on the structural argument above (the
+only `occurrenceRanges` caller in the view layer is now `occurrenceIndex` inside
+`recomputeVisible`). A playback-with-search smoke check joins the F174 visual pass. **Not
+planned:** an automated render-count instrument (harness limitation).
+
+## F173 — "Correct with local AI" busy state is global, not scoped to the meeting being corrected
+
+- **Outcome:** fixed
+- **Closed:** 2026-08-07 by Claude Code (Fable 5), loop iteration 1
+- **Reachability:** Transcript header status row →
+  `TranscriptDetailView.improvementStatus(_:)` reads **`model.proposingCorrectionsID ==
+  meetingID`**; `AppModel.proposeLocalCorrections` sets/clears the ID around the seam call.
+
+**Root cause.** F165 shipped the busy state as a single global `Bool` — correct for the
+one-run-at-a-time guard, wrong for presentation: every meeting's view showed the indicator during
+any run. The same shape F156 fixed for Second Opinion.
+
+**Fix.** `proposingCorrectionsID: UUID?` replaces the `Bool`, mirroring `secondOpinionRunningID`;
+a computed `isProposingCorrections` keeps the exclusivity guard and existing call sites/tests.
+The status row shows only in the meeting being corrected.
+
+**Evidence.**
+
+Red before:
+
+```text
+Tests/WhisperMeetTests/CorrectionScopeTests.swift:47:19:
+error: value of type 'AppModel' has no member 'proposingCorrectionsID'
+```
+
+Green after (the seam is held open with a continuation, IDs asserted mid-run and after):
+
+```text
+✔ Test "A correction run is attributed to the requested meeting only, and clears when done (F173)" passed after 0.137 seconds.
+✔ Test run with 336 tests in 2 suites passed after 8.162 seconds.
+```
+
+**Gaps.** The two-meetings visual cross-check joins the F174 pass. **Not planned:** a
+view-render test (harness limitation).
+
 ## F171 — Tag and notes editors lack direct add/remove affordances
 
 - **Outcome:** fixed
