@@ -29,6 +29,46 @@ public enum MeetingTags {
         return result
     }
 
+    /// Split live-typed editor input at commas/newlines: every part before the last separator is
+    /// ready to commit; the text after it stays in the field as the in-progress tag (F171). Ready
+    /// parts are trimmed and empties dropped; the remainder only loses leading whitespace so the
+    /// user's in-flight typing is preserved.
+    public static func liveSplit(_ draft: String) -> (ready: [String], remainder: String) {
+        guard draft.contains(where: { $0 == "," || $0 == "\n" }) else {
+            return ([], draft)
+        }
+        var parts = draft.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+        let tail = parts.removeLast()
+        let ready = parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return (ready, String(tail.drop(while: \.isWhitespace)))
+    }
+
+    /// Library tags offered for one-click reuse in the editor (F171): tags used on any meeting
+    /// that are not already applied, deduped case-insensitively keeping the first-seen spelling,
+    /// filtered by a case-insensitive substring query, in first-appearance order, capped at
+    /// `limit` so the row stays scannable.
+    public static func reuseSuggestions(
+        library: [[String]], applied: [String], query: String, limit: Int = 5
+    ) -> [String] {
+        guard limit > 0 else { return [] }
+        let appliedKeys = Set(applied.map { $0.lowercased() })
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var seen = Set<String>()
+        var result: [String] = []
+        for tags in library {
+            for tag in tags {
+                let key = tag.lowercased()
+                guard !appliedKeys.contains(key), seen.insert(key).inserted else { continue }
+                guard needle.isEmpty || key.contains(needle) else { continue }
+                result.append(tag)
+                if result.count >= limit { return result }
+            }
+        }
+        return result
+    }
+
     /// Whether a meeting's tags satisfy the selected filter under the given mode. An empty selection
     /// matches everything (no filter applied).
     public static func matches(meetingTags: [String], selected: [String], mode: MatchMode) -> Bool {

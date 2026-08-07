@@ -1688,8 +1688,8 @@ private struct TranscriptDetailView: View {
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
-    @State private var tagsDraft = ""
-    @State private var tagsLoadedFor: UUID?
+    @State private var didCopyTranscript = false
+    @State private var copyAcknowledgmentReset: Task<Void, Never>?
 
     /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
     /// Claude summary. Loaded once per meeting; flushed to the index on edit. Never sent to Claude.
@@ -1701,6 +1701,18 @@ private struct TranscriptDetailView: View {
                 .frame(minHeight: 72)
                 .padding(6)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                // An empty scratchpad says what it is for (F171): the hint sits where typed text
+                // will land and never intercepts clicks.
+                .overlay(alignment: .topLeading) {
+                    if notesDraft.isEmpty {
+                        Text("Add agenda, attendees, or follow-ups — notes stay on this Mac.")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 11)
+                            .padding(.top, 6)
+                            .allowsHitTesting(false)
+                    }
+                }
                 // Debounced write (F133): coalesce the per-keystroke whole-index write.
                 .onChange(of: notesDraft) { _, newValue in
                     store.editNotes(id: meetingID, text: newValue)
@@ -1716,23 +1728,14 @@ private struct TranscriptDetailView: View {
         .onDisappear { store.flushPendingEdits() }
     }
 
-    /// A comma-separated tag editor. Tags are labels for organizing/filtering — never speaker
-    /// identity. Committed (normalized) on Return (F67).
+    /// Tags as directly manipulable chips (F171). Tags are labels for organizing/filtering — never
+    /// speaker identity (F67). Editing state lives in `TagChipsEditor`; `.id` resets its
+    /// in-progress input when the selection moves to another meeting.
     private var tagsEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Tags").font(.headline)
-            TextField("Comma-separated (e.g. budget, hiring)", text: $tagsDraft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit {
-                    store.setTags(id: meetingID, tagsDraft.split(separator: ",").map(String.init))
-                    tagsDraft = (store.meeting(id: meetingID)?.tags ?? []).joined(separator: ", ")
-                }
-        }
-        .onAppear {
-            if tagsLoadedFor != meetingID {
-                tagsDraft = (store.meeting(id: meetingID)?.tags ?? []).joined(separator: ", ")
-                tagsLoadedFor = meetingID
-            }
+            TagChipsEditor(store: store, meetingID: meetingID)
+                .id(meetingID)
         }
     }
 
@@ -2089,7 +2092,10 @@ private struct TranscriptDetailView: View {
     private func transcriptSection(_ meeting: MeetingRecord) -> some View {
         let hasSegments = !meeting.segments.isEmpty
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            // Four improvement actions live in one labeled menu (F172): seven inline controls
+            // compressed every label to "Suggest…"/"Correct…"; menu items have room for full
+            // names, and the top row keeps only the mode picker and the two instant actions.
+            HStack(spacing: 10) {
                 Text("Transcript").font(.headline)
                 Spacer()
                 if hasSegments {
@@ -2101,67 +2107,14 @@ private struct TranscriptDetailView: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+                improveMenu(meeting)
                 Button {
-                    suggestVocabulary(meeting)
+                    copyTranscriptAcknowledged()
                 } label: {
-                    if isSuggestingVocab {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Suggest Vocab", systemImage: "text.badge.plus")
-                    }
+                    Text(didCopyTranscript ? "Copied" : "Copy")
+                        .frame(minWidth: 48)
                 }
-                .disabled(isSuggestingVocab)
-                .help("Find names and key terms in this transcript to add to your business vocabulary")
-                Button {
-                    let proposals = model.glossaryCorrections(for: meetingID)
-                    if proposals.isEmpty {
-                        model.alertMessage = "No transcript spans look close to a vocabulary term."
-                    } else {
-                        glossaryProposals = proposals
-                    }
-                } label: {
-                    Label("Correct toward Vocabulary", systemImage: "wand.and.stars")
-                }
-                .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
-                .help("Propose spelling corrections in this transcript toward your business vocabulary")
-                if SummarizerRuntime.isSupportedOnCurrentMac {
-                    Button {
-                        Task {
-                            let proposals = await model.proposeLocalCorrections(for: meetingID)
-                            if proposals.isEmpty {
-                                // Only speak up if the model ran and simply found nothing; the AppModel
-                                // guard already set a message for install-required / edited / errors.
-                                if model.alertMessage == nil {
-                                    model.alertMessage = "The local model found nothing to correct."
-                                }
-                            } else {
-                                glossaryProposals = proposals
-                            }
-                        }
-                    } label: {
-                        if model.isProposingCorrections {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("Correct with local AI", systemImage: "wand.and.stars.inverse")
-                        }
-                    }
-                    .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
-                    .help("Use the on-device model to propose corrections toward your vocabulary. Reviewed before applying; the recording is never changed.")
-                }
-                Button {
-                    model.secondOpinionSpans = nil
-                    model.requestSecondOpinion(id: meetingID)
-                    showSecondOpinion = true
-                } label: {
-                    if model.secondOpinionRunningID == meetingID {
-                        ProgressView().controlSize(.small)   // spinner ONLY on the meeting being processed
-                    } else {
-                        Label("Second opinion", systemImage: "person.2.wave.2")
-                    }
-                }
-                .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
-                .help("Re-transcribe this recording with the OTHER local engine and compare where they differ. This runs a full transcription, so it can take a while.")
-                Button("Copy") { copy(currentTranscript()) }
+                .fixedSize()
                 Menu("Export…") {
                     Button("Meeting Notes — Summary + Transcript (.md)") {
                         exportMeetingNotes(meeting: meeting)
@@ -2176,6 +2129,7 @@ private struct TranscriptDetailView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
+            improvementStatus(meeting)
 
             // Explain in plain language when timestamp alignment was unavailable, so a transcript
             // with no seekable timestamps never looks like a silent failure (F30). The complete text
@@ -2224,6 +2178,125 @@ private struct TranscriptDetailView: View {
                 }
                 transcriptTextEditor(meeting)
             }
+        }
+        // The status row's arrival/departure fades and settles (F116) instead of snapping the
+        // section layout; each animation is scoped to the state that inserts or removes it.
+        .animation(reduceMotion ? nil : .uiSpring, value: isSuggestingVocab)
+        .animation(reduceMotion ? nil : .uiSpring, value: model.isProposingCorrections)
+        .animation(reduceMotion ? nil : .uiSpring, value: model.secondOpinionRunningID)
+        .animation(reduceMotion ? nil : .uiSpring, value: showSecondOpinion)
+    }
+
+    /// The transcript-improvement actions as one labeled pull-down (F172). Items keep full
+    /// descriptive labels; when something is disabled, a plain-language footnote in the same menu
+    /// says why instead of leaving a mystery-gray row.
+    private func improveMenu(_ meeting: MeetingRecord) -> some View {
+        Menu {
+            Button {
+                suggestVocabulary(meeting)
+            } label: {
+                Label("Suggest Vocabulary Terms…", systemImage: "text.badge.plus")
+            }
+            .disabled(isSuggestingVocab)
+            Button {
+                let proposals = model.glossaryCorrections(for: meetingID)
+                if proposals.isEmpty {
+                    model.alertMessage = "No transcript spans look close to a vocabulary term."
+                } else {
+                    glossaryProposals = proposals
+                }
+            } label: {
+                Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
+            }
+            .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
+            if SummarizerRuntime.isSupportedOnCurrentMac {
+                Button {
+                    Task {
+                        let proposals = await model.proposeLocalCorrections(for: meetingID)
+                        if proposals.isEmpty {
+                            // Only speak up if the model ran and simply found nothing; the AppModel
+                            // guard already set a message for install-required / edited / errors.
+                            if model.alertMessage == nil {
+                                model.alertMessage = "The local model found nothing to correct."
+                            }
+                        } else {
+                            glossaryProposals = proposals
+                        }
+                    }
+                } label: {
+                    Label("Correct with Local AI…", systemImage: "wand.and.stars.inverse")
+                }
+                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
+            }
+            Divider()
+            Button {
+                model.secondOpinionSpans = nil
+                model.requestSecondOpinion(id: meetingID)
+                showSecondOpinion = true
+            } label: {
+                Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
+            }
+            .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
+            if meeting.isTranscriptEdited || store.vocabulary.isEmpty {
+                Divider()
+                if meeting.isTranscriptEdited {
+                    Text("Unavailable after manual edits — these tools work on the original transcription.")
+                }
+                if store.vocabulary.isEmpty {
+                    Text("Corrections need Business Vocabulary terms (see the Vocabulary tab).")
+                }
+            }
+        } label: {
+            Label("Improve", systemImage: "sparkles")
+        }
+        .fixedSize()
+        .help("Tools that improve this transcript's accuracy: vocabulary suggestions, spelling corrections, and a second engine's comparison. Everything runs on this Mac.")
+    }
+
+    /// Ongoing improvement work surfaced as a labeled status line under the header instead of a
+    /// spinner squeezed into a button (F172): the running tool is named, and second-opinion
+    /// progress can be reopened after its sheet was dismissed.
+    @ViewBuilder
+    private func improvementStatus(_ meeting: MeetingRecord) -> some View {
+        if isSuggestingVocab {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Scanning the transcript for vocabulary terms…")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        } else if model.isProposingCorrections {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("The local model is proposing corrections…")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        } else if model.secondOpinionRunningID == meetingID && !showSecondOpinion {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Second opinion in progress…")
+                Button("Show Progress") { showSecondOpinion = true }
+                    .controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        }
+    }
+
+    /// Copy with a visible acknowledgment (F172). The pending reset is cancelled on re-press so
+    /// an older press can never clear a newer confirmation — the F159 failure mode, avoided here.
+    private func copyTranscriptAcknowledged() {
+        copy(currentTranscript())
+        didCopyTranscript = true
+        copyAcknowledgmentReset?.cancel()
+        copyAcknowledgmentReset = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            didCopyTranscript = false
         }
     }
 
@@ -2355,6 +2428,173 @@ private struct TranscriptDetailView: View {
         formatter.allowedUnits = duration >= 3_600 ? [.hour, .minute] : [.minute, .second]
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: duration) ?? "0m"
+    }
+}
+
+/// A left-aligned wrapping layout for tag chips (F171): rows fill the proposed width then wrap,
+/// like text. Sized by the sum of its rows so it composes with the surrounding VStack.
+private struct WrapLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(proposal: proposal, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, origin) in zip(subviews, arrangement(proposal: proposal, subviews: subviews).origins) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
+                proposal: .unspecified
+            )
+        }
+    }
+
+    private func arrangement(
+        proposal: ProposedViewSize, subviews: Subviews
+    ) -> (size: CGSize, origins: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var width: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            width = max(width, x + size.width)
+            x += size.width + spacing
+        }
+        return (CGSize(width: width, height: y + rowHeight), origins)
+    }
+}
+
+/// A token-style tag editor (F171): every applied tag is a chip with a visible remove control,
+/// new tags are typed inline (Return or comma commits; Backspace in the empty field removes the
+/// last tag), and tags already used on other meetings are offered for one-click reuse so
+/// spellings stay consistent. `MeetingStore.setTags` normalization (F67) remains the single
+/// gatekeeper for what is persisted.
+private struct TagChipsEditor: View {
+    @ObservedObject var store: MeetingStore
+    let meetingID: UUID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var draft = ""
+    @FocusState private var inputFocused: Bool
+
+    private var tags: [String] { store.meeting(id: meetingID)?.tags ?? [] }
+    private var atCapacity: Bool { tags.count >= MeetingTags.maxCount }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WrapLayout(spacing: 6) {
+                ForEach(tags, id: \.self) { tag in
+                    chip(tag)
+                }
+                if !atCapacity {
+                    TextField(tags.isEmpty ? "Add a tag (Return commits)" : "Add…", text: $draft)
+                        .textFieldStyle(.plain)
+                        .frame(width: 150)
+                        .focused($inputFocused)
+                        .onSubmit { commit(draft) }
+                        // Comma commits mid-typing, so "budget, hiring" becomes chips as it is
+                        // typed — the grammar the old comma-separated field trained users into.
+                        .onChange(of: draft) { _, newValue in
+                            let split = MeetingTags.liveSplit(newValue)
+                            guard !split.ready.isEmpty else { return }
+                            commit(split.ready.joined(separator: ","))
+                            draft = split.remainder
+                        }
+                        // Backspace in the empty field removes the last chip — standard
+                        // token-field grammar, so deleting needs no pointer travel.
+                        .onKeyPress(.delete) {
+                            guard draft.isEmpty, let last = tags.last else { return .ignored }
+                            remove(last)
+                            return .handled
+                        }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            .contentShape(Rectangle())
+            // The whole well focuses the field, like a real token field — the click target is
+            // the control, not a thin text line.
+            .onTapGesture { inputFocused = true }
+
+            if atCapacity {
+                Text("Tag limit reached (\(MeetingTags.maxCount)). Remove one to add another.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            let suggestions = MeetingTags.reuseSuggestions(
+                library: store.meetings.map { $0.tags ?? [] },
+                applied: tags,
+                query: draft
+            )
+            if inputFocused && !atCapacity && !suggestions.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(suggestions, id: \.self) { tag in
+                        Button {
+                            commit(tag)
+                        } label: {
+                            Label(tag, systemImage: "plus")
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.quaternary.opacity(0.35), in: Capsule())
+                        }
+                        .buttonStyle(PressableChipStyle())
+                        .accessibilityLabel("Add tag \(tag)")
+                    }
+                }
+                .transition(.gentleFade(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(reduceMotion ? nil : .uiSpring, value: tags)
+        .animation(reduceMotion ? nil : .uiSpring, value: inputFocused)
+        // Commit whatever is typed when focus leaves, so an un-Returned tag is never lost.
+        .onChange(of: inputFocused) { _, focused in
+            if !focused { commit(draft) }
+        }
+    }
+
+    private func chip(_ tag: String) -> some View {
+        HStack(spacing: 5) {
+            Text(tag)
+            Button {
+                remove(tag)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(LinkPressStyle())
+            .foregroundStyle(.tertiary)
+            .accessibilityLabel("Remove tag \(tag)")
+            .help("Remove \(tag)")
+        }
+        .font(.callout)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+    }
+
+    private func commit(_ text: String) {
+        let parts = text
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !parts.isEmpty else { return }
+        store.setTags(id: meetingID, tags + parts)
+        draft = ""
+    }
+
+    private func remove(_ tag: String) {
+        store.setTags(id: meetingID, tags.filter { $0 != tag })
     }
 }
 
