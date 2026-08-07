@@ -122,7 +122,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSummarizerInstalled = false
     @Published private(set) var isInstallingSummarizer = false
     @Published private(set) var summarizerInstallationMessage: String?
-    @Published private(set) var isProposingCorrections = false
+    /// The meeting currently being corrected by the local model, or nil. Scoped to an ID (not a
+    /// global Bool) so another meeting's view never shows this run as its own (F173, mirroring
+    /// F156's `secondOpinionRunningID`).
+    @Published private(set) var proposingCorrectionsID: UUID?
+
+    /// Whether any correction run is active — the "don't start a second run" convenience.
+    var isProposingCorrections: Bool { proposingCorrectionsID != nil }
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
     @Published private(set) var isImporting = false
@@ -1352,8 +1358,8 @@ final class AppModel: ObservableObject {
         // Feed the plain segment text (no timestamps) so a proposed `from` span matches a segment.
         let plainText = meeting.segments.map(\.text).joined(separator: "\n")
         let vocabulary = store.vocabulary
-        isProposingCorrections = true
-        defer { isProposingCorrections = false }
+        proposingCorrectionsID = id
+        defer { proposingCorrectionsID = nil }
         do {
             let corrections = try await proposeTranscriptCorrections(plainText, vocabulary, reference)
             return TranscriptCorrection.glossaryCorrections(from: corrections, segments: meeting.segments)

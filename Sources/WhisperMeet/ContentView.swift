@@ -1527,7 +1527,7 @@ private struct VocabularyView: View {
     @State private var manualTerms = ""
     @State private var showsImporter = false
     @State private var importMessage: String?
-    @State private var didCopyPrompt = false
+    @StateObject private var copyAck = TransientAcknowledgment()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -1540,8 +1540,8 @@ private struct VocabularyView: View {
                         copyGenerationPrompt()
                     } label: {
                         Label(
-                            didCopyPrompt ? "Prompt Copied" : "Copy AI Prompt",
-                            systemImage: didCopyPrompt ? "checkmark" : "sparkles"
+                            copyAck.isActive ? "Prompt Copied" : "Copy AI Prompt",
+                            systemImage: copyAck.isActive ? "checkmark" : "sparkles"
                         )
                     }
                     .help("Copy a ready-made prompt to paste into any AI chat, then paste the terms it lists back into the Add box. Note: whatever you paste into that external chat (notes, rosters, docs) leaves this Mac and goes to that provider.")
@@ -1629,11 +1629,9 @@ private struct VocabularyView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(VocabularyPrompt.generationPrompt, forType: .string)
-        didCopyPrompt = true
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            didCopyPrompt = false
-        }
+        // Re-triggerable acknowledgment (F159): a rapid second press keeps "Prompt Copied"
+        // visible for its own full window instead of being cleared by the first press's timer.
+        copyAck.trigger()
     }
 
     private func addManualTerms() {
@@ -1688,8 +1686,7 @@ private struct TranscriptDetailView: View {
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
-    @State private var didCopyTranscript = false
-    @State private var copyAcknowledgmentReset: Task<Void, Never>?
+    @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
 
     /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
     /// Claude summary. Loaded once per meeting; flushed to the index on edit. Never sent to Claude.
@@ -2109,9 +2106,10 @@ private struct TranscriptDetailView: View {
                 }
                 improveMenu(meeting)
                 Button {
-                    copyTranscriptAcknowledged()
+                    copy(currentTranscript())
+                    copyAck.trigger()
                 } label: {
-                    Text(didCopyTranscript ? "Copied" : "Copy")
+                    Text(copyAck.isActive ? "Copied" : "Copy")
                         .frame(minWidth: 48)
                 }
                 .fixedSize()
@@ -2182,7 +2180,7 @@ private struct TranscriptDetailView: View {
         // The status row's arrival/departure fades and settles (F116) instead of snapping the
         // section layout; each animation is scoped to the state that inserts or removes it.
         .animation(reduceMotion ? nil : .uiSpring, value: isSuggestingVocab)
-        .animation(reduceMotion ? nil : .uiSpring, value: model.isProposingCorrections)
+        .animation(reduceMotion ? nil : .uiSpring, value: model.proposingCorrectionsID)
         .animation(reduceMotion ? nil : .uiSpring, value: model.secondOpinionRunningID)
         .animation(reduceMotion ? nil : .uiSpring, value: showSecondOpinion)
     }
@@ -2266,7 +2264,8 @@ private struct TranscriptDetailView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .transition(.gentleFade(reduceMotion: reduceMotion))
-        } else if model.isProposingCorrections {
+        } else if model.proposingCorrectionsID == meetingID {
+            // Scoped to THIS meeting (F173) — another meeting's run must not present here.
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("The local model is proposing corrections…")
@@ -2287,18 +2286,6 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    /// Copy with a visible acknowledgment (F172). The pending reset is cancelled on re-press so
-    /// an older press can never clear a newer confirmation — the F159 failure mode, avoided here.
-    private func copyTranscriptAcknowledged() {
-        copy(currentTranscript())
-        didCopyTranscript = true
-        copyAcknowledgmentReset?.cancel()
-        copyAcknowledgmentReset = Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            didCopyTranscript = false
-        }
-    }
 
     private func transcriptTextEditor(_ meeting: MeetingRecord) -> some View {
         TextEditor(text: Binding(
@@ -2942,6 +2929,9 @@ private struct PlayableTranscriptView: View {
     @State private var followPlayback = true
     @State private var selectedSearchPosition = 0
     @State private var searchOccurrences: [TextSearchOccurrence] = []
+    // Per-segment highlight ranges, computed with searchOccurrences in recomputeVisible() — only
+    // when the query changes, never on the playback tick that redraws the rows (F160).
+    @State private var searchRangesByIndex: [Int: [Range<String.Index>]] = [:]
     // Quality review: step through the segments Whisper was least sure about.
     @State private var reviewPosition = 0
     @State private var reviewNudge = 0
@@ -3014,9 +3004,13 @@ private struct PlayableTranscriptView: View {
         // can leave the flag latched because selectedSearchID does not change).
         animateNextSearchScroll = false
         let query = findText.trimmingCharacters(in: .whitespacesAndNewlines)
-        searchOccurrences = query.isEmpty
-            ? []
-            : TextSearch.occurrences(query, in: segments.map(\.text))
+        // One pass builds both the occurrence list and the highlight ranges (F160); rendering
+        // reads the cached ranges, so the per-segment text scan never repeats on redraw.
+        let index = query.isEmpty
+            ? (occurrences: [], rangesByField: [:])
+            : TextSearch.occurrenceIndex(query, in: segments.map(\.text))
+        searchOccurrences = index.occurrences
+        searchRangesByIndex = index.rangesByField
         let matchingSegmentIDs = Set(searchOccurrences.map(\.fieldIndex))
         visible = segments.enumerated().compactMap { index, segment in
             guard query.isEmpty || matchingSegmentIDs.contains(index) else { return nil }
@@ -3340,9 +3334,10 @@ private struct PlayableTranscriptView: View {
     }
 
     private func highlightedText(_ text: String, segmentIndex: Int) -> Text {
-        guard isSearching else { return Text(text) }
+        // Reads the ranges cached by recomputeVisible() (F160) — no text scanning on redraw.
+        guard isSearching, let ranges = searchRangesByIndex[segmentIndex] else { return Text(text) }
         var highlighted = AttributedString(text)
-        for (occurrenceIndex, range) in TextSearch.occurrenceRanges(findText, in: text).enumerated() {
+        for (occurrenceIndex, range) in ranges.enumerated() {
             if let attributedRange = Range(range, in: highlighted) {
                 let isSelected = selectedSearchOccurrence?.fieldIndex == segmentIndex
                     && selectedSearchOccurrence?.occurrenceIndex == occurrenceIndex

@@ -91,4 +91,27 @@ public enum TextSearch {
             }
         }
     }
+
+    /// One pass over the fields producing both the stable occurrence list (counts, Previous/Next)
+    /// and each field's highlight ranges, so the GUI computes highlights once per query change
+    /// instead of once per redraw during playback (F160). Semantics match `occurrences` +
+    /// `occurrenceRanges` exactly: a field participates only when it contains every term (F43),
+    /// and ranges are the merged unions local to that field's text.
+    public static func occurrenceIndex(
+        _ query: String,
+        in fields: [String]
+    ) -> (occurrences: [TextSearchOccurrence], rangesByField: [Int: [Range<String.Index>]]) {
+        var occurrences: [TextSearchOccurrence] = []
+        var rangesByField: [Int: [Range<String.Index>]] = [:]
+        for (fieldIndex, field) in fields.enumerated() {
+            guard matches(query, in: [field]) else { continue }
+            let ranges = occurrenceRanges(query, in: field)
+            guard !ranges.isEmpty else { continue }
+            rangesByField[fieldIndex] = ranges
+            occurrences.append(contentsOf: ranges.indices.map {
+                TextSearchOccurrence(fieldIndex: fieldIndex, occurrenceIndex: $0)
+            })
+        }
+        return (occurrences, rangesByField)
+    }
 }
