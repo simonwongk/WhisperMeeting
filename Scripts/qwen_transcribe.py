@@ -22,19 +22,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def alignment_language(text: str, requested: str) -> str:
-    if requested in {"English", "Chinese"}:
-        return requested
-    return "Chinese" if any("\u3400" <= char <= "\u9fff" for char in text) else "English"
+def _cjk_is_majority(text: str) -> bool:
+    """True when CJK ideographs are the strict majority of the non-whitespace characters.
 
-
-def detected_language_code(text: str) -> str:
-    """Top-level en/zh label for the whole transcript.
-
-    Unlike the per-chunk aligner heuristic (`alignment_language`, which flags any CJK), require CJK
-    to be the MAJORITY of non-whitespace characters. Otherwise a mostly-English meeting that mentions
-    one Chinese name or term (e.g. "meet in \u5317\u4eac") is mislabeled `zh`, disagreeing with Whisper on the
-    same audio and biasing the summary language (F41).
+    Shared by the whole-transcript label (`detected_language_code`) and the per-chunk forced-aligner
+    language (`alignment_language`) so both decide by majority script instead of flagging on any single
+    CJK scalar (F41, F155). Ties and empty text are not Chinese.
     """
     cjk = 0
     total = 0
@@ -44,9 +37,30 @@ def detected_language_code(text: str) -> str:
         total += 1
         if "\u3400" <= char <= "\u9fff":
             cjk += 1
-    if total == 0:
-        return "en"
-    return "zh" if cjk * 2 > total else "en"
+    return total > 0 and cjk * 2 > total
+
+
+def alignment_language(text: str, requested: str) -> str:
+    """Language handed to the forced aligner for a single chunk's text.
+
+    Honor an explicit request; otherwise choose by the MAJORITY script (F155). The prior rule flagged
+    any CJK scalar as Chinese, so an English-dominant chunk that mentions one Chinese name or term was
+    aligned with the Chinese model and got worse word timings.
+    """
+    if requested in {"English", "Chinese"}:
+        return requested
+    return "Chinese" if _cjk_is_majority(text) else "English"
+
+
+def detected_language_code(text: str) -> str:
+    """Top-level en/zh label for the whole transcript.
+
+    Require CJK to be the MAJORITY of non-whitespace characters. Otherwise a mostly-English meeting
+    that mentions one Chinese name or term (e.g. "meet in \u5317\u4eac") is mislabeled `zh`, disagreeing with
+    Whisper on the same audio and biasing the summary language (F41). The per-chunk aligner
+    (`alignment_language`) now shares this same majority rule (F155).
+    """
+    return "zh" if _cjk_is_majority(text) else "en"
 
 
 def build_chunks(segments):

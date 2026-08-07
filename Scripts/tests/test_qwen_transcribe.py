@@ -37,6 +37,29 @@ class DetectedLanguageCodeTests(unittest.TestCase):
         self.assertEqual(qwen.detected_language_code("   "), "en")
 
 
+class AlignmentLanguageTests(unittest.TestCase):
+    """F155 — the per-chunk forced-aligner language must follow the MAJORITY script, not any single
+    CJK char, so an English-dominant chunk that mentions one Chinese name/term aligns with the English
+    model (better word timings) instead of being forced through Chinese alignment."""
+
+    def test_english_dominant_single_cjk_is_english(self):
+        self.assertEqual(qwen.alignment_language("Let's meet in 北京 next week", "auto"), "English")
+
+    def test_mostly_chinese_is_chinese(self):
+        self.assertEqual(qwen.alignment_language("我们讨论了太极拳的历史和哲学", "auto"), "Chinese")
+
+    def test_pure_english_is_english(self):
+        self.assertEqual(qwen.alignment_language("hello world", "auto"), "English")
+
+    def test_empty_text_is_english(self):
+        self.assertEqual(qwen.alignment_language("   ", "auto"), "English")
+
+    def test_explicit_request_overrides_text(self):
+        # An explicit language request is honored regardless of the chunk's script mix.
+        self.assertEqual(qwen.alignment_language("hello world", "Chinese"), "Chinese")
+        self.assertEqual(qwen.alignment_language("我们讨论了历史", "English"), "English")
+
+
 class BuildChunksTests(unittest.TestCase):
     """F51 — segment extraction must degrade to [] + warning on schema drift, never raise."""
 
