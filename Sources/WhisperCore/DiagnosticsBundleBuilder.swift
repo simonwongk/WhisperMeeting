@@ -61,6 +61,13 @@ public enum DiagnosticsBundleBuilder {
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "<path>")
     }
 
+    /// Error text destined for the unified system log (F154): path-redacted, so `.public` OSLog
+    /// interpolations can never leak absolute paths into Console/sysdiagnose. One named entry
+    /// point so new log sites don't hand-roll (or forget) the redaction.
+    public static func publicLogDescription(_ error: some Error) -> String {
+        redactPaths(error.localizedDescription)
+    }
+
     public static func json(_ input: DiagnosticsInput) -> String {
         let meetings: [[String: Any]] = input.meetings.map { meeting in
             // Bind the nil-coalesced values to explicitly-typed locals so `??` resolves to the

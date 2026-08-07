@@ -46,6 +46,14 @@ extension Animation {
     /// Live level-meter tracking: linear and short, 1:1 with the signal. Shared by the recording
     /// meter and the dictation pill bars so the two can never drift apart.
     static var meterTracking: Animation { .linear(duration: 0.08) }
+
+    /// Short color-only shifts — status tints, the active-segment highlight (F158). Quick, and
+    /// safe under Reduce Motion because nothing moves.
+    static var tintShift: Animation { .smooth(duration: 0.22) }
+
+    /// The cross-fade used when Reduce Motion suppresses the layout spring (F116); named so fade
+    /// sites can't drift apart (F158).
+    static var reducedMotionFade: Animation { .linear(duration: 0.2) }
 }
 
 extension AnyTransition {
@@ -54,7 +62,7 @@ extension AnyTransition {
     /// layout animation is gated to `nil` — so state swaps always fade, and only the layout
     /// movement is dropped for Reduce Motion users.
     static func gentleFade(reduceMotion: Bool) -> AnyTransition {
-        .opacity.animation(reduceMotion ? .linear(duration: 0.2) : .uiSpring)
+        .opacity.animation(reduceMotion ? .reducedMotionFade : .uiSpring)
     }
 }
 

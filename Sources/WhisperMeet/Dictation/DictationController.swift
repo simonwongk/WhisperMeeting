@@ -209,7 +209,7 @@ final class DictationController: ObservableObject {
                 try await engine.warmUp()
                 await MainActor.run { self.scheduleIdleEviction() } // warmed but no dictation yet — still evict if unused
             } catch {
-                log.error("warm-up failed: \(error.localizedDescription, privacy: .public)")
+                log.error("warm-up failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
             }
         }
     }
@@ -369,7 +369,7 @@ final class DictationController: ObservableObject {
             // Capture produced no usable audio (or wasn't recording). Drive the machine out of
             // .listening and release the mic instead of wedging there forever; treat it as "nothing
             // heard" rather than a hard error.
-            log.notice("dictation capture yielded no audio: \(error.localizedDescription, privacy: .public)")
+            log.notice("dictation capture yielded no audio: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
             recorder.cancel()
             _ = session.handle(.dismiss)
             status = .idle
@@ -430,7 +430,7 @@ final class DictationController: ObservableObject {
                 await MainActor.run { self.finish(text: cleaned) }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
-                log.error("transcription failed: \(error.localizedDescription, privacy: .public)")
+                log.error("transcription failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
                 await MainActor.run {
                     guard self.enabled else { return }
                     _ = self.session.handle(.engineFailed(error.localizedDescription))

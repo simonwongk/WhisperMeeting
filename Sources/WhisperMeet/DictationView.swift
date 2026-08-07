@@ -6,6 +6,7 @@ struct DictationView: View {
     @ObservedObject var dictation: DictationController
     @ObservedObject var log: DictationLogStore
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var diag = DictationDiagnostics(
         engineName: "", runtimeInstalled: false, helperInstalled: false, modelReady: false,
         microphoneGranted: false, accessibilityGranted: false, hotkeyActive: false
@@ -50,13 +51,18 @@ struct DictationView: View {
                             Spacer()
                         }
                         if let result = dictation.selfTestResult {
+                            // The multi-second self-test payoff fades in instead of snapping the
+                            // layout (F161, the F116 vocabulary).
                             Text(result)
                                 .font(.callout)
                                 .foregroundStyle(result.hasPrefix("✓") ? .green : .orange)
                                 .textSelection(.enabled)
+                                .transition(.gentleFade(reduceMotion: reduceMotion))
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Scoped so only the self-test result's arrival animates (F161).
+                    .animation(reduceMotion ? nil : .uiSpring, value: dictation.selfTestResult)
                 }
                 .padding(16)
                 .cardSurface()

@@ -185,7 +185,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             startHealthTimer()
         } catch {
             Self.logger.error(
-                "Recording capture failed after \(ProcessInfo.processInfo.systemUptime - startBeganAt, format: .fixed(precision: 3))s: \(error.localizedDescription, privacy: .public)"
+                "Recording capture failed after \(ProcessInfo.processInfo.systemUptime - startBeganAt, format: .fixed(precision: 3))s: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)"
             )
             if (systemWriter?.frameCount ?? 0) > 0
                 || (microphoneWriter?.frameCount ?? 0) > 0 {

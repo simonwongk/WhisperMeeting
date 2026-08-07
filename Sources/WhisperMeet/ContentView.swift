@@ -211,6 +211,9 @@ private struct MeetingRow: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 7, height: 7)
+                    // Color-only handoff as the meeting moves through its pipeline (F162);
+                    // value-scoped so list filtering/selection changes never animate the dot.
+                    .animation(.tintShift, value: meeting.status)
                 Text(meeting.status.title)
                 if meeting.duration > 0 {
                     Text("·")
@@ -589,8 +592,8 @@ private struct RecordMeetingView: View {
         }
         // The continuously watched surface: status flips fade (color/text only, no movement)
         // instead of teleporting, so a warning reads as a monitored transition, not a glitch.
-        .animation(.smooth(duration: 0.22), value: health.overallStatus)
-        .animation(.smooth(duration: 0.22), value: health.warnings)
+        .animation(.tintShift, value: health.overallStatus)
+        .animation(.tintShift, value: health.warnings)
     }
 
     private func storageRow(_ health: RecordingHealthSnapshot) -> some View {
@@ -1199,6 +1202,7 @@ private struct RecordingChannelHealthRow: View {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var apiKeyDraft = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var capturingKey = false
@@ -1230,11 +1234,15 @@ struct SettingsView: View {
                             || dictation.isActive
                     )
                 }
+                // The install → result swap after a minutes-long wait fades in as a readable
+                // payoff instead of snapping (F161, the F116 vocabulary).
                 if model.isInstallingRuntime {
                     ProgressView("Installing. This can take several minutes…")
+                        .transition(.gentleFade(reduceMotion: reduceMotion))
                 } else if let message = model.installationMessage {
                     Text(message)
                         .foregroundStyle(.secondary)
+                        .transition(.gentleFade(reduceMotion: reduceMotion))
                 }
                 if MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac {
                     HStack {
@@ -1261,9 +1269,11 @@ struct SettingsView: View {
                     }
                     if model.isInstallingQwenRuntime {
                         ProgressView("Installing about 4.5 GB. This can take several minutes…")
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
                     } else if let message = model.qwenInstallationMessage {
                         Text(message)
                             .foregroundStyle(.secondary)
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
                     }
                 } else {
                     Text("Qwen3-ASR requires an Apple-silicon Mac; Whisper remains available here.")
@@ -1276,6 +1286,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // Scoped to the installer states so only their swaps animate, nothing else in the
+            // Form (F161).
+            .animation(reduceMotion ? nil : .uiSpring, value: model.isInstallingRuntime)
+            .animation(reduceMotion ? nil : .uiSpring, value: model.installationMessage)
+            .animation(reduceMotion ? nil : .uiSpring, value: model.isInstallingQwenRuntime)
+            .animation(reduceMotion ? nil : .uiSpring, value: model.qwenInstallationMessage)
 
             Section(header: Label("Meeting library", systemImage: "books.vertical")) {
                 HStack {
@@ -3308,7 +3324,7 @@ private struct PlayableTranscriptView: View {
             .contentShape(Rectangle())
             // A short fade as the playing segment moves — a color-only change, safe under
             // Reduce Motion.
-            .animation(.smooth(duration: 0.22), value: isActive)
+            .animation(.tintShift, value: isActive)
         }
         .buttonStyle(.plain)
         .help(flags.map(qualityHelp) ?? "")
