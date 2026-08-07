@@ -7,6 +7,81 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Maintenance cycle — Qwen aligner language by majority script
+
+- **The opt-in Qwen forced aligner no longer mis-selects Chinese for English-dominant chunks (F155).**
+  `alignment_language` returned `Chinese` if a chunk held *any* CJK scalar, so an English sentence that
+  mentioned one Chinese name ("meet in 北京") was pushed through the Chinese aligner and its word timings
+  degraded. It now shares one `_cjk_is_majority(text)` helper with the transcript-level
+  `detected_language_code` — CJK must be the strict majority of non-whitespace characters — so the
+  chunk-level and transcript-level heuristics can no longer drift apart. An explicit English/Chinese
+  request is still honored.
+- **Verification.** Red→green on five new `AlignmentLanguageTests` (the failing case:
+  `alignment_language("Let's meet in 北京 next week", "auto")` now returns `English`); full qwen helper
+  suite `Ran 12 tests … OK`. Gap: no real-audio A/B of aligner timing quality on such a chunk (needs the
+  installed Qwen models + a labeled clip); the fix is verified at the language-selection boundary where
+  the defect lived.
+
+## Maintenance cycle — privacy-safe logs and motion polish
+
+- **OSLog error text is now path-redacted (F154).** The capture-failure and dictation log sites marked
+  raw `error.localizedDescription` as `.public` for Console diagnosability, but Foundation error text
+  routinely embeds absolute paths — F141 had redacted only the exported diagnostics bundle. A named
+  `DiagnosticsBundleBuilder.publicLogDescription(_:)` applies the tested F141 `redactPaths` to every
+  `.public` interpolation, so future log sites have one entry point instead of a convention to remember.
+- **The motion vocabulary is finished (F158, F161, F162).** The last inline animation durations became
+  two named design-system tokens — `.tintShift` (0.22 s color-only shifts) and `.reducedMotionFade` (the
+  0.2 s Reduce-Motion fallback) (F158). Async self-test and installer results now get a gentle entrance —
+  `gentleFade` plus a value-scoped spring, so only the result swap animates and Reduce Motion keeps just
+  the fade (F161). The sidebar meeting-row status dot animates its color handoff with `.tintShift`,
+  scoped to `meeting.status` so filtering and selection never animate it (F162).
+- **Verification.** Suite green at **338/338**; F158's cleanup confirmed by grep (only the two token
+  definitions remain). The three motion items are presentation-only; their in-app visual and
+  Reduce-Motion pass is the open manual-verify ticket F174. The log-redaction live Console check was not
+  run (no safe way to force a real capture failure); the redaction mechanism itself is test-covered.
+
+## Maintenance cycle — transcript search performance and correctness
+
+- **Find-highlight ranges are no longer recomputed on every playback redraw (F160).** `highlightedText`
+  scanned each visible segment inline while rendering, so the 4 Hz playback tick re-scanned a long
+  searched transcript several times per second. A pure one-pass `TextSearch.occurrenceIndex(_:in:)`
+  returns the occurrence list *and* per-field ranges with identical semantics (the F43 all-terms rule is
+  pinned by a test); `recomputeVisible()` — which runs only on query change — caches them, so no
+  rendering path scans transcript text anymore.
+- **The copy acknowledgment can't be cleared by a stale timer (F159).** Each "Copy AI Prompt" press
+  spawned its own reset task, so the earliest press's timer cleared the flag regardless of newer presses.
+  A shared `@MainActor TransientAcknowledgment` cancels the pending reset before scheduling its own, and
+  both copy buttons now share the one tested holder (the wait is an injected seam, so the test drives both
+  windows with continuations — no real sleeps).
+- **The "Correct with local AI" busy indicator is scoped to its meeting (F173).** F165 shipped the busy
+  state as a single global `Bool` — right for the one-run guard, wrong for presentation, so every
+  meeting's view showed the indicator during any run. A `proposingCorrectionsID: UUID?` mirrors Second
+  Opinion's `secondOpinionRunningID`; a computed `isProposingCorrections` keeps the exclusivity guard.
+- **Verification.** Red→green per ticket (missing-symbol compile failures before each core existed);
+  suite **336/336**, release build complete. The visual spot-checks (double-press copy,
+  playback-with-search, a two-meeting correction) join F174.
+
+## Maintenance cycle — transcript toolbar: tag chips and a grouped Improve menu
+
+- **Tag editing became a token-style chip editor (F171).** Tags shipped (F67) as a raw comma-separated
+  `TextField`, so removing one meant text-editing the whole line. Now every applied tag is a chip with an
+  always-visible remove control; the inline field commits on Return and live on comma; Backspace in the
+  empty field removes the last chip; focus loss commits pending text so a typed-but-not-Returned tag is
+  never lost; and tags used on other meetings appear as one-click "+" reuse chips so spellings stay
+  consistent. At the F67 12-tag cap the field becomes a plain-language capacity note. The splitting and
+  suggestion logic is pure WhisperCore (`MeetingTags.liveSplit` / `reuseSuggestions`) per the three-layer
+  rule; the notes editor gained placeholder text stating its purpose and that notes stay local.
+- **The transcript header actions stopped truncating (F172).** Each improvement feature (F82 glossary
+  corrections, F156 second opinion, F165 local-AI corrections) had appended another button to one header
+  `HStack`, so inside the 860 pt column all four rendered as identical truncated stubs ("Suggest…",
+  "Correct…"). They are now grouped under one labeled "Improve" pull-down — the common path (read, copy,
+  export) stays top-level; disabled items explain why in plain language instead of leaving mystery-gray
+  rows; and the in-button spinners became a named status row (`gentleFade` + value-scoped `uiSpring`) that
+  also lets a dismissed Second Opinion sheet be reopened via "Show Progress".
+- **Verification.** Red→green on five new `MeetingTags` tests; suite **330/330**, debug and release
+  builds complete, app re-signed. The regroup is presentation-only (no model-layer path changed). The
+  header-at-default-width visual and VoiceOver walkthrough is F174.
+
 ## Maintenance cycle — on-device summaries by default, plus AI transcript correction
 
 - **Local meeting summaries are now the default (F164).** Summaries run on a bundled Qwen3 model on
