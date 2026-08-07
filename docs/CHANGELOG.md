@@ -7,6 +7,40 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Maintenance cycle — on-device summaries by default, plus AI transcript correction
+
+- **Local meeting summaries are now the default (F164).** Summaries run on a bundled Qwen3 model on
+  this Mac — no API key, fully offline — picked by RAM (Qwen3-8B-4bit on ≥ 16 GB, a 4B model below).
+  Claude cloud summaries become an opt-in premium and still require a saved key and an explicit,
+  confirmed press. A new keyless `LocalSummarizer` spawns `summarize_local.py` (mlx_lm, thinking
+  disabled) against a dedicated `Runtime/Summarizer` runtime, kept separate from the opt-in Qwen3-ASR
+  runtime because summaries are now a default and must not depend on it. The local prompt reuses
+  `ClaudeSummarizer.systemPrompt` as the single source of truth; the helper's `parse_summary`
+  degrades, never raises.
+- **AI transcript correction toward your business vocabulary (F165).** A new "Correct with local AI"
+  action asks the on-device model to fix domain terms (names, products, jargon) that ASR mis-heard,
+  guided by the Business Vocabulary list. It reuses the summary model + venv via a sibling
+  `correct_local.py`, so it needs no extra download. Corrections are proposal-only: they flow through
+  the same review sheet as glossary corrections, the raw recording is never modified, a hand-edited
+  transcript is skipped, and any span whose `from` text is not present verbatim in the transcript is
+  dropped so a hallucination can never be applied.
+- **Fixed a latent suite-wide hang the correction tests exposed (F169).** All four local subprocess
+  engines (`LocalWhisperClient`, `QwenASRClient`, `LocalSummarizer`, `LocalTranscriptCorrector`)
+  awaited their Python helper with `Process.waitUntilExit()`, which spins a run loop on the calling
+  thread; on a Swift-concurrency cooperative worker the child's termination wake-up can land on a
+  different worker and the wait wedges forever. F165's extra subprocess tests tipped this into a
+  deterministic full-suite stall past the 600 s watchdog. A shared `armedExitStream(for:)` arms
+  `terminationHandler` before launch and replaces the blocking wait with a non-blocking `await`.
+- **Verification.** Full suite **325/325** (up from 316, none dropped), via the F166 swift-testing
+  framework-path workaround; the complete gate (`quality-check.sh`) passes end to end — release build
+  with warnings-as-errors plus a signed app package, exit 0. Python helper suites
+  (`test_summarize_local.py`, `test_correct_local.py`) green. Exercised against the **real installed
+  Qwen3-8B-4bit model**: a synthetic transcript was corrected "Kew Bernetes"→"Kubernetes" and
+  "Post Grease"→"Postgres" while already-correct terms were left untouched (8.0 s), and F164's
+  summaries produced valid Mandarin-in/Mandarin-out and English JSON. The app was rebuilt and
+  installed to `/Applications/WhisperMeet.app` (signed with the stable "WhisperMeet Dev" identity) and
+  launches clean.
+
 ## Maintenance cycle — warm Whisper dictation never actually warmed
 
 - Fixed a pre-existing defect that silently disabled the warm path for **Whisper Turbo, the default
