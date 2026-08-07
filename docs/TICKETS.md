@@ -16,6 +16,75 @@ Use the [work dashboard](tickets-dashboard.html) for a scan-first view. This Mar
 authoritative queue: claim only a ticket that is `open`, and read [`NEEDS_HUMAN.md`](NEEDS_HUMAN.md)
 before starting work that depends on a person.
 
+## In progress
+
+### F173 — "Correct with local AI" busy state is global, not scoped to the meeting being corrected
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 1)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-07 by Claude Code (Fable 5), found while working F172
+
+**Problem.** `AppModel.isProposingCorrections` (`AppModel.swift:125`) is a single global `Bool`, so
+the "Correct with local AI" busy indicator in the transcript header shows in **every** meeting's
+detail view while any correction run is active — the same presentation defect F156 fixed for Second
+Opinion by introducing `secondOpinionRunningID` (`AppModel.swift:330`).
+
+**Impact.** Opening another meeting during a correction run shows a busy indicator implying that
+meeting is being processed.
+
+**Proposed fix.** Replace the `Bool` with a `proposingCorrectionsID: UUID?` mirroring F156, and
+scope the header indicator to the matching meeting.
+
+**Verification.** Headless state test: starting a correction for meeting A leaves meeting B's
+indicator state false; manual cross-check with two meetings.
+
+### F159 — Prevent an older copy-prompt task from clearing newer feedback
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 1)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-03 by /root, from F157 documentation audit
+
+**Problem.** Every press in `ContentView.swift` `VocabularyView.copyGenerationPrompt` starts an
+independent two-second task that sets `didCopyPrompt` to false. A task from an earlier press can
+therefore clear the confirmation shortly after a later press. The F172 transcript Copy button
+added a second, hand-rolled instance of the corrected pattern.
+
+**Impact.** The "Prompt Copied" acknowledgement can disappear too early during repeated use.
+
+**Proposed fix.** Extract a small testable acknowledgment holder (trigger → auto-reset, cancelling
+the pending reset on re-trigger) with an injected wait seam (F47 style); use it for both copy
+buttons.
+
+**Verification.** A focused state test proves a second press keeps the confirmation visible for its
+full window; manually press the control twice in quick succession.
+
+### F160 — Avoid recomputing find-highlight ranges on every playback redraw
+
+- **Status:** in-progress
+- **Owner:** Claude Code (Fable 5), session 2026-08-07 (loop iteration 1)
+- **Severity:** low
+- **Area:** ui
+- **Filed:** 2026-08-03 by /root, from F157 documentation audit
+
+**Problem.** `PlayableTranscriptView.highlightedText` (`ContentView.swift:3342-3355`) recalculates
+`TextSearch.occurrenceRanges` and rebuilds an `AttributedString` for every visible matching
+segment. Playback updates the active state repeatedly, so a long searched transcript can repeat
+this work on each redraw.
+
+**Impact.** Long transcripts may spend unnecessary CPU time while playing back with search active.
+
+**Proposed fix.** Compute occurrences and per-segment ranges in one pass in a new pure
+`TextSearch.occurrenceIndex`, cache the ranges in `recomputeVisible()` (which already runs only on
+query change), and have row rendering read the cache.
+
+**Verification.** Red-green test that `occurrenceIndex` matches the existing
+`occurrences`/`occurrenceRanges` semantics; structurally, range scanning then only runs on query
+change, never on the playback tick.
+
 ## Ready to claim
 
 ### F174 — Visually verify the tag chip editor and the transcript Improve menu (incl. VoiceOver)
@@ -42,28 +111,6 @@ row appears. Repeat the tag pass under VoiceOver (chips must announce "Remove ta
 "Add tag …") and with Reduce Motion on.
 
 **Verification.** Each step above passes; any failure gets its own ticket.
-
-### F173 — "Correct with local AI" busy state is global, not scoped to the meeting being corrected
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-07 by Claude Code (Fable 5), found while working F172
-
-**Problem.** `AppModel.isProposingCorrections` (`AppModel.swift:125`) is a single global `Bool`, so
-the "Correct with local AI" busy indicator in the transcript header shows in **every** meeting's
-detail view while any correction run is active — the same presentation defect F156 fixed for Second
-Opinion by introducing `secondOpinionRunningID` (`AppModel.swift:330`).
-
-**Impact.** Opening another meeting during a correction run shows a busy indicator implying that
-meeting is being processed.
-
-**Proposed fix.** Replace the `Bool` with a `proposingCorrectionsID: UUID?` mirroring F156, and
-scope the header indicator to the matching meeting.
-
-**Verification.** Headless state test: starting a correction for meeting A leaves meeting B's
-indicator state false; manual cross-check with two meetings.
 
 ### F168 — `quality-check.sh` cold run: step [4] debug build trips the F121 watchdog
 
@@ -285,45 +332,6 @@ app.
 
 **Verification.** Exercise the relevant state changes with and without Reduce Motion and confirm no
 raw duplicate duration remains at the cited call sites.
-
-### F159 — Prevent an older copy-prompt task from clearing newer feedback
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-03 by /root, from F157 documentation audit
-
-**Problem.** Every press in `ContentView.swift:1583-1591` starts an independent two-second task that
-sets `didCopyPrompt` to false. A task from an earlier press can therefore clear the confirmation
-shortly after a later press.
-
-**Impact.** The "Prompt Copied" acknowledgement can disappear too early during repeated use.
-
-**Proposed fix.** Store and cancel the pending reset task before scheduling a replacement.
-
-**Verification.** A focused state test proves a second press keeps the confirmation visible for its
-full window; manually press the control twice in quick succession.
-
-### F160 — Avoid recomputing find-highlight ranges on every playback redraw
-
-- **Status:** open
-- **Owner:** —
-- **Severity:** low
-- **Area:** ui
-- **Filed:** 2026-08-03 by /root, from F157 documentation audit
-
-**Problem.** `ContentView.swift:3021-3033` recalculates `TextSearch.occurrenceRanges` and rebuilds
-an `AttributedString` for every visible matching segment. Playback updates the active state
-repeatedly, so a long searched transcript can repeat this work on each redraw.
-
-**Impact.** Long transcripts may spend unnecessary CPU time while playing back with search active.
-
-**Proposed fix.** Cache occurrence ranges or highlighted text when the search query/segments change,
-not when playback position changes.
-
-**Verification.** Profile or instrument a long searched transcript during playback and show the
-range work does not repeat per playback tick.
 
 ### F161 — Give async self-test and installer results a gentle entrance
 
