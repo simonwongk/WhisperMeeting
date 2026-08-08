@@ -36,6 +36,14 @@ public enum MediaSourceURL {
         // A leading "-" would be read by yt-dlp as an option even after the URL slot; refuse it
         // outright (and the client also passes `--` before the URL as defense in depth).
         guard !trimmed.hasPrefix("-") else { throw ValidationError.flagInjection }
+        // Reject embedded control characters, NUL, and interior whitespace. A NUL is the sharp case:
+        // Swift keeps it in the String, but it terminates the C string handed to the subprocess, so
+        // yt-dlp would fetch a *different* URL than the one persisted and shown as provenance.
+        guard !trimmed.unicodeScalars.contains(where: {
+            $0.value < 0x20 || $0.value == 0x7F || CharacterSet.whitespacesAndNewlines.contains($0)
+        }) else {
+            throw ValidationError.notHTTP
+        }
 
         guard let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(),

@@ -1628,6 +1628,9 @@ private struct LinkImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var link = ""
     @State private var isWorking = false
+    /// The in-flight import, held so Cancel actually stops the download instead of only closing the
+    /// sheet and leaving the fetch (and the isImporting latch) running invisibly.
+    @State private var importTask: Task<Void, Never>?
 
     private var trimmedLink: String {
         link.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1680,7 +1683,7 @@ private struct LinkImportSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(isWorking ? "Stop" : "Cancel") { cancel() }
                 Button("Download and Transcribe") { start(confirmed: false) }
                     .buttonStyle(.borderedProminent)
                     .disabled(trimmedLink.isEmpty || isWorking)
@@ -1708,15 +1711,25 @@ private struct LinkImportSheet: View {
     private func start(confirmed: Bool) {
         guard !trimmedLink.isEmpty, !isWorking else { return }
         isWorking = true
-        Task {
+        importTask = Task {
             let id = await model.importFromURL(trimmedLink, confirmedLongDuration: confirmed)
             isWorking = false
+            importTask = nil
             if let id {
                 onImported(id)
                 dismiss()
             }
             // A nil result that is only awaiting confirmation keeps the sheet open for the alert.
         }
+    }
+
+    /// Stops an in-flight download (the runner kills the whole process group and the import cleans up
+    /// its folder) before closing, so Cancel never leaves an invisible fetch running.
+    private func cancel() {
+        importTask?.cancel()
+        importTask = nil
+        isWorking = false
+        dismiss()
     }
 }
 

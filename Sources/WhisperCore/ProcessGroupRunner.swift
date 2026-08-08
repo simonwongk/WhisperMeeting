@@ -26,18 +26,33 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         public let output: String
     }
 
+    /// How the captured output will be used, which decides whether it may be truncated.
+    public enum OutputUse: Sendable {
+        /// Diagnostics only — keep a bounded tail, like the other subprocess clients do.
+        case diagnostics
+        /// The output IS the result and will be parsed as a whole document, so it must never be
+        /// truncated: front-truncating a single-line JSON payload (`yt-dlp --dump-single-json`) leaves
+        /// a buffer with no line starting with `{`, which parses as "unreadable" and kills the import.
+        case parsedResult
+    }
+
     /// Mutable state shared with the reader thread and the stall watchdog.
     private final class State: @unchecked Sendable {
         private let lock = NSLock()
         private var output = ""
         private var lastActivity = Date()
         private(set) var stalled = false
+        private let use: OutputUse
+
+        init(use: OutputUse) { self.use = use }
 
         func append(_ text: String) {
             lock.lock()
             output += text
-            // Keep the buffer bounded like the other clients do; the tail is what diagnostics need.
-            if output.count > 200_000 { output = String(output.suffix(100_000)) }
+            // Bound the buffer only when it is diagnostics; a parsed result must stay intact.
+            if use == .diagnostics, output.count > 200_000 {
+                output = String(output.suffix(100_000))
+            }
             lastActivity = Date()
             lock.unlock()
         }
@@ -102,6 +117,7 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         arguments: [String],
         environment: [String: String],
         stallTimeout: TimeInterval,
+        outputUse: OutputUse = .diagnostics,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async throws -> Outcome {
         var argv: [UnsafeMutablePointer<CChar>?] = [strdup(executableURL.path)]
@@ -166,10 +182,13 @@ public final class ProcessGroupRunner: @unchecked Sendable {
 
         if registerChild(pid) { _ = killpg(pid, SIGTERM) }
 
-        let state = State()
-        // Blocking reads live on a dedicated queue, never a cooperative thread.
+        let state = State(use: outputUse)
+        // Blocking reads live on a dedicated queue, never a cooperative thread. The group lets the
+        // result wait for EOF before snapshotting — without that join, the child's final bytes (which
+        // for a probe are the payload itself) can still be in flight when `waitpid` returns.
+        let readGroup = DispatchGroup()
         let readQueue = DispatchQueue(label: "com.whispermeet.process-group-runner.read")
-        readQueue.async {
+        readQueue.async(group: readGroup) {
             while true {
                 var buffer = [UInt8](repeating: 0, count: 4_096)
                 let count = read(readDescriptor, &buffer, buffer.count)
@@ -209,6 +228,10 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         // The child has been reaped; its pid may be recycled from here on.
         forgetChild()
         stallWatchdog.cancel()
+        // Drain to EOF before reading the buffer, so no trailing output is lost.
+        await withCheckedContinuation { continuation in
+            readGroup.notify(queue: .global()) { continuation.resume() }
+        }
 
         if state.stalled { throw ProcessGroupRunnerError.stalled(stallTimeout) }
         try Task.checkCancellation()

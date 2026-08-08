@@ -12,6 +12,8 @@ public enum MediaDownloadFailureKind: Sendable, Equatable {
     case network            // transient connectivity failure — retry may work
     case updateDownloader   // yt-dlp is stale; extraction is broken until it is updated
     case unsupportedURL     // no extractor / not a media page
+    case botCheck           // the site demands sign-in / "confirm you're not a bot"
+    case ffmpegMissing      // the post-processor that extracts audio isn't installed
     case generic            // anything unclassified — a plain retry
 }
 
@@ -46,6 +48,21 @@ public enum MediaDownloadFailureClassifier {
             return .init(
                 kind: .updateDownloader,
                 explanation: "The downloader is out of date — this site changed how it serves audio. Update the downloader in Settings, then try again."
+            )
+        }
+        // The bot check is currently the most common real yt-dlp failure, and it is NOT fixed by
+        // updating or retrying — it needs a signed-in session this app deliberately doesn't support.
+        // Checked before the age rule because both mention "sign in to confirm".
+        if contains(["confirm you're not a bot", "confirm you are not a bot", "sign in to confirm you're not a bot", "not a bot"]) {
+            return .init(
+                kind: .botCheck,
+                explanation: "The site is asking to confirm you're not a bot, which needs a signed-in session this app doesn't use. Download it another way, then import the file."
+            )
+        }
+        if contains(["ffmpeg not found", "ffprobe not found", "ffmpeg is not installed", "you have requested merging", "postprocessing: ffmpeg not found"]) {
+            return .init(
+                kind: .ffmpegMissing,
+                explanation: "FFmpeg is needed to extract the audio and isn't installed. Install the local Whisper runtime in Settings, which installs it."
             )
         }
         if contains(["sign in to confirm your age", "confirm your age", "age-restricted", "age restricted"]) {

@@ -42,6 +42,39 @@ func captionArgs() {
     #expect(args.contains("/tmp/rec/captions.%(ext)s"))
 }
 
+@Test("A hostile sub-language from site metadata cannot become a caption-selection pattern (F183)")
+func sanitizesSubLangs() {
+    // `--sub-langs` accepts regex and an `all` keyword, and the value comes from the site's metadata,
+    // so anything but a plain code must not pass through — otherwise the pin that blocks auto-translated
+    // tracks could be widened by the very metadata it is meant to constrain.
+    #expect(MediaDownloadArguments.sanitizedSubLangs("en") == "en")
+    #expect(MediaDownloadArguments.sanitizedSubLangs("zh-Hans") == "zh-Hans")
+    #expect(MediaDownloadArguments.sanitizedSubLangs("all") == "all") // a literal code shape, still pinned below
+    #expect(MediaDownloadArguments.sanitizedSubLangs("en.*") == "none")
+    #expect(MediaDownloadArguments.sanitizedSubLangs("en,fr") == "none")
+    #expect(MediaDownloadArguments.sanitizedSubLangs("") == "none")
+}
+
+@Test("Every vector ignores the user's yt-dlp config so the tested contract is what runs (F183)")
+func ignoresUserConfig() {
+    let url = "https://youtu.be/abc"
+    #expect(MediaDownloadArguments.probe(url: url).contains("--ignore-config"))
+    #expect(MediaDownloadArguments.download(url: url, intoDirectory: "/tmp/x").contains("--ignore-config"))
+    #expect(MediaDownloadArguments.captions(url: url, intoDirectory: "/tmp/x", subLangs: "en").contains("--ignore-config"))
+}
+
+@Test("The extraction suppresses ffmpeg metadata so the WAV data chunk stays at the expected offset (F183)")
+func extractionSuppressesMetadata() {
+    let args = MediaDownloadArguments.download(url: "https://youtu.be/abc", intoDirectory: "/tmp/x")
+    let recipe = try! #require(args.first { $0.contains("ExtractAudio+ffmpeg:") })
+    // Without these, ffmpeg writes a LIST/INFO chunk between `fmt ` and `data`, and this app's WAV
+    // readers take the data size from the fixed offset 40 — they would read the LIST size instead.
+    #expect(recipe.contains("-map_metadata -1"))
+    #expect(recipe.contains("-fflags +bitexact"))
+    #expect(recipe.contains("-ar 16000"))
+    #expect(recipe.contains("-ac 1"))
+}
+
 @Test("A flag-shaped URL still lands after -- so it can't be read as an option (F183)")
 func flagShapedURLIsPositional() {
     // MediaSourceURL rejects a leading-dash URL, but -- is defense in depth if one slips through.

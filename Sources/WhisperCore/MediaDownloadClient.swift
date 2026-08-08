@@ -68,8 +68,13 @@ public enum MediaDownloadRuntime {
 /// and optionally fetch the publisher's captions as a reference. Runs through `ProcessGroupRunner`, so a
 /// cancel kills yt-dlp *and* the ffmpeg it spawns, and a stalled network transfer aborts.
 public struct MediaDownloadClient: Sendable {
-    /// No progress line for this long means the transfer is stuck (dead socket), not merely slow.
-    public static let defaultStallTimeout: TimeInterval = 90
+    /// No output for this long means the transfer is stuck (a dead socket), not merely slow.
+    ///
+    /// It is generous on purpose. yt-dlp is **silent by design** while ffmpeg post-processes the audio
+    /// after the bytes have arrived, and that pass can run for minutes on a multi-hour recording — a
+    /// tight timeout would kill a perfectly healthy import and delete its folder. The watchdog only has
+    /// to beat "hung forever", so it is sized to comfortably exceed the longest legitimate silence.
+    public static let defaultStallTimeout: TimeInterval = 600
 
     private let executableURL: URL
     private let stallTimeout: TimeInterval
@@ -89,16 +94,37 @@ public struct MediaDownloadClient: Sendable {
 
     public func probe(url: String) async throws -> MediaProbe {
         let runner = ProcessGroupRunner()
-        let outcome = try await runner.run(
-            executableURL: executableURL,
-            arguments: MediaDownloadArguments.probe(url: url),
-            environment: Self.makeEnvironment(),
-            stallTimeout: stallTimeout
-        )
+        let outcome = try await Self.mappingErrors {
+            // `.parsedResult`: the probe payload is a single JSON line that is parsed as a whole, so it
+            // must never be truncated the way a diagnostic log tail can be.
+            try await runner.run(
+                executableURL: executableURL,
+                arguments: MediaDownloadArguments.probe(url: url),
+                environment: Self.makeEnvironment(),
+                stallTimeout: stallTimeout,
+                outputUse: .parsedResult
+            )
+        }
         guard outcome.exitStatus == 0 else {
             throw MediaDownloadError.failed(MediaDownloadFailureClassifier.classify(stderr: outcome.output))
         }
         return try Self.parseProbe(outcome.output)
+    }
+
+    /// Translates the runner's low-level failures into actionable `MediaDownloadError`s. Without this the
+    /// most likely network failure — a stall — would surface to the user as a raw Swift enum description,
+    /// and `MediaDownloadError.stalled`'s written explanation would be dead code.
+    static func mappingErrors<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as ProcessGroupRunnerError {
+            switch error {
+            case .stalled:
+                throw MediaDownloadError.stalled
+            case .spawnFailed:
+                throw MediaDownloadError.runtimeNotInstalled
+            }
+        }
     }
 
     /// Downloads the audio into `directory` as a canonical `recording.wav` and returns its URL.
@@ -107,16 +133,22 @@ public struct MediaDownloadClient: Sendable {
         into directory: URL,
         progress: (@Sendable (MediaDownloadProgress) -> Void)? = nil
     ) async throws -> URL {
+        // yt-dlp shells out to ffmpeg for the WAV extraction, and a Qwen-only user has neither installed
+        // (only setup-local-whisper.sh provides them). Detect that here rather than surfacing yt-dlp's
+        // own obscure post-processing error.
+        guard MediaDownloadRuntime.findFFmpeg() != nil else { throw MediaDownloadError.ffmpegMissing }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let runner = ProcessGroupRunner()
         let parser = ParserBox()
-        let outcome = try await runner.run(
-            executableURL: executableURL,
-            arguments: MediaDownloadArguments.download(url: url, intoDirectory: directory.path),
-            environment: Self.makeEnvironment(),
-            stallTimeout: stallTimeout
-        ) { chunk in
-            if let update = parser.consume(chunk) { progress?(update) }
+        let outcome = try await Self.mappingErrors {
+            try await runner.run(
+                executableURL: executableURL,
+                arguments: MediaDownloadArguments.download(url: url, intoDirectory: directory.path),
+                environment: Self.makeEnvironment(),
+                stallTimeout: stallTimeout
+            ) { chunk in
+                if let update = parser.consume(chunk) { progress?(update) }
+            }
         }
         guard outcome.exitStatus == 0 else {
             throw MediaDownloadError.failed(MediaDownloadFailureClassifier.classify(stderr: outcome.output))

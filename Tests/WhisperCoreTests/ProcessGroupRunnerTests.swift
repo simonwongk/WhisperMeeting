@@ -90,6 +90,30 @@ func stallTimeoutAborts() async throws {
     #expect(Date().timeIntervalSince(startedAt) < 15, "the stall timeout did not actually abort the run")
 }
 
+@Test("A large single-line payload survives intact when the output IS the result (F183)")
+func parsedResultOutputIsNotTruncated() async throws {
+    // The probe's JSON arrives as ONE line well past the diagnostics cap. Front-truncating it leaves a
+    // buffer with no line starting with "{", which parses as "unreadable" and kills the import — so
+    // `.parsedResult` must keep the payload whole.
+    let (directory, script) = try makeScript(#"""
+    printf '{"title":"'
+    /usr/bin/awk 'BEGIN { while (i++ < 300000) printf "a" }'
+    printf '"}\n'
+    """#)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let outcome = try await ProcessGroupRunner().run(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [script.path],
+        environment: ["PATH": "/usr/bin:/bin"],
+        stallTimeout: 60,
+        outputUse: .parsedResult
+    )
+    #expect(outcome.output.count > 300_000)
+    #expect(outcome.output.hasPrefix("{"))       // the head survived — parseProbe can find the object
+    #expect(outcome.output.contains("\"}"))      // and so did the tail (the reader thread was joined)
+}
+
 @Test("A normal run streams its output and reports its exit status (F183)")
 func normalRunStreamsOutput() async throws {
     let (directory, script) = try makeScript("echo hello; exit 3\n")

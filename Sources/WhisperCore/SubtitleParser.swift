@@ -32,7 +32,13 @@ public enum SubtitleParser {
                 textLines.append(lines[index])
                 index += 1
             }
-            let cleaned = cleanCueText(textLines.joined(separator: " "))
+            // Strip each caption LINE before joining. A cue commonly carries one speaker per line
+            // ("JOHN: hi" / ">> and then we shipped"), so cleaning only the joined string would leave
+            // every label after the first embedded in the segment text — speaker identity in the
+            // transcript, which the no-diarization invariant forbids.
+            let cleaned = cleanCueText(
+                textLines.map(cleanCueText).filter { !$0.isEmpty }.joined(separator: " ")
+            )
             guard !cleaned.isEmpty else { continue }
             // Rolling-caption dedup: auto-captions re-emit the same line across consecutive cues with
             // shifting timings; keep the first appearance and extend its end, so the reference isn't
