@@ -11,7 +11,7 @@ import Testing
 private final class StyleRecordingSummarizer: MeetingSummarizer, @unchecked Sendable {
     private(set) var recordedStyle: SummaryStyle?
     let stub = MeetingSummary(summary: "S", keyPoints: ["k1"], actionItems: ["a1"])
-    func summarize(transcript: String, language: String?, style: SummaryStyle) async throws -> MeetingSummary {
+    func summarize(transcript: String, language: String?, style: SummaryStyle, template: MeetingTemplate) async throws -> MeetingSummary {
         recordedStyle = style
         return stub
     }

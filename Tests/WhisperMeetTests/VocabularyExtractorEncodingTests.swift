@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import WhisperCore
 @testable import WhisperMeet
 
 private func makeTempDir() throws -> URL {
@@ -39,4 +40,32 @@ func batchImportSkipsBadFiles() throws {
     #expect(result.terms.contains("Kubernetes")) // survives the non-UTF-8 read
     #expect(result.terms.contains("Grafana"))    // survives the sibling bad file
     #expect(result.failed.map(\.lastPathComponent) == ["image.bin"])
+}
+
+/// F170 — a chosen reference document reads to its full (capped) raw text, not extracted candidates,
+/// so the correction pass can be guided toward spellings that only appear in the reference.
+@Test("Reference document reads to prepared raw text (F170)")
+func referenceDocumentReadsRawText() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("spec.md")
+    try "# Naming\nThe correct spelling is Sequoya, not Sequoia.\n".data(using: .utf8)!.write(to: url)
+
+    let reference = try #require(VocabularyExtractor.referenceText(from: url))
+    #expect(reference.contains("Sequoya"))              // raw text, not just proper-noun candidates
+    #expect(reference.contains("The correct spelling")) // ordinary words survive (unlike `candidates`)
+}
+
+/// F170 — an empty or unreadable reference reads to nil so the UI can say so instead of passing "".
+@Test("Empty or unsupported reference document reads to nil (F170)")
+func emptyReferenceDocumentReadsToNil() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let empty = dir.appendingPathComponent("empty.txt")
+    try "   \n".data(using: .utf8)!.write(to: empty)
+    #expect(VocabularyExtractor.referenceText(from: empty) == nil)
+
+    let unsupported = dir.appendingPathComponent("image.bin")
+    try Data([0x00, 0x01]).write(to: unsupported)
+    #expect(VocabularyExtractor.referenceText(from: unsupported) == nil)
 }

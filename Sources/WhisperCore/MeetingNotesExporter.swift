@@ -50,7 +50,7 @@ public enum MeetingNotesExporter {
             }
             if !summary.actionItems.isEmpty {
                 lines.append("### Action items")
-                lines.append(contentsOf: summary.actionItems.map { "- [ ] \($0)" })
+                lines.append(contentsOf: summary.actionItems.map(Self.actionItemLine))
                 lines.append("")
             }
         }
@@ -90,5 +90,19 @@ public enum MeetingNotesExporter {
         lines.append("")
         lines.append(transcriptText)
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// A GitHub-style task line for one action item, carrying the done state and any owner/due the
+    /// user entered (F177): `- [x] Ship v1 — @Alice (due: Fri)`. Timestamp/quote are review aids in
+    /// the app and intentionally not exported here.
+    public static func actionItemLine(_ item: ActionItem) -> String {
+        var line = "- [\(item.done ? "x" : " ")] \(item.text)"
+        if let owner = item.owner?.trimmingCharacters(in: .whitespacesAndNewlines), !owner.isEmpty {
+            line += " — @\(owner)"
+        }
+        if let due = item.due?.trimmingCharacters(in: .whitespacesAndNewlines), !due.isEmpty {
+            line += " (due: \(due))"
+        }
+        return line
     }
 }

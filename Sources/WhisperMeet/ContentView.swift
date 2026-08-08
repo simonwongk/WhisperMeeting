@@ -9,6 +9,7 @@ import WhisperCore
 private enum SidebarItem: Hashable {
     case record
     case vocabulary
+    case askMeetings
     case dictation
     case settings
     case meeting(UUID)
@@ -27,6 +28,11 @@ struct ContentView: View {
     @State private var selectedTags: Set<String> = []
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
+    // F180 "Ask Meetings" query + scope, held here (like searchText/selectedTags) so they survive the
+    // detail view's per-selection recreation and are restored on return.
+    @State private var askQuery = ""
+    @State private var askScopeTags: Set<String> = []
+    @State private var askTagMode: MeetingTags.MatchMode = .any
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: AppModel, dictation: DictationController) {
@@ -65,6 +71,8 @@ struct ContentView: View {
                         .tag(SidebarItem.record)
                     Label("Business Vocabulary", systemImage: "text.book.closed")
                         .tag(SidebarItem.vocabulary)
+                    Label("Ask Meetings", systemImage: "text.magnifyingglass")
+                        .tag(SidebarItem.askMeetings)
                     Label("Dictation", systemImage: "mic.fill")
                         .tag(SidebarItem.dictation)
                     Label("Settings", systemImage: "gearshape")
@@ -111,6 +119,12 @@ struct ContentView: View {
         // renders inside the sidebar and scrolls beneath the window controls (observed live,
         // F126); at this level it lands in the window toolbar like Finder/Mail.
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
+        // F180: an "Ask Meetings" cited result drives the sidebar selection from the model (survives the
+        // detail view's per-selection recreation). The detail view consumes the seek on appear.
+        .onChange(of: model.pendingNavigation) { _, request in
+            guard let request else { return }
+            selection = .meeting(request.meetingID)
+        }
         .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
             "WhisperMeet",
@@ -172,6 +186,14 @@ struct ContentView: View {
             }
         case .vocabulary:
             VocabularyView(store: store)
+        case .askMeetings:
+            AskMeetingsView(
+                model: model,
+                store: store,
+                query: $askQuery,
+                scopeTags: $askScopeTags,
+                tagMode: $askTagMode
+            )
         case .dictation:
             DictationView(dictation: dictation, log: dictation.logStore, model: model)
         case .settings:
@@ -1537,6 +1559,265 @@ struct SettingsView: View {
     }
 }
 
+/// F180 — ask a question across a chosen set of completed meetings and get cited, timestamped results.
+/// Local keyword retrieval (BM25) over the transcript segments; every result links to its meeting and
+/// (when the transcript is aligned) the moment it was said. Clicking a result opens that meeting and
+/// seeks the recording there, reusing the F177 playback path.
+private struct AskMeetingsView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: MeetingStore
+    @Binding var query: String
+    @Binding var scopeTags: Set<String>
+    @Binding var tagMode: MeetingTags.MatchMode
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var results: [CitedResult] = []
+    @State private var hasSearched = false
+
+    private var libraryTags: [String] {
+        MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
+    }
+
+    private var scope: MeetingScope {
+        MeetingScope(tags: Array(scopeTags), tagMode: tagMode)
+    }
+
+    private var scopedCount: Int {
+        store.meetings.filter {
+            MeetingScopeResolver.inScope(tags: $0.tags ?? [], isCompleted: $0.status == .completed, scope: scope)
+        }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ask Meetings").font(.largeTitle.bold())
+                Text("Search across your meetings and jump to where it was said. Everything runs on this Mac — nothing is uploaded, and only completed transcripts are searched.")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                TextField("Ask about your meetings — e.g. pricing discount", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.search)
+                    .onSubmit(runSearch)
+                Button("Ask") { runSearch() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !libraryTags.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Scope").font(.subheadline.bold())
+                        Text(scopeCaption).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if scopeTags.count > 1 {
+                            Picker("Match", selection: $tagMode) {
+                                Text("Any tag").tag(MeetingTags.MatchMode.any)
+                                Text("All tags").tag(MeetingTags.MatchMode.all)
+                            }
+                            .pickerStyle(.segmented)
+                            .fixedSize()
+                            .onChange(of: tagMode) { _, _ in runSearchIfActive() }
+                        }
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(libraryTags, id: \.self) { tag in
+                                scopeChip(tag)
+                            }
+                        }
+                    }
+                }
+            }
+
+            resultsSection
+        }
+        .padding(32)
+        .navigationTitle("Ask Meetings")
+        // Restore results when returning to this tab: the view's @State (results/hasSearched) is
+        // recreated, but `query` is bound to ContentView and survives, so recompute from it.
+        .onAppear {
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { runSearch() }
+        }
+    }
+
+    private var scopeCaption: String {
+        if scopeTags.isEmpty {
+            return "all completed meetings (\(scopedCount))"
+        }
+        return "\(scopedCount) meeting\(scopedCount == 1 ? "" : "s") matching the selected tags"
+    }
+
+    private func scopeChip(_ tag: String) -> some View {
+        let selected = scopeTags.contains(tag)
+        return Button {
+            if selected { scopeTags.remove(tag) } else { scopeTags.insert(tag) }
+            runSearchIfActive()
+        } label: {
+            Text(tag)
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary),
+                    in: Capsule()
+                )
+                .foregroundStyle(selected ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selected ? "Remove tag \(tag) from scope" : "Add tag \(tag) to scope")
+    }
+
+    @ViewBuilder
+    private var resultsSection: some View {
+        if !hasSearched {
+            ContentUnavailableView(
+                "Ask a question",
+                systemImage: "text.magnifyingglass",
+                description: Text("Type a question or keywords above to find the moments across your meetings that answer it.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if results.isEmpty {
+            ContentUnavailableView(
+                "No matches",
+                systemImage: "magnifyingglass",
+                description: Text("Nothing in the selected meetings matched. Try different words or widen the scope.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(results) { result in
+                Button {
+                    model.pendingNavigation = AppModel.MeetingNavigationRequest(
+                        meetingID: result.meetingID, seek: result.timestamp
+                    )
+                } label: {
+                    resultRow(result)
+                }
+                .buttonStyle(.plain)
+            }
+            .alternatingRowBackgrounds()
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.separator.opacity(0.55), lineWidth: 1)
+            )
+        }
+    }
+
+    private func resultRow(_ result: CitedResult) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(result.meetingTitle.isEmpty ? "Untitled meeting" : result.meetingTitle)
+                    .font(.subheadline.bold())
+                if let timestamp = result.timestamp {
+                    Label(TranscriptFormatter.clock(timestamp), systemImage: "play.circle")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("no timestamp")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+            Text(result.snippet)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private func runSearch() {
+        hasSearched = true
+        results = model.askMeetings(query: query, scope: scope)
+    }
+
+    /// Re-run only when a search is already showing, so toggling scope before the first query is quiet.
+    private func runSearchIfActive() {
+        guard hasSearched else { return }
+        results = model.askMeetings(query: query, scope: scope)
+    }
+}
+
+/// Editor for exact `heard → preferred` replacement rules (F179). Rules are reviewed before they apply
+/// — they surface as proposals in a meeting's Improve ▸ Apply Replacement Rules and go through the same
+/// approve-then-apply sheet as vocabulary corrections; the audio is never touched.
+private struct ReplacementRulesEditor: View {
+    @ObservedObject var store: MeetingStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var heardDraft = ""
+    @State private var preferredDraft = ""
+
+    private var canAdd: Bool {
+        !heardDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            && !preferredDraft.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Replacement Rules").font(.headline)
+            Text("Exact fixes for a term that is always misheard the same way. Nothing changes until you review and approve them in a meeting's Improve ▸ Apply Replacement Rules.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                TextField("Heard", text: $heardDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addRule() }
+                Image(systemName: "arrow.right").foregroundStyle(.tertiary)
+                TextField("Preferred", text: $preferredDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addRule() }
+                Button("Add Rule") { addRule() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canAdd)
+            }
+
+            if !store.replacementRules.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(store.replacementRules, id: \.self) { rule in
+                            HStack(spacing: 6) {
+                                Text(rule.heard).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                                Text(rule.preferred).fontWeight(.medium)
+                                Spacer()
+                                Button {
+                                    withAnimation(reduceMotion ? nil : .uiSpring) {
+                                        store.removeReplacementRule(rule)
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(LinkPressStyle())
+                                .foregroundStyle(.tertiary)
+                                .accessibilityLabel("Remove rule \(rule.heard) to \(rule.preferred)")
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator.opacity(0.5)))
+    }
+
+    private func addRule() {
+        guard canAdd else { return }
+        store.addReplacementRule(heard: heardDraft, preferred: preferredDraft)
+        heardDraft = ""
+        preferredDraft = ""
+    }
+}
+
 private struct VocabularyView: View {
     @ObservedObject var store: MeetingStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1583,6 +1864,8 @@ private struct VocabularyView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+
+            ReplacementRulesEditor(store: store)
 
             if store.vocabulary.isEmpty {
                 ContentUnavailableView(
@@ -1695,11 +1978,18 @@ private struct TranscriptDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
     @AppStorage("summaryStyle") private var summaryStyle: SummaryStyle = .balanced
+    // F178: the meeting template reshapes the summary's structure (independent of the length/emphasis
+    // that `summaryStyle` controls). Persisted like the style; local-only.
+    @AppStorage("summaryTemplate") private var summaryTemplate: MeetingTemplate = .general
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
     @State private var glossaryProposals: [GlossaryCorrection]?
     @State private var showSecondOpinion = false
+    @State private var showsReferenceImporter = false
     @State private var isSuggestingVocab = false
+    // F177: an action item's "Play source" writes its timestamp here; the transcript player below
+    // observes it, seeks, and resets it to nil.
+    @State private var seekRequest: Double?
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
@@ -1787,9 +2077,19 @@ private struct TranscriptDetailView: View {
             }
             .navigationTitle(meeting.title)
             .onAppear { normalizeTranscriptIfNeeded(meeting) }
+            // F180: consume a "jump to this cited moment" request once this (freshly recreated) detail
+            // view for the requested meeting appears, feeding the F177 seek path. `.task(id:)` runs on
+            // (re)appear for this meeting id; the seek is a one-shot cleared from the model.
+            .task(id: meetingID) {
+                if let request = model.pendingNavigation, request.meetingID == meetingID {
+                    transcriptMode = .read // the player only exists in read mode
+                    seekRequest = request.seek
+                    model.pendingNavigation = nil
+                }
+            }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
-                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle) }
+                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
             } message: {
                 Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
             }
@@ -1821,6 +2121,54 @@ private struct TranscriptDetailView: View {
                     onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
                 )
             }
+            // F170: pick a local reference document (spec/glossary) to guide the on-device correction
+            // pass. The file is read and capped off the main actor, then passed to the same
+            // review-before-apply path; nothing is uploaded and the recording is never touched.
+            .fileImporter(
+                isPresented: $showsReferenceImporter,
+                allowedContentTypes: Self.referenceContentTypes,
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case let .success(urls):
+                    guard let url = urls.first else { return }
+                    correctWithReference(url, meetingID: meetingID)
+                case let .failure(error):
+                    model.alertMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Document types accepted as a correction reference — the same set the Vocabulary importer reads.
+    private static var referenceContentTypes: [UTType] {
+        var types: [UTType] = [.pdf, .plainText, .commaSeparatedText]
+        if let docx = UTType(filenameExtension: "docx") { types.append(docx) }
+        if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
+        return types
+    }
+
+    /// Reads the chosen reference document off the main actor, then runs the on-device correction pass
+    /// guided by it (F170). An unreadable/empty document says so instead of silently doing nothing.
+    private func correctWithReference(_ url: URL, meetingID: UUID) {
+        Task {
+            let reference = await Task.detached(priority: .userInitiated) {
+                VocabularyExtractor.referenceText(from: url)
+            }.value
+            guard let reference else {
+                model.alertMessage = "That reference document couldn't be read, or had no usable text. Choose a PDF, DOCX, TXT, or Markdown file."
+                return
+            }
+            let proposals = await model.proposeLocalCorrections(for: meetingID, reference: reference)
+            if proposals.isEmpty {
+                // Only speak up if the model ran and found nothing; the AppModel guard already set a
+                // message for install-required / hand-edited / error cases.
+                if model.alertMessage == nil {
+                    model.alertMessage = "The local model found nothing to correct against that reference."
+                }
+            } else {
+                glossaryProposals = proposals
+            }
         }
     }
 
@@ -1844,6 +2192,15 @@ private struct TranscriptDetailView: View {
                     Button("Copy") { copy(Self.summaryText(summary)) }
                     Button("Export…") { export(meeting: meeting, text: Self.summaryText(summary)) }
                 }
+                Picker("Meeting template", selection: $summaryTemplate) {
+                    ForEach(MeetingTemplate.allCases, id: \.self) { template in
+                        Text(template.displayName).tag(template)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 150)
+                .disabled(isSummarizing)
+                .help("Choose a template that shapes the summary's structure for this kind of meeting. Everything stays on this Mac.")
                 Picker("Summary style", selection: $summaryStyle) {
                     ForEach(SummaryStyle.allCases, id: \.self) { style in
                         Text(Self.summaryStyleName(style)).tag(style)
@@ -1859,7 +2216,7 @@ private struct TranscriptDetailView: View {
                     switch model.summarizationEngine {
                     case .local:
                         // The AppModel guard offers install if the model is missing (honest fallback).
-                        model.summarize(id: meetingID, style: summaryStyle)
+                        model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate)
                     case .claude:
                         if model.hasClaudeAPIKey {
                             confirmSummarize = true
@@ -1907,10 +2264,24 @@ private struct TranscriptDetailView: View {
                 }
             }
             if !summary.actionItems.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Action items").font(.subheadline.bold())
                     ForEach(summary.actionItems.indices, id: \.self) { index in
-                        Label(summary.actionItems[index], systemImage: "checkmark.square")
+                        ActionItemCard(
+                            item: summary.actionItems[index],
+                            onToggleDone: { done in
+                                model.updateActionItem(at: index, for: meetingID) { $0.done = done }
+                            },
+                            onCommitOwner: { owner in
+                                model.updateActionItem(at: index, for: meetingID) { $0.owner = owner }
+                            },
+                            onCommitDue: { due in
+                                model.updateActionItem(at: index, for: meetingID) { $0.due = due }
+                            },
+                            onPlaySource: summary.actionItems[index].timestamp.map { time in
+                                { transcriptMode = .read; seekRequest = time }
+                            }
+                        )
                     }
                 }
             }
@@ -1928,7 +2299,7 @@ private struct TranscriptDetailView: View {
         }
         if !summary.actionItems.isEmpty {
             lines.append("\nAction items")
-            lines.append(contentsOf: summary.actionItems.map { "- [ ] \($0)" })
+            lines.append(contentsOf: summary.actionItems.map(MeetingNotesExporter.actionItemLine))
         }
         return lines.joined(separator: "\n")
     }
@@ -2182,7 +2553,8 @@ private struct TranscriptDetailView: View {
                     meetingID: meetingID,
                     recordingURL: store.recordingURL(for: meeting),
                     segments: meeting.segments,
-                    isEdited: meeting.isTranscriptEdited
+                    isEdited: meeting.isTranscriptEdited,
+                    seekRequest: $seekRequest
                 )
                 .id(meetingID)
             } else {
@@ -2223,6 +2595,18 @@ private struct TranscriptDetailView: View {
                 Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
             }
             .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
+            // F179: exact user-defined replacement rules, reviewed through the same sheet. No model.
+            Button {
+                let proposals = model.replacementRuleCorrections(for: meetingID)
+                if proposals.isEmpty {
+                    model.alertMessage = "None of your replacement rules matched this transcript."
+                } else {
+                    glossaryProposals = proposals
+                }
+            } label: {
+                Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
+            }
+            .disabled(store.replacementRules.isEmpty || meeting.isTranscriptEdited)
             if SummarizerRuntime.isSupportedOnCurrentMac {
                 Button {
                     Task {
@@ -2241,6 +2625,15 @@ private struct TranscriptDetailView: View {
                     Label("Correct with Local AI…", systemImage: "wand.and.stars.inverse")
                 }
                 .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
+                // F170: guide the same on-device correction pass with a chosen reference document
+                // (spec/glossary). Works without any vocabulary — the reference is the target — so it is
+                // NOT disabled on an empty vocabulary, unlike the vocabulary-only correction above.
+                Button {
+                    showsReferenceImporter = true
+                } label: {
+                    Label("Correct with Local AI + Reference File…", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited)
             }
             Divider()
             Button {
@@ -2251,13 +2644,16 @@ private struct TranscriptDetailView: View {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
             .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
-            if meeting.isTranscriptEdited || store.vocabulary.isEmpty {
+            if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty {
                 Divider()
                 if meeting.isTranscriptEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
                 }
                 if store.vocabulary.isEmpty {
-                    Text("Corrections need Business Vocabulary terms (see the Vocabulary tab).")
+                    Text("Vocabulary-based corrections need Business Vocabulary terms (see the Vocabulary tab). The reference-file option works without them.")
+                }
+                if store.replacementRules.isEmpty {
+                    Text("Replacement rules (exact heard → preferred) are added in the Vocabulary tab.")
                 }
             }
         } label: {
@@ -2657,6 +3053,104 @@ private struct VocabularySuggestionSheet: View {
     }
 }
 
+/// One evidence-linked action item as a reviewable local card (F177): a done checkbox, the task text,
+/// a user-entered owner and due, and — when the item was matched to a transcript moment — its quote
+/// and a "Play source" button that seeks the recording. Owner/due commit on Return (or when the field
+/// loses focus), so editing them does not rewrite the meeting index on every keystroke.
+private struct ActionItemCard: View {
+    let item: ActionItem
+    let onToggleDone: (Bool) -> Void
+    let onCommitOwner: (String?) -> Void
+    let onCommitDue: (String?) -> Void
+    /// Non-nil only when the item resolved to a timestamp; the closure seeks the transcript player.
+    let onPlaySource: (() -> Void)?
+
+    @State private var ownerDraft = ""
+    @State private var dueDraft = ""
+    @FocusState private var focus: Field?
+
+    private enum Field { case owner, due }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Toggle(isOn: Binding(get: { item.done }, set: onToggleDone)) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .accessibilityLabel(item.done ? "Mark action item not done" : "Mark action item done")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.text)
+                    .strikethrough(item.done, color: .secondary)
+                    .foregroundStyle(item.done ? Color.secondary : Color.primary)
+
+                HStack(spacing: 8) {
+                    TextField("Owner", text: $ownerDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 150)
+                        .focused($focus, equals: .owner)
+                        .onSubmit(commitOwner)
+                    TextField("Due", text: $dueDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 130)
+                        .focused($focus, equals: .due)
+                        .onSubmit(commitDue)
+                    if let onPlaySource, let timestamp = item.timestamp {
+                        Button(action: onPlaySource) {
+                            Label(TranscriptFormatter.timestamp(timestamp), systemImage: "play.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Play the recording from where this was raised.")
+                    }
+                }
+
+                if let quote = item.quote?.trimmingCharacters(in: .whitespacesAndNewlines), !quote.isEmpty {
+                    Text("“\(quote)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.separator.opacity(0.6)))
+        .onAppear {
+            ownerDraft = item.owner ?? ""
+            dueDraft = item.due ?? ""
+        }
+        // Commit on Return (onSubmit above), on focus loss (a field the user leaves by clicking the
+        // checkbox / Play source / another field), and on teardown — the detail view is `.id(meetingID)`,
+        // so switching meetings destroys this card, and without the teardown flush a typed-but-not-
+        // submitted owner/due would be lost. Mirrors EditableMeetingTitle.
+        .onChange(of: focus) { previous, _ in
+            if previous == .owner { commitOwner() }
+            if previous == .due { commitDue() }
+        }
+        .onDisappear {
+            commitOwner()
+            commitDue()
+        }
+    }
+
+    /// Commit guarded on an actual change so leaving an untouched field doesn't rewrite the index.
+    private func commitOwner() {
+        let value = normalized(ownerDraft)
+        if value != item.owner { onCommitOwner(value) }
+    }
+
+    private func commitDue() {
+        let value = normalized(dueDraft)
+        if value != item.due { onCommitDue(value) }
+    }
+
+    private func normalized(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 /// Presents proposed spelling corrections toward the user's vocabulary for review. Nothing is applied
 /// until the user confirms — corrections only take effect after explicit review (F82/F65).
 private struct GlossarySuggestionSheet: View {
@@ -2937,6 +3431,8 @@ private struct PlayableTranscriptView: View {
     let meetingID: UUID
     let recordingURL: URL
     let segments: [TranscriptSegment]
+    /// A "Play source" request from an action item card (F177): a start time to seek to, or nil.
+    @Binding var seekRequest: Double?
     @StateObject private var playback: TranscriptPlaybackController
     @State private var findText = ""
     // The filtered list is cached and recomputed only when the query changes — never on the 4 Hz
@@ -2973,7 +3469,8 @@ private struct PlayableTranscriptView: View {
         meetingID: UUID,
         recordingURL: URL,
         segments: [TranscriptSegment],
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        seekRequest: Binding<Double?> = .constant(nil)
     ) {
         self.store = store
         self.model = model
@@ -2981,6 +3478,7 @@ private struct PlayableTranscriptView: View {
         self.recordingURL = recordingURL
         self.segments = segments
         self.isEdited = isEdited
+        _seekRequest = seekRequest
         // Edited transcript → the flags describe the original segments, not what's shown, so drop
         // them (no banner, no per-line markers) rather than present stale review state.
         let report = isEdited ? TranscriptQualityReport(flagged: [], scoredCount: 0) : TranscriptQuality.review(segments)
@@ -3166,6 +3664,16 @@ private struct PlayableTranscriptView: View {
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
+        // F177 "Play source": seek (and start playing) from where an action item was raised, then
+        // clear the request. `initial: true` also handles the case where the request was set in the
+        // same tick this view (re)appeared after switching back to read mode.
+        .onChange(of: seekRequest, initial: true) { _, newValue in
+            guard let time = newValue else { return }
+            followPlayback = false
+            playback.seek(to: time)
+            playback.player.play()
+            seekRequest = nil
+        }
         .alert("Rename Marker", isPresented: Binding(
             get: { renamingMarker != nil },
             set: { if !$0 { renamingMarker = nil } }

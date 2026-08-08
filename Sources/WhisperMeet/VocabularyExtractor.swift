@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import NaturalLanguage
 import PDFKit
+import WhisperCore
 
 enum VocabularyImportError: LocalizedError {
     case unsupportedFile
@@ -19,18 +20,25 @@ enum VocabularyImportError: LocalizedError {
 
 enum VocabularyExtractor {
     static func extract(from url: URL) throws -> [String] {
+        candidates(in: try rawText(from: url))
+    }
+
+    /// Reads a document's full plain text — the same per-type reading as `extract`, but returning the
+    /// raw text instead of extracted candidate terms. Used for F170 reference documents, where the
+    /// user wants the model guided by the document's actual spellings (including ordinary words), not
+    /// only its proper-noun candidates.
+    static func rawText(from url: URL) throws -> String {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
-        let text: String
         switch url.pathExtension.lowercased() {
         case "pdf":
             guard let value = PDFDocument(url: url)?.string else {
                 throw VocabularyImportError.unreadableFile
             }
-            text = value
+            return value
         case "txt", "md", "markdown", "csv":
-            text = try readText(from: url)
+            return try readText(from: url)
         case "docx":
             var attributes: NSDictionary?
             let value = try NSAttributedString(
@@ -38,11 +46,18 @@ enum VocabularyExtractor {
                 options: [.documentType: NSAttributedString.DocumentType.officeOpenXML],
                 documentAttributes: &attributes
             )
-            text = value.string
+            return value.string
         default:
             throw VocabularyImportError.unsupportedFile
         }
-        return candidates(in: text)
+    }
+
+    /// The prepared (trimmed, context-window-capped, line-safe) text of a chosen reference document for
+    /// the F170 correction pass, or `nil` if the document could not be read or has no usable text — in
+    /// which case the caller passes `reference: nil` and the corrector simply skips the reference.
+    static func referenceText(from url: URL) -> String? {
+        guard let text = try? rawText(from: url) else { return nil }
+        return ReferenceDocument.prepared(text)
     }
 
     /// Reads a plain-text document, tolerating non-UTF-8 encodings. Excel CSVs (Windows-1252),

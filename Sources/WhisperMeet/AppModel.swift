@@ -147,6 +147,17 @@ final class AppModel: ObservableObject {
     /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
     @Published var showsShortcutsSheet = false
 
+    /// A request to open a meeting (and optionally seek it) from another view — the "Ask Meetings"
+    /// cited results (F180). It lives on the model, not on a view, because the detail view is recreated
+    /// per selection (`.id(meetingID)`), so a view-local seek would be wiped by the navigation itself.
+    /// `ContentView` drives the sidebar selection from it; `TranscriptDetailView` consumes the seek on
+    /// appear and clears it.
+    struct MeetingNavigationRequest: Equatable {
+        let meetingID: UUID
+        let seek: Double?
+    }
+    @Published var pendingNavigation: MeetingNavigationRequest?
+
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()
     private let recorder: AudioCaptureEngine
@@ -1261,7 +1272,7 @@ final class AppModel: ObservableObject {
         store.delete(id: id)
     }
 
-    func summarize(id: UUID, style: SummaryStyle = .balanced) {
+    func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
         guard summarizationTasks[id] == nil else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
@@ -1293,7 +1304,7 @@ final class AppModel: ObservableObject {
         let task = Task {
             await performSummarization(
                 id: id, engine: engine, apiKey: apiKey,
-                transcript: transcript, language: language, style: style
+                transcript: transcript, language: language, style: style, template: template
             )
             summarizationTasks[id] = nil
             activeSummarizationID = nil
@@ -1307,16 +1318,34 @@ final class AppModel: ObservableObject {
         apiKey: String,
         transcript: String,
         language: String?,
-        style: SummaryStyle
+        style: SummaryStyle,
+        template: MeetingTemplate = .general
     ) async {
         let summarizer = makeSummarizer(engine, apiKey)
         do {
-            let summary = try await summarizer.summarize(transcript: transcript, language: language, style: style)
-            store.update(id: id) { $0.summary = summary }
+            let summary = try await summarizer.summarize(
+                transcript: transcript, language: language, style: style, template: template
+            )
+            // F177: link each action item to its best supporting transcript segment (quote + timestamp)
+            // locally, from the stored segments — no extra model call, nothing leaves this Mac.
+            let segments = store.meeting(id: id)?.segments ?? []
+            var resolved = summary
+            resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)
+            store.update(id: id) { $0.summary = resolved }
         } catch is CancellationError {
             // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.
         } catch {
             alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Edits one action item on a meeting's summary — its done state, owner, or due — and persists the
+    /// change to the index (F177). An out-of-range index or a meeting without a summary is a safe no-op.
+    func updateActionItem(at index: Int, for id: UUID, _ mutation: (inout ActionItem) -> Void) {
+        store.update(id: id) { record in
+            guard record.summary != nil,
+                  record.summary!.actionItems.indices.contains(index) else { return }
+            mutation(&record.summary!.actionItems[index])
         }
     }
 
@@ -1325,6 +1354,38 @@ final class AppModel: ObservableObject {
     func glossaryCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
         return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
+    }
+
+    /// Proposed corrections from the user's exact `heard → preferred` replacement rules (F179).
+    /// Read-only — computes over the stored segments; the proposals flow through the same F82 review
+    /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened.
+    func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
+        guard let meeting = store.meeting(id: id) else { return [] }
+        return ReplacementRuleMatcher.corrections(rules: store.replacementRules, segments: meeting.segments)
+    }
+
+    /// Cited cross-meeting retrieval (F180): rank transcript segments across the completed meetings in
+    /// `scope` against `query`, returning citations (meeting + timestamp + snippet). Local-only,
+    /// transcript-only — the tested `MeetingScopeResolver` + `MeetingRetrieval` do the work; this thin
+    /// adapter just gathers the in-scope meetings from the store and hands their segments across.
+    func askMeetings(query: String, scope: MeetingScope, limit: Int = 10) -> [CitedResult] {
+        let inScope = store.meetings.filter { meeting in
+            MeetingScopeResolver.inScope(
+                tags: meeting.tags ?? [],
+                isCompleted: meeting.status == .completed,
+                scope: scope
+            )
+        }
+        let searchable = inScope.map { meeting in
+            SearchableMeeting(
+                id: meeting.id,
+                title: meeting.title,
+                segments: meeting.segments.enumerated().map { index, segment in
+                    SearchableSegment(index: index, start: segment.start, text: segment.text)
+                }
+            )
+        }
+        return MeetingRetrieval.rank(query: query, in: searchable, limit: limit)
     }
 
     /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped

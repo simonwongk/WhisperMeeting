@@ -24,3 +24,11 @@ func matchesTags() {
     #expect(!MeetingTags.matches(meetingTags: tags, selected: ["q3"], mode: .any))
     #expect(MeetingTags.matches(meetingTags: tags, selected: [], mode: .all)) // no filter → all
 }
+
+// F180 — a single tested "distinct tags across the library" helper, so the Ask-Meetings scope
+// selector and the tag reuse editor don't each open-code the dedupe loop.
+@Test("distinct(across:) dedupes case-insensitively keeping first spelling, in first-appearance order")
+func distinctTags() {
+    let library = [["Budget", "hiring"], ["budget", "Q3"], [], ["HIRING", "roadmap"]]
+    #expect(MeetingTags.distinct(across: library) == ["Budget", "hiring", "Q3", "roadmap"])
+}

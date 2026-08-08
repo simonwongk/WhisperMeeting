@@ -106,7 +106,8 @@ public struct LocalSummarizer: MeetingSummarizer {
     public func summarize(
         transcript: String,
         language: String?,
-        style: SummaryStyle
+        style: SummaryStyle,
+        template: MeetingTemplate
     ) async throws -> MeetingSummary {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SummarizerError.emptyTranscript }
@@ -124,7 +125,7 @@ public struct LocalSummarizer: MeetingSummarizer {
         let inputURL = workingDirectory.appendingPathComponent("request.json")
         let outputURL = workingDirectory.appendingPathComponent("summary.json")
         let requestBody: [String: String] = [
-            "systemPrompt": Self.systemPrompt(language: language, style: style),
+            "systemPrompt": Self.systemPrompt(language: language, style: style, template: template),
             "transcript": trimmed,
         ]
         try JSONSerialization.data(withJSONObject: requestBody).write(to: inputURL)
@@ -153,7 +154,9 @@ public struct LocalSummarizer: MeetingSummarizer {
         let summary = MeetingSummary(
             summary: payload.summary,
             keyPoints: payload.keyPoints,
-            actionItems: payload.actionItems
+            // The local helper still emits action items as plain strings; F177 links each to its
+            // supporting transcript moment later, in AppModel, from the meeting's segments.
+            actionItems: payload.actionItems.map { ActionItem(text: $0) }
         )
         // A completely empty result is an error; a degraded raw-text summary (payload.warning set)
         // is still returned — a summary the user can read beats a dead end (honest fallback).
@@ -168,8 +171,12 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// The local prompt reuses `ClaudeSummarizer.systemPrompt` verbatim — the single source of truth
     /// for the output fields and the do-not-translate clause — then appends an explicit JSON-format
     /// directive, because a local model has no enforced structured-output schema like Claude's.
-    static func systemPrompt(language: String?, style: SummaryStyle) -> String {
-        ClaudeSummarizer.systemPrompt(language: language, style: style) + "\n" + jsonFormatInstruction
+    static func systemPrompt(
+        language: String?,
+        style: SummaryStyle,
+        template: MeetingTemplate = .general
+    ) -> String {
+        ClaudeSummarizer.systemPrompt(language: language, style: style, template: template) + "\n" + jsonFormatInstruction
     }
 
     static let jsonFormatInstruction = """

@@ -7,6 +7,62 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Feature cycle — cited "Ask Meetings" (F180)
+
+- **Ask a question across your meetings and jump to where it was said (F180).** A new **Ask Meetings**
+  screen runs local keyword retrieval (BM25) over the transcript segments of a chosen set of completed
+  meetings — scoped by tag, or all of them — and returns ranked, cited results. Each result shows the
+  meeting, the timestamp, and the supporting snippet; clicking it opens that meeting and seeks the
+  recording to the moment, reusing the transcript player. It is the "normal search first" half of the
+  pattern proven by Fathom; an optional on-device AI **answer** synthesized from the cited passages, and
+  a semantic embedding re-rank, are the deferred second half (F182). Everything runs on this Mac —
+  nothing is uploaded, only completed transcripts are searched, and the recording is never opened.
+- **Retrieval is CJK-safe.** The tokenizer emits Latin words plus CJK unigrams *and* overlapping
+  bigrams, so both multi-character and single-character Chinese queries (a one-character word, a
+  surname) match — Mandarin is a first-class supported language.
+- **Verification.** Red→green on the pure WhisperCore core: `RetrievalTokenizer`, BM25 `MeetingRetrieval.rank`
+  (IDF rare-term boost, OR partial matches, deterministic ties, unaligned-segment handling, single- and
+  multi-character Chinese), and `MeetingScopeResolver`; plus an `AppModel.askMeetings` reachability test.
+  Suite **367 → 388**. An adversarial multi-agent review of the diff found and fixed two defects before
+  ship: single-character CJK queries returning nothing, and results not restoring on tab return.
+  `Scripts/quality-check.sh` passes (build + 388 tests + signed app).
+
+## Feature cycle — post-meeting transcript, more useful (F170, F177, F178, F179)
+
+A roadmap cycle from the F175 market shortlist: make the already-local transcript more useful *after*
+the meeting, without chasing live bots or speaker labeling. All local; the only non-local path remains
+the pre-existing opt-in Claude summary.
+
+- **Reference-file picker for local AI correction (F170).** The on-device correction pass could already
+  accept a `reference:` document but never surfaced a way to choose one. A new "Correct with Local AI +
+  Reference File…" action reads a PDF/DOCX/TXT/MD/CSV to prepared, context-window-capped text
+  (`ReferenceDocument.prepared`, cut at a line boundary) and guides correction toward spellings in that
+  spec/glossary — working even with an empty vocabulary, since the reference is the target. Corrections
+  still flow through the same review-before-apply path; the recording is never touched.
+- **Evidence-linked action items (F177).** Action items evolved from flat strings into reviewable local
+  cards: a done checkbox, a user-entered owner and due, the supporting quote, and **Play source** to
+  seek the recording to where the item was raised. The quote and timestamp are derived **locally**
+  (`ActionItemEvidence` matches each item to its best-supporting segment) — no summarizer-contract
+  change, nothing new uploaded. `MeetingSummary.actionItems` became `[ActionItem]` with
+  backward-compatible decoding (old string arrays still load) so no stored summary is lost.
+- **Local meeting templates (F178).** A template (Decision Log, 1:1, Project Update, Interview,
+  Customer Call, General) reshapes the *structure* of a summary for the meeting type by appending
+  guidance to the summarizer prompt, alongside the existing length “style”. The JSON response schema
+  and the do-not-translate clause are unchanged (the F63 boundary), so the transcript-only contract
+  holds.
+- **Reviewable replacement rules (F179).** Business Vocabulary gained exact `heard → preferred` rules
+  for a term always misheard the same way. Rules persist alongside vocabulary and surface as proposals
+  in the same approve-then-apply review sheet as other corrections; nothing auto-applies and the audio
+  is never changed.
+- **Verification.** Each feature: a failing-first test before its core existed, green after; reachability
+  named from a user surface to the new code (see `docs/TICKET_LOG.md`). Suite grew **336 → 368**. An
+  adversarial multi-agent review of the whole diff surfaced two confirmed defects — action-item
+  owner/due committed only on Return (data loss on focus loss) and evidence matching that failed for
+  space-free Chinese — **both fixed with tests** before this entry. `swift build -c release
+  -Xswiftc -warnings-as-errors` and `swift test` (via the F166 gate flags) both pass. UI surfaces
+  (pickers, cards, editors, the file picker) are verified by headless wiring tests plus manual use — the
+  `WhisperMeet` target has no view-render harness; their on-screen pass folds into F174.
+
 ## Maintenance cycle — Qwen aligner language by majority script
 
 - **The opt-in Qwen forced aligner no longer mis-selects Chinese for English-dominant chunks (F155).**

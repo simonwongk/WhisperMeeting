@@ -74,3 +74,34 @@ func localCorrectionRequiresInstalledHelper() async throws {
     #expect(box.transcript == nil) // the model was never invoked
     #expect(model.alertMessage?.contains("Install or update the local model") == true)
 }
+
+/// F170 — the reference document threads through the correction seam, and a reference alone (empty
+/// vocabulary) is enough to propose a correction toward a spelling that lives only in the reference.
+@MainActor
+@Test("A reference document threads through the correction seam without any vocabulary (F170)")
+func referenceThreadsThroughWithoutVocabulary() async throws {
+    let model = try makeModel()
+    model.isCorrectionModelInstalled = { true }
+    let box = CaptureBox()
+    model.proposeTranscriptCorrections = { transcript, vocabulary, reference in
+        box.transcript = transcript
+        box.vocabulary = vocabulary
+        box.reference = reference
+        return [TranscriptCorrection(from: "Sequoia", to: "Sequoya")]
+    }
+
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "Sequoia signed the deal")]
+    let id = UUID()
+    // Deliberately no vocabulary — the reference document must be enough on its own.
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+
+    let proposals = await model.proposeLocalCorrections(for: id, reference: "Preferred spelling: Sequoya")
+
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Sequoia", to: "Sequoya")])
+    #expect(box.reference == "Preferred spelling: Sequoya")
+    #expect(box.vocabulary == [])
+    #expect(model.alertMessage == nil)
+}
