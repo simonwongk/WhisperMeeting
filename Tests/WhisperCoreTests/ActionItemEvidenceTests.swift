@@ -50,3 +50,17 @@ func segmentsWithoutStartYieldNoTimestamp() {
     let resolved = ActionItemEvidence.resolved(["Alice to send the budget spreadsheet"], segments: segments)
     #expect(resolved[0].timestamp == nil)
 }
+
+// F177 — Mandarin is a first-class supported language, and Chinese has no word spacing, so evidence
+// matching must work on character bigrams rather than whole space-delimited words.
+@Test("A Chinese (space-free) action item resolves to its supporting segment (F177)")
+func resolvesChineseActionItem() {
+    let segments = [
+        seg(0, "大家好，我们现在开始。"),
+        seg(12, "我们需要发送预算表给财务部门。"),
+        seg(30, "没有其他事情了，谢谢大家。"),
+    ]
+    let resolved = ActionItemEvidence.resolved(["发送预算表给财务"], segments: segments)
+    #expect(resolved[0].timestamp == 12)
+    #expect(resolved[0].quote?.contains("发送预算表") == true)
+}

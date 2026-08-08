@@ -2851,6 +2851,9 @@ private struct ActionItemCard: View {
 
     @State private var ownerDraft = ""
     @State private var dueDraft = ""
+    @FocusState private var focus: Field?
+
+    private enum Field { case owner, due }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -2868,11 +2871,13 @@ private struct ActionItemCard: View {
                     TextField("Owner", text: $ownerDraft)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 150)
-                        .onSubmit { onCommitOwner(normalized(ownerDraft)) }
+                        .focused($focus, equals: .owner)
+                        .onSubmit(commitOwner)
                     TextField("Due", text: $dueDraft)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 130)
-                        .onSubmit { onCommitDue(normalized(dueDraft)) }
+                        .focused($focus, equals: .due)
+                        .onSubmit(commitDue)
                     if let onPlaySource, let timestamp = item.timestamp {
                         Button(action: onPlaySource) {
                             Label(TranscriptFormatter.timestamp(timestamp), systemImage: "play.circle")
@@ -2899,6 +2904,29 @@ private struct ActionItemCard: View {
             ownerDraft = item.owner ?? ""
             dueDraft = item.due ?? ""
         }
+        // Commit on Return (onSubmit above), on focus loss (a field the user leaves by clicking the
+        // checkbox / Play source / another field), and on teardown — the detail view is `.id(meetingID)`,
+        // so switching meetings destroys this card, and without the teardown flush a typed-but-not-
+        // submitted owner/due would be lost. Mirrors EditableMeetingTitle.
+        .onChange(of: focus) { previous, _ in
+            if previous == .owner { commitOwner() }
+            if previous == .due { commitDue() }
+        }
+        .onDisappear {
+            commitOwner()
+            commitDue()
+        }
+    }
+
+    /// Commit guarded on an actual change so leaving an untouched field doesn't rewrite the index.
+    private func commitOwner() {
+        let value = normalized(ownerDraft)
+        if value != item.owner { onCommitOwner(value) }
+    }
+
+    private func commitDue() {
+        let value = normalized(dueDraft)
+        if value != item.due { onCommitDue(value) }
     }
 
     private func normalized(_ text: String) -> String? {

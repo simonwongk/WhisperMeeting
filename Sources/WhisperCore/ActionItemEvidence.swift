@@ -57,15 +57,62 @@ public enum ActionItemEvidence {
         return copy
     }
 
-    /// Words a match should key on: lowercased, alphanumeric-normalized (CJK-safe — ideographs are
-    /// alphanumeric), at least two characters, and not a common filler word.
+    /// Tokens a match keys on. Space-delimited scripts (English) tokenize into whole words (≥2 chars,
+    /// non-filler); space-free scripts (Chinese) have no word boundaries, so a run of ideographs
+    /// tokenizes into overlapping **character bigrams** — otherwise a whole Chinese item would collapse
+    /// to a single token and never meet the two-token overlap floor, and Mandarin is a first-class
+    /// supported language. A lone ideograph is kept as a one-character token.
     static func contentWords(_ text: String) -> Set<String> {
-        let tokens = text
-            .lowercased()
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init)
-            .filter { $0.count >= 2 && !stopwords.contains($0) }
-        return Set(tokens)
+        var tokens: Set<String> = []
+        var latin = ""
+        var cjk: [Character] = []
+
+        func flushLatin() {
+            if latin.count >= 2, !stopwords.contains(latin) { tokens.insert(latin) }
+            latin = ""
+        }
+        func flushCJK() {
+            if cjk.count == 1 {
+                tokens.insert(String(cjk[0]))
+            } else if cjk.count >= 2 {
+                for i in 0..<(cjk.count - 1) {
+                    tokens.insert(String(cjk[i]) + String(cjk[i + 1]))
+                }
+            }
+            cjk = []
+        }
+
+        for character in text.lowercased() {
+            if let scalar = character.unicodeScalars.first,
+               character.unicodeScalars.count == 1,
+               isCJKIdeograph(scalar) {
+                flushLatin()
+                cjk.append(character)
+            } else if character.isLetter || character.isNumber {
+                flushCJK()
+                latin.append(character)
+            } else {
+                flushLatin()
+                flushCJK()
+            }
+        }
+        flushLatin()
+        flushCJK()
+        return tokens
+    }
+
+    /// Whether a scalar is a CJK ideograph (Chinese/Japanese/Korean Han), which has no word spacing —
+    /// the blocks that back WhisperMeet's supported Mandarin transcripts.
+    static func isCJKIdeograph(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3400...0x4DBF,    // CJK Unified Ideographs Extension A
+             0x4E00...0x9FFF,    // CJK Unified Ideographs
+             0xF900...0xFAFF,    // CJK Compatibility Ideographs
+             0x20000...0x2FA1F:  // CJK Extension B+ and compatibility supplement
+            return true
+        default:
+            return false
+        }
     }
 
     /// A deliberately small English filler set — enough to stop matches keying on connective words,
