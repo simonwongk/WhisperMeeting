@@ -89,7 +89,8 @@ without running anything (`LocalWhisperClientTests` precedent).
   uploader, upload date, `filesize_approx`, `is_live`, availability. **Probing before downloading is
   what makes the storage guard and the duration warning possible at all** (see Trap 6).
 - `download(url:into:progress:)` → writes `recording.wav` (see Trap 1 and Trap 2 for why both the
-  format and the basename are forced).
+  format and the basename are forced). Needs a **stall timeout** and **process-group cancellation**
+  that no existing client in this repo has — see Traps 15 and 16.
 - `captions(url:into:)` → `--write-subs --write-auto-subs --sub-format vtt --skip-download`.
   Best-effort; a failure here never fails the import.
 - `MediaDownloadError`: `runtimeNotInstalled`, `invalidURL`, `unavailable`, `ageRestricted`,
@@ -390,6 +391,29 @@ client, not to a downloader.
 never needs it. Since yt-dlp lives in the Whisper venv, a Qwen-only user has neither — the feature
 must detect that and offer the Whisper runtime install rather than failing obscurely.
 
+**15 — Cancelling the download does not kill ffmpeg.** `ProcessCancellationController.cancel()`
+terminates only the direct child (`LocalWhisperClient.swift:301`), and `LocalSummarizer.swift:206`
+already documents surviving `afconvert`/`ffmpeg` grandchildren as a known gap. yt-dlp spawns ffmpeg
+for the WAV extraction, so cancelling mid-post-process orphans it. Either kill the process group or
+record the limitation explicitly — silently inheriting a known bug is the one option that is not
+acceptable.
+
+**16 — No one-shot subprocess client in this repo has a timeout.** Verified absent from
+`LocalWhisperClient`, `QwenASRClient`, and `LocalSummarizer`; the only watchdog anywhere is the warm
+dictation engine's off-queue `DispatchWorkItem { process.terminate() }`. A transcriber that hangs is
+at least making local progress; a *network* download that stalls hangs forever on a dead socket.
+This client needs a **stall timeout** — no progress line for N seconds — more than any existing one
+does. It is new work, not a pattern to copy.
+
+**17 — A menu command must be added in two places or not at all.** Not planned here (the button
+lives in `importPanel`), but recorded because it is a live trap: adding an entry to
+`CommandCatalog.all` without a matching case in `AppEntry.route`'s switch (`:145`, `default: break`)
+produces a menu item that is visible, enabled, and silently does nothing.
+
+**Also:** nothing in the repo exercises `Bundle.main` resource lookup, so a forgotten `build-app.sh`
+copy line for `update-yt-dlp.sh` passes `swift test` and fails only in the packaged `.app`. That
+needs a manual check before release, not a test.
+
 **Also worth doing:** `DiagnosticsBundleBuilder` uses an allow-list, so the new source URL is
 excluded by default — confirm that stays true, since a pasted URL is new user data that should not
 leak into a diagnostics bundle.
@@ -423,6 +447,21 @@ Everything material has been decided. These three are proceeding as stated unles
 | 1 | The meeting title is the video title verbatim, editable afterwards like any other | Matches the import path's fallback-to-filename behaviour (`AppModel.swift:1128`) |
 | 2 | The downloaded audio is kept permanently | "The recording is the source of truth" — and playback, re-transcribe, and segment re-run all read it |
 | 3 | Cookies / sign-in for private or age-restricted videos is out of scope for v1 | The failure is classified and explained rather than worked around |
+| 4 | `createdAt` is the **download** time, not the video's publish date | Consistent with file import, and it keeps one meaning for "when" in the sidebar. The publish date is still kept, on `source.uploadDate` |
+| 5 | A failed or cancelled download deletes its partial directory | Mirrors `importRecording`'s failure path (`AppModel.swift:1150`); no resume in v1 |
+| 6 | No auto-summarize after a link import | Matches the recording and file-import paths, and summaries stay an explicit press |
+
+### One question the plan does not settle
+
+Should the whole feature sit behind an **off-by-default Settings toggle**? Every prior
+boundary-crossing capability in this app is opt-in — Qwen is an explicit Apple-silicon opt-in, Claude
+summaries require a saved key plus a confirmed press. A toggle would make the network path opt-in
+rather than ambient, which is the strongest available answer to the spec tension below without
+editing the spec at all.
+
+It is not in the plan because it was not among the decisions taken, and it is cheap to add later —
+one `@AppStorage` flag gating the button. Worth a decision before commit 5 (the SwiftUI surfaces),
+not before commit 1.
 
 ## Rough shape of the work
 
