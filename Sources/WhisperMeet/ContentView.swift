@@ -1699,6 +1699,7 @@ private struct TranscriptDetailView: View {
     @State private var vocabularySuggestions: [String]?
     @State private var glossaryProposals: [GlossaryCorrection]?
     @State private var showSecondOpinion = false
+    @State private var showsReferenceImporter = false
     @State private var isSuggestingVocab = false
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
@@ -1820,6 +1821,54 @@ private struct TranscriptDetailView: View {
                     failed: model.secondOpinionFailed,
                     onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
                 )
+            }
+            // F170: pick a local reference document (spec/glossary) to guide the on-device correction
+            // pass. The file is read and capped off the main actor, then passed to the same
+            // review-before-apply path; nothing is uploaded and the recording is never touched.
+            .fileImporter(
+                isPresented: $showsReferenceImporter,
+                allowedContentTypes: Self.referenceContentTypes,
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case let .success(urls):
+                    guard let url = urls.first else { return }
+                    correctWithReference(url, meetingID: meetingID)
+                case let .failure(error):
+                    model.alertMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Document types accepted as a correction reference — the same set the Vocabulary importer reads.
+    private static var referenceContentTypes: [UTType] {
+        var types: [UTType] = [.pdf, .plainText, .commaSeparatedText]
+        if let docx = UTType(filenameExtension: "docx") { types.append(docx) }
+        if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
+        return types
+    }
+
+    /// Reads the chosen reference document off the main actor, then runs the on-device correction pass
+    /// guided by it (F170). An unreadable/empty document says so instead of silently doing nothing.
+    private func correctWithReference(_ url: URL, meetingID: UUID) {
+        Task {
+            let reference = await Task.detached(priority: .userInitiated) {
+                VocabularyExtractor.referenceText(from: url)
+            }.value
+            guard let reference else {
+                model.alertMessage = "That reference document couldn't be read, or had no usable text. Choose a PDF, DOCX, TXT, or Markdown file."
+                return
+            }
+            let proposals = await model.proposeLocalCorrections(for: meetingID, reference: reference)
+            if proposals.isEmpty {
+                // Only speak up if the model ran and found nothing; the AppModel guard already set a
+                // message for install-required / hand-edited / error cases.
+                if model.alertMessage == nil {
+                    model.alertMessage = "The local model found nothing to correct against that reference."
+                }
+            } else {
+                glossaryProposals = proposals
             }
         }
     }
@@ -2241,6 +2290,15 @@ private struct TranscriptDetailView: View {
                     Label("Correct with Local AI…", systemImage: "wand.and.stars.inverse")
                 }
                 .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
+                // F170: guide the same on-device correction pass with a chosen reference document
+                // (spec/glossary). Works without any vocabulary — the reference is the target — so it is
+                // NOT disabled on an empty vocabulary, unlike the vocabulary-only correction above.
+                Button {
+                    showsReferenceImporter = true
+                } label: {
+                    Label("Correct with Local AI + Reference File…", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited)
             }
             Divider()
             Button {
@@ -2257,7 +2315,7 @@ private struct TranscriptDetailView: View {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
                 }
                 if store.vocabulary.isEmpty {
-                    Text("Corrections need Business Vocabulary terms (see the Vocabulary tab).")
+                    Text("Vocabulary-based corrections need Business Vocabulary terms (see the Vocabulary tab). The reference-file option works without them.")
                 }
             }
         } label: {
