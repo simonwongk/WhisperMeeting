@@ -158,6 +158,43 @@ final class AppModel: ObservableObject {
     }
     @Published var pendingNavigation: MeetingNavigationRequest?
 
+    // MARK: - Link import (F183)
+
+    /// Live download progress for the link-import sheet. Nil when no download is running.
+    @Published var mediaDownloadProgress: MediaDownloadProgress?
+    /// A probed link whose duration is above `longMediaDurationThreshold`, awaiting explicit
+    /// confirmation. Never a hard cap — a legitimate 4-hour conference recording stays possible.
+    @Published var pendingLongMediaConfirmation: MediaProbe?
+    /// Whether the user has opted into the link-import feature. Off by default: every other
+    /// boundary-crossing capability in this app is opt-in (Qwen, Claude summaries), so the network
+    /// path is explicit rather than ambient.
+    @Published var linkImportEnabled: Bool {
+        didSet { defaults.set(linkImportEnabled, forKey: Self.linkImportEnabledKey) }
+    }
+    static let linkImportEnabledKey = "linkImportEnabled"
+
+    /// Above this, a link download asks for explicit confirmation before starting.
+    static let longMediaDurationThreshold: TimeInterval = 2 * 3_600
+
+    /// Probes a link for its metadata. Injected so the flow is testable without the real downloader.
+    var probeMediaURL: @Sendable (String) async throws -> MediaProbe = { url in
+        try await MediaDownloadClient.installed().probe(url: url)
+    }
+
+    /// Downloads a link's audio into a directory, returning the written file. Injected for tests.
+    var downloadMedia: @Sendable (String, URL, @Sendable @escaping (MediaDownloadProgress) -> Void) async throws -> URL = {
+        url, directory, progress in
+        try await MediaDownloadClient.installed().download(url: url, into: directory, progress: progress)
+    }
+
+    /// Best-effort captions for a link, as reference segments. Never throws — a caption failure must
+    /// never fail the import. Injected for tests.
+    var downloadCaptions: @Sendable (String, URL, String) async -> [TranscriptSegment] = {
+        url, directory, subLangs in
+        guard let client = try? MediaDownloadClient.installed() else { return [] }
+        return await client.captions(url: url, into: directory, subLangs: subLangs)
+    }
+
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()
     private let recorder: AudioCaptureEngine
@@ -203,6 +240,8 @@ final class AppModel: ObservableObject {
         summarizationEngine = SummarizationEngine(
             rawValue: defaults.string(forKey: Self.summarizationEngineKey) ?? ""
         ) ?? .local
+        // Off unless the user has explicitly turned it on (F183).
+        linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
         runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
         isQwenInstalled = QwenASRRuntime.isInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
@@ -1136,32 +1175,165 @@ final class AppModel: ObservableObject {
             let copiedURL = try await Task.detached(priority: .userInitiated) {
                 try Self.copyImportedRecording(from: sourceURL, into: directory)
             }.value
-            let duration = await Self.loadDuration(of: copiedURL)
             let fallbackTitle = sourceURL.deletingPathExtension().lastPathComponent
             let displayTitle = cleanTitle.isEmpty
                 ? (fallbackTitle.isEmpty ? "Imported Recording" : fallbackTitle)
                 : cleanTitle
-            store.upsert(MeetingRecord(
-                id: id,
-                title: displayTitle,
-                duration: duration,
-                recordingPath: store.relativeRecordingPath(for: copiedURL),
-                status: .recorded
-            ))
-            isImporting = false
-            refreshRuntime()
-            if isSelectedEngineInstalled {
-                beginTranscription(id: id)
-            } else {
-                alertMessage = "Recording imported and saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
-            }
-            return id
+            return await adoptImportedRecording(id: id, at: copiedURL, title: displayTitle)
         } catch {
             isImporting = false
             try? FileManager.default.removeItem(at: directory)
             alertMessage = "The recording could not be imported: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    /// Fetches a link's audio into a new meeting and transcribes it locally (F183). The fetch is
+    /// inbound-only: nothing about the meeting is uploaded, and only the audio is retrieved.
+    ///
+    /// Ordering matters and follows the plan's traps: probe *before* downloading (so the storage guard
+    /// and the long-duration confirmation are possible at all), write the provenance sidecar *before*
+    /// the bytes arrive (so an interrupted download is recoverable as a link import rather than an
+    /// anonymous orphan), download straight into the meeting folder (never temp-then-copy, which would
+    /// double peak disk for a long video), and finish through the shared adopt path so transcription
+    /// starts exactly the way it does for a file import.
+    @discardableResult
+    func importFromURL(_ raw: String, confirmedLongDuration: Bool = false) async -> UUID? {
+        guard linkImportEnabled else {
+            alertMessage = "Turn on “Import from a link” in Settings to fetch audio from a link."
+            return nil
+        }
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else {
+            alertMessage = "Finish the current recording or import before adding from a link."
+            return nil
+        }
+        guard !isInstallingRecognitionRuntime else {
+            alertMessage = "Wait for the local recognition model installation to finish before importing."
+            return nil
+        }
+
+        let parsed: MediaSourceURL.Parsed
+        do {
+            parsed = try MediaSourceURL.validate(raw)
+        } catch {
+            alertMessage = "That doesn't look like a web link. Paste a full https:// address to a single video."
+            return nil
+        }
+        guard !parsed.isPlaylist else {
+            alertMessage = MediaDownloadError.playlistNotSupported.localizedDescription
+            return nil
+        }
+
+        let probe: MediaProbe
+        do {
+            probe = try await probeMediaURL(parsed.url)
+        } catch {
+            alertMessage = error.localizedDescription
+            return nil
+        }
+        guard !probe.isLive else {
+            alertMessage = MediaDownloadError.liveInProgress.localizedDescription
+            return nil
+        }
+        // Long media is confirmed, never capped.
+        if let duration = probe.durationSeconds,
+           duration > Self.longMediaDurationThreshold,
+           !confirmedLongDuration {
+            pendingLongMediaConfirmation = probe
+            return nil
+        }
+        // The storage guard needs the probe's size: the file-import guard reads `.fileSizeKey` from the
+        // source, which is meaningless for a remote URL and would silently degrade to a flat margin.
+        refreshRecordingPreflight()
+        if let available = recordingPreflight.availableStorageBytes {
+            let needed = (probe.approximateBytes ?? 0) + 500_000_000
+            if available < needed {
+                alertMessage = "Downloading this needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
+                return nil
+            }
+        }
+
+        isImporting = true
+        pendingLongMediaConfirmation = nil
+        mediaDownloadProgress = MediaDownloadProgress()
+        let id = UUID()
+        let directory = store.recordingDirectoryURL(for: id)
+        let source = MediaSource(
+            kind: parsed.kind,
+            pageURL: parsed.url,
+            host: parsed.host,
+            videoID: parsed.videoID,
+            uploader: probe.uploader,
+            uploadDate: probe.uploadDate,
+            fetchedAt: Date()
+        )
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Provenance first, so a crash mid-download still leaves a recoverable link import.
+            if let sidecar = try? JSONEncoder().encode(source) {
+                try? sidecar.write(to: directory.appendingPathComponent(MediaSource.sidecarFilename))
+            }
+            let downloaded = try await downloadMedia(parsed.url, directory) { [weak self] progress in
+                Task { @MainActor in self?.mediaDownloadProgress = progress }
+            }
+            mediaDownloadProgress = nil
+            // Captions are a reviewable reference only, pinned to the video's own language so a
+            // machine-translated track can never enter the transcript.
+            let reference = await downloadCaptions(parsed.url, directory, probe.language ?? "en")
+            let title = (probe.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+                $0.isEmpty ? nil : $0
+            } ?? "Imported from \(parsed.host)"
+            return await adoptImportedRecording(
+                id: id, at: downloaded, title: title, source: source, referenceSegments: reference
+            )
+        } catch {
+            isImporting = false
+            mediaDownloadProgress = nil
+            // No resume in v1: a failed or cancelled download leaves nothing behind.
+            try? FileManager.default.removeItem(at: directory)
+            if !(error is CancellationError) {
+                alertMessage = error.localizedDescription
+            }
+            return nil
+        }
+    }
+
+    /// The single place an imported recording becomes a real meeting: measure the written file's
+    /// duration (never a probe's metadata — `MeetingIntegrityChecker` cross-checks the WAV header
+    /// against the indexed duration), upsert the record, then start transcription if the engine is
+    /// installed. Both import entry points — local file and link — call this, so there is exactly one
+    /// place where a meeting becomes real (F183).
+    @discardableResult
+    func adoptImportedRecording(
+        id: UUID,
+        at fileURL: URL,
+        title: String,
+        source: MediaSource? = nil,
+        referenceSegments: [TranscriptSegment]? = nil
+    ) async -> UUID {
+        let duration = await Self.loadDuration(of: fileURL)
+        // The provenance tag is PREPENDED, never appended: `normalized` stops at 12 tags, and the
+        // sidebar renders only the first 4, so an appended marker can be silently dropped or invisible.
+        let tags = source.map { MeetingTags.normalized([$0.suggestedTag]) }
+        store.upsert(MeetingRecord(
+            id: id,
+            title: title,
+            duration: duration,
+            recordingPath: store.relativeRecordingPath(for: fileURL),
+            status: .recorded,
+            tags: (tags?.isEmpty ?? true) ? nil : tags,
+            source: source,
+            referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments
+        ))
+        isImporting = false
+        refreshRuntime()
+        if isSelectedEngineInstalled {
+            beginTranscription(id: id)
+        } else {
+            alertMessage = "Recording imported and saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
+        }
+        return id
     }
 
     /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
