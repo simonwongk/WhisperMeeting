@@ -116,6 +116,23 @@ if ! "$staging_venv/bin/python" -m pip install --upgrade mlx-whisper; then
   print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
 fi
 
+# yt-dlp powers "import from a link" (F183). Three constraints fix exactly where and how it goes:
+#   - AFTER openai-whisper is installed and verified, so the meetings runtime is never left unverified
+#     behind an optional dependency;
+#   - BEFORE the shebang rewrite below, or `bin/yt-dlp`'s console-script shebang still points at the
+#     staging path and is a dead "bad interpreter" the moment the venv is swapped into place;
+#   - inside an `if !` (exempt from `set -e`), so one transient PyPI failure cannot abort the whole
+#     meetings-runtime install.
+# It is deliberately UNPINNED, unlike the exact `==` pins in setup-qwen-asr.sh and
+# setup-local-summarizer.sh: yt-dlp's entire job is to track a moving target, so pinning it guarantees
+# eventual breakage rather than preventing it.
+# NOTE: yt-dlp is intentionally NOT added to venv_is_complete()/venv_works() — those decide whether a
+# runtime is healthy, and requiring yt-dlp would make every already-working install look broken and
+# trigger a rollback to a backup that also lacks it.
+if ! "$staging_venv/bin/python" -m pip install --upgrade yt-dlp; then
+  print -u2 "Note: yt-dlp install failed — importing audio from a link is unavailable (meetings unaffected)."
+fi
+
 # A Python venv is NOT relocatable: its console-script shebangs (e.g. `venv/bin/whisper` — the exact
 # executable the app invokes via LocalWhisperRuntime.managedExecutable) and its activate scripts embed
 # the absolute path it was created at. The `--help` check above passed because it ran while the venv

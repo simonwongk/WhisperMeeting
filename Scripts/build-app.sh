@@ -26,6 +26,8 @@ cp "Scripts/qwen_transcribe.py" "$app_dir/Contents/Resources/qwen_transcribe.py"
 cp "Scripts/qwen_dictate_server.py" "$app_dir/Contents/Resources/qwen_dictate_server.py"
 cp "Scripts/setup-local-summarizer.sh" "$app_dir/Contents/Resources/setup-local-summarizer.sh"
 chmod +x "$app_dir/Contents/Resources/setup-local-summarizer.sh"
+cp "Scripts/update-yt-dlp.sh" "$app_dir/Contents/Resources/update-yt-dlp.sh"
+chmod +x "$app_dir/Contents/Resources/update-yt-dlp.sh"
 cp "Scripts/summarize_local.py" "$app_dir/Contents/Resources/summarize_local.py"
 cp "Scripts/correct_local.py" "$app_dir/Contents/Resources/correct_local.py"
 # Sign with a stable identity when one exists, so macOS TCC keeps the user's permission grants
