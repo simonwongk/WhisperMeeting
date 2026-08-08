@@ -73,6 +73,16 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// The engine that produced this meeting's transcript, recorded so a "second opinion" can run the
     /// genuine other engine regardless of current Settings (F142). Optional for backward compatibility.
     var transcriptionEngine: MeetingTranscriptionEngine?
+    /// Where this meeting's audio came from when it was fetched from a link rather than recorded or
+    /// imported from a local file (F183). Optional so meeting indexes written before this feature still
+    /// decode — a non-optional field here would make every pre-existing meeting fail to decode, and the
+    /// next persist would overwrite both the index and its backup.
+    var source: MediaSource?
+    /// The publisher's own captions for a link-imported meeting, parsed to segments and kept purely as a
+    /// reviewable reference for the existing comparison sheet — never the transcript itself, and never a
+    /// source of speaker identity (`SubtitleParser` strips speaker labels). Optional so old indexes
+    /// decode (F183).
+    var referenceSegments: [TranscriptSegment]?
 
     init(
         id: UUID = UUID(),
@@ -95,7 +105,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         healthReport: RecordingHealthReport? = nil,
         alignmentWarning: String? = nil,
         languageWarning: String? = nil,
-        transcriptionEngine: MeetingTranscriptionEngine? = nil
+        transcriptionEngine: MeetingTranscriptionEngine? = nil,
+        source: MediaSource? = nil,
+        referenceSegments: [TranscriptSegment]? = nil
     ) {
         self.id = id
         self.title = title
@@ -118,6 +130,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.alignmentWarning = alignmentWarning
         self.languageWarning = languageWarning
         self.transcriptionEngine = transcriptionEngine
+        self.source = source
+        self.referenceSegments = referenceSegments
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.
