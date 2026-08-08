@@ -569,6 +569,17 @@ private struct RecordMeetingView: View {
                 }
                 .disabled(model.isImporting || model.isInstallingRecognitionRuntime)
             }
+            // F185: after a bulk import, pressing Transcribe once per meeting is tedious — queue them
+            // all in one action. Uses the normal per-meeting path, so the one-at-a-time queue applies.
+            let ready = model.readyToTranscribeMeetings.count
+            if ready > 1 {
+                Button {
+                    model.beginTranscriptionForAllReady()
+                } label: {
+                    Label("Transcribe \(ready) Ready Meetings", systemImage: "text.badge.checkmark")
+                }
+                .disabled(model.isImporting || model.isInstallingRecognitionRuntime || model.isRunningAuxiliaryEngine)
+            }
             if model.isImporting {
                 ProgressView("Importing…").controlSize(.small)
             } else {

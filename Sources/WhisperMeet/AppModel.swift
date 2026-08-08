@@ -1430,6 +1430,24 @@ final class AppModel: ObservableObject {
 
     /// Requests transcription for a meeting. If another transcription is already running, this one
     /// waits in the queue and starts automatically when the active one finishes.
+    /// Meetings that have audio on disk but no transcript yet — the queue candidates (F185).
+    var readyToTranscribeMeetings: [MeetingRecord] {
+        store.meetings.filter { $0.status == .recorded && !$0.recordingPath.isEmpty }
+    }
+
+    /// Queues every ready meeting for transcription in one action (F185). Each goes through the normal
+    /// `beginTranscription` path, so the engine/settings snapshot, the install guards, and the existing
+    /// one-at-a-time queue all still apply — this only saves the user pressing Transcribe once per
+    /// meeting, which is tedious after a bulk import.
+    @discardableResult
+    func beginTranscriptionForAllReady() -> Int {
+        let ready = readyToTranscribeMeetings
+        for meeting in ready {
+            beginTranscription(id: meeting.id)
+        }
+        return ready.count
+    }
+
     func beginTranscription(id: UUID) {
         guard !isInstallingRecognitionRuntime else {
             alertMessage = "Wait for the local recognition model installation to finish before transcribing."
