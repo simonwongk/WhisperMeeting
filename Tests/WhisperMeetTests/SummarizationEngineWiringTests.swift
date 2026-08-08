@@ -9,7 +9,7 @@ import Testing
 
 private final class RecordingSummarizer: MeetingSummarizer, @unchecked Sendable {
     let stub = MeetingSummary(summary: "S", keyPoints: ["k1"], actionItems: ["a1"])
-    func summarize(transcript: String, language: String?, style: SummaryStyle) async throws -> MeetingSummary {
+    func summarize(transcript: String, language: String?, style: SummaryStyle, template: MeetingTemplate) async throws -> MeetingSummary {
         stub
     }
 }

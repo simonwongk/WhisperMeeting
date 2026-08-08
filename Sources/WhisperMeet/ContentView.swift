@@ -1695,6 +1695,9 @@ private struct TranscriptDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
     @AppStorage("summaryStyle") private var summaryStyle: SummaryStyle = .balanced
+    // F178: the meeting template reshapes the summary's structure (independent of the length/emphasis
+    // that `summaryStyle` controls). Persisted like the style; local-only.
+    @AppStorage("summaryTemplate") private var summaryTemplate: MeetingTemplate = .general
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
     @State private var glossaryProposals: [GlossaryCorrection]?
@@ -1793,7 +1796,7 @@ private struct TranscriptDetailView: View {
             .onAppear { normalizeTranscriptIfNeeded(meeting) }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
-                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle) }
+                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
             } message: {
                 Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
             }
@@ -1896,6 +1899,15 @@ private struct TranscriptDetailView: View {
                     Button("Copy") { copy(Self.summaryText(summary)) }
                     Button("Export…") { export(meeting: meeting, text: Self.summaryText(summary)) }
                 }
+                Picker("Meeting template", selection: $summaryTemplate) {
+                    ForEach(MeetingTemplate.allCases, id: \.self) { template in
+                        Text(template.displayName).tag(template)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 150)
+                .disabled(isSummarizing)
+                .help("Choose a template that shapes the summary's structure for this kind of meeting. Everything stays on this Mac.")
                 Picker("Summary style", selection: $summaryStyle) {
                     ForEach(SummaryStyle.allCases, id: \.self) { style in
                         Text(Self.summaryStyleName(style)).tag(style)
@@ -1911,7 +1923,7 @@ private struct TranscriptDetailView: View {
                     switch model.summarizationEngine {
                     case .local:
                         // The AppModel guard offers install if the model is missing (honest fallback).
-                        model.summarize(id: meetingID, style: summaryStyle)
+                        model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate)
                     case .claude:
                         if model.hasClaudeAPIKey {
                             confirmSummarize = true

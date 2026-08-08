@@ -1261,7 +1261,7 @@ final class AppModel: ObservableObject {
         store.delete(id: id)
     }
 
-    func summarize(id: UUID, style: SummaryStyle = .balanced) {
+    func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
         guard summarizationTasks[id] == nil else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
@@ -1293,7 +1293,7 @@ final class AppModel: ObservableObject {
         let task = Task {
             await performSummarization(
                 id: id, engine: engine, apiKey: apiKey,
-                transcript: transcript, language: language, style: style
+                transcript: transcript, language: language, style: style, template: template
             )
             summarizationTasks[id] = nil
             activeSummarizationID = nil
@@ -1307,11 +1307,14 @@ final class AppModel: ObservableObject {
         apiKey: String,
         transcript: String,
         language: String?,
-        style: SummaryStyle
+        style: SummaryStyle,
+        template: MeetingTemplate = .general
     ) async {
         let summarizer = makeSummarizer(engine, apiKey)
         do {
-            let summary = try await summarizer.summarize(transcript: transcript, language: language, style: style)
+            let summary = try await summarizer.summarize(
+                transcript: transcript, language: language, style: style, template: template
+            )
             // F177: link each action item to its best supporting transcript segment (quote + timestamp)
             // locally, from the stored segments — no extra model call, nothing leaves this Mac.
             let segments = store.meeting(id: id)?.segments ?? []

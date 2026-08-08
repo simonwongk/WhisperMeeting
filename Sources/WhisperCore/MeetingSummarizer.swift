@@ -132,6 +132,51 @@ public enum SummaryStyle: String, Sendable, Equatable, CaseIterable {
     case actionItemsFocused // emphasize concrete follow-up tasks
 }
 
+/// A local meeting template that reshapes the *structure* of a summary for a meeting type (F178) —
+/// a decision log vs. a 1:1 vs. a customer call — rather than only its length (which `SummaryStyle`
+/// controls). It only appends structural guidance to the summarizer system prompt; it never changes
+/// the JSON response schema or the do-not-translate clause (the F63 boundary), so Claude's
+/// "transcript only" contract is untouched and templates stay fully local.
+public enum MeetingTemplate: String, Codable, CaseIterable, Sendable, Hashable {
+    case general
+    case decisionLog
+    case oneOnOne
+    case projectUpdate
+    case interview
+    case customerCall
+
+    public var displayName: String {
+        switch self {
+        case .general: return "General"
+        case .decisionLog: return "Decision Log"
+        case .oneOnOne: return "1:1"
+        case .projectUpdate: return "Project Update"
+        case .interview: return "Interview"
+        case .customerCall: return "Customer Call"
+        }
+    }
+
+    /// Structural guidance appended to the summarizer system prompt. Empty for `.general`. It reshapes
+    /// how the existing summary/keyPoints/actionItems fields are organized — it never adds fields, so
+    /// the response schema is identical for every template.
+    public var guidance: String {
+        switch self {
+        case .general:
+            return ""
+        case .decisionLog:
+            return "Structure this as a decision log: in the key points, record each decision as \"Decision: <what was decided> — Rationale: <why>\", and list any open questions explicitly. The summary should state the decisions that were reached."
+        case .oneOnOne:
+            return "Structure this as a 1:1: organize the key points around updates, feedback, blockers, and any growth or career topics. The action items should capture the commitments each person made."
+        case .projectUpdate:
+            return "Structure this as a project update: organize the key points around current status, progress since last time, risks or blockers, and upcoming milestones with dates when they are stated."
+        case .interview:
+            return "Structure this as an interview debrief: organize the key points around the candidate's strengths, concerns, and notable answers. Do not invent a hiring decision. The action items are follow-ups."
+        case .customerCall:
+            return "Structure this as a customer call: organize the key points around the customer's needs, objections, and feature requests, and any commitments made to them. The action items are follow-ups for the customer."
+        }
+    }
+}
+
 /// Which engine produces a meeting summary. `local` (on-device, keyless, private) is the default;
 /// `claude` is the opt-in cloud upgrade behind the same `MeetingSummarizer` protocol (F164).
 public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashable {
@@ -149,12 +194,22 @@ public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashab
 /// Produces a `MeetingSummary` from a transcript. Implemented by the on-device `LocalSummarizer`
 /// (the keyless default) and the cloud `ClaudeSummarizer` (opt-in) behind one interface (F164).
 public protocol MeetingSummarizer: Sendable {
-    func summarize(transcript: String, language: String?, style: SummaryStyle) async throws -> MeetingSummary
+    func summarize(
+        transcript: String,
+        language: String?,
+        style: SummaryStyle,
+        template: MeetingTemplate
+    ) async throws -> MeetingSummary
 }
 
 public extension MeetingSummarizer {
-    /// Source-compatible convenience for callers that don't choose a style (defaults to balanced).
+    /// Source-compatible convenience for callers that choose a style but not a template (F178).
+    func summarize(transcript: String, language: String?, style: SummaryStyle) async throws -> MeetingSummary {
+        try await summarize(transcript: transcript, language: language, style: style, template: .general)
+    }
+
+    /// Source-compatible convenience for callers that choose neither (defaults to balanced/general).
     func summarize(transcript: String, language: String?) async throws -> MeetingSummary {
-        try await summarize(transcript: transcript, language: language, style: .balanced)
+        try await summarize(transcript: transcript, language: language, style: .balanced, template: .general)
     }
 }
