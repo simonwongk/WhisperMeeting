@@ -188,7 +188,7 @@ public struct MediaDownloadClient: Sendable {
     /// `ffmpeg` fails even when FFmpeg is installed — the exact shape of the shipped F132 defect. The
     /// offline flags from the transcription clients are deliberately NOT copied: they belong to a model
     /// run, and this process must reach the network (Trap 13).
-    static func makeEnvironment(
+    public static func makeEnvironment(
         base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var environment = base

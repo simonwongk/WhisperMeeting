@@ -304,6 +304,7 @@ private struct RecordMeetingView: View {
     let onMeetingSaved: (UUID) -> Void
     @State private var title = ""
     @State private var showsImporter = false
+    @State private var showsLinkSheet = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .largeTitle) private var heroIconSize: CGFloat = 44
 
@@ -422,6 +423,12 @@ private struct RecordMeetingView: View {
             set: { if !$0 { model.dismissPreflightTest() } }
         )) {
             PreflightTestSheet(model: model)
+        }
+        .sheet(isPresented: $showsLinkSheet) {
+            LinkImportSheet(model: model) { meetingID in
+                onMeetingSaved(meetingID)
+                title = ""
+            }
         }
     }
 
@@ -552,6 +559,16 @@ private struct RecordMeetingView: View {
                 Label("Import Recordings…", systemImage: "square.and.arrow.down")
             }
             .disabled(model.isImporting || model.isInstallingRecognitionRuntime)
+            // F183: opt-in link import. The button appears only once the user has switched the feature
+            // on in Settings, so the network path is never ambient.
+            if model.linkImportEnabled {
+                Button {
+                    showsLinkSheet = true
+                } label: {
+                    Label("Add from a Link…", systemImage: "link")
+                }
+                .disabled(model.isImporting || model.isInstallingRecognitionRuntime)
+            }
             if model.isImporting {
                 ProgressView("Importing…").controlSize(.small)
             } else {
@@ -1513,6 +1530,46 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            // F183 — link import is opt-in, like every other capability here that crosses a boundary.
+            Section("Import from a Link") {
+                Toggle("Allow importing audio from a link", isOn: $model.linkImportEnabled)
+                Text("Off by default. When on, an “Add from a Link…” button appears on the record screen. WhisperMeet fetches only the audio and transcribes it on this Mac — nothing about your meetings is uploaded, but the request does reach the site you link to, so that site sees it. Make sure you have the right to download the content.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.linkImportEnabled {
+                    HStack {
+                        Label(
+                            model.isDownloaderInstalled ? "Downloader ready" : "Downloader not installed",
+                            systemImage: model.isDownloaderInstalled ? "checkmark.circle.fill" : "arrow.down.circle"
+                        )
+                        .foregroundStyle(model.isDownloaderInstalled ? .green : .orange)
+                        Spacer()
+                        Button("Update Downloader") { model.updateDownloader() }
+                            .buttonStyle(.bordered)
+                            .disabled(
+                                !model.isDownloaderInstalled
+                                    || model.isUpdatingDownloader
+                                    || model.isInstallingRuntime
+                                    || model.isImporting
+                            )
+                    }
+                    if model.isUpdatingDownloader {
+                        ProgressView("Updating the downloader…").controlSize(.small)
+                    } else if let message = model.downloaderUpdateMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !model.isDownloaderInstalled {
+                        Text("The downloader ships with the local Whisper runtime — install that above and it will be available.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Sites change how they serve media, so the downloader needs updating from time to time. If a link fails with “the downloader is out of date”, update it here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
@@ -1556,6 +1613,110 @@ struct SettingsView: View {
     private func endKeyCapture() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         capturingKey = false
+    }
+}
+
+/// F183 — paste a link, see what was found, then fetch just its audio into a new meeting that the
+/// existing local pipeline transcribes. Only reachable when the feature is switched on in Settings.
+///
+/// The two disclosures are stated plainly and once: many sites' terms prohibit downloading and the
+/// content is usually someone else's copyrighted work, and the fetch reaches the video's host, so that
+/// host sees the request. The app cannot resolve either — they are disclosures, not gates.
+private struct LinkImportSheet: View {
+    @ObservedObject var model: AppModel
+    let onImported: (UUID) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var link = ""
+    @State private var isWorking = false
+
+    private var trimmedLink: String {
+        link.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Add from a Link").font(.headline)
+                Text("WhisperMeet downloads only the audio, then transcribes it on this Mac like any other meeting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            VStack(alignment: .leading, spacing: 14) {
+                TextField("https://…", text: $link)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isWorking)
+                    .onSubmit { start(confirmed: false) }
+
+                if let progress = model.mediaDownloadProgress {
+                    if let fraction = progress.fractionCompleted {
+                        ProgressView(value: fraction) {
+                            Text("Downloading audio… \(Int((fraction * 100).rounded()))%")
+                        }
+                    } else {
+                        ProgressView("Preparing the download…").controlSize(.small)
+                    }
+                } else if isWorking {
+                    ProgressView("Checking the link…").controlSize(.small)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        "The request goes to the site you linked, so that site sees it. Nothing about your meetings is uploaded.",
+                        systemImage: "network"
+                    )
+                    Label(
+                        "Make sure you have the right to download and transcribe this content — many sites' terms don't allow it.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
+
+            Spacer(minLength: 12)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Download and Transcribe") { start(confirmed: false) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(trimmedLink.isEmpty || isWorking)
+            }
+            .padding()
+        }
+        .frame(width: 460, height: 340)
+        // Long media is confirmed, never capped: a legitimate 4-hour conference recording stays possible.
+        .alert(
+            "This is a long recording",
+            isPresented: Binding(
+                get: { model.pendingLongMediaConfirmation != nil },
+                set: { if !$0 { model.pendingLongMediaConfirmation = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { model.pendingLongMediaConfirmation = nil }
+            Button("Download Anyway") { start(confirmed: true) }
+        } message: {
+            let probe = model.pendingLongMediaConfirmation
+            let clock = probe?.durationSeconds.map { TranscriptFormatter.clock($0) } ?? "over two hours"
+            Text("“\(probe?.title ?? "This video")” runs \(clock). Downloading and transcribing it will take a while and use disk space.")
+        }
+    }
+
+    private func start(confirmed: Bool) {
+        guard !trimmedLink.isEmpty, !isWorking else { return }
+        isWorking = true
+        Task {
+            let id = await model.importFromURL(trimmedLink, confirmedLongDuration: confirmed)
+            isWorking = false
+            if let id {
+                onImported(id)
+                dismiss()
+            }
+            // A nil result that is only awaiting confirmation keeps the sheet open for the alert.
+        }
     }
 }
 
@@ -2309,6 +2470,23 @@ private struct TranscriptDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             EditableMeetingTitle(store: store, meetingID: meetingID)
                 .id(meetingID)
+            // F183: where a link-imported meeting came from, with a way back to the original page.
+            if let source = meeting.source {
+                HStack(spacing: 6) {
+                    Image(systemName: "link").font(.caption2).foregroundStyle(.tertiary)
+                    if let uploader = source.uploader, !uploader.isEmpty {
+                        Text(uploader).font(.caption).foregroundStyle(.secondary)
+                        Text("·").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    if let pageURL = URL(string: source.pageURL) {
+                        Link(source.host, destination: pageURL).font(.caption)
+                    } else {
+                        Text(source.host).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Imported from \(source.host)")
+            }
             HStack(spacing: 8) {
                 metadataChip(
                     meeting.createdAt.formatted(date: .abbreviated, time: .shortened),

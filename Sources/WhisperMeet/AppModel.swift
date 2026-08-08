@@ -176,6 +176,50 @@ final class AppModel: ObservableObject {
     /// Above this, a link download asks for explicit confirmation before starting.
     static let longMediaDurationThreshold: TimeInterval = 2 * 3_600
 
+    /// Whether the yt-dlp downloader is present (it ships inside the Whisper runtime venv).
+    var isDownloaderInstalled: Bool { MediaDownloadRuntime.findExecutable() != nil }
+    @Published private(set) var isUpdatingDownloader = false
+    @Published private(set) var downloaderUpdateMessage: String?
+
+    /// Refreshes just the downloader, backing the "the downloader is out of date" failure guidance —
+    /// sites change how they serve media, so this goes stale on a scale of weeks (F183).
+    func updateDownloader() {
+        guard !isUpdatingDownloader else { return }
+        guard let script = Bundle.main.url(forResource: "update-yt-dlp", withExtension: "sh")
+            ?? Self.developmentScriptURL("update-yt-dlp.sh") else {
+            alertMessage = "The downloader updater is missing from this build."
+            return
+        }
+        isUpdatingDownloader = true
+        downloaderUpdateMessage = nil
+        Task {
+            let runner = ProcessGroupRunner()
+            let outcome = try? await runner.run(
+                executableURL: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: [script.path],
+                environment: MediaDownloadClient.makeEnvironment(),
+                stallTimeout: 600
+            )
+            isUpdatingDownloader = false
+            if let outcome, outcome.exitStatus == 0 {
+                downloaderUpdateMessage = "The downloader is up to date."
+            } else {
+                downloaderUpdateMessage = "The downloader could not be updated. \(String((outcome?.output ?? "").suffix(200)))"
+            }
+        }
+    }
+
+    /// Locates a bundled script when running from a built `.app`, falling back to the checkout while
+    /// developing (the packaged path is the one that matters; see build-app.sh).
+    private static func developmentScriptURL(_ name: String) -> URL? {
+        let candidate = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // WhisperMeet/
+            .deletingLastPathComponent()   // Sources/
+            .deletingLastPathComponent()   // repo root
+            .appendingPathComponent("Scripts/\(name)")
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
     /// Probes a link for its metadata. Injected so the flow is testable without the real downloader.
     var probeMediaURL: @Sendable (String) async throws -> MediaProbe = { url in
         try await MediaDownloadClient.installed().probe(url: url)
