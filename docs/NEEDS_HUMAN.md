@@ -6,24 +6,11 @@ the ticket rules in [`../AGENTS.md`](../AGENTS.md); open work stays in [`TICKETS
 
 ---
 
-### F176 — Install and select full Xcode so the Swift Testing suite can run
+**The queue is currently empty — nothing is blocked on a human.**
 
-- **Status:** needs-human
-- **Owner:** /root
-- **Severity:** medium
-- **Area:** build
-- **Filed:** 2026-08-08 by /root, while verifying F175
-
-**Problem.** `swift build` passes, but `swift test` stops before any tests run because every test
-target reports `no such module 'Testing'`. The active developer directory is
-`/Library/Developer/CommandLineTools`; `xcodebuild -version` reports that Xcode is required, and no
-`Xcode.app` is installed in `/Applications`. The project uses the Swift Testing framework by design.
-
-**Impact.** No behavioral change can currently meet the required full-suite verification gate, even
-though the application itself builds.
-
-**What I need from you:** Install a full Xcode version compatible with this macOS release, select it
-as the active developer directory, then let an agent rerun `swift test`.
-
-**Verification.** `xcode-select -p` ends in `Xcode.app/Contents/Developer`, `swift test` compiles
-`import Testing`, and the full suite completes.
+F176 ("Install and select full Xcode so the Swift Testing suite can run") was closed `invalid` on
+2026-08-08: its observation was right that a *bare* `swift test` fails on this toolchain, but its
+blocking claim was wrong. `Scripts/quality-check.sh` already supplies the framework/rpath flags that
+F166 added, and it runs the **full suite** here — 435 tests green on the day F176 was closed. Installing
+full Xcode remains a convenience for running `swift test` directly; it is not a prerequisite for
+verifying a change. See `TICKET_LOG.md` for the evidence.
