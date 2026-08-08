@@ -160,11 +160,21 @@ Beyond the core record → transcribe flow:
   available as an opt-in upgrade: save a Claude API key in Settings and select it to send that
   transcript to Anthropic’s API instead — the one non-local feature, never used without a saved key
   and an explicit, confirmed press. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+- **Meeting templates** — a **template** (Decision Log, 1:1, Project Update, Interview, Customer Call,
+  or General) reshapes how the summary is organized for that kind of meeting, alongside the length
+  “style”. Templates only guide the summary’s structure; they never change what leaves the Mac.
+- **Evidence-linked action items** — each action item is a reviewable card: mark it done, add an owner
+  or due date, and **Play source** to jump to the moment in the recording it came from. The supporting
+  quote and timestamp are found locally by matching the item against the transcript — no extra upload.
 - **AI transcript correction (local)** — on Apple silicon, the transcript’s **Correct with local
   AI** action asks the on-device model to fix domain terms (names, products, jargon) that speech
-  recognition mis-heard, guided by your Business Vocabulary. Corrections are proposed for your
-  review, not applied automatically; the recording is never modified, and a transcript you have
-  hand-edited is skipped. It reuses the same local model as summaries, so it needs no extra download.
+  recognition mis-heard, guided by your Business Vocabulary. You can also point it at a **reference
+  file** (a spec or glossary) to guide corrections toward spellings in that document. Corrections are
+  proposed for your review, not applied automatically; the recording is never modified, and a
+  transcript you have hand-edited is skipped. It reuses the same local model as summaries.
+- **Replacement rules** — in Business Vocabulary, add exact `heard → preferred` rules for a term that
+  is always misheard the same way. Rules are proposed as corrections you review and approve per
+  meeting; nothing is applied automatically and the recording is never changed.
 
 ## Recording safety and recovery
 
