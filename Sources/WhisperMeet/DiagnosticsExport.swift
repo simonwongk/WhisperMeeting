@@ -27,7 +27,7 @@ enum DiagnosticsExport {
                 // Sensitive — carried so the builder proves it never emits them.
                 transcriptText: meeting.transcriptText,
                 summary: meeting.summary.map { summary in
-                    ([summary.summary] + summary.keyPoints + summary.actionItems).joined(separator: "\n")
+                    ([summary.summary] + summary.keyPoints + summary.actionItems.map(\.text)).joined(separator: "\n")
                 }
             )
         }

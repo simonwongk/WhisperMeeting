@@ -1312,11 +1312,26 @@ final class AppModel: ObservableObject {
         let summarizer = makeSummarizer(engine, apiKey)
         do {
             let summary = try await summarizer.summarize(transcript: transcript, language: language, style: style)
-            store.update(id: id) { $0.summary = summary }
+            // F177: link each action item to its best supporting transcript segment (quote + timestamp)
+            // locally, from the stored segments — no extra model call, nothing leaves this Mac.
+            let segments = store.meeting(id: id)?.segments ?? []
+            var resolved = summary
+            resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)
+            store.update(id: id) { $0.summary = resolved }
         } catch is CancellationError {
             // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.
         } catch {
             alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Edits one action item on a meeting's summary — its done state, owner, or due — and persists the
+    /// change to the index (F177). An out-of-range index or a meeting without a summary is a safe no-op.
+    func updateActionItem(at index: Int, for id: UUID, _ mutation: (inout ActionItem) -> Void) {
+        store.update(id: id) { record in
+            guard record.summary != nil,
+                  record.summary!.actionItems.indices.contains(index) else { return }
+            mutation(&record.summary!.actionItems[index])
         }
     }
 

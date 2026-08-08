@@ -153,7 +153,9 @@ public struct LocalSummarizer: MeetingSummarizer {
         let summary = MeetingSummary(
             summary: payload.summary,
             keyPoints: payload.keyPoints,
-            actionItems: payload.actionItems
+            // The local helper still emits action items as plain strings; F177 links each to its
+            // supporting transcript moment later, in AppModel, from the meeting's segments.
+            actionItems: payload.actionItems.map { ActionItem(text: $0) }
         )
         // A completely empty result is an error; a degraded raw-text summary (payload.warning set)
         // is still returned — a summary the user can read beats a dead end (honest fallback).

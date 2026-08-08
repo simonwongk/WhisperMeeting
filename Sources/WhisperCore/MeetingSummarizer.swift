@@ -1,12 +1,78 @@
 import Foundation
 
+/// One reviewable follow-up task from a meeting (F177). Evolved from a plain string into a local card
+/// with open/done state, an optional user-entered owner and due, and — derived locally from the
+/// transcript, never a model call — the supporting `quote` and its `timestamp` that drive "Play
+/// source". Everything here stays on this Mac; the quote comes only from segments already in the index.
+public struct ActionItem: Codable, Sendable, Equatable {
+    public var text: String
+    public var done: Bool
+    /// Optional, user-entered. Never a diarized speaker — a person the user assigns the task to.
+    public var owner: String?
+    /// Optional, user-entered free-text due ("Fri", "Aug 15"). Kept as text so there is no locale or
+    /// timezone surprise; a structured date picker is a possible later enhancement.
+    public var due: String?
+    /// The transcript segment text that best supports this item (F177), or nil when none matched.
+    public var quote: String?
+    /// Start time (seconds) of the supporting segment, for "Play source". Nil when unresolved.
+    public var timestamp: Double?
+
+    public init(
+        text: String,
+        done: Bool = false,
+        owner: String? = nil,
+        due: String? = nil,
+        quote: String? = nil,
+        timestamp: Double? = nil
+    ) {
+        self.text = text
+        self.done = done
+        self.owner = owner
+        self.due = due
+        self.quote = quote
+        self.timestamp = timestamp
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text, done, owner, due, quote, timestamp
+    }
+
+    /// Backward-compatible decoding: a summary index written before F177 stored each action item as a
+    /// bare JSON string, so decode a single string into a text-only item; otherwise decode the object
+    /// form. New items always encode as objects (the synthesized `encode(to:)`), so an old index is
+    /// migrated the first time it is saved.
+    public init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let text = try? single.decode(String.self) {
+            self.init(text: text)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            text: try container.decode(String.self, forKey: .text),
+            done: try container.decodeIfPresent(Bool.self, forKey: .done) ?? false,
+            owner: try container.decodeIfPresent(String.self, forKey: .owner),
+            due: try container.decodeIfPresent(String.self, forKey: .due),
+            quote: try container.decodeIfPresent(String.self, forKey: .quote),
+            timestamp: try container.decodeIfPresent(Double.self, forKey: .timestamp)
+        )
+    }
+}
+
+extension ActionItem: ExpressibleByStringLiteral {
+    /// Lets a plain string stand in for a text-only action item, so existing call sites and summarizer
+    /// outputs (`["Email vendor"]`) keep working after the string→struct upgrade (F177).
+    public init(stringLiteral value: String) {
+        self.init(text: value)
+    }
+}
+
 /// The structured result of summarizing a meeting transcript.
 public struct MeetingSummary: Codable, Sendable, Equatable {
     public var summary: String
     public var keyPoints: [String]
-    public var actionItems: [String]
+    public var actionItems: [ActionItem]
 
-    public init(summary: String, keyPoints: [String], actionItems: [String]) {
+    public init(summary: String, keyPoints: [String], actionItems: [ActionItem]) {
         self.summary = summary
         self.keyPoints = keyPoints
         self.actionItems = actionItems

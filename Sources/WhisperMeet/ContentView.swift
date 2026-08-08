@@ -1701,6 +1701,9 @@ private struct TranscriptDetailView: View {
     @State private var showSecondOpinion = false
     @State private var showsReferenceImporter = false
     @State private var isSuggestingVocab = false
+    // F177: an action item's "Play source" writes its timestamp here; the transcript player below
+    // observes it, seeks, and resets it to nil.
+    @State private var seekRequest: Double?
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
@@ -1956,10 +1959,24 @@ private struct TranscriptDetailView: View {
                 }
             }
             if !summary.actionItems.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Action items").font(.subheadline.bold())
                     ForEach(summary.actionItems.indices, id: \.self) { index in
-                        Label(summary.actionItems[index], systemImage: "checkmark.square")
+                        ActionItemCard(
+                            item: summary.actionItems[index],
+                            onToggleDone: { done in
+                                model.updateActionItem(at: index, for: meetingID) { $0.done = done }
+                            },
+                            onCommitOwner: { owner in
+                                model.updateActionItem(at: index, for: meetingID) { $0.owner = owner }
+                            },
+                            onCommitDue: { due in
+                                model.updateActionItem(at: index, for: meetingID) { $0.due = due }
+                            },
+                            onPlaySource: summary.actionItems[index].timestamp.map { time in
+                                { transcriptMode = .read; seekRequest = time }
+                            }
+                        )
                     }
                 }
             }
@@ -1977,7 +1994,7 @@ private struct TranscriptDetailView: View {
         }
         if !summary.actionItems.isEmpty {
             lines.append("\nAction items")
-            lines.append(contentsOf: summary.actionItems.map { "- [ ] \($0)" })
+            lines.append(contentsOf: summary.actionItems.map(MeetingNotesExporter.actionItemLine))
         }
         return lines.joined(separator: "\n")
     }
@@ -2231,7 +2248,8 @@ private struct TranscriptDetailView: View {
                     meetingID: meetingID,
                     recordingURL: store.recordingURL(for: meeting),
                     segments: meeting.segments,
-                    isEdited: meeting.isTranscriptEdited
+                    isEdited: meeting.isTranscriptEdited,
+                    seekRequest: $seekRequest
                 )
                 .id(meetingID)
             } else {
@@ -2715,6 +2733,76 @@ private struct VocabularySuggestionSheet: View {
     }
 }
 
+/// One evidence-linked action item as a reviewable local card (F177): a done checkbox, the task text,
+/// a user-entered owner and due, and — when the item was matched to a transcript moment — its quote
+/// and a "Play source" button that seeks the recording. Owner/due commit on Return (or when the field
+/// loses focus), so editing them does not rewrite the meeting index on every keystroke.
+private struct ActionItemCard: View {
+    let item: ActionItem
+    let onToggleDone: (Bool) -> Void
+    let onCommitOwner: (String?) -> Void
+    let onCommitDue: (String?) -> Void
+    /// Non-nil only when the item resolved to a timestamp; the closure seeks the transcript player.
+    let onPlaySource: (() -> Void)?
+
+    @State private var ownerDraft = ""
+    @State private var dueDraft = ""
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Toggle(isOn: Binding(get: { item.done }, set: onToggleDone)) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .accessibilityLabel(item.done ? "Mark action item not done" : "Mark action item done")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.text)
+                    .strikethrough(item.done, color: .secondary)
+                    .foregroundStyle(item.done ? Color.secondary : Color.primary)
+
+                HStack(spacing: 8) {
+                    TextField("Owner", text: $ownerDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 150)
+                        .onSubmit { onCommitOwner(normalized(ownerDraft)) }
+                    TextField("Due", text: $dueDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 130)
+                        .onSubmit { onCommitDue(normalized(dueDraft)) }
+                    if let onPlaySource, let timestamp = item.timestamp {
+                        Button(action: onPlaySource) {
+                            Label(TranscriptFormatter.timestamp(timestamp), systemImage: "play.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Play the recording from where this was raised.")
+                    }
+                }
+
+                if let quote = item.quote?.trimmingCharacters(in: .whitespacesAndNewlines), !quote.isEmpty {
+                    Text("“\(quote)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.separator.opacity(0.6)))
+        .onAppear {
+            ownerDraft = item.owner ?? ""
+            dueDraft = item.due ?? ""
+        }
+    }
+
+    private func normalized(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 /// Presents proposed spelling corrections toward the user's vocabulary for review. Nothing is applied
 /// until the user confirms — corrections only take effect after explicit review (F82/F65).
 private struct GlossarySuggestionSheet: View {
@@ -2995,6 +3083,8 @@ private struct PlayableTranscriptView: View {
     let meetingID: UUID
     let recordingURL: URL
     let segments: [TranscriptSegment]
+    /// A "Play source" request from an action item card (F177): a start time to seek to, or nil.
+    @Binding var seekRequest: Double?
     @StateObject private var playback: TranscriptPlaybackController
     @State private var findText = ""
     // The filtered list is cached and recomputed only when the query changes — never on the 4 Hz
@@ -3031,7 +3121,8 @@ private struct PlayableTranscriptView: View {
         meetingID: UUID,
         recordingURL: URL,
         segments: [TranscriptSegment],
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        seekRequest: Binding<Double?> = .constant(nil)
     ) {
         self.store = store
         self.model = model
@@ -3039,6 +3130,7 @@ private struct PlayableTranscriptView: View {
         self.recordingURL = recordingURL
         self.segments = segments
         self.isEdited = isEdited
+        _seekRequest = seekRequest
         // Edited transcript → the flags describe the original segments, not what's shown, so drop
         // them (no banner, no per-line markers) rather than present stale review state.
         let report = isEdited ? TranscriptQualityReport(flagged: [], scoredCount: 0) : TranscriptQuality.review(segments)
@@ -3224,6 +3316,16 @@ private struct PlayableTranscriptView: View {
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
+        // F177 "Play source": seek (and start playing) from where an action item was raised, then
+        // clear the request. `initial: true` also handles the case where the request was set in the
+        // same tick this view (re)appeared after switching back to read mode.
+        .onChange(of: seekRequest, initial: true) { _, newValue in
+            guard let time = newValue else { return }
+            followPlayback = false
+            playback.seek(to: time)
+            playback.player.play()
+            seekRequest = nil
+        }
         .alert("Rename Marker", isPresented: Binding(
             get: { renamingMarker != nil },
             set: { if !$0 { renamingMarker = nil } }
