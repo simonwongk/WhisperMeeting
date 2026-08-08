@@ -142,6 +142,9 @@ struct OrphanedRecording: Sendable, Equatable {
 final class MeetingStore: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
     @Published var vocabulary: [String] = []
+    /// Exact `heard → preferred` replacement rules (F179), persisted like vocabulary. Reviewed before
+    /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
+    @Published private(set) var replacementRules: [ReplacementRule] = []
     @Published private(set) var storageErrorMessage: String?
 
     private(set) var startupRecoveryMessages: [String] = []
@@ -149,6 +152,7 @@ final class MeetingStore: ObservableObject {
     let rootDirectory: URL
     private let meetingFiles: BackupJSONStore<[MeetingRecord]>
     private let vocabularyFiles: BackupJSONStore<[String]>
+    private let replacementRulesFiles: BackupJSONStore<[ReplacementRule]>
     /// How long a transcript keystroke waits before its edit is flushed to disk. Coalesces the
     /// per-keystroke full-index rewrite (F40) into one debounced write; tests pass a large value to
     /// prove coalescing and drive the flush explicitly.
@@ -173,6 +177,10 @@ final class MeetingStore: ObservableObject {
             primaryURL: self.rootDirectory.appendingPathComponent("vocabulary.json"),
             backupURL: self.rootDirectory.appendingPathComponent("vocabulary.backup.json")
         )
+        replacementRulesFiles = BackupJSONStore(
+            primaryURL: self.rootDirectory.appendingPathComponent("replacement-rules.json"),
+            backupURL: self.rootDirectory.appendingPathComponent("replacement-rules.backup.json")
+        )
 
         do {
             try FileManager.default.createDirectory(
@@ -187,6 +195,7 @@ final class MeetingStore: ObservableObject {
         }
         loadMeetings()
         loadVocabulary()
+        loadReplacementRules()
     }
 
     func recordingDirectory(for id: UUID) throws -> URL {
@@ -370,6 +379,25 @@ final class MeetingStore: ObservableObject {
         persistVocabulary()
     }
 
+    /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
+    /// no-op (`heard == preferred`), or already-present rule. Capped so the list can't grow unbounded.
+    func addReplacementRule(heard: String, preferred: String) {
+        let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !h.isEmpty, !p.isEmpty, h != p else { return }
+        let rule = ReplacementRule(heard: h, preferred: p)
+        guard !replacementRules.contains(rule), replacementRules.count < Self.maxReplacementRules else { return }
+        replacementRules.append(rule)
+        persistReplacementRules()
+    }
+
+    func removeReplacementRule(_ rule: ReplacementRule) {
+        replacementRules.removeAll { $0 == rule }
+        persistReplacementRules()
+    }
+
+    private static let maxReplacementRules = 500
+
     func clearStorageError() {
         storageErrorMessage = nil
     }
@@ -411,6 +439,15 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    private func persistReplacementRules() {
+        do {
+            try replacementRulesFiles.save(replacementRules)
+            storageErrorMessage = nil
+        } catch {
+            storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+        }
+    }
+
     private func loadMeetings() {
         do {
             guard let result = try meetingFiles.load() else { return }
@@ -435,6 +472,21 @@ final class MeetingStore: ObservableObject {
                     "The vocabulary index was damaged, so WhisperMeet restored the previous readable backup."
                 )
                 try vocabularyFiles.save(vocabulary)
+            }
+        } catch {
+            startupRecoveryMessages.append(error.localizedDescription)
+        }
+    }
+
+    private func loadReplacementRules() {
+        do {
+            guard let result = try replacementRulesFiles.load() else { return }
+            replacementRules = result.value
+            if result.source == .backup {
+                startupRecoveryMessages.append(
+                    "The replacement-rule index was damaged, so WhisperMeet restored the previous readable backup."
+                )
+                try replacementRulesFiles.save(replacementRules)
             }
         } catch {
             startupRecoveryMessages.append(error.localizedDescription)

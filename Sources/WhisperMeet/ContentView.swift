@@ -1537,6 +1537,81 @@ struct SettingsView: View {
     }
 }
 
+/// Editor for exact `heard → preferred` replacement rules (F179). Rules are reviewed before they apply
+/// — they surface as proposals in a meeting's Improve ▸ Apply Replacement Rules and go through the same
+/// approve-then-apply sheet as vocabulary corrections; the audio is never touched.
+private struct ReplacementRulesEditor: View {
+    @ObservedObject var store: MeetingStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var heardDraft = ""
+    @State private var preferredDraft = ""
+
+    private var canAdd: Bool {
+        !heardDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            && !preferredDraft.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Replacement Rules").font(.headline)
+            Text("Exact fixes for a term that is always misheard the same way. Nothing changes until you review and approve them in a meeting's Improve ▸ Apply Replacement Rules.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                TextField("Heard", text: $heardDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addRule() }
+                Image(systemName: "arrow.right").foregroundStyle(.tertiary)
+                TextField("Preferred", text: $preferredDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addRule() }
+                Button("Add Rule") { addRule() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canAdd)
+            }
+
+            if !store.replacementRules.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(store.replacementRules, id: \.self) { rule in
+                            HStack(spacing: 6) {
+                                Text(rule.heard).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                                Text(rule.preferred).fontWeight(.medium)
+                                Spacer()
+                                Button {
+                                    withAnimation(reduceMotion ? nil : .uiSpring) {
+                                        store.removeReplacementRule(rule)
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(LinkPressStyle())
+                                .foregroundStyle(.tertiary)
+                                .accessibilityLabel("Remove rule \(rule.heard) to \(rule.preferred)")
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator.opacity(0.5)))
+    }
+
+    private func addRule() {
+        guard canAdd else { return }
+        store.addReplacementRule(heard: heardDraft, preferred: preferredDraft)
+        heardDraft = ""
+        preferredDraft = ""
+    }
+}
+
 private struct VocabularyView: View {
     @ObservedObject var store: MeetingStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1583,6 +1658,8 @@ private struct VocabularyView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+
+            ReplacementRulesEditor(store: store)
 
             if store.vocabulary.isEmpty {
                 ContentUnavailableView(
@@ -2302,6 +2379,18 @@ private struct TranscriptDetailView: View {
                 Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
             }
             .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
+            // F179: exact user-defined replacement rules, reviewed through the same sheet. No model.
+            Button {
+                let proposals = model.replacementRuleCorrections(for: meetingID)
+                if proposals.isEmpty {
+                    model.alertMessage = "None of your replacement rules matched this transcript."
+                } else {
+                    glossaryProposals = proposals
+                }
+            } label: {
+                Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
+            }
+            .disabled(store.replacementRules.isEmpty || meeting.isTranscriptEdited)
             if SummarizerRuntime.isSupportedOnCurrentMac {
                 Button {
                     Task {
@@ -2339,13 +2428,16 @@ private struct TranscriptDetailView: View {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
             .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
-            if meeting.isTranscriptEdited || store.vocabulary.isEmpty {
+            if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty {
                 Divider()
                 if meeting.isTranscriptEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
                 }
                 if store.vocabulary.isEmpty {
                     Text("Vocabulary-based corrections need Business Vocabulary terms (see the Vocabulary tab). The reference-file option works without them.")
+                }
+                if store.replacementRules.isEmpty {
+                    Text("Replacement rules (exact heard → preferred) are added in the Vocabulary tab.")
                 }
             }
         } label: {

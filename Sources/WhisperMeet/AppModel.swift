@@ -1345,6 +1345,14 @@ final class AppModel: ObservableObject {
         return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
     }
 
+    /// Proposed corrections from the user's exact `heard → preferred` replacement rules (F179).
+    /// Read-only — computes over the stored segments; the proposals flow through the same F82 review
+    /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened.
+    func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
+        guard let meeting = store.meeting(id: id) else { return [] }
+        return ReplacementRuleMatcher.corrections(rules: store.replacementRules, segments: meeting.segments)
+    }
+
     /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped
     /// text from the corrected segments. Skipped when the transcript was hand-edited (segment-derived
     /// text no longer matches what's shown). The recording is never opened (F82).
