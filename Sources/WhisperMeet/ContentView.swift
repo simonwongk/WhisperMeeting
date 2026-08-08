@@ -9,6 +9,7 @@ import WhisperCore
 private enum SidebarItem: Hashable {
     case record
     case vocabulary
+    case askMeetings
     case dictation
     case settings
     case meeting(UUID)
@@ -27,6 +28,11 @@ struct ContentView: View {
     @State private var selectedTags: Set<String> = []
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
+    // F180 "Ask Meetings" query + scope, held here (like searchText/selectedTags) so they survive the
+    // detail view's per-selection recreation and are restored on return.
+    @State private var askQuery = ""
+    @State private var askScopeTags: Set<String> = []
+    @State private var askTagMode: MeetingTags.MatchMode = .any
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: AppModel, dictation: DictationController) {
@@ -65,6 +71,8 @@ struct ContentView: View {
                         .tag(SidebarItem.record)
                     Label("Business Vocabulary", systemImage: "text.book.closed")
                         .tag(SidebarItem.vocabulary)
+                    Label("Ask Meetings", systemImage: "text.magnifyingglass")
+                        .tag(SidebarItem.askMeetings)
                     Label("Dictation", systemImage: "mic.fill")
                         .tag(SidebarItem.dictation)
                     Label("Settings", systemImage: "gearshape")
@@ -111,6 +119,12 @@ struct ContentView: View {
         // renders inside the sidebar and scrolls beneath the window controls (observed live,
         // F126); at this level it lands in the window toolbar like Finder/Mail.
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
+        // F180: an "Ask Meetings" cited result drives the sidebar selection from the model (survives the
+        // detail view's per-selection recreation). The detail view consumes the seek on appear.
+        .onChange(of: model.pendingNavigation) { _, request in
+            guard let request else { return }
+            selection = .meeting(request.meetingID)
+        }
         .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
             "WhisperMeet",
@@ -172,6 +186,14 @@ struct ContentView: View {
             }
         case .vocabulary:
             VocabularyView(store: store)
+        case .askMeetings:
+            AskMeetingsView(
+                model: model,
+                store: store,
+                query: $askQuery,
+                scopeTags: $askScopeTags,
+                tagMode: $askTagMode
+            )
         case .dictation:
             DictationView(dictation: dictation, log: dictation.logStore, model: model)
         case .settings:
@@ -1537,6 +1559,190 @@ struct SettingsView: View {
     }
 }
 
+/// F180 — ask a question across a chosen set of completed meetings and get cited, timestamped results.
+/// Local keyword retrieval (BM25) over the transcript segments; every result links to its meeting and
+/// (when the transcript is aligned) the moment it was said. Clicking a result opens that meeting and
+/// seeks the recording there, reusing the F177 playback path.
+private struct AskMeetingsView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: MeetingStore
+    @Binding var query: String
+    @Binding var scopeTags: Set<String>
+    @Binding var tagMode: MeetingTags.MatchMode
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var results: [CitedResult] = []
+    @State private var hasSearched = false
+
+    private var libraryTags: [String] {
+        MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
+    }
+
+    private var scope: MeetingScope {
+        MeetingScope(tags: Array(scopeTags), tagMode: tagMode)
+    }
+
+    private var scopedCount: Int {
+        store.meetings.filter {
+            MeetingScopeResolver.inScope(tags: $0.tags ?? [], isCompleted: $0.status == .completed, scope: scope)
+        }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ask Meetings").font(.largeTitle.bold())
+                Text("Search across your meetings and jump to where it was said. Everything runs on this Mac — nothing is uploaded, and only completed transcripts are searched.")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                TextField("Ask about your meetings — e.g. pricing discount", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.search)
+                    .onSubmit(runSearch)
+                Button("Ask") { runSearch() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !libraryTags.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Scope").font(.subheadline.bold())
+                        Text(scopeCaption).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if scopeTags.count > 1 {
+                            Picker("Match", selection: $tagMode) {
+                                Text("Any tag").tag(MeetingTags.MatchMode.any)
+                                Text("All tags").tag(MeetingTags.MatchMode.all)
+                            }
+                            .pickerStyle(.segmented)
+                            .fixedSize()
+                            .onChange(of: tagMode) { _, _ in runSearchIfActive() }
+                        }
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(libraryTags, id: \.self) { tag in
+                                scopeChip(tag)
+                            }
+                        }
+                    }
+                }
+            }
+
+            resultsSection
+        }
+        .padding(32)
+        .navigationTitle("Ask Meetings")
+        // Restore results when returning to this tab: the view's @State (results/hasSearched) is
+        // recreated, but `query` is bound to ContentView and survives, so recompute from it.
+        .onAppear {
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { runSearch() }
+        }
+    }
+
+    private var scopeCaption: String {
+        if scopeTags.isEmpty {
+            return "all completed meetings (\(scopedCount))"
+        }
+        return "\(scopedCount) meeting\(scopedCount == 1 ? "" : "s") matching the selected tags"
+    }
+
+    private func scopeChip(_ tag: String) -> some View {
+        let selected = scopeTags.contains(tag)
+        return Button {
+            if selected { scopeTags.remove(tag) } else { scopeTags.insert(tag) }
+            runSearchIfActive()
+        } label: {
+            Text(tag)
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary),
+                    in: Capsule()
+                )
+                .foregroundStyle(selected ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selected ? "Remove tag \(tag) from scope" : "Add tag \(tag) to scope")
+    }
+
+    @ViewBuilder
+    private var resultsSection: some View {
+        if !hasSearched {
+            ContentUnavailableView(
+                "Ask a question",
+                systemImage: "text.magnifyingglass",
+                description: Text("Type a question or keywords above to find the moments across your meetings that answer it.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if results.isEmpty {
+            ContentUnavailableView(
+                "No matches",
+                systemImage: "magnifyingglass",
+                description: Text("Nothing in the selected meetings matched. Try different words or widen the scope.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(results) { result in
+                Button {
+                    model.pendingNavigation = AppModel.MeetingNavigationRequest(
+                        meetingID: result.meetingID, seek: result.timestamp
+                    )
+                } label: {
+                    resultRow(result)
+                }
+                .buttonStyle(.plain)
+            }
+            .alternatingRowBackgrounds()
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.separator.opacity(0.55), lineWidth: 1)
+            )
+        }
+    }
+
+    private func resultRow(_ result: CitedResult) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(result.meetingTitle.isEmpty ? "Untitled meeting" : result.meetingTitle)
+                    .font(.subheadline.bold())
+                if let timestamp = result.timestamp {
+                    Label(TranscriptFormatter.clock(timestamp), systemImage: "play.circle")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("no timestamp")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+            Text(result.snippet)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private func runSearch() {
+        hasSearched = true
+        results = model.askMeetings(query: query, scope: scope)
+    }
+
+    /// Re-run only when a search is already showing, so toggling scope before the first query is quiet.
+    private func runSearchIfActive() {
+        guard hasSearched else { return }
+        results = model.askMeetings(query: query, scope: scope)
+    }
+}
+
 /// Editor for exact `heard → preferred` replacement rules (F179). Rules are reviewed before they apply
 /// — they surface as proposals in a meeting's Improve ▸ Apply Replacement Rules and go through the same
 /// approve-then-apply sheet as vocabulary corrections; the audio is never touched.
@@ -1871,6 +2077,16 @@ private struct TranscriptDetailView: View {
             }
             .navigationTitle(meeting.title)
             .onAppear { normalizeTranscriptIfNeeded(meeting) }
+            // F180: consume a "jump to this cited moment" request once this (freshly recreated) detail
+            // view for the requested meeting appears, feeding the F177 seek path. `.task(id:)` runs on
+            // (re)appear for this meeting id; the seek is a one-shot cleared from the model.
+            .task(id: meetingID) {
+                if let request = model.pendingNavigation, request.meetingID == meetingID {
+                    transcriptMode = .read // the player only exists in read mode
+                    seekRequest = request.seek
+                    model.pendingNavigation = nil
+                }
+            }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
                 Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }

@@ -69,6 +69,20 @@ public enum MeetingTags {
         return result
     }
 
+    /// The distinct tags used across a library of meetings' tag lists, deduped case-insensitively
+    /// keeping the first-seen spelling, in first-appearance order (F180). One tested helper so the
+    /// Ask-Meetings scope selector and the tag reuse editor don't each open-code the same loop.
+    public static func distinct(across library: [[String]]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for tags in library {
+            for tag in tags where seen.insert(tag.lowercased()).inserted {
+                result.append(tag)
+            }
+        }
+        return result
+    }
+
     /// Whether a meeting's tags satisfy the selected filter under the given mode. An empty selection
     /// matches everything (no filter applied).
     public static func matches(meetingTags: [String], selected: [String], mode: MatchMode) -> Bool {

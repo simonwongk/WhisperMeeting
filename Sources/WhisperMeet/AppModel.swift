@@ -147,6 +147,17 @@ final class AppModel: ObservableObject {
     /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
     @Published var showsShortcutsSheet = false
 
+    /// A request to open a meeting (and optionally seek it) from another view — the "Ask Meetings"
+    /// cited results (F180). It lives on the model, not on a view, because the detail view is recreated
+    /// per selection (`.id(meetingID)`), so a view-local seek would be wiped by the navigation itself.
+    /// `ContentView` drives the sidebar selection from it; `TranscriptDetailView` consumes the seek on
+    /// appear and clears it.
+    struct MeetingNavigationRequest: Equatable {
+        let meetingID: UUID
+        let seek: Double?
+    }
+    @Published var pendingNavigation: MeetingNavigationRequest?
+
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()
     private let recorder: AudioCaptureEngine
@@ -1351,6 +1362,30 @@ final class AppModel: ObservableObject {
     func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
         return ReplacementRuleMatcher.corrections(rules: store.replacementRules, segments: meeting.segments)
+    }
+
+    /// Cited cross-meeting retrieval (F180): rank transcript segments across the completed meetings in
+    /// `scope` against `query`, returning citations (meeting + timestamp + snippet). Local-only,
+    /// transcript-only — the tested `MeetingScopeResolver` + `MeetingRetrieval` do the work; this thin
+    /// adapter just gathers the in-scope meetings from the store and hands their segments across.
+    func askMeetings(query: String, scope: MeetingScope, limit: Int = 10) -> [CitedResult] {
+        let inScope = store.meetings.filter { meeting in
+            MeetingScopeResolver.inScope(
+                tags: meeting.tags ?? [],
+                isCompleted: meeting.status == .completed,
+                scope: scope
+            )
+        }
+        let searchable = inScope.map { meeting in
+            SearchableMeeting(
+                id: meeting.id,
+                title: meeting.title,
+                segments: meeting.segments.enumerated().map { index, segment in
+                    SearchableSegment(index: index, start: segment.start, text: segment.text)
+                }
+            )
+        }
+        return MeetingRetrieval.rank(query: query, in: searchable, limit: limit)
     }
 
     /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped
