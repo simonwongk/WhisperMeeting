@@ -7,6 +7,26 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Feature cycle — cited "Ask Meetings" (F180)
+
+- **Ask a question across your meetings and jump to where it was said (F180).** A new **Ask Meetings**
+  screen runs local keyword retrieval (BM25) over the transcript segments of a chosen set of completed
+  meetings — scoped by tag, or all of them — and returns ranked, cited results. Each result shows the
+  meeting, the timestamp, and the supporting snippet; clicking it opens that meeting and seeks the
+  recording to the moment, reusing the transcript player. It is the "normal search first" half of the
+  pattern proven by Fathom; an optional on-device AI **answer** synthesized from the cited passages, and
+  a semantic embedding re-rank, are the deferred second half (F182). Everything runs on this Mac —
+  nothing is uploaded, only completed transcripts are searched, and the recording is never opened.
+- **Retrieval is CJK-safe.** The tokenizer emits Latin words plus CJK unigrams *and* overlapping
+  bigrams, so both multi-character and single-character Chinese queries (a one-character word, a
+  surname) match — Mandarin is a first-class supported language.
+- **Verification.** Red→green on the pure WhisperCore core: `RetrievalTokenizer`, BM25 `MeetingRetrieval.rank`
+  (IDF rare-term boost, OR partial matches, deterministic ties, unaligned-segment handling, single- and
+  multi-character Chinese), and `MeetingScopeResolver`; plus an `AppModel.askMeetings` reachability test.
+  Suite **367 → 388**. An adversarial multi-agent review of the diff found and fixed two defects before
+  ship: single-character CJK queries returning nothing, and results not restoring on tab return.
+  `Scripts/quality-check.sh` passes (build + 388 tests + signed app).
+
 ## Feature cycle — post-meeting transcript, more useful (F170, F177, F178, F179)
 
 A roadmap cycle from the F175 market shortlist: make the already-local transcript more useful *after*

@@ -175,6 +175,10 @@ Beyond the core record → transcribe flow:
 - **Replacement rules** — in Business Vocabulary, add exact `heard → preferred` rules for a term that
   is always misheard the same way. Rules are proposed as corrections you review and approve per
   meeting; nothing is applied automatically and the recording is never changed.
+- **Ask Meetings** — ask a question across a chosen set of completed meetings (all of them, or scoped
+  by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
+  quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search
+  (BM25) over the transcripts — nothing is uploaded, and it works in English and Mandarin.
 
 ## Recording safety and recovery
 
