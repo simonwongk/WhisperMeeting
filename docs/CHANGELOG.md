@@ -41,6 +41,20 @@ recording is the source of truth; no diarization; original language only) are pr
   the tests asserted that cancellation happened *promptly* rather than the tree merely running to
   completion. **Not verified here:** a real `yt-dlp` run — the binary is not installed in this environment,
   so the live download, the extractor contract, and the packaged-app resource lookup need a real run.
+- **An adversarial review then confirmed 16 further defects, 15 of them fixed before ship.** Two were
+  serious enough to have broken the feature outright, and each was reproduced rather than argued: the
+  runner's output cap (a diagnostics tail-keeper) was truncating the probe's single-line JSON, so the
+  import died before any download; and ffmpeg's WAV muxer writes a `LIST`/`INFO` chunk between `fmt ` and
+  `data`, which would have made **every** link-imported meeting read as damaged forever, because this
+  app's WAV readers take the data size from a fixed offset. Both fixes were verified the same way they
+  were found — a 300 000-character payload driven through the runner, and real `ffmpeg` output inspected
+  chunk by chunk (before: offset 40 held `26`, the LIST size; after: `96000`, exactly three seconds of
+  16 kHz mono 16-bit). The rest: dropped output tails, unmapped stall errors, a stall timeout too tight
+  for ffmpeg's silent post-processing pass, speaker labels surviving past the first line of a cue,
+  `--ignore-config`, an unsanitized `--sub-langs` taken from site metadata, URLs carrying control
+  characters, missing bot-check/ffmpeg-missing classifications, and a Cancel button that closed the sheet
+  without stopping the download. The one finding left open — `source.json` is written but never read — is
+  recorded on **F184**.
 
 ## Feature cycle — cited "Ask Meetings" (F180)
 
