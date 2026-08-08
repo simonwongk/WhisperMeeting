@@ -179,6 +179,16 @@ Beyond the core record → transcribe flow:
   by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
   quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search
   (BM25) over the transcripts — nothing is uploaded, and it works in English and Mandarin.
+- **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
+  **Add from a Link…** button appears on the record screen. Paste a link to a single video and
+  WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any
+  other meeting; the meeting keeps a record of where it came from and links back to the original page.
+  Two things to know, and the app cannot resolve either: the request goes to the site you linked, so
+  **that site sees it** (nothing about your meetings is uploaded), and **many sites' terms prohibit
+  downloading** — you are responsible for having the right to the content you paste. The publisher's
+  own captions, when available, are kept only as a reviewable reference, never as the transcript. The
+  downloader ships with the local Whisper runtime; if a link fails with "the downloader is out of
+  date", update it from the same Settings section.
 
 ## Recording safety and recovery
 

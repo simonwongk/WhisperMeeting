@@ -46,6 +46,7 @@ of these index files.
 | An interrupted imported file is empty or not playable | Empty files are never promoted. Other compressed candidates are verified with AVFoundation; an unverified candidate is indexed as **Needs Attention**, not as ready audio. | The original imported file and its folder remain untouched for replacement or manual inspection. |
 | An imported WAV is truncated or declares more audio than the file contains | The WAV is not promoted as playable and the meeting is indexed as **Needs Attention**. | The original WAV and folder remain untouched for manual inspection or replacement. |
 | An index save fails, including a full disk | The app shows an error and keeps the last readable index copy. | Existing recording files and the last readable index. New unsaved metadata may need to be entered again after storage is available. |
+| A link import is interrupted mid-download (cancel, failure, or quit) | The partial download and its folder are removed; no meeting is created, and there is no resume in this version. Start the link again. | Everything already in your library. A `source.json` sidecar is written into the folder *before* the audio arrives, so a folder left behind by a crash identifies itself as a link import rather than an anonymous orphan. |
 
 Before a new meeting, WhisperMeet refuses to start when less than 500 MB is available. During a
 meeting it warns when available storage falls below 2 GB, while leaving the user in control of when

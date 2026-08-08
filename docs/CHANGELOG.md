@@ -7,6 +7,41 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Feature cycle — import audio from a link, opt-in (F183)
+
+- **Paste a link, get a local transcript (F183).** With *Import from a Link* switched on in Settings,
+  an **Add from a Link…** button fetches just the audio of a single video into a new meeting, which the
+  **existing** local pipeline transcribes unchanged. The meeting carries typed provenance (`MediaSource`)
+  plus an auto-applied tag, and its detail view links back to the original page. The publisher's captions,
+  when available, are parsed only into a reviewable reference — never the transcript.
+- **It is off by default, on purpose.** Every other boundary-crossing capability here is opt-in: Qwen is
+  an explicit opt-in, Claude summaries need a saved key plus a confirmed press. A toggle keeps the network
+  path explicit rather than ambient. `docs/PRODUCT_SPEC.md` was deliberately **not** amended; the tension
+  (the spec calls the Claude summary "the one optional cloud path") is recorded in the ticket instead,
+  along with the fact that this fetch is inbound-only and uploads nothing. The link sheet and the README
+  both state plainly that the request reaches the linked site and that the user is responsible for having
+  the right to the content.
+- **Two invariants are enforced at the boundary, not trusted.** Captions become a *write path* into the
+  transcript the moment the comparison sheet's adopt action exists, so the subtitle parser **strips
+  speaker labels** (`>>`, `JOHN:`, `[Speaker 1]`) before a segment is ever constructed — no diarization by
+  import — and caption fetches **pin the sub-language** to the video's own, so an auto-translated track can
+  never be adopted.
+- **Two subprocess-lifecycle gaps closed** (both genuinely new work, not copies of an existing client): a
+  `ProcessGroupRunner` spawns the downloader as its own process-group leader so cancelling kills yt-dlp
+  **and the ffmpeg it spawns** — the orphan-grandchild gap `LocalSummarizer` had documented — and adds a
+  **stall timeout**, because a network transfer stuck on a dead socket hangs forever where a slow local
+  transcriber is still making progress.
+- **Verification.** Red-green across the pure core (URL validation incl. a flag-injection guard, probe
+  parsing, progress/failure classification, subtitle parsing) and the `AppModel.importFromURL` seam
+  (provenance + auto tag + pinned caption language, failed download leaves no meeting or orphan directory,
+  off-by-default refusal reaches no network, playlists/live refused before any download, long-video
+  confirm-then-proceed). Suite **415 → 428**. Two findings came from testing rather than assumption: the
+  process-group kill silently did nothing until the child's inherited signal **mask** was cleared
+  (`POSIX_SPAWN_SETSIGMASK` — Swift-concurrency workers block signals), and the first green was false until
+  the tests asserted that cancellation happened *promptly* rather than the tree merely running to
+  completion. **Not verified here:** a real `yt-dlp` run — the binary is not installed in this environment,
+  so the live download, the extractor contract, and the packaged-app resource lookup need a real run.
+
 ## Feature cycle — cited "Ask Meetings" (F180)
 
 - **Ask a question across your meetings and jump to where it was said (F180).** A new **Ask Meetings**
