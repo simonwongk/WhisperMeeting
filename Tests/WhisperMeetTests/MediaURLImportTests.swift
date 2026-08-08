@@ -67,6 +67,21 @@ func linkImportCreatesMeetingWithProvenance() async throws {
 }
 
 @MainActor
+@Test("Captions are skipped when the video's language is unknown, never guessed (F183)")
+func captionsSkippedWhenLanguageUnknown() async throws {
+    let (model, root) = try makeModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let box = SeamBox()
+    // No `language` in the probe — asking for a fixed language here is how an auto-TRANSLATED caption
+    // track would be fetched, which must never reach the transcript.
+    stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "Unknown language", durationSeconds: 60))
+
+    let id = try #require(await model.importFromURL("https://youtu.be/abc"))
+    #expect(box.captionLangs == nil) // the caption fetch never ran
+    #expect(model.store.meeting(id: id)?.referenceSegments == nil)
+}
+
+@MainActor
 @Test("A failed download leaves no meeting and no orphan directory (F183)")
 func failedDownloadLeavesNothingBehind() async throws {
     let (model, root) = try makeModel()

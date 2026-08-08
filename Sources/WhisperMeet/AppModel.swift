@@ -1322,9 +1322,17 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.mediaDownloadProgress = progress }
             }
             mediaDownloadProgress = nil
-            // Captions are a reviewable reference only, pinned to the video's own language so a
-            // machine-translated track can never enter the transcript.
-            let reference = await downloadCaptions(parsed.url, directory, probe.language ?? "en")
+            // Captions are a reviewable reference only, pinned to the video's OWN language so a
+            // machine-translated track can never enter the transcript. When the probe doesn't report a
+            // language, captions are skipped entirely rather than guessed: asking for a fixed language
+            // on an unknown-language video is exactly how an auto-translated track would be fetched,
+            // and adopting one would break "preserve the original spoken language".
+            let reference: [TranscriptSegment]
+            if let language = probe.language?.trimmingCharacters(in: .whitespaces), !language.isEmpty {
+                reference = await downloadCaptions(parsed.url, directory, language)
+            } else {
+                reference = []
+            }
             let title = (probe.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
                 $0.isEmpty ? nil : $0
             } ?? "Imported from \(parsed.host)"

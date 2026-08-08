@@ -78,6 +78,15 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         return cancelRequested
     }
 
+    /// Forgets the reaped child so a later `cancel()` cannot signal a **recycled** pid. Once `waitpid`
+    /// has returned, the kernel is free to reuse that pid for an unrelated process, and a stale
+    /// `killpg` would then terminate somebody else's process group.
+    private func forgetChild() {
+        lock.lock()
+        defer { lock.unlock() }
+        childPID = -1
+    }
+
     /// Terminates the entire process group. Safe to call before the child exists (the request is
     /// remembered and applied at spawn) and after it has exited (a no-op).
     public func cancel() {
@@ -197,6 +206,9 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         } onCancel: {
             self.cancel()
         }
+        // The child has been reaped; its pid may be recycled from here on.
+        forgetChild()
+        stallWatchdog.cancel()
 
         if state.stalled { throw ProcessGroupRunnerError.stalled(stallTimeout) }
         try Task.checkCancellation()
