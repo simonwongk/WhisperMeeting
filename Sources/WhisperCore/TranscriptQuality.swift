@@ -110,6 +110,59 @@ public enum TranscriptQuality {
         return TranscriptQualityReport(flagged: flagged, scoredCount: scoredCount)
     }
 
+    // MARK: - Cross-segment repetition (F186)
+
+    /// Below this many segments there is too little evidence to call a decode degenerate, and a false
+    /// accusation on a short transcript is worse than silence.
+    static let repetitionMinimumSegments = 20
+    /// A decode is degenerate when this share or less of its lines are distinct. Measured against real
+    /// transcripts: seven healthy recordings sat at 0.98–1.00, a real conversation full of "Yeah."/"Bye."
+    /// acknowledgements sat at 0.48, and the observed loop sat at **0.016**. The bar is set well below
+    /// the chatty-but-healthy case, because falsely accusing a good transcript is worse than missing a
+    /// partial loop.
+    static let repetitionUniqueRatioThreshold = 0.25
+    /// …and one line must account for at least this share of the transcript. This is what separates a
+    /// stuck decode from ordinary speech: the observed loop repeated a **two-character** line for 73% of
+    /// the transcript, while real meetings repeat equally short fillers ("Yeah.", "嗯", "对") for only
+    /// 11–30%. Line length cannot tell them apart — dominance can.
+    static let repetitionDominanceThreshold = 0.5
+
+    /// A plain-language notice when the transcript looks like a **looping decode** — the same line
+    /// emitted over and over (F186).
+    ///
+    /// This is deliberately a *cross-segment* check. `classify` measures repetition **within** one
+    /// segment (the model's `compression_ratio`, or F55's text-only equivalent), which a loop defeats
+    /// completely: every individual line is clean, so the transcript is scored and reported at full
+    /// confidence while being mostly one repeated sentence. Judging the segment list as a whole is the
+    /// only way to see it, and it works on any engine because it needs no model metrics — which matters
+    /// because the Qwen path emits none.
+    ///
+    /// Returns `nil` for healthy transcripts. It only ever *warns*: the recording is the source of
+    /// truth, and the user decides whether to re-run with the other engine.
+    public static func repetitionNotice(_ segments: [TranscriptSegment]) -> String? {
+        let lines = segments
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard lines.count >= repetitionMinimumSegments else { return nil }
+
+        var counts: [String: Int] = [:]
+        for line in lines { counts[line, default: 0] += 1 }
+        let uniqueRatio = Double(counts.count) / Double(lines.count)
+        guard let repeats = counts.values.max() else { return nil }
+        let dominance = Double(repeats) / Double(lines.count)
+        guard uniqueRatio <= repetitionUniqueRatioThreshold,
+              dominance >= repetitionDominanceThreshold else {
+            return nil
+        }
+
+        let percent = Int((dominance * 100).rounded())
+        return """
+        This transcript looks like a decode that got stuck: one line repeats \(repeats) times, \
+        about \(percent)% of it. The recording itself is fine — try Second Opinion with the other \
+        engine, or transcribe it again.
+        """
+    }
+
     /// A compression-ratio-equivalent derived from text alone, for transcripts (Qwen, legacy) that
     /// carry no model metrics. Deterministic and framework-free — a degenerate loop repeats tokens,
     /// so total/distinct token count spikes above the same 2.4 threshold Whisper's real ratio uses.

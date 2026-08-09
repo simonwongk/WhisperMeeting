@@ -2175,6 +2175,8 @@ private struct TranscriptDetailView: View {
     // F177: an action item's "Play source" writes its timestamp here; the transcript player below
     // observes it, seeks, and resets it to nil.
     @State private var seekRequest: Double?
+    // F186: the cross-segment repetition notice, computed once per meeting rather than per redraw.
+    @State private var repetitionNotice: String?
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
@@ -2271,6 +2273,12 @@ private struct TranscriptDetailView: View {
                     seekRequest = request.seek
                     model.pendingNavigation = nil
                 }
+                // Once per meeting, off the render path. Suppressed on a hand-edited transcript, like
+                // every other segment-derived overlay — the segments no longer describe what is shown.
+                let segments = store.meeting(id: meetingID)?.segments ?? []
+                repetitionNotice = (store.meeting(id: meetingID)?.isTranscriptEdited ?? false)
+                    ? nil
+                    : TranscriptQuality.repetitionNotice(segments)
             }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
@@ -2735,6 +2743,20 @@ private struct TranscriptDetailView: View {
             // "original language only" is visibly enforced rather than silently trusted (F32).
             if let warning = meeting.languageWarning {
                 Label(warning, systemImage: "character.bubble.badge.exclamationmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .bannerSurface(.red)
+                    .accessibilityElement(children: .combine)
+            }
+
+            // A looping decode is clean segment-by-segment, so the per-segment quality review scores it
+            // and reports full confidence; only judging the whole segment list reveals it (F186).
+            // Computed once per meeting in `.task` below, never per redraw — the segment list can run to
+            // thousands of entries and this sits in a view that repaints during playback (F160).
+            if let notice = repetitionNotice {
+                Label(notice, systemImage: "repeat.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(10)
