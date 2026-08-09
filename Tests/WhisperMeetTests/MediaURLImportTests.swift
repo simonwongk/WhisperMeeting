@@ -59,7 +59,13 @@ func linkImportCreatesMeetingWithProvenance() async throws {
     #expect(meeting.tags == ["YouTube"])                       // provenance mirrored as a tag
     #expect(meeting.referenceSegments?.first?.text == "caption line")
     #expect(box.captionLangs == "en")                          // pinned to the video's own language
-    #expect(model.alertMessage == nil)
+    // NOT `alertMessage == nil`: when no transcription engine is installed, the shared adopt path posts
+    // a benign "install the model, then choose Transcribe" notice. That is success, not failure — and
+    // asserting nil made this test pass on a dev Mac with the runtime installed and fail on CI without
+    // it. Assert the import raised no *error* instead, which holds on either machine.
+    let notice = model.alertMessage
+    #expect(notice == nil || notice?.contains("Install the selected transcription model") == true,
+            "unexpected alert after a successful link import: \(notice ?? "nil")")
     // The provenance sidecar is written into the meeting folder before the bytes arrive.
     let sidecar = model.store.recordingDirectoryURL(for: id)
         .appendingPathComponent(MediaSource.sidecarFilename)
