@@ -136,6 +136,71 @@ func cancelsLocalProcess() async throws {
     }
 }
 
+/// F153 — the real helper shells out to **ffmpeg** to decode the recording, and the concern was that
+/// cancelling would leave that decoder running. It does not, but only because of behaviour Foundation
+/// does not document: `Process` launches the child as its own process-group leader (verified:
+/// `getpgid(child) == child`), the grandchild inherits that group, and `terminate()` signals the group
+/// rather than the single pid. A raw `kill(childPid, SIGTERM)` — what the ticket assumed the code did —
+/// *does* leave the decoder alive, so the margin here is one implementation detail wide.
+///
+/// This test exists to pin that invariant. If Apple ever changes `Process.terminate()`, or someone
+/// swaps it for a direct `kill`, this fails instead of silently orphaning a decoder on every cancel.
+/// The stand-in below spawns a long-lived grandchild the way the real helper does; the assertion is
+/// about the process *tree*, not about ffmpeg itself.
+@Test("Cancelling transcription kills the helper's decoder grandchild, not just the helper (F153)")
+func cancelKillsDecoderGrandchild() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetTests-\(UUID().uuidString)", isDirectory: true)
+    let executableURL = directory.appendingPathComponent("whisper")
+    let audioURL = directory.appendingPathComponent("meeting.wav")
+    let pidFile = directory.appendingPathComponent("decoder.pid")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: audioURL)
+    try makeExecutable(
+        at: executableURL,
+        script: """
+        #!/bin/zsh
+        sleep 120 &
+        print $! > \(pidFile.path)
+        exec sleep 120
+        """
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let client = LocalWhisperClient(
+        executableURL: executableURL,
+        modelDirectory: directory.appendingPathComponent("Models")
+    )
+    let startedAt = Date()
+    let task = Task { try await client.transcribe(recordingAt: audioURL) }
+
+    // Wait for the "decoder" to exist before cancelling.
+    var decoder: pid_t = -1
+    for _ in 0..<200 {
+        try? await Task.sleep(for: .milliseconds(50))
+        if let text = try? String(contentsOf: pidFile, encoding: .utf8),
+           let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            decoder = pid
+            break
+        }
+    }
+    #expect(decoder > 0)
+    #expect(kill(decoder, 0) == 0, "the stand-in decoder never started")
+
+    task.cancel()
+    await #expect(throws: CancellationError.self) { try await task.value }
+
+    var died = false
+    for _ in 0..<100 {
+        try? await Task.sleep(for: .milliseconds(50))
+        if kill(decoder, 0) != 0 { died = true; break }
+    }
+    #expect(died, "the decoder survived cancellation — the process group was not killed")
+    // Without this the test would pass for the wrong reason: if the kill did nothing, both processes
+    // would simply exit on their own ~120 s later and everything would look dead.
+    #expect(Date().timeIntervalSince(startedAt) < 20, "cancellation did not take effect promptly")
+}
+
 @Test("Cancellation before launch prevents the process from spawning")
 func cancellationBeforeLaunch() throws {
     let process = Process()

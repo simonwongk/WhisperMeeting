@@ -120,6 +120,12 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         outputUse: OutputUse = .diagnostics,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async throws -> Outcome {
+        // Never spawn a child for an already-cancelled task: the old `ProcessCancellationController`
+        // made launch-vs-cancel one atomic decision, and losing that would let a cancellation that
+        // lands just before launch start a process nobody is waiting on.
+        try Task.checkCancellation()
+        if isCancelRequested() { throw CancellationError() }
+
         var argv: [UnsafeMutablePointer<CChar>?] = [strdup(executableURL.path)]
         argv.append(contentsOf: arguments.map { strdup($0) })
         argv.append(nil)
