@@ -22,8 +22,18 @@ private func makeDegradedStore() throws -> (MeetingStore, URL) {
 /// The seed store is `.complete` (no index files exist yet), so its `upsert` is allowed and
 /// `BackupJSONStore.save` lays down identical primary and backup copies; corrupting only the primary
 /// makes the reopened store load from the backup: non-empty and read-only.
+///
+/// `status`, `segments` and `recordingBytes` are parameters (with the original defaults) because the
+/// engine-running mutators need more than a bare record to reach their guard: `computeSecondOpinion`
+/// returns early unless the meeting is `.completed` with segments, and `reTranscribeSegment` slices
+/// the recording as a canonical WAV before it runs anything. Seeding a five-byte "audio" placeholder
+/// there would make the clip step throw and the guard never be the thing under test (F187).
 @MainActor
-private func makeBackupRecoveredStore() throws -> (store: MeetingStore, root: URL, meeting: MeetingRecord) {
+private func makeBackupRecoveredStore(
+    status: MeetingStatus = .recorded,
+    segments: [TranscriptSegment] = [],
+    recordingBytes: Data = Data("audio".utf8)
+) throws -> (store: MeetingStore, root: URL, meeting: MeetingRecord) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("WhisperMeetRecovered-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -31,13 +41,15 @@ private func makeBackupRecoveredStore() throws -> (store: MeetingStore, root: UR
     let id = UUID()
     let directory = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: directory.appendingPathComponent("meeting.wav"))
+    try recordingBytes.write(to: directory.appendingPathComponent("meeting.wav"))
 
     let meeting = MeetingRecord(
         id: id,
         title: "Quarterly review",
         recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: status,
         transcriptText: "the original transcript",
+        segments: segments,
         notes: "the original notes"
     )
     let seed = MeetingStore(rootDirectory: root)
@@ -228,7 +240,9 @@ func startupRecoverySuppressedWhileDegraded() async throws {
     #expect(store.persistCount == 0)
     let alert = try #require(model.alertMessage)
     #expect(alert.contains("read-only"))
-    #expect(!alert.contains("added it back to meeting history"))
+    // The orphan-adoption message as it is worded TODAY. Asserting the pre-rename wording here would
+    // be true by construction and could never fail, which is how this assertion originally shipped.
+    #expect(!alert.contains("was added back to meeting history"))
 }
 
 // MARK: - Work that runs to completion before its write is refused (F187)
@@ -323,9 +337,207 @@ func degradedLibraryRefusesSummarize() throws {
     // observable half of that pair — `localSummarizePathStoresSummary` asserts on it for the
     // success case, so a registered task and a nil id cannot coexist.
     #expect(model.activeSummarizationID == nil)
-    #expect(!model.isSummarizing)
     #expect(store.meeting(id: meeting.id)?.summary == nil)
     let message = try #require(model.alertMessage)
+    #expect(message.contains("Summarization cannot start"))
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+// MARK: - Second opinion (F187)
+
+/// Counts engine invocations across the `@Sendable`-adjacent stub boundary.
+private final class EngineCallCounter: @unchecked Sendable {
+    var runs = 0
+}
+
+@MainActor
+private func stubEngine(_ model: AppModel, counter: EngineCallCounter) {
+    model.runTranscriptionEngineOverride = { _, _ in
+        counter.runs += 1
+        return TranscriptionResult(
+            id: "stub", text: "a different reading", languageCode: "en",
+            audioDuration: 2, confidence: nil,
+            segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "a different reading")]
+        )
+    }
+}
+
+// The most expensive refusal in the app: a second opinion is a whole SECOND ASR pass over the entire
+// recording — minutes to tens of minutes. Its only product, `secondOpinionSpans`, is consumable solely
+// through `applySecondOpinionSpan`, whose `store.update` a degraded store refuses. Without a guard the
+// user waits out a full re-transcription, reads the comparison sheet, clicks Replace on each
+// divergence, and every click silently does nothing (F187).
+@Test("Requesting a second opinion is refused while degraded, before the engine flag is claimed")
+@MainActor
+func degradedLibraryRefusesSecondOpinionRequest() throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore(
+        status: .completed,
+        segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "the original transcript")]
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    model.requestSecondOpinion(id: meeting.id)
+
+    // Both are set synchronously by the un-refused path, before the worker task is even spawned — so
+    // they are the state that proves the refusal happened at the entry point, not inside the task.
+    #expect(!model.isRunningAuxiliaryEngine)
+    #expect(model.secondOpinionRunningID == nil)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+    #expect(message.contains("second opinion"))
+}
+
+@Test("The second-opinion worker refuses while degraded and never starts the other engine")
+@MainActor
+func degradedLibraryRefusesSecondOpinionWork() async throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore(
+        status: .completed,
+        segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "the original transcript")]
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    let counter = EngineCallCounter()
+    stubEngine(model, counter: counter)
+
+    await model.computeSecondOpinion(id: meeting.id)
+
+    #expect(counter.runs == 0)
+    #expect(model.secondOpinionSpans == nil)
+    // A refusal is not an engine failure: the sheet must not render "the comparison failed".
+    #expect(!model.secondOpinionFailed)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("second opinion"))
+    #expect(message.contains("read-only"))
+}
+
+// MARK: - The backstop under every engine path (F187)
+
+// Three consecutive briefs on this branch enumerated "all the mutating entry points" by grepping for
+// `store.upsert`/`store.update` call sites, and all three missed one — because the expensive work and
+// the write live in different functions. `executeEngine` is the single admission point for every heavy
+// engine pass (second opinion, segment re-run, full transcription), so it refuses on its own account:
+// whatever entry point someone adds next, no minutes-long model run can start against a library that
+// cannot save the result.
+@Test("No engine pass can start while degraded, not even a stubbed one")
+@MainActor
+func degradedLibraryRefusesEveryEngineRun() async throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    let counter = EngineCallCounter()
+    stubEngine(model, counter: counter)
+    let selection = MeetingTranscriptionSelection(engine: model.selectedEngine, language: model.selectedLanguage)
+
+    var thrown: Error?
+    do {
+        _ = try await model.executeEngine(selection, on: store.recordingURL(for: meeting))
+    } catch {
+        thrown = error
+    }
+
+    #expect(thrown as? MeetingStoreError == .engineRunIsReadOnly)
+    // The refusal precedes the override branch, so even a test double never runs.
+    #expect(counter.runs == 0)
+    // It names transcription, not recording: this backstop is reachable from every engine path.
+    let message = try #require((thrown as? MeetingStoreError)?.errorDescription)
+    #expect(message.contains("Transcription cannot start"))
+    #expect(message.contains("read-only"))
+}
+
+// MARK: - Guards that were load-bearing but untested (F187)
+
+/// Counts the link-import network seams so a removed guard shows up as work actually attempted, not
+/// just as a nil return that the guard and a later failure would both produce.
+private final class NetworkSeamCounter: @unchecked Sendable {
+    var probes = 0
+    var downloads = 0
+    var captionFetches = 0
+}
+
+// The worst instance of the whole bug. `importFromURL` creates the meeting directory, writes the
+// provenance sidecar, and pulls the media DOWN OVER THE NETWORK, and only then reaches the `upsert`
+// inside `adoptImportedRecording` that a degraded store refuses — leaving the download sitting in the
+// library, unindexed, while `orphanedRecordings()` reports nothing because the index is degraded.
+// The network seams are stubbed with a real (tiny) file, exactly as `MediaURLImportTests` does, so
+// removing the guard costs a folder on disk rather than a real request.
+@Test("A link import is refused while degraded, before the probe or the download")
+@MainActor
+func degradedLibraryRefusesLinkImport() async throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    model.linkImportEnabled = true // off by default; opt in so the feature flag cannot be the refusal
+    let network = NetworkSeamCounter()
+    model.probeMediaURL = { _ in
+        network.probes += 1
+        return MediaProbe(title: "Quarterly review", durationSeconds: 600, uploader: "Acme", language: "en")
+    }
+    model.downloadMedia = { _, directory, _ in
+        network.downloads += 1
+        let file = directory.appendingPathComponent("recording.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: file)
+        return file
+    }
+    model.downloadCaptions = { _, _, _ in
+        network.captionFetches += 1
+        return []
+    }
+
+    let imported = await model.importFromURL("https://www.youtube.com/watch?v=abc123")
+
+    #expect(imported == nil)
+    #expect(network.probes == 0)
+    #expect(network.downloads == 0)
+    #expect(network.captionFetches == 0)
+    #expect(store.meetings.isEmpty)
+    #expect(!model.isImporting)
+    // Nothing was laid down: no meeting folder, so no sidecar and no unindexed audio.
+    let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: recordings.path))
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("Import cannot start"))
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+// The segment re-run reaches the engine through `makeSegmentClip`, which reads and slices the real
+// recording, and only then hits a `store.update` a degraded store refuses. The seed here is a genuine
+// 48 kHz WAV so the clip step CANNOT be what stops it — with the guard removed this walks all the way
+// to `executeEngine`, and the message the user sees changes from the specific one to the backstop's
+// generic one. That message is what makes this test genuinely red without its guard.
+@Test("Re-transcribing a segment is refused while degraded, with the specific reason")
+@MainActor
+func degradedLibraryRefusesSegmentReTranscription() async throws {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 1, text: "first"),
+        TranscriptSegment(speaker: nil, start: 1, end: 2, text: "second wrong")
+    ]
+    var wav = WAVWriter.header(sampleRate: 48_000, dataByteCount: 48_000 * 2 * 3)
+    wav.append(Data(count: 48_000 * 2 * 3))
+    let (store, root, meeting) = try makeBackupRecoveredStore(
+        status: .completed, segments: segments, recordingBytes: wav
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    let counter = EngineCallCounter()
+    stubEngine(model, counter: counter)
+
+    await model.reTranscribeSegment(id: meeting.id, index: 1)
+
+    #expect(counter.runs == 0)
+    #expect(store.meeting(id: meeting.id)?.segments.map(\.text) == ["first", "second wrong"])
+    let message = try #require(model.alertMessage)
+    // Named by the action the user actually took — not the backstop's generic "Transcription", which
+    // is what surfaces if this entry point's own guard is deleted.
+    #expect(message.contains("Re-transcribing a segment cannot start"))
     #expect(message.contains("read-only"))
     #expect(message.contains("recovery"))
 }

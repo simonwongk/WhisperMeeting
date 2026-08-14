@@ -459,6 +459,17 @@ final class AppModel: ObservableObject {
         on url: URL,
         onProgress: @escaping @Sendable (LocalTranscriptionProgress) async -> Void = { _ in }
     ) async throws -> TranscriptionResult {
+        // The systematic backstop (F187). Every heavy engine pass — full transcription, per-segment
+        // re-run, second opinion — is admitted here, and nowhere else. The per-entry-point
+        // `libraryAcceptsChanges` guards are what the user should normally hit, because they name the
+        // action they attempted; this one exists for the entry point NOBODY REMEMBERED TO GUARD.
+        // Three consecutive passes over this branch enumerated "every mutating entry point" by
+        // grepping `store.upsert`/`store.update` call sites, and each missed one, because the
+        // expensive work and the refused write live in different functions. So the guarantee is
+        // placed where it cannot be missed by inspection: minutes of model time are never spent on a
+        // library that will refuse to save the result. It sits ABOVE the override branch on purpose —
+        // not even a stubbed engine runs while degraded.
+        guard !store.isDegraded else { throw MeetingStoreError.engineRunIsReadOnly }
         if let override = runTranscriptionEngineOverride {
             return try await override(selection, url)
         }
@@ -495,6 +506,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before requesting a second opinion."
             return
         }
+        // Guarded here as well as in the worker, so the refusal is one immediate message rather than
+        // one raised from inside a detached task after the engine flag was already claimed (F187).
+        guard libraryAcceptsChanges("Requesting a second opinion") else { return }
         secondOpinionFailed = false
         secondOpinionSpans = nil
         secondOpinionProgress = nil
@@ -512,6 +526,12 @@ final class AppModel: ObservableObject {
     /// Runs the non-selected engine on the meeting's recording and stores the comparison spans. Never
     /// overwrites the stored transcript — only `applySecondOpinionSpan` does, on explicit user action.
     func computeSecondOpinion(id: UUID) async {
+        // A second opinion is the single most expensive thing the app does — a whole second ASR pass
+        // over the entire recording — and its ONLY product, `secondOpinionSpans`, can be consumed
+        // solely through `applySecondOpinionSpan`, whose `store.update` a degraded store refuses. So
+        // without this the user waits out a full re-transcription, reviews the divergences, and every
+        // Replace click silently does nothing (F187).
+        guard libraryAcceptsChanges("Requesting a second opinion") else { return }
         guard let meeting = store.meeting(id: id), meeting.status == .completed, !meeting.segments.isEmpty else { return }
         secondOpinionFailed = false
         // Run the genuine OTHER engine relative to the engine that produced this transcript (recorded on
@@ -1402,6 +1422,13 @@ final class AppModel: ObservableObject {
     /// against the indexed duration), upsert the record, then start transcription if the engine is
     /// installed. Both import entry points — local file and link — call this, so there is exactly one
     /// place where a meeting becomes real (F183).
+    ///
+    /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
+    /// not an oversight: both `importRecording` and `importFromURL` call `libraryAcceptsChanges`
+    /// before they copy or download anything, so this is unreachable while the library is degraded.
+    /// A third caller added without that guard would reach the `upsert` below, which `MeetingStore`
+    /// silently refuses — correctness is safe, but the user would have paid for the copy first. Guard
+    /// any new caller up front, the way the two existing ones do (F187).
     @discardableResult
     func adoptImportedRecording(
         id: UUID,
@@ -1575,7 +1602,7 @@ final class AppModel: ObservableObject {
         // Ahead of the per-engine preconditions, so a read-only library is reported as the real
         // blocker rather than a missing model or key — and, for Claude, before an API call is spent
         // on a summary the store would then refuse to save (F187).
-        guard libraryAcceptsChanges("Summarizing") else { return }
+        guard libraryAcceptsChanges("Summarization") else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
         // than fail); Claude needs a saved key. Neither uploads anything for `.local` (F164).

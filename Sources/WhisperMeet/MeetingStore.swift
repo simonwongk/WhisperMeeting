@@ -167,8 +167,9 @@ enum ReadOnlyLibraryNotice {
     /// rather than the generic one; only the shared middle is factored out.
     static let recordingRefused = refused("Recording", resolution: "before recording")
     /// Before a library-changing action that is not recording — import, transcription, summarization.
-    /// The action reads as the subject of the sentence, so pass a gerund noun ("Import",
-    /// "Transcription", "Summarizing"), not an imperative verb.
+    /// The action reads as the subject of the sentence, so pass a noun phrase naming the action
+    /// ("Import", "Transcription", "Summarization", "Re-transcribing a segment"), not an imperative
+    /// verb.
     static func actionRefused(_ action: String) -> String {
         refused(action, resolution: "first")
     }
@@ -188,10 +189,18 @@ enum MeetingStoreError: LocalizedError, Equatable {
     /// would create files or records may run.
     case libraryIsReadOnly
 
+    /// A transcription-engine pass was refused for the same reason, thrown by `AppModel.executeEngine`
+    /// — the one admission point every heavy engine run passes through (F187). Separate from
+    /// `libraryIsReadOnly` only so the message names transcription rather than recording: this is
+    /// reachable from the full transcription, the per-segment re-run, and the second opinion alike.
+    case engineRunIsReadOnly
+
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
             return ReadOnlyLibraryNotice.recordingRefused
+        case .engineRunIsReadOnly:
+            return ReadOnlyLibraryNotice.actionRefused("Transcription")
         }
     }
 }
