@@ -25,5 +25,9 @@ func unreadableDictationLogIsNotOverwritten() throws {
         .filter { $0.contains(".unreadable-") }
     #expect(quarantined.count == 1)
     #expect(try Data(contentsOf: root.appendingPathComponent(quarantined[0])) == bytes)
+    // The primary file itself, not just the copy aside: `StoreQuarantine.preserve` is idempotent per
+    // byte content, so the two assertions above hold even with the `record` guard removed — only this
+    // one and the emptiness check below actually fail when the guard goes (F187).
+    #expect(try Data(contentsOf: primary) == bytes)
     #expect(store.log.entries.isEmpty)
 }
