@@ -27,7 +27,7 @@ data**; the synthesized `encode(to:)` only ever emits an object, so an **older r
 data** with `typeMismatch`. The change was reviewed as backward-compatible. It is — and it is
 forward-fatal. Only one of the two directions was considered.
 
-Two bundles existed with different schemas: the installed app built from `4bd5cb2` (pre-`94deb11b`,
+Two bundles existed with different schemas: the installed app built from `4bd5cb2` (pre-`94de11b`,
 `nm` reports **0** `ActionItem` symbols) and a development bundle built from `1434006` (**356**
 symbols). Exactly one meeting in the library carried a summary, with six object-shaped action items.
 A summary with an *empty* `actionItems` array would not have been fatal.
@@ -186,15 +186,46 @@ through salvage so a dropped record cannot reappear as a blank stub.
 ### F188 — schema compatibility and bundle identity
 
 **Compatibility is bidirectional or it is nothing.** The rejected design checked only that current
-readers accept old payloads — the safe direction, which would not have caught `94de11b`. The gate must
-also test **current encoder output against frozen historical readers**, declare a
-storage-format revision with a supported-reader/writer policy, and either round-trip unknown fields and
-raw enum values losslessly or fail closed. A checked-in inventory of persisted roots and nested types
-keeps the surface honest. Fixtures are synthetic and sanitized, checked against pinned commits.
+readers accept old payloads — the safe direction, which would not have caught `94de11b`.
 
-**Also disarm the trigger, not only survive it.** Every other fix here survives an asymmetric encoding;
-encoding a text-only action item back to a bare string removes the asymmetry. Whether to do this or
-rely solely on fail-closed compatibility is an open decision below.
+*Frozen reader graphs* (resolved). One reader graph per **storage wire revision**, copied and
+minimized from the exact shipped source and annotated with its commit. Each must preserve the
+*historical decoding behaviour* — nesting, optionality, enum handling, date strategy and key names —
+not merely the top-level type. A compiled old app is brittle and a recorded decode trace proves only
+one execution; frozen readers exercise the real wire contract in ordinary tests.
+
+Three checks:
+
+1. the current reader decodes each synthetic historical fixture;
+2. each still-supported frozen reader decodes canonical bytes emitted by the current writer;
+3. current writer output matches checked-in canonical golden bytes for representative records.
+
+Two qualifications. Fixtures cover **representative graphs**, not one happy-path record: every
+`ActionItem` state, nested health data, enums, dates, optional fields, non-ASCII text and mixed
+historical shapes. And check 2 applies only to readers within an explicit **supported writer floor** —
+for a deliberately retired reader the test asserts the compatibility fence and isolation, never an
+accidental decode failure.
+
+Encoding and decoding move behind one small `LibraryIndexCodec` seam so production and contract tests
+share the exact canonical encoder settings. Exact-byte goldens become appropriate once that encoding is
+deliberately canonical, and **must not be generated from the implementation under test** — a golden
+dumped from the current encoder only asserts that the code equals itself.
+
+Unknown fields and unknown raw enum values must round-trip losslessly or fail closed. A checked-in
+inventory of persisted roots and nested types keeps the surface honest. Fixtures are synthetic and
+sanitized, pinned to commits.
+
+**No conditional bare-string encoding for `ActionItem`** (resolved — the earlier proposal is dropped).
+Encoding a text-only item back to a string is not a cure: it holds only while *every* item is
+text-only, and enrichment is the entire point of the feature — `quote` and `timestamp` are derived
+automatically, and `done`/`owner`/`due` arrive from ordinary UI edits. One rich item breaks the old
+reader again, while mixed string/object arrays obscure the format contract and manufacture false
+confidence. The canonical format encodes `ActionItem` as an object, consistently; old string-form data
+is preserved through the current reader's migration; and retired binaries are kept from writing the
+library by the format/version fence and instance isolation rather than by a shim. Were supporting
+`4bd5cb2` *as a writer* ever an explicit product promise, the answer would be a bounded dual-format
+migration with a documented sunset — a larger commitment that would still need write fencing to stop an
+old save stripping richer data.
 
 **Packaging stays separate from installation.** The rejected proposal — packaging installs by default,
 and the development bundle is deleted — was wrong three ways: the installer *calls* the packaging
@@ -247,21 +278,20 @@ Final library: **10 meetings, 8 with transcripts.**
 **Live hazard until F188 ships:** preferences still select an action-item-focused summary style, so
 generating any summary re-arms the same field.
 
+## Decisions taken
+
+- **Frozen historical readers**: test-only vendored reader graphs per storage wire revision, with the
+  three checks and the supported-writer-floor qualification above. Not compiled binaries, not traces.
+- **`ActionItem` symmetry**: dropped. Canonical object encoding, migration on read, fencing instead of
+  a shim.
+- **Library/schema fence**: required. This reverses an earlier preference for single-binary discipline
+  over a version stamp; that discipline proved unworkable, so the ground for declining it is gone.
+
 ## Open decisions
 
-1. **Frozen historical readers — mechanism.** The old binary's decoder cannot be executed from the test
-   suite. The workable form is test-only vendored reader structs per shipped storage revision (the
-   graph is ~8 types), plus golden encoder-output bytes so any change to what is written fails. Confirm
-   this is what is meant, rather than checking in a compiled old binary.
-2. **`ActionItem` encoding symmetry** — disarm the trigger, or rely solely on fail-closed
-   compatibility? Symmetric encoding is cheap and removes the failure mode, but it also hides schema
-   drift behind a compatibility shim.
-3. **Library/schema fence.** An earlier decision declined a version stamp in favour of single-binary
-   discipline. That discipline is now shown unworkable, so the ground for declining is gone and F188
-   requires the fence. Recorded here because it reverses a prior choice.
-4. **After a partial salvage, may the app write at all?** Proposal: write-blocked until the user
+1. **After a partial salvage, may the app write at all?** Proposal: write-blocked until the user
    explicitly accepts the loss. UX call, not technical.
-5. **Should the index stop being the single point of truth?** Nothing on disk can reconstruct a title,
+2. **Should the index stop being the single point of truth?** Nothing on disk can reconstruct a title,
    transcript, note, tag or summary. A per-recording sidecar written alongside every index save would
    make this class of incident survivable by construction.
 
@@ -276,7 +306,10 @@ generating any summary re-arms the same field.
 5. **An error message is a promise.** "Both files were preserved" was shipped, tested, and false.
 6. **A test name is not an assertion.** The test that should have caught this never exercised the
    destroying path.
-7. **Never verify a restore with the only reader that works.** That is what hid the fault for six days.
-8. **A wrong diagnosis costs the next incident.**
-9. **The docs are part of the system.** A guide that says to run the development bundle, while an
+7. **A shim that holds only in the trivial case is a false cure.** Encoding text-only action items as
+   strings would have "fixed" compatibility exactly until the first enriched item — and enrichment is
+   the feature. Worse than no fix, because it reads like one.
+8. **Never verify a restore with the only reader that works.** That is what hid the fault for six days.
+9. **A wrong diagnosis costs the next incident.**
+10. **The docs are part of the system.** A guide that says to run the development bundle, while an
    installed copy exists, is a defect.
