@@ -466,7 +466,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value)
-            if result.source == .backup {
+            if result.health == .recoveredFromBackup {
                 startupRecoveryMessages.append(
                     "The meeting index was damaged, so WhisperMeet restored the previous readable backup. No recording folders were deleted."
                 )
@@ -481,7 +481,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try vocabularyFiles.load() else { return }
             vocabulary = Self.promptSafeTerms(result.value)
-            if result.source == .backup {
+            if result.health == .recoveredFromBackup {
                 startupRecoveryMessages.append(
                     "The vocabulary index was damaged, so WhisperMeet restored the previous readable backup."
                 )
@@ -496,7 +496,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try replacementRulesFiles.load() else { return }
             replacementRules = result.value
-            if result.source == .backup {
+            if result.health == .recoveredFromBackup {
                 startupRecoveryMessages.append(
                     "The replacement-rule index was damaged, so WhisperMeet restored the previous readable backup."
                 )
