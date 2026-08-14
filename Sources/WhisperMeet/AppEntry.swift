@@ -28,7 +28,10 @@ struct WhisperMeetApp: App {
                     dictation.configureRuntimeInstalling { [weak model] in
                         model?.isInstallingRecognitionRuntime ?? false
                     }
-                    dictation.configureVocabulary { [weak model] in model?.store.vocabulary ?? [] }
+                    // Quick Dictation feeds this straight into Whisper's `initial_prompt` (and derives
+                    // its prompt-echo check from the same list), so it takes the prompt-capped view —
+                    // the stored list is no longer trimmed to a prompt budget (F187).
+                    dictation.configureVocabulary { [weak model] in model?.store.promptVocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
                     await model.performStartupRecovery()
                 }

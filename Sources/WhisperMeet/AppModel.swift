@@ -493,7 +493,9 @@ final class AppModel: ObservableObject {
             )
             return try await client.transcribe(
                 recordingAt: url,
-                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.vocabulary),
+                // The engine's `initial_prompt` is budgeted, so it takes the capped view — the stored
+                // list is no longer trimmed to fit it (F187).
+                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.promptVocabulary),
                 onProgress: onProgress
             )
         }
@@ -1682,6 +1684,7 @@ final class AppModel: ObservableObject {
     /// Read-only — computes over the stored segments; the user reviews before any apply.
     func glossaryCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
+        // Local matching, not a prompt: it must see EVERY stored term, so it stays on the full list (F187).
         return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
     }
 
@@ -1747,7 +1750,8 @@ final class AppModel: ObservableObject {
         }
         // Feed the plain segment text (no timestamps) so a proposed `from` span matches a segment.
         let plainText = meeting.segments.map(\.text).joined(separator: "\n")
-        let vocabulary = store.vocabulary
+        // Goes into a model prompt, so it takes the capped view rather than the full stored list (F187).
+        let vocabulary = store.promptVocabulary
         proposingCorrectionsID = id
         defer { proposingCorrectionsID = nil }
         do {
@@ -1907,6 +1911,8 @@ final class AppModel: ObservableObject {
     func diagnosticsJSON() -> String {
         let input = DiagnosticsExport.input(
             meetings: store.meetings,
+            // Diagnostics report what is actually stored (a count, never the terms), so this is the
+            // full list — the prompt-capped view would understate the library (F187).
             vocabulary: store.vocabulary,
             recordingBytes: { meeting in
                 let path = store.recordingURL(for: meeting).path

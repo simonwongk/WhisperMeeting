@@ -208,13 +208,26 @@ enum MeetingStoreError: LocalizedError, Equatable {
 @MainActor
 final class MeetingStore: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
-    @Published var vocabulary: [String] = []
+    /// The full stored term list (F187). Never narrowed by the prompt budget — doing that at load and
+    /// on every addition made the truncation permanent on the next write. `private(set)` so the only
+    /// ways in are `addVocabulary`/`removeVocabulary`, which carry the read-only guard; a settable
+    /// property would let a caller replace the list without ever passing `mutationIsAllowed()`.
+    @Published private(set) var vocabulary: [String] = []
+
+    /// The subset handed to an engine's `initial_prompt`, capped to the prompt budget at the point of
+    /// use rather than in storage.
+    var promptVocabulary: [String] { Self.promptSafeTerms(vocabulary) }
+
     /// Exact `heard → preferred` replacement rules (F179), persisted like vocabulary. Reviewed before
     /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
     @Published private(set) var replacementRules: [ReplacementRule] = []
     @Published private(set) var storageErrorMessage: String?
-    /// How much of the meeting index actually loaded (F187). Anything but `.complete` blocks EVERY
-    /// mutation — not just persistence — because `delete` removes audio before it saves the index.
+    /// The WORST load result across every persisted store this guard covers — the meeting index, the
+    /// vocabulary and the replacement rules (F187). Scoped that way because it gates all three: anything
+    /// but `.complete` blocks EVERY mutation, not just persistence, because `delete` removes audio
+    /// before it saves the index. Only ever assigned through `degrade(to:)`, so a store that loaded
+    /// cleanly can never raise a damaged one back to writable — see that method for what went wrong when
+    /// it was written as a plain assignment.
     @Published private(set) var health: PersistedStoreHealth = .complete
     var isDegraded: Bool { !health.allowsMutation }
 
@@ -473,7 +486,7 @@ final class MeetingStore: ObservableObject {
 
     func addVocabulary(_ terms: [String]) {
         guard mutationIsAllowed() else { return }
-        vocabulary = Self.promptSafeTerms(vocabulary + terms)
+        vocabulary = Self.storedTerms(vocabulary + terms)
         persistVocabulary()
     }
 
@@ -512,6 +525,21 @@ final class MeetingStore: ObservableObject {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Storage-side normalization only (F187): trim, drop empties, dedupe, sort. The 1,000-character
+    /// prompt budget belongs to `promptVocabulary`, not to what the user's file is allowed to contain.
+    /// The ceiling here exists so a runaway paste cannot grow the file without bound; it is deliberately
+    /// far above any budget a prompt could impose, so reaching it is a bug report, not a routine trim.
+    private static func storedTerms(_ values: [String]) -> [String] {
+        Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            .prefix(maxStoredVocabularyTerms)
+            .map { $0 }
+    }
+
+    private static let maxStoredVocabularyTerms = 5_000
+
+    /// The prompt budget: at most 100 terms AND at most 1,000 characters once joined. Applied only when
+    /// a prompt is built (`promptVocabulary`) — never to what is stored (F187).
     private static func promptSafeTerms(_ values: [String]) -> [String] {
         let candidates = Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
@@ -554,11 +582,38 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// Worsen `health` toward `state`, and never improve it (F187).
+    ///
+    /// All three persisted stores load in sequence inside `init` and share this ONE value, which gates
+    /// mutation for all of them. Written as a plain `health = result.health` it becomes last-writer-wins
+    /// across three independent files: a perfectly readable `vocabulary.json` loading after a corrupt
+    /// `meetings.json` puts `.complete` back and silently re-opens every mutator on a library that
+    /// cannot be read — the exact failure this ticket exists to prevent. `.complete` is rank 0 in
+    /// `PersistedStoreHealth.severity`, so it can only ever be the starting value, never an upgrade.
+    private func degrade(to state: PersistedStoreHealth) {
+        guard state.isWorse(than: health) else { return }
+        health = state
+    }
+
+    /// Degrade to whatever a failed load implies, and record why. Fails CLOSED: a load that threw is
+    /// never a healthy store, so the `else` covers every error this does not recognize. Shared by all
+    /// three load paths so the rule cannot drift between them — `BackupJSONStoreError` lives in
+    /// WhisperCore, and a new case there raises no warning here (F187).
+    private func degrade(after error: Error) {
+        if let storeError = error as? BackupJSONStoreError,
+           case let .noReadableCopy(_, _, quarantined) = storeError {
+            degrade(to: .unreadable(quarantined: quarantined))
+        } else {
+            degrade(to: .unavailable(error.localizedDescription))
+        }
+        startupRecoveryMessages.append(error.localizedDescription)
+    }
+
     private func loadMeetings() {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value)
-            health = result.health
+            degrade(to: result.health)
             if case .recoveredFromBackup = result.health {
                 startupRecoveryMessages.append(
                     "The meeting index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and no recording folders were deleted — confirm the library looks right before editing."
@@ -570,24 +625,14 @@ final class MeetingStore: ObservableObject {
                 )
             }
             // A valid but empty index sitting next to recording folders is suspicious, not normal.
-            if meetings.isEmpty, health == .complete {
+            // Keyed off `result.health` rather than `health` so it still asks "did THIS load come back
+            // clean?" no matter what any other store has already reported.
+            if meetings.isEmpty, result.health == .complete {
                 let count = recordingFolderCount()
-                if count > 0 { health = .suspectEmpty(recordingFolderCount: count) }
+                if count > 0 { degrade(to: .suspectEmpty(recordingFolderCount: count)) }
             }
-        } catch let error as BackupJSONStoreError {
-            // The default must fail CLOSED (F187): a load that threw is never a healthy library. A bare
-            // `return` on an unrecognized case would leave `health == .complete` and unblock every
-            // mutator. `BackupJSONStoreError` lives in WhisperCore, so a new case raises no warning here
-            // — this `else` is the only thing standing between a new case and a writable library.
-            if case let .noReadableCopy(_, _, quarantined) = error {
-                health = .unreadable(quarantined: quarantined)
-            } else {
-                health = .unavailable(error.localizedDescription)
-            }
-            startupRecoveryMessages.append(error.localizedDescription)
         } catch {
-            health = .unavailable(error.localizedDescription)
-            startupRecoveryMessages.append(error.localizedDescription)
+            degrade(after: error)
         }
     }
 
@@ -604,15 +649,22 @@ final class MeetingStore: ObservableObject {
     private func loadVocabulary() {
         do {
             guard let result = try vocabularyFiles.load() else { return }
-            vocabulary = Self.promptSafeTerms(result.value)
+            vocabulary = Self.storedTerms(result.value)
+            // Through `degrade`, never a plain assignment: this runs AFTER `loadMeetings()`, so a
+            // readable vocabulary index must not undo a degraded meeting index (F187).
+            degrade(to: result.health)
             if result.health == .recoveredFromBackup {
+                // No re-persist here, matching the meeting index: recovering from a stale backup writes
+                // nothing, so the damaged primary is left exactly as it is for recovery to work from
+                // (F187, and what `docs/RECOVERY.md` already promises). The old `save()` also ran during
+                // `init` — bypassing `mutationIsAllowed()` entirely, on a library that had just declared
+                // itself read-only.
                 startupRecoveryMessages.append(
-                    "The vocabulary index was damaged, so WhisperMeet restored the previous readable backup."
+                    "The vocabulary index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and the damaged copy was left exactly as it is."
                 )
-                try vocabularyFiles.save(vocabulary)
             }
         } catch {
-            startupRecoveryMessages.append(error.localizedDescription)
+            degrade(after: error)
         }
     }
 
@@ -620,14 +672,15 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try replacementRulesFiles.load() else { return }
             replacementRules = result.value
+            degrade(to: result.health)
             if result.health == .recoveredFromBackup {
+                // Same as `loadVocabulary`: no silent re-persist from inside `init` (F187).
                 startupRecoveryMessages.append(
-                    "The replacement-rule index was damaged, so WhisperMeet restored the previous readable backup."
+                    "The replacement-rule index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and the damaged copy was left exactly as it is."
                 )
-                try replacementRulesFiles.save(replacementRules)
             }
         } catch {
-            startupRecoveryMessages.append(error.localizedDescription)
+            degrade(after: error)
         }
     }
 }
