@@ -100,8 +100,12 @@ struct DictationView: View {
                             .padding(.bottom, 8)
                     }
                     if log.log.entries.isEmpty {
-                        Text("Your recent dictations will appear here.")
-                            .foregroundStyle(.secondary).padding(.vertical, 12)
+                        // A read-only log will never gain entries, so do not promise that it will —
+                        // the advisory directly above already says nothing will be written (F187).
+                        if log.health.allowsMutation {
+                            Text("Your recent dictations will appear here.")
+                                .foregroundStyle(.secondary).padding(.vertical, 12)
+                        }
                     } else {
                         ForEach(log.log.entries) { entry in
                             DictationHistoryRow(entry: entry)
