@@ -152,6 +152,20 @@ struct OrphanedRecording: Sendable, Equatable {
     let createdAt: Date
 }
 
+/// Why the store refused an operation outright (F187).
+enum MeetingStoreError: LocalizedError {
+    /// The meeting index is not known-complete, so the library is open read-only and nothing that
+    /// would create files or records may run.
+    case libraryIsReadOnly
+
+    var errorDescription: String? {
+        switch self {
+        case .libraryIsReadOnly:
+            return "WhisperMeet could not fully read its meeting library, so it is open in read-only mode. Resolve recovery before recording — your existing recordings are untouched."
+        }
+    }
+}
+
 @MainActor
 final class MeetingStore: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
@@ -216,7 +230,13 @@ final class MeetingStore: ObservableObject {
         loadReplacementRules()
     }
 
+    /// Creates (and returns) a meeting's recording folder. Refuses while the library is not
+    /// known-complete: the matching `upsert` would be refused by `refuseWhileDegraded()`, so the folder
+    /// would hold audio the library could never index — and `orphanedRecordings()` hides it too, so the
+    /// user would lose the whole meeting silently. Callers should refuse earlier and explain why; this
+    /// throw is the invariant that stops a future caller from reintroducing the hole (F187).
     func recordingDirectory(for id: UUID) throws -> URL {
+        guard !isDegraded else { throw MeetingStoreError.libraryIsReadOnly }
         let directory = recordingDirectoryURL(for: id)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -338,6 +358,9 @@ final class MeetingStore: ObservableObject {
     /// Flush a pending debounced edit now — call on focus loss, meeting change, or view disappearance
     /// so no edit is lost (F40/F133). No-op when nothing is pending.
     func flushPendingEdits() {
+        // Reaches `persistMeetings()` directly, so it carries the same refusal as every other mutator
+        // even though only the already-guarded edit paths can schedule a flush today (F187).
+        guard !refuseWhileDegraded() else { return }
         guard let task = pendingIndexFlush else { return }
         pendingIndexFlush = nil
         task.cancel()

@@ -882,6 +882,14 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
             return
         }
+        // Must precede every side effect below, including the recording folder: while the library is
+        // read-only the `store.upsert` in `stopRecording` is refused, so the meeting would be captured
+        // to disk and then never indexed — and `orphanedRecordings()` reports nothing while degraded,
+        // so the user would lose a whole meeting with no error shown (F187).
+        guard !store.isDegraded else {
+            alertMessage = "Recording cannot start because WhisperMeet could not fully read its meeting library, so it is open in read-only mode. Your existing recordings are untouched — resolve recovery before recording."
+            return
+        }
         refreshRecordingPreflight()
         if recordingPreflight.microphoneAccess == .unavailable {
             alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."

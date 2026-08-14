@@ -67,3 +67,41 @@ func degradedIndexReportsNoOrphans() throws {
 
     #expect(try store.orphanedRecordings().isEmpty)
 }
+
+// A recording started while the library is read-only produces audio the store then refuses to index,
+// so the meeting vanishes with no error shown — and `orphanedRecordings()` hides it too (F187).
+@Test("Recording is refused while degraded, before any folder or state changes")
+@MainActor
+func degradedLibraryRefusesRecording() async throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = UserDefaults(suiteName: "F187.\(UUID().uuidString)")!
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    await model.startRecording()
+
+    let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: recordings.path))
+    #expect(model.recordingState == .idle)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+// Defense in depth: even if a future caller skips the AppModel guard, the store itself never lays down
+// a recording folder it could not index (F187).
+@Test("recordingDirectory(for:) throws while degraded and creates nothing")
+@MainActor
+func degradedRecordingDirectoryThrows() throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+
+    #expect(throws: MeetingStoreError.libraryIsReadOnly) {
+        try store.recordingDirectory(for: id)
+    }
+    #expect(!FileManager.default.fileExists(atPath: store.recordingDirectoryURL(for: id).path))
+    #expect(!FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("Recordings", isDirectory: true).path
+    ))
+}
