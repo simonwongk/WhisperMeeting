@@ -206,3 +206,27 @@ func degradedRecordingDirectoryThrows() throws {
         atPath: root.appendingPathComponent("Recordings", isDirectory: true).path
     ))
 }
+
+// Startup is where the damage happened: with an empty in-memory index every recording folder looks
+// orphaned, so "recovery" rebuilt ten real meetings as blank stubs. A degraded library must report the
+// state and change nothing (F187).
+@Test("Startup recovery creates no records when the index is degraded")
+@MainActor
+func startupRecoverySuppressedWhileDegraded() async throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    for _ in 0..<3 {
+        let directory = root.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    let defaults = try #require(UserDefaults(suiteName: "DegradedLibraryTests-\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    await model.performStartupRecovery()
+
+    #expect(store.meetings.isEmpty)
+    #expect(store.persistCount == 0)
+    let alert = try #require(model.alertMessage)
+    #expect(alert.contains("read-only"))
+    #expect(!alert.contains("added it back to meeting history"))
+}

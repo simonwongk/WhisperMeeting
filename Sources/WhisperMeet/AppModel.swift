@@ -656,6 +656,16 @@ final class AppModel: ObservableObject {
         refreshRuntime()
         refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
+        // A library that did not fully load must never be "recovered" into a lesser one (F187). Every
+        // recording folder looks orphaned when the in-memory index is empty, which is how ten meetings
+        // became blank stubs on 2026-08-14. Show the state and stop; the user decides what happens next.
+        if store.isDegraded {
+            messages.append(
+                "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched and the unreadable index was copied aside. Nothing will be changed until you choose how to recover."
+            )
+            alertMessage = messages.joined(separator: "\n\n")
+            return
+        }
 
         do {
             let recover = recoverInterruptedRecording
@@ -728,7 +738,8 @@ final class AppModel: ObservableObject {
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
                         : "Recovered after an interruption. The original recording and source tracks were preserved."
                 ))
-                messages.append("Recovered \(title) and added it back to meeting history.")
+                // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
+                messages.append("\(title) was added back to meeting history.")
             }
         } catch {
             messages.append(
