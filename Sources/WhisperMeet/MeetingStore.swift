@@ -160,6 +160,10 @@ final class MeetingStore: ObservableObject {
     /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
     @Published private(set) var replacementRules: [ReplacementRule] = []
     @Published private(set) var storageErrorMessage: String?
+    /// How much of the meeting index actually loaded (F187). Anything but `.complete` blocks EVERY
+    /// mutation — not just persistence — because `delete` removes audio before it saves the index.
+    @Published private(set) var health: PersistedStoreHealth = .complete
+    var isDegraded: Bool { !health.allowsMutation }
 
     private(set) var startupRecoveryMessages: [String] = []
 
@@ -236,6 +240,9 @@ final class MeetingStore: ObservableObject {
     }
 
     func orphanedRecordings() throws -> [OrphanedRecording] {
+        // An index that did not fully load is indistinguishable from "no meetings", which is exactly
+        // how every recording folder came to look orphaned on 2026-08-14 (F187).
+        guard !isDegraded else { return [] }
         let recordingsDirectory = rootDirectory
             .appendingPathComponent("Recordings", isDirectory: true)
         guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else {
@@ -270,7 +277,16 @@ final class MeetingStore: ObservableObject {
         .sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// Refuses a mutation while the library is not known-complete, and says why (F187). Callers must
+    /// invoke this BEFORE any in-memory or filesystem side effect.
+    private func refuseWhileDegraded() -> Bool {
+        guard isDegraded else { return false }
+        storageErrorMessage = "WhisperMeet could not fully read its meeting library, so it is open in read-only mode and nothing has been changed. Resolve recovery before editing, deleting, or recording."
+        return true
+    }
+
     func upsert(_ meeting: MeetingRecord) {
+        guard !refuseWhileDegraded() else { return }
         if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
             meetings[index] = meeting
         } else {
@@ -281,6 +297,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
+        guard !refuseWhileDegraded() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         persistMeetings()
@@ -290,6 +307,7 @@ final class MeetingStore: ObservableObject {
     /// live) but coalesce the expensive whole-index write, which otherwise ran on every keystroke
     /// (F40). See `scheduleDebouncedPersist`.
     func editTranscript(id: UUID, text: String) {
+        guard !refuseWhileDegraded() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].transcriptText = text
         scheduleDebouncedPersist()
@@ -299,6 +317,7 @@ final class MeetingStore: ObservableObject {
     /// transcript editor — the notes field had the identical per-keystroke whole-index write (F133).
     /// Empty text clears the field (nil), matching the prior binding.
     func editNotes(id: UUID, text: String) {
+        guard !refuseWhileDegraded() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].notes = text.isEmpty ? nil : text
         scheduleDebouncedPersist()
@@ -327,12 +346,14 @@ final class MeetingStore: ObservableObject {
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
     func setTags(id: UUID, _ raw: [String]) {
+        guard !refuseWhileDegraded() else { return }
         let normalized = MeetingTags.normalized(raw)
         update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
 
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
     func togglePin(id: UUID) {
+        guard !refuseWhileDegraded() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].pinned = !(meetings[index].pinned ?? false)
         meetings = MeetingOrdering.sorted(meetings)
@@ -359,6 +380,10 @@ final class MeetingStore: ObservableObject {
     }
 
     func delete(id: UUID) {
+        // Must precede the lookup below: this is the single most important guard in the store, because
+        // the removeRecordingDirectory call further down runs BEFORE the index is persisted. A guard
+        // placed after any side effect would still destroy audio while merely refusing to save (F187).
+        guard !refuseWhileDegraded() else { return }
         guard let meeting = meeting(id: id) else { return }
         let directory = recordingURL(for: meeting).deletingLastPathComponent()
         // Never delete outside the library, and never delete the library root itself — a corrupt index
@@ -384,11 +409,13 @@ final class MeetingStore: ObservableObject {
     }
 
     func addVocabulary(_ terms: [String]) {
+        guard !refuseWhileDegraded() else { return }
         vocabulary = Self.promptSafeTerms(vocabulary + terms)
         persistVocabulary()
     }
 
     func removeVocabulary(_ term: String) {
+        guard !refuseWhileDegraded() else { return }
         vocabulary.removeAll { $0 == term }
         persistVocabulary()
     }
@@ -396,6 +423,7 @@ final class MeetingStore: ObservableObject {
     /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
     /// no-op (`heard == preferred`), or already-present rule. Capped so the list can't grow unbounded.
     func addReplacementRule(heard: String, preferred: String) {
+        guard !refuseWhileDegraded() else { return }
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty, !p.isEmpty, h != p else { return }
@@ -406,6 +434,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func removeReplacementRule(_ rule: ReplacementRule) {
+        guard !refuseWhileDegraded() else { return }
         replacementRules.removeAll { $0 == rule }
         persistReplacementRules()
     }
@@ -466,15 +495,40 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value)
-            if result.health == .recoveredFromBackup {
+            health = result.health
+            if case .recoveredFromBackup = result.health {
                 startupRecoveryMessages.append(
-                    "The meeting index was damaged, so WhisperMeet restored the previous readable backup. No recording folders were deleted."
+                    "The meeting index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and no recording folders were deleted — confirm the library looks right before editing."
                 )
-                try meetingFiles.save(meetings)
             }
+            if case let .partiallySalvaged(parked) = result.health {
+                startupRecoveryMessages.append(
+                    "\(parked.count) meeting record(s) could not be read and were left in the preserved copy. The rest of the library loaded. Nothing was written."
+                )
+            }
+            // A valid but empty index sitting next to recording folders is suspicious, not normal.
+            if meetings.isEmpty, health == .complete {
+                let count = recordingFolderCount()
+                if count > 0 { health = .suspectEmpty(recordingFolderCount: count) }
+            }
+        } catch let error as BackupJSONStoreError {
+            guard case let .noReadableCopy(_, _, quarantined) = error else { return }
+            health = .unreadable(quarantined: quarantined)
+            startupRecoveryMessages.append(error.localizedDescription)
         } catch {
+            health = .unavailable(error.localizedDescription)
             startupRecoveryMessages.append(error.localizedDescription)
         }
+    }
+
+    private func recordingFolderCount() -> Int {
+        let recordings = rootDirectory.appendingPathComponent("Recordings", isDirectory: true)
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: recordings,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return urls.filter { UUID(uuidString: $0.lastPathComponent) != nil }.count
     }
 
     private func loadVocabulary() {
