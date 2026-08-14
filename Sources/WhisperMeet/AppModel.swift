@@ -364,6 +364,21 @@ final class AppModel: ObservableObject {
         recordingPreflight = .inspect(storageDirectory: store.rootDirectory)
     }
 
+    /// Whether a library-changing action may proceed, explaining the refusal through `alertMessage`
+    /// — the channel these entry points already use. Mirrors `MeetingStore.mutationIsAllowed()`, which
+    /// covers the write itself; this covers the work that leads up to one (F187).
+    ///
+    /// Callers MUST invoke this BEFORE doing that work. Import copies the media file into the library
+    /// and transcription runs a speech model for minutes, and each only then reaches a `store.upsert`
+    /// or `store.update` that a degraded store silently refuses — so without this the user waits out
+    /// the whole job, is told nothing, and in the import case is left with audio sitting in the
+    /// library that nothing will ever index.
+    private func libraryAcceptsChanges(_ action: String) -> Bool {
+        guard store.isDegraded else { return true }
+        alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
+        return false
+    }
+
     /// Rebuilds one interrupted recording folder from its raw tracks. Injectable so startup
     /// recovery's per-orphan resilience is testable; defaults to the real rebuild (F47).
     var recoverInterruptedRecording: @Sendable (URL) throws -> RecoveredRecording? = {
@@ -537,6 +552,7 @@ final class AppModel: ObservableObject {
     /// selected engine on the clip, and splice the result back — the recording is never modified. The
     /// heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards + wraps.
     func reTranscribeSegment(id: UUID, index: Int) async {
+        guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         guard let meeting = store.meeting(id: id),
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
@@ -570,6 +586,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before re-transcribing a segment."
             return
         }
+        // Guarded here as well as in the delegate, so the refusal is one immediate message rather
+        // than one raised from inside a detached task after the engine flag was already claimed (F187).
+        guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         isRunningAuxiliaryEngine = true
         Task {
             await reTranscribeSegment(id: id, index: index)
@@ -1220,6 +1239,11 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before importing."
             return nil
         }
+        // Must precede the copy below: while the library is read-only the `store.upsert` in
+        // `adoptImportedRecording` is refused, so the file would be copied into the library and then
+        // never indexed — and `orphanedRecordings()` reports nothing while degraded, so the import
+        // would vanish with no error shown (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin.
@@ -1274,6 +1298,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before importing."
             return nil
         }
+        // Before the probe, let alone the download: the same unindexed-audio trap as a file import,
+        // with a network transfer in front of it (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
 
         let parsed: MediaSourceURL.Parsed
         do {
@@ -1410,6 +1437,9 @@ final class AppModel: ObservableObject {
     /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
     /// the UI can navigate to it. Only a single-file import adopts the typed title.
     func importRecordings(from urls: [URL], title: String) async -> UUID? {
+        // Guarded here as well as in `importRecording`, so a multi-file drop yields one message
+        // instead of the same refusal repeated once per file (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
         var firstID: UUID?
         for url in urls {
             let itemTitle = urls.count == 1 ? title : ""
@@ -1460,6 +1490,9 @@ final class AppModel: ObservableObject {
     /// meeting, which is tedious after a bulk import.
     @discardableResult
     func beginTranscriptionForAllReady() -> Int {
+        // Guarded here as well as in `beginTranscription`, so the returned count cannot claim work
+        // that was never started — the caller reports this number to the user (F187).
+        guard libraryAcceptsChanges("Transcription") else { return 0 }
         let ready = readyToTranscribeMeetings
         for meeting in ready {
             beginTranscription(id: meeting.id)
@@ -1477,6 +1510,10 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the second-opinion or segment re-run before transcribing this meeting."
             return
         }
+        // Must precede the enqueue: the model can run for minutes, and the `store.update` that stores
+        // the transcript is refused while the library is read-only, so the whole run would be thrown
+        // away in silence (F187).
+        guard libraryAcceptsChanges("Transcription") else { return }
         refreshRuntime()
         let settings = MeetingTranscriptionSelection(
             engine: selectedEngine,
@@ -1535,6 +1572,10 @@ final class AppModel: ObservableObject {
 
     func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
         guard summarizationTasks[id] == nil else { return }
+        // Ahead of the per-engine preconditions, so a read-only library is reported as the real
+        // blocker rather than a missing model or key — and, for Claude, before an API call is spent
+        // on a summary the store would then refuse to save (F187).
+        guard libraryAcceptsChanges("Summarizing") else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
         // than fail); Claude needs a saved key. Neither uploads anything for `.local` (F164).

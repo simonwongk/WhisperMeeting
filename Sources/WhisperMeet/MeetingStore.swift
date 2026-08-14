@@ -163,7 +163,21 @@ enum ReadOnlyLibraryNotice {
     /// After the user attempted an edit, delete, or tag change.
     static let mutationRefused = "\(lead) Nothing has been changed. Resolve recovery before editing, deleting, or recording."
     /// Before a recording can start — from AppModel's pre-check and the store's backstop throw alike.
-    static let recordingRefused = "Recording cannot start because \(lead) Your existing recordings are untouched — resolve recovery before recording."
+    /// Its exact wording is shipped through `MeetingStoreError`, so it keeps its own resolution clause
+    /// rather than the generic one; only the shared middle is factored out.
+    static let recordingRefused = refused("Recording", resolution: "before recording")
+    /// Before a library-changing action that is not recording — import, transcription, summarization.
+    /// The action reads as the subject of the sentence, so pass a gerund noun ("Import",
+    /// "Transcription", "Summarizing"), not an imperative verb.
+    static func actionRefused(_ action: String) -> String {
+        refused(action, resolution: "first")
+    }
+
+    /// The one sentence shape every pre-action refusal shares. Private so the surfaces above stay the
+    /// only vocabulary callers see.
+    private static func refused(_ action: String, resolution: String) -> String {
+        "\(action) cannot start because \(lead) Your existing recordings are untouched — resolve recovery \(resolution)."
+    }
 }
 
 /// Why the store refused an operation outright (F187).

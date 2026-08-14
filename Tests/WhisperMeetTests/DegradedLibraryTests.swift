@@ -230,3 +230,102 @@ func startupRecoverySuppressedWhileDegraded() async throws {
     #expect(alert.contains("read-only"))
     #expect(!alert.contains("added it back to meeting history"))
 }
+
+// MARK: - Work that runs to completion before its write is refused (F187)
+//
+// `store.upsert`/`store.update` decline while degraded, silently. Import, transcription and
+// summarization all reach that write only at the END of their job — after the media file has been
+// copied into the library, after a speech model has run for minutes, after a Claude call has been
+// spent. Each must refuse UP FRONT, so nothing is done and the user is told why.
+
+@Test("Import is refused while degraded, before any audio is copied into the library")
+@MainActor
+func degradedLibraryRefusesImport() async throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F187-import-source-\(UUID().uuidString).wav")
+    try Data("source audio".utf8).write(to: source)
+    defer { try? FileManager.default.removeItem(at: source) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    let imported = await model.importRecording(from: source, title: "Imported")
+
+    #expect(imported == nil)
+    #expect(store.meetings.isEmpty)
+    #expect(!model.isImporting)
+    // The point of the task: the copy must not have happened. Without the guard the audio lands in
+    // the library and the concluding `upsert` is refused, so it sits there unindexed and unreported.
+    let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: recordings.path))
+    #expect(FileManager.default.fileExists(atPath: source.path)) // the user's own file is untouched
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+@Test("Transcription is refused while degraded, before the engine is started")
+@MainActor
+func degradedLibraryRefusesTranscription() throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    model.beginTranscription(id: meeting.id)
+
+    // Real state `beginTranscription` sets on success — the queue it enqueues into and then pumps.
+    #expect(!model.transcription.contains(meeting.id))
+    #expect(model.activeTranscriptionID == nil)
+    #expect(store.meeting(id: meeting.id)?.transcriptText == meeting.transcriptText)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+// The bulk entry point is guarded as well as its delegate, so it cannot report a count for work it
+// never started — the seeded meeting is `.recorded` with audio, so it IS a queue candidate (F187).
+@Test("Transcribe-all is refused while degraded and reports having started nothing")
+@MainActor
+func degradedLibraryRefusesTranscribeAll() throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    try #require(model.readyToTranscribeMeetings.map(\.id) == [meeting.id])
+
+    #expect(model.beginTranscriptionForAllReady() == 0)
+
+    #expect(!model.transcription.contains(meeting.id))
+    #expect(model.activeTranscriptionID == nil)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
+
+// The local model is stubbed installed so the engine precondition cannot be what stops this — only
+// the read-only guard can. Without it, `summarize` claims the summarization slot and spawns the job,
+// which would spend a Claude API call for a summary the store then refuses to save (F187).
+@Test("Summarizing is refused while degraded, before a model runs or an API call is spent")
+@MainActor
+func degradedLibraryRefusesSummarize() throws {
+    let (store, root, meeting) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    model.summarizationEngine = .local
+    model.isSummarizerModelInstalled = { true }
+
+    model.summarize(id: meeting.id)
+
+    // `activeSummarizationID` is set in the same breath as `summarizationTasks[id]`, and is the
+    // observable half of that pair — `localSummarizePathStoresSummary` asserts on it for the
+    // success case, so a registered task and a nil id cannot coexist.
+    #expect(model.activeSummarizationID == nil)
+    #expect(!model.isSummarizing)
+    #expect(store.meeting(id: meeting.id)?.summary == nil)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}
