@@ -152,8 +152,24 @@ struct OrphanedRecording: Sendable, Equatable {
     let createdAt: Date
 }
 
+/// The user-facing vocabulary for a read-only library (F187). One lead sentence, one tail per surface,
+/// so the wording cannot drift between the store's refusal and AppModel's. `recordingRefused` in
+/// particular is one event reached by two paths — AppModel's pre-check and the store's backstop throw —
+/// and both must say the same thing.
+enum ReadOnlyLibraryNotice {
+    /// Why the library is read-only. "WhisperMeet" stays capitalized when this is embedded mid-sentence:
+    /// it is a product name, not a word to be case-folded.
+    static let lead = "WhisperMeet could not fully read its meeting library, so it is open in read-only mode."
+    /// After the user attempted an edit, delete, or tag change.
+    static let mutationRefused = "\(lead) Nothing has been changed. Resolve recovery before editing, deleting, or recording."
+    /// Before a recording can start — from AppModel's pre-check and the store's backstop throw alike.
+    static let recordingRefused = "Recording cannot start because \(lead) Your existing recordings are untouched — resolve recovery before recording."
+}
+
 /// Why the store refused an operation outright (F187).
-enum MeetingStoreError: LocalizedError {
+/// `Equatable` is declared, not inferred: tests match on this error with `#expect(throws:)`, and the
+/// synthesized conformance would silently disappear the moment a case gains an associated value.
+enum MeetingStoreError: LocalizedError, Equatable {
     /// The meeting index is not known-complete, so the library is open read-only and nothing that
     /// would create files or records may run.
     case libraryIsReadOnly
@@ -161,7 +177,7 @@ enum MeetingStoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
-            return "WhisperMeet could not fully read its meeting library, so it is open in read-only mode. Resolve recovery before recording — your existing recordings are untouched."
+            return ReadOnlyLibraryNotice.recordingRefused
         }
     }
 }
@@ -231,7 +247,7 @@ final class MeetingStore: ObservableObject {
     }
 
     /// Creates (and returns) a meeting's recording folder. Refuses while the library is not
-    /// known-complete: the matching `upsert` would be refused by `refuseWhileDegraded()`, so the folder
+    /// known-complete: the matching `upsert` would be refused by `mutationIsAllowed()`, so the folder
     /// would hold audio the library could never index — and `orphanedRecordings()` hides it too, so the
     /// user would lose the whole meeting silently. Callers should refuse earlier and explain why; this
     /// throw is the invariant that stops a future caller from reintroducing the hole (F187).
@@ -297,16 +313,17 @@ final class MeetingStore: ObservableObject {
         .sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// Refuses a mutation while the library is not known-complete, and says why (F187). Callers must
-    /// invoke this BEFORE any in-memory or filesystem side effect.
-    private func refuseWhileDegraded() -> Bool {
-        guard isDegraded else { return false }
-        storageErrorMessage = "WhisperMeet could not fully read its meeting library, so it is open in read-only mode and nothing has been changed. Resolve recovery before editing, deleting, or recording."
-        return true
+    /// Whether a mutation may proceed. Returns false and explains why in `storageErrorMessage` while the
+    /// library is not known-complete (F187). MUST be the first statement of every mutator — before any
+    /// in-memory or filesystem side effect, because `delete` removes audio before it persists.
+    private func mutationIsAllowed() -> Bool {
+        guard isDegraded else { return true }
+        storageErrorMessage = ReadOnlyLibraryNotice.mutationRefused
+        return false
     }
 
     func upsert(_ meeting: MeetingRecord) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
             meetings[index] = meeting
         } else {
@@ -317,7 +334,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         persistMeetings()
@@ -327,7 +344,7 @@ final class MeetingStore: ObservableObject {
     /// live) but coalesce the expensive whole-index write, which otherwise ran on every keystroke
     /// (F40). See `scheduleDebouncedPersist`.
     func editTranscript(id: UUID, text: String) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].transcriptText = text
         scheduleDebouncedPersist()
@@ -337,7 +354,7 @@ final class MeetingStore: ObservableObject {
     /// transcript editor — the notes field had the identical per-keystroke whole-index write (F133).
     /// Empty text clears the field (nil), matching the prior binding.
     func editNotes(id: UUID, text: String) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].notes = text.isEmpty ? nil : text
         scheduleDebouncedPersist()
@@ -360,7 +377,7 @@ final class MeetingStore: ObservableObject {
     func flushPendingEdits() {
         // Reaches `persistMeetings()` directly, so it carries the same refusal as every other mutator
         // even though only the already-guarded edit paths can schedule a flush today (F187).
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let task = pendingIndexFlush else { return }
         pendingIndexFlush = nil
         task.cancel()
@@ -369,14 +386,14 @@ final class MeetingStore: ObservableObject {
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
     func setTags(id: UUID, _ raw: [String]) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         let normalized = MeetingTags.normalized(raw)
         update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
 
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
     func togglePin(id: UUID) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].pinned = !(meetings[index].pinned ?? false)
         meetings = MeetingOrdering.sorted(meetings)
@@ -406,7 +423,7 @@ final class MeetingStore: ObservableObject {
         // Must precede the lookup below: this is the single most important guard in the store, because
         // the removeRecordingDirectory call further down runs BEFORE the index is persisted. A guard
         // placed after any side effect would still destroy audio while merely refusing to save (F187).
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         guard let meeting = meeting(id: id) else { return }
         let directory = recordingURL(for: meeting).deletingLastPathComponent()
         // Never delete outside the library, and never delete the library root itself — a corrupt index
@@ -432,13 +449,13 @@ final class MeetingStore: ObservableObject {
     }
 
     func addVocabulary(_ terms: [String]) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         vocabulary = Self.promptSafeTerms(vocabulary + terms)
         persistVocabulary()
     }
 
     func removeVocabulary(_ term: String) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         vocabulary.removeAll { $0 == term }
         persistVocabulary()
     }
@@ -446,7 +463,7 @@ final class MeetingStore: ObservableObject {
     /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
     /// no-op (`heard == preferred`), or already-present rule. Capped so the list can't grow unbounded.
     func addReplacementRule(heard: String, preferred: String) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty, !p.isEmpty, h != p else { return }
@@ -457,7 +474,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func removeReplacementRule(_ rule: ReplacementRule) {
-        guard !refuseWhileDegraded() else { return }
+        guard mutationIsAllowed() else { return }
         replacementRules.removeAll { $0 == rule }
         persistReplacementRules()
     }
@@ -535,8 +552,15 @@ final class MeetingStore: ObservableObject {
                 if count > 0 { health = .suspectEmpty(recordingFolderCount: count) }
             }
         } catch let error as BackupJSONStoreError {
-            guard case let .noReadableCopy(_, _, quarantined) = error else { return }
-            health = .unreadable(quarantined: quarantined)
+            // The default must fail CLOSED (F187): a load that threw is never a healthy library. A bare
+            // `return` on an unrecognized case would leave `health == .complete` and unblock every
+            // mutator. `BackupJSONStoreError` lives in WhisperCore, so a new case raises no warning here
+            // — this `else` is the only thing standing between a new case and a writable library.
+            if case let .noReadableCopy(_, _, quarantined) = error {
+                health = .unreadable(quarantined: quarantined)
+            } else {
+                health = .unavailable(error.localizedDescription)
+            }
             startupRecoveryMessages.append(error.localizedDescription)
         } catch {
             health = .unavailable(error.localizedDescription)

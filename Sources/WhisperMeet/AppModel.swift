@@ -887,7 +887,7 @@ final class AppModel: ObservableObject {
         // to disk and then never indexed — and `orphanedRecordings()` reports nothing while degraded,
         // so the user would lose a whole meeting with no error shown (F187).
         guard !store.isDegraded else {
-            alertMessage = "Recording cannot start because WhisperMeet could not fully read its meeting library, so it is open in read-only mode. Your existing recordings are untouched — resolve recovery before recording."
+            alertMessage = ReadOnlyLibraryNotice.recordingRefused
             return
         }
         refreshRecordingPreflight()
