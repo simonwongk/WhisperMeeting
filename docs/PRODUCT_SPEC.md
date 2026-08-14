@@ -38,9 +38,11 @@ post-meeting transcript in the meeting’s original language, with all speech pr
 - During recording, show independent microphone/system meters derived from the samples written to
   the source tracks, warn about missing capture, clipping, and low storage, and prevent idle system
   sleep.
-- Keep a previous-readable backup of meeting and vocabulary indexes. If neither index copy is
-  readable, preserve both files and reconstruct history from usable recording folders without
-  deleting audio.
+- Keep a previous-readable backup of meeting and vocabulary indexes. If an index copy cannot be
+  read, copy its exact bytes aside before writing anything, and never overwrite bytes that failed to
+  parse. When no copy is readable, open the library read-only, block every mutation, and offer
+  recovery from usable recording folders only as an explicit, user-reviewed action — never
+  automatically, and never deleting audio.
 - Surface recovery and storage failures in plain language, state whether the recording is safe, and
   let the user reveal a meeting's recording in Finder.
 - On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python
