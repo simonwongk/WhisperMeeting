@@ -681,11 +681,27 @@ final class MeetingStore: ObservableObject {
                     "\(parked.count) meeting record(s) could not be read and were left in the preserved copy. The rest of the library loaded. Nothing was written."
                 )
             }
-            // A valid but empty index sitting next to recording folders is suspicious, not normal.
+            // A valid but empty index sitting next to FINALIZED recordings is suspicious, not normal:
+            // that is the wipe shape — meetings that demonstrably happened, an index claiming none.
             // Keyed off `result.health` rather than `health` so it still asks "did THIS load come back
             // clean?" no matter what any other store has already reported.
+            //
+            // "Finalized" is the whole rule, and it is narrower than "a folder exists" for a reason
+            // (F187). `AppModel.startRecording` creates the folder BEFORE any record exists, so a
+            // force-quit mid-recording leaves raw capture tracks and no mixed WAV. Counting that folder
+            // turned "deleted my last meeting, then crashed while recording" — no corruption anywhere —
+            // into a read-only library with no in-app way out, in which the interrupted audio was never
+            // even rebuilt, because `orphanedRecordings()` reports nothing while degraded. An unfinished
+            // folder is exactly what `InterruptedRecordingRecovery` exists to rebuild, so it is evidence
+            // of a crash, never of a lost meeting.
+            //
+            // Residual, accepted knowingly: an import copies `recording.<ext>` into place before it is
+            // indexed, so a force-quit during that copy leaves a partial file that counts as finalized.
+            // It is counted anyway, because a COMPLETED import leaves the identical file and nothing
+            // else — excluding it would make a wiped library of imports look like a fresh install,
+            // which is the failure this check exists to catch.
             if meetings.isEmpty, result.health == .complete {
-                let count = recordingFolderCount()
+                let count = finalizedRecordingFolderCount()
                 if count > 0 { degrade(to: .suspectEmpty(recordingFolderCount: count)) }
             }
         } catch {
@@ -693,14 +709,24 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    private func recordingFolderCount() -> Int {
+    /// How many recording folders hold a FINALIZED recording — the only folders that count as a
+    /// meeting the index should have known about (F187). Reads only; creates and rewrites nothing,
+    /// because this runs during `init` on a library that may be mid-recovery.
+    ///
+    /// `InterruptedRecordingRecovery.finalizedRecording(in:)` is the single definition of "finalized"
+    /// and belongs there, not here: the recovery path and this check must agree, or one of them would
+    /// treat a folder as a lost meeting while the other treats it as something to rebuild.
+    private func finalizedRecordingFolderCount() -> Int {
         let recordings = rootDirectory.appendingPathComponent("Recordings", isDirectory: true)
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: recordings,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )) ?? []
-        return urls.filter { UUID(uuidString: $0.lastPathComponent) != nil }.count
+        return urls.filter {
+            UUID(uuidString: $0.lastPathComponent) != nil
+                && InterruptedRecordingRecovery.finalizedRecording(in: $0) != nil
+        }.count
     }
 
     private func loadVocabulary() {

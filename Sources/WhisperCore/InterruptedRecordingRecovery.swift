@@ -32,19 +32,25 @@ public enum InterruptedRecordingRecovery {
         return true
     }
 
-    public static func recover(
-        in directory: URL,
-        sampleRate: Double = 48_000
-    ) throws -> RecoveredRecording? {
-        let fileManager = FileManager.default
+    /// The finalized recording a folder ALREADY holds, or nil when it holds none. A pure read: it
+    /// rebuilds nothing, writes nothing, and creates nothing.
+    ///
+    /// This is the codebase's single definition of "this recording finished", and two callers depend
+    /// on it meaning exactly that. `recover(in:)` uses it to skip the rebuild for a folder that needs
+    /// none. `MeetingStore.loadMeetings()` uses it to decide whether an empty index is suspicious:
+    /// a folder WITHOUT one of these is an interrupted capture, which is what the rebuild below
+    /// exists for — not evidence that the index lost a meeting (F187).
+    ///
+    /// The three names are the three ways a recording becomes real, and all three are required:
+    /// `meeting.wav` is written only by `AudioCaptureEngine.stop()`; `meeting-recovered.wav` is what
+    /// a previous rebuild left behind and the meeting the user actually has; `recording.<ext>` is an
+    /// import, which never has capture tracks at all. Each is checked the same way the recovery path
+    /// checks it — a complete WAV header for the captures, non-empty bytes for the import — so a WAV
+    /// truncated mid-mix (its header is written LAST) does not read as finalized.
+    public static func finalizedRecording(in directory: URL) -> RecoveredRecording? {
         for name in ["meeting.wav", "meeting-recovered.wav"] {
             let url = directory.appendingPathComponent(name)
             if let duration = wavDuration(at: url) {
-                try writeRecoveryManifestIfNeeded(
-                    in: directory,
-                    sampleRate: sampleRate,
-                    alignment: "captured-timeline"
-                )
                 return RecoveredRecording(
                     recordingURL: url,
                     duration: duration,
@@ -52,17 +58,34 @@ public enum InterruptedRecordingRecovery {
                 )
             }
         }
-
         // An imported recording keeps a single `recording.<ext>` file and no raw source tracks, so
         // it cannot be rebuilt from `.f32` data — recognize it directly instead of reporting that
         // there was not enough audio.
         if let imported = importedRecording(in: directory) {
-            let duration = wavDuration(at: imported)
             return RecoveredRecording(
                 recordingURL: imported,
-                duration: duration ?? 0,
+                duration: wavDuration(at: imported) ?? 0,
                 source: .importedRecording
             )
+        }
+        return nil
+    }
+
+    public static func recover(
+        in directory: URL,
+        sampleRate: Double = 48_000
+    ) throws -> RecoveredRecording? {
+        let fileManager = FileManager.default
+        if let finished = finalizedRecording(in: directory) {
+            // Only a capture gets a manifest: an import has no source tracks to describe.
+            if finished.source == .existingCapture {
+                try writeRecoveryManifestIfNeeded(
+                    in: directory,
+                    sampleRate: sampleRate,
+                    alignment: "captured-timeline"
+                )
+            }
+            return finished
         }
 
         let systemURL = directory.appendingPathComponent(systemFile)

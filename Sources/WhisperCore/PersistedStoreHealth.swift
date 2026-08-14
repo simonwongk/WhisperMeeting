@@ -13,7 +13,9 @@ public enum PersistedStoreHealth: Sendable, Equatable {
     case partiallySalvaged(parkedIdentifiers: [String])
     /// Neither copy decoded. `quarantined` lists the preserved file names.
     case unreadable(quarantined: [String])
-    /// A syntactically valid but empty index found alongside existing recording folders.
+    /// A syntactically valid but empty index found alongside recording folders that hold a FINALIZED
+    /// recording. Folders from an interrupted capture are excluded and do not count here — see
+    /// `MeetingStore.finalizedRecordingFolderCount()` for why counting those locked the library.
     case suspectEmpty(recordingFolderCount: Int)
     /// The store could not be read at all (I/O, permissions).
     case unavailable(String)
