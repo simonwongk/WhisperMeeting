@@ -541,3 +541,92 @@ func degradedLibraryRefusesSegmentReTranscription() async throws {
     #expect(message.contains("read-only"))
     #expect(message.contains("recovery"))
 }
+
+// MARK: - Backup (F187)
+
+/// Counts real coordinator invocations across the `@Sendable` backup seam.
+private final class BackupCallCounter: @unchecked Sendable {
+    var runs = 0
+}
+
+/// Every path under `directory`, keyed by kind + relative path, with each file's exact bytes — the
+/// whole destination as one comparable value, so "nothing was created and nothing was pruned" is a
+/// single assertion about real disk state rather than a list of guesses about what a run would touch.
+private func snapshot(of directory: URL) throws -> [String: Data] {
+    let fileManager = FileManager.default
+    let base = directory.standardizedFileURL.path
+    guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey])
+    else { return [:] }
+    var result: [String: Data] = [:]
+    for case let url as URL in enumerator {
+        let full = url.standardizedFileURL.path
+        guard full.hasPrefix(base + "/") else { continue }
+        let relative = String(full.dropFirst(base.count + 1))
+        let isDirectory = (try url.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
+        // Kind is part of the key so an empty file can never compare equal to a directory it replaced.
+        result[(isDirectory ? "dir:" : "file:") + relative] = isDirectory ? Data() : try Data(contentsOf: url)
+    }
+    return result
+}
+
+// The most intuitive thing a user does when the library goes read-only — "back this up before I touch
+// anything" — is the click that destroys their last good off-library copies. `backUpLibrary` snapshots
+// the DAMAGED `meetings.json` into a new generation and then prunes complete generations beyond the
+// retention limit, so a few clicks replace every off-library copy of the readable index with copies of
+// the truncated one. The seam here forwards to the REAL coordinator, so without the guard this test
+// does that damage on actual disk instead of watching a stub return early (F187).
+@Test("Backing up while degraded creates no generation and prunes no existing one")
+@MainActor
+func degradedLibraryRefusesBackUp() async throws {
+    let (store, root, _) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // Outside the library — the coordinator refuses an overlapping destination outright, and that
+    // refusal would stand in for the guard being tested.
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F187-backup-dest-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: destination) }
+
+    // A plausible existing generation: the user's last good off-library copy of a READABLE index.
+    let existing = destination
+        .appendingPathComponent(BackupCoordinator.managedSubfolder, isDirectory: true)
+        .appendingPathComponent("1000", isDirectory: true)
+    let existingIndex = existing.appendingPathComponent("meetings.json")
+    let existingAudio = existing.appendingPathComponent("Recordings/A/meeting.wav")
+    try FileManager.default.createDirectory(
+        at: existingAudio.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data("the last readable index".utf8).write(to: existingIndex)
+    try Data("audio-A".utf8).write(to: existingAudio)
+    try Data().write(to: existing.appendingPathComponent(BackupCoordinator.completionMarker))
+    let before = try snapshot(of: destination)
+
+    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    // One more generation is one too many: a real run at this retention prunes generation 1000.
+    model.backupRetention = 1
+    let counter = BackupCallCounter()
+    model.runLibraryBackup = { source, destination, now, retain in
+        counter.runs += 1
+        return try BackupCoordinator.backUp(source: source, destination: destination, now: now, retain: retain)
+    }
+
+    await model.backUpLibrary(to: destination, now: 5_000)
+
+    // The work never started — not "a stub returned early".
+    #expect(counter.runs == 0)
+    let after = try snapshot(of: destination)
+    #expect(after == before) // byte-for-byte: nothing created, nothing pruned, nothing rewritten
+    #expect(FileManager.default.fileExists(atPath: existingIndex.path))
+    // `try?`, not `try`: a pruned generation must still record every remaining expectation below
+    // rather than aborting the test at the first missing file.
+    #expect((try? Data(contentsOf: existingIndex)) == Data("the last readable index".utf8))
+    let created = destination
+        .appendingPathComponent(BackupCoordinator.managedSubfolder, isDirectory: true)
+        .appendingPathComponent("5000", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: created.path))
+    let message = try #require(model.alertMessage)
+    // Named by the action the user took, and never the success summary a completed run would post.
+    #expect(message.contains("Backing up the library cannot start"))
+    #expect(message.contains("read-only"))
+    #expect(message.contains("recovery"))
+}

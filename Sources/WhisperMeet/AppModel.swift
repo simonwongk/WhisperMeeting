@@ -669,6 +669,16 @@ final class AppModel: ObservableObject {
     /// recording or import is active so it never snapshots changing files, and runs the copy/hash work
     /// off the main actor so the UI doesn't stall (F137).
     func backUpLibrary(to destination: URL, now: Int = Int(Date().timeIntervalSince1970)) async {
+        // Refused while the library is read-only, ahead of the busyness guard below and of any
+        // filesystem work — this is not about a transient conflict but about the library being
+        // untrustworthy (F187). A backup taken from a library the app could not fully read is worse
+        // than no backup: the snapshot captures the DAMAGED `meetings.json`, and the same run prunes
+        // complete generations beyond `backupRetention`, so the user's last good off-library copies of
+        // a readable index are replaced by copies of the truncated one. "Back this up before I touch
+        // anything" is the most intuitive move here and would be the destructive one. While degraded
+        // the only safe action is to change nothing at all; recovery is the manual path in
+        // `docs/RECOVERY.md`, and a backup taken after that is a backup worth having.
+        guard libraryAcceptsChanges("Backing up the library") else { return }
         guard !isRecordingActive, !isImporting else {
             alertMessage = "Finish recording or importing before backing up the library."
             return
