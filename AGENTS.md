@@ -374,9 +374,10 @@ auto-detect.
 Everything lives under `~/Library/Application Support/WhisperMeet/`: `Runtime/venv/bin/whisper`
 (installed runtime), `Models/` (downloaded once on first use), `Runtime/Qwen3ASR/` (optional Qwen
 environment, ASR model, aligner, helper, and manifest), `Recordings/<meeting-uuid>/` (`meeting.wav`,
-`system-audio.f32`, `microphone-audio.f32`, `source-tracks.json`), and `meetings.json` /
-`vocabulary.json` (+ their `.backup.json`). `LocalWhisperRuntime.findExecutable()` also falls back
-to Homebrew/`~/.local/bin` installs.
+`system-audio.f32`, `microphone-audio.f32`, `source-tracks.json`), and the four persisted indexes
+`meetings.json` / `vocabulary.json` / `replacement-rules.json` / `dictation-log.json` (+ their
+`.backup.json`). `LocalWhisperRuntime.findExecutable()` also falls back to Homebrew/`~/.local/bin`
+installs. The indexes are a wire format shared across builds — see **Persisted-schema rules**.
 
 ### Non-negotiable invariants
 
