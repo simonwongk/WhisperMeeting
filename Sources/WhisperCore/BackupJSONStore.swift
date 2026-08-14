@@ -65,6 +65,17 @@ public struct BackupJSONStore<Value: Codable> {
         let newData = try encoder.encode(value)
         let existingPrimary = readableData(at: primaryURL)
         let existingBackup = readableData(at: backupURL)
+
+        // Preserve anything that exists but does not decode BEFORE either write can replace it (F187).
+        // "Undecodable" is not "worthless": conflating them is what destroyed the library on 2026-08-14.
+        // If the bytes cannot be preserved, refuse to write at all — surfacing an error beats losing data.
+        if existingPrimary == nil {
+            _ = try StoreQuarantine.preserve(fileAt: primaryURL, using: fileManager)
+        }
+        if existingBackup == nil {
+            _ = try StoreQuarantine.preserve(fileAt: backupURL, using: fileManager)
+        }
+
         let backupData = existingPrimary ?? existingBackup ?? newData
         try backupData.write(to: backupURL, options: .atomic)
         try newData.write(to: primaryURL, options: .atomic)
