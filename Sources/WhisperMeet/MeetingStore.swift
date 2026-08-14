@@ -255,7 +255,9 @@ final class MeetingStore: ObservableObject {
         self.transcriptWriteDebounce = transcriptWriteDebounce
         meetingFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
-            backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json")
+            backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json"),
+            // One bad record costs one record, not the library (F187) — see `salvageMeetings(from:)`.
+            salvage: MeetingStore.salvageMeetings(from:)
         )
         vocabularyFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("vocabulary.json"),
@@ -607,6 +609,61 @@ final class MeetingStore: ObservableObject {
             degrade(to: .unavailable(error.localizedDescription))
         }
         startupRecoveryMessages.append(error.localizedDescription)
+    }
+
+    /// Rebuild a meeting list from index bytes that no longer decode as a whole, keeping every record
+    /// that still does (F187).
+    ///
+    /// `BackupJSONStore` has carried this seam since quarantine landed, but the meeting index — the one
+    /// index actually wiped on 2026-08-14 — was constructed without it, so a single unreadable record
+    /// still cost the entire library. `BackupJSONStore` calls this only AFTER both copies have been
+    /// preserved, so this reads bytes that already survive on disk and writes nothing.
+    ///
+    /// The decoder MUST match `BackupJSONStore`'s own (`.iso8601`). Under the default date strategy
+    /// every record's `createdAt` fails, and the salvage silently rescues nothing while looking wired.
+    ///
+    /// Returns nil when there is nothing element-wise to rescue, in two cases that matter equally:
+    /// a top level that is not an array, and an array where NOTHING decoded. Reporting the second as
+    /// `.partiallySalvaged` with an empty library would read to the user as "your meetings are gone"
+    /// while claiming a partial rescue; the honest answer is `noReadableCopy`, which names the
+    /// quarantine files. Returning nil lets that real error stand.
+    ///
+    /// `nonisolated` and `@Sendable` because `BackupJSONStore` stores this as a `@Sendable` closure and
+    /// runs it on whatever context called `load()`: a `@MainActor`-isolated static could not be handed
+    /// over at all, and an unmarked one converts only with a data-race warning. It is a pure function of
+    /// its bytes and touches no store state, so both are statements of fact rather than escape hatches.
+    @Sendable
+    nonisolated private static func salvageMeetings(from data: Data) -> SalvagedValue<[MeetingRecord]>? {
+        guard let elements = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        var kept: [MeetingRecord] = []
+        var parked: [String] = []
+        for (index, element) in elements.enumerated() {
+            // Re-serialized wrapped back into a one-element ARRAY rather than as a bare fragment:
+            // every value `JSONSerialization` hands back is legal inside an array, so a malformed
+            // element (a number, a string, null) is parked rather than trapping the whole salvage.
+            if JSONSerialization.isValidJSONObject([element]),
+               let elementData = try? JSONSerialization.data(withJSONObject: [element]),
+               let record = try? decoder.decode([MeetingRecord].self, from: elementData).first {
+                kept.append(record)
+            } else {
+                parked.append(parkedIdentifier(for: element, at: index))
+            }
+        }
+        guard !kept.isEmpty else { return nil }
+        return SalvagedValue(value: kept, parkedIdentifiers: parked)
+    }
+
+    /// A name the user can look for inside the quarantined copy: the record's own id, else its title,
+    /// else its position in the file. Never fails — a record too damaged to identify is simply another
+    /// parked record, and losing its name must not cost the records around it (F187).
+    nonisolated private static func parkedIdentifier(for element: Any, at index: Int) -> String {
+        guard let object = element as? [String: Any] else { return "record at index \(index)" }
+        if let id = object["id"] as? String, !id.isEmpty { return id }
+        if let title = object["title"] as? String, !title.isEmpty { return title }
+        return "record at index \(index)"
     }
 
     private func loadMeetings() {
