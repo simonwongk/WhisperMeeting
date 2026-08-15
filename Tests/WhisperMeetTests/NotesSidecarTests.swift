@@ -107,3 +107,49 @@ func audioLessMeetingIsSkipped() throws {
     #expect(store.sidecarWriteCount == 0)
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Recordings").path))
 }
+
+@Test("Backfill writes a sidecar for every existing meeting, and a second run writes nothing")
+@MainActor
+func backfillIsIdempotent() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = try seedMeeting(in: store, root: root, transcript: "first meeting")
+    let b = try seedMeeting(in: store, root: root, transcript: "second meeting")
+
+    store.backfillNotesSidecars()
+    let afterFirst = store.sidecarWriteCount
+    #expect(afterFirst == 2)
+    for meeting in [a, b] {
+        let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+        #expect(FileManager.default.fileExists(atPath: sidecar.path))
+    }
+
+    store.backfillNotesSidecars()
+    #expect(store.sidecarWriteCount == afterFirst)
+}
+
+@Test("No sidecar is written while the library is read-only")
+@MainActor
+func noSidecarWhileDegraded() throws {
+    let (seedStore, root) = try makeStore()
+    let meeting = try seedMeeting(in: seedStore, root: root)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // Corrupt only the primary; copy it to the backup first so the reopened store still holds the
+    // record (`.recoveredFromBackup` — degraded AND populated).
+    let primary = root.appendingPathComponent("meetings.json")
+    let backup = root.appendingPathComponent("meetings.backup.json")
+    try? FileManager.default.removeItem(at: backup)
+    try FileManager.default.copyItem(at: primary, to: backup)
+    try Data("broken-primary".utf8).write(to: primary)
+
+    let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 999)
+    #expect(store.isDegraded)
+    #expect(!store.meetings.isEmpty)
+
+    store.backfillNotesSidecars()
+    store.flushPendingNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    #expect(!FileManager.default.fileExists(atPath: sidecar.path))
+    #expect(store.sidecarWriteCount == 0)
+}

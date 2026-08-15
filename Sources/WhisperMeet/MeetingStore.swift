@@ -353,6 +353,18 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// One idempotent sweep: make sure every meeting that has a recording folder also has an
+    /// up-to-date notes.md (F198). Covers everything transcribed before this feature existed.
+    /// Compare-first, so a library whose sidecars are current writes nothing. Refused while
+    /// degraded — the F187 read-only promise covers derived files too.
+    func backfillNotesSidecars() {
+        guard !isDegraded else { return }
+        for meeting in meetings {
+            pendingSidecarIDs.insert(meeting.id)
+        }
+        flushPendingNotesSidecars()
+    }
+
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
     /// button and the automatic sidecar both call this, so the two can never drift.
     func notesMarkdown(for meeting: MeetingRecord) -> String {
