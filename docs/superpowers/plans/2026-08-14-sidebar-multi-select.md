@@ -817,7 +817,7 @@ Record these steps in the log entry and mark the absence of a GUI test **"Not pl
 
 - [ ] **Step 3: File the ticket entry**
 
-Add the feature to `docs/TICKETS.md` using the template in `AGENTS.md` (next free ID is **F198**), advance the "Next free ID" line at the top of the file, then regenerate and validate:
+Add the feature to `docs/TICKETS.md` using the template in `AGENTS.md` at the board's current next free ID (check the header of `docs/TICKETS.md`), advance the "Next free ID" line at the top of the file, then regenerate and validate:
 
 ```bash
 python3 Scripts/generate-tickets-dashboard.py

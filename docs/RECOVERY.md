@@ -19,6 +19,10 @@ A normally completed recording contains:
 - `microphone-audio.f32` — the original microphone track.
 - `source-tracks.json` — timing and format information for the source tracks.
 
+Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mirroring that
+meeting's transcript, summary and action items, regenerated automatically as they change. It is
+write-only insurance — the app never reads it back — and safe to read or copy with any editor.
+
 The meeting list, business vocabulary, replacement rules, and dictation log each have a primary and
 a previous-readable copy:
 
