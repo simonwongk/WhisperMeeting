@@ -71,6 +71,103 @@ func transcriptEditWritesTheSidecar() throws {
     #expect(written.contains("corrected text"))
 }
 
+// Each mutator hook is pinned individually (F198): deleting any single `scheduleNotesSidecarWrite`
+// call must turn exactly one of the next three tests red. `editTranscript`'s hook is pinned by
+// `transcriptEditWritesTheSidecar` above.
+
+@Test("An upsert alone queues the sidecar — flushing right after seeding writes notes.md")
+@MainActor
+func upsertAloneWritesTheSidecar() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // Seeding IS the upsert under test — no further edits before the flush (F198).
+    let meeting = try seedMeeting(in: store, root: root)
+
+    store.flushPendingNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    let current = try #require(store.meeting(id: meeting.id))
+    #expect(written == store.notesMarkdown(for: current))
+    #expect(store.sidecarWriteCount == 1)
+}
+
+@Test("An update(id:) alone marks the sidecar stale — a title rename lands in notes.md")
+@MainActor
+func updateAloneWritesTheSidecar() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root)
+    store.flushPendingNotesSidecars()   // settle the seed's queue; only `update` may re-queue (F198)
+    let before = store.sidecarWriteCount
+
+    store.update(id: meeting.id) { $0.title = "Renamed sync" }
+    store.flushPendingNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    #expect(written.contains("Renamed sync"))
+    #expect(store.sidecarWriteCount == before + 1)
+}
+
+@Test("A notes edit alone marks the sidecar stale — the note text lands in notes.md")
+@MainActor
+func notesEditAloneWritesTheSidecar() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root)
+    store.flushPendingNotesSidecars()   // settle the seed's queue; only `editNotes` may re-queue (F198)
+    let before = store.sidecarWriteCount
+
+    store.editNotes(id: meeting.id, text: "Follow up with the vendor")
+    store.flushPendingNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    #expect(written.contains("Follow up with the vendor"))
+    #expect(store.sidecarWriteCount == before + 1)
+}
+
+// The quit-time path (F198): `update` persists the index synchronously, so `pendingIndexFlush` is nil
+// while the sidecar queue is NOT empty. `flushPendingEdits()` alone must still flush the sidecars —
+// this is red if the sidecar flush hides behind the index queue's early return.
+@Test("flushPendingEdits flushes queued sidecars even when no index flush is pending")
+@MainActor
+func flushPendingEditsAloneWritesTheSidecar() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root)
+    store.flushPendingNotesSidecars()
+
+    store.update(id: meeting.id) { $0.title = "Renamed before quit" }
+    store.flushPendingEdits()   // the ONLY flush — a quitting app calls nothing else (F198)
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    #expect(written.contains("Renamed before quit"))
+}
+
+// The launch wiring (F198): `performStartupRecovery` must run the sidecar backfill, so a library
+// transcribed before this feature existed gains its notes.md on the next launch.
+@Test("Startup recovery backfills notes.md for an already-indexed meeting")
+@MainActor
+func startupRecoveryBackfillsTheSidecar() async throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root, transcript: "pre-existing transcript")
+    let suite = "F198.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    await model.performStartupRecovery()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    let current = try #require(store.meeting(id: meeting.id))
+    #expect(written == store.notesMarkdown(for: current))
+}
+
 @Test("Identical content is not rewritten — a pin toggle leaves the sidecar untouched")
 @MainActor
 func identicalContentIsNotRewritten() throws {
@@ -91,21 +188,42 @@ func identicalContentIsNotRewritten() throws {
 @Test("A meeting whose recording folder is missing is skipped without creating anything")
 @MainActor
 func audioLessMeetingIsSkipped() throws {
-    let (store, root) = try makeStore()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let meeting = MeetingRecord(
+    // A dedicated parent directory, because the empty-path case below resolves to the directory
+    // ABOVE the library root — the sweep at the end must be able to prove nothing landed there (F198).
+    let container = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetSidecarContainer-\(UUID().uuidString)", isDirectory: true)
+    let root = container.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: container) }
+    let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 999)
+
+    // An empty `recordingPath` resolves to the library root's PARENT, which the containment check
+    // rejects (F198).
+    store.upsert(MeetingRecord(
         id: UUID(),
         title: "Transcript only",
         recordingPath: "",
         status: .completed,
         transcriptText: "kept text"
-    )
-    store.upsert(meeting)
+    ))
+    // A non-empty path whose folder was never created — the folder-exists guard, distinct from
+    // containment: the sidecar writer must never create a directory (F198).
+    store.upsert(MeetingRecord(
+        id: UUID(),
+        title: "Folder gone",
+        recordingPath: "Recordings/\(UUID().uuidString)/meeting.wav",
+        status: .completed,
+        transcriptText: "kept text"
+    ))
 
     store.flushPendingNotesSidecars()
 
     #expect(store.sidecarWriteCount == 0)
-    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Recordings").path))
+    // No notes.md anywhere under the container — covering the library root, its parent, and
+    // everything below them.
+    let everything = FileManager.default.enumerator(at: container, includingPropertiesForKeys: nil)?
+        .compactMap { $0 as? URL } ?? []
+    #expect(!everything.contains { $0.lastPathComponent == "notes.md" })
 }
 
 @Test("Backfill writes a sidecar for every existing meeting, and a second run writes nothing")
@@ -123,6 +241,13 @@ func backfillIsIdempotent() async throws {
         let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
         #expect(FileManager.default.fileExists(atPath: sidecar.path))
     }
+    // The backfilled file is the real composed document, not merely present (F198).
+    let currentA = try #require(store.meeting(id: a.id))
+    let writtenA = try String(
+        contentsOf: root.appendingPathComponent("Recordings/\(a.id.uuidString)/notes.md"),
+        encoding: .utf8
+    )
+    #expect(writtenA == store.notesMarkdown(for: currentA))
 
     await store.backfillNotesSidecars()
     #expect(store.sidecarWriteCount == afterFirst)
