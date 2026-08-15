@@ -720,7 +720,8 @@ final class AppModel: ObservableObject {
 
         // Every meeting's transcript and summary is mirrored as notes.md beside its audio, so the
         // text survives even an index loss (F198). Idempotent: an up-to-date library writes nothing.
-        store.backfillNotesSidecars()
+        // Awaited, but the sweep itself runs detached off the main actor — see the store.
+        await store.backfillNotesSidecars()
 
         do {
             let recover = recoverInterruptedRecording

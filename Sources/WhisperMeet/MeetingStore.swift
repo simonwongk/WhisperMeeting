@@ -311,23 +311,26 @@ final class MeetingStore: ObservableObject {
         rootDirectory.appendingPathComponent(meeting.recordingPath)
     }
 
-    /// Marks a meeting's notes.md stale and schedules the debounced rewrite (F198).
+    /// Marks a meeting's notes.md stale and schedules the debounced rewrite — the same clamp-and-cancel
+    /// shape as `scheduleDebouncedPersist`, and the `Task {}` inherits this method's main-actor
+    /// isolation, so no explicit hop back is needed (F198).
     private func scheduleNotesSidecarWrite(for id: UUID) {
         pendingSidecarIDs.insert(id)
         pendingSidecarFlush?.cancel()
         let delay = transcriptWriteDebounce
         pendingSidecarFlush = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            await MainActor.run { self?.flushPendingNotesSidecars() }
+            self?.flushPendingNotesSidecars()
         }
     }
 
     /// Writes every pending notes.md now. Write-only insurance for the text a wiped index would
-    /// otherwise take with it (F198): the app never reads these back, they are regenerable from the
-    /// index at any time, and a failed write therefore loses nothing — which is why failures here are
-    /// silent BY DESIGN, unlike the F187 fixes, where the failing store was the source of truth.
-    /// Never writes while degraded, and never creates a folder.
+    /// otherwise take with it (F198): never read back into the app's state — the only read is the
+    /// compare-before-write in `writeSidecarIfStale` — regenerable from the index at any time, so a
+    /// failed write loses nothing, which is why failures are silent BY DESIGN, unlike the F187 fixes,
+    /// where the failing store was the source of truth. Never writes while degraded, and never
+    /// creates a folder.
     func flushPendingNotesSidecars() {
         pendingSidecarFlush?.cancel()
         pendingSidecarFlush = nil
@@ -335,21 +338,38 @@ final class MeetingStore: ObservableObject {
         let ids = pendingSidecarIDs
         pendingSidecarIDs = []
         for id in ids {
-            guard let meeting = meeting(id: id), !meeting.recordingPath.isEmpty else { continue }
-            let directory = recordingURL(for: meeting).deletingLastPathComponent()
-            guard isWithinLibrary(directory),
-                  FileManager.default.fileExists(atPath: directory.path) else { continue }
-            let composed = notesMarkdown(for: meeting)
-            let sidecarURL = directory.appendingPathComponent("notes.md")
-            if let existing = try? String(contentsOf: sidecarURL, encoding: .utf8), existing == composed {
-                continue
-            }
-            do {
-                try composed.write(to: sidecarURL, atomically: true, encoding: .utf8)
+            guard let meeting = meeting(id: id) else { continue }
+            if Self.writeSidecarIfStale(for: meeting, root: rootDirectory) {
                 sidecarWriteCount += 1
-            } catch {
-                // Silent by design — see the doc comment above.
             }
+        }
+    }
+
+    /// Writes (or skips) one meeting's notes.md: containment, folder-exists, compose, compare, write.
+    /// Returns whether a file was actually written. `nonisolated` — pure path/string/file work over a
+    /// `Sendable` record — so the startup backfill can run it detached while the cheap per-edit
+    /// debounce path calls it synchronously on the actor (F198).
+    private nonisolated static func writeSidecarIfStale(for meeting: MeetingRecord, root: URL) -> Bool {
+        guard !meeting.recordingPath.isEmpty else { return false }
+        let directory = root
+            .appendingPathComponent(meeting.recordingPath)
+            .deletingLastPathComponent()
+        // Same shape as `delete()`: never outside the library, and never the library root itself.
+        // The sidecar filename is fixed, so a root-level write could never clobber the indexes —
+        // excluding the root is for consistency with the delete path (F198).
+        guard isWithinLibrary(directory, root: root),
+              directory.standardizedFileURL != root.standardizedFileURL,
+              FileManager.default.fileExists(atPath: directory.path) else { return false }
+        let composed = composeNotes(for: meeting)
+        let sidecarURL = directory.appendingPathComponent("notes.md")
+        if let existing = try? String(contentsOf: sidecarURL, encoding: .utf8), existing == composed {
+            return false
+        }
+        do {
+            try composed.write(to: sidecarURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false // Silent by design — see `flushPendingNotesSidecars`.
         }
     }
 
@@ -357,17 +377,28 @@ final class MeetingStore: ObservableObject {
     /// up-to-date notes.md (F198). Covers everything transcribed before this feature existed.
     /// Compare-first, so a library whose sidecars are current writes nothing. Refused while
     /// degraded — the F187 read-only promise covers derived files too.
-    func backfillNotesSidecars() {
+    ///
+    /// Runs the sweep detached: it is on the launch path and does transcript-sized string work plus
+    /// a file read per meeting, unbounded with library size, so it must not stall the main actor.
+    /// The actor only snapshots (`MeetingRecord` is `Sendable`) and banks the write count; a
+    /// debounced flush racing the sweep at worst rewrites identical bytes, because both sides
+    /// compare before writing.
+    func backfillNotesSidecars() async {
         guard !isDegraded else { return }
-        for meeting in meetings {
-            pendingSidecarIDs.insert(meeting.id)
-        }
-        flushPendingNotesSidecars()
+        let snapshot = meetings
+        let root = rootDirectory
+        let written = await Task.detached(priority: .utility) {
+            snapshot.reduce(into: 0) { count, meeting in
+                if Self.writeSidecarIfStale(for: meeting, root: root) { count += 1 }
+            }
+        }.value
+        sidecarWriteCount += written
     }
 
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
-    /// button and the automatic sidecar both call this, so the two can never drift.
-    func notesMarkdown(for meeting: MeetingRecord) -> String {
+    /// button and the automatic sidecar (debounced flush and detached backfill alike) all route
+    /// through here, so none can drift. `nonisolated` so the backfill can compose off the actor.
+    nonisolated static func composeNotes(for meeting: MeetingRecord) -> String {
         MeetingNotesExporter.markdown(
             title: meeting.title,
             dateText: meeting.createdAt.formatted(date: .abbreviated, time: .shortened),
@@ -379,6 +410,10 @@ final class MeetingStore: ObservableObject {
             markers: meeting.orderedMarkers,
             segments: meeting.segments
         )
+    }
+
+    func notesMarkdown(for meeting: MeetingRecord) -> String {
+        Self.composeNotes(for: meeting)
     }
 
     func relativeRecordingPath(for url: URL) -> String {
@@ -495,11 +530,14 @@ final class MeetingStore: ObservableObject {
         // Reaches `persistMeetings()` directly, so it carries the same refusal as every other mutator
         // even though only the already-guarded edit paths can schedule a flush today (F187).
         guard mutationIsAllowed() else { return }
+        // The two pending queues empty independently: `upsert`/`update` persist the index
+        // synchronously, so the sidecar queue is routinely non-empty while no index flush is pending.
+        // Flush sidecars before the early return below or a quit-time flush would skip them (F198).
+        flushPendingNotesSidecars()
         guard let task = pendingIndexFlush else { return }
         pendingIndexFlush = nil
         task.cancel()
         persistMeetings()
-        flushPendingNotesSidecars()
     }
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
@@ -531,10 +569,16 @@ final class MeetingStore: ObservableObject {
 
     /// True when `url` is the library root or a path inside it — the containment check that stops a
     /// corrupt/tampered `recordingPath` (e.g. one with `../`) from reaching outside the library (F148 #6).
-    func isWithinLibrary(_ url: URL) -> Bool {
-        let base = rootDirectory.standardizedFileURL.path
+    /// The pure path math is `nonisolated static` so the detached sidecar backfill runs the same
+    /// check off the actor (F198).
+    nonisolated static func isWithinLibrary(_ url: URL, root: URL) -> Bool {
+        let base = root.standardizedFileURL.path
         let target = url.standardizedFileURL.path
         return target == base || target.hasPrefix(base + "/")
+    }
+
+    func isWithinLibrary(_ url: URL) -> Bool {
+        Self.isWithinLibrary(url, root: rootDirectory)
     }
 
     func delete(id: UUID) {

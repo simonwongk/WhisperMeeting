@@ -110,13 +110,13 @@ func audioLessMeetingIsSkipped() throws {
 
 @Test("Backfill writes a sidecar for every existing meeting, and a second run writes nothing")
 @MainActor
-func backfillIsIdempotent() throws {
+func backfillIsIdempotent() async throws {
     let (store, root) = try makeStore()
     defer { try? FileManager.default.removeItem(at: root) }
     let a = try seedMeeting(in: store, root: root, transcript: "first meeting")
     let b = try seedMeeting(in: store, root: root, transcript: "second meeting")
 
-    store.backfillNotesSidecars()
+    await store.backfillNotesSidecars()
     let afterFirst = store.sidecarWriteCount
     #expect(afterFirst == 2)
     for meeting in [a, b] {
@@ -124,13 +124,13 @@ func backfillIsIdempotent() throws {
         #expect(FileManager.default.fileExists(atPath: sidecar.path))
     }
 
-    store.backfillNotesSidecars()
+    await store.backfillNotesSidecars()
     #expect(store.sidecarWriteCount == afterFirst)
 }
 
 @Test("No sidecar is written while the library is read-only")
 @MainActor
-func noSidecarWhileDegraded() throws {
+func noSidecarWhileDegraded() async throws {
     let (seedStore, root) = try makeStore()
     let meeting = try seedMeeting(in: seedStore, root: root)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -146,7 +146,7 @@ func noSidecarWhileDegraded() throws {
     #expect(store.isDegraded)
     #expect(!store.meetings.isEmpty)
 
-    store.backfillNotesSidecars()
+    await store.backfillNotesSidecars()
     store.flushPendingNotesSidecars()
 
     let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
