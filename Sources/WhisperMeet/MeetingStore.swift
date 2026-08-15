@@ -244,6 +244,11 @@ final class MeetingStore: ObservableObject {
     /// Count of completed index writes — lets F40's coalescing test assert how many disk writes ran.
     private(set) var persistCount = 0
     private var pendingIndexFlush: Task<Void, Never>?
+    /// Meetings whose notes sidecar is stale. Flushed together, debounced like the index (F40).
+    private var pendingSidecarIDs: Set<UUID> = []
+    private var pendingSidecarFlush: Task<Void, Never>?
+    /// Count of sidecar files actually written — lets tests assert the compare-first rule.
+    private(set) var sidecarWriteCount = 0
 
     init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = 0.5) {
         let appSupport = FileManager.default.urls(
@@ -304,6 +309,48 @@ final class MeetingStore: ObservableObject {
 
     func recordingURL(for meeting: MeetingRecord) -> URL {
         rootDirectory.appendingPathComponent(meeting.recordingPath)
+    }
+
+    /// Marks a meeting's notes.md stale and schedules the debounced rewrite (F198).
+    private func scheduleNotesSidecarWrite(for id: UUID) {
+        pendingSidecarIDs.insert(id)
+        pendingSidecarFlush?.cancel()
+        let delay = transcriptWriteDebounce
+        pendingSidecarFlush = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.flushPendingNotesSidecars() }
+        }
+    }
+
+    /// Writes every pending notes.md now. Write-only insurance for the text a wiped index would
+    /// otherwise take with it (F198): the app never reads these back, they are regenerable from the
+    /// index at any time, and a failed write therefore loses nothing — which is why failures here are
+    /// silent BY DESIGN, unlike the F187 fixes, where the failing store was the source of truth.
+    /// Never writes while degraded, and never creates a folder.
+    func flushPendingNotesSidecars() {
+        pendingSidecarFlush?.cancel()
+        pendingSidecarFlush = nil
+        guard !isDegraded else { return }        // F187's read-only promise stays absolute
+        let ids = pendingSidecarIDs
+        pendingSidecarIDs = []
+        for id in ids {
+            guard let meeting = meeting(id: id), !meeting.recordingPath.isEmpty else { continue }
+            let directory = recordingURL(for: meeting).deletingLastPathComponent()
+            guard isWithinLibrary(directory),
+                  FileManager.default.fileExists(atPath: directory.path) else { continue }
+            let composed = notesMarkdown(for: meeting)
+            let sidecarURL = directory.appendingPathComponent("notes.md")
+            if let existing = try? String(contentsOf: sidecarURL, encoding: .utf8), existing == composed {
+                continue
+            }
+            do {
+                try composed.write(to: sidecarURL, atomically: true, encoding: .utf8)
+                sidecarWriteCount += 1
+            } catch {
+                // Silent by design — see the doc comment above.
+            }
+        }
     }
 
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
@@ -385,6 +432,7 @@ final class MeetingStore: ObservableObject {
         }
         meetings = MeetingOrdering.sorted(meetings)
         persistMeetings()
+        scheduleNotesSidecarWrite(for: meeting.id)
     }
 
     func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
@@ -392,6 +440,7 @@ final class MeetingStore: ObservableObject {
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         persistMeetings()
+        scheduleNotesSidecarWrite(for: id)
     }
 
     /// Apply a transcript-body edit: update the in-memory record immediately (so the editor stays
@@ -402,6 +451,7 @@ final class MeetingStore: ObservableObject {
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].transcriptText = text
         scheduleDebouncedPersist()
+        scheduleNotesSidecarWrite(for: id)
     }
 
     /// Apply a notes edit with the same immediate-in-memory + debounced-write coalescing as the
@@ -412,6 +462,7 @@ final class MeetingStore: ObservableObject {
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].notes = text.isEmpty ? nil : text
         scheduleDebouncedPersist()
+        scheduleNotesSidecarWrite(for: id)
     }
 
     /// Cancel any pending flush and schedule a single trailing one `transcriptWriteDebounce` later, so
@@ -436,6 +487,7 @@ final class MeetingStore: ObservableObject {
         pendingIndexFlush = nil
         task.cancel()
         persistMeetings()
+        flushPendingNotesSidecars()
     }
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.

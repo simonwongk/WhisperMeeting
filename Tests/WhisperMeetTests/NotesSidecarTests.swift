@@ -52,3 +52,58 @@ func notesMarkdownMatchesTheExporter() throws {
     #expect(composed.contains("Planning sync"))
     #expect(composed.contains("hello world"))
 }
+
+@Test("A transcript edit writes notes.md beside the audio after the flush")
+@MainActor
+func transcriptEditWritesTheSidecar() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root)
+
+    store.editTranscript(id: meeting.id, text: "corrected text")
+    store.flushPendingEdits()
+    store.flushPendingNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(meeting.id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    let current = try #require(store.meeting(id: meeting.id))
+    #expect(written == store.notesMarkdown(for: current))
+    #expect(written.contains("corrected text"))
+}
+
+@Test("Identical content is not rewritten — a pin toggle leaves the sidecar untouched")
+@MainActor
+func identicalContentIsNotRewritten() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root)
+    store.flushPendingNotesSidecars()
+    let before = store.sidecarWriteCount
+
+    // A pin change routes through the hooked `update(id:)` here; the pin is not part of the notes
+    // document, so the composed content is identical and the file must not be rewritten.
+    store.update(id: meeting.id) { $0.pinned = true }
+    store.flushPendingNotesSidecars()
+
+    #expect(store.sidecarWriteCount == before)
+}
+
+@Test("A meeting whose recording folder is missing is skipped without creating anything")
+@MainActor
+func audioLessMeetingIsSkipped() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = MeetingRecord(
+        id: UUID(),
+        title: "Transcript only",
+        recordingPath: "",
+        status: .completed,
+        transcriptText: "kept text"
+    )
+    store.upsert(meeting)
+
+    store.flushPendingNotesSidecars()
+
+    #expect(store.sidecarWriteCount == 0)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Recordings").path))
+}
