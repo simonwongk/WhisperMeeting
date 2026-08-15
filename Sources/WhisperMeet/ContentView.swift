@@ -3017,18 +3017,7 @@ private struct TranscriptDetailView: View {
 
     private func exportMeetingNotes(meeting: MeetingRecord) {
         let current = store.meeting(id: meeting.id) ?? meeting
-        let notes = MeetingNotesExporter.markdown(
-            title: current.title,
-            dateText: current.createdAt.formatted(date: .abbreviated, time: .shortened),
-            durationSeconds: current.duration,
-            languageCode: current.languageCode,
-            summary: current.summary,
-            transcriptText: current.transcriptText,
-            notes: current.notes,
-            markers: current.orderedMarkers,
-            segments: current.segments
-        )
-        saveExport(notes, suggestedName: "\(current.title) Notes", fileExtension: "md")
+        saveExport(store.notesMarkdown(for: current), suggestedName: "\(current.title) Notes", fileExtension: "md")
     }
 
     private func saveExport(_ content: String, suggestedName: String, fileExtension: String) {

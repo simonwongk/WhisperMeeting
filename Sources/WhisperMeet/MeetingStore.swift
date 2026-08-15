@@ -306,6 +306,22 @@ final class MeetingStore: ObservableObject {
         rootDirectory.appendingPathComponent(meeting.recordingPath)
     }
 
+    /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
+    /// button and the automatic sidecar both call this, so the two can never drift.
+    func notesMarkdown(for meeting: MeetingRecord) -> String {
+        MeetingNotesExporter.markdown(
+            title: meeting.title,
+            dateText: meeting.createdAt.formatted(date: .abbreviated, time: .shortened),
+            durationSeconds: meeting.duration,
+            languageCode: meeting.languageCode,
+            summary: meeting.summary,
+            transcriptText: meeting.transcriptText,
+            notes: meeting.notes,
+            markers: meeting.orderedMarkers,
+            segments: meeting.segments
+        )
+    }
+
     func relativeRecordingPath(for url: URL) -> String {
         url.standardizedFileURL.path.replacingOccurrences(
             of: rootDirectory.standardizedFileURL.path + "/",
