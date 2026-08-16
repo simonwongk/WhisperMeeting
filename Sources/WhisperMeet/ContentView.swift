@@ -221,6 +221,18 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if selectedMeetingIDs.count > 1 {
+            MeetingBatchView(store: store, meetingIDs: selectedMeetingIDs) {
+                let chosen = Set(selectedMeetingIDs)
+                pendingDeletion = store.meetings.filter { chosen.contains($0.id) }
+            }
+        } else {
+            singleDetail
+        }
+    }
+
+    @ViewBuilder
+    private var singleDetail: some View {
         switch singleSelection ?? .record {
         case .record:
             RecordMeetingView(model: model) { meetingID in
@@ -3099,7 +3111,8 @@ private struct TranscriptDetailView: View {
 
 /// A left-aligned wrapping layout for tag chips (F171): rows fill the proposed width then wrap,
 /// like text. Sized by the sum of its rows so it composes with the surrounding VStack.
-private struct WrapLayout: Layout {
+/// Used by `TagChipsEditor` here and by `MeetingBatchView` in its own file.
+struct WrapLayout: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
