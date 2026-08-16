@@ -19,13 +19,22 @@ A normally completed recording contains:
 - `microphone-audio.f32` — the original microphone track.
 - `source-tracks.json` — timing and format information for the source tracks.
 
-The meeting list and business vocabulary have primary and previous-readable copies:
+Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mirroring that
+meeting's transcript, summary and action items, regenerated automatically as they change. It is
+write-only insurance — the app never reads it back — and safe to read or copy with any editor.
+
+The meeting list, business vocabulary, replacement rules, and dictation log each have a primary and
+a previous-readable copy:
 
 ```text
 meetings.json
 meetings.backup.json
 vocabulary.json
 vocabulary.backup.json
+replacement-rules.json
+replacement-rules.backup.json
+dictation-log.json
+dictation-log.backup.json
 ```
 
 The backup is deliberately one version behind after an ordinary save. Audio folders are independent
@@ -41,8 +50,8 @@ of these index files.
 | Recording finalization fails | The app closes the raw track files instead of deleting them, then attempts to rebuild `meeting-recovered.wav`. | All source files that reached disk. |
 | The app or Mac stops during recording | On the next launch, the app finds the unindexed recording folder and attempts to rebuild a WAV from the raw tracks. | Raw source tracks; the recovered WAV when enough audio was written. |
 | Recording permission or startup fails before any file is created | The verified-empty meeting folder is removed automatically and is not shown as an interrupted recording. | No audio existed to preserve. Any non-empty folder remains protected. |
-| `meetings.json` or `vocabulary.json` is damaged | The app opens the previous readable backup and repairs the primary copy. | The backup and every recording folder. |
-| Both an index and its backup are unreadable | Both damaged files are left untouched. Recording folders are scanned and usable recordings are added back to history. | The damaged files for manual inspection and every recording folder. Transcript text present only in the damaged index may require manual recovery or retranscription. |
+| Any meeting-library index (`meetings.json`, `vocabulary.json`, or `replacement-rules.json`) is damaged | The app opens that index's previous readable backup, which may be one save behind, and leaves the damaged primary exactly as it is. The **whole** library opens read-only — a damaged index anywhere means the app cannot be sure what you had, so editing, deleting, recording, importing and transcribing are all refused until recovery is resolved, whichever index it was. | The backup, the damaged primary, and every recording folder. |
+| Neither index copy can be read | The exact bytes are copied aside as `<name>.unreadable-<timestamp>.json`, the library opens read-only, and no mutation, recording, import, transcription or deletion is permitted until recovery is resolved. | Every recording folder, and both original index files. |
 | An interrupted imported file is empty or not playable | Empty files are never promoted. Other compressed candidates are verified with AVFoundation; an unverified candidate is indexed as **Needs Attention**, not as ready audio. | The original imported file and its folder remain untouched for replacement or manual inspection. |
 | An imported WAV is truncated or declares more audio than the file contains | The WAV is not promoted as playable and the meeting is indexed as **Needs Attention**. | The original WAV and folder remain untouched for manual inspection or replacement. |
 | An index save fails, including a full disk | The app shows an error and keeps the last readable index copy. | Existing recording files and the last readable index. New unsaved metadata may need to be entered again after storage is available. |

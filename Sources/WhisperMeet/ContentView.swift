@@ -2448,17 +2448,29 @@ private struct TranscriptDetailView: View {
     private func summaryBody(_ summary: MeetingSummary) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(summary.summary)
+                .textSelection(.enabled)
             if !summary.keyPoints.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Key points").font(.subheadline.bold())
+                    HStack {
+                        Text("Key points").font(.subheadline.bold())
+                        Button("Copy") { copy(summary.keyPoints.map { "• \($0)" }.joined(separator: "\n")) }
+                            .controlSize(.small)
+                            .help("Copy the key points only")
+                    }
                     ForEach(summary.keyPoints.indices, id: \.self) { index in
                         Text("• \(summary.keyPoints[index])")
                     }
+                    .textSelection(.enabled)
                 }
             }
             if !summary.actionItems.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Action items").font(.subheadline.bold())
+                    HStack {
+                        Text("Action items").font(.subheadline.bold())
+                        Button("Copy") { copy(summary.actionItems.map(MeetingNotesExporter.actionItemLine).joined(separator: "\n")) }
+                            .controlSize(.small)
+                            .help("Copy the action items only, with owner and due date")
+                    }
                     ForEach(summary.actionItems.indices, id: \.self) { index in
                         ActionItemCard(
                             item: summary.actionItems[index],
@@ -3017,18 +3029,7 @@ private struct TranscriptDetailView: View {
 
     private func exportMeetingNotes(meeting: MeetingRecord) {
         let current = store.meeting(id: meeting.id) ?? meeting
-        let notes = MeetingNotesExporter.markdown(
-            title: current.title,
-            dateText: current.createdAt.formatted(date: .abbreviated, time: .shortened),
-            durationSeconds: current.duration,
-            languageCode: current.languageCode,
-            summary: current.summary,
-            transcriptText: current.transcriptText,
-            notes: current.notes,
-            markers: current.orderedMarkers,
-            segments: current.segments
-        )
-        saveExport(notes, suggestedName: "\(current.title) Notes", fileExtension: "md")
+        saveExport(store.notesMarkdown(for: current), suggestedName: "\(current.title) Notes", fileExtension: "md")
     }
 
     private func saveExport(_ content: String, suggestedName: String, fileExtension: String) {
@@ -3304,6 +3305,7 @@ private struct ActionItemCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.text)
+                    .textSelection(.enabled)
                     .strikethrough(item.done, color: .secondary)
                     .foregroundStyle(item.done ? Color.secondary : Color.primary)
 
@@ -4039,6 +4041,7 @@ private struct PlayableTranscriptView: View {
                     .foregroundStyle(isActive ? Color.accentColor : .secondary)
                     .frame(width: 52, alignment: .leading)
                 highlightedText(segment.text, segmentIndex: index)
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
             }

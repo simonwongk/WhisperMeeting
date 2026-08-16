@@ -364,6 +364,21 @@ final class AppModel: ObservableObject {
         recordingPreflight = .inspect(storageDirectory: store.rootDirectory)
     }
 
+    /// Whether a library-changing action may proceed, explaining the refusal through `alertMessage`
+    /// — the channel these entry points already use. Mirrors `MeetingStore.mutationIsAllowed()`, which
+    /// covers the write itself; this covers the work that leads up to one (F187).
+    ///
+    /// Callers MUST invoke this BEFORE doing that work. Import copies the media file into the library
+    /// and transcription runs a speech model for minutes, and each only then reaches a `store.upsert`
+    /// or `store.update` that a degraded store silently refuses — so without this the user waits out
+    /// the whole job, is told nothing, and in the import case is left with audio sitting in the
+    /// library that nothing will ever index.
+    private func libraryAcceptsChanges(_ action: String) -> Bool {
+        guard store.isDegraded else { return true }
+        alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
+        return false
+    }
+
     /// Rebuilds one interrupted recording folder from its raw tracks. Injectable so startup
     /// recovery's per-orphan resilience is testable; defaults to the real rebuild (F47).
     var recoverInterruptedRecording: @Sendable (URL) throws -> RecoveredRecording? = {
@@ -444,6 +459,17 @@ final class AppModel: ObservableObject {
         on url: URL,
         onProgress: @escaping @Sendable (LocalTranscriptionProgress) async -> Void = { _ in }
     ) async throws -> TranscriptionResult {
+        // The systematic backstop (F187). Every heavy engine pass — full transcription, per-segment
+        // re-run, second opinion — is admitted here, and nowhere else. The per-entry-point
+        // `libraryAcceptsChanges` guards are what the user should normally hit, because they name the
+        // action they attempted; this one exists for the entry point NOBODY REMEMBERED TO GUARD.
+        // Three consecutive passes over this branch enumerated "every mutating entry point" by
+        // grepping `store.upsert`/`store.update` call sites, and each missed one, because the
+        // expensive work and the refused write live in different functions. So the guarantee is
+        // placed where it cannot be missed by inspection: minutes of model time are never spent on a
+        // library that will refuse to save the result. It sits ABOVE the override branch on purpose —
+        // not even a stubbed engine runs while degraded.
+        guard !store.isDegraded else { throw MeetingStoreError.engineRunIsReadOnly }
         if let override = runTranscriptionEngineOverride {
             return try await override(selection, url)
         }
@@ -467,7 +493,9 @@ final class AppModel: ObservableObject {
             )
             return try await client.transcribe(
                 recordingAt: url,
-                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.vocabulary),
+                // The engine's `initial_prompt` is budgeted, so it takes the capped view — the stored
+                // list is no longer trimmed to fit it (F187).
+                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.promptVocabulary),
                 onProgress: onProgress
             )
         }
@@ -480,6 +508,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before requesting a second opinion."
             return
         }
+        // Guarded here as well as in the worker, so the refusal is one immediate message rather than
+        // one raised from inside a detached task after the engine flag was already claimed (F187).
+        guard libraryAcceptsChanges("Requesting a second opinion") else { return }
         secondOpinionFailed = false
         secondOpinionSpans = nil
         secondOpinionProgress = nil
@@ -497,6 +528,12 @@ final class AppModel: ObservableObject {
     /// Runs the non-selected engine on the meeting's recording and stores the comparison spans. Never
     /// overwrites the stored transcript — only `applySecondOpinionSpan` does, on explicit user action.
     func computeSecondOpinion(id: UUID) async {
+        // A second opinion is the single most expensive thing the app does — a whole second ASR pass
+        // over the entire recording — and its ONLY product, `secondOpinionSpans`, can be consumed
+        // solely through `applySecondOpinionSpan`, whose `store.update` a degraded store refuses. So
+        // without this the user waits out a full re-transcription, reviews the divergences, and every
+        // Replace click silently does nothing (F187).
+        guard libraryAcceptsChanges("Requesting a second opinion") else { return }
         guard let meeting = store.meeting(id: id), meeting.status == .completed, !meeting.segments.isEmpty else { return }
         secondOpinionFailed = false
         // Run the genuine OTHER engine relative to the engine that produced this transcript (recorded on
@@ -537,6 +574,7 @@ final class AppModel: ObservableObject {
     /// selected engine on the clip, and splice the result back — the recording is never modified. The
     /// heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards + wraps.
     func reTranscribeSegment(id: UUID, index: Int) async {
+        guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         guard let meeting = store.meeting(id: id),
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
@@ -570,6 +608,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before re-transcribing a segment."
             return
         }
+        // Guarded here as well as in the delegate, so the refusal is one immediate message rather
+        // than one raised from inside a detached task after the engine flag was already claimed (F187).
+        guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         isRunningAuxiliaryEngine = true
         Task {
             await reTranscribeSegment(id: id, index: index)
@@ -628,6 +669,16 @@ final class AppModel: ObservableObject {
     /// recording or import is active so it never snapshots changing files, and runs the copy/hash work
     /// off the main actor so the UI doesn't stall (F137).
     func backUpLibrary(to destination: URL, now: Int = Int(Date().timeIntervalSince1970)) async {
+        // Refused while the library is read-only, ahead of the busyness guard below and of any
+        // filesystem work — this is not about a transient conflict but about the library being
+        // untrustworthy (F187). A backup taken from a library the app could not fully read is worse
+        // than no backup: the snapshot captures the DAMAGED `meetings.json`, and the same run prunes
+        // complete generations beyond `backupRetention`, so the user's last good off-library copies of
+        // a readable index are replaced by copies of the truncated one. "Back this up before I touch
+        // anything" is the most intuitive move here and would be the destructive one. While degraded
+        // the only safe action is to change nothing at all; recovery is the manual path in
+        // `docs/RECOVERY.md`, and a backup taken after that is a backup worth having.
+        guard libraryAcceptsChanges("Backing up the library") else { return }
         guard !isRecordingActive, !isImporting else {
             alertMessage = "Finish recording or importing before backing up the library."
             return
@@ -656,6 +707,21 @@ final class AppModel: ObservableObject {
         refreshRuntime()
         refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
+        // A library that did not fully load must never be "recovered" into a lesser one (F187). Every
+        // recording folder looks orphaned when the in-memory index is empty, which is how ten meetings
+        // became blank stubs on 2026-08-14. Show the state and stop; the user decides what happens next.
+        if store.isDegraded {
+            messages.append(
+                "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched and the unreadable index was copied aside. Nothing will be changed until you choose how to recover."
+            )
+            alertMessage = messages.joined(separator: "\n\n")
+            return
+        }
+
+        // Every meeting's transcript and summary is mirrored as notes.md beside its audio, so the
+        // text survives even an index loss (F198). Idempotent: an up-to-date library writes nothing.
+        // Awaited, but the sweep itself runs detached off the main actor — see the store.
+        await store.backfillNotesSidecars()
 
         do {
             let recover = recoverInterruptedRecording
@@ -728,7 +794,8 @@ final class AppModel: ObservableObject {
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
                         : "Recovered after an interruption. The original recording and source tracks were preserved."
                 ))
-                messages.append("Recovered \(title) and added it back to meeting history.")
+                // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
+                messages.append("\(title) was added back to meeting history.")
             }
         } catch {
             messages.append(
@@ -880,6 +947,14 @@ final class AppModel: ObservableObject {
         }
         guard !isDictationActive() else {
             alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
+            return
+        }
+        // Must precede every side effect below, including the recording folder: while the library is
+        // read-only the `store.upsert` in `stopRecording` is refused, so the meeting would be captured
+        // to disk and then never indexed — and `orphanedRecordings()` reports nothing while degraded,
+        // so the user would lose a whole meeting with no error shown (F187).
+        guard !store.isDegraded else {
+            alertMessage = ReadOnlyLibraryNotice.recordingRefused
             return
         }
         refreshRecordingPreflight()
@@ -1201,6 +1276,11 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before importing."
             return nil
         }
+        // Must precede the copy below: while the library is read-only the `store.upsert` in
+        // `adoptImportedRecording` is refused, so the file would be copied into the library and then
+        // never indexed — and `orphanedRecordings()` reports nothing while degraded, so the import
+        // would vanish with no error shown (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin.
@@ -1255,6 +1335,9 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before importing."
             return nil
         }
+        // Before the probe, let alone the download: the same unindexed-audio trap as a file import,
+        // with a network transfer in front of it (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
 
         let parsed: MediaSourceURL.Parsed
         do {
@@ -1356,6 +1439,13 @@ final class AppModel: ObservableObject {
     /// against the indexed duration), upsert the record, then start transcription if the engine is
     /// installed. Both import entry points — local file and link — call this, so there is exactly one
     /// place where a meeting becomes real (F183).
+    ///
+    /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
+    /// not an oversight: both `importRecording` and `importFromURL` call `libraryAcceptsChanges`
+    /// before they copy or download anything, so this is unreachable while the library is degraded.
+    /// A third caller added without that guard would reach the `upsert` below, which `MeetingStore`
+    /// silently refuses — correctness is safe, but the user would have paid for the copy first. Guard
+    /// any new caller up front, the way the two existing ones do (F187).
     @discardableResult
     func adoptImportedRecording(
         id: UUID,
@@ -1391,6 +1481,9 @@ final class AppModel: ObservableObject {
     /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
     /// the UI can navigate to it. Only a single-file import adopts the typed title.
     func importRecordings(from urls: [URL], title: String) async -> UUID? {
+        // Guarded here as well as in `importRecording`, so a multi-file drop yields one message
+        // instead of the same refusal repeated once per file (F187).
+        guard libraryAcceptsChanges("Import") else { return nil }
         var firstID: UUID?
         for url in urls {
             let itemTitle = urls.count == 1 ? title : ""
@@ -1441,6 +1534,9 @@ final class AppModel: ObservableObject {
     /// meeting, which is tedious after a bulk import.
     @discardableResult
     func beginTranscriptionForAllReady() -> Int {
+        // Guarded here as well as in `beginTranscription`, so the returned count cannot claim work
+        // that was never started — the caller reports this number to the user (F187).
+        guard libraryAcceptsChanges("Transcription") else { return 0 }
         let ready = readyToTranscribeMeetings
         for meeting in ready {
             beginTranscription(id: meeting.id)
@@ -1458,6 +1554,10 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the second-opinion or segment re-run before transcribing this meeting."
             return
         }
+        // Must precede the enqueue: the model can run for minutes, and the `store.update` that stores
+        // the transcript is refused while the library is read-only, so the whole run would be thrown
+        // away in silence (F187).
+        guard libraryAcceptsChanges("Transcription") else { return }
         refreshRuntime()
         let settings = MeetingTranscriptionSelection(
             engine: selectedEngine,
@@ -1516,6 +1616,10 @@ final class AppModel: ObservableObject {
 
     func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
         guard summarizationTasks[id] == nil else { return }
+        // Ahead of the per-engine preconditions, so a read-only library is reported as the real
+        // blocker rather than a missing model or key — and, for Claude, before an API call is spent
+        // on a summary the store would then refuse to save (F187).
+        guard libraryAcceptsChanges("Summarization") else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
         // than fail); Claude needs a saved key. Neither uploads anything for `.local` (F164).
@@ -1595,6 +1699,7 @@ final class AppModel: ObservableObject {
     /// Read-only — computes over the stored segments; the user reviews before any apply.
     func glossaryCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
+        // Local matching, not a prompt: it must see EVERY stored term, so it stays on the full list (F187).
         return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
     }
 
@@ -1660,7 +1765,8 @@ final class AppModel: ObservableObject {
         }
         // Feed the plain segment text (no timestamps) so a proposed `from` span matches a segment.
         let plainText = meeting.segments.map(\.text).joined(separator: "\n")
-        let vocabulary = store.vocabulary
+        // Goes into a model prompt, so it takes the capped view rather than the full stored list (F187).
+        let vocabulary = store.promptVocabulary
         proposingCorrectionsID = id
         defer { proposingCorrectionsID = nil }
         do {
@@ -1820,6 +1926,8 @@ final class AppModel: ObservableObject {
     func diagnosticsJSON() -> String {
         let input = DiagnosticsExport.input(
             meetings: store.meetings,
+            // Diagnostics report what is actually stored (a count, never the terms), so this is the
+            // full list — the prompt-capped view would understate the library (F187).
             vocabulary: store.vocabulary,
             recordingBytes: { meeting in
                 let path = store.recordingURL(for: meeting).path

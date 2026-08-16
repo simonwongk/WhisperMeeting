@@ -293,17 +293,42 @@ record the citation in `docs/TICKET_LOG.md`.
 ```bash
 swift build                      # build the WhisperCore library + WhisperMeet executable
 swift test                       # run both Swift Testing suites (does NOT download a model)
-swift test --filter "original language"   # run a single test by name substring (Swift Testing)
+swift test --filter transcribesWithLocalWhisper  # run one test by FUNCTION name (see below)
 python3 Scripts/generate-tickets-dashboard.py --check  # validate the ticket snapshot
 Scripts/build-app.sh             # build + ad-hoc-sign .build/WhisperMeet.app (release)
-open .build/WhisperMeet.app      # run the GUI app
+Scripts/install-app.sh           # build + guarded install to /Applications (the bundle you run)
+open /Applications/WhisperMeet.app
 Scripts/setup-local-whisper.sh   # install the local Whisper runtime from this checkout
 Scripts/setup-qwen-asr.sh        # install pinned Qwen ASR + aligner (Apple silicon, opt-in)
 ```
 
-Tests use the **Swift Testing** framework (`@Test`/`#expect`), not XCTest — `--filter` matches the
-string in the `@Test("...")` display name. `WhisperMeetTests` may exercise app-target lifecycle
-logic only through injected seams that avoid permissions, live hardware, and GUI startup.
+`Scripts/build-app.sh` only packages into `.build/`; never run that bundle while an installed copy
+exists, because two bundles at different commits can hold incompatible library schemas.
+`Scripts/install-app.sh` is what puts the bundle you actually launch in `/Applications`.
+
+Tests use the **Swift Testing** framework (`@Test`/`#expect`), not XCTest. `--filter` matches the
+**Swift function name** (case-sensitive regex), *not* the `@Test("...")` display string — a filter
+written against a display name matches nothing and still exits 0, which looks like a pass. Always
+confirm the run reported the test count you expected. (`transcribesWithLocalWhisper` above is the
+function behind the display name "Local Whisper preserves the original language and uses accuracy
+settings" in `Tests/WhisperCoreTests/LocalWhisperClientTests.swift`.) `WhisperMeetTests` may
+exercise app-target lifecycle logic only through injected seams that avoid permissions, live
+hardware, and GUI startup.
+
+On a Mac with **Command Line Tools only** (no full Xcode), the bare `swift build` / `swift test`
+lines above fail: that toolchain does not put `Testing.framework` and `lib_TestingInterop.dylib` on
+the default search and rpath, so the build stops at `no such module 'Testing'`. This is a property
+of the machine, not of the repo. Either run `Scripts/quality-check.sh`, which already bakes these
+flags in, or invoke the suite directly:
+
+```bash
+FW=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+LIB=/Library/Developer/CommandLineTools/Library/Developer/usr/lib
+swift test --disable-sandbox --no-parallel \
+  -Xswiftc -F -Xswiftc "$FW" \
+  -Xlinker -rpath -Xlinker "$FW" \
+  -Xlinker -rpath -Xlinker "$LIB"
+```
 
 ## Architecture
 
@@ -349,9 +374,10 @@ auto-detect.
 Everything lives under `~/Library/Application Support/WhisperMeet/`: `Runtime/venv/bin/whisper`
 (installed runtime), `Models/` (downloaded once on first use), `Runtime/Qwen3ASR/` (optional Qwen
 environment, ASR model, aligner, helper, and manifest), `Recordings/<meeting-uuid>/` (`meeting.wav`,
-`system-audio.f32`, `microphone-audio.f32`, `source-tracks.json`), and `meetings.json` /
-`vocabulary.json` (+ their `.backup.json`). `LocalWhisperRuntime.findExecutable()` also falls back
-to Homebrew/`~/.local/bin` installs.
+`system-audio.f32`, `microphone-audio.f32`, `source-tracks.json`), and the four persisted indexes
+`meetings.json` / `vocabulary.json` / `replacement-rules.json` / `dictation-log.json` (+ their
+`.backup.json`). `LocalWhisperRuntime.findExecutable()` also falls back to Homebrew/`~/.local/bin`
+installs. The indexes are a wire format shared across builds — see **Persisted-schema rules**.
 
 ### Non-negotiable invariants
 
@@ -380,3 +406,20 @@ there is **no open purity defect today**. If you reintroduce a framework import,
 defect — file a ticket per the rules above.
 
 See `README.md` for the end-user workflow and `docs/RECOVERY.md` for exact recovery file locations.
+
+## Persisted-schema rules
+
+`meetings.json`, `vocabulary.json`, `replacement-rules.json` and `dictation-log.json` are a wire
+format shared by every build a user might launch. See
+`docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md`.
+
+- Persisted fields are **append-only and optional**. Never retype an existing field: F177 changed
+  `actionItems` from `[String]` to `[ActionItem]` and cost a user's entire library.
+- Assess compatibility in **both** directions. "Old data still decodes" is half a review — ask
+  whether the previously shipped build can read what this one writes.
+- Every `Codable` change to a persisted type ships fixtures in both directions (F188).
+- An unreadable file is quarantined, never overwritten.
+- A failed load never rebuilds a library, and never permits mutation — `delete` removes audio before
+  it saves the index, so blocking persistence alone is not enough.
+- Enums reachable from a persisted type decode unknown raw values leniently or fail closed. Prefer a
+  plain `String` as `MediaSource.kind` does.

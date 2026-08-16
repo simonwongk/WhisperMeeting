@@ -74,13 +74,38 @@ struct DictationView: View {
                             .font(.headline)
                         Spacer()
                         if !log.log.entries.isEmpty {
+                            // Disabled, not hidden, while the history is read-only (F187): `clear()` is
+                            // guarded and would silently do nothing, and a control that does nothing when
+                            // clicked is its own bug. The tooltip carries the reason.
                             Button("Clear All", role: .destructive) { log.clear() }
+                                .disabled(!log.health.allowsMutation)
+                                .help(log.health.allowsMutation
+                                      ? "Remove every dictation from this history. This cannot be undone."
+                                      : "Unavailable while the history is read-only — clearing it would write over dictations that could not be read.")
                         }
                     }
                     .padding(.bottom, 8)
+                    // The store has recorded the load failure since F187's Task 6, but nothing rendered
+                    // it: a degraded log made every dictation and every Clear All a silent no-op. Same
+                    // inline advisory vocabulary as the transcript warnings (F30/F32) — tinted surface,
+                    // full-contrast text, no action to take here (F187).
+                    if let message = log.loadErrorMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bannerSurface(.orange)
+                            .accessibilityElement(children: .combine)
+                            .padding(.bottom, 8)
+                    }
                     if log.log.entries.isEmpty {
-                        Text("Your recent dictations will appear here.")
-                            .foregroundStyle(.secondary).padding(.vertical, 12)
+                        // A read-only log will never gain entries, so do not promise that it will —
+                        // the advisory directly above already says nothing will be written (F187).
+                        if log.health.allowsMutation {
+                            Text("Your recent dictations will appear here.")
+                                .foregroundStyle(.secondary).padding(.vertical, 12)
+                        }
                     } else {
                         ForEach(log.log.entries) { entry in
                             DictationHistoryRow(entry: entry)
