@@ -57,7 +57,7 @@ swift test --disable-sandbox --no-parallel \
 - Consumes: `mutationIsAllowed()`, `recordingURL(for:)`, `isWithinLibrary(_:)`, `removeRecordingDirectory`, `persistMeetings()`.
 - Produces: `@discardableResult func delete(ids: [UUID]) -> [UUID]` (the ids actually removed).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `Tests/WhisperMeetTests/BatchMeetingActionsTests.swift`:
 
@@ -131,11 +131,11 @@ func batchDeleteKeepsWhatItCouldNotRemove() throws {
 
 `MeetingRecord.id` and `.createdAt` are `let` (`MeetingStore.swift:32, 34`), so they **must** be passed through the initializer — assigning after construction will not compile. The argument list above mirrors the one `makeBackupRecoveredStore` already uses in `Tests/WhisperMeetTests/DegradedLibraryTests.swift:46-54`, so the remaining parameters have defaults.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run with `--filter "batchDelete"`. Expected: FAIL to compile — `delete(ids:)` does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `MeetingStore` immediately after `delete(id:)`:
 
@@ -196,11 +196,11 @@ Add to `MeetingStore` immediately after `delete(id:)`:
     }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run with `--filter "batchDelete"`, then the **full suite with no `--filter`**. Expected: PASS, suite 488 + 2.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperMeet/MeetingStore.swift Tests/WhisperMeetTests/BatchMeetingActionsTests.swift
@@ -216,7 +216,7 @@ This is the most important test in the plan. Batch delete is a **new** way to vi
 **Files:**
 - Test: `Tests/WhisperMeetTests/BatchMeetingActionsTests.swift` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `Tests/WhisperMeetTests/DegradedLibraryTests.swift` already has a helper `makeBackupRecoveredStore()` that returns a **degraded store containing a real record and a real `.wav`**. It is `private` to that file, so write a local equivalent here rather than changing its access level:
 
@@ -259,19 +259,19 @@ func batchDeleteRefusedWhileDegraded() throws {
 
 Verify the seeding actually produces `.recoveredFromBackup` before relying on it — `BackupJSONStore.save()` writes identical primary and backup copies, and `load()` falls through to the backup when the primary does not decode. If `#expect(store.isDegraded)` fails, the fixture is wrong, not the guard.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Temporarily delete the `guard mutationIsAllowed() else { return [] }` line from `delete(ids:)`, run with `--filter "batchDeleteRefusedWhileDegraded"`, and confirm it goes **red with the audio actually removed** — not merely with a flag unset. Restore the guard from a scratchpad copy (**not** `git checkout`). Record that red output in your report; this branch has repeatedly shipped tests that passed with their guard deleted.
 
-- [ ] **Step 3: No implementation needed**
+- [x] **Step 3: No implementation needed**
 
 Task 1's guard already satisfies this. If the test passes without removing the guard, the fixture is not actually degraded — fix the fixture.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Expected: PASS, suite 488 + 3.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Tests/WhisperMeetTests/BatchMeetingActionsTests.swift
@@ -289,7 +289,7 @@ git commit -m "test(meetings): batch delete removes no audio while the library i
 **Interfaces:**
 - Produces: `func addTag(_ tag: String, to ids: [UUID])`, `func removeTag(_ tag: String, from ids: [UUID])`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```swift
 @Test("Adding a tag to several meetings writes the index once and applies to all")
@@ -328,11 +328,11 @@ func batchRemoveTagWritesOnce() throws {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run with `--filter "batchAddTag"` then `--filter "batchRemoveTag"`. Expected: FAIL to compile — the methods do not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```swift
     /// Adds one tag across a selection with a single index write (F40's rule: don't write per record).
@@ -374,11 +374,11 @@ Run with `--filter "batchAddTag"` then `--filter "batchRemoveTag"`. Expected: FA
 
 Read `Sources/WhisperCore/MeetingTags.swift:17-30` first and confirm `normalized` de-duplicates case-insensitively and caps length — the `removeTag` matching above assumes it does.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Then the full suite. Expected: PASS, suite 488 + 5.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperMeet/MeetingStore.swift Tests/WhisperMeetTests/BatchMeetingActionsTests.swift
@@ -395,7 +395,7 @@ git commit -m "feat(meetings): add and remove a tag across a selection in one wr
 - Modify: `Sources/WhisperMeet/AppModel.swift` (add immediately after `deleteMeeting(id:)` at `:1607-1610`)
 - Test: `Tests/WhisperMeetTests/BatchMeetingActionsTests.swift` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 @Test("Deleting a selection cancels each meeting's transcription first")
@@ -417,11 +417,11 @@ func batchDeleteCancelsTranscriptions() throws {
 
 The `AppModel(store:recorder:defaults:)` seam is the established one — see `Tests/WhisperMeetTests/CancelConfirmationTests.swift:6-11`. `AudioCaptureEngine()` touches no hardware; only `start` does. `isQueuedForTranscription(_:)` exists at `AppModel.swift:353`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run with `--filter "batchDeleteCancelsTranscriptions"`. Expected: FAIL to compile — `deleteMeetings(ids:)` does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```swift
     /// Deletes a whole selection. Cancels each meeting's transcription first, exactly as
@@ -432,9 +432,9 @@ Run with `--filter "batchDeleteCancelsTranscriptions"`. Expected: FAIL to compil
     }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**, then the full suite. Expected: PASS, suite 488 + 6.
+- [x] **Step 4: Run the test to verify it passes**, then the full suite. Expected: PASS, suite 488 + 6.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperMeet/AppModel.swift Tests/WhisperMeetTests/BatchMeetingActionsTests.swift
@@ -450,7 +450,7 @@ This task is a pure refactor — no behaviour change beyond shift/⌘ selection 
 **Files:**
 - Modify: `Sources/WhisperMeet/ContentView.swift:27, 68, 126, 167-169, 182, 185`
 
-- [ ] **Step 1: Change the state and add the derived property**
+- [x] **Step 1: Change the state and add the derived property**
 
 Replace `ContentView.swift:27`:
 
@@ -487,7 +487,7 @@ Add next to `filteredMeetings` (after `:64`):
     }
 ```
 
-- [ ] **Step 2: Update every existing use of `selection`**
+- [x] **Step 2: Update every existing use of `selection`**
 
 There are four, and all must change:
 
@@ -505,7 +505,7 @@ There are four, and all must change:
 
 `List(selection: $selection)` at `:68` needs no change — the binding type does the work.
 
-- [ ] **Step 3: Build and run the full suite**
+- [x] **Step 3: Build and run the full suite**
 
 ```bash
 swift build 2>&1 | tail -5
@@ -513,7 +513,7 @@ swift build 2>&1 | tail -5
 
 Then the full suite with no `--filter`. Expected: builds clean, **488 + 6 passing**, no behaviour change. A compile error here means a `selection` use was missed — search the file for `selection` and check each hit.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Sources/WhisperMeet/ContentView.swift
@@ -534,7 +534,7 @@ looking unimplemented.
 **Files:**
 - Modify: `Sources/WhisperMeet/ContentView.swift:29, 97-109, 152-177`
 
-- [ ] **Step 1: Widen the pending deletion state**
+- [x] **Step 1: Widen the pending deletion state**
 
 Replace `:29`:
 
@@ -550,7 +550,7 @@ with:
     @State private var pendingDeletion: [MeetingRecord] = []
 ```
 
-- [ ] **Step 2: Offer the batch action in the context menu**
+- [x] **Step 2: Offer the batch action in the context menu**
 
 Replace the `.contextMenu` block at `:97-109` with:
 
@@ -579,7 +579,7 @@ Replace the `.contextMenu` block at `:97-109` with:
                             }
 ```
 
-- [ ] **Step 3: Make the confirmation dialog handle a list**
+- [x] **Step 3: Make the confirmation dialog handle a list**
 
 Replace the `.confirmationDialog` block at `:152-177` with:
 
@@ -621,11 +621,11 @@ Replace the `.confirmationDialog` block at `:152-177` with:
         }
 ```
 
-- [ ] **Step 4: Build and run the full suite**
+- [x] **Step 4: Build and run the full suite**
 
 Expected: builds clean, 488 + 6 passing. No test covers the SwiftUI layer; the store-level behaviour is already covered by Tasks 1-4.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperMeet/ContentView.swift
@@ -642,7 +642,7 @@ git commit -m "feat(ui): delete a whole sidebar selection behind one confirmatio
 
 `ContentView.swift` is already ~3,700 lines, so the new pane goes in its own file.
 
-- [ ] **Step 1: Create the view**
+- [x] **Step 1: Create the view**
 
 ```swift
 // Sources/WhisperMeet/MeetingBatchView.swift
@@ -744,7 +744,7 @@ struct WrapLayout: Layout {
 
 That is the whole change; `TagChipsEditor`'s use of it is unaffected.
 
-- [ ] **Step 2: Route the detail pane to it**
+- [x] **Step 2: Route the detail pane to it**
 
 Replace the opening of `detail` at `:180-182`:
 
@@ -776,11 +776,11 @@ with:
 
 The rest of the existing `switch` body is unchanged — it becomes the body of `singleDetail`.
 
-- [ ] **Step 3: Build and run the full suite**
+- [x] **Step 3: Build and run the full suite**
 
 Expected: builds clean, 488 + 6 passing.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Sources/WhisperMeet/MeetingBatchView.swift Sources/WhisperMeet/ContentView.swift
@@ -794,7 +794,7 @@ duplicating the layout."
 
 ### Task 8: Gate, manual verification, and the ticket
 
-- [ ] **Step 1: Run the full gate**
+- [x] **Step 1: Run the full gate**
 
 ```bash
 Scripts/quality-check.sh
@@ -802,7 +802,7 @@ Scripts/quality-check.sh
 
 Expected: all five steps pass.
 
-- [ ] **Step 2: Manual verification**
+- [ ] **Step 2: Manual verification** *(outstanding — the installer refused while WhisperMeet was running; signed candidate at `.build/WhisperMeet.app`. Checklist recorded in the F199 ticket entry.)*
 
 The `WhisperMeet` target has no view-render harness, so the selection interaction cannot be tested (`AGENTS.md`, "Wiring an unreachable core"). Install and check by hand:
 
@@ -815,7 +815,7 @@ Confirm: click a meeting, shift-click a lower one — the range selects; ⌘-cli
 
 Record these steps in the log entry and mark the absence of a GUI test **"Not planned:"** — a harness limitation, not deferred work.
 
-- [ ] **Step 3: File the ticket entry**
+- [x] **Step 3: File the ticket entry**
 
 Add the feature to `docs/TICKETS.md` using the template in `AGENTS.md` at the board's current next free ID (check the header of `docs/TICKETS.md`), advance the "Next free ID" line at the top of the file, then regenerate and validate:
 
@@ -826,7 +826,7 @@ python3 Scripts/generate-tickets-dashboard.py --check
 
 **Do not** run `Scripts/format-docs.py`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** *(the ticket docs are local-only per the 2026-08-07 gitignore policy, so `git add -A` had nothing to stage; the durable F199 trail commit is the plan-checkbox commit instead, matching the F198 precedent.)*
 
 ```bash
 git add -A
