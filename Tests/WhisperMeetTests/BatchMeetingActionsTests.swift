@@ -63,3 +63,38 @@ func batchDeleteKeepsWhatItCouldNotRemove() throws {
     #expect(store.meetings.map(\.id) == [stubborn])
     #expect(store.storageErrorMessage != nil)
 }
+
+@Test("Batch delete is refused while the library is read-only, and removes no audio")
+@MainActor
+func batchDeleteRefusedWhileDegraded() throws {
+    // Seed a writable library, then corrupt only the primary index so the backup loads:
+    // that yields `.recoveredFromBackup`, which is degraded AND still has records and audio.
+    let (_, root, ids) = try makeLibrary(count: 2)
+    let primary = root.appendingPathComponent("meetings.json")
+    let backup = root.appendingPathComponent("meetings.backup.json")
+    // `BackupJSONStore.save()` writes the PREVIOUS primary into the backup, so after two upserts the
+    // backup is one generation behind and holds only one meeting. Copy the primary across first, or
+    // this fixture silently tests a one-record library and the count assertion below is meaningless.
+    try? FileManager.default.removeItem(at: backup)
+    try FileManager.default.copyItem(at: primary, to: backup)
+    try Data("broken-primary".utf8).write(to: primary)
+
+    let store = MeetingStore(rootDirectory: root)
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(store.isDegraded)
+    #expect(store.meetings.count == 2)
+    let before = store.persistCount
+    var removalAttempted = false
+    store.removeRecordingDirectory = { _ in removalAttempted = true }
+
+    store.delete(ids: ids)
+
+    #expect(!removalAttempted)
+    #expect(store.meetings.count == 2)
+    #expect(store.persistCount == before)
+    for id in ids {
+        let wav = root.appendingPathComponent("Recordings/\(id.uuidString)/meeting.wav")
+        #expect(FileManager.default.fileExists(atPath: wav.path))
+    }
+    #expect(store.storageErrorMessage != nil)
+}
