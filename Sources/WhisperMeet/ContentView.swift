@@ -24,7 +24,11 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
     @ObservedObject private var store: MeetingStore
-    @State private var selection: SidebarItem? = .record
+    // A set, not an optional: this is what gives the sidebar macOS's native shift-range and
+    // ⌘-toggle selection. Navigation rows share the list with meetings, so a shift-range can
+    // include them; `selectedMeetingIDs` filters them out rather than trying to make them
+    // unselectable, which a single SwiftUI `List` cannot express.
+    @State private var selection: Set<SidebarItem> = [.record]
     @State private var selectedTags: Set<String> = []
     @State private var pendingDeletion: MeetingRecord?
     @State private var searchText = ""
@@ -61,6 +65,21 @@ struct ContentView: View {
                 tagMode: .any
             )
         }
+    }
+
+    /// The selected meetings in sidebar order. Navigation items in the selection are ignored, so a
+    /// shift-range that crosses the Meetings section boundary never "selects Settings".
+    private var selectedMeetingIDs: [UUID] {
+        let chosen = Set(selection.compactMap { item -> UUID? in
+            if case let .meeting(id) = item { return id }
+            return nil
+        })
+        return filteredMeetings.map(\.id).filter { chosen.contains($0) }
+    }
+
+    /// The single selected item, when exactly one thing is selected.
+    private var singleSelection: SidebarItem? {
+        selection.count == 1 ? selection.first : nil
     }
 
     var body: some View {
@@ -123,7 +142,7 @@ struct ContentView: View {
         // detail view's per-selection recreation). The detail view consumes the seek on appear.
         .onChange(of: model.pendingNavigation) { _, request in
             guard let request else { return }
-            selection = .meeting(request.meetingID)
+            selection = [.meeting(request.meetingID)]
         }
         .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
@@ -164,8 +183,8 @@ struct ContentView: View {
                 withAnimation(reduceMotion ? nil : .uiSpring) {
                     model.deleteMeeting(id: meeting.id)
                 }
-                if selection == .meeting(meeting.id) {
-                    selection = .record
+                if selection.contains(.meeting(meeting.id)) {
+                    selection = [.record]
                 }
                 pendingDeletion = nil
             }
@@ -179,10 +198,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        switch selection ?? .record {
+        switch singleSelection ?? .record {
         case .record:
             RecordMeetingView(model: model) { meetingID in
-                selection = .meeting(meetingID)
+                selection = [.meeting(meetingID)]
             }
         case .vocabulary:
             VocabularyView(store: store)
