@@ -1614,6 +1614,13 @@ final class AppModel: ObservableObject {
         store.delete(id: id)
     }
 
+    /// Deletes a whole selection. Cancels each meeting's transcription first, exactly as
+    /// `deleteMeeting(id:)` does, then removes them in a single index write.
+    func deleteMeetings(ids: [UUID]) {
+        for id in ids { cancelTranscription(id: id) }
+        store.delete(ids: ids)
+    }
+
     func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
         guard summarizationTasks[id] == nil else { return }
         // Ahead of the per-engine preconditions, so a read-only library is reported as the real

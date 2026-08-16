@@ -133,3 +133,19 @@ func batchRemoveTagWritesOnce() throws {
     #expect(store.meeting(id: ids[1])?.tags?.contains("shared") == true)
     #expect(store.meeting(id: ids[2])?.tags == ["keep"])
 }
+
+@Test("Deleting a selection cancels each meeting's transcription first")
+@MainActor
+func batchDeleteCancelsTranscriptions() throws {
+    let (store, root, ids) = try makeLibrary(count: 2)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let defaults = try #require(UserDefaults(suiteName: "BatchDelete-\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    model.deleteMeetings(ids: ids)
+
+    #expect(store.meetings.isEmpty)
+    for id in ids {
+        #expect(!model.isQueuedForTranscription(id))
+    }
+}
