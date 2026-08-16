@@ -98,3 +98,38 @@ func batchDeleteRefusedWhileDegraded() throws {
     }
     #expect(store.storageErrorMessage != nil)
 }
+
+@Test("Adding a tag to several meetings writes the index once and applies to all")
+@MainActor
+func batchAddTagWritesOnce() throws {
+    let (store, root, ids) = try makeLibrary(count: 3)
+    defer { try? FileManager.default.removeItem(at: root) }
+    store.setTags(id: ids[0], ["existing"])
+    let before = store.persistCount
+
+    store.addTag("  Budget  ", to: ids)
+
+    #expect(store.persistCount == before + 1)
+    for id in ids {
+        let tags = store.meeting(id: id)?.tags ?? []
+        #expect(tags.contains("Budget"))          // trimmed by MeetingTags.normalized
+    }
+    #expect(store.meeting(id: ids[0])?.tags?.contains("existing") == true)
+}
+
+@Test("Removing a tag takes it off every selected meeting and leaves others alone")
+@MainActor
+func batchRemoveTagWritesOnce() throws {
+    let (store, root, ids) = try makeLibrary(count: 3)
+    defer { try? FileManager.default.removeItem(at: root) }
+    store.addTag("shared", to: ids)
+    store.setTags(id: ids[2], ["shared", "keep"])
+    let before = store.persistCount
+
+    store.removeTag("shared", from: [ids[0], ids[2]])
+
+    #expect(store.persistCount == before + 1)
+    #expect(store.meeting(id: ids[0])?.tags?.contains("shared") != true)
+    #expect(store.meeting(id: ids[1])?.tags?.contains("shared") == true)
+    #expect(store.meeting(id: ids[2])?.tags == ["keep"])
+}

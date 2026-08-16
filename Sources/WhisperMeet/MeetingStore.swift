@@ -547,6 +547,42 @@ final class MeetingStore: ObservableObject {
         update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
 
+    /// Adds one tag across a selection with a single index write (F40's rule: don't write per record).
+    /// Normalization goes through `MeetingTags.normalized`, exactly as `setTags(id:_:)` does, so the
+    /// batch and single paths cannot diverge.
+    func addTag(_ tag: String, to ids: [UUID]) {
+        guard mutationIsAllowed() else { return }
+        let target = Set(ids)
+        var changed = false
+        for index in meetings.indices where target.contains(meetings[index].id) {
+            let merged = MeetingTags.normalized((meetings[index].tags ?? []) + [tag])
+            guard merged != meetings[index].tags else { continue }
+            meetings[index].tags = merged.isEmpty ? nil : merged
+            changed = true
+        }
+        guard changed else { return }
+        persistMeetings()
+    }
+
+    /// Removes one tag from every meeting in the selection, matched case-insensitively so it agrees
+    /// with `MeetingTags.normalized`'s own de-duplication rule.
+    func removeTag(_ tag: String, from ids: [UUID]) {
+        guard mutationIsAllowed() else { return }
+        let target = Set(ids)
+        let needle = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        var changed = false
+        for index in meetings.indices where target.contains(meetings[index].id) {
+            guard let existing = meetings[index].tags else { continue }
+            let remaining = existing.filter { $0.lowercased() != needle }
+            guard remaining.count != existing.count else { continue }
+            meetings[index].tags = remaining.isEmpty ? nil : remaining
+            changed = true
+        }
+        guard changed else { return }
+        persistMeetings()
+    }
+
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
     func togglePin(id: UUID) {
         guard mutationIsAllowed() else { return }
