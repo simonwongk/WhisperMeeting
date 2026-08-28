@@ -35,6 +35,15 @@ final class DictationController: ObservableObject {
     /// Whether Quick Dictation feeds the business vocabulary into Whisper's initial prompt. On by
     /// default (same spelling nudge meetings get); can be turned off for plain dictation.
     @Published var useVocabulary: Bool { didSet { persist() } }
+    /// F200: opt-in local-AI cleanup of dictated text before delivery. Off by default — the
+    /// documented "local-instant feel" stays untouched unless the user chooses the trade.
+    @Published var refineEnabled: Bool { didSet { persist(); applyRefineSetting() } }
+    /// Injectable so headless tests can simulate runtime presence; the default asks the real
+    /// Summarizer runtime. Read directly by the Settings UI on each render.
+    var refineRuntimeAvailability: () -> Bool = {
+        SummarizerRuntime.isSupportedOnCurrentMac && SummarizerRuntime.isRefineHelperInstalled()
+    }
+    var isRefineRuntimeInstalled: Bool { refineRuntimeAvailability() }
 
     var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
     func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
@@ -59,6 +68,7 @@ final class DictationController: ObservableObject {
     private let recorder: any DictationRecording
     private let overlay: any DictationOverlayPresenting
     private let engine: SelectableDictationEngine
+    private let refiner: any DictationTextRefining
     private let engineFactory: (DictationTranscriptionEngine) -> DictationEngine
     private let captureTimeout: Duration
     private let captureSleep: DictationCaptureWatchdog.Sleep
@@ -84,9 +94,10 @@ final class DictationController: ObservableObject {
         self.hotkeyMonitor.resetToggleState()
     }
 
-    private static let idleEvictSeconds: TimeInterval = 300 // 5 min; configurable later
+    private let idleEvictSeconds: TimeInterval // 5 min default; injectable for tests
 
     private static let enabledKey = "dictationEnabled"
+    private static let refineEnabledKey = "dictationRefineEnabled"
     private static let hotkeyKey = "dictationHotkey"
     private static let languageKey = "dictationLanguage"
     private static let autoPasteKey = "dictationAutoPaste"
@@ -105,6 +116,8 @@ final class DictationController: ObservableObject {
         captureSleep: @escaping DictationCaptureWatchdog.Sleep = {
             try await Task.sleep(for: $0)
         },
+        refiner: (any DictationTextRefining)? = nil,
+        idleEvictSeconds: TimeInterval = 300,
         activateOnInit: Bool = true
     ) {
         self.defaults = defaults
@@ -114,6 +127,14 @@ final class DictationController: ObservableObject {
         self.logStore = logStore ?? DictationLogStore()
         self.captureTimeout = captureTimeout
         self.captureSleep = captureSleep
+        self.idleEvictSeconds = idleEvictSeconds
+        self.refiner = refiner ?? DictationRefiner(
+            engine: WarmRefineEngine(
+                python: SummarizerRuntime.pythonExecutable(),
+                script: SummarizerRuntime.refineHelperScript(),
+                modelDirectory: SummarizerRuntime.modelDirectory()
+            )
+        )
         let storedEngine = DictationTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.engineKey) ?? ""
         ) ?? .whisperTurbo
@@ -129,6 +150,7 @@ final class DictationController: ObservableObject {
         language = WhisperLanguage(rawValue: defaults.string(forKey: Self.languageKey) ?? "") ?? .automatic
         autoPaste = defaults.object(forKey: Self.autoPasteKey) as? Bool ?? true
         useVocabulary = defaults.object(forKey: Self.useVocabularyKey) as? Bool ?? true
+        refineEnabled = defaults.object(forKey: Self.refineEnabledKey) as? Bool ?? false
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
@@ -201,6 +223,21 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func applyRefineSetting() {
+        if refineEnabled {
+            prewarmRefinerIfNeeded()
+        } else {
+            refiner.shutdown()
+        }
+    }
+
+    /// Free speed: fire the model load while the user is still speaking (press-down), so a warm
+    /// refiner answers inside the budget by the time the transcript exists.
+    private func prewarmRefinerIfNeeded() {
+        guard enabled, refineEnabled, refineRuntimeAvailability() else { return }
+        Task { [refiner] in await refiner.warmUp() }
+    }
+
     func warmUpIfNeeded() {
         guard enabled else { return }
         log.notice("warm-up starting for \(self.selectedEngine.rawValue, privacy: .public)")
@@ -248,6 +285,7 @@ final class DictationController: ObservableObject {
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
             overlay.hide()
             engine.shutdown()             // release the resident model/subprocess when disabled
+            refiner.shutdown()            // and the resident refine model with it (F200)
             status = .disabled
             log.notice("dictation disabled")
         }
@@ -318,6 +356,7 @@ final class DictationController: ObservableObject {
     deinit {
         hotkeyMonitor.stop()
         engine.shutdown()
+        refiner.shutdown()
     }
 
     private func requestMicIfNeeded() async {
@@ -343,7 +382,9 @@ final class DictationController: ObservableObject {
             return
         }
         switch session.handle(.startPressed) {
-        case .startCapture: startCapture()
+        case .startCapture:
+            startCapture()
+            prewarmRefinerIfNeeded()
         case .busy:
             // A press arrived while a dictation is still in flight — leave the in-flight session and
             // its overlay untouched. Never reset it here; that would drop the pending transcript.
@@ -430,7 +471,10 @@ final class DictationController: ObservableObject {
             : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
-        Task { [engine, log] in
+        // Snapshot the refine decision with the other settings: mid-flight toggle changes must not
+        // switch behavior halfway through a dictation.
+        let refineOn = refineEnabled && refineRuntimeAvailability()
+        Task { [engine, log, refiner] in
             let started = Date()
             do {
                 let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
@@ -446,7 +490,22 @@ final class DictationController: ObservableObject {
                     cleaned = ""
                 }
                 log.notice("\(selection.rawValue, privacy: .public) transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
-                await MainActor.run { self.finish(text: cleaned) }
+                var rawText: String?
+                var refinement: String?
+                if refineOn, !cleaned.isEmpty {
+                    await MainActor.run { if self.enabled { self.overlay.show(.refining) } }
+                    let attempt = await refiner.attempt(
+                        text: cleaned, languageCode: result.languageCode)
+                    refinement = attempt.outcome.rawValue
+                    if attempt.outcome == .refined {
+                        rawText = cleaned
+                        cleaned = attempt.text
+                    }
+                    log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s total")
+                }
+                await MainActor.run {
+                    self.finish(text: cleaned, rawText: rawText, refinement: refinement)
+                }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
                 log.error("transcription failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
@@ -459,7 +518,7 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func finish(text: String) {
+    private func finish(text: String, rawText: String? = nil, refinement: String? = nil) {
         guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
@@ -468,10 +527,15 @@ final class DictationController: ObservableObject {
             _ = session.handle(.delivered)
             switch delivery {
             case .pasted: overlay.show(.done)
-            case .clipboard: overlay.show(.copied); notifyClipboard()
+            case .clipboard: overlay.show(.copied); clipboardNotifier()
             }
             log.notice("delivered via \(delivery == .pasted ? "paste" : "clipboard", privacy: .public)")
-            logStore.record(text: payload, outcome: delivery == .pasted ? .pasted : .clipboard)
+            logStore.record(
+                text: payload,
+                outcome: delivery == .pasted ? .pasted : .clipboard,
+                rawText: rawText,
+                refinement: refinement
+            )
             scheduleDismiss(after: 1.1)
         case .none where session.state == .failed(.emptyTranscript):
             overlay.show(.empty)
@@ -530,13 +594,19 @@ final class DictationController: ObservableObject {
             guard let self, self.enabled, !self.isActive else { return }
             self.log.notice("evicting idle warm dictation model")
             self.engine.shutdown()
+            self.refiner.shutdown()
         }
         idleEvictWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleEvictSeconds, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + idleEvictSeconds, execute: item)
     }
 
 
-    private func notifyClipboard() {
+    /// Injectable because `UNUserNotificationCenter.current()` requires a real app bundle and
+    /// raises an NSException in headless test processes — the F200 wiring tests are the first to
+    /// drive a clipboard delivery to completion and hit exactly that.
+    var clipboardNotifier: () -> Void = DictationController.postClipboardNotification
+
+    private static func postClipboardNotification() {
         let content = UNMutableNotificationContent()
         content.title = "Dictation copied"
         content.body = "Transcript is on the clipboard — press ⌘V to paste."
@@ -615,6 +685,7 @@ final class DictationController: ObservableObject {
         defaults.set(language.rawValue, forKey: Self.languageKey)
         defaults.set(autoPaste, forKey: Self.autoPasteKey)
         defaults.set(useVocabulary, forKey: Self.useVocabularyKey)
+        defaults.set(refineEnabled, forKey: Self.refineEnabledKey)
         defaults.set(selectedEngine.rawValue, forKey: Self.engineKey)
     }
 }
