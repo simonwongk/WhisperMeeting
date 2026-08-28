@@ -1444,6 +1444,19 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Refine with local AI (grammar cleanup)", isOn: $dictation.refineEnabled)
+                    .disabled(!dictation.isRefineRuntimeInstalled)
+                if !dictation.isRefineRuntimeInstalled {
+                    Text(SummarizerRuntime.isSupportedOnCurrentMac
+                        ? "Requires the local AI model — install or update it in the Summaries settings."
+                        : "Requires an Apple silicon Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if dictation.refineEnabled {
+                    Text("Fixes grammar, punctuation, and filler words before pasting. If the model can't answer within about a second, the raw transcript is pasted instead. Keeps the local AI model in memory while dictation is warm (about 2–5 GB).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {
