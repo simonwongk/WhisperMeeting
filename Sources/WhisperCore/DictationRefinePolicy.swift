@@ -45,4 +45,53 @@ public enum DictationRefinePolicy {
         }
         return trimmed.split(whereSeparator: { $0.isWhitespace }).count
     }
+
+    // MARK: - Output guardrails (F165 ethos: never trust LLM output blindly)
+
+    /// The model's reply, cleaned and vetted — or nil, in which case the raw transcript must be
+    /// delivered. Mirrors the F165 verbatim-guard ethos: a rejection costs nothing (raw is what
+    /// ships today); an accepted hallucination costs trust. So every check biases toward raw.
+    public static func acceptedOutput(_ output: String, input: String) -> String? {
+        var candidate = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        candidate = strippingCodeFence(candidate)
+        candidate = strippingWrappingQuotes(candidate)
+        candidate = DictationTextCleanup.clean(candidate)
+        guard !candidate.isEmpty else { return nil }
+
+        let cleanedInput = DictationTextCleanup.clean(input)
+        let inputCount = cleanedInput.count
+        // Light-touch edits barely move length; filler removal shrinks a little. The +4 absolute
+        // slack keeps one-word dictations ("hi" → "Hi.") from tripping the ratio.
+        let lower = inputCount / 2
+        let upper = inputCount + inputCount / 2 + 4
+        guard (lower...upper).contains(candidate.count) else { return nil }
+
+        if let inputScript = TranscriptLanguage.dominant(of: cleanedInput) {
+            guard TranscriptLanguage.dominant(of: candidate) == inputScript else { return nil }
+        }
+        return candidate
+    }
+
+    private static func strippingCodeFence(_ text: String) -> String {
+        guard text.hasPrefix("```") else { return text }
+        var lines = text.components(separatedBy: "\n")
+        lines.removeFirst()
+        if let last = lines.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func strippingWrappingQuotes(_ text: String) -> String {
+        let pairs: [(Character, Character)] = [
+            ("\"", "\""), ("“", "”"), ("'", "'"), ("‘", "’"), ("「", "」"), ("『", "』"),
+        ]
+        for (open, close) in pairs where text.count >= 2 {
+            if text.first == open, text.last == close {
+                return String(text.dropFirst().dropLast())
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return text
+    }
 }
