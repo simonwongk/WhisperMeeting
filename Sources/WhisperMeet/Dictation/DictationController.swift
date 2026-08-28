@@ -231,6 +231,16 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// F202: without this, a dictation after idle eviction pays the full subprocess spawn + model
+    /// load (measured 11.4 s cold-to-ready for whisper turbo) entirely *after* the key is
+    /// released, because `transcribe()` reaches `ensureRunning` lazily. Kicking the warm-up at
+    /// press-down overlaps the reload with the user's speaking time; the engine queue serializes
+    /// it ahead of the transcription request, and on an already-warm engine it is a no-op.
+    /// Deliberately no idle-eviction re-arm here — capture start already cancelled that timer.
+    private func prewarmEngineForCapture() {
+        Task { [engine] in try? await engine.warmUp() }
+    }
+
     /// Free speed: fire the model load while the user is still speaking (press-down), so a warm
     /// refiner answers inside the budget by the time the transcript exists.
     private func prewarmRefinerIfNeeded() {
@@ -384,6 +394,7 @@ final class DictationController: ObservableObject {
         switch session.handle(.startPressed) {
         case .startCapture:
             startCapture()
+            prewarmEngineForCapture()
             prewarmRefinerIfNeeded()
         case .busy:
             // A press arrived while a dictation is still in flight — leave the in-flight session and
