@@ -132,7 +132,10 @@ final class DictationController: ObservableObject {
             engine: WarmRefineEngine(
                 python: SummarizerRuntime.pythonExecutable(),
                 script: SummarizerRuntime.refineHelperScript(),
-                modelDirectory: SummarizerRuntime.modelDirectory()
+                modelDirectory: SummarizerRuntime.modelDirectory(),
+                // F203: prime the helper's prompt cache at warm-up with the real base prompt —
+                // the language-pinned variants extend it, so their common token prefix stays hot.
+                primePrompt: DictationRefinePrompt.system(languageCode: nil)
             )
         )
         let storedEngine = DictationTranscriptionEngine(
