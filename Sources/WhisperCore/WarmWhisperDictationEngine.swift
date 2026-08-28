@@ -350,6 +350,212 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 }
 
+/// Keeps the Summarizer-runtime Qwen model resident for Quick Dictation refinement (F200), driven
+/// over stdin/stdout newline-delimited JSON by `refine_server.py`. Same process-host shape as
+/// `WarmWhisperDictationEngine` above (serialized queue, off-queue termination, drained stderr,
+/// read watchdog); deliberately a separate class so the battle-tested transcription engine is not
+/// refactored under a feature change, and placed in this file so the sanctioned `import Darwin`
+/// (SIGKILL escalation) stays file-scoped per the WhisperCore purity rule. No download path exists
+/// here — the model is already on disk — so the ready timeout is minutes (model load), not the
+/// whisper engine's 1800 s download window.
+public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable {
+    private let python: URL
+    private let script: URL
+    private let modelDirectory: URL
+    private let queue = DispatchQueue(label: "com.whispermeet.dictation.refine")
+
+    private var process: Process?
+    private var stdin: FileHandle?
+    private var stdout: FileHandle?
+    private var stdoutBuffer = Data()
+
+    private let liveLock = NSLock()
+    private var liveProcess: Process?
+    private var liveStdin: FileHandle?
+
+    private let stderrLock = NSLock()
+    private var stderrText = ""
+    private var stderrHandle: FileHandle?
+
+    private static let readyTimeout: TimeInterval = 300
+    /// The caller (`DictationRefiner`) enforces the user-facing budget; this watchdog only stops a
+    /// wedged child from hanging the serial queue forever.
+    private static let replyTimeout: TimeInterval = 30
+
+    public init(python: URL, script: URL, modelDirectory: URL) {
+        self.python = python
+        self.script = script
+        self.modelDirectory = modelDirectory
+    }
+
+    public func warmUp() async throws {
+        try await run { try self.ensureRunning() }
+    }
+
+    public func refine(_ request: RefineRequest) async throws -> String {
+        try await run {
+            try self.ensureRunning()
+            if let stdin = self.stdin {
+                try ThrowingFileHandleIO.write(
+                    try DictationWireProtocol.encodeLine(request),
+                    to: stdin
+                )
+            }
+            let line = try self.readLine(timeout: Self.replyTimeout)
+            let response = try JSONDecoder().decode(RefineResponse.self, from: line)
+            if let error = response.error {
+                throw SummarizerError.helperFailed(error)
+            }
+            return (response.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    public func shutdown() {
+        // Same off-queue interrupt as WarmWhisperDictationEngine.shutdown: terminating the child
+        // closes its stdout, unblocking a parked read so queued state cleanup runs immediately.
+        liveLock.lock()
+        let process = liveProcess
+        let input = liveStdin
+        liveLock.unlock()
+        try? input?.close()
+        process?.terminate()
+        queue.async { self.clearProcessState() }
+    }
+
+    private func run<T>(_ body: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do { continuation.resume(returning: try body()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func ensureRunning() throws {
+        if let process, process.isRunning { return }
+        guard FileManager.default.isExecutableFile(atPath: python.path),
+              FileManager.default.fileExists(atPath: script.path),
+              FileManager.default.fileExists(
+                  atPath: modelDirectory.appendingPathComponent("model.safetensors").path
+              ) else {
+            throw SummarizerError.modelNotInstalled
+        }
+
+        let process = Process()
+        process.executableURL = python
+        process.arguments = [script.path, "--model", modelDirectory.path]
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardInput = inPipe
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        // Pinned local snapshot; refinement must never reach the network (the summarizer's rule).
+        process.environment = LocalSummarizer.makeEnvironment()
+        resetStderr()
+        try process.run()
+
+        self.process = process
+        self.stdin = inPipe.fileHandleForWriting
+        self.stdout = outPipe.fileHandleForReading
+        self.stdoutBuffer.removeAll()
+        let errHandle = errPipe.fileHandleForReading
+        self.stderrHandle = errHandle
+        errHandle.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            } else if let text = String(data: data, encoding: .utf8) {
+                self?.appendStderr(text)
+            }
+        }
+        liveLock.lock()
+        liveProcess = process
+        liveStdin = self.stdin
+        liveLock.unlock()
+
+        let readyLine = try readLine(timeout: Self.readyTimeout)
+        if let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
+           ready["ready"] == true {
+            return
+        }
+        if let response = try? JSONDecoder().decode(RefineResponse.self, from: readyLine),
+           let error = response.error {
+            throw SummarizerError.helperFailed(error)
+        }
+        throw SummarizerError.helperFailed("Refine helper failed to start.\(stderrSuffix())")
+    }
+
+    private func readLine(timeout: TimeInterval) throws -> Data {
+        let watchdogProcess = process
+        let watchdog = DispatchWorkItem { watchdogProcess?.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        defer { watchdog.cancel() }
+
+        while true {
+            if let line = DictationWireProtocol.takeLine(&stdoutBuffer) {
+                guard Self.isProtocolMessage(line) else {
+                    appendStderr("helper stdout: \(String(decoding: line, as: UTF8.self))\n")
+                    continue
+                }
+                return line
+            }
+            guard let stdout else {
+                throw SummarizerError.helperFailed("Refine helper is not running.")
+            }
+            let chunk = stdout.availableData
+            if chunk.isEmpty {
+                throw SummarizerError.helperFailed(
+                    "Refine helper stopped unexpectedly.\(stderrSuffix())")
+            }
+            stdoutBuffer.append(chunk)
+        }
+    }
+
+    private static func isProtocolMessage(_ line: Data) -> Bool {
+        line.first(where: { $0 != 0x20 && $0 != 0x09 && $0 != 0x0D }) == 0x7B // "{"
+    }
+
+    private func appendStderr(_ text: String) {
+        stderrLock.lock(); stderrText += text; stderrLock.unlock()
+    }
+
+    private func resetStderr() {
+        stderrLock.lock(); stderrText = ""; stderrLock.unlock()
+    }
+
+    private func stderrSuffix() -> String {
+        stderrLock.lock()
+        let text = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+        stderrLock.unlock()
+        return text.isEmpty ? "" : "\n\(text.suffix(2_000))"
+    }
+
+    private func clearProcessState() {
+        try? stdin?.close()
+        if let process, process.isRunning {
+            process.terminate()
+            let pid = process.processIdentifier
+            let forceStop = DispatchWorkItem {
+                if process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+            process.waitUntilExit()
+            forceStop.cancel()
+        }
+        process = nil
+        stdin = nil
+        stdout = nil
+        stdoutBuffer.removeAll()
+        stderrHandle?.readabilityHandler = nil
+        stderrHandle = nil
+        liveLock.lock()
+        liveProcess = nil
+        liveStdin = nil
+        liveLock.unlock()
+    }
+}
+
 /// Qwen adapter for the same resident-process dictation protocol. It deliberately excludes the
 /// forced aligner used by meetings: dictation needs text, not timestamps, and loading the extra
 /// model would increase latency and memory without improving the delivered text.
