@@ -39,6 +39,7 @@ print "[2/5] Running script regression suites"
 python3 Scripts/tests/test_qwen_transcribe.py
 python3 Scripts/tests/test_summarize_local.py
 python3 Scripts/tests/test_correct_local.py
+python3 Scripts/tests/test_refine_server.py
 
 print "[3/5] Running the complete Swift test suite"
 # Run serially: several tests block a cooperative thread waiting on a real
