@@ -26,7 +26,10 @@ in `WhisperCore`.
 - No cloud/streaming ASR. (Wispr Flow feels instant because it streams to its cloud; we stay local.)
 - No live word-by-word streaming — Whisper is batch; we transcribe the finished clip.
 - No AI/Claude text cleanup of dictated text (adds latency + network; breaks the local-instant
-  feel).
+  feel). (**Superseded 2026-08-28, F200:** shipped as opt-in, time-budgeted refinement by the
+  on-device Summarizer model — no network, raw transcript delivered whenever the budget is
+  missed; see `docs/superpowers/specs/2026-08-28-dictation-refinement-design.md`. Off by
+  default, so the v1 local-instant feel is unchanged unless the user opts in.)
 - No multiple hotkey profiles, no per-app rules. (**Superseded in Round 7:** a persistent local
   dictation history *was* added as a reliability fallback — see `docs/CHANGELOG.md`. It stays
   on-device; retention controls / an off switch are tracked as follow-ups.)
@@ -306,8 +309,9 @@ Per the user's "keep logs of what you've done":
 
 ## Deferred / future
 
-AI/Claude text cleanup; live streaming words; dictation history; multiple hotkey profiles;
+Live streaming words; dictation history; multiple hotkey profiles;
 prior-clipboard restore after paste; per-app behavior; auto-type (keystroke) delivery mode.
+(AI text cleanup left this list 2026-08-28 — shipped as F200 local refinement, see Non-goals.)
 
 ## Acceptance criteria
 

@@ -26,6 +26,30 @@ public struct DictationResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// One dictation-refinement request to `refine_server.py` (F200). The system prompt travels with
+/// every request so Swift stays the single source of truth for prompt content.
+public struct RefineRequest: Codable, Equatable, Sendable {
+    public var text: String
+    public var systemPrompt: String
+    public var maxTokens: Int
+    public init(text: String, systemPrompt: String, maxTokens: Int) {
+        self.text = text
+        self.systemPrompt = systemPrompt
+        self.maxTokens = maxTokens
+    }
+}
+
+/// The refine helper's reply: corrected text, or an error message. Same one-line JSON framing as
+/// `DictationResponse`.
+public struct RefineResponse: Codable, Equatable, Sendable {
+    public var text: String?
+    public var error: String?
+    public init(text: String?, error: String?) {
+        self.text = text
+        self.error = error
+    }
+}
+
 /// Newline-delimited JSON framing shared with `whisper_dictate_server.py`. `JSONEncoder` never emits
 /// literal newlines, so one physical line is exactly one JSON message.
 public enum DictationWireProtocol {

@@ -58,6 +58,41 @@ struct EmptyDictationEngine: DictationEngine {
     func shutdown() {}
 }
 
+/// Counts calls and returns a scripted attempt so wiring tests can drive every refine outcome
+/// without a model. Lock-guarded: the controller calls it from a background Task.
+final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _attemptCount = 0
+    private var _warmUpCount = 0
+    private var _shutdownCount = 0
+    private var _scripted: RefineAttempt?
+    var attemptCount: Int { lock.withLock { _attemptCount } }
+    var warmUpCount: Int { lock.withLock { _warmUpCount } }
+    var shutdownCount: Int { lock.withLock { _shutdownCount } }
+
+    /// nil → echo the input back as `.skipped`; set to script a specific outcome.
+    func script(_ attempt: RefineAttempt?) { lock.withLock { _scripted = attempt } }
+
+    func warmUp() async { lock.withLock { _warmUpCount += 1 } }
+    func attempt(text: String, languageCode: String?) async -> RefineAttempt {
+        lock.withLock { _attemptCount += 1 }
+        return lock.withLock { _scripted } ?? RefineAttempt(text: text, outcome: .skipped)
+    }
+    func shutdown() { lock.withLock { _shutdownCount += 1 } }
+}
+
+/// A dictation engine that returns a fixed transcript, for refine wiring tests.
+struct FixedTextDictationEngine: DictationEngine {
+    let text: String
+    func warmUp() async throws {}
+    func transcribe(
+        wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
+    ) async throws -> DictationResult {
+        DictationResult(text: text, languageCode: "en")
+    }
+    func shutdown() {}
+}
+
 /// A hotkey monitor whose `start()` result is caller-controllable and whose toggle/stop/reset calls
 /// are counted, so tests can drive the controller's edge handling deterministically.
 final class FakeHotkeyMonitor: HotkeyMonitoring {

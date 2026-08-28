@@ -37,9 +37,17 @@ import WhisperCore
 
     /// Mutations are refused while the history is not known-complete (F187), so an unreadable log is
     /// preserved by `BackupJSONStore` rather than replaced by a fresh one-entry file.
-    func record(text: String, outcome: DictationLogEntry.Outcome) {
+    func record(
+        text: String,
+        outcome: DictationLogEntry.Outcome,
+        rawText: String? = nil,
+        refinement: String? = nil
+    ) {
         guard health.allowsMutation else { return }
-        log = log.adding(DictationLogEntry(id: UUID(), date: Date(), text: text, outcome: outcome))
+        log = log.adding(DictationLogEntry(
+            id: UUID(), date: Date(), text: text, outcome: outcome,
+            rawText: rawText, refinement: refinement
+        ))
         persist()
     }
 

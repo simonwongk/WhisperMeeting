@@ -15,7 +15,7 @@ private final class NonActivatingPanel: NSPanel {
 @MainActor
 final class DictationOverlay {
     enum Phase: Equatable {
-        case listening, transcribing, done, copied, empty, error, busy
+        case listening, transcribing, refining, done, copied, empty, error, busy
     }
 
     private let model = PillModel()
@@ -142,7 +142,7 @@ private struct DictationPill: View {
     @ViewBuilder private var icon: some View {
         switch model.phase {
         case .listening: Circle().fill(.red).frame(width: 10, height: 10)
-        case .transcribing: ProgressView().controlSize(.small).tint(.white)
+        case .transcribing, .refining: ProgressView().controlSize(.small).tint(.white)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .copied: Image(systemName: "doc.on.clipboard").foregroundStyle(.white)
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
@@ -155,6 +155,7 @@ private struct DictationPill: View {
         switch model.phase {
         case .listening: "Listening…"
         case .transcribing: "Transcribing…"
+        case .refining: "Polishing…"
         case .done: "Pasted"
         case .copied: "Copied to clipboard"
         case .empty: "Didn’t catch that"

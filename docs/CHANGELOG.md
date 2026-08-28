@@ -7,6 +7,33 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Feature cycle — dictation refinement by the local AI model, opt-in (F200)
+
+- **Dictated text can now be polished before it lands (F200).** With *Refine with local AI* switched
+  on in Quick Dictation settings, the transcript takes one light-touch pass through the installed
+  on-device Summarizer model (Qwen3-8B/4B-4bit) before pasting: grammar, punctuation,
+  capitalization, and filler words ("um", "uh") — never rephrasing, reordering, or translation. The
+  overlay shows a **Polishing…** phase so the wait is legible, and the dictation history records the
+  raw transcript beside the refined one with the attempt's outcome.
+- **Speed is protected by a hard budget, measured, not guessed.** Refinement races a length-scaled
+  budget (1.2 s + 30 ms/word, capped at 2.5 s — constants revised upward after real-model
+  measurement showed a ~1.0–1.3 s floor); a miss, an engine error, or a guardrail rejection delivers
+  the raw transcript exactly as before. Dictations over 60 words skip the model entirely, and a
+  dictation arriving while an abandoned generation is still running skips rather than queues (the
+  busy-skip rule also keeps the JSON-lines stream desync-proof without request ids). The model
+  prewarms on hotkey press-down — loading while the user is still speaking — and is evicted with the
+  Whisper model after 5 idle minutes.
+- **Output is guarded, never trusted (the F165 ethos).** The model's reply is rejected in favor of
+  the raw transcript when it is empty, drifts outside ~0.5–1.5× of the input length, changes the
+  dominant script (translation tripwire, reusing the F32 heuristic), or arrives wrapped in
+  quotes/fences (stripped, then re-checked). The resident `refine_server.py` lives in the Summarizer
+  runtime, runs fully offline (`HF_HUB_OFFLINE=1`), and self-heals onto existing installs through
+  the F25 helper-sync. Off by default: the documented "local-instant feel" is unchanged unless the
+  user opts in. Verified by red-green unit tests (policy, guardrails, refiner races, wire types,
+  two-direction log-schema fixtures), seven controller wiring tests, and a real-model latency run;
+  the initial red test run caught a genuine race-design deadlock (task-group races can't abandon an
+  engine call) that shipped fixed as a first-wins continuation.
+
 ## Feature cycle — import audio from a link, opt-in (F183)
 
 - **Paste a link, get a local transcript (F183).** With *Import from a Link* switched on in Settings,

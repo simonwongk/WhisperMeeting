@@ -44,6 +44,12 @@ public struct SummarizerRuntime: Sendable {
             .appendingPathComponent("correct_local.py")
     }
 
+    /// The dictation-refinement helper (F200), installed alongside the summarizer in the same runtime.
+    public static func refineHelperScript(applicationSupport: URL? = nil) -> URL {
+        managedDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("refine_server.py")
+    }
+
     public static func modelDirectory(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("model", isDirectory: true)
@@ -69,6 +75,16 @@ public struct SummarizerRuntime: Sendable {
         isInstalled(applicationSupport: applicationSupport)
             && FileManager.default.fileExists(
                 atPath: correctionHelperScript(applicationSupport: applicationSupport).path
+            )
+    }
+
+    /// Whether the runtime is installed AND carries the F200 refine helper. Same shape as
+    /// `isCorrectionHelperInstalled`: an older install stays valid for summaries; dictation
+    /// refinement is gated until the helper reaches disk (the launch helper-sync writes it).
+    public static func isRefineHelperInstalled(applicationSupport: URL? = nil) -> Bool {
+        isInstalled(applicationSupport: applicationSupport)
+            && FileManager.default.fileExists(
+                atPath: refineHelperScript(applicationSupport: applicationSupport).path
             )
     }
 
