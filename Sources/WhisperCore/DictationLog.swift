@@ -17,12 +17,28 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     public let date: Date
     public let text: String
     public let outcome: Outcome
+    /// The pre-refinement transcript, recorded only when an F200 refine attempt changed the
+    /// delivered text. Optional + append-only per the persisted-schema rules.
+    public let rawText: String?
+    /// `DictationRefinement.rawValue` for the attempt, or nil when refinement was off/not
+    /// attempted. A plain String on the wire (never the enum) so unknown future values decode
+    /// leniently in older builds.
+    public let refinement: String?
 
-    public init(id: UUID, date: Date, text: String, outcome: Outcome) {
+    public init(
+        id: UUID,
+        date: Date,
+        text: String,
+        outcome: Outcome,
+        rawText: String? = nil,
+        refinement: String? = nil
+    ) {
         self.id = id
         self.date = date
         self.text = text
         self.outcome = outcome
+        self.rawText = rawText
+        self.refinement = refinement
     }
 
     /// True when a transcript was actually produced and delivered.
