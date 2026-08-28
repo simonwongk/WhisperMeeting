@@ -7,6 +7,25 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Speed cycle — dictation latency, measured and cut (F202, F203)
+
+- **The post-eviction stall now overlaps your speech (F202).** After the 5-minute idle eviction, the
+  next dictation used to pay the full Whisper subprocess spawn + model load — measured **11.4 s**
+  cold-to-ready — entirely *after* the key was released, because the engine restarts lazily inside
+  `transcribe()`. The transcription engine now prewarms on hotkey press-down (exactly like the F200
+  refiner), so the reload runs while the user is still speaking; on a warm engine it is a queue
+  no-op. Red-green wiring tests pin that a starting capture prewarms and a refused press does not.
+- **Refinement got 35–50 % faster per request (F203).** `refine_server.py` keeps one persistent
+  prompt cache and, per request, trims it to the common token prefix with the previous request and
+  feeds only the suffix — the ~120-token fixed system prompt is prefilled once, not every time.
+  `WarmRefineEngine` primes the cache at warm-up with the real base prompt (sent from Swift, the
+  prompt's single source of truth), so the first dictation already hits it. Verified against the
+  pinned `mlx_lm==0.30.5` installed source (`KVCache.offset` ground truth; `trim_prompt_cache`),
+  with a cache-reset-on-error rule so a partially fed cache can never corrupt a later request.
+  Real-model before → after on the same four requests: 1.13/1.08/0.98/1.25 s →
+  **0.73/0.59/0.49/0.77 s**, byte-identical outputs, Mandarin staying Mandarin across the
+  language-pin switch. Budgets are unchanged — they are ceilings; the actual waits just shrank.
+
 ## Feature cycle — dictation refinement by the local AI model, opt-in (F200)
 
 - **Dictated text can now be polished before it lands (F200).** With *Refine with local AI* switched
