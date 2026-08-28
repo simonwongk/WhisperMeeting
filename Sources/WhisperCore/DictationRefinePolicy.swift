@@ -17,9 +17,13 @@ public enum DictationRefinePolicy {
     /// Above this the model cannot reliably answer inside `maximumBudgetMilliseconds` — skip,
     /// don't tease the user with a budget that will always be missed.
     public static let maximumWordCount = 60
-    static let baseBudgetMilliseconds = 700
+    /// Constants revised against the real installed model (Qwen3-8B-4bit, 2026-08-28): short
+    /// requests measured a ~1.0–1.3 s floor on an 18 GiB Apple-silicon Mac, so the design's
+    /// initial 700 ms base missed every time. 1.2 s base + 30 ms/word covers the measured runs
+    /// with 200–350 ms headroom while keeping the worst-case added latency hard-capped at 2.5 s.
+    static let baseBudgetMilliseconds = 1_200
     static let perWordBudgetMilliseconds = 30
-    static let maximumBudgetMilliseconds = 2_000
+    static let maximumBudgetMilliseconds = 2_500
     /// Output cap sent to the helper. ≤60 words in either language is well under this; the cap
     /// bounds how long an abandoned (timed-out) generation can occupy the resident server.
     public static let maxOutputTokens = 256

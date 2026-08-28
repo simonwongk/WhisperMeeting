@@ -108,6 +108,13 @@ model call) when:
 **Budget** — `B = 0.7 s + 30 ms × wordCount`, capped at 2.0 s. Constants live
 in the policy and are pinned by tests. Honest framing: a missed budget means
 delivery lands up to `B` *later* than today, so `B` stays modest by design.
+
+> **Revision (2026-08-28, post-measurement).** The real installed model
+> (Qwen3-8B-4bit on an 18 GiB Apple-silicon Mac) measured a ~1.0–1.3 s floor on
+> short requests, so the 0.7 s base missed every time. Constants shipped as
+> **base 1.2 s + 30 ms/word, capped at 2.5 s** — the measured runs then land
+> within budget with 200–350 ms headroom. The hard-ceiling framing is
+> unchanged; only the numbers moved, on evidence.
 (CJK text has no space-delimited words; for majority-CJK text — as decided by
 `TranscriptLanguage.dominant(of:)` — the budget and the length cap use
 `wordCount = ceil(nonWhitespaceCharacterCount / 2)` instead of

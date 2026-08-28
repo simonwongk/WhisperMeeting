@@ -1453,7 +1453,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if dictation.refineEnabled {
-                    Text("Fixes grammar, punctuation, and filler words before pasting. If the model can't answer within about a second, the raw transcript is pasted instead. Keeps the local AI model in memory while dictation is warm (about 2–5 GB).")
+                    Text("Fixes grammar, punctuation, and filler words before pasting. If the model can't answer within about two seconds, the raw transcript is pasted instead. Keeps the local AI model in memory while dictation is warm (about 2–5 GB).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
