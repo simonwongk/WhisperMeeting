@@ -261,7 +261,8 @@ final class DictationController: ObservableObject {
     /// builds the specs from the bundle and the installed paths, then logs each outcome.
     private func ensureHelperInstalled() {
         let files = FileManager.default
-        let helpers = Self.bundledDictationHelpers(fileManager: files)
+        var helpers = Self.bundledDictationHelpers(fileManager: files)
+        helpers.append(Self.bundledRefineHelper(fileManager: files))
         for (helper, outcome) in zip(helpers, DictationHelperSync.sync(helpers, fileManager: files)) {
             switch outcome {
             case let .synced(name):
@@ -294,6 +295,24 @@ final class DictationController: ObservableObject {
                 runtimeInstalled: files.fileExists(atPath: location.pythonExecutable.path)
             )
         }
+    }
+
+    /// The F200 refine helper rides the same F25 helper-sync so an existing Summarizer install
+    /// (which predates `refine_server.py`) self-heals at launch/enable instead of demanding a
+    /// reinstall. `DictationHelperSync.sync` is engine-agnostic: an absent runtime is skipped,
+    /// never created.
+    private static func bundledRefineHelper(
+        fileManager files: FileManager
+    ) -> DictationHelperSync.Helper {
+        DictationHelperSync.Helper(
+            name: "refine_server",
+            bundledData: Bundle.main.url(forResource: "refine_server", withExtension: "py")
+                .flatMap { try? Data(contentsOf: $0) },
+            installedScript: SummarizerRuntime.refineHelperScript(),
+            runtimeInstalled: files.isExecutableFile(
+                atPath: SummarizerRuntime.pythonExecutable().path
+            )
+        )
     }
 
     deinit {

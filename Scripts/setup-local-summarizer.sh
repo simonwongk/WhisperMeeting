@@ -11,6 +11,7 @@ target_directory="${1:-${HOME}/Library/Application Support/WhisperMeet/Runtime/S
 script_directory="${0:A:h}"
 helper_source="$script_directory/summarize_local.py"
 correction_helper_source="$script_directory/correct_local.py"
+refine_helper_source="$script_directory/refine_server.py"
 runtime_parent="${target_directory:h}"
 staging_directory="$runtime_parent/.Summarizer-install-$$"
 backup_directory="$runtime_parent/.Summarizer-backup-$$"
@@ -44,6 +45,10 @@ if [[ ! -f "$helper_source" ]]; then
 fi
 if [[ ! -f "$correction_helper_source" ]]; then
   print -u2 "The bundled transcript-correction helper is missing."
+  exit 1
+fi
+if [[ ! -f "$refine_helper_source" ]]; then
+  print -u2 "The bundled dictation-refinement helper is missing."
   exit 1
 fi
 
@@ -150,6 +155,8 @@ cp "$helper_source" "$staging_directory/summarize_local.py"
 chmod 644 "$staging_directory/summarize_local.py"
 cp "$correction_helper_source" "$staging_directory/correct_local.py"
 chmod 644 "$staging_directory/correct_local.py"
+cp "$refine_helper_source" "$staging_directory/refine_server.py"
+chmod 644 "$staging_directory/refine_server.py"
 {
   print "mlx-lm=$mlx_lm_version"
   print "summarizer_repository=$repository"
@@ -159,6 +166,7 @@ chmod 644 "$staging_directory/correct_local.py"
 
 "$staging_directory/venv/bin/python" "$staging_directory/summarize_local.py" --help >/dev/null
 "$staging_directory/venv/bin/python" "$staging_directory/correct_local.py" --help >/dev/null
+"$staging_directory/venv/bin/python" "$staging_directory/refine_server.py" --help >/dev/null
 
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"
