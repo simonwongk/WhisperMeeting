@@ -122,7 +122,11 @@ public actor DictationRefiner: DictationTextRefining {
         }
     }
 
-    private func clearInFlight() {
+    // Deliberately `async`: the completion Task above may or may not inherit this actor's
+    // isolation depending on compiler inference, and a synchronous actor method would make the
+    // `await` at the call site "redundant" in one mode — which the release gate's
+    // warnings-as-errors turns into a build failure.
+    private func clearInFlight() async {
         inFlight = false
     }
 }
