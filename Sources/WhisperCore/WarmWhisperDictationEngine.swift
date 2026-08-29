@@ -382,14 +382,40 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     /// wedged child from hanging the serial queue forever.
     private static let replyTimeout: TimeInterval = 30
 
-    public init(python: URL, script: URL, modelDirectory: URL) {
+    /// F203: a tiny request sent once per child process at warm-up, carrying the real base system
+    /// prompt (Swift stays the prompt's source of truth), so the helper's persistent prompt cache
+    /// is hot before the first dictation's refine request arrives. Queue-confined state.
+    private let primePrompt: String?
+    private var primed = false
+
+    public init(python: URL, script: URL, modelDirectory: URL, primePrompt: String? = nil) {
         self.python = python
         self.script = script
         self.modelDirectory = modelDirectory
+        self.primePrompt = primePrompt
     }
 
     public func warmUp() async throws {
-        try await run { try self.ensureRunning() }
+        try await run {
+            try self.ensureRunning()
+            guard let primePrompt = self.primePrompt, !self.primed else { return }
+            // Attempt-once even on failure: a helper that errors on the prime would otherwise be
+            // re-primed on every press. The reply MUST be consumed here — leaving it unread would
+            // desync every later request on the newline-JSON wire.
+            self.primed = true
+            do {
+                let request = RefineRequest(text: "ready", systemPrompt: primePrompt, maxTokens: 8)
+                if let stdin = self.stdin {
+                    try ThrowingFileHandleIO.write(
+                        try DictationWireProtocol.encodeLine(request),
+                        to: stdin
+                    )
+                }
+                _ = try self.readLine(timeout: Self.replyTimeout)
+            } catch {
+                // Prime is an optimization; a failure must not fail warm-up itself.
+            }
+        }
     }
 
     public func refine(_ request: RefineRequest) async throws -> String {
@@ -454,6 +480,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         process.environment = LocalSummarizer.makeEnvironment()
         resetStderr()
         try process.run()
+        primed = false // every fresh child starts with a cold prompt cache
 
         self.process = process
         self.stdin = inPipe.fileHandleForWriting
@@ -547,6 +574,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         stdin = nil
         stdout = nil
         stdoutBuffer.removeAll()
+        primed = false // a fresh child has a cold prompt cache — prime again on next warm-up
         stderrHandle?.readabilityHandler = nil
         stderrHandle = nil
         liveLock.lock()

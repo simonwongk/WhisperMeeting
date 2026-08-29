@@ -81,6 +81,21 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
     func shutdown() { lock.withLock { _shutdownCount += 1 } }
 }
 
+/// Counts `warmUp()` calls so tests can pin exactly when the controller prewarms the
+/// transcription engine (F202). Lock-guarded: the controller warms from a background Task.
+final class WarmUpCountingEngine: DictationEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _warmUpCount = 0
+    var warmUpCount: Int { lock.withLock { _warmUpCount } }
+    func warmUp() async throws { lock.withLock { _warmUpCount += 1 } }
+    func transcribe(
+        wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
+    ) async throws -> DictationResult {
+        DictationResult(text: "hello", languageCode: "en")
+    }
+    func shutdown() {}
+}
+
 /// A dictation engine that returns a fixed transcript, for refine wiring tests.
 struct FixedTextDictationEngine: DictationEngine {
     let text: String
