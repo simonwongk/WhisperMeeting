@@ -92,6 +92,20 @@ by your Mac’s RAM) stored under `~/Library/Application Support/WhisperMeet/Run
 powers on-device meeting summaries (the default) and AI transcript correction; both share this one
 runtime, so enabling correction after summaries needs no further download.
 
+### Use the installed local Qwen model in Terminal
+
+If you installed **Local Model**, this checkout also provides a private, offline Terminal chat using
+that same model — it does not download anything, write a chat log, or read WhisperMeet recordings:
+
+```bash
+Scripts/qwen-chat
+```
+
+Type `/exit` (or press Control-D) to leave. The last six exchanges are kept only in memory to make
+the conversation coherent; use `Scripts/qwen-chat --max-turns 1` for a stateless prompt-and-answer
+style. This is available on Apple-silicon Macs with the Local Model installed, and it may take a
+moment to load the model before the first prompt.
+
 For a manual installation from this checkout:
 
 ```bash

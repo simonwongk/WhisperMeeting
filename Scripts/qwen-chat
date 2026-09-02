@@ -1,0 +1,14 @@
+#!/bin/zsh
+# Start a private Terminal chat with the Qwen model already installed by WhisperMeet.
+set -euo pipefail
+
+script_directory="${0:A:h}"
+runtime_directory="${WHISPERMEET_QWEN_RUNTIME:-$HOME/Library/Application Support/WhisperMeet/Runtime/Summarizer}"
+
+if [[ ! -x "$runtime_directory/venv/bin/python" ]]; then
+  print -u2 "Local Qwen is not installed. Open WhisperMeet → Settings → Install Local Model."
+  exit 2
+fi
+
+exec "$runtime_directory/venv/bin/python" "$script_directory/qwen_chat.py" \
+  --runtime "$runtime_directory" "$@"
