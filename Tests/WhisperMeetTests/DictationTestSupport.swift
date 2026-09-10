@@ -73,7 +73,10 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
     /// nil → echo the input back as `.skipped`; set to script a specific outcome.
     func script(_ attempt: RefineAttempt?) { lock.withLock { _scripted = attempt } }
 
-    func warmUp() async { lock.withLock { _warmUpCount += 1 } }
+    func warmUp() async -> Bool {
+        lock.withLock { _warmUpCount += 1 }
+        return true
+    }
     func attempt(text: String, languageCode: String?) async -> RefineAttempt {
         lock.withLock { _attemptCount += 1 }
         return lock.withLock { _scripted } ?? RefineAttempt(text: text, outcome: .skipped)
@@ -86,12 +89,15 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
 final class WarmUpCountingEngine: DictationEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var _warmUpCount = 0
+    private var _transcribeCount = 0
     var warmUpCount: Int { lock.withLock { _warmUpCount } }
+    var transcribeCount: Int { lock.withLock { _transcribeCount } }
     func warmUp() async throws { lock.withLock { _warmUpCount += 1 } }
     func transcribe(
         wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
     ) async throws -> DictationResult {
-        DictationResult(text: "hello", languageCode: "en")
+        lock.withLock { _transcribeCount += 1 }
+        return DictationResult(text: "hello", languageCode: "en")
     }
     func shutdown() {}
 }

@@ -24,6 +24,44 @@ private final class FakeRefineEngine: DictationRefineEngine, @unchecked Sendable
     func shutdown() {}
 }
 
+private struct FailingWarmRefineEngine: DictationRefineEngine {
+    func warmUp() async throws { throw SummarizerError.helperFailed("unavailable") }
+    func refine(_ request: RefineRequest) async throws -> String { request.text }
+    func shutdown() {}
+}
+
+private actor GatedRefineEngine: DictationRefineEngine {
+    private var calls = 0
+    private var first: CheckedContinuation<String, Never>?
+    private var second: CheckedContinuation<String, Never>?
+
+    func warmUp() async throws {}
+
+    func refine(_ request: RefineRequest) async throws -> String {
+        calls += 1
+        if calls == 1 {
+            return await withCheckedContinuation { first = $0 }
+        }
+        return await withCheckedContinuation { second = $0 }
+    }
+
+    nonisolated func shutdown() {}
+
+    func evict() async {}
+
+    var callCount: Int { calls }
+
+    func finishFirst() {
+        first?.resume(returning: "first")
+        first = nil
+    }
+
+    func finishSecond() {
+        second?.resume(returning: "second")
+        second = nil
+    }
+}
+
 private let instantSleep: DictationRefiner.Sleep = { _ in }
 private let neverSleep: DictationRefiner.Sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
 
@@ -70,4 +108,40 @@ func policySkipNeverCallsEngine() async {
     let attempt = await refiner.attempt(text: long, languageCode: "en")
     #expect(attempt == RefineAttempt(text: long, outcome: .skipped))
     #expect(engine.refineCount == 0)
+}
+
+@Test("An evicted request cannot clear the busy state of a newer request")
+func staleCompletionDoesNotClearNewerRequest() async {
+    let engine = GatedRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: instantSleep)
+
+    let first = await refiner.attempt(text: "first words", languageCode: "en")
+    #expect(first.outcome == .rawTimeout)
+    for _ in 0..<100 {
+        if await engine.callCount >= 1 { break }
+        await Task.yield()
+    }
+
+    await refiner.evict()
+    let second = await refiner.attempt(text: "second words", languageCode: "en")
+    #expect(second.outcome == .rawTimeout)
+    for _ in 0..<100 {
+        if await engine.callCount >= 2 { break }
+        await Task.yield()
+    }
+
+    // The old request finishes after the new one has taken ownership of the busy flag.
+    await engine.finishFirst()
+    for _ in 0..<10 { await Task.yield() }
+    let third = await refiner.attempt(text: "third words", languageCode: "en")
+    #expect(third.outcome == .rawBusy)
+
+    await engine.finishSecond()
+}
+
+@Test("A failed optional warm-up reports not-ready so callers can stay on the raw path")
+func failedWarmUpReportsNotReady() async {
+    let refiner = DictationRefiner(engine: FailingWarmRefineEngine())
+    let ready = await refiner.warmUp()
+    #expect(ready == false)
 }

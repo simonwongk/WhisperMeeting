@@ -70,3 +70,64 @@ func refusedPressDoesNotPrewarm() async throws {
     #expect(controller.status != .listening)
     #expect(engine.warmUpCount == 0)
 }
+
+@MainActor
+@Test("A meeting transcription blocks a new dictation before it warms another local model (F206)")
+func meetingTranscriptionPreventsDictationPrewarm() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.meeting.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-meeting-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = WarmUpCountingEngine()
+    let (controller, monitor) = makeController(engine: engine, defaults: defaults, directory: directory)
+    controller.configureMeetingTranscriptionRunning { true }
+    monitor.onPressStart?()
+    try await Task.sleep(for: .milliseconds(60))
+    #expect(controller.status != .listening)
+    #expect(engine.warmUpCount == 0)
+}
+
+@MainActor
+@Test("Enabling dictation during a meeting defers background recognition warm-up (F206)")
+func enablingDuringMeetingDefersRecognitionWarmUp() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.enable.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-enable-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = WarmUpCountingEngine()
+    let (controller, _) = makeController(engine: engine, defaults: defaults, directory: directory)
+    controller.configureMeetingTranscriptionRunning { true }
+    controller.setEnabled(true)
+    try await Task.sleep(for: .milliseconds(60))
+
+    #expect(engine.warmUpCount == 0)
+}
+
+@MainActor
+@Test("A meeting transcription blocks the dictation self-test before it starts ASR (F206)")
+func meetingTranscriptionPreventsDictationSelfTest() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.selfTest.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-selfTest-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = WarmUpCountingEngine()
+    let (controller, _) = makeController(engine: engine, defaults: defaults, directory: directory)
+    controller.configureMeetingTranscriptionRunning { true }
+    controller.runSelfTest()
+
+    #expect(controller.isSelfTesting == false)
+    #expect(engine.transcribeCount == 0)
+    #expect(controller.selfTestResult?.contains("meeting transcription") == true)
+}

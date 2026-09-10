@@ -86,6 +86,17 @@ enum SegmentReRunError: LocalizedError {
 
 @MainActor
 final class AppModel: ObservableObject {
+    private enum EngineAdmissionError: LocalizedError {
+        case dictationActive
+
+        var errorDescription: String? {
+            switch self {
+            case .dictationActive:
+                return "Finish the current Quick Dictation before starting a meeting transcription."
+            }
+        }
+    }
+
     enum RecordingState: Equatable {
         case idle
         case starting
@@ -252,6 +263,12 @@ final class AppModel: ObservableObject {
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
     private var didPerformStartupRecovery = false
     private var isDictationActive: () -> Bool = { false }
+    /// AppEntry wires this to `DictationController.releaseIdleModelsForMeetingTranscription`.
+    /// Kept as a headless seam so tests can prove the release completes before an engine starts.
+    var releaseIdleDictationModels: @Sendable () async -> Void = {}
+    /// Once all meeting ASR work has ended, AppEntry uses this to rewarm only the dictation
+    /// recognizer. The optional refiner stays evicted so the next hotkey stays responsive.
+    var warmIdleDictationRecognition: () -> Void = {}
 
     private static let modelKey = "localWhisperModel"
     private static let languageKey = "localWhisperLanguage"
@@ -309,6 +326,17 @@ final class AppModel: ObservableObject {
     /// start while dictation currently owns the microphone. See `AppEntry`'s `.task` for the call site.
     func configureDictationGuard(_ isActive: @escaping () -> Bool) {
         isDictationActive = isActive
+    }
+
+    /// Lets a meeting ASR pass release inactive Quick Dictation helpers before it claims unified
+    /// memory. This is intentionally separate from `configureDictationGuard`: the latter answers
+    /// whether dictation owns the microphone; this one handles idle resident models.
+    func configureIdleDictationModelRelease(_ release: @escaping @Sendable () async -> Void) {
+        releaseIdleDictationModels = release
+    }
+
+    func configureIdleDictationRecognitionWarmUp(_ warm: @escaping () -> Void) {
+        warmIdleDictationRecognition = warm
     }
 
     var isRecordingActive: Bool {
@@ -470,6 +498,13 @@ final class AppModel: ObservableObject {
         // library that will refuse to save the result. It sits ABOVE the override branch on purpose —
         // not even a stubbed engine runs while degraded.
         guard !store.isDegraded else { throw MeetingStoreError.engineRunIsReadOnly }
+        // Entry points normally reject this sooner with a specific alert, but this central boundary
+        // closes the queue/race hole for every heavy engine pass, including a direct auxiliary call.
+        guard !isDictationActive() else { throw EngineAdmissionError.dictationActive }
+        // A Qwen dictation helper and optional 4B/8B refiner can otherwise remain resident for five
+        // minutes, materially slowing this ASR + alignment process through unified-memory pressure.
+        // The configured closure waits for their children to exit before the selected engine begins.
+        await releaseIdleDictationModels()
         if let override = runTranscriptionEngineOverride {
             return try await override(selection, url)
         }
@@ -508,6 +543,10 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish the current transcription before requesting a second opinion."
             return
         }
+        guard !isDictationActive() else {
+            alertMessage = "Finish the current Quick Dictation before requesting a second opinion."
+            return
+        }
         // Guarded here as well as in the worker, so the refusal is one immediate message rather than
         // one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Requesting a second opinion") else { return }
@@ -522,6 +561,7 @@ final class AppModel: ObservableObject {
             secondOpinionProgress = nil
             secondOpinionEngine = nil
             isRunningAuxiliaryEngine = false
+            if !hasActiveTranscription { warmIdleDictationRecognition() }
         }
     }
 
@@ -606,6 +646,10 @@ final class AppModel: ObservableObject {
     func requestSegmentReTranscription(id: UUID, index: Int) {
         guard !hasActiveTranscription, !isRunningAuxiliaryEngine else {
             alertMessage = "Finish the current transcription before re-transcribing a segment."
+            return
+        }
+        guard !isDictationActive() else {
+            alertMessage = "Finish the current Quick Dictation before re-transcribing a segment."
             return
         }
         // Guarded here as well as in the delegate, so the refusal is one immediate message rather
@@ -1549,6 +1593,10 @@ final class AppModel: ObservableObject {
             alertMessage = "Wait for the local recognition model installation to finish before transcribing."
             return
         }
+        guard !isDictationActive() else {
+            alertMessage = "Finish the current Quick Dictation before starting a meeting transcription."
+            return
+        }
         // A second-opinion or segment re-run is holding the engine; don't start a normal run atop it (F140).
         guard !isRunningAuxiliaryEngine else {
             alertMessage = "Finish the second-opinion or segment re-run before transcribing this meeting."
@@ -1590,6 +1638,9 @@ final class AppModel: ObservableObject {
             transcriptionSettings.remove(next)
             transcription.finishActive()
             pumpTranscriptionQueue()
+            if !hasActiveTranscription, !isRunningAuxiliaryEngine {
+                warmIdleDictationRecognition()
+            }
         }
         transcriptionTasks[next] = task
     }

@@ -91,12 +91,19 @@ public protocol DictationEngine: Sendable {
     func warmUp() async throws
     func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult
     func shutdown()
+    /// Temporarily frees a resident model and waits until its child process has exited. Unlike
+    /// `retire()`, the same engine may warm again for a later dictation.
+    func evict() async
     /// Permanently stops this instance and waits until queued process work has drained. Model
     /// selection uses this stronger lifecycle boundary so two resident models cannot overlap.
     func retire() async
 }
 
 public extension DictationEngine {
+    func evict() async {
+        shutdown()
+    }
+
     func retire() async {
         shutdown()
     }
@@ -158,6 +165,10 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
 
     public func shutdown() {
         current.shutdown()
+    }
+
+    public func evict() async {
+        await current.evict()
     }
 
     private var current: DictationEngine {

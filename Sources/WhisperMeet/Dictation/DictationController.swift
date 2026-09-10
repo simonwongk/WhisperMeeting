@@ -51,7 +51,7 @@ final class DictationController: ObservableObject {
     /// True while dictation owns the microphone/result path or is retiring a resident model. Used by
     /// `AppModel` to avoid microphone and large-model contention with meeting recording.
     var isActive: Bool {
-        if isSwitchingModel { return true }
+        if isSwitchingModel || isSelfTesting { return true }
         switch status {
         case .listening, .transcribing, .delivering: return true
         case .disabled, .idle, .error: return false
@@ -75,11 +75,25 @@ final class DictationController: ObservableObject {
     private var session = DictationSession()
     private var isMicrophoneBusy: () -> Bool = { false }
     private var isRecognitionRuntimeInstalling: () -> Bool = { false }
+    private var isMeetingTranscriptionRunning: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
+    /// Both warm-up tasks are cancellable and generation-guarded. A meeting release must prevent a
+    /// task that was queued while idle from launching a model after that meeting has claimed memory.
+    private var engineWarmTask: Task<Void, Never>?
+    private var engineWarmGeneration = 0
+    /// The optional polishing model is deliberately warmed only when it cannot contend with ASR.
+    /// A generation invalidates an old asynchronous warm-up after eviction/disable.
+    private var refinerWarmTask: Task<Void, Never>?
+    private var refinerIsWarm = false
+    private var refinerIsWarming = false
+    private var refinerWarmGeneration = 0
+    /// A press during a cold optional-model load waits for that load to be terminated before ASR
+    /// starts. It is nil for an already resident refiner, which the user explicitly opted into.
+    private var refinerReleaseForCapture: Task<Void, Never>?
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
     private lazy var captureWatchdog = DictationCaptureWatchdog(
         timeout: captureTimeout,
@@ -198,6 +212,27 @@ final class DictationController: ObservableObject {
         self.isRecognitionRuntimeInstalling = provider
     }
 
+    /// Prevent a new local ASR job from competing with a post-meeting engine. This is a distinct
+    /// resource boundary from the microphone and installer guards: both workloads use unified
+    /// memory even though neither needs the microphone.
+    func configureMeetingTranscriptionRunning(_ provider: @escaping () -> Bool) {
+        isMeetingTranscriptionRunning = provider
+    }
+
+    /// Releases only idle models before a meeting engine begins. Waiting for the children to exit
+    /// is load-bearing: a fire-and-forget shutdown still let a 4B/8B refiner contend with Qwen's
+    /// ASR and aligner during their startup.
+    func releaseIdleModelsForMeetingTranscription() async {
+        guard !isActive else { return }
+        idleEvictWorkItem?.cancel()
+        invalidateEngineWarmth()
+        invalidateRefinerWarmth()
+        refinerReleaseForCapture = nil
+        await engine.evict()
+        await refiner.evict()
+        log.notice("released idle dictation models before meeting transcription")
+    }
+
     /// Supplies the business vocabulary (same source meetings already feed into their
     /// `initial_prompt`) so Quick Dictation gets the same spelling nudge for proper nouns/jargon.
     func configureVocabulary(_ provider: @escaping () -> [String]) {
@@ -212,6 +247,7 @@ final class DictationController: ObservableObject {
               !isActive,
               !isSelfTesting else { return }
         idleEvictWorkItem?.cancel()
+        invalidateEngineWarmth()
         selectedEngine = selection
         persist()
         ensureHelperInstalled()
@@ -228,40 +264,124 @@ final class DictationController: ObservableObject {
 
     private func applyRefineSetting() {
         if refineEnabled {
-            prewarmRefinerIfNeeded()
+            prewarmRefinerWhenSafe()
         } else {
+            invalidateRefinerWarmth()
             refiner.shutdown()
         }
     }
 
-    /// F202: without this, a dictation after idle eviction pays the full subprocess spawn + model
-    /// load (measured 11.4 s cold-to-ready for whisper turbo) entirely *after* the key is
-    /// released, because `transcribe()` reaches `ensureRunning` lazily. Kicking the warm-up at
-    /// press-down overlaps the reload with the user's speaking time; the engine queue serializes
-    /// it ahead of the transcription request, and on an already-warm engine it is a no-op.
-    /// Deliberately no idle-eviction re-arm here — capture start already cancelled that timer.
     private func prewarmEngineForCapture() {
-        Task { [engine] in try? await engine.warmUp() }
+        // F202: without this, a dictation after idle eviction pays the full subprocess spawn +
+        // model load entirely after key release. This overlaps the reload with the user's speaking
+        // time, but does not re-arm an idle timer while capture is in progress.
+        startEngineWarmUp(armIdleEviction: false, prewarmRefinerAfter: false)
     }
 
-    /// Free speed: fire the model load while the user is still speaking (press-down), so a warm
-    /// refiner answers inside the budget by the time the transcript exists.
-    private func prewarmRefinerIfNeeded() {
-        guard enabled, refineEnabled, refineRuntimeAvailability() else { return }
-        Task { [refiner] in await refiner.warmUp() }
+    /// If an optional refiner is still cold-loading when the user presses the hotkey again, cancel
+    /// and evict it during capture. The transcribe task below awaits this boundary before starting
+    /// ASR, so a rapid second dictation cannot recreate the contention F206 removed.
+    private func prepareRefinerForCapture() {
+        guard refinerIsWarming else { return }
+        invalidateRefinerWarmth()
+        refinerReleaseForCapture = Task { [refiner] in
+            await refiner.evict()
+        }
     }
 
-    func warmUpIfNeeded() {
-        guard enabled else { return }
-        log.notice("warm-up starting for \(self.selectedEngine.rawValue, privacy: .public)")
-        Task { [engine, log] in
+    /// The polishing model is optional; recognition is not. In particular, never cold-start the
+    /// 4B/8B refiner alongside ASR on press-down — on an 18 GB Mac that turned a sub-second Qwen
+    /// dictation into a multi-second wait. Once ASR has delivered, a background warm can help the
+    /// *next* dictation without delaying this one.
+    private func prewarmRefinerWhenSafe() {
+        guard enabled,
+              refineEnabled,
+              refineRuntimeAvailability(),
+              !isMeetingTranscriptionRunning(),
+              canWarmRefinerWithoutContention,
+              !refinerIsWarm,
+              !refinerIsWarming else { return }
+        refinerIsWarming = true
+        let generation = refinerWarmGeneration
+        let task = Task { @MainActor [weak self, refiner] in
+            // This check is intentionally before the actor call. A meeting release and this task
+            // both run on MainActor, so they cannot interleave between it and enqueueing warmUp().
+            guard let self,
+                  !Task.isCancelled,
+                  self.refinerWarmGeneration == generation else { return }
+            let warmed = await refiner.warmUp()
+            guard !Task.isCancelled,
+                  self.refinerWarmGeneration == generation else { return }
+            self.refinerWarmTask = nil
+            self.refinerIsWarming = false
+            self.refinerIsWarm = warmed
+                && self.enabled
+                && self.refineEnabled
+                && self.refineRuntimeAvailability()
+        }
+        refinerWarmTask = task
+    }
+
+    private var canWarmRefinerWithoutContention: Bool {
+        switch status {
+        case .idle: true
+        case .disabled, .listening, .transcribing, .delivering, .error: false
+        }
+    }
+
+    private func invalidateRefinerWarmth() {
+        refinerWarmGeneration &+= 1
+        refinerWarmTask?.cancel()
+        refinerWarmTask = nil
+        refinerIsWarm = false
+        refinerIsWarming = false
+    }
+
+    private func invalidateEngineWarmth() {
+        engineWarmGeneration &+= 1
+        engineWarmTask?.cancel()
+        engineWarmTask = nil
+    }
+
+    /// Starts only the recognition helper. The optional refiner has a separate warm policy because
+    /// its multi-GB load must never race recognition or a meeting model.
+    private func startEngineWarmUp(armIdleEviction: Bool, prewarmRefinerAfter: Bool) {
+        guard enabled,
+              !isMeetingTranscriptionRunning(),
+              engineWarmTask == nil else { return }
+        let generation = engineWarmGeneration
+        let task = Task { @MainActor [weak self, engine, log] in
+            // Same MainActor generation barrier as the refiner: a release that wins first makes a
+            // stale task a no-op instead of a late process spawn during meeting transcription.
+            guard let self,
+                  !Task.isCancelled,
+                  self.engineWarmGeneration == generation else { return }
             do {
                 try await engine.warmUp()
-                await MainActor.run { self.scheduleIdleEviction() } // warmed but no dictation yet — still evict if unused
+                guard !Task.isCancelled,
+                      self.engineWarmGeneration == generation else { return }
+                self.engineWarmTask = nil
+                if prewarmRefinerAfter { self.prewarmRefinerWhenSafe() }
+                if armIdleEviction { self.scheduleIdleEviction() }
             } catch {
+                guard !Task.isCancelled,
+                      self.engineWarmGeneration == generation else { return }
+                self.engineWarmTask = nil
                 log.error("warm-up failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
             }
         }
+        engineWarmTask = task
+    }
+
+    func warmUpIfNeeded() {
+        log.notice("warm-up starting for \(self.selectedEngine.rawValue, privacy: .public)")
+        startEngineWarmUp(armIdleEviction: true, prewarmRefinerAfter: true)
+    }
+
+    /// Used after the last meeting ASR pass completes. It restores fast dictation without bringing
+    /// the optional 4B/8B refiner back into memory.
+    func warmRecognitionEngineIfNeeded() {
+        startEngineWarmUp(armIdleEviction: true, prewarmRefinerAfter: false)
     }
 
     // MARK: - Enable / disable
@@ -297,8 +417,11 @@ final class DictationController: ObservableObject {
             idleEvictWorkItem?.cancel()
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
             overlay.hide()
+            invalidateEngineWarmth()
             engine.shutdown()             // release the resident model/subprocess when disabled
             refiner.shutdown()            // and the resident refine model with it (F200)
+            invalidateRefinerWarmth()
+            refinerReleaseForCapture = nil
             status = .disabled
             log.notice("dictation disabled")
         }
@@ -394,11 +517,17 @@ final class DictationController: ObservableObject {
             hotkeyMonitor.resetToggleState()
             return
         }
+        if isMeetingTranscriptionRunning() {
+            log.notice("dictation press ignored — a meeting is transcribing (avoids local-model contention)")
+            flashBusy()
+            hotkeyMonitor.resetToggleState()
+            return
+        }
         switch session.handle(.startPressed) {
         case .startCapture:
             startCapture()
+            prepareRefinerForCapture()
             prewarmEngineForCapture()
-            prewarmRefinerIfNeeded()
         case .busy:
             // A press arrived while a dictation is still in flight — leave the in-flight session and
             // its overlay untouched. Never reset it here; that would drop the pending transcript.
@@ -485,12 +614,18 @@ final class DictationController: ObservableObject {
             : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
+        let refinerRelease = refinerReleaseForCapture
         // Snapshot the refine decision with the other settings: mid-flight toggle changes must not
         // switch behavior halfway through a dictation.
-        let refineOn = refineEnabled && refineRuntimeAvailability()
+        // A cold refiner is a nice-to-have, never a reason to hold this clip. It warms only after
+        // delivery, so the first post-eviction dictation gets fast raw text rather than a timeout.
+        let refineOn = refineEnabled && refinerIsWarm && refineRuntimeAvailability()
         Task { [engine, log, refiner] in
             let started = Date()
             do {
+                // A just-started optional model is cancelled on press-down. Ensure it has actually
+                // left unified memory before the recognition helper runs, even for a very short tap.
+                await refinerRelease?.value
                 let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
                 try? FileManager.default.removeItem(at: clip.url)
                 var cleaned = DictationTextCleanup.clean(result.text)
@@ -514,6 +649,14 @@ final class DictationController: ObservableObject {
                     if attempt.outcome == .refined {
                         rawText = cleaned
                         cleaned = attempt.text
+                    } else if attempt.outcome == .rawError {
+                        // A crashed/helper-missing refiner is not actually resident. Clear the
+                        // optimistic warm state so the next dictation stays on its immediate raw
+                        // path while a later idle window may retry the optional warm-up.
+                        await MainActor.run {
+                            self.invalidateRefinerWarmth()
+                            self.refiner.shutdown()
+                        }
                     }
                     log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s total")
                 }
@@ -536,6 +679,7 @@ final class DictationController: ObservableObject {
         guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
+            refinerReleaseForCapture = nil
             status = .delivering
             let delivery = autoPaste ? TextInjector.deliver(payload) : deliverClipboardOnly(payload)
             _ = session.handle(.delivered)
@@ -594,6 +738,7 @@ final class DictationController: ObservableObject {
             self?.overlay.hide()
             _ = self?.session.handle(.dismiss)
             self?.status = .idle
+            self?.prewarmRefinerWhenSafe()
             self?.scheduleIdleEviction()
         }
         dismissWorkItem = item
@@ -607,6 +752,8 @@ final class DictationController: ObservableObject {
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.enabled, !self.isActive else { return }
             self.log.notice("evicting idle warm dictation model")
+            self.invalidateEngineWarmth()
+            self.invalidateRefinerWarmth()
             self.engine.shutdown()
             self.refiner.shutdown()
         }
@@ -667,6 +814,10 @@ final class DictationController: ObservableObject {
 
     func runSelfTest() {
         guard !isSelfTesting, !isSwitchingModel else { return }
+        guard !isMeetingTranscriptionRunning() else {
+            selfTestResult = "Finish the current meeting transcription before testing Quick Dictation."
+            return
+        }
         isSelfTesting = true
         selfTestResult = nil
         idleEvictWorkItem?.cancel() // self-test is activity — don't let a stale timer evict mid-test

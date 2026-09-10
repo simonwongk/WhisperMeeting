@@ -89,6 +89,41 @@ func warmDictationEngineRetirementWaitsForIdleProcessExit() async throws {
     #expect(elapsed < 8)
 }
 
+@Test("evict() waits for an idle helper to exit but permits a later rewarm (F206)")
+func warmDictationEngineEvictionWaitsAndCanRewarm() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineEvict-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let marker = tmp.appendingPathComponent("helper-exited")
+    let script = tmp.appendingPathComponent("ready-then-delay-exit.sh")
+    let helper = """
+    trap 'sleep 1; touch "\(marker.path)"; exit 0' TERM
+    printf '{"ready":true}\\n'
+    while :; do sleep 1; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+
+    try await engine.warmUp()
+    let started = Date()
+    await engine.evict()
+    let elapsed = Date().timeIntervalSince(started)
+
+    #expect(FileManager.default.fileExists(atPath: marker.path))
+    #expect(elapsed >= 0.8)
+    #expect(elapsed < 8)
+    // Unlike a model replacement, meeting preparation is temporary: the next hotkey can warm the
+    // same engine instance again.
+    try await engine.warmUp()
+    engine.shutdown()
+}
+
 @Test("A helper that dies during start surfaces its stderr in the error")
 func warmDictationEngineSurfacesStderrOnFailure() async throws {
     let tmp = FileManager.default.temporaryDirectory

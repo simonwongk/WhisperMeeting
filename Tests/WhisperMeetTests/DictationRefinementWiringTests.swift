@@ -63,6 +63,20 @@ private struct Harness {
         }
         #expect(!controller.logStore.log.entries.isEmpty)
     }
+
+    /// The polish model is deliberately optional: dictation must run once in an idle period before
+    /// the controller starts it in the background. Enable the controller here to exercise the
+    /// separate, already-warm refinement path without making a press-down compete with ASR.
+    func warmRefiner() async throws {
+        controller.setEnabled(true)
+        for _ in 0..<300 where refiner.warmUpCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(refiner.warmUpCount >= 1)
+        // `warmUp()` increments the fake's counter just before the controller records its ready
+        // state on the main actor. Yield that completion before starting the capture below.
+        for _ in 0..<5 { await Task.yield() }
+    }
 }
 
 @MainActor
@@ -84,6 +98,7 @@ func refinedTextDeliveredAndLogged() async throws {
     let harness = try Harness(refineEnabled: true)
     defer { harness.tearDown() }
     harness.refiner.script(RefineAttempt(text: "Hello there.", outcome: .refined))
+    try await harness.warmRefiner()
     try await harness.dictateOnce()
     #expect(harness.refiner.attemptCount == 1)
     let entry = harness.controller.logStore.log.entries.first
@@ -99,6 +114,7 @@ func timeoutDeliversRaw() async throws {
     let harness = try Harness(refineEnabled: true)
     defer { harness.tearDown() }
     harness.refiner.script(RefineAttempt(text: "hello there", outcome: .rawTimeout))
+    try await harness.warmRefiner()
     try await harness.dictateOnce()
     let entry = harness.controller.logStore.log.entries.first
     #expect(entry?.text == "hello there")
@@ -117,13 +133,21 @@ func unavailableRuntimeSkips() async throws {
 }
 
 @MainActor
-@Test("Press-down prewarms the refiner only when the toggle is on and the runtime is present")
-func pressDownPrewarms() async throws {
+@Test("Press-down defers optional refinement until raw dictation has been delivered")
+func pressDownDefersRefinerWarmUp() async throws {
     let on = try Harness(refineEnabled: true)
     defer { on.tearDown() }
     on.monitor.onPressStart?()
     try await Task.sleep(for: .milliseconds(50))
-    #expect(on.refiner.warmUpCount >= 1)
+    #expect(on.refiner.warmUpCount == 0)
+    on.monitor.onPressEnd?()
+    for _ in 0..<300 where on.controller.logStore.log.entries.isEmpty {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    for _ in 0..<100 where on.refiner.warmUpCount == 0 {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(on.refiner.warmUpCount == 1)
 
     let off = try Harness(refineEnabled: false)
     defer { off.tearDown() }

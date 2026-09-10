@@ -110,15 +110,28 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // the queued operation returns at once — instead of the state-cleanup below (queued behind
         // it) having to wait out the read's 120s/1800s timeout. Mirrors the off-queue terminate the
         // readLine watchdog and LocalWhisperClient's ProcessCancellationController already rely on.
-        liveLock.lock()
-        let process = liveProcess
-        let input = liveStdin
-        liveLock.unlock()
+        let (process, input) = captureLiveProcess()
         try? input?.close()
         process?.terminate()
 
         queue.async {
             self.clearProcessState()
+        }
+    }
+
+    public func evict() async {
+        // Meeting transcription needs the unified memory now, but this engine remains usable for
+        // the next hotkey press. Close/terminate off the queue so a blocked line read unblocks,
+        // then wait until cleanup confirms the child is gone before another model starts.
+        let (process, input) = captureLiveProcess()
+        try? input?.close()
+        process?.terminate()
+
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.clearProcessState()
+                continuation.resume()
+            }
         }
     }
 
@@ -142,6 +155,12 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         let input = liveStdin
         liveLock.unlock()
         return (process, input)
+    }
+
+    private func captureLiveProcess() -> (Process?, FileHandle?) {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return (liveProcess, liveStdin)
     }
 
     private func appendStderr(_ text: String) {
@@ -439,13 +458,25 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     public func shutdown() {
         // Same off-queue interrupt as WarmWhisperDictationEngine.shutdown: terminating the child
         // closes its stdout, unblocking a parked read so queued state cleanup runs immediately.
-        liveLock.lock()
-        let process = liveProcess
-        let input = liveStdin
-        liveLock.unlock()
+        let (process, input) = captureLiveProcess()
         try? input?.close()
         process?.terminate()
         queue.async { self.clearProcessState() }
+    }
+
+    public func evict() async {
+        // Same temporary, wait-for-exit boundary as the ASR helper above. A meeting Qwen run can
+        // otherwise begin while this 4B/8B model is still consuming unified memory.
+        let (process, input) = captureLiveProcess()
+        try? input?.close()
+        process?.terminate()
+
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.clearProcessState()
+                continuation.resume()
+            }
+        }
     }
 
     private func run<T>(_ body: @escaping () throws -> T) async throws -> T {
@@ -455,6 +486,12 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
                 catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    private func captureLiveProcess() -> (Process?, FileHandle?) {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return (liveProcess, liveStdin)
     }
 
     private func ensureRunning() throws {
@@ -620,6 +657,10 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
         runner.shutdown()
     }
 
+    public func evict() async {
+        await runner.evict()
+    }
+
     public func retire() async {
         await runner.retire()
     }
@@ -664,6 +705,11 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
     public func shutdown() {
         primary.shutdown()
         fallback.shutdown()
+    }
+
+    public func evict() async {
+        await primary.evict()
+        await fallback.evict()
     }
 
     public func retire() async {

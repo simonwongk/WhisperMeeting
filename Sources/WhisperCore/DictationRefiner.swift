@@ -28,14 +28,32 @@ public protocol DictationRefineEngine: Sendable {
     func warmUp() async throws
     func refine(_ request: RefineRequest) async throws -> String
     func shutdown()
+    /// Temporarily frees a resident model and waits until its child process has exited.
+    func evict() async
+}
+
+public extension DictationRefineEngine {
+    func evict() async {
+        shutdown()
+    }
 }
 
 /// The controller-facing seam: everything Quick Dictation needs from refinement, fakeable in
 /// `WhisperMeetTests` without a model.
 public protocol DictationTextRefining: Sendable {
-    func warmUp() async
+    /// Returns true only when a resident model is ready to accept an immediate request. A failed
+    /// optional warm-up must not make the controller spend a dictation's latency budget trying it.
+    func warmUp() async -> Bool
     func attempt(text: String, languageCode: String?) async -> RefineAttempt
     func shutdown()
+    /// Temporarily frees a resident model and waits until it is gone.
+    func evict() async
+}
+
+public extension DictationTextRefining {
+    func evict() async {
+        shutdown()
+    }
 }
 
 /// Races the refine engine against `DictationRefinePolicy`'s budget and applies its guardrails.
@@ -52,6 +70,10 @@ public actor DictationRefiner: DictationTextRefining {
     private let engine: any DictationRefineEngine
     private let sleep: Sleep
     private var inFlight = false
+    /// Identifies the request that owns `inFlight`. An eviction can abandon an old request while a
+    /// later fresh helper starts another; the old completion must not clear the newer request's flag.
+    private var inFlightGeneration = 0
+    private var isEvicting = false
 
     public init(
         engine: any DictationRefineEngine,
@@ -61,20 +83,36 @@ public actor DictationRefiner: DictationTextRefining {
         self.sleep = sleep
     }
 
-    public func warmUp() async {
-        try? await engine.warmUp()
+    public func warmUp() async -> Bool {
+        guard !isEvicting else { return false }
+        do {
+            try await engine.warmUp()
+            return true
+        } catch {
+            return false
+        }
     }
 
     nonisolated public func shutdown() {
         engine.shutdown()
     }
 
+    public func evict() async {
+        isEvicting = true
+        inFlightGeneration &+= 1
+        inFlight = false
+        await engine.evict()
+        isEvicting = false
+    }
+
     public func attempt(text: String, languageCode: String?) async -> RefineAttempt {
-        guard !inFlight else { return RefineAttempt(text: text, outcome: .rawBusy) }
+        guard !inFlight, !isEvicting else { return RefineAttempt(text: text, outcome: .rawBusy) }
         guard case let .attempt(budget) = DictationRefinePolicy.decision(for: text) else {
             return RefineAttempt(text: text, outcome: .skipped)
         }
         inFlight = true
+        inFlightGeneration &+= 1
+        let generation = inFlightGeneration
         let request = RefineRequest(
             text: text,
             systemPrompt: DictationRefinePrompt.system(languageCode: languageCode),
@@ -86,7 +124,7 @@ public actor DictationRefiner: DictationTextRefining {
         // finishes — that is the busy-skip guarantee.
         Task { [work] in
             _ = try? await work.value
-            await self.clearInFlight()
+            await self.clearInFlight(generation: generation)
         }
 
         // First-wins race. NOT a task group: `withTaskGroup` awaits all of its children before
@@ -126,7 +164,8 @@ public actor DictationRefiner: DictationTextRefining {
     // isolation depending on compiler inference, and a synchronous actor method would make the
     // `await` at the call site "redundant" in one mode — which the release gate's
     // warnings-as-errors turns into a build failure.
-    private func clearInFlight() async {
+    private func clearInFlight(generation: Int) async {
+        guard generation == inFlightGeneration else { return }
         inFlight = false
     }
 }

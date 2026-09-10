@@ -76,3 +76,21 @@ func noPrimePromptSendsNothing() async throws {
         RefineRequest(text: "hello", systemPrompt: "SYS", maxTokens: 8))
     #expect(reply == "1:hello")
 }
+
+@Test("evict releases the refine helper and a later warm-up starts a fresh, primed process (F206)")
+func evictThenRewarmRestartsRefineHelper() async throws {
+    let (engine, root) = try makeFixture()
+    defer {
+        engine.shutdown()
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    try await engine.warmUp()
+    await engine.evict()
+    try await engine.warmUp()
+    let reply = try await engine.refine(
+        RefineRequest(text: "hello", systemPrompt: "SYS", maxTokens: 8))
+
+    // A fresh fake server numbers the re-prime as request 1 and the real request as 2.
+    #expect(reply == "2:hello")
+}

@@ -28,11 +28,24 @@ struct WhisperMeetApp: App {
                     dictation.configureRuntimeInstalling { [weak model] in
                         model?.isInstallingRecognitionRuntime ?? false
                     }
+                    // Meeting ASR and Quick Dictation both use large local models. Keep them
+                    // mutually exclusive and release idle dictation helpers before meeting work
+                    // starts, rather than letting unified-memory pressure slow both paths (F206).
+                    dictation.configureMeetingTranscriptionRunning { [weak model] in
+                        (model?.hasActiveTranscription ?? false)
+                            || (model?.isRunningAuxiliaryEngine ?? false)
+                    }
                     // Quick Dictation feeds this straight into Whisper's `initial_prompt` (and derives
                     // its prompt-echo check from the same list), so it takes the prompt-capped view —
                     // the stored list is no longer trimmed to a prompt budget (F187).
                     dictation.configureVocabulary { [weak model] in model?.store.promptVocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
+                    model.configureIdleDictationModelRelease { [weak dictation] in
+                        await dictation?.releaseIdleModelsForMeetingTranscription()
+                    }
+                    model.configureIdleDictationRecognitionWarmUp { [weak dictation] in
+                        dictation?.warmRecognitionEngineIfNeeded()
+                    }
                     await model.performStartupRecovery()
                 }
         }
