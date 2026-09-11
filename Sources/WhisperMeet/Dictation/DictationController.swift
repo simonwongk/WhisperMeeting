@@ -91,9 +91,13 @@ final class DictationController: ObservableObject {
     private var refinerIsWarm = false
     private var refinerIsWarming = false
     private var refinerWarmGeneration = 0
-    /// A press during a cold optional-model load waits for that load to be terminated before ASR
-    /// starts. It is nil for an already resident refiner, which the user explicitly opted into.
+    /// An asynchronous refiner teardown creates a hard boundary before the next recognition warm-up
+    /// or request. It is nil for an already resident refiner, which the user explicitly opted into.
     private var refinerReleaseForCapture: Task<Void, Never>?
+    /// A timed-out refine request is still consuming the helper until it naturally finishes. The
+    /// next press must evict it before recognition starts, even though the model itself had been
+    /// fully warm when the timeout was reported.
+    private var refinerRequiresReleaseBeforeRecognition = false
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
     private lazy var captureWatchdog = DictationCaptureWatchdog(
         timeout: captureTimeout,
@@ -224,12 +228,18 @@ final class DictationController: ObservableObject {
     /// ASR and aligner during their startup.
     func releaseIdleModelsForMeetingTranscription() async {
         guard !isActive else { return }
+        let pendingRefinerRelease = refinerReleaseForCapture
         idleEvictWorkItem?.cancel()
         invalidateEngineWarmth()
         invalidateRefinerWarmth()
+        refinerRequiresReleaseBeforeRecognition = false
         refinerReleaseForCapture = nil
         await engine.evict()
-        await refiner.evict()
+        if let pendingRefinerRelease {
+            await pendingRefinerRelease.value
+        } else {
+            await refiner.evict()
+        }
         log.notice("released idle dictation models before meeting transcription")
     }
 
@@ -266,8 +276,9 @@ final class DictationController: ObservableObject {
         if refineEnabled {
             prewarmRefinerWhenSafe()
         } else {
-            invalidateRefinerWarmth()
-            refiner.shutdown()
+            // Do not let a setting change leave a terminating 4B/8B helper racing the next
+            // recognition warm-up. The boundary is asynchronous because `didSet` is synchronous.
+            beginRefinerRelease()
         }
     }
 
@@ -278,15 +289,32 @@ final class DictationController: ObservableObject {
         startEngineWarmUp(armIdleEviction: false, prewarmRefinerAfter: false)
     }
 
-    /// If an optional refiner is still cold-loading when the user presses the hotkey again, cancel
-    /// and evict it during capture. The transcribe task below awaits this boundary before starting
-    /// ASR, so a rapid second dictation cannot recreate the contention F206 removed.
+    /// If an optional refiner is cold-loading or still completing a timed-out request when the user
+    /// presses the hotkey again, cancel and evict it during capture. Both the recognition warm-up
+    /// and the eventual transcription await this boundary, so a rapid second dictation cannot
+    /// recreate the contention F206 removed.
     private func prepareRefinerForCapture() {
-        guard refinerIsWarming else { return }
+        guard refinerIsWarming || refinerRequiresReleaseBeforeRecognition else { return }
+        beginRefinerRelease()
+    }
+
+    /// Starts one temporary, wait-for-exit release of the optional helper. The task stays visible
+    /// until it has actually finished so every recognition launch can use it as an admission
+    /// boundary. A resident, already-idle refiner is intentionally not released here.
+    private func beginRefinerRelease() {
+        guard refinerReleaseForCapture == nil else { return }
         invalidateRefinerWarmth()
-        refinerReleaseForCapture = Task { [refiner] in
+        refinerRequiresReleaseBeforeRecognition = false
+        // Request termination immediately (important for a user disabling the feature) and then
+        // retain the asynchronous `evict` boundary until the helper has actually exited.
+        refiner.shutdown()
+        let generation = refinerWarmGeneration
+        let task = Task { @MainActor [weak self, refiner] in
             await refiner.evict()
+            guard let self, self.refinerWarmGeneration == generation else { return }
+            self.refinerReleaseForCapture = nil
         }
+        refinerReleaseForCapture = task
     }
 
     /// The polishing model is optional; recognition is not. In particular, never cold-start the
@@ -299,6 +327,8 @@ final class DictationController: ObservableObject {
               refineRuntimeAvailability(),
               !isMeetingTranscriptionRunning(),
               canWarmRefinerWithoutContention,
+              engineWarmTask == nil,
+              refinerReleaseForCapture == nil,
               !refinerIsWarm,
               !refinerIsWarming else { return }
         refinerIsWarming = true
@@ -309,6 +339,13 @@ final class DictationController: ObservableObject {
             guard let self,
                   !Task.isCancelled,
                   self.refinerWarmGeneration == generation else { return }
+            // The check above can run one MainActor turn before this task starts. Recheck actual
+            // meeting admission immediately before a multi-GB process launches.
+            guard !self.isMeetingTranscriptionRunning() else {
+                self.refinerWarmTask = nil
+                self.refinerIsWarming = false
+                return
+            }
             let warmed = await refiner.warmUp()
             guard !Task.isCancelled,
                   self.refinerWarmGeneration == generation else { return }
@@ -350,12 +387,23 @@ final class DictationController: ObservableObject {
               !isMeetingTranscriptionRunning(),
               engineWarmTask == nil else { return }
         let generation = engineWarmGeneration
+        let refinerRelease = refinerReleaseForCapture
         let task = Task { @MainActor [weak self, engine, log] in
             // Same MainActor generation barrier as the refiner: a release that wins first makes a
             // stale task a no-op instead of a late process spawn during meeting transcription.
+            // A press that evicts a cold/timed-out refiner also arrives here before ASR warm-up,
+            // rather than only at the later transcribe boundary.
+            await refinerRelease?.value
             guard let self,
                   !Task.isCancelled,
                   self.engineWarmGeneration == generation else { return }
+            // `hasActiveTranscription` can change after the synchronous admission check above but
+            // before this queued task begins. Do not make the meeting wait for an avoidable model
+            // spawn in that window.
+            guard !self.isMeetingTranscriptionRunning() else {
+                self.engineWarmTask = nil
+                return
+            }
             do {
                 try await engine.warmUp()
                 guard !Task.isCancelled,
@@ -419,24 +467,29 @@ final class DictationController: ObservableObject {
             overlay.hide()
             invalidateEngineWarmth()
             engine.shutdown()             // release the resident model/subprocess when disabled
-            refiner.shutdown()            // and the resident refine model with it (F200)
-            invalidateRefinerWarmth()
-            refinerReleaseForCapture = nil
+            // Keep a real wait-for-exit boundary in case the user re-enables dictation before the
+            // optional helper has finished terminating.
+            beginRefinerRelease()
             status = .disabled
             log.notice("dictation disabled")
         }
     }
 
-    /// Keep **both** engines' installed helpers in sync with this app build — not only the selected
-    /// one — so a shipped helper fix reaches disk on launch instead of waiting for the user to select
-    /// that engine (F25). This self-heals a runtime that predates Qwen dictation and applies future
-    /// protocol fixes. The reconciliation (atomic, content-gated writes, safe against another writer
-    /// of the shared runtime directory) lives in the pure `DictationHelperSync`; this method only
-    /// builds the specs from the bundle and the installed paths, then logs each outcome.
+    /// Keep every installed local-runtime helper in sync with this app build — not only the selected
+    /// dictation engine — so a shipped fix reaches disk on launch instead of waiting for a reinstall
+    /// or a model switch (F25, F207). This includes Qwen's one-shot *meeting* helper: an old copy
+    /// chose the Chinese forced aligner for any English chunk containing a Chinese name. The
+    /// reconciliation is atomic and content-gated, so a concurrent helper reader never observes a
+    /// partial script and an already-current runtime incurs no write.
     private func ensureHelperInstalled() {
         let files = FileManager.default
         var helpers = Self.bundledDictationHelpers(fileManager: files)
         helpers.append(Self.bundledRefineHelper(fileManager: files))
+        // The one-shot Qwen meeting helper is read at process launch. Atomic replacement makes
+        // readers safe, but defer a nonessential update while an existing meeting pass owns it.
+        if !isMeetingTranscriptionRunning() {
+            helpers.append(Self.bundledQwenMeetingHelper(fileManager: files))
+        }
         for (helper, outcome) in zip(helpers, DictationHelperSync.sync(helpers, fileManager: files)) {
             switch outcome {
             case let .synced(name):
@@ -486,6 +539,40 @@ final class DictationController: ObservableObject {
             runtimeInstalled: files.isExecutableFile(
                 atPath: SummarizerRuntime.pythonExecutable().path
             )
+        )
+    }
+
+    private static func bundledQwenMeetingHelper(
+        fileManager files: FileManager
+    ) -> DictationHelperSync.Helper {
+        qwenMeetingHelper(
+            bundledData: Bundle.main.url(forResource: "qwen_transcribe", withExtension: "py")
+                .flatMap { try? Data(contentsOf: $0) },
+            fileManager: files
+        )
+    }
+
+    /// The meeting helper is the one file deliberately excluded from `QwenASRRuntime.isInstalled()`:
+    /// a missing/stale copy is exactly what this repair may restore. Require the actual Python and
+    /// both model artifacts instead, so a partial installer never gains a lone helper script.
+    /// Kept internal for the headless F207 sync test; production supplies bytes from `Bundle.main`.
+    static func qwenMeetingHelper(
+        bundledData: Data?,
+        applicationSupport: URL? = nil,
+        fileManager files: FileManager = .default
+    ) -> DictationHelperSync.Helper {
+        let python = QwenASRRuntime.pythonExecutable(applicationSupport: applicationSupport)
+        let model = QwenASRRuntime.modelDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("model.safetensors")
+        let aligner = QwenASRRuntime.alignerDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("model.safetensors")
+        return DictationHelperSync.Helper(
+            name: "qwen_transcribe",
+            bundledData: bundledData,
+            installedScript: QwenASRRuntime.helperScript(applicationSupport: applicationSupport),
+            runtimeInstalled: files.isExecutableFile(atPath: python.path)
+                && files.fileExists(atPath: model.path)
+                && files.fileExists(atPath: aligner.path)
         )
     }
 
@@ -654,8 +741,14 @@ final class DictationController: ObservableObject {
                         // optimistic warm state so the next dictation stays on its immediate raw
                         // path while a later idle window may retry the optional warm-up.
                         await MainActor.run {
-                            self.invalidateRefinerWarmth()
-                            self.refiner.shutdown()
+                            self.beginRefinerRelease()
+                        }
+                    } else if attempt.outcome == .rawTimeout || attempt.outcome == .rawBusy {
+                        // `DictationRefiner` correctly keeps an abandoned request busy until it
+                        // really drains. Raw text has already been delivered, but the next ASR
+                        // must not warm alongside that still-running 4B/8B request.
+                        await MainActor.run {
+                            self.refinerRequiresReleaseBeforeRecognition = true
                         }
                     }
                     log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s total")
@@ -679,7 +772,6 @@ final class DictationController: ObservableObject {
         guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
-            refinerReleaseForCapture = nil
             status = .delivering
             let delivery = autoPaste ? TextInjector.deliver(payload) : deliverClipboardOnly(payload)
             _ = session.handle(.delivered)
@@ -753,9 +845,10 @@ final class DictationController: ObservableObject {
             guard let self, self.enabled, !self.isActive else { return }
             self.log.notice("evicting idle warm dictation model")
             self.invalidateEngineWarmth()
-            self.invalidateRefinerWarmth()
             self.engine.shutdown()
-            self.refiner.shutdown()
+            // A new press will await this before it restarts recognition. `shutdown()` alone is
+            // fire-and-forget for the helper, which is not enough on unified memory.
+            self.beginRefinerRelease()
         }
         idleEvictWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + idleEvictSeconds, execute: item)

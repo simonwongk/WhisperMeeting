@@ -659,6 +659,7 @@ final class AppModel: ObservableObject {
         Task {
             await reTranscribeSegment(id: id, index: index)
             isRunningAuxiliaryEngine = false
+            if !hasActiveTranscription { warmIdleDictationRecognition() }
         }
     }
 

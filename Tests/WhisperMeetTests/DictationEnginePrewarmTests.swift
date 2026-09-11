@@ -30,6 +30,52 @@ private func makeController(
     return (controller, monitor)
 }
 
+/// Holds recognition warm-up open so the refinement toggle test can prove the optional 4B/8B model
+/// never begins loading beside it.
+private final class GatedWarmUpEngine: DictationEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _warmUpCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var warmUpCount: Int { lock.withLock { _warmUpCount } }
+
+    func warmUp() async throws {
+        lock.withLock { _warmUpCount += 1 }
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func transcribe(
+        wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
+    ) async throws -> DictationResult {
+        DictationResult(text: "", languageCode: nil)
+    }
+
+    func shutdown() { releaseWarmUp() }
+
+    func releaseWarmUp() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+/// Keeps the meeting-admission edge explicit in queued-task tests. The controller runs on the
+/// main actor, but its engine/refiner tasks yield before their subprocess calls, so this state is
+/// lock-backed like the real AppModel closure boundary.
+private final class MeetingActivity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = false
+
+    var isRunning: Bool { lock.withLock { running } }
+    func setRunning(_ value: Bool) { lock.withLock { running = value } }
+}
+
 @MainActor
 @Test("Press-down that starts capture prewarms the transcription engine")
 func pressDownPrewarmsEngine() async throws {
@@ -109,6 +155,118 @@ func enablingDuringMeetingDefersRecognitionWarmUp() async throws {
     try await Task.sleep(for: .milliseconds(60))
 
     #expect(engine.warmUpCount == 0)
+}
+
+@MainActor
+@Test("A queued recognition warm-up rechecks meeting admission before it launches (F206)")
+func queuedRecognitionWarmUpRechecksMeetingAdmission() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.queuedRecognition.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-queuedRecognition-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = WarmUpCountingEngine()
+    let (controller, _) = makeController(engine: engine, defaults: defaults, directory: directory)
+    let meeting = MeetingActivity()
+    controller.configureMeetingTranscriptionRunning { meeting.isRunning }
+    controller.setEnabled(true)
+    // The task was admitted while idle, then a meeting claimed the resource before that task got
+    // a chance to call the model. It must make no late subprocess launch.
+    meeting.setRunning(true)
+    try await Task.sleep(for: .milliseconds(60))
+
+    #expect(engine.warmUpCount == 0)
+}
+
+@MainActor
+@Test("A queued refiner warm-up rechecks meeting admission before it launches (F206)")
+func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.queuedRefiner.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(false, forKey: "dictationRefineEnabled")
+    defaults.set(false, forKey: "dictationAutoPaste")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-queuedRefiner-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = WarmUpCountingEngine()
+    let refiner = FakeRefiner()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: engine,
+        recorder: FakeDictationRecorder(outputURL: directory.appendingPathComponent("clip.wav")),
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: FakeHotkeyMonitor(),
+        logStore: DictationLogStore(directory: directory),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
+        refiner: refiner,
+        activateOnInit: false
+    )
+    let meeting = MeetingActivity()
+    controller.refineRuntimeAvailability = { true }
+    controller.configureMeetingTranscriptionRunning { meeting.isRunning }
+    controller.setEnabled(true)
+    for _ in 0..<100 where engine.warmUpCount == 0 {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    // Let the recognition task clear its own task marker before enabling the optional model.
+    try await Task.sleep(for: .milliseconds(20))
+
+    controller.refineEnabled = true
+    meeting.setRunning(true)
+    try await Task.sleep(for: .milliseconds(60))
+
+    #expect(refiner.warmUpCount == 0)
+}
+
+@MainActor
+@Test("Turning on refinement waits for an in-flight recognition warm-up (F206)")
+func refinementToggleWaitsForRecognitionWarmUp() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.refine.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(false, forKey: "dictationRefineEnabled")
+    defaults.set(false, forKey: "dictationAutoPaste")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-refine-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let engine = GatedWarmUpEngine()
+    let refiner = FakeRefiner()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: engine,
+        recorder: FakeDictationRecorder(outputURL: directory.appendingPathComponent("clip.wav")),
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: FakeHotkeyMonitor(),
+        logStore: DictationLogStore(directory: directory),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
+        refiner: refiner,
+        activateOnInit: false
+    )
+    controller.refineRuntimeAvailability = { true }
+    controller.setEnabled(true)
+    for _ in 0..<100 where engine.warmUpCount == 0 {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    controller.refineEnabled = true
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(refiner.warmUpCount == 0)
+
+    engine.releaseWarmUp()
+    for _ in 0..<100 where refiner.warmUpCount == 0 {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(refiner.warmUpCount == 1)
 }
 
 @MainActor
