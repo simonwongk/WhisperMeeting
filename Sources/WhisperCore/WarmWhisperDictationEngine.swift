@@ -2,6 +2,42 @@
 import Darwin
 import Foundation
 
+/// Requests a helper exit from outside its serialized IO queue. A `FileHandle.availableData` read
+/// can be parked on that queue forever when a helper ignores SIGTERM, so the SIGKILL escalation
+/// must be armed here rather than only in queued cleanup. The work item captures this exact
+/// `Process` and PID; it can never kill a later re-warmed helper.
+private func requestHelperTermination(
+    process: Process?,
+    input: FileHandle?
+) {
+    try? input?.close()
+    guard let process, process.isRunning else { return }
+
+    let pid = process.processIdentifier
+    let forceStop = DispatchWorkItem { [weak process] in
+        guard let process, process.isRunning else { return }
+        // Signal the whole process group, not just the helper. The helper spawns its own children
+        // — mlx_whisper shells out to `ffmpeg` to decode every clip — and a pid-only SIGKILL both
+        // orphans whichever one is running and, for any child that inherited the helper's stdout,
+        // leaves that pipe's write end open, parking our `availableData` read forever: the exact
+        // hang this escalation exists to break. Foundation makes every child it spawns the leader
+        // of a fresh group on Darwin; the leadership check keeps a group signal from ever reaching
+        // the app's own group if that stops being true. `isRunning` means Foundation has not reaped
+        // the child yet, so this pid cannot have been recycled onto an unrelated process.
+        if Darwin.getpgid(pid) == pid {
+            _ = Darwin.killpg(pid, SIGKILL)
+        } else {
+            _ = Darwin.kill(pid, SIGKILL)
+        }
+    }
+    // An orderly exit needs no delayed work. The weak work-item capture avoids a retention cycle
+    // through Process.terminationHandler, and its `isRunning` check makes repeated termination
+    // requests safe even if a later request replaces this cancellation handler.
+    process.terminationHandler = { _ in forceStop.cancel() }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+    process.terminate()
+}
+
 /// Keeps a Whisper model resident in a child Python process, driven over stdin/stdout
 /// newline-delimited JSON, so repeat dictations skip the multi-second model-load cost.
 /// All process/IO work is serialized on a private queue; the model is evicted on `shutdown()`.
@@ -111,8 +147,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // it) having to wait out the read's 120s/1800s timeout. Mirrors the off-queue terminate the
         // readLine watchdog and LocalWhisperClient's ProcessCancellationController already rely on.
         let (process, input) = captureLiveProcess()
-        try? input?.close()
-        process?.terminate()
+        requestHelperTermination(process: process, input: input)
 
         queue.async {
             self.clearProcessState()
@@ -124,8 +159,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // the next hotkey press. Close/terminate off the queue so a blocked line read unblocks,
         // then wait until cleanup confirms the child is gone before another model starts.
         let (process, input) = captureLiveProcess()
-        try? input?.close()
-        process?.terminate()
+        requestHelperTermination(process: process, input: input)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -137,8 +171,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
     public func retire() async {
         let (process, input) = markRetiredAndCaptureLiveProcess()
-        try? input?.close()
-        process?.terminate()
+        requestHelperTermination(process: process, input: input)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -255,8 +288,10 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         let shouldStop = retired
         liveLock.unlock()
         if shouldStop {
-            try? self.stdin?.close()
-            process.terminate()
+            // Same escalation as every other termination site: a helper that ignores TERM while
+            // being retired mid-launch must not outlive this call on the strength of the queued
+            // `clearProcessState()` happening to reach it later.
+            requestHelperTermination(process: process, input: self.stdin)
             throw processFailure("Dictation model was replaced before it finished starting.")
         }
 
@@ -284,7 +319,15 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // the read returns EOF and we fail cleanly instead of hanging. (Same terminate-from-another-
         // thread pattern LocalWhisperClient's ProcessCancellationController already relies on.)
         let watchdogProcess = process
-        let watchdog = DispatchWorkItem { watchdogProcess?.terminate() }
+        // Deliberately no stdin here. Terminating closes the helper's STDOUT, which is what unblocks
+        // this read; closing our stdin buys nothing and is actively harmful, because `defer`-cancel
+        // cannot stop a work item that has already begun. A reply landing exactly on the deadline
+        // would leave `self.stdin` closed but non-nil with the process still `isRunning`, so
+        // `ensureRunning()` would short-circuit and the next request would fail EBADF on write
+        // instead of respawning.
+        let watchdog = DispatchWorkItem {
+            requestHelperTermination(process: watchdogProcess, input: nil)
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
         defer { watchdog.cancel() }
 
@@ -356,16 +399,8 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
     private func terminateAndWait(_ process: Process) {
         guard process.isRunning else { return }
-        process.terminate()
-        let pid = process.processIdentifier
-        let forceStop = DispatchWorkItem {
-            if process.isRunning {
-                _ = Darwin.kill(pid, SIGKILL)
-            }
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+        requestHelperTermination(process: process, input: nil)
         process.waitUntilExit()
-        forceStop.cancel()
     }
 }
 
@@ -459,17 +494,17 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         // Same off-queue interrupt as WarmWhisperDictationEngine.shutdown: terminating the child
         // closes its stdout, unblocking a parked read so queued state cleanup runs immediately.
         let (process, input) = captureLiveProcess()
-        try? input?.close()
-        process?.terminate()
-        queue.async { self.clearProcessState() }
+        requestHelperTermination(process: process, input: input)
+        queue.async {
+            self.clearProcessState()
+        }
     }
 
     public func evict() async {
         // Same temporary, wait-for-exit boundary as the ASR helper above. A meeting Qwen run can
         // otherwise begin while this 4B/8B model is still consuming unified memory.
         let (process, input) = captureLiveProcess()
-        try? input?.close()
-        process?.terminate()
+        requestHelperTermination(process: process, input: input)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -552,7 +587,15 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
 
     private func readLine(timeout: TimeInterval) throws -> Data {
         let watchdogProcess = process
-        let watchdog = DispatchWorkItem { watchdogProcess?.terminate() }
+        // Deliberately no stdin here. Terminating closes the helper's STDOUT, which is what unblocks
+        // this read; closing our stdin buys nothing and is actively harmful, because `defer`-cancel
+        // cannot stop a work item that has already begun. A reply landing exactly on the deadline
+        // would leave `self.stdin` closed but non-nil with the process still `isRunning`, so
+        // `ensureRunning()` would short-circuit and the next request would fail EBADF on write
+        // instead of respawning.
+        let watchdog = DispatchWorkItem {
+            requestHelperTermination(process: watchdogProcess, input: nil)
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
         defer { watchdog.cancel() }
 
@@ -598,14 +641,8 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     private func clearProcessState() {
         try? stdin?.close()
         if let process, process.isRunning {
-            process.terminate()
-            let pid = process.processIdentifier
-            let forceStop = DispatchWorkItem {
-                if process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+            requestHelperTermination(process: process, input: nil)
             process.waitUntilExit()
-            forceStop.cancel()
         }
         process = nil
         stdin = nil

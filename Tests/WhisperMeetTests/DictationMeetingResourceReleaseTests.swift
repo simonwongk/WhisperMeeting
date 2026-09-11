@@ -65,6 +65,84 @@ private final class EvictTrackingRefiner: DictationTextRefining, @unchecked Send
     }
 }
 
+/// Holds both independent model exits at their first suspension point. This makes the release
+/// ordering observable without a real model: a serial implementation never reaches the refiner
+/// until the engine gate opens, while the production path should begin both exits immediately.
+private final class ConcurrentEvictionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started: Set<String> = []
+    private var released: Set<String> = []
+    private var continuations: [String: CheckedContinuation<Void, Never>] = [:]
+
+    func wait(_ name: String) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            started.insert(name)
+            if released.contains(name) {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            continuations[name] = continuation
+            lock.unlock()
+        }
+    }
+
+    func release(_ name: String) {
+        lock.lock()
+        released.insert(name)
+        let continuation = continuations.removeValue(forKey: name)
+        lock.unlock()
+        continuation?.resume()
+    }
+
+    var bothStarted: Bool {
+        lock.withLock { started == ["engine", "refiner"] }
+    }
+}
+
+private final class GatedEvictionEngine: DictationEngine, @unchecked Sendable {
+    private let gate: ConcurrentEvictionGate
+
+    init(gate: ConcurrentEvictionGate) {
+        self.gate = gate
+    }
+
+    func warmUp() async throws {}
+
+    func transcribe(
+        wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
+    ) async throws -> DictationResult {
+        DictationResult(text: "", languageCode: nil)
+    }
+
+    func shutdown() {}
+
+    func evict() async {
+        await gate.wait("engine")
+    }
+}
+
+private final class GatedEvictionRefiner: DictationTextRefining, @unchecked Sendable {
+    private let gate: ConcurrentEvictionGate
+
+    init(gate: ConcurrentEvictionGate) {
+        self.gate = gate
+    }
+
+    func warmUp() async -> Bool { true }
+
+    func attempt(text: String, languageCode: String?) async -> RefineAttempt {
+        RefineAttempt(text: text, outcome: .skipped)
+    }
+
+    func shutdown() {}
+
+    func evict() async {
+        await gate.wait("refiner")
+    }
+}
+
 /// The warm task is deliberately allowed to yield so the test can make meeting preparation win
 /// first, then prove the queued stale task cannot start a helper afterward.
 private final class LateWarmEngine: DictationEngine, @unchecked Sendable {
@@ -154,7 +232,45 @@ func meetingPreparationEvictsBothIdleHelpers() async throws {
     )
 
     await controller.releaseIdleModelsForMeetingTranscription()
-    #expect(events.snapshot == ["engine-evicted", "refiner-evicted"])
+    #expect(events.snapshot.count == 2)
+    #expect(events.snapshot.contains("engine-evicted"))
+    #expect(events.snapshot.contains("refiner-evicted"))
+}
+
+@MainActor
+@Test("Meeting preparation starts both independent dictation evictions before awaiting either (F206)")
+func meetingPreparationEvictsIdleHelpersConcurrently() async throws {
+    let suite = "DictationMeetingResourceReleaseTests.concurrent.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "dictationEnabled")
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationMeetingResourceReleaseTests-concurrent-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let gate = ConcurrentEvictionGate()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: GatedEvictionEngine(gate: gate),
+        recorder: FakeDictationRecorder(outputURL: root.appendingPathComponent("clip.wav")),
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: FakeHotkeyMonitor(),
+        logStore: DictationLogStore(directory: root),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
+        refiner: GatedEvictionRefiner(gate: gate),
+        activateOnInit: false
+    )
+
+    let release = Task { await controller.releaseIdleModelsForMeetingTranscription() }
+    // Generous budget: a miss here is a false failure on a loaded machine, not a real serial path.
+    for _ in 0..<400 where !gate.bothStarted {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(gate.bothStarted)
+    gate.release("engine")
+    gate.release("refiner")
+    await release.value
 }
 
 @MainActor

@@ -234,12 +234,19 @@ final class DictationController: ObservableObject {
         invalidateRefinerWarmth()
         refinerRequiresReleaseBeforeRecognition = false
         refinerReleaseForCapture = nil
-        await engine.evict()
-        if let pendingRefinerRelease {
-            await pendingRefinerRelease.value
-        } else {
-            await refiner.evict()
-        }
+        // The recognition and optional-refiner helpers own distinct child processes. Start both
+        // exits before awaiting either one: two independent 5-second graceful shutdown windows
+        // must overlap, while a meeting still waits for *both* models to release memory.
+        async let engineRelease: Void = engine.evict()
+        async let refinerRelease: Void = {
+            if let pendingRefinerRelease {
+                await pendingRefinerRelease.value
+            } else {
+                await refiner.evict()
+            }
+        }()
+        await engineRelease
+        await refinerRelease
         log.notice("released idle dictation models before meeting transcription")
     }
 
@@ -612,7 +619,7 @@ final class DictationController: ObservableObject {
         }
         switch session.handle(.startPressed) {
         case .startCapture:
-            startCapture()
+            guard startCapture() else { return }
             prepareRefinerForCapture()
             prewarmEngineForCapture()
         case .busy:
@@ -630,7 +637,7 @@ final class DictationController: ObservableObject {
         _ = beginTranscriptionIfNeeded()
     }
 
-    private func startCapture() {
+    private func startCapture() -> Bool {
         do {
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
@@ -642,10 +649,12 @@ final class DictationController: ObservableObject {
             overlay.show(.listening)
             captureWatchdog.arm()
             log.notice("listening")
+            return true
         } catch {
             _ = session.handle(.engineFailed(error.localizedDescription))
             hotkeyMonitor.resetToggleState() // capture never began — never leave toggle latched "on" (F38)
             fail(error.localizedDescription)
+            return false
         }
     }
 

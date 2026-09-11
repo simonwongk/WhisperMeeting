@@ -118,6 +118,42 @@ func refusedPressDoesNotPrewarm() async throws {
 }
 
 @MainActor
+@Test("A failed microphone start does not prewarm the dictation model (F206)")
+func failedCaptureStartDoesNotPrewarm() async throws {
+    let suite = "WhisperMeet.DictationEnginePrewarmTests.startFailure.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(false, forKey: "dictationAutoPaste")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DictationEnginePrewarmTests-startFailure-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let recorder = FakeDictationRecorder(outputURL: directory.appendingPathComponent("c.wav"))
+    recorder.startError = NSError(domain: "DictationTest", code: 1)
+    let engine = WarmUpCountingEngine()
+    let monitor = FakeHotkeyMonitor()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: engine,
+        recorder: recorder,
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: monitor,
+        logStore: DictationLogStore(directory: directory),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
+        activateOnInit: false
+    )
+    controller.clipboardNotifier = {}
+
+    monitor.onPressStart?()
+    try await Task.sleep(for: .milliseconds(80))
+
+    #expect(controller.status != .listening)
+    #expect(engine.warmUpCount == 0)
+}
+
+@MainActor
 @Test("A meeting transcription blocks a new dictation before it warms another local model (F206)")
 func meetingTranscriptionPreventsDictationPrewarm() async throws {
     let suite = "WhisperMeet.DictationEnginePrewarmTests.meeting.\(UUID().uuidString)"

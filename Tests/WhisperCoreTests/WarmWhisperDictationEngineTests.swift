@@ -1,6 +1,27 @@
+import Darwin
 import Testing
 import Foundation
 @testable import WhisperCore
+
+/// Reads a pid a test helper wrote, or nil while the file exists but is still empty — shell and
+/// Python both create the file before the write lands, so existence alone does not mean readable.
+private func recordedPID(_ url: URL) -> Int32? {
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+    return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+private final class EvictionCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func markFinished() {
+        lock.withLock { finished = true }
+    }
+
+    var isFinished: Bool {
+        lock.withLock { finished }
+    }
+}
 
 @Test("shutdown() interrupts in-flight warm-up instead of waiting for the process to finish")
 func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
@@ -122,6 +143,77 @@ func warmDictationEngineEvictionWaitsAndCanRewarm() async throws {
     // same engine instance again.
     try await engine.warmUp()
     engine.shutdown()
+}
+
+@Test("evict force-stops a TERM-ignoring helper even while its stdout read is blocked (F206)")
+func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineForceEvict-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let pidFile = tmp.appendingPathComponent("helper.pid")
+    let childPIDFile = tmp.appendingPathComponent("helper-child.pid")
+    let script = tmp.appendingPathComponent("ignore-term.sh")
+    // Keep both the helper and a descendant alive after TERM. The descendant deliberately retains
+    // stdout, matching a helper-launched decoder: a direct SIGKILL of only the helper cannot
+    // unblock `availableData`; the process-group escalation must kill both.
+    // The descendant must be a separate `sh -c` child, not a `( ... ) &` subshell: in POSIX sh
+    // `$$` inside a subshell still expands to the PARENT shell's pid, so a subshell could not
+    // record its own pid and this test's emergency cleanup would have no way to reach it.
+    let helper = """
+    trap '' TERM
+    printf '%s' "$$" > "\(pidFile.path)"
+    /bin/sh -c 'trap "" TERM; printf "%s" "$$" > "\(childPIDFile.path)"; \
+    while :; do sleep 1 < /dev/null > /dev/null 2>&1; done' &
+    while :; do sleep 1 < /dev/null > /dev/null 2>&1; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+    // Keep `warmUp()` blocked inside `stdout.availableData`. A helper that's already ready lets
+    // queued cleanup schedule its old SIGKILL fallback, which is not the failure mode here.
+    let warm = Task { try await engine.warmUp() }
+    // Wait for a readable pid, not merely for the file: `> "$file"` creates it empty before printf
+    // writes. Reading "" here would leave the emergency cleanup below with no pid to signal, and a
+    // surviving TERM-ignoring descendant parks this suite on a read that never ends.
+    for _ in 0..<200 where recordedPID(pidFile) == nil || recordedPID(childPIDFile) == nil {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(recordedPID(pidFile) != nil)
+    #expect(recordedPID(childPIDFile) != nil)
+
+    let completion = EvictionCompletion()
+    let eviction = Task {
+        await engine.evict()
+        completion.markFinished()
+    }
+
+    // The red proof intentionally cleans the test helper up itself if production has no
+    // off-queue SIGKILL fallback yet. `#expect` records the failure but continues to this cleanup.
+    for _ in 0..<140 where !completion.isFinished {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    let finishedWithoutManualKill = completion.isFinished
+    // Clean up before recording the red expectation: a failure must never leave an intentionally
+    // TERM-ignoring descendant alive if the testing library stops executing this function early.
+    // Signal every recorded pid directly rather than the process group: production's escalation
+    // may already have reaped the group leader, and `getpgid` on a dead leader cannot name the
+    // surviving tree. Missing the descendant here parks the suite on a read that never ends.
+    if !finishedWithoutManualKill {
+        for pidRecord in [pidFile, childPIDFile] {
+            guard let pid = recordedPID(pidRecord) else { continue }
+            _ = Darwin.kill(pid, SIGKILL)
+        }
+    }
+    #expect(finishedWithoutManualKill)
+    await eviction.value
+    _ = await warm.result
 }
 
 @Test("A helper that dies during start surfaces its stderr in the error")
