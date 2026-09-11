@@ -9,10 +9,12 @@ Exits cleanly when stdin closes (the app terminates it to evict the model).
 Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dictation-only.
 """
 import argparse
+import contextlib
 import json
 import os
 import shutil
 import sys
+import wave
 
 
 def model_fully_cached(hub_dir: str, mlx_repo: str) -> bool:
@@ -29,6 +31,34 @@ def model_fully_cached(hub_dir: str, mlx_repo: str) -> bool:
         if not isinstance(try_to_load_from_cache(mlx_repo, filename, cache_dir=hub_dir), str):
             return False
     return True
+
+
+# WhisperMeet's capture format, from DictationCaptureLimits.sampleRate / WAVWriter: 16-bit PCM,
+# mono, 16 kHz. Kept as a named constant so the fast path below and the app stay tied together.
+DICTATION_SAMPLE_RATE = 16_000
+
+
+def conforming_pcm16_frames(path: str, sample_rate: int = DICTATION_SAMPLE_RATE):
+    """Raw little-endian int16 frames when `path` is ALREADY mono/16-bit/`sample_rate` PCM, else None.
+
+    `mlx_whisper.load_audio` forks an `ffmpeg` process per request to down-mix and resample
+    (site-packages/mlx_whisper/audio.py:41-59) — 27.6 ms median for a 3.1 s clip on an M-series Mac.
+    Quick Dictation's own recorder writes exactly the target format, so that work is pure overhead
+    on every single dictation. Returning None (never raising) keeps this a strict fast path: any
+    clip that is not already conforming — an imported file, a future format change, a truncated
+    write — falls through to the real decoder, which also owns the error message for a bad clip.
+    """
+    try:
+        with contextlib.closing(wave.open(path, "rb")) as handle:
+            if (
+                handle.getnchannels(),
+                handle.getsampwidth(),
+                handle.getframerate(),
+            ) != (1, 2, sample_rate):
+                return None
+            return handle.readframes(handle.getnframes())
+    except Exception:
+        return None
 
 
 def main() -> int:
@@ -65,6 +95,13 @@ def main() -> int:
 
     import mlx.core as mx
     import mlx_whisper  # imported after arg parse so --help is instant
+    # numpy is a hard dependency of mlx_whisper in the installed runtime, but importing it
+    # unconditionally would make this helper unstartable wherever it is absent. It powers only an
+    # optional fast path, so treat it as optional: without it every clip takes the normal decoder.
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover - exercised by the no-numpy helper protocol test
+        np = None
 
     # Pre-warm: run one throwaway transcribe on a short silent buffer. This is the exact
     # request code path, so it loads the model into mlx_whisper's ModelHolder cache (fp16
@@ -96,8 +133,25 @@ def main() -> int:
             continue
         try:
             request = json.loads(line)
+            # Hand the model samples directly when the clip is already in its target format,
+            # skipping load_audio's per-request ffmpeg fork. The conversion mirrors load_audio's
+            # own line exactly (int16 -> float32 / 32768.0), so samples stay byte-identical.
+            wav_path = request["wavPath"]
+            audio = wav_path
+            frames = conforming_pcm16_frames(wav_path) if np is not None else None
+            if frames:
+                try:
+                    audio = (
+                        mx.array(np.frombuffer(frames, np.int16))
+                        .flatten()
+                        .astype(mx.float32) / 32768.0
+                    )
+                except Exception:
+                    # A fast path that cannot be taken must never fail a dictation: fall back to
+                    # the decoder, which is also the one that owns errors for an unreadable clip.
+                    audio = wav_path
             result = mlx_whisper.transcribe(
-                request["wavPath"],
+                audio,
                 path_or_hf_repo=args.mlx_repo,
                 task="transcribe",  # never translate
                 language=request.get("language"),
