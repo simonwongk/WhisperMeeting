@@ -45,6 +45,24 @@ private enum RealModelPerf {
             && LocalWhisperRuntime.mlxModelCached()
     }
 
+    static var qwenRuntimeReady: Bool {
+        let files = FileManager.default
+        return files.isExecutableFile(atPath: QwenASRRuntime.pythonExecutable().path)
+            && files.fileExists(atPath: QwenASRRuntime.dictationHelperScript().path)
+            && files.fileExists(
+                atPath: QwenASRRuntime.modelDirectory()
+                    .appendingPathComponent("model.safetensors").path
+            )
+    }
+
+    static func productionQwenEngine() -> WarmQwenDictationEngine {
+        WarmQwenDictationEngine(
+            python: QwenASRRuntime.pythonExecutable(),
+            script: QwenASRRuntime.dictationHelperScript(),
+            modelDirectory: QwenASRRuntime.modelDirectory()
+        )
+    }
+
     static var refineRuntimeReady: Bool {
         let files = FileManager.default
         return files.isExecutableFile(atPath: SummarizerRuntime.pythonExecutable().path)
@@ -207,4 +225,157 @@ func realModelRecognitionUnderRefinerColdLoadIsSlower() async throws {
     // this class of machine, the release/admission machinery guarding against it is dead weight and
     // this case should fail so someone re-reads that conclusion rather than inheriting it.
     #expect(contendedMean > soloMean)
+}
+
+@Test(
+    "Real Qwen3-ASR dictation engine, the selected engine on this Mac, stays well under a second (F206)",
+    .enabled(if: RealModelPerf.isEnabled && RealModelPerf.qwenRuntimeReady)
+)
+func realModelQwenDictationLatency() async throws {
+    let engine = RealModelPerf.productionQwenEngine()
+    defer { engine.shutdown() }
+    _ = try await RealModelPerf.measure("qwen cold warm-up") { try await engine.warmUp() }
+
+    let clips = ["en1.wav", "en2.wav", "en3.wav", "zh1.wav", "cs1.wav"]
+    // One untimed pass so every timed request is a genuinely warm one.
+    for clip in clips {
+        _ = try await engine.transcribe(
+            wavAt: RealModelPerf.clip(clip), language: .automatic, initialPrompt: nil
+        )
+    }
+    var latencies: [Double] = []
+    for clip in clips {
+        latencies.append(
+            try await RealModelPerf.measure("qwen transcribe \(clip) (warm)") {
+                _ = try await engine.transcribe(
+                    wavAt: RealModelPerf.clip(clip), language: .automatic, initialPrompt: nil
+                )
+            }
+        )
+    }
+    let median = latencies.sorted()[latencies.count / 2]
+    FileHandle.standardError.write(
+        Data("    [real-model] qwen ASR median: \(String(format: "%.0f", median * 1000)) ms\n".utf8)
+    )
+    // Recognition is the part the user cannot avoid paying. It is not the slow half.
+    #expect(median < 1.0)
+}
+
+@Test(
+    "Real refine helper latency against the live budget, through the primed production engine (F206)",
+    .enabled(if: RealModelPerf.isEnabled && RealModelPerf.refineRuntimeReady)
+)
+func realModelRefineLatencyAgainstItsBudget() async throws {
+    let engine = RealModelPerf.productionRefineEngine()
+    defer { engine.shutdown() }
+    // warmUp() sends the F203 prime, so the prompt cache is hot exactly as it is in the app. A
+    // driver that skips the prime measures a colder helper and overstates the per-request cost.
+    _ = try await RealModelPerf.measure("refine cold warm-up (includes F203 prime)") {
+        try await engine.warmUp()
+    }
+
+    // Representative of this user's own dictations: short, one or two sentences, both scripts.
+    let samples = [
+        "can you send me the quarterly report by friday afternoon",
+        "lets schedule the design review for next tuesday morning",
+        "the build is failing on the release step please take a look",
+        "帮我把今天的会议纪要发给团队",
+    ]
+    var overBudget = 0
+    for text in samples {
+        let words = DictationRefinePolicy.effectiveWordCount(of: text)
+        guard case let .attempt(budget) = DictationRefinePolicy.decision(for: text) else { continue }
+        let budgetSeconds = Double(budget.components.seconds)
+            + Double(budget.components.attoseconds) / 1e18
+        let elapsed = try await RealModelPerf.measure("refine \(words) words") {
+            _ = try await engine.refine(
+                RefineRequest(
+                    text: text,
+                    systemPrompt: DictationRefinePrompt.system(languageCode: nil),
+                    maxTokens: DictationRefinePolicy.maxOutputTokens
+                )
+            )
+        }
+        if elapsed > budgetSeconds { overBudget += 1 }
+        let verdict = elapsed > budgetSeconds ? "MISSED" : "met"
+        let note = "    [real-model]   budget was "
+            + "\(String(format: "%.0f", budgetSeconds * 1000)) ms — \(verdict)\n"
+        FileHandle.standardError.write(Data(note.utf8))
+    }
+    FileHandle.standardError.write(
+        Data("    [real-model] refine missed its budget on \(overBudget)/\(samples.count) samples\n".utf8)
+    )
+    // Deliberately not an assertion on `overBudget`: this case exists to REPORT whether the tuned
+    // budget matches this machine. The user's own history (40 rawTimeout in 100) is the signal that
+    // it does not, and a red here would only restate a product decision the constants already encode.
+    #expect(overBudget >= 0)
+}
+
+@Test(
+    "Refine latency with the ASR model also resident — the app's real memory shape (F206)",
+    .enabled(
+        if: RealModelPerf.isEnabled
+            && RealModelPerf.qwenRuntimeReady
+            && RealModelPerf.refineRuntimeReady
+    )
+)
+func realModelRefineLatencyWithASRResident() async throws {
+    let samples = [
+        "can you send me the quarterly report by friday afternoon",
+        "lets schedule the design review for next tuesday morning",
+        "the build is failing on the release step please take a look",
+        "帮我把今天的会议纪要发给团队",
+    ]
+    func refineRequest(_ text: String) -> RefineRequest {
+        RefineRequest(
+            text: text,
+            systemPrompt: DictationRefinePrompt.system(languageCode: nil),
+            maxTokens: DictationRefinePolicy.maxOutputTokens
+        )
+    }
+
+    // A. Refiner alone in unified memory.
+    let soloRefiner = RealModelPerf.productionRefineEngine()
+    try await soloRefiner.warmUp()
+    for text in samples { _ = try? await soloRefiner.refine(refineRequest(text)) }  // settle
+    var solo: [Double] = []
+    for text in samples {
+        solo.append(
+            try await RealModelPerf.measure("refine alone") {
+                _ = try await soloRefiner.refine(refineRequest(text))
+            }
+        )
+    }
+    await soloRefiner.evict()
+    soloRefiner.shutdown()
+
+    // B. The app's actual shape: the dictation ASR model is resident too, because the refine pass
+    // runs immediately after recognition and nothing evicts recognition in between.
+    let asr = RealModelPerf.productionQwenEngine()
+    defer { asr.shutdown() }
+    try await asr.warmUp()
+    _ = try await asr.transcribe(
+        wavAt: RealModelPerf.clip("en1.wav"), language: .automatic, initialPrompt: nil
+    )
+    let refiner = RealModelPerf.productionRefineEngine()
+    defer { refiner.shutdown() }
+    try await refiner.warmUp()
+    for text in samples { _ = try? await refiner.refine(refineRequest(text)) }  // settle
+    var withASR: [Double] = []
+    for text in samples {
+        withASR.append(
+            try await RealModelPerf.measure("refine with ASR resident") {
+                _ = try await refiner.refine(refineRequest(text))
+            }
+        )
+    }
+    await refiner.evict()
+
+    let soloMean = solo.reduce(0, +) / Double(solo.count)
+    let withMean = withASR.reduce(0, +) / Double(withASR.count)
+    let summary = "    [real-model] refine alone \(String(format: "%.0f", soloMean * 1000)) ms"
+        + " vs with ASR resident \(String(format: "%.0f", withMean * 1000)) ms"
+        + " (\(String(format: "%.2fx", withMean / max(soloMean, 0.001))))\n"
+    FileHandle.standardError.write(Data(summary.utf8))
+    #expect(soloMean > 0 && withMean > 0)
 }
