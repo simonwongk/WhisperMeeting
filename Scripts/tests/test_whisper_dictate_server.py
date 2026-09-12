@@ -105,5 +105,42 @@ class ConformingPCM16FramesTests(unittest.TestCase):
         )
 
 
+class PrewarmDecodeOptionsTests(unittest.TestCase):
+    """The readiness prewarm exists to make the model and its kernels resident; its transcript is
+    discarded. Whisper's default decode retries the clip at six temperatures whenever the result
+    trips its compression-ratio / logprob thresholds — which pure digital silence always does — so
+    the shipped prewarm paid five extra full decodes for a result nobody reads. Measured on the
+    installed runtime with the model already resident: 2631 ms default vs 1276 ms greedy, i.e.
+    ~1.35 s off every helper start (every cold start and every post-eviction reload)."""
+
+    def test_prewarm_uses_a_single_greedy_pass(self):
+        calls = []
+
+        def fake_transcribe(audio, **kwargs):
+            calls.append((audio, kwargs))
+            return {"text": ""}
+
+        server.prewarm(fake_transcribe, audio=[0.0] * 1600, mlx_repo="repo/name")
+
+        self.assertEqual(len(calls), 1)
+        _, kwargs = calls[0]
+        self.assertEqual(kwargs["temperature"], 0.0)
+
+    def test_prewarm_keeps_stdout_silent_and_targets_the_request_path(self):
+        """verbose MUST stay None (False still prints) and the task must match real requests, or
+        the prewarm compiles a different path than the one dictation actually uses."""
+        calls = []
+
+        def fake_transcribe(audio, **kwargs):
+            calls.append(kwargs)
+            return {"text": ""}
+
+        server.prewarm(fake_transcribe, audio=[0.0] * 1600, mlx_repo="repo/name")
+
+        self.assertIsNone(calls[0]["verbose"])
+        self.assertEqual(calls[0]["task"], "transcribe")
+        self.assertEqual(calls[0]["path_or_hf_repo"], "repo/name")
+
+
 if __name__ == "__main__":
     unittest.main()

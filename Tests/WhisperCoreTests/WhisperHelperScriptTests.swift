@@ -66,9 +66,12 @@ func whisperDictationHelperStdoutIsPureJSON() throws {
 
     // Reproduces the real library's contract exactly: it announces the detected language on stdout
     // unless `verbose` is None (openai/whisper transcribe.py, mirrored by mlx_whisper).
+    // Mirrors the real library's signature, `temperature` included: mlx_whisper accepts it and the
+    // readiness prewarm passes temperature=0.0 to skip the six-temperature fallback ladder. A fake
+    // missing the parameter would fail the helper at start-up for a reason the real runtime cannot.
     try """
     def transcribe(audio, path_or_hf_repo=None, task=None, language=None,
-                   initial_prompt=None, verbose=False):
+                   initial_prompt=None, verbose=False, temperature=None):
         if language is None and verbose is not None:
             print("Detected language: English")
         return {"text": " hello ", "language": "en",

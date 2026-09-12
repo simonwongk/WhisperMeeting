@@ -7,6 +7,52 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Speed cycle — the slowdown found and measured (F206, F207)
+
+- **Root cause: refinement was attempted on a model that was not loaded (F206).** With *Refine with
+  local AI* switched on, every dictation asked the optional 4B/8B polish model for a pass —
+  including when that model was not resident. The attempt then had to cold-load 4.3 GB *inside* a
+  1.2–2.5 s budget, which cannot be done: the budget expired, the raw transcript was delivered, and
+  the whole wait bought nothing. The user's own dictation history shows the cost plainly: **40 of
+  the last 100 dictations ended in `rawTimeout`**, steady at ~40 % every day. Refinement is now
+  gated on the model actually being warm (`refineOn = refineEnabled && refinerIsWarm && …`), so a
+  cold refiner yields fast raw text immediately and warms in the background for the next dictation
+  instead of taxing this one. Measured on the installed models: recognition is **320 ms** and a
+  primed refine pass is **540–770 ms**, meeting its budget on 4/4 samples.
+- **Two contending local models no longer load on top of each other (F206).** The optional polish
+  model can no longer cold-load beside recognition — including on rapid repeat dictations and after
+  a timed-out refine, whose abandoned request keeps the helper busy until it really drains. Meeting
+  transcription now releases *both* idle dictation helpers and waits for their child processes to
+  exit before it claims unified memory, and it starts those two independent exits concurrently
+  rather than paying two 5-second shutdown windows back to back. Measured contention while a
+  refiner cold-loads beside recognition: **1.41 s → 1.97 s (1.39×)**.
+- **A wedged helper can no longer hold dictation or a meeting hostage (F206).** The SIGKILL
+  escalation for a helper that ignores SIGTERM is armed off the serialized IO queue (a parked
+  `availableData` read could never have run it) and is delivered to the helper's **process group**.
+  That matters because the helper spawns its own children — `mlx_whisper` shells out to `ffmpeg`
+  for every clip — and a descendant that inherited the helper's stdout keeps that pipe open, so a
+  pid-only kill left the read parked forever.
+- **A failed microphone start no longer warms a model nobody will use (F206).** Prewarm deliberately
+  arms no idle-eviction timer, so a model started for a dictation that never began stayed resident.
+- **Dictation no longer forks `ffmpeg` to decode audio it already wrote correctly (F206).**
+  `mlx_whisper.load_audio` forks a process per request to down-mix and resample; Quick Dictation's
+  recorder already writes 16-bit PCM mono at 16 kHz, exactly the target format. Reading it directly
+  is **27.6 ms → ~0 ms** per dictation with byte-identical samples, verified across all ten bench
+  clips on both samples and transcripts. The fast path is not load-bearing: anything not already
+  conforming falls through to the normal decoder.
+- **A stale installed Qwen meeting helper now repairs itself (F207).** The runtime copy of
+  `qwen_transcribe.py` predated F155 and picked the Chinese forced aligner for any chunk containing
+  a single CJK character rather than when CJK is the majority script, so an English meeting
+  mentioning one Chinese name could be aligned with the wrong model. It is now reconciled from the
+  app bundle atomically at launch, deferred while a meeting pass owns it. Verified on the real
+  runtime: `bd8bdc7d…` → `d4492440…`.
+- **Latency is now measured against the real installed models, not stubs.**
+  `RealModelDictationPerformanceTests` (opt-in via `WHISPERMEET_REAL_MODEL_PERF=1`) drives the
+  installed helpers with production argv and reads only `Scripts/bench/clips`. It also pins two
+  measurement traps: a driver that skips the F203 prompt-cache prime overstates refine cost by ~2×
+  (1211 ms vs 656 ms), and model residency is *not* the cost (refine alone 680 ms vs 656 ms with the
+  ASR model also resident, 0.97×).
+
 ## Speed cycle — dictation latency, measured and cut (F202, F203)
 
 - **The post-eviction stall now overlaps your speech (F202).** After the 5-minute idle eviction, the

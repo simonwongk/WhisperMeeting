@@ -61,6 +61,32 @@ def conforming_pcm16_frames(path: str, sample_rate: int = DICTATION_SAMPLE_RATE)
         return None
 
 
+def prewarm(transcribe, audio, mlx_repo: str) -> None:
+    """One throwaway decode so the model and its Metal kernels are resident before readiness.
+
+    `temperature=0.0` is load-bearing. Whisper's default is a six-temperature fallback ladder that
+    re-decodes the clip whenever the result trips its compression-ratio / logprob thresholds — which
+    pure digital silence always does — so the default paid five extra full decodes for a transcript
+    that is discarded. Measured on the installed runtime with the model already resident:
+    2631 ms default vs 1276 ms greedy, i.e. ~1.35 s off every helper start.
+
+    This is still the exact request code path (same task, same model), so it loads the model into
+    mlx_whisper's ModelHolder cache and compiles the kernels a real request will use. Only the
+    fallback ladder — which no request reaches unless its own decode is poor — is skipped.
+
+    verbose MUST be None, not False. Whisper documents False as "minimal details", and the code
+    guards its prints with `if verbose is not None` — so False still writes "Detected language: X"
+    to STDOUT, which is this protocol's wire. Only None is silent.
+    """
+    transcribe(
+        audio,
+        path_or_hf_repo=mlx_repo,
+        task="transcribe",
+        temperature=0.0,
+        verbose=None,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mlx-repo", default="mlx-community/whisper-large-v3-turbo")
@@ -112,11 +138,10 @@ def main() -> int:
     # code guards its prints with `if verbose is not None` — so False still writes
     # "Detected language: X" to STDOUT, which is this protocol's wire. Only None is silent.
     try:
-        mlx_whisper.transcribe(
+        prewarm(
+            mlx_whisper.transcribe,
             mx.zeros(1600, dtype=mx.float32),  # 0.1s of silence at 16 kHz
-            path_or_hf_repo=args.mlx_repo,
-            task="transcribe",
-            verbose=None,
+            args.mlx_repo,
         )
     except Exception as error:  # pragma: no cover - warm failure is fatal to the helper
         sys.stdout.write(json.dumps({"error": "warm-up failed: " + str(error)}) + "\n")
