@@ -36,6 +36,7 @@ deliberately static—after editing a board file, run the two commands documente
 | [`DICTATION_MODEL_SELECTION_LOG_2026-07-30.md`](DICTATION_MODEL_SELECTION_LOG_2026-07-30.md) | Dictation model evaluation record. |
 | [`UI_REDESIGN_LOG.md`](UI_REDESIGN_LOG.md) | UI redesign decisions and rejected alternatives. |
 | [`URL_IMPORT_PLAN.md`](URL_IMPORT_PLAN.md) | Proposed plan (`F175`) for importing audio from a pasted link. Not started; decisions and verified traps recorded before any code. |
+| [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) | Proposed, evidence-gated plan (`F215`) for optional local anonymous speaker-turn labels. It does not change the current no-diarization policy until separately approved. |
 
 ## Historical planning records
 
