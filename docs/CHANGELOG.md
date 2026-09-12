@@ -7,6 +7,39 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Speed cycle — the decoders themselves (F212, F213)
+
+- **Why dictation still felt slow after F206: the polish model could not finish in time (F212).**
+  With the cold-refiner timeouts gone, the dictation log still showed the pattern by length —
+  41–60 word dictations ended `rawTimeout` **17 times out of 18**, 21–40 words 11 of 18, and the
+  user's median dictation is 26 words. The resident refiner is Qwen3-8B-4bit, and a warm, primed
+  pass through the production helper measures ~30 ms per dictated word (40 words 1502 ms, 60 words
+  2150 ms) against a 1.5 s ceiling. So for most dictations the user waited out the whole budget —
+  up to five times the 320 ms recognition — and then got the raw text anyway.
+- **The refiner now decodes several tokens per forward pass (F212).** A cleanup reply is mostly a
+  verbatim copy of the dictated text, so the helper drafts the next few tokens from that text
+  (following it through inserted punctuation and capitalised or removed words) and verifies the
+  whole draft in one pass — prompt-lookup speculative decoding, no second model, no download. A
+  pass over three tokens costs the same as one on this bandwidth-bound model (35 vs 37 ms), so the
+  draft length adapts to how the last one fared. Same inputs, same model: **40 words 1508 → 804 ms,
+  60 words 2152 → 998 ms, Mandarin 60 eff-words 2171 → 1249 ms**; all 14 bench cases inside budget
+  where 6 timed out before, 13 of 14 replies byte-identical (the other gained a capital letter on a
+  floating-point near-tie).
+- **Meeting transcription decodes four chunks at once (F213).** The ASR pass was ~75 % of a
+  meeting helper run, and ~80 % of that was one-token-at-a-time decoding at 59 tok/s; chunk size
+  did not move it (18–20 s at 30/60/120/240 s). The decoder is memory-bandwidth bound, so the helper
+  now splits at 60 s and decodes the full-length chunks four at a time (142 tok/s), running the
+  short last chunk alone and unpadded because padding a short tail with silence measurably changed
+  its transcript. On a 261 s ground-truth clip the helper went **27.5 → 16.7 s** end to end (ASR
+  pass 20.0 → 10.7 s) at the same peak memory — and more accurately, English WER 2.5 → 1.9 % and
+  Mandarin CER 9.2 → 4.9 %, because a 60 s chunk also keeps a language switch out of one chunk.
+  Single-chunk recordings keep the library path byte for byte; any failure of the batched path falls
+  back to the sequential one.
+- **The machine itself is part of the story.** The Mac has 18 GB of unified memory and was sitting on
+  10.3 GB of swap in use; the optional 8B polish model alone is 4.3 GB resident. A "warm" model whose
+  pages have been swapped out is not warm, which is the likeliest reason a refine attempt can still
+  miss its budget on the odd dictation. Less time spent decoding is also less time for that to bite.
+
 ## Speed cycle — the slowdown found and measured (F206, F207)
 
 - **Root cause: refinement was attempted on a model that was not loaded (F206).** With *Refine with
