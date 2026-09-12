@@ -11,8 +11,29 @@ public enum AudioTranscoder {
     /// is transcoded first via afconvert, so a Qwen-only user doesn't need ffmpeg installed at all (F145).
     public static let nativelyDecodableExtensions: Set<String> = ["wav", "flac", "mp3", "ogg"]
 
+    /// The format the engines want, and what `transcodeToWAV` produces.
+    static let targetSampleRate: UInt32 = 16_000
+    static let targetChannels: UInt32 = 1
+
     public static func needsTranscoding(_ url: URL) -> Bool {
-        !nativelyDecodableExtensions.contains(url.pathExtension.lowercased())
+        guard nativelyDecodableExtensions.contains(url.pathExtension.lowercased()) else { return true }
+        // "Natively decodable" is not "free to decode". Meetings are captured at 48 kHz mono
+        // (`AudioCaptureEngine.targetSampleRate`), and mlx-audio then miniaudio-decodes the whole
+        // recording, casts it to float64 and runs scipy `resample_poly` 48k -> 16k *inside* the ASR
+        // process, on the critical path. Measured on a synthetic 47-minute 48 kHz mono WAV:
+        // load_audio 2.83 s and 2.21 GB peak RSS, versus 0.06 s once pre-converted — while afconvert
+        // does the same conversion in 0.29 s, off the model's memory budget.
+        //
+        // Only WAV is checked: its format is four cheap header bytes away. Reading a flac/mp3/ogg
+        // header is not, and transcoding those on a guess would add work rather than remove it.
+        guard url.pathExtension.lowercased() == "wav",
+              let header = WAVInspection.header(at: url) else {
+            // Unreadable, absent, or not a container we can inspect: keep today's behaviour. Claiming
+            // a transcode is needed would hand afconvert a file it may not decode, turning a decode
+            // the engine might well manage into a hard "unsupported file format".
+            return false
+        }
+        return header.sampleRate != targetSampleRate || header.channels != targetChannels
     }
 
     /// Transcodes `input` to a 16 kHz mono 16-bit WAV at `output` via `/usr/bin/afconvert` (the recipe
