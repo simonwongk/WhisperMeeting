@@ -153,3 +153,64 @@ struct FailableDecodable<Wrapped: Decodable>: Decodable {
         value = try? Wrapped(from: decoder)
     }
 }
+
+// F211 — `save()` may now skip the *decode* of a file whose exact bytes it has already decoded.
+// These cases pin what a careless memory would break: any foreign write must still be seen, both
+// when it is undecodable (preserve it) and when it is a valid generation (keep it as the backup).
+
+@Test("A foreign corruption is still preserved even after this process has written the file (F211)")
+func saveDoesNotLetItsWriteMemoryMaskAForeignCorruption() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetBackupTests-\(UUID().uuidString)", isDirectory: true)
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupJSONStore<[SavedMeeting]>(primaryURL: primaryURL, backupURL: backupURL)
+
+    // Two saves, so the store has written — and could have cached — both files.
+    try store.save([SavedMeeting(title: "First")])
+    try store.save([SavedMeeting(title: "Second")])
+
+    // Someone else replaces the primary with bytes that do not decode. The F187 rule says those
+    // bytes are preserved before anything overwrites them; a cache keyed on "I wrote this" and not
+    // on the file's identity would skip the check and destroy them.
+    let foreign = Data("foreign-corruption".utf8)
+    try foreign.write(to: primaryURL, options: .atomic)
+
+    try store.save([SavedMeeting(title: "Third")])
+
+    let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    let quarantined = names.filter { $0.contains(".unreadable-") }
+    #expect(quarantined.count == 1)
+    let preserved = try quarantined.map { try Data(contentsOf: directory.appendingPathComponent($0)) }
+    #expect(preserved.contains(foreign))
+}
+
+@Test("A foreign valid generation becomes the backup, not this process's cached bytes (F211)")
+func saveUsesTheForeignGenerationAsBackupNotItsCachedBytes() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetBackupTests-\(UUID().uuidString)", isDirectory: true)
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupJSONStore<[SavedMeeting]>(primaryURL: primaryURL, backupURL: backupURL)
+
+    try store.save([SavedMeeting(title: "Ours")])
+
+    // A different writer lands a perfectly valid generation we have never seen. `save` keeps the
+    // existing primary as the new backup, so that generation must survive into the backup — a stale
+    // cache would silently write our own older bytes there and drop it.
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    let foreignBytes = try encoder.encode([SavedMeeting(title: "Theirs")])
+    try foreignBytes.write(to: primaryURL, options: .atomic)
+
+    try store.save([SavedMeeting(title: "Next")])
+
+    #expect(try Data(contentsOf: backupURL) == foreignBytes)
+    let reloaded = try #require(try store.load())
+    #expect(reloaded.value == [SavedMeeting(title: "Next")])
+}
