@@ -7,6 +7,22 @@ explicitly. The test suite has grown steadily from 28 across rounds — see each
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
 recording is the source of truth; no diarization; original language only) are preserved.
 
+## Storage — saving the library stops getting slower as it grows (F211)
+
+- **Every library edit re-decoded the whole index twice, on the main thread (F211).** Renaming a
+  meeting, editing a transcript, adding a tag, finishing a transcription — each one saved the index,
+  and each save proved both the primary and the backup readable by reading *and* fully decoding them.
+  That is heavier than it sounds: 2.1 MB across only 17 meetings means thousands of small nested
+  per-segment objects, and it grew with the library. The save now remembers the *identity* of bytes
+  it has already decoded (device, inode, size, mtime, ctime) and skips only the decode while the file
+  still matches — the bytes always come from disk. Measured on an index shaped like the real one:
+  **63.7 ms → 24.3 ms at 17 meetings, and 400.7 ms → 150.8 ms at a hundred** (2.6–2.7×).
+- **The safety rule is untouched.** An atomic replace changes the inode and an in-place rewrite
+  changes ctime, so *any* write from outside this process misses the memory and takes the full
+  read-and-decode path. Two tests pin it: after this process has written the file, a foreign
+  corruption is still preserved before anything overwrites it, and a foreign *valid* generation still
+  becomes the backup rather than this process's older bytes.
+
 ## Speed cycle — the decoders themselves (F212, F213)
 
 - **Why dictation still felt slow after F206: the polish model could not finish in time (F212).**
