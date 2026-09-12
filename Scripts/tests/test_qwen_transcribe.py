@@ -82,6 +82,66 @@ class BuildChunksTests(unittest.TestCase):
         self.assertIn("KeyError", warning)
 
 
+class PlanBatchesTests(unittest.TestCase):
+    """F213 — full chunks batch together; the (usually short) last chunk always decodes alone."""
+
+    def test_full_chunks_batch_and_the_last_runs_alone(self):
+        self.assertEqual(qwen.plan_batches(6, 4), [[0, 1, 2, 3], [4], [5]])
+        self.assertEqual(qwen.plan_batches(5, 4), [[0, 1, 2, 3], [4]])
+        self.assertEqual(qwen.plan_batches(2, 4), [[0], [1]])
+
+    def test_single_or_no_chunk(self):
+        self.assertEqual(qwen.plan_batches(1, 4), [[0]])
+        self.assertEqual(qwen.plan_batches(0, 4), [])
+
+
+class GreedyDecodeRowsTests(unittest.TestCase):
+    """F213 — each row collects until its own EOS while the batch keeps stepping for the others."""
+
+    def test_rows_finish_independently(self):
+        script = [[5, 6], [7, 99], [8, 9], [99, 10], [11, 12]]  # per step: next token per row
+        steps = iter(script)
+        rows = qwen.greedy_decode_rows([1, 2], lambda tokens: next(steps), {99}, max_tokens=50)
+        self.assertEqual(rows, [[1, 5, 7, 8], [2, 6]])
+
+    def test_max_tokens_bounds_a_row_that_never_ends(self):
+        rows = qwen.greedy_decode_rows([1], lambda tokens: [tokens[0] + 1], {99}, max_tokens=3)
+        self.assertEqual(rows, [[1, 2, 3]])
+
+    def test_eos_as_first_token_gives_an_empty_row(self):
+        calls = []
+        rows = qwen.greedy_decode_rows([99, 4], lambda t: (calls.append(t), [99, 99])[1], {99}, 10)
+        self.assertEqual(rows, [[], [4]])
+        self.assertEqual(calls, [[99, 4]])
+
+
+class SegmentsForTests(unittest.TestCase):
+    def test_segment_bounds_use_the_real_chunk_length(self):
+        chunks = [([0.0] * 32000, 0.0), ([0.0] * 16000, 2.0)]
+        self.assertEqual(
+            qwen.segments_for(chunks, ["a", "b"]),
+            [{"text": "a", "start": 0.0, "end": 2.0}, {"text": "b", "start": 2.0, "end": 3.0}],
+        )
+
+
+class TranscribeFallbackTests(unittest.TestCase):
+    """F213 — the sequential library path is the safety net for the batched decoder."""
+
+    def test_batched_failure_falls_back_to_sequential_generate(self):
+        calls = []
+
+        def generate(audio, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(text="fallback", segments=[])
+
+        asr = SimpleNamespace(generate=generate)  # no batched-path internals at all
+        result = qwen.transcribe(asr, [0.0] * 32000, "auto", chunk_duration=60.0, batch_size=4)
+        self.assertEqual(result.text, "fallback")
+        self.assertEqual(calls[0]["chunk_duration"], 60.0)
+        self.assertEqual(calls[0]["language"], "auto")
+        self.assertTrue(calls[0]["verbose"])
+
+
 def _install_fake_mlx(transcription, aligner_items=None):
     """Inject fake mlx / numpy / mlx_audio modules so main() runs without the real models. Both the
     ASR model and the aligner load through the same fake load_model (keyed on 'aligner' in the path)."""
