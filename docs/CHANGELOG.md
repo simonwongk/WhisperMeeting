@@ -40,6 +40,20 @@ recording is the source of truth; no diarization; original language only) are pr
   is **27.6 ms → ~0 ms** per dictation with byte-identical samples, verified across all ten bench
   clips on both samples and transcripts. The fast path is not load-bearing: anything not already
   conforming falls through to the normal decoder.
+- **The readiness prewarm no longer decodes silence six times (F206).** The prewarm exists to make
+  the model and its Metal kernels resident; its transcript is discarded. It ran with Whisper's
+  default six-temperature fallback ladder, which re-decodes whenever a result trips the
+  compression-ratio / logprob thresholds — which pure digital silence always does. Interleaved A/B
+  on the installed runtime, four launches per arm: **8.00 s → 2.38 s to ready, a 5.62 s (70 %)
+  cut**, paid back on every cold start and every post-eviction reload. F202 overlaps that wait with
+  the user's speech, but 8 s is longer than most dictations; 2.4 s mostly is not.
+- **A meeting WAV is no longer resampled inside the ASR process (F206).** Decode-first was decided
+  from the file extension alone, so a `.wav` always skipped it — but meetings are captured at 48 kHz
+  and mlx-audio then decoded the whole recording, cast it to float64 and ran scipy `resample_poly`
+  48k → 16k on the critical path, inside the model's own memory budget. Measured on a synthetic
+  47-minute 48 kHz mono WAV: **2.83 s and 2.21 GB peak RSS → 0.06 s**, with `afconvert` doing the
+  same conversion in 0.29 s. Only WAV is inspected (four header bytes); flac/mp3/ogg and any
+  unreadable header keep today's behaviour rather than being transcoded on a guess.
 - **A stale installed Qwen meeting helper now repairs itself (F207).** The runtime copy of
   `qwen_transcribe.py` predated F155 and picked the Chinese forced aligner for any chunk containing
   a single CJK character rather than when CJK is the majority script, so an English meeting
