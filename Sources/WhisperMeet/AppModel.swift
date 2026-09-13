@@ -913,8 +913,15 @@ final class AppModel: ObservableObject {
                 // carrying a typed label across would quietly attribute it to a different voice.
                 aliases: [:]
             )
-            try DiarizationArtifactStore.save(artifact, for: request.meetingID, in: store.rootDirectory)
+            let quarantined = try DiarizationArtifactStore.save(
+                artifact, for: request.meetingID, in: store.rootDirectory
+            )
             invalidateSpeakerOverlayCache()
+            if let quarantined {
+                // A rerun landed on a damaged previous result. The new analysis was saved, but a
+                // file the user never made is now beside their recording, so it is named.
+                alertMessage = "Speaker analysis finished. The previous result was damaged, so a copy of it was kept beside the recording as \(quarantined)."
+            }
         } catch is CancellationError {
             // Nothing written and nothing said: the user asked for this.
         } catch {
@@ -958,10 +965,16 @@ final class AppModel: ObservableObject {
             alertMessage = "There is no speaker label to rename for this meeting."
             return
         }
-        guard case let .ready(artifact) = DiarizationArtifactStore.load(
-            meetingID: id, in: store.rootDirectory
-        ) else {
-            alertMessage = "That meeting's speaker analysis could not be read, so the label was not saved. Your transcript is unchanged."
+        let artifact: DiarizationArtifactV1
+        switch DiarizationArtifactStore.load(meetingID: id, in: store.rootDirectory) {
+        case let .ready(loaded):
+            artifact = loaded
+        case let .unavailable(reason):
+            alertMessage = Self.speakerLabelNotSavedMessage(reason)
+            return
+        case .absent, .stale:
+            // The overlay above was drawn from a sidecar that has since gone or stopped matching.
+            alertMessage = "That meeting's speaker analysis is no longer available, so the label was not saved. Your transcript is unchanged."
             return
         }
         var updated = artifact
@@ -975,12 +988,37 @@ final class AppModel: ObservableObject {
             updated.aliases[String(clusterID)] = trimmed
         }
         do {
-            try DiarizationArtifactStore.save(updated, for: id, in: store.rootDirectory)
+            if let quarantined = try DiarizationArtifactStore.save(
+                updated, for: id, in: store.rootDirectory
+            ) {
+                // The label was saved, and a file the user did not create now sits beside their
+                // recording. Saying nothing would leave them to discover it and guess.
+                alertMessage = "The label was saved. The previous speaker-analysis file was damaged, so a copy of it was kept beside the recording as \(quarantined)."
+            }
         } catch {
             alertMessage = error.localizedDescription
             return
         }
         invalidateSpeakerOverlayCache()
+    }
+
+    /// Why a speaker label could not be saved, in the user's terms. Three situations hide behind
+    /// "could not be read" and their advice is opposite: a damaged file left a copy the user can go
+    /// and find by name, a newer build's file needs an update rather than a repair, and a file the
+    /// OS will not open is a permissions problem somewhere else entirely. One generic sentence for
+    /// all three sends people looking in the wrong place. Every one still ends by saying the
+    /// transcript is untouched — labels are an optional extra and losing one is not losing a meeting.
+    static func speakerLabelNotSavedMessage(_ reason: DiarizationUnavailableReason) -> String {
+        switch reason {
+        case let .corrupt(quarantinedAs: name):
+            let kept = name.map { " A copy of the damaged file was kept beside the recording as \($0)." }
+                ?? " The damaged file was left exactly as it is."
+            return "That meeting's speaker-analysis file is damaged, so the label was not saved.\(kept) Your transcript is unchanged."
+        case let .newerSchema(version):
+            return "That meeting's speaker analysis was written by a newer version of WhisperMeet (format \(version)), so the label was not saved. Update WhisperMeet to edit it. Your transcript is unchanged."
+        case .unreadable:
+            return "That meeting's speaker-analysis file could not be opened, so the label was not saved. Check the permissions on the recording's folder. Your transcript is unchanged."
+        }
     }
 
     /// The labels to render for one meeting, or nil when none may be shown. A stale result is withheld

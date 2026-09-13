@@ -8,7 +8,27 @@ enum DiarizationLoadOutcome: Sendable, Equatable {
     case absent
     case ready(DiarizationArtifactV1)
     case stale
-    case unavailable
+    case unavailable(DiarizationUnavailableReason)
+}
+
+/// Why a sidecar that exists could not be turned into a result (F218).
+///
+/// One undifferentiated "could not be read" forces the UI into a single sentence for three
+/// situations whose correct advice is opposite: damage left a NEW FILE in the user's recording
+/// folder and the only way they will ever understand it is to be told its name; a newer build's
+/// file is perfectly intact and the answer is to update WhisperMeet, not to repair anything; and a
+/// file the OS will not hand over is a permissions problem in a third place entirely. The F187
+/// precedent is `BackupJSONStoreError.noReadableCopy(primary:backup:quarantined:)`, which carries
+/// the sibling names so `MeetingStore.startupRecoveryMessages` can report them.
+enum DiarizationUnavailableReason: Sendable, Equatable {
+    /// The bytes did not decode. A copy was kept under this name — nil when none could be made, in
+    /// which case the load is reporting a second failure on top of the first.
+    case corrupt(quarantinedAs: String?)
+    /// Written by a newer build of WhisperMeet, which declared this schema version. Left exactly as
+    /// found and never quarantined: it is not damaged, just not ours to read.
+    case newerSchema(Int)
+    /// The file exists but could not be read at all — permissions, or an I/O error.
+    case unreadable
 }
 
 enum DiarizationArtifactStoreError: LocalizedError, Sendable, Equatable {
@@ -66,7 +86,7 @@ enum DiarizationArtifactStore {
     ) -> DiarizationLoadOutcome {
         let url = fileURL(meetingID: meetingID, in: root)
         guard fileManager.fileExists(atPath: url.path) else { return .absent }
-        guard let data = try? Data(contentsOf: url) else { return .unavailable }
+        guard let data = try? Data(contentsOf: url) else { return .unavailable(.unreadable) }
         do {
             let artifact = try DiarizationArtifactCodec.decode(data)
             // A sidecar that describes a DIFFERENT meeting is not this meeting's result — a
@@ -78,13 +98,17 @@ enum DiarizationArtifactStore {
                 return .stale
             }
             return .ready(artifact)
-        } catch DiarizationArtifactError.newerSchema {
+        } catch DiarizationArtifactError.newerSchema(let version) {
             // Not damaged — just not ours to read. Quarantining it would imply corruption and
-            // leave a confusing sibling behind for a file a newer build will open perfectly.
-            return .unavailable
+            // leave a confusing sibling behind for a file a newer build will open perfectly. The
+            // version it declared travels with the outcome: "a newer version" is advice, "format 99
+            // and this build reads 1" is a fact the user can act on and report.
+            return .unavailable(.newerSchema(version))
         } catch {
-            quarantine(url, using: fileManager)
-            return .unavailable
+            // The sibling's name travels with the outcome too: that copy is the user's only route
+            // back to the aliases they typed, and a file they cannot name is a file they will never
+            // find in a folder they did not know they had.
+            return .unavailable(.corrupt(quarantinedAs: quarantine(url, using: fileManager)))
         }
     }
 
@@ -96,12 +120,19 @@ enum DiarizationArtifactStore {
     /// address different folders: with a duplicated or restored recording folder, a rename loaded
     /// from B and wrote into A, so the rename appeared not to stick and A's aliases were silently
     /// rewritten. A mismatch is a refusal, never a redirect.
+    ///
+    /// Returns the name of the sibling a damaged previous file was copied aside to, or nil when
+    /// nothing was quarantined. A save that quietly leaves a new `diarization.unreadable-….json` in
+    /// someone's recording folder owes them its name, and this is the only layer that knows it.
+    /// `@discardableResult` because a first save lands in a folder with no sidecar in it at all, so
+    /// there is routinely nothing to report.
+    @discardableResult
     static func save(
         _ artifact: DiarizationArtifactV1,
         for meetingID: UUID,
         in root: URL,
         fileManager: FileManager = .default
-    ) throws {
+    ) throws -> String? {
         guard artifact.meetingID == meetingID else {
             throw DiarizationArtifactStoreError.meetingMismatch(
                 expected: meetingID, found: artifact.meetingID
@@ -116,6 +147,7 @@ enum DiarizationArtifactStore {
         guard fileManager.fileExists(atPath: directory.path) else {
             throw DiarizationArtifactStoreError.recordingFolderMissing(meetingID)
         }
+        var quarantined: String?
         if fileManager.fileExists(atPath: url.path) {
             if let existing = try? Data(contentsOf: url) {
                 do {
@@ -132,7 +164,7 @@ enum DiarizationArtifactStore {
                     // file "was left untouched and nothing was written", so swallowing it with
                     // `try?` would make that promise a lie (AGENTS.md:422, and the propagating
                     // `try` in BackupJSONStore.save).
-                    _ = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
+                    quarantined = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
                 }
             } else {
                 // Bytes that exist but cannot even be READ are the ones most worth keeping — and
@@ -140,10 +172,11 @@ enum DiarizationArtifactStore {
                 // a temp file and renames, so it needs only directory permission and would destroy
                 // them without ever touching them. `preserve` throws `.couldNotPreserve` here, and
                 // that refusal is what has to stop the write.
-                _ = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
+                quarantined = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
             }
         }
         try DiarizationArtifactCodec.encode(artifact).write(to: url, options: .atomic)
+        return quarantined
     }
 
     /// Removes the sidecar and nothing else. The recording and the transcript are never touched:
@@ -161,8 +194,11 @@ enum DiarizationArtifactStore {
     ///
     /// `StoreQuarantine.preserve` copies rather than moves and is idempotent per (file, byte
     /// content), so a relaunch loop cannot fill the folder with duplicates.
-    private static func quarantine(_ url: URL, using fileManager: FileManager) {
-        _ = try? StoreQuarantine.preserve(fileAt: url, using: fileManager)
+    /// Returns the sibling's name so the outcome can carry it; nil when nothing was copied, which
+    /// on this path means either "no file" or "the copy failed" — indistinguishable, and deliberately
+    /// so: on the load path nothing is being overwritten, so neither changes what the caller does.
+    private static func quarantine(_ url: URL, using fileManager: FileManager) -> String? {
+        try? StoreQuarantine.preserve(fileAt: url, using: fileManager)
     }
 }
 

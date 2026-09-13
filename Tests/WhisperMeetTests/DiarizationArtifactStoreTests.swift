@@ -312,3 +312,73 @@ func storeRefusesToSaveAForeignArtifact() throws {
     #expect(!FileManager.default.fileExists(
         atPath: root.appendingPathComponent("Recordings/\(foreign.meetingID.uuidString)").path))
 }
+
+@Test("An unavailable sidecar names WHY, so the UI can tell damage from a newer build (F218)")
+func storeNamesWhyASidecarIsUnavailable() throws {
+    let (damagedRoot, damagedID, damagedDirectory) = try makeRecording()
+    let (newerRoot, newerID, newerDirectory) = try makeRecording()
+    defer {
+        try? FileManager.default.removeItem(at: damagedRoot)
+        try? FileManager.default.removeItem(at: newerRoot)
+    }
+    try Data("{ this is not json".utf8)
+        .write(to: damagedDirectory.appendingPathComponent("diarization.json"))
+    try Data(#"{"schemaVersion":99,"somethingNew":true}"#.utf8)
+        .write(to: newerDirectory.appendingPathComponent("diarization.json"))
+
+    let damaged = DiarizationArtifactStore.load(meetingID: damagedID, in: damagedRoot)
+    let newer = DiarizationArtifactStore.load(meetingID: newerID, in: newerRoot)
+
+    // These two need opposite advice. Damage left a new file in the recording folder and the user
+    // should be told its name; a newer build's file is intact and the answer is to update, not to
+    // repair. One undifferentiated `.unavailable` forces the UI to say one sentence for both.
+    #expect(damaged != newer)
+
+    // The damaged case carries the sibling's actual name, because that copy is the user's only
+    // route back to the aliases they typed and they cannot find a file nothing ever names.
+    let siblings = try FileManager.default.contentsOfDirectory(atPath: damagedDirectory.path)
+    let kept = try #require(siblings.first { $0.hasPrefix("diarization.unreadable-") })
+    #expect(damaged == .unavailable(.corrupt(quarantinedAs: kept)))
+    // …and the newer case carries the version it declared, so the message can state a fact rather
+    // than a vague "a newer version".
+    #expect(newer == .unavailable(.newerSchema(99)))
+
+    // Bytes that exist but cannot be opened at all are a third thing again — a permissions problem
+    // somewhere else entirely — and nothing is quarantined, because nothing could be read to copy.
+    let (lockedRoot, lockedID, lockedDirectory) = try makeRecording()
+    let locked = lockedDirectory.appendingPathComponent("diarization.json")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: locked.path)
+        try? FileManager.default.removeItem(at: lockedRoot)
+    }
+    try Data(#"{"schemaVersion":1}"#.utf8).write(to: locked)
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+
+    #expect(DiarizationArtifactStore.load(meetingID: lockedID, in: lockedRoot)
+        == .unavailable(.unreadable))
+    #expect(!(try FileManager.default.contentsOfDirectory(atPath: lockedDirectory.path))
+        .contains { $0.hasPrefix("diarization.unreadable-") })
+}
+
+@Test("A save that quarantines a damaged file tells the caller its name (F218)")
+func storeSaveReportsTheQuarantinedSibling() throws {
+    let (root, meetingID, directory) = try makeRecording()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sidecar = directory.appendingPathComponent("diarization.json")
+    let corrupt = Data("{ half-written aliases".utf8)
+    try corrupt.write(to: sidecar)
+
+    // A new file has just appeared in the user's recording folder. `save` is the only code that
+    // knows its name, so returning Void means nothing can ever tell them what it is or why.
+    let quarantined = try DiarizationArtifactStore.save(
+        makeArtifact(meetingID: meetingID), for: meetingID, in: root
+    )
+
+    let name = try #require(quarantined)
+    #expect(name.hasPrefix("diarization.unreadable-"))
+    #expect(try Data(contentsOf: directory.appendingPathComponent(name)) == corrupt)
+    // And a save over bytes that were fine reports nothing, so no caller invents a message.
+    #expect(try DiarizationArtifactStore.save(
+        makeArtifact(meetingID: meetingID), for: meetingID, in: root
+    ) == nil)
+}

@@ -334,3 +334,41 @@ func diarizationSingleClusterSuppressesLabels() async throws {
     #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases.isEmpty)
     #expect(fixture.model.alertMessage != nil)
 }
+
+@MainActor
+@Test("An unsaveable label says which of three things went wrong, not one generic line (F219)")
+func diarizationRenameExplainsWhyTheSidecarCouldNotBeRead() async throws {
+    // Task 9 hard-coded "could not be read" for every failure, because `load` reported one
+    // undifferentiated `.unavailable`. Three different things hide in there and their advice is
+    // opposite: a damaged file left a copy the user can go and find, a newer build's file needs an
+    // update rather than a repair, and a locked file is a permissions problem somewhere else.
+    let fixture = try makeFixture()
+    fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
+    fixture.model.requestSpeakerDiarization(for: fixture.id)
+    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    // The overlay must stay renameable, so replace the bytes only after it has been computed and
+    // cached: the rename's own guard reads the cache, and the message under test is the next step.
+    _ = fixture.model.speakerOverlay(for: fixture.id)
+
+    try Data("{ half-written aliases".utf8).write(to: fixture.sidecarURL)
+    fixture.model.renameSpeaker(clusterID: 1, to: "Ada", in: fixture.id)
+    let damaged = try #require(fixture.model.alertMessage)
+    let directory = fixture.sidecarURL.deletingLastPathComponent()
+    let kept = try #require(
+        (try FileManager.default.contentsOfDirectory(atPath: directory.path))
+            .first { $0.hasPrefix("diarization.unreadable-") }
+    )
+    #expect(damaged.contains(kept))                       // the file they can actually go and find
+    #expect(damaged.contains("Your transcript is unchanged"))
+
+    fixture.model.alertMessage = nil
+    try Data(#"{"schemaVersion":99,"somethingNew":true}"#.utf8).write(to: fixture.sidecarURL)
+    fixture.model.renameSpeaker(clusterID: 1, to: "Ada", in: fixture.id)
+    let newer = try #require(fixture.model.alertMessage)
+    #expect(newer.contains("newer version"))
+    #expect(newer.contains("99"))                          // the format it declared, not a vague hint
+    #expect(newer != damaged)
+    // And a newer build's intact file is never copied aside — only the damaged one was.
+    #expect((try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        .filter { $0.hasPrefix("diarization.unreadable-") }.count == 1)
+}
