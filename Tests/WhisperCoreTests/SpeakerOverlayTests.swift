@@ -85,6 +85,35 @@ func overlayVetoesOnOverlap() {
     #expect(rows == [SpeakerOverlayRow(segmentIndex: 0, label: .overlapping)])
 }
 
+@Test("The overlap veto is unreachable from runtime output, so simultaneous speech is named (F223)")
+func overlayVetoIsUnreachableFromRuntimeOutput() {
+    // The test above is the PRD's veto — "an overlap anywhere in the segment vetoes a name" — and it
+    // passes only because its fixture hand-builds a `.overlap` turn. Nothing in the shipped pipeline
+    // ever does: `DiarizationOutputParser.densify` is the only production constructor of a
+    // `SpeakerTurn`, the runtime emits one speaker per line and never reports simultaneity, so
+    // densify has nothing to copy and emits `.speech`/`.uncertain` only. F223 tracks deriving
+    // `.overlap` from intersecting raw turns; until it lands the veto is dead code in production.
+    //
+    // This test RECORDS that gap rather than approving it. When F223 lands it goes red — that is the
+    // alarm, and the answer is to flip the expectations here and amend both
+    // `docs/SPEAKER_DIARIZATION_PLAN.md` and the veto's doc comment, never to delete it.
+    let raw = [
+        RawDiarizationTurn(startSeconds: 0, endSeconds: 100, rawSpeaker: 0, confidence: 0.9),
+        RawDiarizationTurn(startSeconds: 40, endSeconds: 45, rawSpeaker: 1, confidence: 0.9)
+    ]
+    let turns = DiarizationOutputParser.densify(raw, uncertainBelowConfidence: 0.5)
+    #expect(!turns.contains { $0.kind == .overlap })
+
+    // The same two intervals the veto test uses, only unmarked — and the overlay names one of the
+    // two voices over five seconds in which both were talking, with no hedge at all.
+    let rows = SpeakerOverlay.rows(
+        segments: [seg(0, 100)],
+        turns: turns,
+        recordingDuration: 100
+    )
+    #expect(rows == [SpeakerOverlayRow(segmentIndex: 0, label: .speaker(clusterID: 0))])
+}
+
 @Test("An uncertain turn covering the segment yields uncertain, never a cluster name (F218)")
 func overlayPropagatesUncertainty() {
     let rows = SpeakerOverlay.rows(

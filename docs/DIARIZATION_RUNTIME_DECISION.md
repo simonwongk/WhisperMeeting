@@ -758,3 +758,14 @@ Ordered by how likely each is to overturn this decision.
     this record, and the policy amendment in its "Required decision before implementation" section
     is still unapproved — **no implementation ticket may close as shipped until that is signed
     off**, regardless of this runtime selection.
+11. **The runtime reports no overlap at all, so the PRD's overlap veto is dead in production.**
+    sherpa-onnx emits one speaker per line and never marks simultaneity, so
+    `DiarizationOutputParser.densify` — the only production constructor of a `SpeakerTurn` — can
+    produce `.speech` and `.uncertain` but never `.overlap`. Task 4's veto ("an overlap anywhere in
+    the segment vetoes a name") is implemented and tested, and fires only for turns built by hand in
+    test fixtures. Real simultaneous speech therefore arrives as two intersecting `.speech`
+    intervals, passes through unmarked, and the overlay may name one of the two voices confidently.
+    This compounds risk 2 rather than mitigating it: crosstalk is absent from the corpus, so nothing
+    measured here exercises the case. **Falsifier / fix:** F223, which derives `.overlap` by
+    splitting intersecting raw turns. Until it lands, `overlayVetoIsUnreachableFromRuntimeOutput`
+    pins the gap, and any claim that the veto protects a real meeting is false.

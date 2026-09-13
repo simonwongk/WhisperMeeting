@@ -142,6 +142,19 @@ public enum SpeakerOverlay {
 
     /// The PRD's rule, in one place: an overlap anywhere in the segment vetoes a name; otherwise a
     /// cluster must clear both the coverage floor and the margin over the runner-up.
+    ///
+    /// **The overlap veto is implemented and tested, and is currently UNREACHABLE IN PRODUCTION.**
+    /// The selected runtime does not report overlap: it emits one speaker per line, so
+    /// `DiarizationOutputParser.densify` — the only production constructor of a `SpeakerTurn` — has
+    /// no simultaneity to copy and produces `.speech`/`.uncertain` only. Nothing outside test
+    /// fixtures builds a `.overlap` turn, so this branch never fires on real output. Intersecting
+    /// same-time turns are therefore NOT currently marked: two people talking at once arrive as two
+    /// intersecting `.speech` intervals, pass through unmarked, and the rule below may then name one
+    /// of them confidently — the precise case the veto exists to stop. Deriving `.overlap` from
+    /// intersecting raw turns is interval splitting with its own failure modes, so it is deferred to
+    /// F223 rather than improvised here; `overlayVetoIsUnreachableFromRuntimeOutput` pins the gap so
+    /// it cannot be forgotten, and `docs/DIARIZATION_RUNTIME_DECISION.md` §8 carries it as a
+    /// residual risk.
     private static func label(
         coverageByCluster: [Int: TimeInterval],
         overlapSeconds: TimeInterval,
