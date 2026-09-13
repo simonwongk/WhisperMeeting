@@ -15,6 +15,23 @@ func fingerprintIsStable() {
     #expect(TranscriptTimingFingerprint.compute(segments) == TranscriptTimingFingerprint.compute(segments))
 }
 
+@Test("The fingerprint is a pinned 16-hex-digit value, not a per-process hash (F218)")
+func fingerprintIsReproducibleAcrossProcesses() {
+    // This value is persisted in diarization.json and compared against a freshly computed one after
+    // a relaunch (AppModel.computeSpeakerOverlay), so the algorithm is a cross-process wire format,
+    // not an implementation detail. Nothing else here would notice it changing: a per-process-seeded
+    // hash (Hasher/hashValue) satisfies every other test in this file while staling every cached
+    // overlay in every meeting on every launch. Golden values, recomputed independently.
+    #expect(TranscriptTimingFingerprint.compute([]) == "af63bd4c8601b7df")
+    #expect(TranscriptTimingFingerprint.compute([seg(0, 1, "a")]) == "d0a5ff18672b47c4")
+    #expect(TranscriptTimingFingerprint.compute([seg(0, 1.5, "a"), seg(1.5, 3, "b")]) == "9e16f22299e1db45")
+    // Sixteen ASCII hex digits, always: the codec bounds this field on decode, and a value that
+    // outgrew the format would be refused as malformed rather than merely look different.
+    let fingerprint = TranscriptTimingFingerprint.compute([seg(0, 1, "a"), seg(nil, nil, "b")])
+    #expect(fingerprint.count == 16)
+    #expect(fingerprint.allSatisfy { $0.isHexDigit && $0.isASCII })
+}
+
 @Test("Editing only the text leaves the timing fingerprint unchanged (F218)")
 func fingerprintIgnoresText() {
     let before = TranscriptTimingFingerprint.compute([seg(0, 1, "hello"), seg(1, 2, "world")])
