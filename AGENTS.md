@@ -388,9 +388,19 @@ done** above requires every change to leave them intact.
 
 ### Build config note
 
-`swift-tools-version: 6.0` but `swiftLanguageModes: [.v5]` — the code compiles under the **Swift 5
+`swift-tools-version: 6.2` but `swiftLanguageModes: [.v5]` — the code compiles under the **Swift 5
 language mode** (with explicit `Sendable`/`@MainActor` annotations), not full Swift 6 strict
 concurrency. `WhisperMeet` links its Apple frameworks explicitly in `Package.swift`.
+
+The tools version was **6.0 until F216** and moved only to reach the `traits:` argument, which does
+not exist before SwiftPM 6.1; the rationale is in `Package.swift`'s header comment. The bump changed
+nothing else — same 695 tests, same warnings-as-errors release build, byte-identical binary — and
+`.macOS(.v15)` / `swiftLanguageModes: [.v5]` are unchanged.
+
+**FluidAudio is this repo's first third-party SwiftPM dependency** (F216, pinned `exact: "0.15.7"`).
+It is a dependency of the **`WhisperMeet` target only**; `WhisperCore` gets nothing, so the purity
+rule below is enforced by the manifest and not merely by convention — `import FluidAudio` from
+`Sources/WhisperCore/` fails to build.
 
 ## WhisperCore purity rule
 
