@@ -31,6 +31,11 @@ chmod +x "$app_dir/Contents/Resources/update-yt-dlp.sh"
 cp "Scripts/summarize_local.py" "$app_dir/Contents/Resources/summarize_local.py"
 cp "Scripts/correct_local.py" "$app_dir/Contents/Resources/correct_local.py"
 cp "Scripts/refine_server.py" "$app_dir/Contents/Resources/refine_server.py"
+cp "Scripts/setup-speaker-diarization.sh" "$app_dir/Contents/Resources/setup-speaker-diarization.sh"
+chmod +x "$app_dir/Contents/Resources/setup-speaker-diarization.sh"
+# The notices are a build product, not documentation: the diarization installer reads this file from
+# beside itself and refuses to activate a runtime it cannot ship the attributions for (F219).
+cp "Resources/THIRD-PARTY-NOTICES.txt" "$app_dir/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 # Sign with a stable identity when one exists, so macOS TCC keeps the user's permission grants
 # across rebuilds — an ad-hoc signature's identity changes every build, which resets microphone,
 # screen-recording, and accessibility grants each time (F127). Override with
