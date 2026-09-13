@@ -12,13 +12,13 @@ public enum TranscriptTimingFingerprint {
     /// coarser would miss a real re-alignment.
     private static let quantum: Double = 1000
 
-    /// A segment with no timing at all. Reserved so it can never collide with a real quantized bound.
+    /// A segment with no timing at all — the `start`/`end` key was absent or null.
     private static let missingTiming = UInt64.max
 
-    /// A finite bound too large to quantize into `Int64`. A transcript is editable JSON on disk, so a
-    /// bound can be any finite `Double`; converting one straight to `Int64` traps the process, which
-    /// is a crash caused by data rather than by code.
-    private static let unquantizableTiming = UInt64.max &- 1
+    /// A bound that exists but is unusable: negative, NaN, infinite, or too large to quantize into
+    /// `Int64`. A transcript is editable JSON on disk, so a bound can be any `Double`; converting
+    /// one straight to `Int64` traps the process, which is a crash caused by data rather than code.
+    private static let unusableTiming = UInt64.max &- 1
 
     public static func compute(_ segments: [TranscriptSegment]) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
@@ -36,13 +36,23 @@ public enum TranscriptTimingFingerprint {
     }
 
     /// `nil` maps to a reserved sentinel so a segment without timings can never fingerprint the same
-    /// as one that genuinely starts at zero; an out-of-range bound maps to a second sentinel so a
+    /// as one that genuinely starts at zero; an unusable bound maps to a second sentinel so a
     /// malformed transcript degrades the fingerprint instead of trapping.
+    ///
+    /// Real bounds are non-negative and quantize to at most ~10^8, so both sentinels sit far outside
+    /// the reachable range and CANNOT be spelled by any real value — which is what the word
+    /// "reserved" has to mean. Mapping through `UInt64(bitPattern:)` would break that: a bound of
+    /// -1 ms lands exactly on `missingTiming` and -2 ms exactly on `unusableTiming`, so two
+    /// different timing sets would share one fingerprint in the function whose whole job is to
+    /// notice that timings differ.
     private static func quantized(_ value: Double?) -> UInt64 {
-        guard let value, value.isFinite else { return missingTiming }
-        guard let scaled = Int64(exactly: (value * quantum).rounded()) else {
-            return unquantizableTiming
+        guard let value else { return missingTiming }
+        guard value.isFinite,
+              let scaled = Int64(exactly: (value * quantum).rounded()),
+              scaled >= 0,
+              UInt64(scaled) < unusableTiming else {
+            return unusableTiming
         }
-        return UInt64(bitPattern: scaled)
+        return UInt64(scaled)
     }
 }

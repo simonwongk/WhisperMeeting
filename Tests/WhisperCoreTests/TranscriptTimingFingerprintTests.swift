@@ -58,3 +58,19 @@ func fingerprintSurvivesOutOfRangeTimings() {
     #expect(!absurd.isEmpty)
     #expect(absurd != missing)
 }
+
+@Test("A negative bound cannot spell either reserved sentinel (F218)")
+func fingerprintSentinelsAreUnreachable() {
+    // -1 ms is UInt64.max in two's complement, and -2 ms is UInt64.max - 1: exactly the two
+    // sentinels. A transcript is editable JSON on disk, so "no real value reaches them" has to be
+    // enforced, not assumed — otherwise two different timing sets share one fingerprint and a
+    // stale overlay is shown as current.
+    let missing = TranscriptTimingFingerprint.compute([seg(nil, nil, "a")])
+    let absurd = TranscriptTimingFingerprint.compute([seg(1e300, 1e300, "a")])
+    #expect(TranscriptTimingFingerprint.compute([seg(-0.001, -0.001, "a")]) != missing)
+    #expect(TranscriptTimingFingerprint.compute([seg(-0.002, -0.002, "a")]) != missing)
+    #expect(TranscriptTimingFingerprint.compute([seg(.nan, .nan, "a")]) != missing)
+    #expect(TranscriptTimingFingerprint.compute([seg(.infinity, .infinity, "a")]) != missing)
+    // Every unusable bound is allowed to share one sentinel; none may share the "absent" one.
+    #expect(TranscriptTimingFingerprint.compute([seg(-0.002, -0.002, "a")]) == absurd)
+}
