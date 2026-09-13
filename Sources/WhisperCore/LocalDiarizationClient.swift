@@ -138,10 +138,9 @@ public struct LocalDiarizationClient: Sendable {
             turns = try SpeakerTurns.validate(densified, durationSeconds: durationSeconds)
         } catch let error as SpeakerTurnValidationError {
             // Re-thrown as this adapter's error so the caller shows the reassuring "your transcript
-            // is unchanged" message rather than a bare enum description in an alert.
-            throw LocalDiarizationError.processFailed(
-                "The analysis produced an unusable result (\(error))."
-            )
+            // is unchanged" message. The detail is a diagnostic, not user copy — interpolating a
+            // Swift case name into a sentence put "(exceedsDuration)" in front of a person.
+            throw LocalDiarizationError.processFailed("speaker-turn validation failed: \(error)")
         }
         return SpeakerDiarizationResult(
             turns: turns,
@@ -215,14 +214,11 @@ public struct LocalDiarizationClient: Sendable {
             try cancellation.runUnlessCancelled()
 
             var reader = DiarizationLineReader()
-            var logData = Data()
+            var log = DiarizationDiagnosticLog()
             var raw: [RawDiarizationTurn] = []
             for await data in dataStream {
-                logData.append(data)
-                if logData.count > 200_000 {
-                    logData = logData.suffix(100_000)
-                }
                 for line in reader.consume(String(decoding: data, as: UTF8.self)) {
+                    log.append(line, hasStarted: reader.hasStarted)
                     if let fraction = DiarizationOutputParser.progress(from: line) {
                         await progress(fraction)
                     } else if let turn = reader.turn(from: line) {
@@ -233,6 +229,7 @@ public struct LocalDiarizationClient: Sendable {
             // A final line with no terminator is still a line; the runtime does not always end its
             // last write with a newline.
             for line in reader.flush() {
+                log.append(line, hasStarted: reader.hasStarted)
                 if let fraction = DiarizationOutputParser.progress(from: line) {
                     await progress(fraction)
                 } else if let turn = reader.turn(from: line) {
@@ -245,12 +242,11 @@ public struct LocalDiarizationClient: Sendable {
             for await _ in processExited {}
             handle.readabilityHandler = nil
 
-            let log = String(decoding: logData, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let logText = log.text
             try Task.checkCancellation()
             let status = process.terminationStatus
             guard status == 0 else {
-                let diagnostic = String(log.suffix(4_000))
+                let diagnostic = String(logText.suffix(4_000))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw DiarizationOutputParser.classify(
                     errorOutput: diagnostic.isEmpty
@@ -266,6 +262,27 @@ public struct LocalDiarizationClient: Sendable {
     }
 }
 
+/// The bounded diagnostic accumulated while the runtime speaks, built line by line rather than from
+/// raw read chunks so the config preamble can be left out of it (F219).
+///
+/// Bounded because a damaged binary can spew without end; only the tail is ever used, and the
+/// caller trims it to 4 KB again before it reaches an error value.
+private struct DiarizationDiagnosticLog {
+    private var data = Data()
+
+    mutating func append(_ line: String, hasStarted: Bool) {
+        guard !DiarizationLineReader.isConfigDump(line, hasStarted: hasStarted) else { return }
+        data.append(Data((line + "\n").utf8))
+        if data.count > 200_000 {
+            data = data.suffix(100_000)
+        }
+    }
+
+    var text: String {
+        String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 /// Reassembles the runtime's output into lines and enforces the one structural rule of its grammar:
 /// nothing before the literal `Started` is data (F219).
 ///
@@ -276,9 +293,27 @@ private struct DiarizationLineReader {
     private var pending = ""
     private var started = false
 
+    /// True once the literal `Started` line has been seen. Everything printed before it is preamble
+    /// (DIARIZATION_RUNTIME_DECISION.md:601-606), which is what makes the config dump identifiable.
+    var hasStarted: Bool { started }
+
     /// Anything longer than this is not a line of this grammar — a damaged binary spewing one
     /// unterminated blob must not be buffered without bound.
     private static let maximumPendingBytes = 100_000
+
+    /// The runtime's one-line `OfflineSpeakerDiarizationConfig(...)` preamble, which
+    /// `--print-args=false` does NOT suppress and which embeds the recording path and both model
+    /// paths. It must never be retained verbatim — not as a turn, and not in the log that becomes a
+    /// diagnostic (DIARIZATION_RUNTIME_DECISION.md:585-591, :612, :647).
+    ///
+    /// Only this line is withheld, not everything before `Started`: all three documented failure
+    /// markers — `Errors in config!`, `Failed to read <path>`, `Expect sample rate ...` — are
+    /// printed *instead of* `Started` (:677-679), so a log gated on `Started` alone would be empty
+    /// in exactly the runs where it is the only evidence there is, and every damaged-runtime failure
+    /// would degrade to a bare `.processFailed`.
+    static func isConfigDump(_ line: String, hasStarted: Bool) -> Bool {
+        !hasStarted && line.contains("Config(")
+    }
 
     mutating func consume(_ chunk: String) -> [String] {
         pending += chunk

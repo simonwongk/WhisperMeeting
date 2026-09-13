@@ -90,4 +90,8 @@ func parserClassifiesFailures() {
         == .sampleRateMismatch("Expect sample rate 16000. Given: 44100"))
     #expect(DiarizationOutputParser.classify(errorOutput: "something else", exitStatus: 3)
         == .processFailed("something else"))
+    // A crash before any output leaves the marker text empty; the exit status is then the only
+    // evidence there is, and it is passed into this very function.
+    #expect(DiarizationOutputParser.classify(errorOutput: "   \n ", exitStatus: 137)
+        == .processFailed("The analyzer exited with status 137."))
 }

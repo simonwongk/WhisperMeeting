@@ -35,8 +35,12 @@ public enum LocalDiarizationError: LocalizedError, Sendable, Equatable {
             "This meeting's recording could not be read for analysis. Your transcript is unchanged."
         case .sampleRateMismatch:
             "The audio prepared for analysis was in the wrong format. Your transcript is unchanged."
-        case let .processFailed(detail):
-            "Speaker analysis did not finish. Your transcript is unchanged. \(detail)"
+        case .processFailed:
+            // The associated value is up to 4 KB of the runtime's own output, and its first line is
+            // a config dump carrying the recording path and both model paths
+            // (DIARIZATION_RUNTIME_DECISION.md:612, :647 — "never surface it raw to the user").
+            // Carried for diagnostics, never rendered — exactly as the three cases above do.
+            "Speaker analysis did not finish. Your transcript is unchanged."
         }
     }
 }
@@ -125,12 +129,16 @@ public enum DiarizationOutputParser {
     }
 
     /// Maps the runtime's failure markers onto distinct errors. All four config/IO failures exit
-    /// 255, so the marker text is the only discriminator — `exitStatus` is carried for the caller's
-    /// diagnostics rather than used to choose a case.
+    /// 255, so the marker text is the only discriminator; `exitStatus` is the fallback diagnostic
+    /// when the runtime died without saying anything at all.
     public static func classify(errorOutput: String, exitStatus: Int32) -> LocalDiarizationError {
         if errorOutput.contains("Expect sample rate") { return .sampleRateMismatch(errorOutput) }
         if errorOutput.contains("Failed to read") { return .audioUnreadable(errorOutput) }
         if errorOutput.contains("Errors in config!") { return .runtimeDamaged(errorOutput) }
-        return .processFailed(errorOutput)
+        // A signalled or instantly-aborted child leaves no marker text, and the status is then the
+        // only evidence there is. Recording it here rather than only at the call site means the
+        // guarantee holds for every caller of this function.
+        let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .processFailed(detail.isEmpty ? "The analyzer exited with status \(exitStatus)." : detail)
     }
 }

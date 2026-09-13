@@ -132,6 +132,44 @@ func clientMapsConfigFailure() async throws {
 }
 
 @MainActor
+@Test("A failure never puts the config preamble or a recording path in front of the user (F219)")
+func clientKeepsThePreambleOutOfTheUserFacingError() async throws {
+    // The runtime's line 1 embeds the recording path and both model paths, and `--print-args=false`
+    // does not suppress it (DIARIZATION_RUNTIME_DECISION.md:585-591, :612, :647). It is gated out
+    // of turn parsing already; it must also be gated out of the diagnostic that becomes an alert.
+    let (directory, client) = try makeFakeRuntime(
+        stdout: #"OfflineSpeakerDiarizationConfig(model="/Users/someone/Library/Application Support/WhisperMeet/Recordings/secret.wav")"#,
+        stderr: "",
+        exitStatus: 7
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    var thrown: Error?
+    do {
+        _ = try await client.diarize(
+            audioURL: directory.appendingPathComponent("audio.wav"),
+            durationSeconds: 10,
+            progress: { _ in }
+        )
+    } catch { thrown = error }
+
+    let message = (thrown as? LocalizedError)?.errorDescription ?? ""
+    #expect(!message.contains("OfflineSpeakerDiarizationConfig"))
+    #expect(!message.contains("secret.wav"))
+    #expect(!message.contains("/Users/"))
+    #expect(message == "Speaker analysis did not finish. Your transcript is unchanged.")
+
+    // And not retained in the carried diagnostic either. The preamble is printed on every run, so it
+    // is evidence of nothing; keeping the recording path in memory buys nothing and risks a log.
+    guard case .processFailed(let detail)? = thrown as? LocalDiarizationError else {
+        Issue.record("expected processFailed, got \(String(describing: thrown))")
+        return
+    }
+    #expect(!detail.contains("OfflineSpeakerDiarizationConfig"))
+    #expect(!detail.contains("secret.wav"))
+}
+
+@MainActor
 @Test("A turn past the recording duration fails the whole run rather than being shown (F219)")
 func clientValidatesAgainstDuration() async throws {
     let (directory, client) = try makeFakeRuntime(stdout: """
