@@ -324,10 +324,13 @@ private struct DiarizationDiagnosticLog {
 /// Reassembles the runtime's output into lines and enforces the one structural rule of its grammar:
 /// nothing before the literal `Started` is data (F219).
 ///
+/// Internal rather than file-private so its reassembly rules can be tested directly: the clamp below
+/// fires on a chunk boundary, which nothing driving the real subprocess can place deterministically.
+///
 /// Reads arrive in arbitrary chunks, so a line can straddle two of them; and the runtime terminates
 /// its progress updates with a carriage return, so splitting on `\n` alone would fuse a whole run's
 /// progress into one unparsable line.
-private struct DiarizationLineReader {
+struct DiarizationLineReader {
     private var pending = ""
     private var started = false
 
@@ -353,17 +356,35 @@ private struct DiarizationLineReader {
         !hasStarted && line.contains("Config(")
     }
 
+    /// True while the remainder of an over-long line is still being skipped. Dropping only the head
+    /// of such a line and resyncing at the next terminator would hand the turn regex the TAIL of a
+    /// blob as if it were a line of this grammar — a fragment that can parse.
+    private var discardingOversizedLine = false
+
     mutating func consume(_ chunk: String) -> [String] {
         pending += chunk
         let pieces = pending.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" }
         pending = String(pieces.last ?? "")
-        if pending.utf8.count > Self.maximumPendingBytes { pending = "" }
-        return pieces.dropLast().map(String.init)
+        var lines = pieces.dropLast().map(String.init)
+        if discardingOversizedLine, !lines.isEmpty {
+            lines.removeFirst()
+            discardingOversizedLine = false
+        }
+        if pending.utf8.count > Self.maximumPendingBytes {
+            pending = ""
+            discardingOversizedLine = true
+        }
+        return lines
     }
 
     mutating func flush() -> [String] {
-        defer { pending = "" }
-        return pending.isEmpty ? [] : [pending]
+        defer {
+            pending = ""
+            discardingOversizedLine = false
+        }
+        // The tail of an over-long line is still not a line, even at EOF.
+        guard !discardingOversizedLine, !pending.isEmpty else { return [] }
+        return [pending]
     }
 
     /// A turn, but only once `Started` has been seen. The preamble is a config dump that embeds the

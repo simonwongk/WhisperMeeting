@@ -141,6 +141,27 @@ func clientCancellationTerminatesTheProcess() async throws {
 }
 
 @MainActor
+@Test("A final line with no trailing newline is still a turn (F219)")
+func clientReadsAnUnterminatedFinalLine() async throws {
+    // The runtime does not always end its last write with a newline. Every other fixture here goes
+    // through a heredoc, which always adds one, so `pending` is always empty at EOF and nothing
+    // exercises the flush path — gutting `flush()` to `return []` leaves the whole file green while
+    // the last turn of a real run silently disappears.
+    let (directory, client) = try makeFakeRuntime(stdout: "", body: """
+    printf 'Started\\n'
+    printf '2.000 -- 3.000 speaker_00'
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let result = try await client.diarize(
+        audioURL: directory.appendingPathComponent("audio.wav"),
+        durationSeconds: 10
+    )
+    #expect(result.turns.count == 1)
+    #expect(result.turns.first?.endSeconds == 3.0)
+}
+
+@MainActor
 @Test("Lines before `Started` are discarded so the config preamble never reaches a turn (F219)")
 func clientDiscardsThePreamble() async throws {
     // The preamble embeds model paths; treating it as data would both break parsing and log paths.
@@ -299,6 +320,28 @@ func clientEnvironmentDropsProxyVariables() {
     for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
         #expect(environment[name] == nil, "\(name) reached the diarization subprocess")
     }
+}
+
+@Test("The tail of an over-long line is dropped, not resynced into the grammar (F219)")
+func lineReaderDropsTheRestOfAnOversizedLine() {
+    // The clamp fires on a chunk boundary, which nothing driving the real subprocess can place
+    // deterministically — hence the direct test.
+    var reader = DiarizationLineReader()
+    _ = reader.consume("Started\n")
+    // A damaged binary emitting one unbounded blob: the buffer is cleared to bound memory, and that
+    // throws away the HEAD of the line. Emitting whatever arrives before the next terminator as a
+    // line would hand the turn regex a fragment of that blob — which can parse.
+    #expect(reader.consume(String(repeating: "x", count: 100_001)).isEmpty)
+    #expect(reader.consume("0.000 -- 1.000 speaker_00\nprogress 10.00%\n") == ["progress 10.00%"])
+}
+
+@Test("An over-long line that never terminates is not flushed as a line either (F219)")
+func lineReaderDoesNotFlushAnOversizedTail() {
+    var reader = DiarizationLineReader()
+    _ = reader.consume(String(repeating: "x", count: 100_001))
+    _ = reader.consume("0.000 -- 1.000 speaker_00")
+    // EOF is not a terminator that makes the rest of a discarded line legitimate.
+    #expect(reader.flush().isEmpty)
 }
 
 private final class ProgressBox: @unchecked Sendable {
