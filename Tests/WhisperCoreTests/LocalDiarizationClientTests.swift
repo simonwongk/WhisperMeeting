@@ -9,7 +9,8 @@ import Testing
 private func makeFakeRuntime(
     stdout: String,
     stderr: String = "",
-    exitStatus: Int = 0
+    exitStatus: Int = 0,
+    body: String? = nil
 ) throws -> (directory: URL, client: LocalDiarizationClient) {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("DiarizationClient-\(UUID().uuidString)", isDirectory: true)
@@ -19,14 +20,20 @@ private func makeFakeRuntime(
     // decisions of this feature — the re-derived threshold, the flag that keeps the recording path
     // out of the log, and the flag that is deliberately never passed — and a fixture that discards
     // "$@" cannot notice any of them changing. `QwenClientFixture` records argv the same way.
-    let script = """
-    #!/bin/zsh
-    printf '%s\\n' "$@" > '\(directory.appendingPathComponent("arguments.txt").path)'
+    // `body` replaces the replay, not the whole script, so a runtime that hangs or writes its own
+    // bytes still records argv. The default heredoc always ends its output with a newline, which is
+    // why an override is the only way to reach the unterminated-final-line path.
+    let replay = body ?? """
     cat <<'STDOUT_EOF'
     \(stdout)
     STDOUT_EOF
     print -u2 -- '\(stderr)'
     exit \(exitStatus)
+    """
+    let script = """
+    #!/bin/zsh
+    printf '%s\\n' "$@" > '\(directory.appendingPathComponent("arguments.txt").path)'
+    \(replay)
     """
     try script.write(to: executable, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
@@ -94,6 +101,43 @@ func clientPassesThePinnedArguments() async throws {
         audio.path
     ])
     #expect(!arguments.contains { $0.hasPrefix("--clustering.num-clusters") })
+}
+
+@MainActor
+@Test("Cancelling speaker analysis terminates the runtime process (F219)")
+func clientCancellationTerminatesTheProcess() async throws {
+    let pidPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DiarizationCancel-\(UUID().uuidString).pid").path
+    defer { try? FileManager.default.removeItem(atPath: pidPath) }
+    // Cancelling a long-running child is the whole reason this adapter copies `LocalWhisperClient`'s
+    // armedExitStream shape instead of calling `waitUntilExit()` (the F115/F121 hang), and every
+    // other subprocess client here has this test. Without one, dropping the cancellation handler
+    // costs nothing that any assertion notices.
+    // `exec` so the recorded $$ is the pid of `sleep` itself, not of a shell that leaves it orphaned.
+    let (directory, client) = try makeFakeRuntime(
+        stdout: "", body: "printf '%s' $$ > '\(pidPath)'\nexec sleep 120\n"
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audio = directory.appendingPathComponent("audio.wav")
+
+    let task = Task { try await client.diarize(audioURL: audio, durationSeconds: 10) }
+    try await Task.sleep(for: .milliseconds(300))
+    task.cancel()
+
+    await #expect(throws: CancellationError.self) { try await task.value }
+
+    // Throwing `CancellationError` is NOT evidence the child died: `AsyncStream` ends its own
+    // iteration when the task is cancelled, so the loop unwinds and `Task.checkCancellation()`
+    // throws within milliseconds even when nothing ever signals the process — which is exactly the
+    // shape a gutted `onCancel` leaves behind, with a multi-GiB analysis still running. The pid is
+    // the only thing that tells the two apart.
+    let pid = pid_t(try String(contentsOf: URL(fileURLWithPath: pidPath), encoding: .utf8)) ?? 0
+    #expect(pid > 0)
+    var alive = true
+    for _ in 0..<100 where alive {
+        if kill(pid, 0) != 0 { alive = false } else { try await Task.sleep(for: .milliseconds(50)) }
+    }
+    #expect(!alive, "the runtime process \(pid) was left running after cancellation")
 }
 
 @MainActor
@@ -225,7 +269,16 @@ func clientValidatesAgainstDuration() async throws {
             progress: { _ in }
         )
     } catch { thrown = error }
-    #expect(thrown != nil)
+    // Pin the contract, not merely "something threw". `diarize` throws for several unrelated
+    // reasons — a missing runtime, a launch failure, or any pre-check a later change adds in front
+    // of the run (this fixture deliberately passes an audio path that does not exist) — and every
+    // one of them would satisfy `thrown != nil` while never reaching `SpeakerTurns.validate` at
+    // all. The escaping case and the reason both have to be named.
+    guard case .processFailed(let detail)? = thrown as? LocalDiarizationError else {
+        Issue.record("expected processFailed, got \(String(describing: thrown))")
+        return
+    }
+    #expect(detail.contains("exceedsDuration"))
 }
 
 @Test("The diarization subprocess environment carries no proxy variables (F219)")
