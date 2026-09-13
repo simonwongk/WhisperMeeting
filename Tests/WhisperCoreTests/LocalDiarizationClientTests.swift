@@ -220,20 +220,33 @@ func runtimeInstallationPredicateRequiresEveryFile() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     #expect(DiarizationRuntime.isInstalled(applicationSupport: root) == false)
 
-    let directory = DiarizationRuntime.managedDirectory(applicationSupport: root)
-    try FileManager.default.createDirectory(
-        at: directory.appendingPathComponent("models/segmentation"), withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(
-        at: directory.appendingPathComponent("models/embedding"), withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(
-        at: directory.appendingPathComponent("bin"), withIntermediateDirectories: true)
-    try Data("x".utf8).write(to: DiarizationRuntime.segmentationModel(applicationSupport: root))
-    try Data("x".utf8).write(to: DiarizationRuntime.embeddingModel(applicationSupport: root))
-    // Still missing the executable.
-    #expect(DiarizationRuntime.isInstalled(applicationSupport: root) == false)
-
+    // The seven files the installer's own `runtime_is_complete()` requires
+    // (Scripts/setup-speaker-diarization.sh, DIARIZATION_RUNTIME_DECISION.md), added one at a time.
+    // An install interrupted at ANY of these points must report uninstalled: checking a subset is
+    // how a tree that dies on `@rpath/libonnxruntime.dylib` gets reported as healthy, and the dyld
+    // error that follows has no `LocalDiarizationError` mapping at all.
+    let required = [
+        DiarizationRuntime.onnxRuntimeLibrary(applicationSupport: root),
+        DiarizationRuntime.segmentationModel(applicationSupport: root),
+        DiarizationRuntime.segmentationLicense(applicationSupport: root),
+        DiarizationRuntime.embeddingModel(applicationSupport: root),
+        DiarizationRuntime.thirdPartyNotices(applicationSupport: root),
+        DiarizationRuntime.manifest(applicationSupport: root)
+    ]
     let executable = DiarizationRuntime.executable(applicationSupport: root)
+    try FileManager.default.createDirectory(
+        at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data("x".utf8).write(to: executable)
+    // Present but not executable is not installed either.
+    #expect(DiarizationRuntime.isInstalled(applicationSupport: root) == false)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+    for file in required {
+        #expect(DiarizationRuntime.isInstalled(applicationSupport: root) == false,
+                "reported installed while \(file.lastPathComponent) was missing")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: file)
+    }
     #expect(DiarizationRuntime.isInstalled(applicationSupport: root) == true)
 }
