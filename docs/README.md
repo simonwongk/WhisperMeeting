@@ -35,6 +35,10 @@ deliberately static—after editing a board file, run the two commands documente
 | [`ASR_MODEL_ALTERNATIVES.md`](ASR_MODEL_ALTERNATIVES.md) | Decision criteria for local ASR choices. |
 | [`DICTATION_MODEL_SELECTION_LOG_2026-07-30.md`](DICTATION_MODEL_SELECTION_LOG_2026-07-30.md) | Dictation model evaluation record. |
 | [`UI_REDESIGN_LOG.md`](UI_REDESIGN_LOG.md) | UI redesign decisions and rejected alternatives. |
+| [`LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md`](LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md) | What destroyed the library on 2026-08-14, and why. Read this before changing any store. |
+| [`LIBRARY_INDEX_SAFETY_PLAN.md`](LIBRARY_INDEX_SAFETY_PLAN.md) | F187 — preserve-before-overwrite, health states, per-record salvage. **Shipped.** |
+| [`LIBRARY_INDEX_TRANSACTION_DESIGN.md`](LIBRARY_INDEX_TRANSACTION_DESIGN.md) | F190 — the transactional, generation-aware write protocol, with the four rejected designs and the facts measured on-machine. **Design only.** |
+| [`LIBRARY_INDEX_TRANSACTION_PLAN.md`](LIBRARY_INDEX_TRANSACTION_PLAN.md) | F190 — the 11-task implementation sequence for that design. Task 1 shipped; 2–11 open. |
 | [`URL_IMPORT_PLAN.md`](URL_IMPORT_PLAN.md) | Proposed plan (`F175`) for importing audio from a pasted link. Not started; decisions and verified traps recorded before any code. |
 | [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) | Proposed, evidence-gated plan (`F215`) for optional local anonymous speaker-turn labels. It does not change the current no-diarization policy until separately approved. |
 

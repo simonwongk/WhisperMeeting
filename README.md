@@ -33,6 +33,7 @@ Start with the [documentation map](docs/README.md) to find the right guide by ta
 | Area | Key documents |
 |---|---|
 | Product and recovery | [Product spec](docs/PRODUCT_SPEC.md) · [Recovery](docs/RECOVERY.md) · [Recording health](docs/RECORDING_HEALTH.md) · [Preflight test](docs/PREFLIGHT_TEST.md) |
+| Library-index safety | [Wipe postmortem](docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md) · [F187 safety plan](docs/LIBRARY_INDEX_SAFETY_PLAN.md) · [F190 transaction design](docs/LIBRARY_INDEX_TRANSACTION_DESIGN.md) · [F190 plan](docs/LIBRARY_INDEX_TRANSACTION_PLAN.md) |
 | Feature guides | [Quick Dictation](docs/QUICK_DICTATION_DESIGN.md) · [Recording markers](docs/RECORDING_MARKERS.md) · [Transcript quality](docs/TRANSCRIPT_QUALITY.md) · [Claude summaries](docs/CLAUDE_SUMMARIES.md) |
 | Project work | [Work dashboard](docs/tickets-dashboard.html) · [Tickets](docs/TICKETS.md) · [Needs human](docs/NEEDS_HUMAN.md) · [Ticket log](docs/TICKET_LOG.md) |
 | Direction and history | [Roadmap](docs/ROADMAP.md) · [Changelog](docs/CHANGELOG.md) |
@@ -210,6 +211,12 @@ The recording is the source of truth. Both local engines only read the finished 
 cancelled transcription leaves the audio untouched and can be retried. The app also keeps
 previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when
 recording finalization fails, and scans for interrupted recording folders on its next launch.
+
+Deleting a meeting writes the index first and removes the audio only once nothing refers to it, so a
+failed save can never leave a record pointing at a recording that is already gone; if the files
+cannot be removed, the deletion is rolled back and the meeting is kept. An index copy that exists but
+cannot be decoded is copied aside rather than overwritten, and the library opens read-only until that
+is resolved.
 
 Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety
 and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual
