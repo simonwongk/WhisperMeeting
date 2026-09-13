@@ -135,7 +135,14 @@ func overlayWithNoTurnsLabelsNothing() {
         turns: [],
         recordingDuration: 2
     )
-    #expect(rows.allSatisfy { $0.label == .unlabeled })
+    // The shape, not `allSatisfy`, which is trivially true on the empty array: this is the early
+    // return taken whenever analysis ran and found no speech — the likeliest path in production —
+    // and every other test here passes non-empty turns, so nothing else holds it to "one row per
+    // segment, in order".
+    #expect(rows == [
+        SpeakerOverlayRow(segmentIndex: 0, label: .unlabeled),
+        SpeakerOverlayRow(segmentIndex: 1, label: .unlabeled)
+    ])
 }
 
 @Test("Cluster ids are listed in first-appearance order for a stable legend (F218)")

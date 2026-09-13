@@ -52,9 +52,18 @@ public enum SpeakerOverlay {
             return segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: .unlabeled) }
         }
 
-        // Turns are validated sorted by start, so a single advancing cursor is enough, and the walk
-        // never rescans from the beginning. A nested scan here would be O(segments x turns) and would
-        // regress long transcripts the way the playback tick once did.
+        // Turns are validated sorted by start, so one advancing cursor is enough to keep the walk
+        // linear WHILE TURNS DO NOT OVERLAP — the case a nested scan would turn into
+        // O(segments x turns), regressing long transcripts the way the playback tick once did.
+        //
+        // The bound is not unconditional, and the comment here used to claim it was. The cursor only
+        // moves past turns that END before this segment begins, so a single turn spanning a long
+        // stretch pins it, and every segment inside that stretch rescans the turn list from the
+        // pinned index: measured here at 63/222/876 ms for 2 000/4 000/8 000 segments against
+        // 3.3/4.5/8.4 ms with no spanning turn — doubling the input quadruples it. Real diarization
+        // output overlaps rarely and briefly, so the walk is linear in practice; one long spanning
+        // turn (a whole-recording `.overlap`, say) would not be, and `overlayIsLinearOnLongInput`
+        // builds strictly non-overlapping turns, so it cannot observe that case.
         //
         // That cursor only moves forward, so it also requires the SEGMENTS to be in ascending start
         // order. Whisper emits them that way; a merged, re-aligned or hand-edited transcript need
