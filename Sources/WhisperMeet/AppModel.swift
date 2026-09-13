@@ -493,8 +493,12 @@ final class AppModel: ObservableObject {
     var isCorrectionModelInstalled: @Sendable () -> Bool = { SummarizerRuntime.isCorrectionHelperInstalled() }
 
     /// Whether the pinned speaker-analysis runtime is installed (F219). Injectable so the admission
-    /// guard is testable without the real 60 MB runtime, mirroring `isSummarizerModelInstalled`.
-    var isDiarizationModelInstalled: @Sendable () -> Bool = { DiarizationRuntime.isInstalled() }
+    /// guard is testable without the real runtime, mirroring `isSummarizerModelInstalled`.
+    ///
+    /// It probes the FluidAudio Core ML bundles the runtime now loads, not the sherpa-onnx tree
+    /// (F216): a machine carrying the old ONNX payload cannot run this analyzer, so reporting it as
+    /// installed would enable a menu entry whose first run fails on missing models.
+    var isDiarizationModelInstalled: @Sendable () -> Bool = { FluidAudioDiarizationRuntime.isInstalled() }
 
     /// Where the pinned speaker-analysis runtime lives. Held as a property rather than called at each
     /// use site so a test can point the install and the launch reclaim at a temp directory; without
@@ -708,8 +712,8 @@ final class AppModel: ObservableObject {
     /// testable without the pinned runtime or real audio, in the F47 seam style.
     ///
     /// The default prepares 16 kHz mono audio into a per-run temp DIRECTORY that is removed on the way
-    /// out, then runs `LocalDiarizationClient`. `request.audioURL` is only ever READ: the canonical
-    /// recording is never transcoded in place, moved, or rewritten.
+    /// out, then runs `FluidAudioDiarizationClient`. `request.audioURL` is only ever READ: the
+    /// canonical recording is never transcoded in place, moved, or rewritten.
     var runSpeakerDiarization: @Sendable (
         SpeakerDiarizationRequest, @Sendable @escaping (Double) async -> Void
     ) async throws -> SpeakerDiarizationResult = { request, progress in
@@ -731,11 +735,10 @@ final class AppModel: ObservableObject {
         }
         try Task.checkCancellation()
 
-        let client = LocalDiarizationClient(
-            executableURL: DiarizationRuntime.executable(),
-            segmentationModelURL: DiarizationRuntime.segmentationModel(),
-            embeddingModelURL: DiarizationRuntime.embeddingModel()
-        )
+        // FluidAudio's in-process Core ML runtime, replacing the sherpa-onnx subprocess (F216).
+        // `LocalDiarizationClient` is still in the tree but nothing calls it any more; it is removed
+        // with the rest of the sherpa install path (F219).
+        let client = FluidAudioDiarizationClient()
         return try await client.diarize(
             audioURL: analysisURL,
             durationSeconds: AppModel.analysisSeconds(of: analysisURL, fallback: request.durationSeconds),
@@ -744,15 +747,21 @@ final class AppModel: ObservableObject {
     }
 
     /// The pinned stack this build analyzes with, recorded on every artifact so a result produced by a
-    /// different runtime or model is recognizable later. These are the hashes the installer verifies
-    /// per file at install time (`docs/DIARIZATION_RUNTIME_DECISION.md`); re-hashing 34 MB of models on
-    /// every run to re-derive a value the install already gated on would buy nothing.
+    /// different runtime or model is recognizable later — which is exactly what the move from
+    /// sherpa-onnx to FluidAudio makes necessary (F216). Re-hashing the models on every run to
+    /// re-derive a value the install gates on would buy nothing.
+    ///
+    /// The two hashes are the `weights/weight.bin` of `Segmentation.mlmodelc` and
+    /// `Embedding.mlmodelc` — the model parameters themselves, the only part of a compiled Core ML
+    /// bundle whose bytes are the model rather than its packaging — as published by
+    /// `FluidInference/speaker-diarization-coreml` and staged during the F216 evaluation. The
+    /// installer gates on the same two files when the Core ML payload replaces the ONNX tree (F219).
     private static let diarizationProducer = DiarizationProducer(
-        runtimeID: "sherpa-onnx-offline-speaker-diarization",
-        runtimeVersion: "1.13.8",
-        segmentationModelSHA256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
-        embeddingModelSHA256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
-        clusterThreshold: DiarizationRuntime.clusterThreshold
+        runtimeID: FluidAudioDiarizationRuntime.runtimeID,
+        runtimeVersion: FluidAudioDiarizationRuntime.runtimeVersion,
+        segmentationModelSHA256: "c3189a64946c75bc24fcb98afe89ad78c52bdbadfdf65e857fb1b81e2cc9fbb2",
+        embeddingModelSHA256: "99356b2985b8d43880a657024d941d450b38820451ccff903f76ed4e52d1868b",
+        clusterThreshold: FluidAudioDiarizationRuntime.clusterThreshold
     )
 
     /// The canonical recording file names capture and interrupted-recording recovery write. An
