@@ -224,6 +224,11 @@ public struct LocalDiarizationClient: Sendable {
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = pipe
+        // The runtime reads nothing from stdin, so hand it /dev/null rather than letting it inherit
+        // the parent's descriptor (the runtime record's "stdin is unused; close it"). An inherited
+        // descriptor is a channel nobody accounted for, and a child that ever blocks on a read from
+        // it would hang a run that has no reason to wait for anything.
+        process.standardInput = FileHandle.nullDevice
         process.environment = Self.makeEnvironment()
         let cancellation = ProcessCancellationController(process: process)
 
