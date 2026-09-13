@@ -212,3 +212,26 @@ func artifactBoundsAliasBytesNotJustCharacters() throws {
     do { _ = try DiarizationArtifactCodec.decode(data) } catch { thrown = error }
     #expect(thrown as? DiarizationArtifactError == .malformed("aliasLength"))
 }
+
+@Test("No decode failure escapes the codec as anything but a DiarizationArtifactError (F218)")
+func artifactDecodeFailuresAreAlwaysArtifactErrors() throws {
+    // `DiarizationArtifactStore.load` quarantines whatever escapes `decode`, so an error type the
+    // codec forgot to convert files a PERFECTLY GOOD sidecar away as corrupt — a validation bug
+    // becomes data loss. The conversion has to be exhaustive, not one typed arm that happens to
+    // cover everything `SpeakerTurns.validate` throws today.
+    let fixtures = [
+        artifact(turns: [SpeakerTurn(startSeconds: 5, endSeconds: 1, clusterID: 0, kind: .speech)]),
+        artifact(turns: [SpeakerTurn(startSeconds: 0, endSeconds: 99, clusterID: 0, kind: .speech)]),
+        artifact(turns: [SpeakerTurn(startSeconds: 0, endSeconds: 1, clusterID: -1, kind: .speech)]),
+        artifact(turns: [
+            SpeakerTurn(startSeconds: 2, endSeconds: 3, clusterID: 0, kind: .speech),
+            SpeakerTurn(startSeconds: 1, endSeconds: 2, clusterID: 1, kind: .speech)
+        ])
+    ]
+    for bad in fixtures {
+        let data = try JSONEncoder.diarization.encode(bad)
+        var thrown: Error?
+        do { _ = try DiarizationArtifactCodec.decode(data) } catch { thrown = error }
+        #expect(thrown is DiarizationArtifactError, "escaped as \(String(describing: thrown))")
+    }
+}

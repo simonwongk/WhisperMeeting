@@ -144,6 +144,11 @@ public enum DiarizationArtifactCodec {
             _ = try SpeakerTurns.validate(artifact.turns, durationSeconds: artifact.recording.durationSeconds)
         } catch let error as SpeakerTurnValidationError {
             throw DiarizationArtifactError.malformed(String(describing: error))
+        } catch {
+            // Exhaustive on purpose. `DiarizationArtifactStore.load` quarantines whatever escapes
+            // this function, so an error type the codec did not convert would file a perfectly good
+            // sidecar away as corrupt — every failure here leaves as a DiarizationArtifactError.
+            throw DiarizationArtifactError.malformed("turns")
         }
         for (key, alias) in artifact.aliases {
             guard let clusterID = Int(key), clusterID >= 0 else {
