@@ -15,8 +15,13 @@ private func makeFakeRuntime(
         .appendingPathComponent("DiarizationClient-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let executable = directory.appendingPathComponent("fake-diarizer")
+    // Every run records its own argv beside the executable. The pinned flags are the central quality
+    // decisions of this feature — the re-derived threshold, the flag that keeps the recording path
+    // out of the log, and the flag that is deliberately never passed — and a fixture that discards
+    // "$@" cannot notice any of them changing. `QwenClientFixture` records argv the same way.
     let script = """
     #!/bin/zsh
+    printf '%s\\n' "$@" > '\(directory.appendingPathComponent("arguments.txt").path)'
     cat <<'STDOUT_EOF'
     \(stdout)
     STDOUT_EOF
@@ -55,6 +60,40 @@ func clientParsesASuccessfulRun() async throws {
     #expect(result.turns.map(\.clusterID) == [0, 1])
     #expect(result.speakerCount == 2)
     #expect(result.turns[0].startSeconds == 0.031)
+}
+
+@MainActor
+@Test("The pinned analysis arguments are exactly the ones the runtime record specifies (F219)")
+func clientPassesThePinnedArguments() async throws {
+    let (directory, client) = try makeFakeRuntime(stdout: "Started")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let audio = directory.appendingPathComponent("audio.wav")
+
+    _ = try await client.diarize(audioURL: audio, durationSeconds: 10, progress: { _ in })
+
+    let arguments = try String(
+        contentsOf: directory.appendingPathComponent("arguments.txt"), encoding: .utf8
+    ).split(separator: "\n").map(String.init)
+    // Pinned as an exact list, not a set of `contains` probes: a flag that appears is as much a
+    // decision as one that does not, and `--clustering.num-clusters` is forbidden outright (§5 of
+    // the runtime record — fixing the speaker count makes the runtime invent a second voice in a
+    // monologue rather than report one).
+    //
+    // 0.40 was re-derived on the F217 corpus; Swift renders it `0.4`. 0.5 merges two same-gender
+    // speakers into one cluster, which the overlay cannot detect: it sees one cluster, no
+    // competitor, and labels confidently. `--print-args=false` keeps the full argv — including the
+    // recording path — out of the runtime's own log.
+    #expect(arguments == [
+        "--print-args=false",
+        "--clustering.cluster-threshold=0.4",
+        "--clustering.compute-confidence=true",
+        "--segmentation.num-threads=4",
+        "--embedding.num-threads=4",
+        "--segmentation.pyannote-model=\(directory.appendingPathComponent("segmentation.onnx").path)",
+        "--embedding.model=\(directory.appendingPathComponent("embedding.onnx").path)",
+        audio.path
+    ])
+    #expect(!arguments.contains { $0.hasPrefix("--clustering.num-clusters") })
 }
 
 @MainActor
