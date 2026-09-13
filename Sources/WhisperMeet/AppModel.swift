@@ -251,7 +251,10 @@ final class AppModel: ObservableObject {
 
     /// Locates a bundled script when running from a built `.app`, falling back to the checkout while
     /// developing (the packaged path is the one that matters; see build-app.sh).
-    private static func developmentScriptURL(_ name: String) -> URL? {
+    ///
+    /// `nonisolated` because it reads nothing but the filesystem, and the speaker-analysis reclaim
+    /// resolves its script off the main actor (F219). Main-actor callers are unaffected.
+    private nonisolated static func developmentScriptURL(_ name: String) -> URL? {
         let candidate = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // WhisperMeet/
             .deletingLastPathComponent()   // Sources/
@@ -493,6 +496,31 @@ final class AppModel: ObservableObject {
     /// guard is testable without the real 60 MB runtime, mirroring `isSummarizerModelInstalled`.
     var isDiarizationModelInstalled: @Sendable () -> Bool = { DiarizationRuntime.isInstalled() }
 
+    /// Where the pinned speaker-analysis runtime lives. Held as a property rather than called at each
+    /// use site so a test can point the install and the launch reclaim at a temp directory; without
+    /// it both would work over the user's real `Runtime/Diarization` (F219).
+    var diarizationRuntimeDirectory: URL = DiarizationRuntime.managedDirectory()
+
+    /// Runs the bundled `setup-speaker-diarization.sh` over a runtime directory. Injectable so the
+    /// install wiring is testable without a 60 MB download or a spawned process; defaults to the real
+    /// runner, which mirrors `runQwenInstaller` (F219).
+    var runDiarizationInstaller: @Sendable (
+        _ scriptURL: URL, _ runtimeDirectory: URL
+    ) async throws -> Void = { scriptURL, runtimeDirectory in
+        try await AppModel.spawnDiarizationInstaller(
+            scriptURL: scriptURL, runtimeDirectory: runtimeDirectory
+        )
+    }
+
+    /// Runs the speaker-analysis installer's recovery-only reclaim over a runtime directory (restores
+    /// an orphaned complete backup, removes abandoned artifacts). Injectable so the startup wiring is
+    /// testable without spawning a real process; defaults to invoking the bundled script with
+    /// `DIARIZATION_INSTALL_RECOVERY_ONLY=1` — the same arrangement F33 established for Qwen. Returns
+    /// the reclaim's exit status.
+    var runDiarizationInstallRecovery: @Sendable (URL) async -> Int32 = { runtimeDirectory in
+        await AppModel.spawnDiarizationInstallRecovery(runtimeDirectory: runtimeDirectory)
+    }
+
     /// Locates the installed local-Whisper executable. Injectable so a headless test can put the app
     /// into the "a transcription is running" state: `beginTranscription` refuses without an installed
     /// engine and re-probes the filesystem itself, which left every "refuse while transcribing" guard
@@ -532,6 +560,9 @@ final class AppModel: ObservableObject {
     /// Whether the pinned speaker-analysis runtime is on disk, refreshed alongside the other runtimes
     /// so Settings can offer Install / Repair (F219).
     @Published private(set) var isDiarizationInstalled = false
+    /// The install row's plain-language status line — what is happening, or what happened. Mirrors
+    /// `qwenInstallationMessage`; nil until an install is attempted (F219).
+    @Published private(set) var diarizationInstallationMessage: String?
     /// The in-flight analysis, held so `cancelSpeakerDiarization()` can stop it.
     private var diarizationTask: Task<Void, Never>?
     /// One meeting's computed overlay, keyed by the timings it was computed from. Single-entry on
@@ -1156,6 +1187,11 @@ final class AppModel: ObservableObject {
         // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
         // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
         await reclaimInterruptedQwenInstall()
+        // The same self-heal for the speaker-analysis runtime, and for the same reason (F219): an
+        // install interrupted mid-swap can leave the previous runtime in a `.Diarization-backup-*`
+        // dir with `Diarization/` gone, which reports as "not installed" until it is reclaimed. It
+        // must therefore also run BEFORE the probe below, or this launch shows the wrong state.
+        await reclaimInterruptedDiarizationInstall()
         refreshRuntime()
         refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
@@ -1389,6 +1425,75 @@ final class AppModel: ObservableObject {
             }
             isInstallingSummarizer = false
         }
+    }
+
+    /// Installs the pinned speaker-analysis runtime (F219). Mirrors `installQwenASR`: the same
+    /// compound busy guard, the same architecture gate, the same bundled-script resolution, and the
+    /// installer run off the main actor.
+    ///
+    /// The part that is not cosmetic is the verification. Success is decided by **re-probing the
+    /// filesystem** afterwards (`refreshRuntime()` → `isDiarizationInstalled`), never by the
+    /// installer's exit status: this script downloads, hash-verifies and atomically swaps, and any of
+    /// those steps can leave the previous runtime in place while the shell still exits 0. Believing
+    /// the exit code would leave the app announcing a model that is not there, and the first thing a
+    /// user would see is analysis failing on a meeting instead of an honest install failure here.
+    ///
+    /// The guard also refuses while an analysis is running: the installer swaps the very binary that
+    /// run is executing.
+    func installSpeakerDiarization() {
+        guard !isInstallingRecognitionRuntime,
+              !isInstallingSummarizer,
+              !isInstallingDiarizationRuntime,
+              diarizationRunningID == nil, // never swap the runtime under a running analysis
+              !isMicrophoneBusy,
+              !isImporting,
+              !hasActiveTranscription,
+              !isRunningAuxiliaryEngine,
+              !isDictationActive() else {
+            return
+        }
+        guard Self.diarizationIsSupportedOnCurrentMac else {
+            alertMessage = "Speaker analysis requires an Apple-silicon Mac. Everything else in WhisperMeet is unchanged on Intel Macs."
+            return
+        }
+        guard let scriptURL = Bundle.main.url(
+            forResource: "setup-speaker-diarization",
+            withExtension: "sh"
+        ) ?? Self.developmentScriptURL("setup-speaker-diarization.sh") else {
+            alertMessage = "The speaker-analysis installer is missing. Rebuild the app and try again."
+            return
+        }
+        let runtimeDirectory = diarizationRuntimeDirectory
+        let install = runDiarizationInstaller
+        isInstallingDiarizationRuntime = true
+        diarizationInstallationMessage = "Installing the speaker-analysis model…"
+        Task {
+            do {
+                try await install(scriptURL, runtimeDirectory)
+                // Exit status is not evidence. Ask the filesystem.
+                refreshRuntime()
+                if isDiarizationInstalled {
+                    diarizationInstallationMessage = "Speaker analysis is ready — it runs entirely on this Mac."
+                } else {
+                    throw LocalDiarizationError.runtimeNotInstalled
+                }
+            } catch {
+                diarizationInstallationMessage = "Installation failed. The previous model was preserved."
+                alertMessage = error.localizedDescription
+            }
+            isInstallingDiarizationRuntime = false
+        }
+    }
+
+    /// The pinned runtime asset is `osx-arm64`, so speaker analysis is Apple-silicon only — the same
+    /// constraint Qwen3-ASR and on-device summaries already carry (F219). Kept here rather than on
+    /// `DiarizationRuntime` so this task touches only the files it owns.
+    static var diarizationIsSupportedOnCurrentMac: Bool {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
     }
 
     func startRecording() async {
@@ -2522,6 +2627,44 @@ final class AppModel: ObservableObject {
             }
         }.value
     }
+
+    /// Runs the bundled `setup-speaker-diarization.sh` over the runtime directory, logging to
+    /// `diarization-install.log` beside the other runtimes' logs. Mirrors `runQwenInstaller` (F219);
+    /// a non-zero exit carries the log tail so the alert says what actually went wrong. Note that a
+    /// clean exit is still not proof of an install — `installSpeakerDiarization` re-probes the disk.
+    nonisolated static func spawnDiarizationInstaller(
+        scriptURL: URL,
+        runtimeDirectory: URL
+    ) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let parent = runtimeDirectory.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: parent,
+                withIntermediateDirectories: true
+            )
+            let logURL = parent.appendingPathComponent("diarization-install.log")
+            try Data().write(to: logURL, options: .atomic)
+            let handle = try FileHandle(forWritingTo: logURL)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            process.standardOutput = handle
+            process.standardError = handle
+            try process.run()
+            process.waitUntilExit()
+            try? handle.close()
+            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+            guard process.terminationStatus == 0 else {
+                let tail = String(log.suffix(2_000))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw LocalDiarizationError.processFailed(
+                    tail.isEmpty
+                        ? "The installer exited with status \(process.terminationStatus)."
+                        : tail
+                )
+            }
+        }.value
+    }
 }
 
 // MARK: - Library integrity sweep (F83 — wires the tested F66 core to the running app)
@@ -2676,6 +2819,73 @@ extension AppModel {
             process.arguments = [scriptURL.path, runtimeDirectory.path]
             var environment = ProcessInfo.processInfo.environment
             environment["QWEN_INSTALL_RECOVERY_ONLY"] = "1"
+            process.environment = environment
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus
+            } catch {
+                return -1
+            }
+        }.value
+    }
+}
+
+// MARK: - Interrupted speaker-analysis install reclaim (F219 — mirrors the F33 Qwen wiring)
+
+extension AppModel {
+    /// Reclaim an interrupted speaker-analysis install on launch — but only when installer-owned
+    /// orphans actually exist under the runtime parent, so a clean launch (or a Mac that never
+    /// installed speaker analysis) spawns nothing. A force-quit mid-install can strand the previous
+    /// runtime in a `.Diarization-backup-*` dir while `Diarization/` is gone and the app reports "not
+    /// installed"; the installer's recovery-only branch restores it (or clears an incomplete one)
+    /// without a manual reinstall. Returns whether the reclaim was run. The reclaim itself is the
+    /// injected `runDiarizationInstallRecovery` seam, so this hop is headless-testable without
+    /// spawning a process.
+    ///
+    /// `runtimeDirectory` defaults to `diarizationRuntimeDirectory` (a default argument cannot read
+    /// an instance property, hence the optional).
+    @discardableResult
+    func reclaimInterruptedDiarizationInstall(runtimeDirectory: URL? = nil) async -> Bool {
+        let directory = runtimeDirectory ?? diarizationRuntimeDirectory
+        let parent = directory.deletingLastPathComponent()
+        guard Self.hasOrphanedDiarizationInstallArtifacts(in: parent) else { return false }
+        _ = await runDiarizationInstallRecovery(directory)
+        return true
+    }
+
+    /// True when the runtime parent holds installer-owned orphan artifacts — a leftover backup or an
+    /// abandoned staging directory from an interrupted speaker-analysis install. Only the installer's
+    /// hidden `.Diarization-backup-*` / `.Diarization-install-*` names match, so this never fires on a
+    /// clean runtime (the live `Diarization/` and its sibling runtimes carry none of these prefixes),
+    /// nor on the `.Diarization-install.lock` file, whose staleness `shlock` already settles.
+    nonisolated static func hasOrphanedDiarizationInstallArtifacts(in parent: URL) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
+            return false
+        }
+        return entries.contains {
+            $0.hasPrefix(".Diarization-backup-") || $0.hasPrefix(".Diarization-install-")
+        }
+    }
+
+    /// Spawns the bundled `setup-speaker-diarization.sh` in recovery-only mode over the runtime
+    /// directory and returns its exit status. Runs off the main actor. Returns a non-zero sentinel if
+    /// the bundled script is missing or the process cannot start.
+    nonisolated static func spawnDiarizationInstallRecovery(runtimeDirectory: URL) async -> Int32 {
+        guard let scriptURL = Bundle.main.url(
+            forResource: "setup-speaker-diarization",
+            withExtension: "sh"
+        ) ?? developmentScriptURL("setup-speaker-diarization.sh") else {
+            return -1
+        }
+        return await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            var environment = ProcessInfo.processInfo.environment
+            environment["DIARIZATION_INSTALL_RECOVERY_ONLY"] = "1"
             process.environment = environment
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
