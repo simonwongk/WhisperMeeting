@@ -101,3 +101,16 @@ func unknownKindSurvivesReEncoding() throws {
     #expect(text.contains("\"kind\":\"crosstalk\""))   // preserved on DISK
     #expect(!text.contains("uncertain"))
 }
+
+@Test("A non-finite recording duration is rejected rather than trusted as a yardstick (F218)")
+func validationRejectsNonFiniteDuration() {
+    // The duration is this gate's own yardstick, and it was the one number the gate did not check.
+    // `max(0, .infinity) + tolerance` accepts every out-of-range turn; `max(0, .nan) + tolerance`
+    // rejects every turn. One class of bad input, two opposite outcomes, neither of them a policy.
+    #expect(throws: SpeakerTurnValidationError.invalidDuration) {
+        try SpeakerTurns.validate([turn(0, 999_999)], durationSeconds: .infinity)
+    }
+    #expect(throws: SpeakerTurnValidationError.invalidDuration) {
+        try SpeakerTurns.validate([turn(0, 5)], durationSeconds: .nan)
+    }
+}

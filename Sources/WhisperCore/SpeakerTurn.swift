@@ -53,6 +53,8 @@ public struct SpeakerTurn: Codable, Sendable, Equatable {
 
 public enum SpeakerTurnValidationError: Error, Sendable, Equatable {
     case notFinite
+    /// The recording duration the turns are measured against is not a usable number.
+    case invalidDuration
     case negativeStart
     case reversedInterval
     case exceedsDuration
@@ -79,6 +81,10 @@ public enum SpeakerTurns {
         durationSeconds: TimeInterval
     ) throws -> [SpeakerTurn] {
         guard turns.count <= maximumTurnCount else { throw SpeakerTurnValidationError.tooManyTurns }
+        // The duration is this gate's own yardstick, so it is checked before it is used to judge
+        // anything: `max(0, .infinity)` accepts every out-of-range turn and `max(0, .nan)` rejects
+        // every turn at all — one class of bad input, two opposite outcomes, neither a policy.
+        guard durationSeconds.isFinite else { throw SpeakerTurnValidationError.invalidDuration }
         let limit = max(0, durationSeconds) + durationTolerance
         var previousStart = -Double.greatestFiniteMagnitude
         for turn in turns {
