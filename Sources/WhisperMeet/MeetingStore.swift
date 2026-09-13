@@ -537,7 +537,11 @@ final class MeetingStore: ObservableObject {
         guard let task = pendingIndexFlush else { return }
         pendingIndexFlush = nil
         task.cancel()
-        persistMeetings()
+        // Re-arm when the write did not land. Clearing `pendingIndexFlush` before persisting left
+        // nothing to re-attempt, so a failed flush silently dropped the user's edit (F190).
+        if !persistMeetings() {
+            scheduleDebouncedPersist()
+        }
     }
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
@@ -593,20 +597,44 @@ final class MeetingStore: ObservableObject {
         // (F148 #6). In that case remove only the index entry and say the on-disk files were left alone.
         guard isWithinLibrary(directory),
               directory.standardizedFileURL != rootDirectory.standardizedFileURL else {
+            let before = meetings
             meetings.removeAll { $0.id == id }
-            persistMeetings()
+            guard persistMeetings() else {
+                meetings = before
+                return
+            }
             storageErrorMessage = "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
+            return
+        }
+        // Persist the removal BEFORE destroying the audio it references. The old order deleted the
+        // recording first, so a failed save left an index entry pointing at audio that was already
+        // gone — and the `storageErrorMessage = nil` that followed wiped the very message the failed
+        // save had just set, so the user was told nothing at all. AGENTS.md states the rule
+        // directly: "delete removes audio before it saves the index, so blocking persistence alone
+        // is not enough" (F190).
+        let before = meetings
+        meetings.removeAll { $0.id == id }
+        guard persistMeetings() else {
+            // Nothing was destroyed. Put the entry back so memory matches the index still on disk;
+            // `persistMeetings()` has already explained the failure.
+            meetings = before
             return
         }
         do {
             try removeRecordingDirectory(directory)
         } catch {
-            // Don't half-delete: keep the meeting so the library stays consistent, and surface why.
-            storageErrorMessage = "This meeting's recording could not be removed, so it was kept to avoid an inconsistent library. \(error.localizedDescription)"
+            // F146 still holds: don't half-delete. Restoring the entry is safe precisely because of
+            // the ordering above — the index stopped referencing the files before anything tried to
+            // remove them, so nothing was destroyed and putting the entry back is a true rollback.
+            // If the restoring save also fails, the folder is merely orphaned, which
+            // `orphanedRecordings()` finds and can re-adopt; the save's own message stands then,
+            // because "changes could not be saved" is the more accurate thing to report.
+            meetings = before
+            if persistMeetings() {
+                storageErrorMessage = "This meeting's recording could not be removed, so it was kept to avoid an inconsistent library. \(error.localizedDescription)"
+            }
             return
         }
-        meetings.removeAll { $0.id == id }
-        persistMeetings()
         storageErrorMessage = nil
     }
 
@@ -680,13 +708,19 @@ final class MeetingStore: ObservableObject {
         return result
     }
 
-    private func persistMeetings() {
+    /// Returns whether the index actually reached disk, so a caller that is about to destroy
+    /// something the index references can refuse to (F190). Callers that only mutate metadata can
+    /// keep ignoring it.
+    @discardableResult
+    private func persistMeetings() -> Bool {
         persistCount += 1
         do {
             try meetingFiles.save(meetings)
             storageErrorMessage = nil
+            return true
         } catch {
             storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(error.localizedDescription)"
+            return false
         }
     }
 
