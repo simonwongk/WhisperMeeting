@@ -151,7 +151,11 @@ public enum DiarizationArtifactCodec {
             throw DiarizationArtifactError.malformed("turns")
         }
         for (key, alias) in artifact.aliases {
-            guard let clusterID = Int(key), clusterID >= 0 else {
+            // Canonical decimal only. `Int("007")`, `Int("+5")` and `Int("-0")` all succeed, and the
+            // later `aliases[String(clusterID)]` lookup then MISSES — the file is certified
+            // trustworthy and the name the user typed silently never appears. "7" and "007" could
+            // also coexist as two keys for one cluster, one of them permanently shadowed.
+            guard let clusterID = Int(key), clusterID >= 0, String(clusterID) == key else {
                 throw DiarizationArtifactError.malformed("aliasKey")
             }
             // `.count` is grapheme clusters: one Character can be 40 KB of combining marks, so 64

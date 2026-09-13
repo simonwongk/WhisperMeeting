@@ -235,3 +235,18 @@ func artifactDecodeFailuresAreAlwaysArtifactErrors() throws {
         #expect(thrown is DiarizationArtifactError, "escaped as \(String(describing: thrown))")
     }
 }
+
+@Test("An alias key that is not canonical decimal is refused rather than silently dropped (F218)")
+func artifactRefusesNonCanonicalAliasKeys() throws {
+    // `Int("007") == 7`, `Int("+5") == 5` and `Int("-0") == 0`, so these keys decode as perfectly
+    // valid — and then the `aliases[String(clusterID)]` lookup the overlay and `renameSpeaker` both
+    // perform MISSES, and the name the user typed vanishes with no error at all. "7" and "007" can
+    // even coexist as two keys for one cluster, one of them permanently shadowed. Certifying a file
+    // trustworthy and then dropping part of it is worse than refusing it.
+    for key in ["007", "+5", "-0"] {
+        let data = try JSONEncoder.diarization.encode(artifact(aliases: [key: "Ada"]))
+        var thrown: Error?
+        do { _ = try DiarizationArtifactCodec.decode(data) } catch { thrown = error }
+        #expect(thrown as? DiarizationArtifactError == .malformed("aliasKey"), "key \(key) was accepted")
+    }
+}
