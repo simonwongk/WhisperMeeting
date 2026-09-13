@@ -141,7 +141,9 @@ func artifactCarriesNoVoiceData() throws {
         #expect(!keys.contains { $0.lowercased().contains(leak) }, "artifact leaked a \(leak) field")
     }
     // Both are fixed-width digests, so a bounded length is what stops either from being widened
-    // into a carrier for the data it is named after.
+    // into a carrier for the data it is named after. These two lines read the values back out of
+    // this file's own fixture, so they pin the fixture, not the codec — `artifactBoundsItsDigestFields`
+    // is the one that tests the bound.
     let producer = try #require(object["producer"] as? [String: Any])
     let embeddingHash = try #require(producer["embeddingModelSHA256"] as? String)
     #expect(embeddingHash.count <= 64)
