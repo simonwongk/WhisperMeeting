@@ -219,3 +219,50 @@ func recordingFingerprintMatchesWholeFileDigest() throws {
     #expect(try RecordingFingerprint.sha256(of: empty)
         == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 }
+
+@Test("A sidecar whose bytes cannot be read is preserved, and the save refuses (F218)")
+func storeRefusesToOverwriteUnreadableBytes() throws {
+    let (root, meetingID, directory) = try makeRecording()
+    let sidecar = directory.appendingPathComponent("diarization.json")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    // The aliases a person typed exist nowhere else, so bytes we cannot even read are the ones
+    // most worth keeping (AGENTS.md:422). An atomic write needs only directory permission, so
+    // nothing but an explicit refusal stops it.
+    let precious = Data(#"{"schemaVersion":1,"aliases":{"0":"Ada"}"#.utf8)
+    try precious.write(to: sidecar)
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: sidecar.path)
+
+    #expect(throws: StoreQuarantineError.couldNotPreserve("diarization.json")) {
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+    }
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path)
+    #expect(try Data(contentsOf: sidecar) == precious)
+}
+
+@Test("A quarantine that cannot be made stops the save rather than being swallowed (F218)")
+func storeRefusesToOverwriteWhenTheQuarantineCopyFails() throws {
+    let (root, meetingID, directory) = try makeRecording()
+    let sidecar = directory.appendingPathComponent("diarization.json")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let corrupt = Data("{ half-written aliases".utf8)
+    try corrupt.write(to: sidecar)
+    // The bytes read fine and simply do not decode, so the save reaches the quarantine branch — and
+    // the copy aside cannot be made. `StoreQuarantineError.couldNotPreserve` promises the file "was
+    // left untouched and nothing was written", so swallowing it with `try?` would make that promise
+    // a lie the moment the write below succeeded.
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+
+    #expect(throws: StoreQuarantineError.couldNotPreserve("diarization.json")) {
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+    }
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    #expect(try Data(contentsOf: sidecar) == corrupt)
+}

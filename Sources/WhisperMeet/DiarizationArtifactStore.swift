@@ -93,18 +93,31 @@ enum DiarizationArtifactStore {
         guard fileManager.fileExists(atPath: directory.path) else {
             throw DiarizationArtifactStoreError.recordingFolderMissing(artifact.meetingID)
         }
-        if let existing = try? Data(contentsOf: url) {
-            do {
-                _ = try DiarizationArtifactCodec.decode(existing)
-            } catch DiarizationArtifactError.newerSchema(let version) {
-                // Downgrading a newer build's file would destroy whatever it carries that this
-                // build cannot even name. Refuse; the user keeps both the file and the message.
-                throw DiarizationArtifactStoreError.newerSchemaPresent(version)
-            } catch {
-                // Unreadable here does not mean worthless: those bytes may hold the only copy of
-                // the aliases someone typed. Copy them aside before replacing them, exactly as the
-                // load path does — a save can arrive without a preceding load.
-                quarantine(url, using: fileManager)
+        if fileManager.fileExists(atPath: url.path) {
+            if let existing = try? Data(contentsOf: url) {
+                do {
+                    _ = try DiarizationArtifactCodec.decode(existing)
+                } catch DiarizationArtifactError.newerSchema(let version) {
+                    // Downgrading a newer build's file would destroy whatever it carries that this
+                    // build cannot even name. Refuse; the user keeps both the file and the message.
+                    throw DiarizationArtifactStoreError.newerSchemaPresent(version)
+                } catch {
+                    // Undecodable is not worthless: these bytes may hold the only copy of the
+                    // aliases someone typed. Copy them aside before replacing them, exactly as the
+                    // load path does — a save can arrive without a preceding load. And if they
+                    // cannot be preserved, refuse to write at all: `couldNotPreserve` promises the
+                    // file "was left untouched and nothing was written", so swallowing it with
+                    // `try?` would make that promise a lie (AGENTS.md:422, and the propagating
+                    // `try` in BackupJSONStore.save).
+                    _ = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
+                }
+            } else {
+                // Bytes that exist but cannot even be READ are the ones most worth keeping — and
+                // the ones a bare `try?` silently skips past. `Data.write(options: .atomic)` writes
+                // a temp file and renames, so it needs only directory permission and would destroy
+                // them without ever touching them. `preserve` throws `.couldNotPreserve` here, and
+                // that refusal is what has to stop the write.
+                _ = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
             }
         }
         try DiarizationArtifactCodec.encode(artifact).write(to: url, options: .atomic)
@@ -118,9 +131,13 @@ enum DiarizationArtifactStore {
         try fileManager.removeItem(at: url)
     }
 
-    /// Best-effort preservation. `StoreQuarantine.preserve` copies rather than moves and is
-    /// idempotent per (file, byte content), so a relaunch loop cannot fill the folder with
-    /// duplicates; a failure to copy must not stop the caller from reporting the real problem.
+    /// Best-effort preservation for the LOAD path only, where nothing is being overwritten and a
+    /// failure to copy must not stop the caller from reporting the real problem. `save` must never
+    /// use this: there, dropping the error would let the write destroy the very bytes the copy was
+    /// meant to keep, so it calls `StoreQuarantine.preserve` with a propagating `try` instead.
+    ///
+    /// `StoreQuarantine.preserve` copies rather than moves and is idempotent per (file, byte
+    /// content), so a relaunch loop cannot fill the folder with duplicates.
     private static func quarantine(_ url: URL, using fileManager: FileManager) {
         _ = try? StoreQuarantine.preserve(fileAt: url, using: fileManager)
     }
