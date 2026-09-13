@@ -8,7 +8,9 @@ The proposed first release labels portions of a completed transcript with anonym
 
 The technical recommendation is to evaluate an offline Core ML implementation of a Community-1-style pipeline through FluidAudio first, with sherpa-onnx as the native fallback and the official Python Community-1 pipeline as a research control. No candidate is selected for shipping until it clears the legal, privacy, offline, quality, performance, recovery, and accessibility gates in this PRD.
 
-**Current-policy status.** PRODUCT_SPEC.md and the roadmap deliberately forbid speaker diarization today. The user's request authorizes this proposal and research; it does not silently amend that boundary. No implementation ticket may close as shipped until the policy amendment in [Required decision](#required-decision-before-implementation) is approved and the affected product documents are changed together.
+> **Superseded 2026-09-13 (F216).** This recommendation predates the constraint that WhisperMeet add no third-party SwiftPM dependency. Under that constraint the selected runtime is a pinned native `sherpa-onnx` binary invoked as a subprocess; FluidAudio was evaluated and not chosen. The reasoning, per-artifact licences, pinned hashes, and offline evidence are in [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md). One further correction: the `pip` distribution of sherpa-onnx statically links espeak-ng (GPL-3.0) and must not be shipped.
+
+**Current-policy status.** **Approved 2026-09-13.** The amendment in [Required decision](#required-decision-before-implementation) was accepted and `AGENTS.md`, `docs/PRODUCT_SPEC.md`, `docs/ROADMAP.md`, `docs/CHANGELOG.md` and the end-user `README.md` were changed together in the F216 commit. Two boundaries were deliberately *not* relaxed: ASR segments are still never presented as identified speakers, and imported third-party captions still have speaker labels stripped before a segment is constructed.
 
 ## Problem statement
 

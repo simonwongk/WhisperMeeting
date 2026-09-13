@@ -40,7 +40,9 @@ deliberately static—after editing a board file, run the two commands documente
 | [`LIBRARY_INDEX_TRANSACTION_DESIGN.md`](LIBRARY_INDEX_TRANSACTION_DESIGN.md) | F190 — the transactional, generation-aware write protocol, with the four rejected designs and the facts measured on-machine. **Design only.** |
 | [`LIBRARY_INDEX_TRANSACTION_PLAN.md`](LIBRARY_INDEX_TRANSACTION_PLAN.md) | F190 — the 11-task implementation sequence for that design. Task 1 shipped; 2–11 open. |
 | [`URL_IMPORT_PLAN.md`](URL_IMPORT_PLAN.md) | Proposed plan (`F175`) for importing audio from a pasted link. Not started; decisions and verified traps recorded before any code. |
-| [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) | Proposed, evidence-gated plan (`F215`) for optional local anonymous speaker-turn labels. It does not change the current no-diarization policy until separately approved. |
+| [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) | The requirements (`F215`) for optional local anonymous speaker-turn labels. **Approved 2026-09-13**; the runtime recommendation is superseded by the decision record below. |
+| [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) | `F216` — which local diarization runtime was selected and why, with per-artifact licences, pinned hashes, and the offline evidence. |
+| [`SPEAKER_DIARIZATION_PLAN.md`](SPEAKER_DIARIZATION_PLAN.md) | `F216`–`F221` — the 17-task implementation sequence for that decision. |
 
 ## Historical planning records
 

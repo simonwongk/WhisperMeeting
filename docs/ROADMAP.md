@@ -2,7 +2,8 @@
 
 A living, prioritized backlog for autonomous improvement rounds. Every item must respect the
 non-negotiable invariants in `PRODUCT_SPEC.md`: local-only (except opt-in Claude summaries), the
-recording is the source of truth, no speaker diarization, original language only. Features should
+recording is the source of truth, speaker labels only as explicit local anonymous analysis (never an
+identity claim), original language only. Features should
 deepen the product's identity — a private, accurate, post-meeting transcription tool — not sprawl.
 
 Legend: impact (H/M/L) · effort (H/M/L) · risk (H/M/L).
@@ -89,5 +90,7 @@ open roadmap work; use **Next candidates** for work that could become a ticket.
 
 ## Explicitly deferred (cost/risk vs. identity)
 - Pause/resume recording (SCStream complexity/risk to the source-of-truth audio).
-- Any cloud/on-device speaker diarization surfaced as identified speakers (violates invariant;
-  source tracks are retained on disk for a *future* local module only).
+- Any speaker analysis surfaced as *identified* people — enrollment, voiceprints, cross-meeting
+  voice matching, or inferred role/gender/sentiment (violates invariant). Anonymous, per-meeting,
+  on-device turn labels shipped separately and are bounded by `PRODUCT_SPEC.md`.
+- Cloud diarization of any kind (sends voice-derived data off-device).

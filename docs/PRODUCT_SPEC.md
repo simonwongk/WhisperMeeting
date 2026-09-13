@@ -67,9 +67,26 @@ post-meeting transcript in the meeting’s original language, with all speech pr
 
 ## Explicit limitation
 
-The official OpenAI Whisper repository does not perform speaker diarization. v1 must not present
-timestamped Whisper segments as identified speakers. The app preserves microphone and system-audio
-source tracks for a future, separately approved local diarization module.
+WhisperMeet may offer an explicit, post-meeting, entirely local speaker-turn analysis for a
+completed recording. It may assign anonymous, per-meeting voice-cluster labels and let the user
+rename those labels for that meeting. It must not infer, enroll, or verify a real person's identity;
+match voices across meetings; infer role, gender, demographic attributes, or sentiment; or send
+audio, embeddings, speaker turns, or user-entered aliases to a service.
+
+The recording and original transcript remain unchanged. Failed, cancelled, ambiguous, overlapping,
+unsupported, or timing-unavailable analysis preserves them and explains the limitation plainly.
+Voice embeddings and model scratch output are temporary; no voice profile is persisted. Default
+transcript views, notes sidecars, ordinary exports, search, and both local and Claude summaries
+exclude speaker labels. A person must explicitly request any labeled export.
+
+Two boundaries survive this allowance and remain absolute. ASR itself performs no diarization, so
+timestamped Whisper or Qwen segments are never presented as identified speakers — a label may come
+only from the separate analysis above. And the allowance is for analysis performed on this Mac:
+imported third-party captions still never carry a speaker claim into a transcript, so the subtitle
+parser goes on stripping `>>`, `JOHN:`, and `[Speaker 1]` before any segment is constructed.
+
+The app preserves microphone and system-audio source tracks as capture provenance. They are never
+treated as people: one track can carry several voices, and one voice can appear on both.
 
 ## Recovery boundary
 

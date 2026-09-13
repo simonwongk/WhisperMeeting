@@ -140,7 +140,8 @@ A ticket may only be closed `fixed` when all of these hold:
 - If the change touches a runtime helper or model adapter, it was exercised against the **real
   installed model**, not only a stub. Stubs cannot catch upstream API drift.
 - The non-negotiable invariants in `docs/PRODUCT_SPEC.md` are intact: local-only except opt-in
-  Claude summaries, the recording is the source of truth, no diarization, original language only.
+  Claude summaries, the recording is the source of truth, speaker labels only as explicit local
+  anonymous analysis and never an identity claim, original language only.
 - No user meeting, recording, index, or transcript was read or modified for testing. Use
   `Scripts/bench/clips`.
 - **Traceable by ticket ID.** Traceability runs through the **ticket ID in the commit message**, not

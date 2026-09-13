@@ -5,7 +5,9 @@ for pure logic) → `swift test` + `swift build` → adversarial multi-agent rev
 build and deploy. Later maintenance cycles record their own verification and deployment status
 explicitly. The test suite has grown steadily from 28 across rounds — see each cycle's own recorded
 count below for the figure at that point. Non-negotiable invariants (local-only except Claude summaries;
-recording is the source of truth; no diarization; original language only) are preserved.
+recording is the source of truth; speaker labels only as explicit local anonymous analysis, never an
+identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
+while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
 ## Storage — saving the library stops getting slower as it grows (F211)
 

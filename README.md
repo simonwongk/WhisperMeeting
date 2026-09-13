@@ -20,9 +20,10 @@ OpenAI Whisper is the default transcription engine; Apple-silicon Macs can addit
 opt-in open-source Qwen3-ASR engine. A separate local language model (installed once) powers the
 on-device summaries and the AI transcript-correction pass.
 
-Two things the app deliberately will not do: it does not identify **who** is speaking (see [Speaker
-limitation](#speaker-limitation)), and it never modifies your recording — a failed or cancelled
-transcription always leaves the audio intact and retryable.
+Two things the app deliberately will not do: it never identifies **who** is speaking — an optional
+local analysis can mark parts of a transcript “Speaker 1” and “Speaker 2”, but never as a named
+person (see [Speaker limitation](#speaker-limitation)) — and it never modifies your recording, so a
+failed or cancelled transcription always leaves the audio intact and retryable.
 
 Beyond meetings, a **Quick Dictation** hotkey transcribes short clips and pastes them into any app.
 
@@ -230,10 +231,28 @@ Monitoring](docs/RECORDING_HEALTH.md) for thresholds and interpretation.
 
 ## Speaker limitation
 
-OpenAI Whisper transcribes speech and produces timestamped segments, but it does not perform speaker
-diarization. This version therefore does not claim to identify different people. The separate
-microphone and system-audio source files are retained so a local diarization model can be added
-later without rerecording meetings.
+Transcription itself does not tell speakers apart: Whisper and Qwen produce timestamped segments,
+not people. So a transcript is never labeled by default.
+
+For a finished meeting you can ask WhisperMeet to **Analyze Speaker Turns**. A model on your Mac
+groups the audio into anonymous voice clusters and labels parts of the transcript “Speaker 1”,
+“Speaker 2”, and so on. You can rename a label for that one meeting — “Me”, “Project lead” — and
+that name stays in that meeting, on this Mac.
+
+What it deliberately does not do:
+
+- It does not identify, enroll, or verify anyone. A cluster is a voice grouping, not a person.
+- It does not recognize the same voice in a different meeting. Labels are per-meeting, and they are
+  replaced whenever you analyze again.
+- It does not guess role, gender, or anything else about a speaker.
+- It does not send audio, voice data, or the names you type anywhere. Analysis runs entirely on your
+  Mac, and the model files are downloaded once, only when you ask for them.
+- It does not change your recording or your transcript, even when it fails or you cancel.
+
+Labels are inferred and can be wrong, especially when people talk over each other. Where the
+analysis is not confident it says **Uncertain** or **Overlapping voices** rather than guessing. Copy,
+ordinary exports, notes, search, and summaries stay unlabeled; including labels is a separate export
+you choose explicitly.
 
 ## Verification
 
