@@ -97,8 +97,10 @@ func storeRefusesToClobberANewerSchema() throws {
     let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
     #expect(!siblings.contains { $0.hasPrefix("diarization.unreadable-") })
     // And a save must refuse rather than downgrade it, or a rerun on this build would silently
-    // destroy whatever the newer schema was carrying.
-    #expect(throws: (any Error).self) {
+    // destroy whatever the newer schema was carrying. The case AND the version it declared: this
+    // error was introduced with this file and nothing asserted either, so a save that dropped the
+    // version — or threw for some entirely unrelated reason — read as correct.
+    #expect(throws: DiarizationArtifactStoreError.newerSchemaPresent(99)) {
         try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
     #expect(try Data(contentsOf: sidecar) == future)
@@ -150,7 +152,10 @@ func storeClearRemovesOnlyTheSidecar() throws {
     #expect(try Data(contentsOf: wav) == before)
 }
 
-@Test("A save never touches the audio, and a failed save leaves the previous artifact intact (F218)")
+// The failed-save half of this name is proved by `storeRefusesToOverwriteUnreadableBytes` and
+// `storeRefusesToClobberANewerSchema`; nothing in the body below performs a failing save at all, so
+// the name now claims only what the body exercises.
+@Test("A save replaces the sidecar atomically and never touches the audio (F218)")
 func storeSaveIsAtomicAndNonDestructive() throws {
     let (root, meetingID, directory) = try makeRecording()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -177,7 +182,10 @@ func storeNeverCreatesARecordingFolder() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let meetingID = UUID()
 
-    #expect(throws: (any Error).self) {
+    // Named, not "any error": `Data.write` into a nonexistent directory fails on its own, so this
+    // test passed even with the explicit guard, its typed error and its user-facing message deleted
+    // outright — and the whole point of the guard is that the folder is never created.
+    #expect(throws: DiarizationArtifactStoreError.recordingFolderMissing(meetingID)) {
         try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
     #expect(!FileManager.default.fileExists(
