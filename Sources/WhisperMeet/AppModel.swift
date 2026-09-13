@@ -84,6 +84,35 @@ enum SegmentReRunError: LocalizedError {
     }
 }
 
+/// What the speaker-analysis seam needs (F219). Deliberately NOT the `MeetingRecord`: the runtime is
+/// handed a path and a duration, never the transcript, the title, the notes, or anything else about
+/// the meeting — there is nothing about a person for it to learn from.
+struct SpeakerDiarizationRequest: Sendable {
+    let meetingID: UUID
+    let audioURL: URL
+    let durationSeconds: TimeInterval
+}
+
+/// Everything a view needs to render anonymous speaker labels for one meeting, recomputed from the
+/// CURRENT segments (F219). Display only: nothing here is ever written into `TranscriptSegment`,
+/// `transcriptText`, or `meetings.json`.
+struct SpeakerOverlayPresentation: Sendable, Equatable {
+    /// One row per segment, in segment order.
+    let rows: [SpeakerOverlayRow]
+    /// The distinct clusters actually shown, in first-appearance order — the legend's row order.
+    let clusterIDs: [Int]
+    /// Cluster id -> the label a person typed for it, for this one meeting.
+    let aliases: [Int: String]
+    /// The stored analysis was computed against different transcript timings, so no label may be
+    /// shown. The result itself is KEPT: the user is told why, and can analyze again.
+    let isStale: Bool
+    /// Exactly one voice could be told apart. Labelling every row "Speaker 1" is worthless for a real
+    /// monologue and actively misleading for a failed separation, and renaming that single cluster
+    /// would attribute the other person's words to the name typed — so nothing is labelled and rename
+    /// is refused (the F216/F217 single-cluster rule).
+    let isSingleCluster: Bool
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private enum EngineAdmissionError: LocalizedError {
@@ -303,9 +332,10 @@ final class AppModel: ObservableObject {
         ) ?? .local
         // Off unless the user has explicitly turned it on (F183).
         linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
-        runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+        runtimeExecutableURL = findWhisperExecutable()
         isQwenInstalled = QwenASRRuntime.isInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
+        isDiarizationInstalled = isDiarizationModelInstalled()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
         refreshRecordingPreflight()
     }
@@ -383,9 +413,10 @@ final class AppModel: ObservableObject {
     }
 
     func refreshRuntime() {
-        runtimeExecutableURL = LocalWhisperRuntime.findExecutable()
+        runtimeExecutableURL = findWhisperExecutable()
         isQwenInstalled = QwenASRRuntime.isInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
+        isDiarizationInstalled = isDiarizationModelInstalled()
     }
 
     func refreshRecordingPreflight() {
@@ -458,6 +489,16 @@ final class AppModel: ObservableObject {
     /// (F165). Injectable for headless tests; defaults to the real check.
     var isCorrectionModelInstalled: @Sendable () -> Bool = { SummarizerRuntime.isCorrectionHelperInstalled() }
 
+    /// Whether the pinned speaker-analysis runtime is installed (F219). Injectable so the admission
+    /// guard is testable without the real 60 MB runtime, mirroring `isSummarizerModelInstalled`.
+    var isDiarizationModelInstalled: @Sendable () -> Bool = { DiarizationRuntime.isInstalled() }
+
+    /// Locates the installed local-Whisper executable. Injectable so a headless test can put the app
+    /// into the "a transcription is running" state: `beginTranscription` refuses without an installed
+    /// engine and re-probes the filesystem itself, which left every "refuse while transcribing" guard
+    /// unreachable from a test (F219). Defaults to the real probe, so behaviour is unchanged.
+    var findWhisperExecutable: @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() }
+
     /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
     /// second-opinion (F88) and per-segment re-run (F92) flows are testable with a stub engine; when nil,
     /// `executeEngine` performs the real Qwen/Whisper dispatch.
@@ -478,6 +519,25 @@ final class AppModel: ObservableObject {
     @Published private(set) var secondOpinionEngine: MeetingTranscriptionEngine?
     /// True while a second-opinion or segment re-run engine pass is in flight (F88/F92).
     @Published private(set) var isRunningAuxiliaryEngine = false
+
+    /// The meeting whose speaker analysis is running, or nil. Scoped to an id — never a global Bool —
+    /// so another meeting's view never shows this run as its own (F156/F173's lesson, F219).
+    @Published private(set) var diarizationRunningID: UUID?
+    /// Fraction complete (0...1) of the in-flight analysis, so the sheet shows a determinate bar
+    /// instead of a featureless spinner. nil when idle.
+    @Published private(set) var diarizationProgress: Double?
+    /// True while the speaker-analysis installer owns the machine. Set by the installer wiring; read
+    /// here so analysis never starts on top of a half-installed runtime (F219).
+    @Published private(set) var isInstallingDiarizationRuntime = false
+    /// Whether the pinned speaker-analysis runtime is on disk, refreshed alongside the other runtimes
+    /// so Settings can offer Install / Repair (F219).
+    @Published private(set) var isDiarizationInstalled = false
+    /// The in-flight analysis, held so `cancelSpeakerDiarization()` can stop it.
+    private var diarizationTask: Task<Void, Never>?
+    /// One meeting's computed overlay, keyed by the timings it was computed from. Single-entry on
+    /// purpose: exactly one transcript is on screen at a time, so this bounds memory while still
+    /// keeping the 4 Hz playback tick off the sidecar read and the turn/segment walk (the F160 rule).
+    private var speakerOverlayCache: (meetingID: UUID, fingerprint: String, presentation: SpeakerOverlayPresentation?)?
 
     /// Runs the given engine selection on a recording (or clip) and returns the result without touching
     /// the store. Extracted from `performTranscription` so second-opinion/segment-rerun share one code
@@ -608,6 +668,353 @@ final class AppModel: ObservableObject {
             meeting.segments[index].text = secondary
             meeting.transcriptText = TranscriptFormatter.timestamped(meeting.segments)
         }
+    }
+
+    // MARK: - Speaker analysis (F219)
+
+    /// Runs anonymous speaker analysis over one prepared copy of a recording, reporting progress as a
+    /// fraction. Injectable so the whole wiring — guards, cancellation, the sidecar, the overlay — is
+    /// testable without the pinned runtime or real audio, in the F47 seam style.
+    ///
+    /// The default prepares 16 kHz mono audio into a per-run temp DIRECTORY that is removed on the way
+    /// out, then runs `LocalDiarizationClient`. `request.audioURL` is only ever READ: the canonical
+    /// recording is never transcoded in place, moved, or rewritten.
+    var runSpeakerDiarization: @Sendable (
+        SpeakerDiarizationRequest, @Sendable @escaping (Double) async -> Void
+    ) async throws -> SpeakerDiarizationResult = { request, progress in
+        // A directory rather than a bare temp file, matching QwenASRClient's decode-first working
+        // directory (F118): cleanup is then one `removeItem` that cannot strand a sibling afconvert
+        // may have left behind, and it runs on every exit path including a throw.
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-Diarization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        // A meeting is captured at 48 kHz mono, so this normally converts; a recording already at
+        // 16 kHz mono is analyzed where it lies, read-only.
+        var analysisURL = request.audioURL
+        if AudioTranscoder.needsTranscoding(request.audioURL) {
+            let prepared = workspace.appendingPathComponent("analysis.wav")
+            try AudioTranscoder.transcodeToWAV(input: request.audioURL, output: prepared)
+            analysisURL = prepared
+        }
+        try Task.checkCancellation()
+
+        let client = LocalDiarizationClient(
+            executableURL: DiarizationRuntime.executable(),
+            segmentationModelURL: DiarizationRuntime.segmentationModel(),
+            embeddingModelURL: DiarizationRuntime.embeddingModel()
+        )
+        return try await client.diarize(
+            audioURL: analysisURL,
+            durationSeconds: AppModel.analysisSeconds(of: analysisURL, fallback: request.durationSeconds),
+            progress: progress
+        )
+    }
+
+    /// The pinned stack this build analyzes with, recorded on every artifact so a result produced by a
+    /// different runtime or model is recognizable later. These are the hashes the installer verifies
+    /// per file at install time (`docs/DIARIZATION_RUNTIME_DECISION.md`); re-hashing 34 MB of models on
+    /// every run to re-derive a value the install already gated on would buy nothing.
+    private static let diarizationProducer = DiarizationProducer(
+        runtimeID: "sherpa-onnx-offline-speaker-diarization",
+        runtimeVersion: "1.13.8",
+        segmentationModelSHA256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+        embeddingModelSHA256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+        clusterThreshold: DiarizationRuntime.clusterThreshold
+    )
+
+    /// The canonical recording file names capture and interrupted-recording recovery write. An
+    /// imported or downloaded file keeps its own name, which is what makes this a reliable test for
+    /// "recorded natively in WhisperMeet".
+    private static let nativeRecordingFileNames: Set<String> = ["meeting.wav", "meeting-recovered.wav"]
+
+    /// Whether a meeting is eligible for speaker analysis at all. v1 is deliberately narrow — a
+    /// completed, natively recorded meeting with timestamps to reconcile against. Imports and link
+    /// audio wait for their own source-quality and recovery gate (the PRD's eligibility rule), and a
+    /// transcript with no timings (the Qwen alignment-failure shape) has nothing to label.
+    ///
+    /// Exposed so the menu entry can be disabled with the same rule the request enforces.
+    func supportsSpeakerAnalysis(_ meeting: MeetingRecord) -> Bool {
+        meeting.status == .completed && isNativeRecording(meeting) && hasUsableTimings(meeting)
+    }
+
+    private func isNativeRecording(_ meeting: MeetingRecord) -> Bool {
+        meeting.source == nil
+            && Self.nativeRecordingFileNames.contains(
+                URL(fileURLWithPath: meeting.recordingPath).lastPathComponent
+            )
+    }
+
+    private func hasUsableTimings(_ meeting: MeetingRecord) -> Bool {
+        meeting.segments.contains { $0.start?.isFinite == true }
+    }
+
+    /// The recording length handed to the seam. `duration` is what the index recorded; a transcript
+    /// that runs past it (a duration never written, or written short) would otherwise make every turn
+    /// beyond it fail interval validation and throw away a whole valid result, so the last timed
+    /// segment raises the floor.
+    private static func analysisDurationSeconds(for meeting: MeetingRecord) -> TimeInterval {
+        let transcriptEnd = meeting.segments
+            .compactMap { $0.end ?? $0.start }
+            .filter(\.isFinite)
+            .max() ?? 0
+        return max(meeting.duration, transcriptEnd)
+    }
+
+    /// The duration of the audio actually handed to the runtime, read from the prepared WAV's header.
+    /// This is the bound every turn is validated against, so it has to describe the file the runtime
+    /// saw rather than the index's recollection of the original.
+    nonisolated static func analysisSeconds(of url: URL, fallback: TimeInterval) -> TimeInterval {
+        guard let header = WAVInspection.header(at: url),
+              header.sampleRate > 0, header.channels > 0, header.bitsPerSample >= 8 else {
+            return fallback
+        }
+        let bytesPerFrame = Double(header.channels) * Double(header.bitsPerSample / 8)
+        guard bytesPerFrame > 0 else { return fallback }
+        let seconds = Double(header.declaredDataBytes) / (bytesPerFrame * Double(header.sampleRate))
+        return seconds.isFinite && seconds > 0 ? seconds : fallback
+    }
+
+    /// Starts anonymous speaker analysis for one meeting (F219).
+    ///
+    /// Every refusal is stated through `alertMessage` — the channel these entry points already use —
+    /// and every one of them happens BEFORE the seam is touched. Analysis is minutes of subprocess
+    /// time whose only product is a sidecar a read-only library would refuse, so a refusal discovered
+    /// afterwards is a refusal the user paid for (the F187 rule, applied to a new heavy path).
+    func requestSpeakerDiarization(for id: UUID) {
+        guard diarizationRunningID == nil else {
+            alertMessage = "Speaker analysis is already running. Wait for it to finish, or cancel it."
+            return
+        }
+        guard !hasActiveTranscription else {
+            alertMessage = "Finish the current transcription before analyzing speaker turns."
+            return
+        }
+        guard !isRunningAuxiliaryEngine else {
+            alertMessage = "Finish the second opinion or segment re-run before analyzing speaker turns."
+            return
+        }
+        guard !isDictationActive() else {
+            alertMessage = "Finish the current Quick Dictation before analyzing speaker turns."
+            return
+        }
+        guard !isInstallingRecognitionRuntime, !isInstallingDiarizationRuntime else {
+            alertMessage = "Wait for the model installation to finish before analyzing speaker turns."
+            return
+        }
+        // Before the runtime check, so a read-only library is reported as the real blocker rather than
+        // as a missing model the user would then install for nothing.
+        guard libraryAcceptsChanges("Speaker analysis") else { return }
+        guard isDiarizationModelInstalled() else {
+            alertMessage = LocalDiarizationError.runtimeNotInstalled.localizedDescription
+            return
+        }
+        guard let meeting = store.meeting(id: id) else { return }
+        guard meeting.status == .completed, isNativeRecording(meeting) else {
+            alertMessage = "Speaker analysis needs a completed recording made in WhisperMeet. Imported and downloaded audio is not supported yet."
+            return
+        }
+        guard hasUsableTimings(meeting) else {
+            alertMessage = "This transcript has no timestamps to analyze against, so speaker turns cannot be labelled. The transcript itself is unchanged."
+            return
+        }
+
+        let request = SpeakerDiarizationRequest(
+            meetingID: id,
+            audioURL: store.recordingURL(for: meeting),
+            durationSeconds: Self.analysisDurationSeconds(for: meeting)
+        )
+        diarizationRunningID = id
+        diarizationProgress = nil
+        // Claimed alongside the scoped id so a transcription or a second opinion refuses to start on
+        // top of this run, exactly as `requestSecondOpinion` does (F140). Cleared in the epilogue.
+        isRunningAuxiliaryEngine = true
+        diarizationTask = Task {
+            await performSpeakerDiarization(request)
+            diarizationRunningID = nil
+            diarizationProgress = nil
+            isRunningAuxiliaryEngine = false
+            diarizationTask = nil
+            // Analysis never evicts the dictation helpers itself, but it does hold the auxiliary flag
+            // a finishing transcription checks before rewarming, so without this a rewarm could fall
+            // between the two and leave the next hotkey cold.
+            if !hasActiveTranscription { warmIdleDictationRecognition() }
+        }
+    }
+
+    /// The analysis itself, separated from the guards so a test can drive a whole run and so the
+    /// persistence decision lives in one place: ONLY a complete, validated result becomes a sidecar.
+    func performSpeakerDiarization(_ request: SpeakerDiarizationRequest) async {
+        // Re-checked here as well as at the entry point, so the refusal cannot be skipped by a caller
+        // that reaches the worker directly. `DiarizationArtifactStore` deliberately holds no
+        // `MeetingStore` reference, so nothing below this line would refuse to write a sidecar into a
+        // read-only library — the F187 backstop, placed where inspection cannot miss it.
+        guard libraryAcceptsChanges("Speaker analysis") else { return }
+        do {
+            let result = try await runSpeakerDiarization(request) { fraction in
+                await self.apply(diarizationProgress: fraction)
+            }
+            try Task.checkCancellation()
+            // Re-read rather than reuse: the meeting may have been edited or deleted while the runtime
+            // worked, and the fingerprint has to describe the transcript this result will be shown
+            // against, not the one it started from.
+            guard let meeting = store.meeting(id: request.meetingID) else { return }
+            let recordingURL = store.recordingURL(for: meeting)
+            // A meeting recording is routinely hundreds of megabytes and can be gigabytes; hashing it
+            // on the main actor would freeze the window for as long as the read takes.
+            let sha256 = try await Task.detached(priority: .utility) {
+                try RecordingFingerprint.sha256(of: recordingURL)
+            }.value
+            try Task.checkCancellation()
+            let artifact = DiarizationArtifactV1(
+                meetingID: request.meetingID,
+                recording: DiarizationRecordingReference(
+                    relativePath: meeting.recordingPath,
+                    sha256: sha256,
+                    durationSeconds: max(result.audioSeconds, request.durationSeconds)
+                ),
+                transcriptTimingFingerprint: TranscriptTimingFingerprint.compute(meeting.segments),
+                producer: Self.diarizationProducer,
+                createdAt: Date(),
+                turns: result.turns,
+                // A rerun deliberately starts with no aliases: cluster ids permute between runs, so
+                // carrying a typed label across would quietly attribute it to a different voice.
+                aliases: [:]
+            )
+            try DiarizationArtifactStore.save(artifact, in: store.rootDirectory)
+            invalidateSpeakerOverlayCache()
+        } catch is CancellationError {
+            // Nothing written and nothing said: the user asked for this.
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Publishes the runtime's live progress for the review sheet.
+    func apply(diarizationProgress fraction: Double) {
+        diarizationProgress = min(max(fraction, 0), 1)
+    }
+
+    /// Stops the in-flight analysis. The task's own epilogue clears the published state; nothing is
+    /// written, because the sidecar is saved only after a complete result.
+    func cancelSpeakerDiarization() {
+        diarizationTask?.cancel()
+    }
+
+    /// Discards a meeting's speaker analysis. The recording and the transcript are never touched —
+    /// throwing away labels is not throwing away the meeting.
+    func clearSpeakerDiarization(for id: UUID) {
+        guard libraryAcceptsChanges("Clearing speaker labels") else { return }
+        do {
+            try DiarizationArtifactStore.clear(meetingID: id, in: store.rootDirectory)
+        } catch {
+            alertMessage = "Those speaker labels could not be removed. Your recording and transcript are unchanged. \(error.localizedDescription)"
+        }
+        invalidateSpeakerOverlayCache()
+    }
+
+    /// Stores the label a person typed for one anonymous cluster, in this meeting only. It is an alias
+    /// on a cluster, never an identity claim, and it never reaches the transcript or any default
+    /// export. Renaming is refused unless that cluster is actually being shown — with one voice
+    /// distinguished there is nothing safe to name, because the name would also cover whoever else the
+    /// runtime failed to separate.
+    func renameSpeaker(clusterID: Int, to alias: String, in id: UUID) {
+        guard libraryAcceptsChanges("Renaming a speaker label") else { return }
+        guard let presentation = speakerOverlay(for: id),
+              !presentation.isSingleCluster,
+              presentation.clusterIDs.contains(clusterID) else {
+            alertMessage = "There is no speaker label to rename for this meeting."
+            return
+        }
+        guard case let .ready(artifact) = DiarizationArtifactStore.load(
+            meetingID: id, in: store.rootDirectory
+        ) else {
+            alertMessage = "That meeting's speaker analysis could not be read, so the label was not saved. Your transcript is unchanged."
+            return
+        }
+        var updated = artifact
+        let trimmed = String(
+            alias.trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(DiarizationArtifactV1.maximumAliasLength)
+        )
+        if trimmed.isEmpty {
+            updated.aliases.removeValue(forKey: String(clusterID))
+        } else {
+            updated.aliases[String(clusterID)] = trimmed
+        }
+        do {
+            try DiarizationArtifactStore.save(updated, in: store.rootDirectory)
+        } catch {
+            alertMessage = error.localizedDescription
+            return
+        }
+        invalidateSpeakerOverlayCache()
+    }
+
+    /// The labels to render for one meeting, or nil when none may be shown. A stale result is withheld
+    /// here rather than re-mapped onto timings it was never computed against.
+    func speakerOverlay(for id: UUID) -> SpeakerOverlayPresentation? {
+        guard let presentation = diarizationPresentation(for: id), !presentation.isStale else { return nil }
+        return presentation
+    }
+
+    /// The full state, INCLUDING a stale result — which the review surface has to explain plainly
+    /// rather than silently show nothing.
+    func diarizationPresentation(for id: UUID) -> SpeakerOverlayPresentation? {
+        guard let meeting = store.meeting(id: id) else { return nil }
+        let fingerprint = TranscriptTimingFingerprint.compute(meeting.segments)
+        if let cached = speakerOverlayCache, cached.meetingID == id, cached.fingerprint == fingerprint {
+            return cached.presentation
+        }
+        let presentation = computeSpeakerOverlay(for: meeting, fingerprint: fingerprint)
+        speakerOverlayCache = (id, fingerprint, presentation)
+        return presentation
+    }
+
+    private func computeSpeakerOverlay(
+        for meeting: MeetingRecord,
+        fingerprint: String
+    ) -> SpeakerOverlayPresentation? {
+        // Deliberately loaded WITHOUT the recording hash: hashing a multi-gigabyte recording belongs on
+        // the analysis path, not on a render. The app never mutates a recording, so that hash is a
+        // corruption check; the timing fingerprint is the one that moves during normal use.
+        guard case let .ready(artifact) = DiarizationArtifactStore.load(
+            meetingID: meeting.id, in: store.rootDirectory
+        ) else {
+            return nil
+        }
+        guard artifact.transcriptTimingFingerprint == fingerprint else {
+            return SpeakerOverlayPresentation(
+                rows: [], clusterIDs: [], aliases: [:], isStale: true, isSingleCluster: false
+            )
+        }
+        let rows = SpeakerOverlay.rows(
+            segments: meeting.segments,
+            turns: artifact.turns,
+            recordingDuration: meeting.duration > 0 ? meeting.duration : nil
+        )
+        let clusterIDs = SpeakerOverlay.clusterIDs(in: rows)
+        guard clusterIDs.count >= 2 else {
+            return SpeakerOverlayPresentation(
+                rows: rows.map { SpeakerOverlayRow(segmentIndex: $0.segmentIndex, label: .unlabeled) },
+                clusterIDs: [], aliases: [:], isStale: false, isSingleCluster: true
+            )
+        }
+        var aliases: [Int: String] = [:]
+        for (key, value) in artifact.aliases {
+            guard let clusterID = Int(key), clusterIDs.contains(clusterID) else { continue }
+            aliases[clusterID] = value
+        }
+        return SpeakerOverlayPresentation(
+            rows: rows, clusterIDs: clusterIDs, aliases: aliases, isStale: false, isSingleCluster: false
+        )
+    }
+
+    /// Dropped whenever the sidecar changes. The cache key carries the transcript's timings, so an
+    /// edited transcript misses by construction; only a change to the artifact itself needs this.
+    private func invalidateSpeakerOverlayCache() {
+        speakerOverlayCache = nil
     }
 
     /// Re-transcribe a single segment (F92): slice that segment's audio from `meeting.wav`, run the
