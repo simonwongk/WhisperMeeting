@@ -1569,7 +1569,13 @@ func runtimeInstallationPredicateRequiresEveryFile() throws {
 
 Model the process handling on `Sources/WhisperCore/LocalWhisperClient.swift:226-345` — read it before writing this. Required elements:
 
-- `DiarizationRuntime` with `managedDirectory(applicationSupport:)` → `<AppSupport>/WhisperMeet/Runtime/Diarization`, `executable` → `bin/sherpa-onnx-offline-speaker-diarization`, `segmentationModel` → `models/segmentation/model.onnx`, `embeddingModel` → `models/embedding/campplus_zh_en.onnx`, plus `isInstalled(applicationSupport:)` requiring an **executable** binary and both model files, and the pinned constants `clusterThreshold = 0.3`, `numThreads = 4`, `uncertainBelowConfidence` (set in Task 17 from measured data; start at `0.0` so nothing is marked uncertain until the number is earned).
+- `DiarizationRuntime` with `managedDirectory(applicationSupport:)` → `<AppSupport>/WhisperMeet/Runtime/Diarization`, `executable` → `bin/sherpa-onnx-offline-speaker-diarization`, `segmentationModel` → `models/segmentation/model.onnx`, `embeddingModel` → `models/embedding/campplus_zh_en.onnx`, plus `isInstalled(applicationSupport:)` requiring an **executable** binary and both model files, and the pinned constants `clusterThreshold = 0.3`, `numThreads = 4`, and `uncertainBelowConfidence = 0.0`.
+
+> **Keep the confidence floor at `0.0`; the number was not earned.** On the F216 fixtures a floor of
+> 0.50 does separate wholly-misattributed turns from correct ones *per turn*. But scored on what a
+> reader actually sees — rows surviving `SpeakerOverlay`'s 80%/20-point rule — the overlay already
+> abstains on exactly those rows: 100% displayed precision at 93.3% coverage without the floor,
+> versus 100% at 86.7% with it. It costs coverage and buys no precision.
 - `SpeakerDiarizationResult { turns: [SpeakerTurn], speakerCount: Int, audioSeconds: TimeInterval }`.
 - `LocalDiarizationClient.diarize(audioURL:durationSeconds:progress:)`:
   - Arguments exactly: `--print-args=false`, `--clustering.cluster-threshold=0.3`, `--clustering.compute-confidence=true`, `--segmentation.num-threads=4`, `--embedding.num-threads=4`, `--segmentation.pyannote-model=<path>`, `--embedding.model=<path>`, `<audio path>`.

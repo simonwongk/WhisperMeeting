@@ -595,7 +595,8 @@ line 3..N  <start> -- <end> speaker_<NN> confidence=<0.NNN>
 ```
 
 Segment line, exact form: `0.031 -- 8.485 speaker_00 confidence=0.707`. Regex:
-`^\s*([0-9]+\.[0-9]+)\s*--\s*([0-9]+\.[0-9]+)\s+speaker_([0-9]+)(?:\s+confidence=(-?[0-9.]+))?\s*$`.
+`^\s*([0-9]+\.[0-9]+)\s*--\s*([0-9]+\.[0-9]+)\s+speaker_([0-9]+)(?:\s+confidence=(n/a|-?[0-9.]+))?\s*$`.
+(The `n/a` alternative is load-bearing — see the confidence note below.)
 
 Adapter rules:
 - **Discard everything until the literal line `Started`.** Never log line 1 verbatim — it embeds the
@@ -604,8 +605,12 @@ Adapter rules:
 - **Speaker ids are not dense.** Real output from `en`:
   `speaker_00, speaker_02, speaker_00, speaker_02, …`. Remap to `0..N-1` in first-appearance order
   before anything reaches the UI or the sidecar.
-- `confidence` is present only with `--clustering.compute-confidence=true`; a value of `-2.0` is the
-  `kUnavailableConfidence` sentinel (only one cluster formed, or no overlapping embedding interval)
+- `confidence` has **three** forms, not two: a float in `[-1, 1]`; the literal string **`n/a`**; or
+  absent (when `--clustering.compute-confidence` is off). **Corrected 2026-09-13 after the F217
+  corpus run:** `n/a` is what the runtime actually prints when only one cluster formed — `mono_1spk`
+  and `zh_2spk_alt` emitted it for 100% of their turns. A pattern accepting only digits fails the
+  whole line and silently discards every turn of a single-speaker recording. Both `n/a` and the
+  `-2.0` sentinel (only one cluster formed, or no overlapping embedding interval)
   and must be surfaced as "unavailable", not as a low score. Valid range is `[-1, 1]`.
 - Zero segment lines with exit 0 is a **legitimate** result (silence, or audio too short) and must
   render as "no speaker turns found", not as an error.
