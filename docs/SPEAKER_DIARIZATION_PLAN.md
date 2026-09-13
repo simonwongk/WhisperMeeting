@@ -30,7 +30,7 @@
   - `lib/libonnxruntime.dylib` sha256 `3567d114f7299d559993e536d605a6f46d7bc9d2542004accc80ee9bf5457f0b`
   - segmentation asset `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` sha256 `24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488`, `model.onnx` sha256 `220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079`, `LICENSE` sha256 `14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba`
   - embedding `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx` sha256 `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`
-  - clustering threshold **0.3** (not the 0.5 default), `num-threads=4`, never `--clustering.num-clusters`, never `model.int8.onnx`
+  - clustering threshold **0.40** — re-derived on the F217 corpus (F216's 0.3 was calibrated on five two-speaker clips); `num-threads=4`, never `--clustering.num-clusters`, never `model.int8.onnx`
   - The upstream release path segment `speaker-recongition-models` is **misspelled upstream**. Hard-code it; `speaker-recognition-models` returns 404.
 - **Verification command** (this Mac has Command Line Tools only, so plain `swift test` fails with `no such module 'Testing'`):
 

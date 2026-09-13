@@ -4,9 +4,17 @@ import Foundation
 /// (F219). The layout mirrors `QwenASRRuntime`: a self-contained tree under the app's managed
 /// Runtime directory, so uninstalling is a single `rm -rf` and a partial install is detectable.
 public struct DiarizationRuntime: Sendable {
-    /// 0.3, not the runtime's 0.5 default. Measured on the F217 corpus: 0.5 merges two same-gender
-    /// speakers into one cluster, which reads as a confident wrong label rather than as ambiguity.
-    public static let clusterThreshold = 0.3
+    /// Re-derived on the F217 corpus (F217), replacing the 0.3 that F216 calibrated on five
+    /// two-speaker clips — the wrong sample for the cases that actually fail. Measured over seven
+    /// thresholds x 18 fixtures, 0.3 through 0.6 form a flat plateau and 0.7 falls off a cliff;
+    /// 0.4 has the best displayed-label precision in that plateau (90.8% at 68.8% coverage).
+    ///
+    /// The axis this moves along is asymmetric, which is why it is not simply "tune for DER":
+    /// too low over-splits, and the overlay rule safely abstains on the rows that become ambiguous.
+    /// Too high merges two speakers into one cluster, which the overlay cannot detect — it sees one
+    /// cluster covering the segment with no competitor and no overlap, and labels it confidently.
+    /// Erring low costs coverage; erring high costs correctness.
+    public static let clusterThreshold = 0.40
 
     /// Segmentation and embedding each get four threads — enough to stay well under real time on
     /// Apple silicon without starving the UI while a meeting is open.

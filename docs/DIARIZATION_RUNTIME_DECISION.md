@@ -81,13 +81,23 @@ Notes on the pins:
 ### Configuration pin (this is part of the decision, not tuning)
 
 ```
---clustering.cluster-threshold=0.3      # NOT the 0.5 default; calibrated to CAM++ zh_en
+--clustering.cluster-threshold=0.40     # re-derived on the F217 corpus; see the note below
 --segmentation.num-threads=4 --embedding.num-threads=4
 --clustering.compute-confidence=true
 --print-args=false
 # never --clustering.num-clusters
 # never model.int8.onnx
 ```
+
+> **Threshold re-pinned 0.30 → 0.40 on 2026-09-13 (F217).** The 0.30 above was calibrated on five
+> two-speaker clips, which is the wrong sample for the cases that actually fail. Swept over seven
+> thresholds × 18 corpus fixtures and scored as the product behaves (conservative overlay plus
+> single-cluster suppression): 0.3–0.6 is a flat plateau, 0.7 falls off a cliff, and **0.40 gives the
+> best displayed-label precision, 90.8 % at 68.8 % coverage**. The axis is asymmetric, which is why
+> this is not simply "tune for DER": too low over-splits, and the overlay abstains on the rows that
+> become ambiguous; too high merges two speakers into one cluster, which no guard in the product can
+> detect. Erring low costs coverage, erring high costs correctness. Full reasoning in
+> `DIARIZATION_SCORECARD.md`.
 
 ### What this decision is not
 
