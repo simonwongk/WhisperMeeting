@@ -13,6 +13,10 @@ public enum SpeakerTurnKind: String, Codable, Sendable, Equatable {
     /// Lenient decoding: a kind written by a newer build must not fail the whole artifact, and an
     /// unrecognized claim must degrade to "uncertain" rather than to confident speech
     /// (`AGENTS.md` — enums reachable from a persisted type decode leniently or fail closed).
+    ///
+    /// This degrades on the way IN only. Preservation on the way back OUT happens in
+    /// `SpeakerTurn.rawKind`, which stores the string verbatim — degrading here as well would
+    /// destroy a newer build's kinds on any read-modify-write.
     public init(from decoder: Decoder) throws {
         let value = try decoder.singleValueContainer().decode(String.self)
         self = SpeakerTurnKind(rawValue: value) ?? .uncertain
@@ -25,13 +29,25 @@ public struct SpeakerTurn: Codable, Sendable, Equatable {
     public let startSeconds: TimeInterval
     public let endSeconds: TimeInterval
     public let clusterID: Int
-    public let kind: SpeakerTurnKind
+
+    /// The kind exactly as it was written. Stored raw so a kind this build does not recognize
+    /// survives a read-modify-write — `renameSpeaker` re-encodes every turn, and degrading an
+    /// unknown kind to "uncertain" on the way out would destroy a newer build's data
+    /// (AGENTS.md — compatibility is assessed in BOTH directions). Same remedy as `MediaSource.kind`.
+    private let rawKind: String
+
+    /// Unknown raw values degrade to `.uncertain` for display only; they are re-encoded verbatim.
+    public var kind: SpeakerTurnKind { SpeakerTurnKind(rawValue: rawKind) ?? .uncertain }
+
+    private enum CodingKeys: String, CodingKey {
+        case startSeconds, endSeconds, clusterID, rawKind = "kind"
+    }
 
     public init(startSeconds: TimeInterval, endSeconds: TimeInterval, clusterID: Int, kind: SpeakerTurnKind) {
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
         self.clusterID = clusterID
-        self.kind = kind
+        self.rawKind = kind.rawValue
     }
 }
 

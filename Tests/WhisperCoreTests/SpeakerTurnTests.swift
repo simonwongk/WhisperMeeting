@@ -85,3 +85,19 @@ func validationToleratesEndOfFileRounding() throws {
     let validated = try SpeakerTurns.validate(turns, durationSeconds: 12)
     #expect(validated.count == 1)
 }
+
+@Test("A kind written by a newer build survives a read-modify-write unchanged (F218)")
+func unknownKindSurvivesReEncoding() throws {
+    // AGENTS.md:418 — "old data still decodes" is half a review. `renameSpeaker` loads the whole
+    // artifact, changes one alias and writes it all back, so a kind this build cannot name must
+    // come out the far side spelled exactly as it went in.
+    let json = Data(#"{"startSeconds":0,"endSeconds":1,"clusterID":0,"kind":"crosstalk"}"#.utf8)
+    let decoded = try JSONDecoder().decode(SpeakerTurn.self, from: json)
+    #expect(decoded.kind == .uncertain)   // degraded for DISPLAY
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let text = String(decoding: try encoder.encode(decoded), as: UTF8.self)
+    #expect(text.contains("\"kind\":\"crosstalk\""))   // preserved on DISK
+    #expect(!text.contains("uncertain"))
+}
