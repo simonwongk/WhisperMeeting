@@ -140,6 +140,22 @@ public enum DiarizationArtifactCodec {
                 throw DiarizationArtifactError.malformed("aliasLength")
             }
         }
+        // The two digest fields are the only places voice data or transcript text could be smuggled
+        // into a file whose whole promise is that it holds neither. A length bound in the CODEC is
+        // what makes that promise enforceable; a bound asserted only in a test asserts the test's
+        // own fixture. `TranscriptTimingFingerprint.compute` is always 16 ASCII hex digits, and the
+        // hex+ASCII gate is what makes the character count a byte count as well.
+        guard artifact.transcriptTimingFingerprint.count <= 32,
+              artifact.transcriptTimingFingerprint.allSatisfy({ $0.isHexDigit && $0.isASCII }) else {
+            throw DiarizationArtifactError.malformed("fingerprint")
+        }
+        // Bytes, not characters: one Character can be tens of kilobytes of combining marks, so a
+        // grapheme-count bound is no bound at all on a file that may have been written by anything.
+        for digest in [artifact.recording.sha256,
+                       artifact.producer.segmentationModelSHA256,
+                       artifact.producer.embeddingModelSHA256] where digest.utf8.count > 64 {
+            throw DiarizationArtifactError.malformed("digest")
+        }
         return artifact
     }
 }

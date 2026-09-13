@@ -148,3 +148,36 @@ func artifactCarriesNoVoiceData() throws {
     let fingerprint = try #require(object["transcriptTimingFingerprint"] as? String)
     #expect(fingerprint.count <= 32 && fingerprint.allSatisfy(\.isHexDigit))
 }
+
+@Test("A fingerprint or digest widened into a carrier for voice data is refused (F218)")
+func artifactBoundsItsDigestFields() throws {
+    // The privacy promise is "no voice data, no copied transcript text". Two fields are named after
+    // exactly those things; only a bound in the CODEC keeps them from becoming carriers for them.
+    // Asserting the bound on a fixture this file hardcodes asserts the fixture, not the codec.
+    var object = try #require(
+        try JSONSerialization.jsonObject(with: DiarizationArtifactCodec.encode(artifact())) as? [String: Any]
+    )
+    object["transcriptTimingFingerprint"] = String(repeating: "So then he said we should ship it. ", count: 40)
+    #expect(throws: DiarizationArtifactError.malformed("fingerprint")) {
+        try DiarizationArtifactCodec.decode(try JSONSerialization.data(withJSONObject: object))
+    }
+
+    object["transcriptTimingFingerprint"] = "ffffffffffffffff"
+    var producer = try #require(object["producer"] as? [String: Any])
+    producer["embeddingModelSHA256"] = String(repeating: "A", count: 4_096)   // a voice vector
+    object["producer"] = producer
+    #expect(throws: DiarizationArtifactError.malformed("digest")) {
+        try DiarizationArtifactCodec.decode(try JSONSerialization.data(withJSONObject: object))
+    }
+
+    // And the digest bound counts BYTES, for the same reason the alias bound does: one Character can
+    // be tens of kilobytes of combining marks, so 32 of them pass any grapheme-count bound while
+    // carrying more than a megabyte.
+    producer["embeddingModelSHA256"] = String(
+        repeating: "a" + String(repeating: "\u{0301}", count: 20_000), count: 32
+    )
+    object["producer"] = producer
+    #expect(throws: DiarizationArtifactError.malformed("digest")) {
+        try DiarizationArtifactCodec.decode(try JSONSerialization.data(withJSONObject: object))
+    }
+}
