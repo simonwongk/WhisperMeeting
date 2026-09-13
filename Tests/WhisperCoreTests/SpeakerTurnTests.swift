@@ -83,7 +83,11 @@ func validationToleratesEndOfFileRounding() throws {
     // The runtime reports its own duration to 3 dp; a turn may end a hair past ours.
     let turns = [turn(0, 12.0004)]
     let validated = try SpeakerTurns.validate(turns, durationSeconds: 12)
-    #expect(validated.count == 1)
+    // Identity, not a count: "tolerated" means the turn comes back exactly as it went in. A count
+    // alone passes just as happily if `validate` quietly clamped 12.0004 to 12.0 — which is the one
+    // thing this function's contract says it never does ("never silently repaired or reordered"),
+    // and the sibling test above already asserts the stronger form.
+    #expect(validated == turns)
 }
 
 @Test("A kind written by a newer build survives a read-modify-write unchanged (F218)")

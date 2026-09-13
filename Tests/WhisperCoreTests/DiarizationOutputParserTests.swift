@@ -69,6 +69,20 @@ func parserTreatsSentinelConfidenceAsUnavailable() {
     #expect(turns[0].kind == .speech)
 }
 
+@Test("The -2.0 sentinel arrives as a line, and the turn survives it (F219)")
+func parserReadsSentinelConfidenceFromALine() throws {
+    // The test above hands `densify` a hand-built RawDiarizationTurn, so nothing ever feeds the
+    // sentinel through as a LINE and the `-?` in the pattern is uncovered. Removing the sign is not
+    // cosmetic: the optional group then cannot match, `\s*$` fails, and the WHOLE line is dropped —
+    // the turn is discarded outright rather than merely de-scored, which is the failure this
+    // parser's own comment warns about for the `n/a` form.
+    let turn = try #require(DiarizationOutputParser.turn(from: "0.031 -- 8.485 speaker_00 confidence=-2.0"))
+    #expect(turn.startSeconds == 0.031)
+    #expect(turn.confidence == DiarizationOutputParser.unavailableConfidence)
+    // And it is still "no score", not a score below every threshold.
+    #expect(DiarizationOutputParser.densify([turn], uncertainBelowConfidence: 0.5)[0].kind == .speech)
+}
+
 @Test("A genuinely low confidence becomes an uncertain turn rather than a confident label (F219)")
 func parserAbstainsBelowTheConfidenceFloor() {
     let raw = [
