@@ -42,7 +42,7 @@ func storeRoundTripsAnArtifact() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let artifact = makeArtifact(meetingID: meetingID)
 
-    try DiarizationArtifactStore.save(artifact, in: root)
+    try DiarizationArtifactStore.save(artifact, for: meetingID, in: root)
     let outcome = DiarizationArtifactStore.load(meetingID: meetingID, in: root)
 
     guard case let .ready(loaded) = outcome else {
@@ -99,7 +99,7 @@ func storeRefusesToClobberANewerSchema() throws {
     // And a save must refuse rather than downgrade it, or a rerun on this build would silently
     // destroy whatever the newer schema was carrying.
     #expect(throws: (any Error).self) {
-        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
     #expect(try Data(contentsOf: sidecar) == future)
 }
@@ -114,7 +114,7 @@ func storeQuarantinesBeforeOverwritingCorruptBytes() throws {
 
     // Save without a preceding load: analysis may write straight through, and the bytes it lands on
     // may be the only copy of the aliases a person typed.
-    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
 
     let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
     let quarantined = try #require(siblings.first { $0.hasPrefix("diarization.unreadable-") })
@@ -126,7 +126,7 @@ func storeQuarantinesBeforeOverwritingCorruptBytes() throws {
 func storeDetectsStaleAudio() throws {
     let (root, meetingID, _) = try makeRecording()
     defer { try? FileManager.default.removeItem(at: root) }
-    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "old"), in: root)
+    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "old"), for: meetingID, in: root)
 
     let outcome = DiarizationArtifactStore.load(meetingID: meetingID, in: root, currentRecordingSHA256: "new")
 
@@ -142,7 +142,7 @@ func storeClearRemovesOnlyTheSidecar() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let wav = directory.appendingPathComponent("meeting.wav")
     let before = try Data(contentsOf: wav)
-    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
 
     try DiarizationArtifactStore.clear(meetingID: meetingID, in: root)
 
@@ -156,10 +156,10 @@ func storeSaveIsAtomicAndNonDestructive() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let wav = directory.appendingPathComponent("meeting.wav")
     let audioBefore = try Data(contentsOf: wav)
-    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "first"), in: root)
+    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "first"), for: meetingID, in: root)
     let firstBytes = try Data(contentsOf: directory.appendingPathComponent("diarization.json"))
 
-    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "second"), in: root)
+    try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID, recordingHash: "second"), for: meetingID, in: root)
 
     let secondBytes = try Data(contentsOf: directory.appendingPathComponent("diarization.json"))
     #expect(secondBytes != firstBytes)
@@ -178,7 +178,7 @@ func storeNeverCreatesARecordingFolder() throws {
     let meetingID = UUID()
 
     #expect(throws: (any Error).self) {
-        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
     #expect(!FileManager.default.fileExists(
         atPath: root.appendingPathComponent("Recordings/\(meetingID.uuidString)").path))
@@ -236,7 +236,7 @@ func storeRefusesToOverwriteUnreadableBytes() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: sidecar.path)
 
     #expect(throws: StoreQuarantineError.couldNotPreserve("diarization.json")) {
-        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
 
     try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path)
@@ -260,9 +260,47 @@ func storeRefusesToOverwriteWhenTheQuarantineCopyFails() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
 
     #expect(throws: StoreQuarantineError.couldNotPreserve("diarization.json")) {
-        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), in: root)
+        try DiarizationArtifactStore.save(makeArtifact(meetingID: meetingID), for: meetingID, in: root)
     }
 
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
     #expect(try Data(contentsOf: sidecar) == corrupt)
+}
+
+@Test("A sidecar describing another meeting is stale, never applied to this one (F218)")
+func storeRefusesAForeignArtifact() throws {
+    let (root, meetingID, directory) = try makeRecording()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A duplicated or restored recording folder is how this happens in the field: the file decodes
+    // perfectly, it just belongs to someone else's meeting. The codec cannot notice — it has no
+    // expected id — so the store is the only layer that can.
+    let foreign = makeArtifact(meetingID: UUID())
+    try DiarizationArtifactCodec.encode(foreign)
+        .write(to: directory.appendingPathComponent("diarization.json"))
+
+    #expect(DiarizationArtifactStore.load(meetingID: meetingID, in: root) == .stale)
+    // And the bytes are kept: they are valid, merely misfiled.
+    let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    #expect(!siblings.contains { $0.hasPrefix("diarization.unreadable-") })
+}
+
+@Test("Saving an artifact under another meeting's id is refused, not filed in the wrong folder (F218)")
+func storeRefusesToSaveAForeignArtifact() throws {
+    let (root, meetingID, directory) = try makeRecording()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // `save` used to resolve its own path from the artifact's id while `load` had been asked for a
+    // different one, so read and write could address different folders: a rename loaded from B and
+    // written into A left B unchanged and silently rewrote A's aliases. The id the caller asked for
+    // is the only one allowed to decide the folder, and a mismatch is a refusal, not a redirect.
+    let foreign = makeArtifact(meetingID: UUID())
+
+    #expect(throws: DiarizationArtifactStoreError.meetingMismatch(
+        expected: meetingID, found: foreign.meetingID
+    )) {
+        try DiarizationArtifactStore.save(foreign, for: meetingID, in: root)
+    }
+    #expect(!FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("diarization.json").path))
+    #expect(!FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("Recordings/\(foreign.meetingID.uuidString)").path))
 }

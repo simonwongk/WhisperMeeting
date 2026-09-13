@@ -14,6 +14,10 @@ enum DiarizationLoadOutcome: Sendable, Equatable {
 enum DiarizationArtifactStoreError: LocalizedError, Sendable, Equatable {
     case recordingFolderMissing(UUID)
     case newerSchemaPresent(Int)
+    /// The artifact describes a different meeting than the one the caller asked to write. Refusing
+    /// is the point: filing it under the artifact's own id instead would write into a folder the
+    /// caller never named.
+    case meetingMismatch(expected: UUID, found: UUID)
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +25,8 @@ enum DiarizationArtifactStoreError: LocalizedError, Sendable, Equatable {
             return "That meeting's recording folder is missing, so its speaker analysis was not saved. Your transcript is unchanged."
         case .newerSchemaPresent:
             return "This meeting's speaker analysis was written by a newer version of WhisperMeet, so it was left untouched and nothing was saved over it."
+        case .meetingMismatch:
+            return "That speaker analysis describes a different meeting, so nothing was saved. Your recording and transcript are unchanged."
         }
     }
 }
@@ -63,6 +69,11 @@ enum DiarizationArtifactStore {
         guard let data = try? Data(contentsOf: url) else { return .unavailable }
         do {
             let artifact = try DiarizationArtifactCodec.decode(data)
+            // A sidecar that describes a DIFFERENT meeting is not this meeting's result — a
+            // duplicated or restored recording folder is how one gets here, and the file decodes
+            // perfectly. The codec cannot see this: it has no expected id, so the store is the only
+            // layer that can. Not quarantined, because the bytes are valid and merely misfiled.
+            guard artifact.meetingID == meetingID else { return .stale }
             if let currentRecordingSHA256, currentRecordingSHA256 != artifact.recording.sha256 {
                 return .stale
             }
@@ -79,19 +90,31 @@ enum DiarizationArtifactStore {
 
     /// Writes the sidecar atomically. Throws rather than silently doing nothing, because a caller
     /// that just spent minutes analysing audio has to be able to say the result was not kept.
+    ///
+    /// `meetingID` is the meeting the caller believes it is writing, and it is the only id allowed
+    /// to decide the folder. Resolving the path from `artifact.meetingID` instead let read and write
+    /// address different folders: with a duplicated or restored recording folder, a rename loaded
+    /// from B and wrote into A, so the rename appeared not to stick and A's aliases were silently
+    /// rewritten. A mismatch is a refusal, never a redirect.
     static func save(
         _ artifact: DiarizationArtifactV1,
+        for meetingID: UUID,
         in root: URL,
         fileManager: FileManager = .default
     ) throws {
-        let url = fileURL(meetingID: artifact.meetingID, in: root)
+        guard artifact.meetingID == meetingID else {
+            throw DiarizationArtifactStoreError.meetingMismatch(
+                expected: meetingID, found: artifact.meetingID
+            )
+        }
+        let url = fileURL(meetingID: meetingID, in: root)
         let directory = url.deletingLastPathComponent()
         // Never create the folder. `InterruptedRecordingRecovery.removeIfEmpty` only reclaims a
         // *completely empty* folder, so a sidecar written beside a recording that never landed
         // would strand that folder forever, and a folder conjured for an unknown meeting would be
         // an orphan the library can never adopt.
         guard fileManager.fileExists(atPath: directory.path) else {
-            throw DiarizationArtifactStoreError.recordingFolderMissing(artifact.meetingID)
+            throw DiarizationArtifactStoreError.recordingFolderMissing(meetingID)
         }
         if fileManager.fileExists(atPath: url.path) {
             if let existing = try? Data(contentsOf: url) {

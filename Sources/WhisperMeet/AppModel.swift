@@ -913,7 +913,7 @@ final class AppModel: ObservableObject {
                 // carrying a typed label across would quietly attribute it to a different voice.
                 aliases: [:]
             )
-            try DiarizationArtifactStore.save(artifact, in: store.rootDirectory)
+            try DiarizationArtifactStore.save(artifact, for: request.meetingID, in: store.rootDirectory)
             invalidateSpeakerOverlayCache()
         } catch is CancellationError {
             // Nothing written and nothing said: the user asked for this.
@@ -975,7 +975,7 @@ final class AppModel: ObservableObject {
             updated.aliases[String(clusterID)] = trimmed
         }
         do {
-            try DiarizationArtifactStore.save(updated, in: store.rootDirectory)
+            try DiarizationArtifactStore.save(updated, for: id, in: store.rootDirectory)
         } catch {
             alertMessage = error.localizedDescription
             return
