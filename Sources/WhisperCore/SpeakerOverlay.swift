@@ -37,8 +37,11 @@ public enum SpeakerOverlay {
     /// …and must beat the runner-up by at least this many percentage points.
     public static let minimumMargin = 0.20
 
-    /// Assigns a label to each segment, in segment order. Never fills a visual gap by choosing the
-    /// most common speaker: an ambiguous interval reports its ambiguity.
+    /// Assigns a label to each segment, returned in the caller's own segment order. Never fills a
+    /// visual gap by choosing the most common speaker: an ambiguous interval reports its ambiguity.
+    ///
+    /// `segments` need not be sorted — the walk orders them internally (see below) — and `turns` are
+    /// assumed sorted by `startSeconds`, as `SpeakerTurns.validate` guarantees.
     public static func rows(
         segments: [TranscriptSegment],
         turns: [SpeakerTurn],
@@ -49,16 +52,26 @@ public enum SpeakerOverlay {
             return segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: .unlabeled) }
         }
 
-        var rows: [SpeakerOverlayRow] = []
-        rows.reserveCapacity(segments.count)
-        // Turns are validated sorted by start, so a single advancing cursor is enough: segments are
-        // also time-ordered, so the walk never rescans from the beginning. A nested scan here would
-        // be O(segments x turns) and would regress long transcripts the way the playback tick once did.
+        // Turns are validated sorted by start, so a single advancing cursor is enough, and the walk
+        // never rescans from the beginning. A nested scan here would be O(segments x turns) and would
+        // regress long transcripts the way the playback tick once did.
+        //
+        // That cursor only moves forward, so it also requires the SEGMENTS to be in ascending start
+        // order. Whisper emits them that way; a merged, re-aligned or hand-edited transcript need
+        // not. And an out-of-order segment does not merely degrade to `.unlabeled` — the cursor has
+        // already advanced past the competing turn, so the segment is attributed to the surviving
+        // cluster CONFIDENTLY, which is the one failure this module exists to prevent. So walk a
+        // sorted copy of the indices and emit the rows back in the caller's own order: O(n log n)
+        // once, with the linear merge walk itself untouched.
+        var labels = [SpeakerOverlayLabel](repeating: .unlabeled, count: segments.count)
+        let order = segments.indices.sorted {
+            (Self.startKey(of: segments, at: $0), $0) < (Self.startKey(of: segments, at: $1), $1)
+        }
         var cursor = 0
 
-        for index in segments.indices {
+        for index in order {
             guard let bounds = self.bounds(of: segments, at: index, recordingDuration: recordingDuration) else {
-                rows.append(SpeakerOverlayRow(segmentIndex: index, label: .unlabeled))
+                labels[index] = .unlabeled
                 continue
             }
             // Retreat is impossible (segments advance), but a turn may span several segments, so the
@@ -87,17 +100,22 @@ public enum SpeakerOverlay {
                 scan += 1
             }
 
-            rows.append(SpeakerOverlayRow(
-                segmentIndex: index,
-                label: label(
-                    coverageByCluster: coverageByCluster,
-                    overlapSeconds: overlapSeconds,
-                    uncertainSeconds: uncertainSeconds,
-                    segmentDuration: bounds.end - bounds.start
-                )
-            ))
+            labels[index] = label(
+                coverageByCluster: coverageByCluster,
+                overlapSeconds: overlapSeconds,
+                uncertainSeconds: uncertainSeconds,
+                segmentDuration: bounds.end - bounds.start
+            )
         }
-        return rows
+        return segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: labels[$0]) }
+    }
+
+    /// The key the walk is ordered by. A segment with no usable start sorts last — it is `.unlabeled`
+    /// whatever order it is visited in. NaN is folded in with the absent case deliberately: a value
+    /// that loses every comparison is not a strict weak ordering, and `sorted` traps on one.
+    private static func startKey(of segments: [TranscriptSegment], at index: Int) -> TimeInterval {
+        guard let start = segments[index].start, start.isFinite else { return .infinity }
+        return start
     }
 
     /// The distinct clusters actually shown, in first-appearance order — the legend's row order, so

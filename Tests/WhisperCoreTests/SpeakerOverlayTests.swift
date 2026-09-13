@@ -161,3 +161,40 @@ func overlayIsLinearOnLongInput() {
     #expect(rows[0].label == .speaker(clusterID: 0))
     #expect(rows[4_999].label == .speaker(clusterID: 4_999 % 3))
 }
+
+@Test("An out-of-order segment is never attributed to the wrong cluster (F218)")
+func overlayHandlesSegmentsOutOfOrder() {
+    // The merge walk has one forward-only cursor. Handling the later segment first advances it past
+    // turn(0, 9, c0), so the earlier segment would see only cluster 7 and label it confidently — the
+    // correct answer is .uncertain (c7 100%, c0 90%, a 10pt margin). Whisper emits ordered segments,
+    // but a merged, re-aligned or hand-edited transcript need not, and a confidently wrong name is
+    // the one failure this module exists to prevent.
+    let rows = SpeakerOverlay.rows(
+        segments: [seg(50, 60), seg(0, 10)],
+        turns: [turn(0, 9, 0), turn(0, 60, 7)],
+        recordingDuration: 60
+    )
+    #expect(rows.count == 2)
+    // Rows come back in the CALLER's order, whatever order the walk visited them in.
+    #expect(rows.map(\.segmentIndex) == [0, 1])
+    #expect(rows[0] == SpeakerOverlayRow(segmentIndex: 0, label: .speaker(clusterID: 7)))
+    #expect(rows[1] == SpeakerOverlayRow(segmentIndex: 1, label: .uncertain))
+}
+
+@Test("A segment with no usable start does not disturb the order of the rest (F218)")
+func overlayToleratesUnsortableSegments() {
+    // nil and NaN starts have no place in a sort, and a comparison NaN loses against everything is
+    // not a strict weak ordering — `sorted` traps on one in a debug build. They are labelled
+    // .unlabeled either way; what matters is that their neighbours are still labelled correctly.
+    let rows = SpeakerOverlay.rows(
+        segments: [seg(nil, nil), seg(10, 20), seg(.nan, .nan), seg(0, 10)],
+        turns: [turn(0, 10, 0), turn(10, 20, 1)],
+        recordingDuration: 20
+    )
+    #expect(rows == [
+        SpeakerOverlayRow(segmentIndex: 0, label: .unlabeled),
+        SpeakerOverlayRow(segmentIndex: 1, label: .speaker(clusterID: 1)),
+        SpeakerOverlayRow(segmentIndex: 2, label: .unlabeled),
+        SpeakerOverlayRow(segmentIndex: 3, label: .speaker(clusterID: 0))
+    ])
+}
