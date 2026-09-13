@@ -42,6 +42,7 @@ python3 Scripts/tests/test_correct_local.py
 python3 Scripts/tests/test_refine_server.py
 python3 Scripts/tests/test_whisper_dictate_server.py
 python3 Scripts/tests/test_qwen_chat.py
+python3 Scripts/tests/test_score_diarization.py
 
 print "[3/5] Running the complete Swift test suite"
 # Run serially: several tests block a cooperative thread waiting on a real

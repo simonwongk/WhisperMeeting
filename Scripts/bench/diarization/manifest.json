@@ -1,0 +1,1596 @@
+{
+  "generator_version": "f217-corpus-1.0.0",
+  "notes": [
+    "Voices are macOS `say` voices verified present on the build machine.",
+    "English-only voices (Samantha, Daniel, Karen, Rishi, Moira) emit ~0.01 s",
+    "of audio when handed Chinese text, so Chinese and code-switched lines are",
+    "only ever assigned to zh-capable voices (Tingting, Meijia, Sandy zh_CN),",
+    "all of which were confirmed to read Latin script as well. The generator",
+    "hard-fails on any utterance that trims below 0.25 s, so a bad assignment",
+    "aborts the run instead of silently corrupting ground truth.",
+    "A negative `gap` means the utterance starts before the previous one ends,",
+    "which is how controlled overlap is expressed.",
+    "All text is original, neutral, meeting-like filler; no real people."
+  ],
+  "fixtures": [
+    {
+      "id": "codeswitch_2spk",
+      "stratum": "code_switching",
+      "seed": 10003,
+      "description": "Both speakers alternate English and Mandarin within the conversation, and within single utterances. One bilingual voice per speaker so timbre stays constant across the language switch.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Tingting"
+        },
+        "SPK_B": {
+          "voice": "Sandy (Chinese (China mainland))"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.3,
+          "max": 0.8
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "这个 sprint 的 scope 我们需要重新确认一下。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I agree. Let us look at the open items first."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The backend latency is already under two hundred milliseconds."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "zh",
+          "text": "那我们把 deadline 定在下周五，可以吗？"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "没问题。我今天下午会 review 那个 pull request。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Thanks. The root cause was a cache that never expired."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "我们的 roadmap 里还有两个 open question 需要讨论。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Let us sync tomorrow and close them before the release."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "en_2spk_alt",
+      "stratum": "english_2spk",
+      "seed": 10001,
+      "description": "English two-speaker alternating conversation, natural gaps.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let's start with a quick status round on the ingest pipeline."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The migration finished on Tuesday and nothing rolled back."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Good. I still owe the team a written summary of the load test."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Can we push the design review to Thursday afternoon?"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "That works for me, as long as we keep it to thirty minutes."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The staging cluster is stable now. We saw no restarts all week."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Two items are still blocked on the vendor contract."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Then let's cut the optional tasks and ship the core flow first."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "en_2spk_samegender",
+      "stratum": "two_speaker_samegender",
+      "seed": 10018,
+      "description": "Control for en_2spk_alt: identical script and layout, two en female voices instead of one female and one male. Isolates voice similarity at two speakers, where speaker count cannot be a factor.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Karen"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let's start with a quick status round on the ingest pipeline."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The migration finished on Tuesday and nothing rolled back."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Good. I still owe the team a written summary of the load test."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Can we push the design review to Thursday afternoon?"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "That works for me, as long as we keep it to thirty minutes."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The staging cluster is stable now. We saw no restarts all week."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Two items are still blocked on the vendor contract."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Then let's cut the optional tasks and ship the core flow first."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "en_3spk",
+      "stratum": "three_speaker",
+      "seed": 10005,
+      "description": "Three English speakers, round-robin then interleaved.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Karen"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.75
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Who is taking notes for this session?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I can take notes, and I'll circulate them before end of day."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "We need one more reviewer on the storage pull request."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'll pick that up after this meeting."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I'd like to flag a risk with the third party rate limits."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Good point. Let's add a rate limiter before we scale up."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "All the acceptance tests pass on the release branch."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "Any objections to freezing the schema this week?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "None from me. Let's record that as a decision."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 9,
+        "expect_speaker_count": 3,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "en_3spk_distinct",
+      "stratum": "three_speaker_distinct",
+      "seed": 10017,
+      "description": "Control for en_3spk: same script and layout, three deliberately dissimilar voices (en_US female, en_GB male, en_IN male). Isolates speaker COUNT from voice similarity -- en_3spk pairs Samantha with Karen, both en female, which is the known failure mode.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Rishi"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.75
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Who is taking notes for this session?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I can take notes, and I'll circulate them before end of day."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "We need one more reviewer on the storage pull request."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'll pick that up after this meeting."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I'd like to flag a risk with the third party rate limits."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Good point. Let's add a rate limiter before we scale up."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "All the acceptance tests pass on the release branch."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "Any objections to freezing the schema this week?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "None from me. Let's record that as a decision."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 9,
+        "expect_speaker_count": 3,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "en_5spk",
+      "stratum": "many_speaker",
+      "seed": 10006,
+      "description": "Five English speakers with distinct accents. The 4+ speaker stratum.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Karen"
+        },
+        "SPK_D": {
+          "voice": "Rishi"
+        },
+        "SPK_E": {
+          "voice": "Moira"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.2,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let's go around the table for the release readiness check."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Backend is ready. The last migration landed this morning."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "The client build is green on all three platforms."
+        },
+        {
+          "speaker": "SPK_D",
+          "lang": "en",
+          "text": "Documentation is about half done. I need two more days."
+        },
+        {
+          "speaker": "SPK_E",
+          "lang": "en",
+          "text": "Support is ready, but we want a rollback plan in writing."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Fair. I'll write the rollback plan before Thursday."
+        },
+        {
+          "speaker": "SPK_D",
+          "lang": "en",
+          "text": "Can someone review the upgrade notes when they are ready?"
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I can review them on Wednesday morning."
+        },
+        {
+          "speaker": "SPK_E",
+          "lang": "en",
+          "text": "Then we are agreed. Let's freeze the branch tonight."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Freezing tonight works. I'll send the announcement."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 10,
+        "expect_speaker_count": 5,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "long_turns",
+      "stratum": "long_turns",
+      "seed": 10008,
+      "description": "Each reference turn runs well over thirty seconds, built from consecutive same-speaker utterances merged by the turn rule.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha",
+          "rate": 155
+        },
+        "SPK_B": {
+          "voice": "Daniel",
+          "rate": 155
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.8,
+        "gap": {
+          "fixed": 0.25
+        },
+        "merge_same_speaker_gap": 0.6
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I want to walk through the whole quarter before we open it up for questions. We started with three goals, and only two of them survived the replanning in the second month. The third goal was folded into the platform workstream because the dependencies were too tangled to separate cleanly."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "On the first goal, the ingest rewrite, we are essentially finished. Throughput is roughly four times what it was, and the error rate has stayed under one percent for six consecutive weeks. The remaining work is documentation and a small amount of cleanup in the retry logic."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The second goal was the storage migration, and that one is more complicated. We moved about eighty percent of the data without incident, but the last twenty percent lives in a legacy format that nobody has touched in years. I would rather spend an extra sprint on it than rush a conversion we cannot verify."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "So my recommendation is that we extend the migration by one sprint, keep the ingest team on documentation for the next two weeks, and revisit the platform workstream at the start of the next quarter. That gives us a clean baseline before we take on anything new."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Thank you for the summary. I want to respond to the storage point, because I think the risk is slightly different from how it was described. The legacy format is not the hard part; the hard part is that we have no reliable record of which rows were written by the old importer."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "We tried to reconstruct that record twice last year, and both attempts produced different answers. That tells me the reconstruction itself is not trustworthy, so an extra sprint spent on conversion will not actually reduce the uncertainty. It will just move it later in the schedule."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "What I would propose instead is that we accept the legacy partition as read only, freeze it in place, and write a small compatibility layer that serves those rows without converting them. That is maybe a week of work, and it removes the migration from the critical path entirely."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "If we do that, the quarter closes with two goals genuinely complete and one deliberately deferred with a written rationale. I think that is a much more honest position than claiming a migration finished when we cannot verify the tail of it. I am happy to write that rationale up this week."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 2,
+        "expect_speaker_count": 2,
+        "expect_min_turn_seconds": 30.0,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "longform_30min",
+      "stratum": "longform",
+      "seed": 10016,
+      "description": "Deterministic thirty-minute three-speaker meeting for memory, cancellation and stability testing. Each speaker holds the floor for several consecutive utterances, so reference turns are meeting-shaped (tens of seconds) rather than one sentence each -- an earlier version switched speaker every 2.8 s for half an hour, which is not a meeting and which dominated every corpus-level average.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Karen"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "gap": {
+          "min": 0.3,
+          "max": 1.4
+        },
+        "merge_same_speaker_gap": 1.5,
+        "repeat_until": 1800.0,
+        "pad_to": 1800.0
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let's take the agenda from the top and keep each item short."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "There are three things I want to get through before we finish."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "First the ingest pipeline, then the retry budget, then the release date."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'd like a decision on the release date today rather than next week."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "If anyone has a blocker on any of those, raise it when we get there."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Otherwise I'll assume we're aligned and we can move quickly."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The ingest pipeline is on track and the backfill finished overnight."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "We processed about four hundred thousand records without an error."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The throughput held steady once we increased the batch size."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "There is one caveat, which is that the staging cluster is smaller."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "So the production numbers will be better than what I just quoted."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I'll have exact figures in the document by tomorrow afternoon."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I have a question about the retry budget before we move on."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "Right now I cannot tell whether it resets per request or per connection."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "That matters a lot when a downstream service is slow but not down."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "If it is per connection we could retry far more than we intend."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I would rather we made that explicit in the configuration."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "Otherwise someone will tune it later without knowing the difference."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "That's a fair point and I don't think it's documented anywhere."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let's make it per request and write that down in the same change."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Can you take that one and open a short design note for it?"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Keep it brief, half a page is enough for a decision like this."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Then we don't have to revisit the question in three months."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Moving on to the release date, which is the one I care about."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I think the release date is achievable if the scope stays fixed."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The risk is not the engineering work, it is the review queue."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "We have two changes waiting on review that block the final build."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "If those clear this week I am comfortable committing to the date."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "If they slip past Friday then I would want to move it a week."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I would rather say that now than surprise everyone later."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I agree with that, and I can help clear the review queue."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I have time on Thursday and I can take both of the open changes."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "That should remove the dependency that worries me the most."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "One more thing before we close, about the documentation."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "The setup guide still references the old configuration format."
+        },
+        {
+          "speaker": "SPK_C",
+          "lang": "en",
+          "text": "I'll fix that as part of the same change so nothing is stale."
+        }
+      ],
+      "checks": {
+        "expect_speaker_count": 3,
+        "expect_duration_seconds": [
+          1800.0,
+          1800.0
+        ],
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "mono_1spk",
+      "stratum": "monologue",
+      "seed": 10004,
+      "description": "Degenerate case: one speaker only. Correct output is a single speaker label.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.3,
+          "max": 0.45
+        },
+        "merge_same_speaker_gap": 0.6
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "This is the weekly project update for the ingest team."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The error rate dropped to under one percent after the retry change."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Our next milestone is the beta cutoff at the end of the month."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The budget for extra compute was approved this morning."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I will circulate written notes before the end of the day."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 1,
+        "expect_speaker_count": 1,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "music_only",
+      "stratum": "music_no_speech",
+      "seed": 10010,
+      "description": "Synthesized chord progression, no speech of any kind. Correct diarization output is zero turns.",
+      "speakers": {},
+      "layout": {
+        "kind": "music",
+        "lead_in": 1.0,
+        "tail": 1.5
+      },
+      "music": {
+        "bpm": 84,
+        "beats_per_chord": 4,
+        "amplitude": 0.2,
+        "attack": 0.06,
+        "release": 0.5,
+        "partials": [
+          [
+            1,
+            1.0
+          ],
+          [
+            2,
+            0.42
+          ],
+          [
+            3,
+            0.18
+          ],
+          [
+            4,
+            0.07
+          ]
+        ],
+        "progression": [
+          [
+            "C3",
+            "E3",
+            "G3",
+            "B3"
+          ],
+          [
+            "A2",
+            "C3",
+            "E3",
+            "G3"
+          ],
+          [
+            "F2",
+            "A2",
+            "C3",
+            "E3"
+          ],
+          [
+            "G2",
+            "B2",
+            "D3",
+            "F3"
+          ],
+          [
+            "C3",
+            "E3",
+            "G3",
+            "B3"
+          ],
+          [
+            "E2",
+            "G2",
+            "B2",
+            "D3"
+          ],
+          [
+            "F2",
+            "A2",
+            "C3",
+            "E3"
+          ],
+          [
+            "G2",
+            "B2",
+            "D3",
+            "G3"
+          ]
+        ]
+      },
+      "script": [],
+      "checks": {
+        "expect_zero_turns": true,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ],
+        "expect_duration_seconds": [
+          20.0,
+          28.0
+        ]
+      }
+    },
+    {
+      "id": "noisy_en_snr03",
+      "stratum": "noisy",
+      "seed": 10011,
+      "description": "Deliberately shares seed 10011 with noisy_en_snr10 so the two form a controlled SNR ablation: identical speech layout and identical noise realization, scaled only to hit a punishing 3 dB SNR instead of 10 dB.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Can everyone hear me over the fan noise?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "You are a little quiet, but I can follow you."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'll move closer to the microphone."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "That is much better. Please go ahead."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The deployment window opens at six tomorrow morning."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I'll be online to watch the dashboards."
+        }
+      ],
+      "post": [
+        {
+          "op": "noise",
+          "snr_db": 3.0
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 6,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "noisy_en_snr10",
+      "stratum": "noisy",
+      "seed": 10011,
+      "description": "English two-speaker conversation with white noise at 10 dB SNR.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Can everyone hear me over the fan noise?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "You are a little quiet, but I can follow you."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'll move closer to the microphone."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "That is much better. Please go ahead."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "The deployment window opens at six tomorrow morning."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "I'll be online to watch the dashboards."
+        }
+      ],
+      "post": [
+        {
+          "op": "noise",
+          "snr_db": 10.0
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 6,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "overlap_2spk",
+      "stratum": "overlap",
+      "seed": 10013,
+      "description": "Two speakers genuinely talking at once. Negative gaps place the interrupting utterance before the previous one ends, and the two voices are summed sample by sample.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.3,
+          "max": 0.6
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Before we decide, I want to raise one more concern about the timeline."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Sorry to interrupt, but I think the timeline is the least of our problems."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "That is fair. Let me finish the thought anyway."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "We committed to a date before the vendor confirmed anything.",
+          "gap": -1.8
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Let me respond to that point directly, because I think it matters."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The vendor still has not confirmed the integration window."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "And that is exactly the part I disagree with completely.",
+          "gap": -2.0
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Then we should put both positions into the meeting notes."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Agreed. Let's decide at the start of next week.",
+          "gap": -0.9
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 9,
+        "expect_speaker_count": 2,
+        "expect_overlap_interval_count": 3,
+        "expect_overlap_seconds": [
+          4.698,
+          4.702
+        ]
+      }
+    },
+    {
+      "id": "rapid_turns",
+      "stratum": "rapid_turns",
+      "seed": 10007,
+      "description": "Fast back-and-forth. Every turn is under two seconds and gaps are tiny.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha",
+          "rate": 210
+        },
+        "SPK_B": {
+          "voice": "Daniel",
+          "rate": 210
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.4,
+        "tail": 0.4,
+        "gap": {
+          "min": 0.06,
+          "max": 0.22
+        },
+        "merge_same_speaker_gap": 0.0
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Are we ready?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Almost ready."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "What is left?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "One test."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Which one?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "The upload test."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Is it flaky?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Sometimes, yes."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Then fix it."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "On it now."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Thanks a lot."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "No problem."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 12,
+        "expect_speaker_count": 2,
+        "expect_max_turn_seconds": 2.0,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "silence_heavy",
+      "stratum": "silence_heavy",
+      "seed": 10009,
+      "description": "Long silences between short turns. Exercises VAD and segment-dropping behaviour.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 3.0,
+        "tail": 6.0,
+        "gap": {
+          "min": 8.0,
+          "max": 18.0
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Are we recording yet?"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Yes, it started a moment ago."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "I'm still waiting for the others to join."
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "en",
+          "text": "Let's give them another few minutes."
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "en",
+          "text": "Alright, I think we can close this one out."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 5,
+        "expect_speaker_count": 2,
+        "expect_min_gap_seconds": 6.0,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "twotrack_basic",
+      "stratum": "two_track",
+      "seed": 10014,
+      "description": "Microphone track and system track built separately; the system track carries a 350 ms presentation-time offset before the two are mixed, mirroring the capture engine.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Karen"
+        }
+      },
+      "layout": {
+        "kind": "two_track",
+        "default_track": "mic",
+        "tracks": {
+          "mic": {
+            "offset": 0.0
+          },
+          "system": {
+            "offset": 0.35
+          }
+        },
+        "lead_in": 0.8,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.3,
+          "max": 0.8
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Good morning. Can the remote folks hear me clearly?"
+        },
+        {
+          "speaker": "SPK_B",
+          "track": "system",
+          "lang": "en",
+          "text": "Loud and clear on this end."
+        },
+        {
+          "speaker": "SPK_C",
+          "track": "system",
+          "lang": "en",
+          "text": "Same here. Your audio sounds fine."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Great. Let's begin with the deployment report."
+        },
+        {
+          "speaker": "SPK_B",
+          "track": "system",
+          "lang": "en",
+          "text": "The rollout reached half the fleet without incident."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Any regressions in the latency dashboards?"
+        },
+        {
+          "speaker": "SPK_C",
+          "track": "system",
+          "lang": "en",
+          "text": "Nothing significant. The graphs look flat."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Then we continue the rollout tomorrow."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 3,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "twotrack_bleed",
+      "stratum": "two_track_bleed",
+      "seed": 10014,
+      "description": "Deliberately shares seed 10014 with twotrack_basic so it is a controlled ablation: identical script, identical gaps, identical turn times, with acoustic bleed as the only difference. Same two-track construction, plus acoustic bleed: every system-track speaker is also faintly present on the microphone track at -18 dB and 12 ms later, as if picked up from the room speakers. Bleed adds no reference turn, because it is the same speech.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Samantha"
+        },
+        "SPK_B": {
+          "voice": "Daniel"
+        },
+        "SPK_C": {
+          "voice": "Karen"
+        }
+      },
+      "layout": {
+        "kind": "two_track",
+        "default_track": "mic",
+        "tracks": {
+          "mic": {
+            "offset": 0.0
+          },
+          "system": {
+            "offset": 0.35
+          }
+        },
+        "lead_in": 0.8,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.3,
+          "max": 0.8
+        },
+        "merge_same_speaker_gap": 0.5,
+        "bleed": {
+          "from": "system",
+          "to": "mic",
+          "gain_db": -18.0,
+          "delay": 0.012
+        }
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Good morning. Can the remote folks hear me clearly?"
+        },
+        {
+          "speaker": "SPK_B",
+          "track": "system",
+          "lang": "en",
+          "text": "Loud and clear on this end."
+        },
+        {
+          "speaker": "SPK_C",
+          "track": "system",
+          "lang": "en",
+          "text": "Same here. Your audio sounds fine."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Great. Let's begin with the deployment report."
+        },
+        {
+          "speaker": "SPK_B",
+          "track": "system",
+          "lang": "en",
+          "text": "The rollout reached half the fleet without incident."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Any regressions in the latency dashboards?"
+        },
+        {
+          "speaker": "SPK_C",
+          "track": "system",
+          "lang": "en",
+          "text": "Nothing significant. The graphs look flat."
+        },
+        {
+          "speaker": "SPK_A",
+          "track": "mic",
+          "lang": "en",
+          "text": "Then we continue the rollout tomorrow."
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 3,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "zh_2spk_alt",
+      "stratum": "mandarin_2spk",
+      "seed": 10002,
+      "description": "Mandarin two-speaker alternating conversation, simplified Chinese.",
+      "speakers": {
+        "SPK_A": {
+          "voice": "Tingting"
+        },
+        "SPK_B": {
+          "voice": "Meijia"
+        }
+      },
+      "layout": {
+        "kind": "sequential",
+        "lead_in": 0.5,
+        "tail": 0.6,
+        "gap": {
+          "min": 0.25,
+          "max": 0.7
+        },
+        "merge_same_speaker_gap": 0.5
+      },
+      "script": [
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "我们先快速过一遍这周的项目进度。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "zh",
+          "text": "数据迁移已经在周二完成，没有出现回滚。"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "很好。压力测试的结论我还需要整理成文档。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "zh",
+          "text": "设计评审能不能推到周四下午？"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "可以，只要控制在三十分钟以内。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "zh",
+          "text": "预发布环境这周一直很稳定，没有重启过。"
+        },
+        {
+          "speaker": "SPK_A",
+          "lang": "zh",
+          "text": "还有两项工作在等供应商合同。"
+        },
+        {
+          "speaker": "SPK_B",
+          "lang": "zh",
+          "text": "那就先砍掉可选功能，优先交付核心流程。"
+        }
+      ],
+      "checks": {
+        "expect_turn_count": 8,
+        "expect_speaker_count": 2,
+        "expect_overlap_seconds": [
+          0.0,
+          0.0
+        ]
+      }
+    }
+  ]
+}
