@@ -22,6 +22,7 @@
 - **Persisted enums decode leniently or fail closed** (`AGENTS.md:425-426`).
 - **Analysis makes no network call.** The runtime binary links no network framework and exports no socket symbols; both facts are asserted by tests.
 - **Never identify a person.** No UI string may say "recognized", "verified", "identified", or imply a channel maps to a person. `AccessibilityPhrase.swift:4` already binds this.
+- **A single-cluster result shows no labels at all.** If analysis distinguishes exactly one voice, suppress labelling entirely and say so plainly. Measured on the F217 corpus: 2 of 16 fixtures at threshold 0.30 (3 of 16 at 0.40) collapse a genuine two-person conversation into one cluster. Labelling every row "Speaker 1" is worthless for a real monologue and actively misleading for a failed separation — and it sets an alias trap, because renaming that single cluster to "Alice" then attributes the other person's words to Alice. Suppressing is strictly better in both cases.
 - **Apple silicon only**, matching the existing Qwen3-ASR constraint.
 - **Runtime pins** (from the F216 decision; every hash independently re-verified):
   - `sherpa-onnx` `1.13.8`, asset `sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts.tar.bz2`, sha256 `91b96512c4fa1960f8a9ed5360a6c8dda53a4b5015d0590244f14086a234557a`
@@ -1887,7 +1888,8 @@ On `AppModel`:
 - Claim `isRunningAuxiliaryEngine = true` alongside `diarizationRunningID`, so transcription and second opinion refuse to start — and clear both in the task epilogue.
 - On success: compute the recording SHA-256 and the timing fingerprint, build the artifact, `DiarizationArtifactStore.save`. Only a complete valid result is persisted.
 - `catch is CancellationError` → clear state, write nothing, no alert.
-- `speakerOverlay(for:)` returns a `SpeakerOverlayPresentation { rows, clusterIDs, aliases, isStale }`, recomputed from current segments, and caches by `(meetingID, timingFingerprint)` so the 4 Hz playback tick never recomputes it (the F160 lesson).
+- `speakerOverlay(for:)` returns a `SpeakerOverlayPresentation { rows, clusterIDs, aliases, isStale, isSingleCluster }`, recomputed from current segments, and caches by `(meetingID, timingFingerprint)` so the 4 Hz playback tick never recomputes it (the F160 lesson).
+- **Single-cluster suppression.** When `SpeakerOverlay.clusterIDs(in:)` yields fewer than two clusters, set `isSingleCluster` and return every row as `.unlabeled`. Rename must be unavailable in that state — there is nothing safe to name. Test it: a result whose turns all carry one cluster produces no labelled rows and `isSingleCluster == true`.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
@@ -2097,7 +2099,13 @@ Rename is an inline-`TextField` alert, matching the marker-rename pattern at Con
 
 - [ ] **Step 5: The states**
 
-Render each PRD state distinctly: analyzing (progress + Cancel), stale (labels hidden + explanation), unavailable (plain reason + the transcript is safe), no turns found, model missing.
+Render each PRD state distinctly: analyzing (progress + Cancel), stale (labels hidden + explanation), unavailable (plain reason + the transcript is safe), no turns found, model missing, and **only one voice distinguished**.
+
+The single-voice state is not an error and must not read like one. Wording along the lines of: *"Only one voice could be told apart in this recording, so no speaker labels are shown. This happens with a single speaker, and also when two people's voices sound alike."* Offer Analyze Again and Clear; do not offer Rename.
+
+- [ ] **Step 5b: Say what the limitation actually is**
+
+The legend and the first-run disclosure must both state that voices which sound similar may be merged into one label — this is the runtime's measured weakness, not a hypothetical. Do not bury it in documentation only. A person who is told this up front reads a wrong label as a known limitation; a person who is not reads it as a fact about who spoke.
 
 - [ ] **Step 6: Build and commit**
 
