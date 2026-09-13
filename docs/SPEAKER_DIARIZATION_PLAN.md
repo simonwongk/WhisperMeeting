@@ -1106,6 +1106,11 @@ Pure, table-driven parsing of the binary's grammar. Every rule here was observed
 - Consumes: `SpeakerTurn`, `SpeakerTurnKind` (Task 2)
 - Produces: `RawDiarizationTurn`, `DiarizationOutputParser.turn(from:)`, `.progress(from:)`, `.densify(_:uncertainBelowConfidence:)`, `.classify(errorOutput:exitStatus:)`, `LocalDiarizationError`
 
+> **Confidence has three forms, not two.** A float, the literal `n/a` (emitted when only one cluster
+> formed — measured on 5 of 592 corpus turns, and on 100% of the turns in both single-cluster
+> fixtures), and absent entirely when `--clustering.compute-confidence` is off. All three must parse
+> to a turn; only the float form is ever compared against a threshold.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
@@ -1130,6 +1135,17 @@ func parserReadsASegmentLine() throws {
 func parserReadsALineWithoutConfidence() throws {
     let turn = try #require(DiarizationOutputParser.turn(from: "8.975 -- 18.695 speaker_02"))
     #expect(turn.rawSpeaker == 2)
+    #expect(turn.confidence == nil)
+}
+
+@Test("A single-cluster run emits confidence=n/a, and the turn still parses")
+func parserReadsUnavailableConfidence() throws {
+    // Observed verbatim on the F217 corpus: whenever exactly one cluster forms, the runtime prints
+    // the literal string `n/a` rather than a number or the -2.0 sentinel. A pattern that accepts
+    // only digits drops the entire line, so a monologue would diarize to nothing at all.
+    let turn = try #require(DiarizationOutputParser.turn(from: "0.470 -- 17.159 speaker_00 confidence=n/a"))
+    #expect(turn.startSeconds == 0.470)
+    #expect(turn.rawSpeaker == 0)
     #expect(turn.confidence == nil)
 }
 
@@ -1247,7 +1263,7 @@ public enum DiarizationOutputParser {
     /// `0.031 -- 8.485 speaker_00 confidence=0.707`, with confidence present only when the runtime
     /// was asked for it.
     private static let segmentPattern = try! NSRegularExpression(
-        pattern: #"^\s*([0-9]+\.[0-9]+)\s*--\s*([0-9]+\.[0-9]+)\s+speaker_([0-9]+)(?:\s+confidence=(-?[0-9.]+))?\s*$"#
+        pattern: #"^\s*([0-9]+\.[0-9]+)\s*--\s*([0-9]+\.[0-9]+)\s+speaker_([0-9]+)(?:\s+confidence=(n/a|-?[0-9.]+))?\s*$"#
     )
     private static let progressPattern = try! NSRegularExpression(
         pattern: #"^\s*progress\s+([0-9]+\.[0-9]+)%\s*$"#
@@ -1267,6 +1283,11 @@ public enum DiarizationOutputParser {
         guard let start = group(1).flatMap(Double.init),
               let end = group(2).flatMap(Double.init),
               let speaker = group(3).flatMap(Int.init) else { return nil }
+        // `confidence=n/a` is emitted verbatim whenever only one cluster formed. It is not a
+        // number and it is not a score — it means "unavailable". Parsing it as a failed Double is
+        // correct (nil), but the PATTERN must accept it, or the whole line fails to match and every
+        // turn of a single-speaker recording is silently discarded. Measured on the F217 corpus:
+        // `mono_1spk` and `zh_2spk_alt` emit it for 100% of their turns.
         return RawDiarizationTurn(
             startSeconds: start,
             endSeconds: end,
