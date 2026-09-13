@@ -149,7 +149,11 @@ public enum DiarizationArtifactCodec {
             guard let clusterID = Int(key), clusterID >= 0 else {
                 throw DiarizationArtifactError.malformed("aliasKey")
             }
-            guard alias.count <= DiarizationArtifactV1.maximumAliasLength else {
+            // `.count` is grapheme clusters: one Character can be 40 KB of combining marks, so 64
+            // of them is 2.5 MB and still passes a count-only bound — and the sidecar becomes the
+            // text dump this bound exists to prevent. 4x admits any legitimate 64-character alias.
+            guard alias.count <= DiarizationArtifactV1.maximumAliasLength,
+                  alias.utf8.count <= 4 * DiarizationArtifactV1.maximumAliasLength else {
                 throw DiarizationArtifactError.malformed("aliasLength")
             }
         }

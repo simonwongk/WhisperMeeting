@@ -196,3 +196,19 @@ func artifactEncodeIsAsStrictAsDecode() throws {
         try DiarizationArtifactCodec.encode(artifact(aliases: ["not-a-number": "Ada"]))
     }
 }
+
+@Test("An alias of combining marks cannot smuggle megabytes past the length bound (F218)")
+func artifactBoundsAliasBytesNotJustCharacters() throws {
+    // `.count` is grapheme clusters, and one Character can be tens of kilobytes of combining marks.
+    // "64 characters" is therefore not a bound at all on a file that may have been written by
+    // anything — which is the whole premise of decoding strictly.
+    let oneCharacter = "a" + String(repeating: "\u{0301}", count: 20_000)
+    let alias = String(repeating: oneCharacter, count: 64)
+    #expect(alias.count == DiarizationArtifactV1.maximumAliasLength)   // passes a count-only bound
+    #expect(alias.utf8.count > 2_000_000)                              // while carrying 2.5 MB
+    let data = try JSONEncoder.diarization.encode(artifact(aliases: ["0": alias]))
+    // Caught rather than `#expect(throws:)` so a failure reports the error, not 2.5 MB of alias.
+    var thrown: Error?
+    do { _ = try DiarizationArtifactCodec.decode(data) } catch { thrown = error }
+    #expect(thrown as? DiarizationArtifactError == .malformed("aliasLength"))
+}
