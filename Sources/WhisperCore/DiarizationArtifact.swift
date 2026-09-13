@@ -102,12 +102,17 @@ extension JSONDecoder {
     }
 }
 
-/// Strict read/write for the sidecar. Decoding validates: a file we cannot fully trust produces an
-/// error the caller turns into "Speaker labels unavailable; your transcript is safe", never a
-/// partially-applied result.
+/// Strict read/write for the sidecar. Both directions validate: a file we cannot fully trust
+/// produces an error the caller turns into "Speaker labels unavailable; your transcript is safe",
+/// never a partially-applied result — and never a file this codec would refuse to read back.
 public enum DiarizationArtifactCodec {
     public static func encode(_ artifact: DiarizationArtifactV1) throws -> Data {
-        try JSONEncoder.diarization.encode(artifact)
+        // Symmetric with `decode` on purpose. Writing a sidecar this same codec then rejects turns a
+        // failed analysis into a "corrupt file" the user has to interpret on some later launch, far
+        // from the cause; failing here reports the thing that actually went wrong, and leaves the
+        // previous sidecar in place.
+        try validate(artifact)
+        return try JSONEncoder.diarization.encode(artifact)
     }
 
     public static func decode(_ data: Data) throws -> DiarizationArtifactV1 {
@@ -121,6 +126,14 @@ public enum DiarizationArtifactCodec {
         guard let artifact = try? JSONDecoder.diarization.decode(DiarizationArtifactV1.self, from: data) else {
             throw DiarizationArtifactError.unreadable
         }
+        try validate(artifact)
+        return artifact
+    }
+
+    /// Every rule a trustworthy sidecar obeys, in one place so reading and writing can never drift
+    /// apart. The file may have been written by anything — another build, an editor, a sync client —
+    /// so nothing here is assumed from the in-memory type alone.
+    private static func validate(_ artifact: DiarizationArtifactV1) throws {
         guard artifact.schemaVersion == DiarizationArtifactV1.currentSchemaVersion else {
             throw DiarizationArtifactError.malformed("schemaVersion")
         }
@@ -156,6 +169,5 @@ public enum DiarizationArtifactCodec {
                        artifact.producer.embeddingModelSHA256] where digest.utf8.count > 64 {
             throw DiarizationArtifactError.malformed("digest")
         }
-        return artifact
     }
 }

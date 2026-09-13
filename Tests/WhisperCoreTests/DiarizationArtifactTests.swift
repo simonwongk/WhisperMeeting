@@ -181,3 +181,18 @@ func artifactBoundsItsDigestFields() throws {
         try DiarizationArtifactCodec.decode(try JSONSerialization.data(withJSONObject: object))
     }
 }
+
+@Test("The codec refuses to write a file it would then refuse to read (F218)")
+func artifactEncodeIsAsStrictAsDecode() throws {
+    // "Strict read/write" is the header's claim, and AppModel writes every analysis through this
+    // function. An encode that accepts what decode rejects persists a failed analysis happily and
+    // fails on the NEXT read — reaching the user as a corrupt sidecar, a launch later and far from
+    // the cause, rather than as an analysis that did not finish.
+    let bad = artifact(turns: [SpeakerTurn(startSeconds: 0, endSeconds: 99, clusterID: 0, kind: .speech)])
+    #expect(throws: DiarizationArtifactError.malformed("exceedsDuration")) {
+        try DiarizationArtifactCodec.encode(bad)
+    }
+    #expect(throws: DiarizationArtifactError.malformed("aliasKey")) {
+        try DiarizationArtifactCodec.encode(artifact(aliases: ["not-a-number": "Ada"]))
+    }
+}
