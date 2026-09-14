@@ -63,6 +63,30 @@ public enum SpeakerTurnValidationError: Error, Sendable, Equatable {
     case tooManyTurns
 }
 
+/// One interval exactly as a diarization runtime reported it, before remapping or validation.
+///
+/// `rawSpeaker` is generic because runtimes do not agree on what a cluster identity is: sherpa-onnx
+/// numbered them sparsely (`speaker_00`, `speaker_02`, no `speaker_01`), FluidAudio names them
+/// (`"S1"`, `"S2"`). Keying on whatever the runtime itself produced means an unfamiliar id is
+/// merely a different key — never a parse that fails open, collapses every turn onto one cluster,
+/// and shows two voices as one confidently-labelled speaker, which is the single error
+/// `SpeakerOverlay` cannot detect (it sees one cluster, no competitor, no overlap).
+public struct RawDiarizationTurn<ID: Hashable & Sendable>: Sendable, Equatable {
+    public let startSeconds: TimeInterval
+    public let endSeconds: TimeInterval
+    public let rawSpeaker: ID
+    /// The runtime's own per-turn confidence, when it reports one at all. `nil` means "no score" —
+    /// which is not a low score, and must never be thresholded as if it were.
+    public let confidence: Double?
+
+    public init(startSeconds: TimeInterval, endSeconds: TimeInterval, rawSpeaker: ID, confidence: Double?) {
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.rawSpeaker = rawSpeaker
+        self.confidence = confidence
+    }
+}
+
 /// Validation for untrusted diarization output — a model result, a file written by another build,
 /// or a corrupted sidecar. Nothing reaches storage or the UI without passing through here (F218).
 public enum SpeakerTurns {
@@ -103,5 +127,48 @@ public enum SpeakerTurns {
             previousStart = turn.startSeconds
         }
         return turns
+    }
+
+    /// Remaps a runtime's own cluster ids onto dense `0..<n` in **first-appearance order**, and
+    /// marks a low-confidence turn uncertain so the overlay abstains instead of showing a
+    /// confident guess.
+    ///
+    /// First-appearance order is the whole point: "Speaker 1" must be the first voice heard, not an
+    /// arbitrary internal index. A runtime's ids are private to its own clustering pass — sparse
+    /// integers, generated names, whatever it happened to allocate — and carry no meaning a reader
+    /// could use. Showing them raw would label the first person to speak "Speaker 3" in one meeting
+    /// and "Speaker 1" in the next, for no reason a user could ever discover.
+    ///
+    /// Runtime-agnostic by construction, which is why it outlived the runtime it was written for:
+    /// every diarizer needs this remap, and none of them can do it for us.
+    ///
+    /// `raw` must already be in time order. First-appearance only means "first voice heard" if the
+    /// turns are sorted when the mapping is built, and `validate` rejects unsorted turns anyway.
+    public static func densify<ID>(
+        _ raw: [RawDiarizationTurn<ID>],
+        uncertainBelowConfidence threshold: Double
+    ) -> [SpeakerTurn] {
+        var mapping: [ID: Int] = [:]
+        var next = 0
+        return raw.map { turn in
+            let clusterID: Int
+            if let existing = mapping[turn.rawSpeaker] {
+                clusterID = existing
+            } else {
+                clusterID = next
+                mapping[turn.rawSpeaker] = next
+                next += 1
+            }
+            // An absent confidence means the runtime reported no score, not a score of zero.
+            // Thresholding it would mark every turn of a runtime that scores nothing uncertain,
+            // and label nothing at all.
+            let isUncertain = turn.confidence.map { $0 < threshold } ?? false
+            return SpeakerTurn(
+                startSeconds: turn.startSeconds,
+                endSeconds: turn.endSeconds,
+                clusterID: clusterID,
+                kind: isUncertain ? .uncertain : .speech
+            )
+        }
     }
 }

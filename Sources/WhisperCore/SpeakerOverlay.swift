@@ -144,8 +144,8 @@ public enum SpeakerOverlay {
     /// cluster must clear both the coverage floor and the margin over the runner-up.
     ///
     /// **The overlap veto is implemented and tested, and is currently UNREACHABLE IN PRODUCTION.**
-    /// The selected runtime does not report overlap: it emits one speaker per line, so
-    /// `DiarizationOutputParser.densify` — the only production constructor of a `SpeakerTurn` — has
+    /// The selected runtime does not report overlap: it reports one speaker per interval, so
+    /// `SpeakerTurns.densify` — the only production constructor of a `SpeakerTurn` — has
     /// no simultaneity to copy and produces `.speech`/`.uncertain` only. Nothing outside test
     /// fixtures builds a `.overlap` turn, so this branch never fires on real output. Intersecting
     /// same-time turns are therefore NOT currently marked: two people talking at once arrive as two

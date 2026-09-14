@@ -4,7 +4,9 @@
 
 **Goal:** Ship optional, post-meeting, entirely local speaker-turn analysis that labels a completed transcript with anonymous per-meeting clusters, never identifies a person, and never changes the recording, the transcript, or any existing output path.
 
-**Architecture:** A pinned native `sherpa-onnx` binary runs as a subprocess over a 16 kHz mono copy of the canonical recording. Its anonymous turns are validated by Foundation-only code in `WhisperCore`, stored in a strict versioned `Recordings/<uuid>/diarization.json` sidecar, and reconciled into a **display-only** overlay at render time. `TranscriptSegment.speaker` is never populated; `meetings.json` never changes.
+**Architecture:** FluidAudio's offline diarizer runs **in-process** over a 16 kHz mono copy of the canonical recording, from the `WhisperMeet` target only. Its anonymous turns are validated by Foundation-only code in `WhisperCore`, stored in a strict versioned `Recordings/<uuid>/diarization.json` sidecar, and reconciled into a **display-only** overlay at render time. `TranscriptSegment.speaker` is never populated; `meetings.json` never changes.
+
+> **Superseded 2026-09-13 (F216/F219).** This plan was written against a pinned native `sherpa-onnx` subprocess, which failed real-meeting validation. Tasks 6 and 7 below built `DiarizationOutputParser` and `LocalDiarizationClient`; both files, and their 23 tests, have since been **deleted** — only `densify` survived, moved to `SpeakerTurns` in `Sources/WhisperCore/SpeakerTurn.swift` and made generic over the runtime's own cluster-id type. Every sherpa-era pin, flag and stdout-grammar rule in the task sections below is history, kept because the reasoning that produced them is still the reasoning that would have to be redone. The current record is [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md).
 
 **Tech Stack:** Swift 6 (language mode 5, swift-tools 6.2), SwiftPM, swift-testing, SwiftUI, zsh installer scripts, Python 3 for the benchmark harness. **One third-party dependency: FluidAudio, WhisperMeet target only.**
 
@@ -24,14 +26,7 @@
 - **Never identify a person.** No UI string may say "recognized", "verified", "identified", or imply a channel maps to a person. `AccessibilityPhrase.swift:4` already binds this.
 - **A single-cluster result shows no labels at all.** If analysis distinguishes exactly one voice, suppress labelling entirely and say so plainly. Measured on the F217 corpus: 2 of 16 fixtures at threshold 0.30 (3 of 16 at 0.40) collapse a genuine two-person conversation into one cluster. Labelling every row "Speaker 1" is worthless for a real monologue and actively misleading for a failed separation — and it sets an alias trap, because renaming that single cluster to "Alice" then attributes the other person's words to Alice. Suppressing is strictly better in both cases.
 - **Apple silicon only**, matching the existing Qwen3-ASR constraint.
-- **Runtime pins** (from the F216 decision; every hash independently re-verified):
-  - `sherpa-onnx` `1.13.8`, asset `sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts.tar.bz2`, sha256 `91b96512c4fa1960f8a9ed5360a6c8dda53a4b5015d0590244f14086a234557a`
-  - `bin/sherpa-onnx-offline-speaker-diarization` sha256 `e1170a93308867d8e343ac22a00b46b1d8e786c763c32a17caff07cf934ff66f`
-  - `lib/libonnxruntime.dylib` sha256 `3567d114f7299d559993e536d605a6f46d7bc9d2542004accc80ee9bf5457f0b`
-  - segmentation asset `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` sha256 `24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488`, `model.onnx` sha256 `220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079`, `LICENSE` sha256 `14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba`
-  - embedding `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx` sha256 `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`
-  - clustering threshold **0.40** — re-derived on the F217 corpus (F216's 0.3 was calibrated on five two-speaker clips); `num-threads=4`, never `--clustering.num-clusters`, never `model.int8.onnx`
-  - The upstream release path segment `speaker-recongition-models` is **misspelled upstream**. Hard-code it; `speaker-recognition-models` returns 404.
+- **Runtime pins.** The sherpa-onnx tarball, ONNX Runtime dylib, segmentation/embedding model and clustering-flag pins that stood here were **removed on 2026-09-13 (F216/F219)** along with the runtime and the installer path that fetched them — a pinned hash for an artifact nothing downloads is an invitation to re-adopt it by accident. The live pins are the 21 Core ML files and their SHA-256s in [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) §1, installed by `Scripts/setup-speaker-diarization.sh`, with `clustering.threshold = 0.6` (a Euclidean PLDA distance, **not** comparable to sherpa's 0.40 cosine) and `numSpeakers`/`minSpeakers`/`maxSpeakers` left nil. The superseded pins remain in that record's §1 and §6b.
 - **Verification command** (this Mac has Command Line Tools only, so plain `swift test` fails with `no such module 'Testing'`):
 
 ```bash
@@ -53,8 +48,9 @@ Keep the flags byte-identical between runs so SwiftPM does not rebuild. `--filte
 | `Sources/WhisperCore/TranscriptTimingFingerprint.swift` | Non-crypto fingerprint over segment timings |
 | `Sources/WhisperCore/SpeakerOverlay.swift` | Pure turn→segment reconciliation (display only) |
 | `Sources/WhisperCore/DiarizationArtifact.swift` | `DiarizationArtifactV1` envelope + strict codec |
-| `Sources/WhisperCore/DiarizationOutputParser.swift` | Pure parser for the runtime's stdout/stderr grammar |
-| `Sources/WhisperCore/LocalDiarizationClient.swift` | Subprocess adapter + `DiarizationRuntime` paths |
+| ~~`Sources/WhisperCore/DiarizationOutputParser.swift`~~ | **Deleted (F216/F219)** — the stdout/stderr grammar died with the subprocess. `densify` moved into `SpeakerTurn.swift` |
+| ~~`Sources/WhisperCore/LocalDiarizationClient.swift`~~ | **Deleted (F216/F219)** — `DiarizationRuntime`, `SpeakerDiarizationResult` and `LocalDiarizationError` moved to `Sources/WhisperCore/DiarizationRuntime.swift` |
+| `Sources/WhisperMeet/FluidAudioDiarizationClient.swift` | In-process FluidAudio adapter + pinned model paths (replaced both rows above) |
 | `Sources/WhisperCore/AccessibilityPhrase.swift` | *(modify)* VoiceOver phrase for an inferred label |
 | `Sources/WhisperCore/TranscriptExporter.swift` | *(modify)* two labeled formats, excluded from the standard set |
 | `Sources/WhisperMeet/DiarizationArtifactStore.swift` | Sidecar I/O, atomic write, quarantine, staleness, hashing |

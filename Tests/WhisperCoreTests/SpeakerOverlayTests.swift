@@ -89,8 +89,8 @@ func overlayVetoesOnOverlap() {
 func overlayVetoIsUnreachableFromRuntimeOutput() {
     // The test above is the PRD's veto — "an overlap anywhere in the segment vetoes a name" — and it
     // passes only because its fixture hand-builds a `.overlap` turn. Nothing in the shipped pipeline
-    // ever does: `DiarizationOutputParser.densify` is the only production constructor of a
-    // `SpeakerTurn`, the runtime emits one speaker per line and never reports simultaneity, so
+    // ever does: `SpeakerTurns.densify` is the only production constructor of a
+    // `SpeakerTurn`, the runtime reports one speaker per interval and never reports simultaneity, so
     // densify has nothing to copy and emits `.speech`/`.uncertain` only. F223 tracks deriving
     // `.overlap` from intersecting raw turns; until it lands the veto is dead code in production.
     //
@@ -101,7 +101,7 @@ func overlayVetoIsUnreachableFromRuntimeOutput() {
         RawDiarizationTurn(startSeconds: 0, endSeconds: 100, rawSpeaker: 0, confidence: 0.9),
         RawDiarizationTurn(startSeconds: 40, endSeconds: 45, rawSpeaker: 1, confidence: 0.9)
     ]
-    let turns = DiarizationOutputParser.densify(raw, uncertainBelowConfidence: 0.5)
+    let turns = SpeakerTurns.densify(raw, uncertainBelowConfidence: 0.5)
     #expect(!turns.contains { $0.kind == .overlap })
 
     // The same two intervals the veto test uses, only unmarked — and the overlay names one of the

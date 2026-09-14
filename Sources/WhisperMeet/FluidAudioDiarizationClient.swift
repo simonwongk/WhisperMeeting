@@ -49,13 +49,14 @@ enum FluidAudioDiarizationRuntime {
         ].map { "\(artifact)/\($0)" }
     }
 
-    /// FluidAudio's own community preset. **Not** `DiarizationRuntime.clusterThreshold` (0.40):
-    /// that number was derived on the F217 corpus against sherpa-onnx, whose threshold is a cosine
-    /// distance, while FluidAudio's is a Euclidean distance in PLDA space (its v0.15.6 semantics
-    /// fix). The two are not comparable — the mapping is `sqrt(2 − 2·cosine)` — so carrying 0.40
-    /// across would not be conservatism, it would be a different, far more aggressive setting that
-    /// over-splits every meeting. The upstream value calibrated on pyannote community-1 is the only
-    /// defensible starting point until the threshold is re-derived on annotated audio (F225).
+    /// FluidAudio's own community preset. **Not** the 0.40 the F217 corpus derived for the retired
+    /// sherpa-onnx runtime, which is why that constant was deleted rather than carried across:
+    /// sherpa's threshold is a cosine distance, FluidAudio's is a Euclidean distance in PLDA space
+    /// (its v0.15.6 semantics fix). The two are not comparable — the mapping is
+    /// `sqrt(2 − 2·cosine)` — so reusing 0.40 would not be conservatism, it would be a different,
+    /// far more aggressive setting that over-splits every meeting. The upstream value calibrated on
+    /// pyannote community-1 is the only defensible starting point until the threshold is re-derived
+    /// on annotated audio (F225).
     static let clusterThreshold = 0.6
 
     /// Recorded on every sidecar so a result produced by this runtime is identifiable later.
@@ -97,11 +98,13 @@ enum FluidAudioDiarizationRuntime {
 /// Runs FluidAudio's offline speaker diarizer over one prepared 16 kHz mono file and returns
 /// validated anonymous turns (F216).
 ///
-/// It satisfies the contract `LocalDiarizationClient` did — an audio URL and a duration in, a
-/// validated `SpeakerDiarizationResult` out — so the `AppModel.runSpeakerDiarization` seam, its
-/// guards, its cancellation and the sidecar are unchanged. What changed is everything below the
-/// seam: there is no subprocess, no stdout grammar and no process to kill, so cancellation now
-/// rides on Swift task cancellation.
+/// It satisfies the same contract the retired sherpa-onnx subprocess client did — an audio URL and
+/// a duration in, a validated `SpeakerDiarizationResult` out — so the
+/// `AppModel.runSpeakerDiarization` seam, its guards, its cancellation and the sidecar are
+/// unchanged. That is what let the subprocess client, its stdout line-grammar parser and their 23
+/// tests be deleted outright: everything above the seam never knew which runtime was underneath.
+/// What changed below it is everything — there is no subprocess, no stdout grammar and no process
+/// to kill, so cancellation now rides on Swift task cancellation.
 ///
 /// `FluidAudio` is imported HERE and nowhere else. `WhisperCore` stays Foundation-only (the
 /// AGENTS.md purity rule), which is the whole reason the runtime lives in the app target.
@@ -210,51 +213,45 @@ struct FluidAudioDiarizationClient: Sendable {
         }
     }
 
-    /// Remaps the runtime's cluster ids onto dense `0..<n` in first-appearance order, so
+    /// Remaps FluidAudio's cluster ids onto dense `0..<n` in first-appearance order, so
     /// "Speaker 1" is the first voice heard rather than an arbitrary internal index.
     ///
-    /// `DiarizationOutputParser.densify` does exactly this, and it is deliberately NOT reused: its
-    /// input is `RawDiarizationTurn`, whose `rawSpeaker` is an `Int` parsed out of sherpa-onnx's
-    /// `speaker_07` line grammar, while FluidAudio's `TimedSpeakerSegment.speakerId` is a `String`
-    /// (`"S1"`, `"S2"`, … — `OfflineDiarizerManager` formats it as `"S\(cluster + 1)"`). Reuse
-    /// would mean parsing the digits back out of that string, and the day an id stops being "S" +
-    /// digits every parse returns the same fallback, every turn collapses onto one cluster, and two
-    /// voices are displayed as one confidently-labelled speaker — the one error `SpeakerOverlay`
-    /// cannot detect, because it sees a single cluster with no competitor and no overlap. Keyed on
-    /// the string itself, an unfamiliar id is merely a different key.
+    /// The remap itself is `SpeakerTurns.densify` in `WhisperCore`, which is where it belongs: it is
+    /// the one part of the retired sherpa-onnx adapter that was never about sherpa-onnx. It is
+    /// generic over the runtime's own id type, so FluidAudio's `TimedSpeakerSegment.speakerId`
+    /// (`"S1"`, `"S2"`, … — `OfflineDiarizerManager` formats it as `"S\(cluster + 1)"`) is used as
+    /// the key verbatim. Parsing the digits back out of that string was the thing worth avoiding:
+    /// the day an id stops being "S" + digits every parse returns the same fallback, every turn
+    /// collapses onto one cluster, and two voices are displayed as one confidently-labelled speaker
+    /// — the one error `SpeakerOverlay` cannot detect, because it sees a single cluster with no
+    /// competitor and no overlap. Keyed on the string itself, an unfamiliar id is merely a
+    /// different key.
     ///
-    /// Sorting happens first because `SpeakerTurns.validate` rejects unsorted turns outright and
-    /// FluidAudio promises no order — and because first-appearance only means "first voice heard"
-    /// if the turns are in time order when the mapping is built.
+    /// Sorting happens HERE rather than in `densify` because ordering is the runtime's property,
+    /// not the remap's: sherpa-onnx promised sorted output and FluidAudio promises none.
+    /// `SpeakerTurns.validate` rejects unsorted turns outright, and first-appearance only means
+    /// "first voice heard" if the turns are in time order when the mapping is built.
     ///
-    /// Every turn is `.speech`. FluidAudio reports a per-segment `qualityScore`, but it is not the
-    /// per-turn clustering confidence sherpa-onnx emitted and no threshold for it has been earned
-    /// on this corpus; `DiarizationRuntime.uncertainBelowConfidence` is 0 for the same reason, so
-    /// thresholding nothing is also what the previous runtime did in practice (F225 may revise this
-    /// only with a documented before/after table).
+    /// Every turn is `.speech`. FluidAudio reports a per-segment `qualityScore`, but it is not a
+    /// per-turn clustering confidence and no threshold for it has been earned on this corpus, so
+    /// the confidence is passed as `nil` — "no score", which `densify` must not threshold. (F225
+    /// may revise this only with a documented before/after table.)
     static func densify(_ segments: [Segment]) -> [SpeakerTurn] {
         let ordered = segments.sorted {
             ($0.startSeconds, $0.endSeconds, $0.speakerID)
                 < ($1.startSeconds, $1.endSeconds, $1.speakerID)
         }
-        var mapping: [String: Int] = [:]
-        var next = 0
-        return ordered.map { segment in
-            let clusterID: Int
-            if let existing = mapping[segment.speakerID] {
-                clusterID = existing
-            } else {
-                clusterID = next
-                mapping[segment.speakerID] = next
-                next += 1
-            }
-            return SpeakerTurn(
-                startSeconds: segment.startSeconds,
-                endSeconds: segment.endSeconds,
-                clusterID: clusterID,
-                kind: .speech
-            )
-        }
+        return SpeakerTurns.densify(
+            ordered.map {
+                RawDiarizationTurn(
+                    startSeconds: $0.startSeconds,
+                    endSeconds: $0.endSeconds,
+                    rawSpeaker: $0.speakerID,
+                    confidence: nil
+                )
+            },
+            uncertainBelowConfidence: DiarizationRuntime.uncertainBelowConfidence
+        )
     }
 
     // MARK: - The real runtime

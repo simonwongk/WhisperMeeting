@@ -821,6 +821,25 @@ print "Speaker analysis is ready at $target_directory"
 > grammar below describes nothing that ships. What replaced it is `FluidAudioDiarizationClient`,
 > whose contract is the same `SpeakerDiarizationResult` this grammar was parsed into — which is why
 > nothing above the adapter seam changed. The sidecar JSON in this section is still current.
+>
+> **Retired in code 2026-09-13 (F216/F219).** The grammar below is now documentation only.
+> `Sources/WhisperCore/LocalDiarizationClient.swift` (the subprocess adapter, its line reader and
+> its bounded diagnostic log), `Sources/WhisperCore/DiarizationOutputParser.swift` (the segment and
+> progress regexes, the `confidence=n/a` and `-2.0` sentinels, and `classify`'s four exit-255
+> failure markers) and their 23 tests were deleted: maintaining a parser for a runtime nothing
+> invokes is a standing invitation to trust it again. Kept, and moved:
+>
+> - `SpeakerTurns.densify` → `Sources/WhisperCore/SpeakerTurn.swift`. The first-appearance remap is
+>   not a property of any runtime — every diarizer allocates cluster ids that are private to its own
+>   clustering pass, and "Speaker 1" has to mean the first voice heard. It is now generic over the
+>   runtime's own id type (sherpa's sparse `Int`, FluidAudio's `String`) and
+>   `FluidAudioDiarizationClient.densify` delegates to it, so there is one implementation of the
+>   rule rather than two.
+> - `DiarizationRuntime`, `SpeakerDiarizationResult`, `LocalDiarizationError` →
+>   `Sources/WhisperCore/DiarizationRuntime.swift`. `DiarizationRuntime` kept only
+>   `managedDirectory` and `uncertainBelowConfidence`; its sherpa-era `clusterThreshold` (0.40,
+>   a cosine distance) and `numThreads` (a `--segmentation.num-threads` value) went with the flags
+>   that consumed them.
 
 **There is no Python helper.** The decision removes the interpreter, so `Scripts/` gains no new
 `.py` file and the `Runtime/Diarization` tree contains no venv. The "helper" is the pinned binary,

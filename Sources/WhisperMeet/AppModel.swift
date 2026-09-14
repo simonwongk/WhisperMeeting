@@ -735,9 +735,10 @@ final class AppModel: ObservableObject {
         }
         try Task.checkCancellation()
 
-        // FluidAudio's in-process Core ML runtime, replacing the sherpa-onnx subprocess (F216).
-        // `LocalDiarizationClient` is still in the tree but nothing calls it any more; it is removed
-        // with the rest of the sherpa install path (F219).
+        // FluidAudio's in-process Core ML runtime, which replaced the sherpa-onnx subprocess
+        // (F216). The subprocess client and its stdout-grammar parser were deleted with the runtime
+        // they spoke to; only `SpeakerTurns.densify` survived, because the first-appearance remap is
+        // not a property of any one runtime (F216/F219).
         let client = FluidAudioDiarizationClient()
         return try await client.diarize(
             audioURL: analysisURL,
