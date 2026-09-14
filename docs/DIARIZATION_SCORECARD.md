@@ -376,8 +376,34 @@ installer, and nothing above the seam moved.
    label `SpeakerOverlay` exists to prevent, and neither the coverage rule nor the margin rule nor
    single-cluster suppression can see it.
 
-   FluidAudio does ship a second architecture, **Sortformer** (`OfflineSortformerDiarizer`,
-   `DiarizerTimeline`), whose per-speaker activity tracks are structurally capable of representing
-   two speakers active at once. Whether it is worth adopting is F232, not a change to make silently.
+   FluidAudio ships a second architecture, **Sortformer** (`OfflineSortformerDiarizer`,
+   `DiarizerTimeline`). It was run on the same fixture rather than assumed from its types:
+
+   ```text
+   SORT speaker 0   0.00-14.16
+   SORT speaker 1   5.92-20.96
+   SORT INTERSECT s0 & s1 over 5.92-14.16
+   SORT spans=2 intersections=1
+   ```
+
+   Against a ground truth of both speakers talking 6.0–14.1 s, it places the overlap at
+   **5.92–14.16 s** — within about 0.1 s at both boundaries. Overlap detection on this runtime is
+   real, not theoretical.
+
+   It is not a free swap, and the trade is sharp:
+
+   | | pyannote community-1 *(current)* | Sortformer v2.1 fp16 |
+   |---|---|---|
+   | Simultaneous speech | not reported at all | detected, ±0.1 s on this fixture |
+   | Maximum speakers | unbounded (clustering) | **4, fixed** — `numSpeakers` is a `let`, the model's output width |
+   | Model download | **21 MB** | **242 MB** |
+   | First compile | 0.10 s | 10.3 s |
+   | Measured on real meetings | yes, §4–5 | **no** — one 21 s synthetic fixture |
+
+   The speaker cap is the hard part. The one real meeting measured produced exactly **4** clusters,
+   which is the cap, so a fifth participant would have nowhere to go. Trading an unbounded speaker
+   count for overlap detection is a product decision about which error is worse, and it is F232's,
+   not a change to make silently. Nothing here was adopted: the probe downloaded into a scratch
+   directory and the installed runtime is untouched.
 4. **Floor-configuration and long-recording runs.** 615.5 MiB at 35 minutes is comfortable; nothing
    here measured 90 minutes or an 8 GB machine, and the system gate names both.
