@@ -381,8 +381,29 @@ func fluidAudioAdapterRunsAgainstTheRealStagedModels() async throws {
     print("REAL RUN: turns=\(result.turns.count) speakers=\(result.speakerCount) seconds=\(seconds)")
 }
 
+/// Holds the diarization task so the progress handler can cancel the very run reporting to it.
+///
+/// The handler can fire before `attach` returns — the relay runs concurrently with the runtime — so
+/// a cancel that arrives first is remembered rather than dropped on the floor.
+private actor RunningAnalysis {
+    private var task: Task<SpeakerDiarizationResult, any Error>?
+    private var cancelRequested = false
+
+    var reportedProgress: Bool { cancelRequested }
+
+    func attach(_ task: Task<SpeakerDiarizationResult, any Error>) {
+        self.task = task
+        if cancelRequested { task.cancel() }
+    }
+
+    func cancelNow() {
+        cancelRequested = true
+        task?.cancel()
+    }
+}
+
 @Test(
-    "Cancellation really propagates into FluidAudio's workers (F216)",
+    "Cancellation really propagates into FluidAudio's workers (F216/F226)",
     .enabled(if: realModelsAvailable)
 )
 func fluidAudioAdapterCancellationPropagatesIntoTheRealRuntime() async throws {
@@ -392,11 +413,35 @@ func fluidAudioAdapterCancellationPropagatesIntoTheRealRuntime() async throws {
     let audio = URL(fileURLWithPath: try #require(realAudioPath))
     let seconds = AppModel.analysisSeconds(of: audio, fallback: 0)
 
+    // Cancel on the runtime's FIRST progress report rather than after a fixed sleep. The sleep this
+    // replaced only proved anything if the run was still in flight when it expired: pointed at
+    // `Scripts/bench/clips/en1.wav` (3.1 s) the whole analysis finishes in 0.28 s, so the cancel
+    // landed after the result and the test failed having caught no defect — an hour of chasing a
+    // non-bug for whoever set the env vars to the obvious thing (F226). FluidAudio reports progress
+    // from inside its segmentation loop, so the first fraction is mid-run at any length.
+    let running = RunningAnalysis()
     let started = Date()
-    let task = Task { try await client.diarize(audioURL: audio, durationSeconds: seconds) }
-    try await Task.sleep(nanoseconds: 300_000_000)
-    task.cancel()
-    await #expect(throws: CancellationError.self) { _ = try await task.value }
+    let task = Task {
+        try await client.diarize(audioURL: audio, durationSeconds: seconds) { _ in
+            await running.cancelNow()
+        }
+    }
+    await running.attach(task)
+
+    var thrown: (any Error)?
+    do { _ = try await task.value } catch { thrown = error }
+
+    // Reported separately so the two ways this can fail read differently. A runtime that never
+    // reports progress leaves the cancel unarmed, which is a fact about the fixture; a run that
+    // ignores an armed cancel is the regression this test exists to catch.
+    #expect(
+        await running.reportedProgress,
+        "the runtime reported no progress for this file, so no cancel was ever delivered"
+    )
+    #expect(
+        thrown is CancellationError,
+        "expected CancellationError, got \(String(describing: thrown))"
+    )
     print("REAL CANCEL: returned after \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
 }
 
