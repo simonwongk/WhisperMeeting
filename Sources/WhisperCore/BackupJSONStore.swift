@@ -673,18 +673,61 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     }
 
     /// Conflict branches awaiting a decision. They are never pruned automatically.
+    ///
+    /// A branch that cannot be READ is still listed (F236). Dropping it would be worse here than
+    /// anywhere else in this module: a retained generation is one of several copies of a lineage,
+    /// but a conflict branch is a losing writer's work and exists nowhere else. Omitting it tells
+    /// the user there is nothing to resolve, and the next cleanup takes it.
+    ///
+    /// The name carries both the sequence and the fingerprint, so an unreadable branch is still
+    /// fully identified; only `bytesMatchName` goes false, because nothing was verified. The size
+    /// comes from a `stat`, which costs nothing and lets the list show what is there.
     public func conflictBranches() throws -> [RetainedGeneration] {
         let names = (try? io.contentsOfDirectory(history.directoryURL, .listHistory)) ?? []
-        return names.filter { $0.hasPrefix("conflict-") }.compactMap { name in
-            guard let bytes = try? io.read(
-                history.directoryURL.appendingPathComponent(name), .readHistoryEntry
-            ) else { return nil }
+        return names.filter { $0.hasPrefix("conflict-") }.map { name in
+            let url = history.directoryURL.appendingPathComponent(name)
+            let claimed = Self.conflictBranchName(name)
+            guard let bytes = try? io.read(url, .readHistoryEntry) else {
+                return RetainedGeneration(
+                    name: name,
+                    sequence: claimed?.sequence ?? 0,
+                    fingerprint: claimed?.fingerprint ?? "",
+                    byteCount: Int(io.identity(url)?.size ?? 0),
+                    wroteAtEpochSeconds: nil,
+                    recordCount: nil,
+                    bytesMatchName: false
+                )
+            }
+            let actual = io.fingerprint(bytes)
             return RetainedGeneration(
-                name: name, sequence: 0, fingerprint: io.fingerprint(bytes),
-                byteCount: bytes.count, wroteAtEpochSeconds: nil, recordCount: nil,
-                bytesMatchName: true
+                name: name,
+                sequence: claimed?.sequence ?? 0,
+                fingerprint: actual,
+                byteCount: bytes.count,
+                wroteAtEpochSeconds: nil,
+                recordCount: nil,
+                // An unparseable name cannot vouch for anything, so it is not reported as verified.
+                bytesMatchName: claimed?.fingerprint == actual
             )
         }
+        .sorted { $0.sequence > $1.sequence }
+    }
+
+    /// `conflict-<9-digit sequence>-<8 hex writer>-<16 hex fingerprint>.json`, or nil.
+    ///
+    /// Lives here rather than beside `StoreHistory.parse` because a conflict branch is written by
+    /// `compareAndSwap` in this file, and the two name formats have no reason to share a parser —
+    /// `parse` deliberately refuses `conflict-` names so a branch can never enter the retained set
+    /// and be pruned as a generation.
+    static func conflictBranchName(_ name: String) -> (sequence: UInt64, fingerprint: String)? {
+        guard name.hasPrefix("conflict-"), name.hasSuffix(".json") else { return nil }
+        let parts = name.dropFirst(9).dropLast(5).split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, let sequence = UInt64(parts[0]) else { return nil }
+        let fingerprint = String(parts[2])
+        guard fingerprint.count == 16,
+              fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
+        else { return nil }
+        return (sequence, fingerprint)
     }
 
     /// Whether the primary belongs to a second lineage (F190). All five conditions must hold.
