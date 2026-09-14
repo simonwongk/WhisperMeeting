@@ -12,6 +12,10 @@ import WhisperCore
     @Published private(set) var health: PersistedStoreHealth = .complete
     @Published private(set) var loadErrorMessage: String?
     private let store: BackupJSONStore<DictationLog>
+    /// The generation this store last read or wrote, threaded into the next save so the
+    /// compare-and-swap can fire (F190). A plain token, NOT a health input: part 1 of the invariant
+    /// below is that `health` is assigned only in `init`, and a conflict must not change that.
+    private var token: GenerationToken?
 
     init(directory: URL? = nil) {
         let dir = directory ?? FileManager.default
@@ -19,12 +23,17 @@ import WhisperCore
             .appendingPathComponent("WhisperMeet", isDirectory: true)
         store = BackupJSONStore(
             primaryURL: dir.appendingPathComponent("dictation-log.json"),
-            backupURL: dir.appendingPathComponent("dictation-log.backup.json")
+            backupURL: dir.appendingPathComponent("dictation-log.backup.json"),
+            // The dictation log is one object rather than an array, so there is no element count to
+            // pin retention's high-water rule on. Its own retention policy is correspondingly
+            // shallower — `RetentionPolicy.dictationLog` (F190).
+            retention: .dictationLog
         )
         do {
             if let loaded = try store.load() {
                 log = loaded.value
                 health = loaded.health
+                token = loaded.token
                 if !loaded.health.allowsMutation {
                     loadErrorMessage = "Your dictation history could not be fully read, so it is shown read-only and nothing will be written over it."
                 }
@@ -75,9 +84,14 @@ import WhisperCore
     /// property into load- and save-error channels before loosening any of them.
     private func persist() {
         do {
-            try store.save(log)
+            let outcome = try store.save(log, expecting: token)
+            token = outcome.token
             loadErrorMessage = nil
         } catch {
+            // Deliberately does NOT touch `health`, including on a lost race (F190). Part 1 of the
+            // invariant above is that `health` is assigned only in `init`; a runtime transition here
+            // would break parts 1 and 2 together and blank the read-only notice permanently for the
+            // process. A conflict is reported through this message and nothing else.
             loadErrorMessage = error.localizedDescription
         }
     }

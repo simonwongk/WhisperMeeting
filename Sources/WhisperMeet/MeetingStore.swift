@@ -195,6 +195,41 @@ enum ReadOnlyLibraryNotice {
     }
 }
 
+/// A save that lost a race, in terms the UI can render (F190).
+///
+/// Carries whether the refused body was preserved, because that is the one thing the user must not
+/// be misled about — the F187 honesty rule. `preservedAs` is nil exactly when preservation failed,
+/// and `message` then says so rather than implying a copy exists.
+struct WriteConflictReport: Equatable {
+    /// The history file holding the refused body, or nil when it could not be written.
+    let preservedAs: String?
+    let message: String
+    /// False when this was an ordinary save failure rather than a lost race — a full disk, a
+    /// permissions change. The channel is shared so a caller has one place to look.
+    let isRace: Bool
+
+    init(_ error: any Error) {
+        guard let storeError = error as? BackupJSONStoreError else {
+            preservedAs = nil
+            isRace = false
+            message = error.localizedDescription
+            return
+        }
+        switch storeError {
+        case let .generationConflict(_, _, _, preserved):
+            preservedAs = preserved
+            isRace = true
+        case .generationConflictNotPreserved:
+            preservedAs = nil
+            isRace = true
+        case .noReadableCopy:
+            preservedAs = nil
+            isRace = false
+        }
+        message = storeError.errorDescription ?? "\(storeError)"
+    }
+}
+
 /// Why the store refused an operation outright (F187).
 /// `Equatable` is declared, not inferred: tests match on this error with `#expect(throws:)`, and the
 /// synthesized conformance would silently disappear the moment a case gains an associated value.
@@ -263,6 +298,29 @@ final class MeetingStore: ObservableObject {
     private var pendingSidecarFlush: Task<Void, Never>?
     /// Count of sidecar files actually written — lets tests assert the compare-first rule.
     private(set) var sidecarWriteCount = 0
+    /// Commits, as opposed to attempts. `persistCount` keeps its original meaning ("a save was
+    /// attempted") because ~15 existing assertions depend on it and on its position before the save
+    /// (F190).
+    private(set) var persistCommitCount = 0
+
+    /// A save that lost a race to another writer. A SEPARATE channel from `health` on purpose:
+    /// `AppModel.startRecording` pre-flights `!isDegraded` and relies on that answer for the whole
+    /// recording, so a mid-session degrade would make `stopRecording`'s `upsert` silently return and
+    /// lose a finished meeting (F190). A conflict is a transient race, not a damaged library.
+    @Published private(set) var writeConflict: WriteConflictReport?
+    /// True while the in-memory value is ahead of what reached disk.
+    @Published private(set) var unsavedChanges = false
+    /// Who holds the single-writer lease. A NON-BLOCKING ADVISORY — it never sets `health`, because
+    /// a lease that could make a library read-only would be a new way to lock a user out of their
+    /// own meetings.
+    @Published private(set) var writerLease: StoreWriterLease = .unmanaged
+
+    /// The generation each store last read or wrote, threaded into the next `save(expecting:)`.
+    /// Without these the compare-and-swap never fires.
+    private var meetingsToken: GenerationToken?
+    private var vocabularyToken: GenerationToken?
+    private var replacementRulesToken: GenerationToken?
+    private var leaseHandle: LibraryWriterLeaseHandle?
 
     init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = 0.5) {
         let appSupport = FileManager.default.urls(
@@ -275,16 +333,19 @@ final class MeetingStore: ObservableObject {
         meetingFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
             backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json"),
+            recordCount: { $0.count },
             // One bad record costs one record, not the library (F187) — see `salvageMeetings(from:)`.
             salvage: MeetingStore.salvageMeetings(from:)
         )
         vocabularyFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("vocabulary.json"),
-            backupURL: self.rootDirectory.appendingPathComponent("vocabulary.backup.json")
+            backupURL: self.rootDirectory.appendingPathComponent("vocabulary.backup.json"),
+            recordCount: { $0.count }
         )
         replacementRulesFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("replacement-rules.json"),
-            backupURL: self.rootDirectory.appendingPathComponent("replacement-rules.backup.json")
+            backupURL: self.rootDirectory.appendingPathComponent("replacement-rules.backup.json"),
+            recordCount: { $0.count }
         )
 
         do {
@@ -298,6 +359,15 @@ final class MeetingStore: ObservableObject {
             )
             return
         }
+
+        // After `createDirectory` so the lock's `open` cannot fail with ENOENT on a first launch,
+        // and before the three loads. Taken ONCE, here — never on a save path. `shared(for:)` and
+        // not `acquire`: `flock` attaches to the open file description, so two acquisitions in one
+        // process contend, and this store and `DictationLogStore` would lock each other out of the
+        // same library and each report the other as a rival application.
+        let handle = LibraryWriterLock.shared(for: self.rootDirectory)
+        leaseHandle = handle
+        writerLease = handle.lease
         loadMeetings()
         loadVocabulary()
         loadReplacementRules()
@@ -732,33 +802,68 @@ final class MeetingStore: ObservableObject {
     /// keep ignoring it.
     @discardableResult
     private func persistMeetings() -> Bool {
+        // `persistCount` keeps its original position and meaning — "a save was attempted" — because
+        // roughly fifteen existing assertions depend on both (F190).
         persistCount += 1
         do {
-            try meetingFiles.save(meetings)
+            let outcome = try meetingFiles.save(meetings, expecting: meetingsToken)
+            meetingsToken = outcome.token
+            persistCommitCount += 1
+            unsavedChanges = false
+            writeConflict = nil
             storageErrorMessage = nil
             return true
         } catch {
+            unsavedChanges = true
+            writeConflict = WriteConflictReport(error)
             storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(error.localizedDescription)"
             return false
         }
     }
 
-    private func persistVocabulary() {
+    @discardableResult
+    private func persistVocabulary() -> Bool {
         do {
-            try vocabularyFiles.save(vocabulary)
+            let outcome = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken)
+            vocabularyToken = outcome.token
             storageErrorMessage = nil
+            return true
         } catch {
+            unsavedChanges = true
+            writeConflict = WriteConflictReport(error)
             storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+            return false
         }
     }
 
-    private func persistReplacementRules() {
+    @discardableResult
+    private func persistReplacementRules() -> Bool {
         do {
-            try replacementRulesFiles.save(replacementRules)
+            let outcome = try replacementRulesFiles.save(
+                replacementRules, expecting: replacementRulesToken
+            )
+            replacementRulesToken = outcome.token
             storageErrorMessage = nil
+            return true
         } catch {
+            unsavedChanges = true
+            writeConflict = WriteConflictReport(error)
             storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+            return false
         }
+    }
+
+    /// Re-reads the library after a lost race, so the next save can succeed.
+    ///
+    /// A conflict is a transient race, not a damaged library: nothing was made read-only, and the
+    /// refused body is on disk as a `conflict-` branch. This discards the in-memory edit in favour
+    /// of what is actually on disk — the caller is expected to have shown the user their choice
+    /// first, which is what `writeConflict` is for.
+    func reloadForConflictRecovery() {
+        loadMeetings()
+        writeConflict = nil
+        unsavedChanges = false
+        storageErrorMessage = nil
     }
 
     /// Worsen `health` toward `state`, and never improve it (F187).
@@ -847,6 +952,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value)
+            meetingsToken = result.token
             degrade(to: result.health)
             if case .recoveredFromBackup = result.health {
                 startupRecoveryMessages.append(
@@ -910,6 +1016,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try vocabularyFiles.load() else { return }
             vocabulary = Self.storedTerms(result.value)
+            vocabularyToken = result.token
             // Through `degrade`, never a plain assignment: this runs AFTER `loadMeetings()`, so a
             // readable vocabulary index must not undo a degraded meeting index (F187).
             degrade(to: result.health)
@@ -932,6 +1039,7 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try replacementRulesFiles.load() else { return }
             replacementRules = result.value
+            replacementRulesToken = result.token
             degrade(to: result.health)
             if result.health == .recoveredFromBackup {
                 // Same as `loadVocabulary`: no silent re-persist from inside `init` (F187).
