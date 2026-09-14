@@ -13,6 +13,18 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     case chapterList
     case chapteredMarkdown
     case html
+    /// The two formats below are the ONLY ones allowed to carry speaker labels, and they are
+    /// deliberately absent from `standardFormats` (F220).
+    case labeledText
+    case labeledMarkdown
+
+    /// The nine formats offered as ordinary exports: everything a transcript is normally needed as,
+    /// and nothing that can carry a speaker label. Listed explicitly rather than derived from
+    /// `allCases` minus a denylist, so adding a labeled format later cannot silently opt itself in.
+    public static let standardFormats: [TranscriptExportFormat] = [
+        .plainText, .timestampedText, .markdown, .srt, .vtt,
+        .json, .chapterList, .chapteredMarkdown, .html
+    ]
 
     public var displayName: String {
         switch self {
@@ -25,13 +37,15 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
         case .chapterList: "Chapter List (.txt)"
         case .chapteredMarkdown: "Chaptered Transcript (.md)"
         case .html: "Web Page (.html)"
+        case .labeledText: "Transcript with Speaker Labels (.txt)"
+        case .labeledMarkdown: "Transcript with Speaker Labels (.md)"
         }
     }
 
     public var fileExtension: String {
         switch self {
-        case .plainText, .timestampedText, .chapterList: "txt"
-        case .markdown, .chapteredMarkdown: "md"
+        case .plainText, .timestampedText, .chapterList, .labeledText: "txt"
+        case .markdown, .chapteredMarkdown, .labeledMarkdown: "md"
         case .srt: "srt"
         case .vtt: "vtt"
         case .json: "json"
@@ -44,7 +58,7 @@ public enum TranscriptExportFormat: String, CaseIterable, Sendable, Hashable {
     /// align with the displayed Whisper timestamps.
     public var usesSegments: Bool {
         switch self {
-        case .srt, .vtt, .json, .chapteredMarkdown, .html: true
+        case .srt, .vtt, .json, .chapteredMarkdown, .html, .labeledText, .labeledMarkdown: true
         case .plainText, .timestampedText, .markdown, .chapterList: false
         }
     }
@@ -57,6 +71,14 @@ public struct TranscriptExportRequest: Sendable {
     public let transcriptText: String
     public let segments: [TranscriptSegment]
     public let markers: [RecordingMarker]
+    /// The label a person typed for one anonymous cluster, keyed by cluster id, for this meeting
+    /// only. Every entry here is treated as **user-assigned** and is marked as such in the output, so
+    /// pass only names someone actually typed — a cluster with no entry renders the anonymous default
+    /// (`Speaker 1`). Read by the two labeled formats and by nothing else (F220).
+    public let speakerLabels: [Int: String]
+    /// The display-only speaker overlay, one row per entry in `segments`. Never written back into a
+    /// `TranscriptSegment`, never into `transcriptText`, and never read by a standard format.
+    public let speakerRows: [SpeakerOverlayRow]
 
     public init(
         title: String,
@@ -64,7 +86,9 @@ public struct TranscriptExportRequest: Sendable {
         durationSeconds: TimeInterval,
         transcriptText: String,
         segments: [TranscriptSegment],
-        markers: [RecordingMarker] = []
+        markers: [RecordingMarker] = [],
+        speakerLabels: [Int: String] = [:],
+        speakerRows: [SpeakerOverlayRow] = []
     ) {
         self.title = title
         self.languageCode = languageCode
@@ -72,6 +96,8 @@ public struct TranscriptExportRequest: Sendable {
         self.transcriptText = transcriptText
         self.segments = segments
         self.markers = markers
+        self.speakerLabels = speakerLabels
+        self.speakerRows = speakerRows
     }
 }
 
@@ -108,6 +134,10 @@ public enum TranscriptExporter {
             return TranscriptChapters.markdown(chapters(request))
         case .html:
             return html(request)
+        case .labeledText:
+            return labeled(request, markdown: false)
+        case .labeledMarkdown:
+            return labeled(request, markdown: true)
         }
     }
 
@@ -214,6 +244,17 @@ public enum TranscriptExporter {
 
     private static func markdown(_ request: TranscriptExportRequest) -> String {
         var lines = ["# \(request.title)", ""]
+        if let meta = metaLine(request) {
+            lines.append(meta)
+            lines.append("")
+        }
+        lines.append(request.transcriptText)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The italic `_Duration: … · Language: …_` line, shared by the Markdown exports. `nil` when
+    /// there is nothing to say, so neither export emits an empty emphasis pair.
+    private static func metaLine(_ request: TranscriptExportRequest) -> String? {
         var meta: [String] = []
         if request.durationSeconds > 0 {
             meta.append("Duration: \(TranscriptFormatter.clock(request.durationSeconds))")
@@ -221,12 +262,130 @@ public enum TranscriptExporter {
         if let language = request.languageCode, !language.isEmpty {
             meta.append("Language: \(language.uppercased())")
         }
-        if !meta.isEmpty {
-            lines.append("_\(meta.joined(separator: " · "))_")
-            lines.append("")
+        guard !meta.isEmpty else { return nil }
+        return "_\(meta.joined(separator: " · "))_"
+    }
+
+    // MARK: - Labeled exports (F220)
+
+    /// The anonymous name for one voice cluster, in the single spelling the labeled exports and the
+    /// review UI both use. Cluster ids are dense and zero-based, and are local to one meeting:
+    /// `Speaker 1` here is not a claim that the same voice appears in any other recording.
+    public static func anonymousSpeakerName(clusterID: Int) -> String {
+        "Speaker \(clusterID + 1)"
+    }
+
+    /// What a labeled export says about itself, once, at the top.
+    ///
+    /// Every claim is deliberately weaker than "who spoke": voices are grouped, not people, and a
+    /// name is the reader's own label. The words "recognized", "identified" and "verified" never
+    /// appear — not even negated, because a sentence promising the app "did not identify anyone"
+    /// still prints the word, and a test pins its absence (`AccessibilityPhrase.swift:4`).
+    private static let speakerLabelNotice = """
+    These speaker labels were inferred on this Mac by local analysis of the recording. They group \
+    similar-sounding audio inside this one meeting: they are anonymous, they are never matched to a \
+    person or to any other recording, and they can be wrong — voices that sound alike are sometimes \
+    merged into a single label. A name below was typed by you for this meeting and is marked \
+    "(your label)". The recording remains the source of truth.
+    """
+
+    /// The only two formats that may carry the speaker overlay. Every other format renders from the
+    /// same request and must come out label-free — `standardExportsNeverCarrySpeakerLabels` pins
+    /// that, and it is why `speakerLabels`/`speakerRows` are read here and nowhere else.
+    private static func labeled(_ request: TranscriptExportRequest, markdown: Bool) -> String {
+        let segments = effectiveSegments(request)
+        let overlay = trustedOverlay(request, renderedCount: segments.count)
+
+        var blocks: [String] = []
+        if markdown {
+            blocks.append("# \(request.title)")
+            if let meta = metaLine(request) { blocks.append(meta) }
         }
-        lines.append(request.transcriptText)
-        return lines.joined(separator: "\n") + "\n"
+        // No usable overlay means nothing to explain: the file is then the ordinary transcript, with
+        // no notice promising labels it does not contain.
+        if !overlay.isEmpty {
+            blocks.append(markdown ? "> \(speakerLabelNotice)" : speakerLabelNotice)
+        }
+
+        var body: [String] = []
+        body.reserveCapacity(segments.count)
+        for (index, segment) in segments.enumerated() {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let prefix = overlay[index].map {
+                speakerPrefix($0, request.speakerLabels, markdown: markdown)
+            } ?? ""
+            guard let start = segment.start else {
+                body.append(prefix + text)
+                continue
+            }
+            let stamp = TranscriptFormatter.timestamp(start)
+            body.append(markdown ? "`\(stamp)` \(prefix)\(text)" : "\(stamp)  \(prefix)\(text)")
+        }
+
+        // Markdown wants a blank line between paragraphs; plain text is one line per segment in the
+        // exact shape `TranscriptFormatter.timestamped` produces, so a labeled export with no overlay
+        // is the ordinary timestamped transcript rather than a second, subtly different rendering.
+        if !body.isEmpty {
+            blocks.append(body.joined(separator: markdown ? "\n\n" : "\n"))
+        }
+        return blocks.joined(separator: "\n\n") + "\n"
+    }
+
+    /// The visible label for one row, already punctuated. `.unlabeled` never reaches here because
+    /// `trustedOverlay` drops it: a row the analysis could not attribute renders with no prefix at
+    /// all, never an empty placeholder that would read as a fourth kind of speaker.
+    private static func speakerPrefix(
+        _ label: SpeakerOverlayLabel,
+        _ speakerLabels: [Int: String],
+        markdown: Bool
+    ) -> String {
+        func plain(_ name: String) -> String { markdown ? "**\(name):** " : "\(name): " }
+        switch label {
+        case let .speaker(clusterID):
+            guard let alias = typedName(speakerLabels[clusterID]) else {
+                return plain(anonymousSpeakerName(clusterID: clusterID))
+            }
+            // The marker travels with the name, not only with the notice at the top, so a single line
+            // quoted out of this file still says the name is a label someone typed.
+            return markdown ? "**\(alias)** (your label): " : "\(alias) (your label): "
+        case .overlapping:
+            return plain("Overlapping voices")
+        case .uncertain:
+            return plain("Unclear which voice")
+        case .unlabeled:
+            return ""
+        }
+    }
+
+    /// A person-typed alias, folded onto one line. `DiarizationArtifactV1.clampedAlias` bounds the
+    /// length and trims the ends but keeps interior newlines, and one of those would split a
+    /// transcript line in two; an empty or blank alias means the label was cleared.
+    private static func typedName(_ alias: String?) -> String? {
+        guard let alias else { return nil }
+        let folded = alias.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return folded.isEmpty ? nil : folded
+    }
+
+    /// The overlay keyed by segment index — but only while it still describes the lines about to be
+    /// rendered. `speakerRows` is computed against `request.segments`, and `effectiveSegments` may
+    /// re-split an edited transcript into a different list, at which point row 3 is no longer about
+    /// line 3. Rather than move a name onto someone else's words, drop every label: the file then
+    /// renders as the plain transcript, which is wrong about nothing.
+    private static func trustedOverlay(
+        _ request: TranscriptExportRequest,
+        renderedCount: Int
+    ) -> [Int: SpeakerOverlayLabel] {
+        let rows = request.speakerRows
+        guard !rows.isEmpty, rows.count == request.segments.count, renderedCount == rows.count else {
+            return [:]
+        }
+        var overlay: [Int: SpeakerOverlayLabel] = [:]
+        for row in rows where row.label != .unlabeled {
+            guard row.segmentIndex >= 0, row.segmentIndex < renderedCount else { return [:] }
+            overlay[row.segmentIndex] = row.label
+        }
+        return overlay
     }
 
     private static func srt(_ segments: [TranscriptSegment]) -> String {
