@@ -2885,6 +2885,13 @@ extension AppModel {
 
     /// Read-only sweep of the whole meeting library. Reachable from launch (`performStartupRecovery`)
     /// and Settings ("Verify Library"). Flags missing/truncated/inconsistent audio; never touches it.
+    /// The footnote for controls disabled because the library is read-only, or nil when it is not
+    /// (F194). The `.disabled` clauses and this string are read from one place so a control can
+    /// never be greyed out without the menu saying why.
+    var libraryReadOnlyFootnote: String? {
+        store.isDegraded ? ReadOnlyLibraryNotice.menuFootnote : nil
+    }
+
     func verifyLibraryIntegrity() -> [LibraryIntegrityResult] {
         var results: [LibraryIntegrityResult] = []
         for meeting in store.meetings {
@@ -2900,6 +2907,13 @@ extension AppModel {
     /// Runs the sweep and surfaces any findings through the shared alert. The thin action behind the
     /// Settings "Verify Library" button (F83). Read-only — it reports, never repairs.
     func verifyLibrary() {
+        // The check reads the very index whose health is in question (F194). On a library that
+        // failed to decode it finds no meetings, therefore no problems, and would report a clean
+        // result — the most reassuring possible answer at the least reassuring possible moment.
+        guard !store.isDegraded else {
+            alertMessage = ReadOnlyLibraryNotice.integrityCheckDeclined
+            return
+        }
         let messages = Self.integrityMessages(verifyLibraryIntegrity())
         if messages.isEmpty {
             alertMessage = "Library check complete — no audio problems were found."

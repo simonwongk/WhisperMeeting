@@ -174,6 +174,20 @@ enum ReadOnlyLibraryNotice {
         refused(action, resolution: "first")
     }
 
+    /// For a control that is disabled rather than refused (F194). The Improve menu's actions each
+    /// run an on-device model for minutes and produce proposals that can only land through a
+    /// `store.update` the read-only library will refuse, so offering them enabled invites the user
+    /// to spend real time on work that cannot be kept. Says what is unavailable and why, because a
+    /// greyed row with no explanation is what the menu's footnote convention exists to prevent.
+    static let menuFootnote =
+        "\(lead) Suggestions could not be applied to a transcript, so these are unavailable until recovery is resolved."
+
+    /// For the library check, which reads the index it is reporting on (F194). Reporting "no audio
+    /// problems were found" for a library that failed to decode is a clean bill of health for an
+    /// index nobody managed to read.
+    static let integrityCheckDeclined =
+        "\(lead) The library check cannot report on an index it could not read, so nothing was checked. Your recordings are untouched."
+
     /// The one sentence shape every pre-action refusal shares. Private so the surfaces above stay the
     /// only vocabulary callers see.
     private static func refused(_ action: String, resolution: String) -> String {
@@ -671,8 +685,13 @@ final class MeetingStore: ObservableObject {
 
     private static let maxReplacementRules = 500
 
+    /// Dismisses a transient storage message. While the library is read-only this restores the
+    /// standing explanation instead of clearing it (F194): the banner is the only persistent sign
+    /// the library cannot be written, and an unguarded dismissal hid that until the next refused
+    /// mutation set it again — leaving the user in a read-only library with nothing on screen
+    /// saying so.
     func clearStorageError() {
-        storageErrorMessage = nil
+        storageErrorMessage = isDegraded ? ReadOnlyLibraryNotice.mutationRefused : nil
     }
 
     private static func normalizeTerm(_ value: String) -> String {

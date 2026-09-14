@@ -2939,7 +2939,8 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
             }
-            .disabled(store.replacementRules.isEmpty || meeting.isTranscriptEdited)
+            .disabled(store.replacementRules.isEmpty || meeting.isTranscriptEdited
+                      || model.libraryReadOnlyFootnote != nil)
             if SummarizerRuntime.isSupportedOnCurrentMac {
                 Button {
                     Task {
@@ -2957,7 +2958,8 @@ private struct TranscriptDetailView: View {
                 } label: {
                     Label("Correct with Local AI…", systemImage: "wand.and.stars.inverse")
                 }
-                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty)
+                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty
+                          || model.libraryReadOnlyFootnote != nil)
                 // F170: guide the same on-device correction pass with a chosen reference document
                 // (spec/glossary). Works without any vocabulary — the reference is the target — so it is
                 // NOT disabled on an empty vocabulary, unlike the vocabulary-only correction above.
@@ -2966,7 +2968,8 @@ private struct TranscriptDetailView: View {
                 } label: {
                     Label("Correct with Local AI + Reference File…", systemImage: "doc.text.magnifyingglass")
                 }
-                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited)
+                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited
+                          || model.libraryReadOnlyFootnote != nil)
             }
             Divider()
             Button {
@@ -2976,7 +2979,8 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
-            .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
+            .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited
+                      || model.libraryReadOnlyFootnote != nil)
             // F220: optional, post-meeting, entirely local speaker-turn analysis. The disclosure
             // always comes first — this button opens it and nothing else, so no analysis can start
             // without the user having read what the labels are and are not.
@@ -2990,8 +2994,13 @@ private struct TranscriptDetailView: View {
                 .disabled(speakerReason != nil)
             }
             if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
-                || speakerReason != nil {
+                || speakerReason != nil || model.libraryReadOnlyFootnote != nil {
                 Divider()
+                // F194: first, because it outranks the others — when the library is read-only none of
+                // these can be applied whatever else is true of the transcript.
+                if let readOnly = model.libraryReadOnlyFootnote {
+                    Text(readOnly)
+                }
                 if meeting.isTranscriptEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
                 }
