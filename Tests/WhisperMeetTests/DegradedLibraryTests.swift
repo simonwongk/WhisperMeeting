@@ -630,3 +630,75 @@ func degradedLibraryRefusesBackUp() async throws {
     #expect(message.contains("read-only"))
     #expect(message.contains("recovery"))
 }
+
+/// Every regular file under `root`, by path relative to it, with its exact bytes. Byte-level rather
+/// than a file listing, because "the index was rewritten with the same name" is precisely the
+/// failure this is watching for (F187).
+private func librarySnapshot(of root: URL) throws -> [String: Data] {
+    var files: [String: Data] = [:]
+    guard let walker = FileManager.default.enumerator(
+        at: root, includingPropertiesForKeys: [.isRegularFileKey]
+    ) else { return files }
+    for case let url as URL in walker {
+        guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+        files[url.path.replacingOccurrences(of: root.path + "/", with: "")] = try Data(contentsOf: url)
+    }
+    return files
+}
+
+// F187's verification asks for "repeated launch idempotence" and nothing pinned it. The risk is real
+// and has two shapes. Quarantine runs from `save()`, and `StoreQuarantine.preserve` is idempotent per
+// (file, bytes) — but if a degraded launch ever reached a write, each one would drop another
+// `meetings.unreadable-<stamp>.json` beside the last, and a launch loop fills the folder with copies
+// of bytes it already has. The worse shape is the one that caused the incident: a launch that decides
+// the library is empty and writes a fresh index over the bytes it could not read.
+//
+// The whole defence is that a degraded store performs no mutation, so the Nth launch must leave the
+// directory bit-for-bit as the first one did.
+
+@Test("Reopening a degraded library repeatedly changes nothing on disk (F187)")
+@MainActor
+func repeatedLaunchesOnADegradedLibraryChangeNothing() throws {
+    let (first, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(first.isDegraded)
+
+    let afterFirstLaunch = try librarySnapshot(of: root)
+    #expect(!afterFirstLaunch.isEmpty, "the unreadable bytes must still be on disk after the first load")
+
+    for launch in 2...5 {
+        let reopened = MeetingStore(rootDirectory: root)
+        #expect(reopened.health == first.health, "launch \(launch) reported a different health")
+        #expect(reopened.isDegraded, "launch \(launch) came up writable over an unreadable index")
+        #expect(reopened.meetings.isEmpty)
+        #expect(
+            try librarySnapshot(of: root) == afterFirstLaunch,
+            "launch \(launch) changed the library on disk"
+        )
+    }
+}
+
+/// The same guarantee for the degraded state that actually carries the user's records. `.unreadable`
+/// has nothing to lose; `.recoveredFromBackup` is holding a real meeting off a valid backup while the
+/// primary is corrupt, so a launch that "helpfully" re-persisted what it loaded would overwrite the
+/// corrupt primary — destroying the only evidence of what went wrong — and silently promote the
+/// library back to writable.
+@Test("Reopening a backup-recovered library repeatedly neither re-persists nor un-degrades it (F187)")
+@MainActor
+func repeatedLaunchesOnABackupRecoveredLibraryChangeNothing() throws {
+    let (first, root, meeting) = try makeBackupRecoveredStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let afterFirstLaunch = try librarySnapshot(of: root)
+    #expect(first.health == .recoveredFromBackup)
+
+    for launch in 2...5 {
+        let reopened = MeetingStore(rootDirectory: root)
+        #expect(reopened.health == .recoveredFromBackup, "launch \(launch) reported a different health")
+        #expect(reopened.meetings.map(\.id) == [meeting.id], "launch \(launch) lost the recovered record")
+        #expect(
+            try librarySnapshot(of: root) == afterFirstLaunch,
+            "launch \(launch) rewrote the library — the corrupt primary is the evidence and must survive"
+        )
+    }
+}
