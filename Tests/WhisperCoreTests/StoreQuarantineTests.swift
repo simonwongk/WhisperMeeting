@@ -17,7 +17,7 @@ func quarantineCopiesRatherThanMoves() throws {
     let bytes = Data("broken-primary".utf8)
     try bytes.write(to: url)
 
-    let name = try #require(try StoreQuarantine.preserve(fileAt: url, using: .default))
+    let name = try #require(try StoreQuarantine.preserve(fileAt: url, using: .live))
 
     #expect(name.hasPrefix("meetings.unreadable-"))
     #expect(name.hasSuffix(".json"))
@@ -34,8 +34,8 @@ func quarantineIsIdempotentForIdenticalBytes() throws {
     let url = directory.appendingPathComponent("meetings.json")
     try Data("broken".utf8).write(to: url)
 
-    _ = try StoreQuarantine.preserve(fileAt: url, using: .default)
-    _ = try StoreQuarantine.preserve(fileAt: url, using: .default)
+    _ = try StoreQuarantine.preserve(fileAt: url, using: .live)
+    _ = try StoreQuarantine.preserve(fileAt: url, using: .live)
 
     let quarantined = try FileManager.default
         .contentsOfDirectory(atPath: directory.path)
@@ -49,7 +49,7 @@ func quarantineSkipsMissingFile() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let name = try StoreQuarantine.preserve(
         fileAt: directory.appendingPathComponent("absent.json"),
-        using: .default
+        using: .live
     )
     #expect(name == nil)
 }

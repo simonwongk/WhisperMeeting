@@ -164,7 +164,7 @@ enum DiarizationArtifactStore {
                     // file "was left untouched and nothing was written", so swallowing it with
                     // `try?` would make that promise a lie (AGENTS.md:422, and the propagating
                     // `try` in BackupJSONStore.save).
-                    quarantined = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
+                    quarantined = try StoreQuarantine.preserve(fileAt: url)
                 }
             } else {
                 // Bytes that exist but cannot even be READ are the ones most worth keeping — and
@@ -172,7 +172,7 @@ enum DiarizationArtifactStore {
                 // a temp file and renames, so it needs only directory permission and would destroy
                 // them without ever touching them. `preserve` throws `.couldNotPreserve` here, and
                 // that refusal is what has to stop the write.
-                quarantined = try StoreQuarantine.preserve(fileAt: url, using: fileManager)
+                quarantined = try StoreQuarantine.preserve(fileAt: url)
             }
         }
         try DiarizationArtifactCodec.encode(artifact).write(to: url, options: .atomic)
@@ -198,7 +198,7 @@ enum DiarizationArtifactStore {
     /// on this path means either "no file" or "the copy failed" — indistinguishable, and deliberately
     /// so: on the load path nothing is being overwritten, so neither changes what the caller does.
     private static func quarantine(_ url: URL, using fileManager: FileManager) -> String? {
-        try? StoreQuarantine.preserve(fileAt: url, using: fileManager)
+        try? StoreQuarantine.preserve(fileAt: url)
     }
 }
 

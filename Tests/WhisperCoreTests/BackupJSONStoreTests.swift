@@ -53,7 +53,16 @@ func saveAfterUnreadableLoadPreservesOriginalBytes() throws {
     #expect(preserved.contains(backupBytes))
 }
 
-@Test("A save refuses to write when the undecodable bytes cannot be preserved")
+// Skipped as root (F190, design §9.4). The scenario is "the directory refuses the quarantine copy",
+// staged with `chmod 0o500` — and root ignores permission bits, so as root the copy SUCCEEDS, the
+// save does not throw, and the test fails on a system that is behaving correctly. (The design
+// described this as passing vacuously as root; it is the other way round, but the remedy is the
+// same.) Once the seam lands, faulting the `quarantine` phase directly is the better instrument;
+// this one is kept because it exercises the real POSIX refusal rather than an injected error.
+@Test(
+    "A save refuses to write when the undecodable bytes cannot be preserved",
+    .enabled(if: getuid() != 0)
+)
 func saveRefusesWhenQuarantineFails() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("WhisperMeetBackupTests-\(UUID().uuidString)", isDirectory: true)

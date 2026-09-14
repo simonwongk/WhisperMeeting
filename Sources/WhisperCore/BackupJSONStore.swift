@@ -114,6 +114,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     private let primaryURL: URL
     private let backupURL: URL
     private let fileManager: FileManager
+    /// Every filesystem effect in the write path goes through this, so a test can fail exactly one
+    /// (F190). `fileManager` survives alongside it only for the `fileExists` probes in `load()`;
+    /// it is not an IO seam and never was.
+    private let io: StoreFileIO
     /// Optional element-wise recovery so one bad record costs one record, not the whole library (F187).
     private let salvage: (@Sendable (Data) -> SalvagedValue<Value>?)?
     private let decodableMemory = DecodableFileMemory()
@@ -122,11 +126,13 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         primaryURL: URL,
         backupURL: URL,
         fileManager: FileManager = .default,
+        io: StoreFileIO = .live,
         salvage: (@Sendable (Data) -> SalvagedValue<Value>?)? = nil
     ) {
         self.primaryURL = primaryURL
         self.backupURL = backupURL
         self.fileManager = fileManager
+        self.io = io
         self.salvage = salvage
     }
 
@@ -135,12 +141,12 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         let backupExists = fileManager.fileExists(atPath: backupURL.path)
 
         if primaryExists,
-           let data = try? Data(contentsOf: primaryURL),
+           let data = try? io.read(primaryURL, .readPrimary),
            let value = try? decoder.decode(Value.self, from: data) {
             return LoadResult(value: value, health: .complete)
         }
         if backupExists,
-           let data = try? Data(contentsOf: backupURL),
+           let data = try? io.read(backupURL, .readBackup),
            let value = try? decoder.decode(Value.self, from: data) {
             return LoadResult(value: value, health: .recoveredFromBackup)
         }
@@ -148,16 +154,17 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
 
         // Preserve first, then try to rescue individual records from the preserved bytes.
         var quarantined: [String] = []
-        if let name = try StoreQuarantine.preserve(fileAt: primaryURL, using: fileManager) {
+        if let name = try StoreQuarantine.preserve(fileAt: primaryURL, using: io) {
             quarantined.append(name)
         }
-        if let name = try StoreQuarantine.preserve(fileAt: backupURL, using: fileManager) {
+        if let name = try StoreQuarantine.preserve(fileAt: backupURL, using: io) {
             quarantined.append(name)
         }
 
         if let salvage {
-            for url in [primaryURL, backupURL] {
-                guard let data = try? Data(contentsOf: url), let rescued = salvage(data) else { continue }
+            for (url, phase) in [(primaryURL, StoreWritePhase.readPrimary),
+                                 (backupURL, StoreWritePhase.readBackup)] {
+                guard let data = try? io.read(url, phase), let rescued = salvage(data) else { continue }
                 return LoadResult(
                     value: rescued.value,
                     health: .partiallySalvaged(parkedIdentifiers: rescued.parkedIdentifiers)
@@ -173,10 +180,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     }
 
     public func save(_ value: Value) throws {
-        try fileManager.createDirectory(
-            at: primaryURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try io.createDirectory(primaryURL.deletingLastPathComponent(), .prepareDirectory)
         let newData = try encoder.encode(value)
         let existingPrimary = knownOrReadableData(at: primaryURL)
         let existingBackup = knownOrReadableData(at: backupURL)
@@ -185,10 +189,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // "Undecodable" is not "worthless": conflating them is what destroyed the library on 2026-08-14.
         // If the bytes cannot be preserved, refuse to write at all — surfacing an error beats losing data.
         if existingPrimary == nil {
-            _ = try StoreQuarantine.preserve(fileAt: primaryURL, using: fileManager)
+            _ = try StoreQuarantine.preserve(fileAt: primaryURL, using: io)
         }
         if existingBackup == nil {
-            _ = try StoreQuarantine.preserve(fileAt: backupURL, using: fileManager)
+            _ = try StoreQuarantine.preserve(fileAt: backupURL, using: io)
         }
 
         let backupData = existingPrimary ?? existingBackup ?? newData
@@ -196,9 +200,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // later save trust a file it never actually proved.
         decodableMemory.forget(backupURL.path)
         decodableMemory.forget(primaryURL.path)
-        try backupData.write(to: backupURL, options: .atomic)
+        try io.writeAtomically(backupData, backupURL, .rotateBackup)
         decodableMemory.remember(path: backupURL.path, byteCount: backupData.count)
-        try newData.write(to: primaryURL, options: .atomic)
+        try io.writeAtomically(newData, primaryURL, .install)
         decodableMemory.remember(path: primaryURL.path, byteCount: newData.count)
     }
 
@@ -211,7 +215,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// was. Worth it because the skipped work is a `Codable` decode of the entire index on the main
     /// actor, and it grows with the library: 61 ms per save at 2.6 MB, 352 ms at a hundred meetings.
     private func knownOrReadableData(at url: URL) -> Data? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? io.read(url, url == primaryURL ? .readPrimary : .readBackup) else {
+            return nil
+        }
         if decodableMemory.isProvenDecodable(path: url.path) { return data }
         guard (try? decoder.decode(Value.self, from: data)) != nil else { return nil }
         decodableMemory.remember(path: url.path, byteCount: data.count)
@@ -219,7 +225,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     }
 
     private func readableData(at url: URL) -> Data? {
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? io.read(url, url == primaryURL ? .readPrimary : .readBackup),
               (try? decoder.decode(Value.self, from: data)) != nil else {
             return nil
         }
