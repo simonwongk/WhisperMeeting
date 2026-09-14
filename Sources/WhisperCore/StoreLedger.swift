@@ -100,10 +100,15 @@ public struct StoreLedger: Codable, Sendable, Equatable {
     /// Deliberately non-throwing. A `throws` signature would invite a caller to propagate, and a
     /// propagated ledger error is precisely how an advisory sidecar turns into something that can
     /// brick a library.
+    /// The fence is a RANGE, not a ceiling. `<= currentFormatVersion` also admits `0` and negative
+    /// numbers, which no build ever wrote — a zero-filled or partially overwritten sidecar decodes
+    /// to exactly that, and Invariant L calls an unknown version *no ledger* in both directions
+    /// (F237). Out-of-range still returns nil rather than throwing: a propagated ledger error is
+    /// precisely how an advisory sidecar turns into something that can brick a library.
     public static func read(at url: URL, using io: StoreFileIO = .live) -> StoreLedger? {
         guard let data = try? io.read(url, .readLedger),
               let ledger = try? JSONDecoder().decode(StoreLedger.self, from: data),
-              ledger.formatVersion <= currentFormatVersion
+              (1...currentFormatVersion).contains(ledger.formatVersion)
         else { return nil }
         return ledger
     }

@@ -109,12 +109,38 @@ public struct StoreHistory: Sendable {
             try io.copyItem(stagedURL, directoryURL.appendingPathComponent(name), .retain)
         } catch StoreIOError.destinationExists {
             // Content-addressed: the same bytes under the same name are already archived. That is
-            // success, not a collision.
+            // success, not a collision — once the file really does hold those bytes.
+            heal(from: stagedURL, to: directoryURL.appendingPathComponent(name))
             return name
         } catch {
             return nil
         }
         return name
+    }
+
+    /// Repairs a destination that already exists but is the wrong size.
+    ///
+    /// `copyItem` writes the destination path directly — no temp, no rename — so on a volume
+    /// without clone support a crash mid-copy leaves a TRUNCATED file under a content-addressed
+    /// name that promises the whole payload. Without this, every later retain of that generation
+    /// catches `destinationExists`, reports success, and the damage is permanent (F237).
+    ///
+    /// Size only. Re-fingerprinting every archived generation is exactly the per-save cost F211
+    /// removed, and same-size-different-bytes still fails safe: `retained()` flags it and
+    /// `data(of:)` refuses it. The repair itself goes through a temp name and a rename, so this
+    /// copy cannot leave the same wreck the last one did.
+    private func heal(from stagedURL: URL, to destination: URL) {
+        guard let staged = io.identity(stagedURL), let existing = io.identity(destination),
+              staged.size != existing.size
+        else { return }
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent("\(destination.lastPathComponent).heal-\(UUID().uuidString)")
+        guard (try? io.copyItem(stagedURL, temporary, .retain)) != nil else { return }
+        // `.heal-` never parses as a generation, so a process death here leaves something inert
+        // rather than something the recovery list would offer.
+        if (try? io.rename(temporary, destination, .retain)) == nil {
+            try? io.remove(temporary, .prune)
+        }
     }
 
     /// `g-<sequence padded to 9>-<fingerprint>.json`
@@ -127,19 +153,26 @@ public struct StoreHistory: Sendable {
     /// This is what the save path uses. `retained()` reads and re-fingerprints every entry to
     /// report whether its bytes still match its name, which is right for the recovery list and
     /// ruinous per save: at 2.6 MB and three generations it put ~8 MB of reads and three full
-    /// fingerprints on the main actor every time the user typed. Pruning needs sizes and names, and
-    /// `identity(_:)` supplies both for the cost of a stat.
+    /// fingerprints on the main actor every time the user typed. Pruning needs sizes, names and
+    /// times, and `identity(_:)` supplies all three for the cost of a stat.
+    ///
+    /// `wroteAtEpochSeconds` is the file's mtime, which is what keeps the age anchors working with
+    /// no ledger at all (F234). The ledger's time is better — it is the writer's own record, proof
+    /// against a restore that rewrites timestamps — so `prune` prefers it and falls back to this.
+    /// Without the fallback, a lost ledger silently reduced retention to "the newest 3", which is
+    /// the 2026-08-14 shape with its specific defence removed, and contradicted design §1.2's
+    /// promise that a lost ledger "can never lose a generation".
     func entries() -> [RetainedGeneration] {
         let names = (try? io.contentsOfDirectory(directoryURL, .listHistory)) ?? []
         return names.compactMap { name -> RetainedGeneration? in
             guard let parsed = Self.parse(name) else { return nil }
-            let size = io.identity(directoryURL.appendingPathComponent(name))?.size ?? 0
+            let identity = io.identity(directoryURL.appendingPathComponent(name))
             return RetainedGeneration(
                 name: name,
                 sequence: parsed.sequence,
                 fingerprint: parsed.fingerprint,
-                byteCount: Int(size),
-                wroteAtEpochSeconds: nil,
+                byteCount: Int(identity?.size ?? 0),
+                wroteAtEpochSeconds: identity?.modifiedSeconds,
                 recordCount: nil,
                 bytesMatchName: true
             )
@@ -149,9 +182,14 @@ public struct StoreHistory: Sendable {
 
     /// Every generation on disk, newest first, joined with whatever the ledger knows.
     ///
-    /// An entry whose bytes no longer match its name is reported with `bytesMatchName == false` and
-    /// `recordCount == nil` — never silently omitted (the user would think the generation vanished)
-    /// and never silently served (they would restore bytes that are not the ones they chose).
+    /// An entry whose bytes no longer match its name — or that cannot be read at all — is reported
+    /// with `bytesMatchName == false` and `recordCount == nil`: never silently omitted (the user
+    /// would think the generation vanished) and never silently served (they would restore bytes
+    /// that are not the ones they chose).
+    ///
+    /// `bytesMatchName == false` therefore means "do not trust these bytes", conflating "wrong
+    /// bytes" with "unreadable". Both refuse identically in `data(of:)`, so nothing here is unsafe;
+    /// telling the two apart in the UI needs a distinct state, and belongs with F192's picker.
     public func retained(ledger: StoreLedger? = nil) -> [RetainedGeneration] {
         let records = Dictionary(
             (ledger?.history ?? []).compactMap { record -> (String, StoreLedger.Record)? in
@@ -163,16 +201,26 @@ public struct StoreHistory: Sendable {
         let names = (try? io.contentsOfDirectory(directoryURL, .listHistory)) ?? []
         return names.compactMap { name -> RetainedGeneration? in
             guard let parsed = Self.parse(name) else { return nil }
-            guard let bytes = try? io.read(directoryURL.appendingPathComponent(name), .readHistoryEntry)
-            else { return nil }
-            let matches = io.fingerprint(bytes) == parsed.fingerprint
+            let url = directoryURL.appendingPathComponent(name)
+            let identity = io.identity(url)
+            // A file we cannot READ is still a generation the user has (F236). Dropping it here
+            // told them it had vanished, when a permission error or a mid-listing removal is what
+            // actually happened — one of those is fixable and the other is worth knowing about.
+            // It reports as not matching its name, which `data(of:)` already refuses, so the
+            // failure stays safe as well as honest.
+            let bytes = try? io.read(url, .readHistoryEntry)
+            let matches = bytes.map { io.fingerprint($0) == parsed.fingerprint } ?? false
             let record = records[name]
             return RetainedGeneration(
                 name: name,
                 sequence: parsed.sequence,
                 fingerprint: parsed.fingerprint,
-                byteCount: bytes.count,
-                wroteAtEpochSeconds: record?.wroteAtEpochSeconds,
+                byteCount: bytes?.count ?? Int(identity?.size ?? 0),
+                // Without a ledger the count is genuinely unknown, but the date is not: it is the
+                // file's own mtime. "3 minutes ago · 0 meetings" beside "yesterday · 17 meetings"
+                // is the discrimination this list exists to make, and half of it survives a lost
+                // ledger for free (F234).
+                wroteAtEpochSeconds: record?.wroteAtEpochSeconds ?? identity?.modifiedSeconds,
                 recordCount: matches ? record?.recordCount : nil,
                 bytesMatchName: matches
             )
@@ -230,12 +278,16 @@ public struct StoreHistory: Sendable {
 
         // Rule 2 — one slot per age anchor: the NEWEST generation older than that age. Without this,
         // a user who notices a problem a week later has nothing to go back to.
+        //
+        // Held apart from `keep` because the byte budget below is allowed to trim these and is
+        // never allowed to trim rules 1, 3 or 4 (design §7.2).
         let age = { (entry: RetainedGeneration) -> Int? in
             (writtenAt[entry.name] ?? entry.wroteAtEpochSeconds).map { now - $0 }
         }
+        var anchored: Set<String> = []
         for anchor in policy.ageAnchors {
-            if let anchored = entries.first(where: { (age($0) ?? -1) >= anchor }) {
-                keep.insert(anchored.name)
+            if let match = entries.first(where: { (age($0) ?? -1) >= anchor }) {
+                anchored.insert(match.name)
             }
         }
 
@@ -255,20 +307,29 @@ public struct StoreHistory: Sendable {
         // Rule 4 — never delete bytes that are currently live.
         for entry in entries where live.contains(entry.fingerprint) { keep.insert(entry.name) }
 
-        var doomed = entries.filter { !keep.contains($0.name) }
+        // A generation is pruned when NO rule keeps it. The budget does not get a vote here.
+        var doomed = entries.filter { !keep.contains($0.name) && !anchored.contains($0.name) }
 
-        // Then the byte budget, which governs only what the rules did NOT already keep. If the
-        // keeps alone exceed the budget they are still kept: the budget exists to bound disk use,
-        // never to lose the last good generation. Newest-first, so what survives is the most recent
-        // history the budget can afford.
-        let keptBytes = entries.filter { keep.contains($0.name) }.reduce(0) { $0 + $1.byteCount }
-        var remaining = max(0, policy.byteBudget - keptBytes)
-        var affordable: Set<String> = []
-        for entry in doomed where entry.byteCount <= remaining {
-            remaining -= entry.byteCount
-            affordable.insert(entry.name)
+        // Then, and only then, the byte budget TRIMS what the rules kept — it never rescues what
+        // they did not (design §7.2). The inverse reading is tempting, because more history is more
+        // recoverable, but it turns the policy into "keep every generation that fits": ~120 of them
+        // per store at the real 2.1 MB index, ~1 GB per library, and a deleted meeting's transcript
+        // surviving ~120 saves instead of the week §13 promises the user. Retention depth is bought
+        // with the anchors, which are bounded, not with the budget, which is a ceiling.
+        //
+        // Oldest-first, and only among rule-2 anchors: rules 1, 3 and 4 are exempt, so the budget
+        // can never take the newest generations, the high-water pin, or bytes that are live.
+        var keptBytes = entries
+            .filter { keep.contains($0.name) || anchored.contains($0.name) }
+            .reduce(0) { $0 + $1.byteCount }
+        if keptBytes > policy.byteBudget {
+            for entry in entries.reversed()
+            where anchored.contains(entry.name) && !keep.contains(entry.name) {
+                guard keptBytes > policy.byteBudget else { break }
+                doomed.append(entry)
+                keptBytes -= entry.byteCount
+            }
         }
-        doomed.removeAll { affordable.contains($0.name) }
 
         var removed: [String] = []
         for entry in doomed {
@@ -279,15 +340,24 @@ public struct StoreHistory: Sendable {
         return removed
     }
 
+    /// The alphabet `StoreFingerprint.of` emits — `%016llx`, sixteen lowercase hex characters. It
+    /// is part of the on-disk format and pinned by golden values, so matching it exactly is a
+    /// sound test of "did this build write that name".
+    private static let fingerprintAlphabet = Set("0123456789abcdef")
+
     /// `g-000000042-0123456789abcdef.json` → (42, "0123456789abcdef"). nil for anything else,
     /// including a `conflict-` branch, which is never a generation.
+    ///
+    /// The fingerprint is checked against the alphabet, not merely counted to sixteen: a stranger's
+    /// file that happens to fit the shape would otherwise join the retained set, where pruning
+    /// would delete it (F237).
     static func parse(_ name: String) -> (sequence: UInt64, fingerprint: String)? {
         guard name.hasPrefix("g-"), name.hasSuffix(".json") else { return nil }
         let middle = name.dropFirst(2).dropLast(5)
         let parts = middle.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2, let sequence = UInt64(parts[0]), parts[1].count == 16 else {
-            return nil
-        }
+        guard parts.count == 2, let sequence = UInt64(parts[0]), parts[1].count == 16,
+              parts[1].allSatisfy(fingerprintAlphabet.contains)
+        else { return nil }
         return (sequence, String(parts[1]))
     }
 }

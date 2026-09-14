@@ -3,7 +3,12 @@
      (F187, shipped), and the incident that started this work is
      docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md. -->
 
-> **Status:** design agreed, not yet implemented. Nothing in `Sources/` implements this document yet.
+> **Status:** under implementation — plan Tasks 1–7 have shipped. In `Sources/` today:
+> the delete ordering fix (§10.1), `StoreFingerprint` (§2.1), `StoreGeneration` (§2.2),
+> `StoreFileIO` (§2.3), `StoreLedger` and Invariant L (§1.2), `StoreHistory` (§7), the write
+> algorithm and compare-and-swap (§3), and recovery on load (§4). Still to come: divergence (§5),
+> `LibraryWriterLease` (§2.4), the rest of the caller wiring (§10), and the doc pass (§6.1).
+> `docs/LIBRARY_INDEX_TRANSACTION_PLAN.md` tracks it task by task.
 >
 > **How this design was produced (2026-09-12).** Four independent protocol designs were written from
 > different angles — a write-ahead journal, numbered generations behind an atomically swapped
@@ -653,14 +658,18 @@ public struct RetentionPolicy: Sendable, Equatable {
 }
 ```
 
-A `g-` entry is pruned only when **no** rule keeps it:
+A `g-` entry is kept when, and only when, some rule keeps it — no rule applies, and it is deleted on
+the next prune, however much room the budget has left. (The necessity reading alone, *"pruned only
+when no rule keeps it"*, is what the first implementation took: it let the budget rescue whatever
+fit, which at the real 2.1 MB index retained ~120 generations per store instead of the seven or so
+below. F235.) The rules:
 
 1. It is among the newest `recentCount`.
 2. It is the newest generation older than anchor A, for some A in `ageAnchors` (one slot per anchor).
 3. `pinHighWaterRecordCount` and it has the greatest known `recordCount` of all retained generations, and no *newer* retained generation has `recordCount >= ` it. Exactly one such pin exists.
 4. Its `(fingerprint, byteCount)` equals the live primary's or the backup's — never delete the bytes that are live.
 
-Then a byte budget: if the retained set exceeds `byteBudget`, drop oldest-first, but never anything kept by rules 1, 3 or 4.
+Then a byte budget, which **trims** the kept set and never rescues anything outside it: if what the rules kept exceeds `byteBudget`, drop oldest-first, but never anything kept by rules 1, 3 or 4. Only rule-2 anchors are droppable, so the budget is a ceiling on an already-bounded set — in the steady state it does nothing at all. At the real 2.1 MB index the rules retain seven or eight generations, about 16 MB per store.
 
 `conflict-` files are **never automatically pruned** — they are unique user data that exists nowhere else. When their count reaches `maxConflictBranches` a new conflict is still preserved and `SaveOutcome.conflictBranchBacklog` reports the count so the app can ask the user to resolve them.
 
@@ -985,7 +994,7 @@ F190 does not stop a downgraded bundle from writing a payload a newer bundle can
 The plan-hash (`:169`) → copy (`:94`) → verify (`:95`) window is mitigated here (flush + guard + one retry) but not closed; the real fix is hashing during the copy. There is also still no in-app restore-from-backup flow. `<stem>.history/` is deliberately outside backups.
 
 **F192 — the recovery surface, and retention privacy.**
-F190 ships the *mechanism* (`retainedGenerations()`, `value(ofGeneration:)`, `restore(generation:)`, `MeetingStore.restoreIndexGeneration`) plus the documented manual procedure in `RECOVERY.md`. It does not ship the picker UI that shows *"42 · 0 meetings · 3 min ago"* beside *"41 · 17 meetings · yesterday"*, which is what makes the mechanism usable by a non-technical user. **Privacy trade, named explicitly:** retained generations keep the content of deleted meetings — transcripts, notes, summaries — for a bounded window (the newest 3 saves, the hour/day/week anchors, and the high-water pin). "Delete" therefore does not immediately erase every copy. The bound is the `byteBudget` and the anchors; a *shred on delete* / *forget history* command belongs to F192 and should be filed with this design.
+F190 ships the *mechanism* (`retainedGenerations()`, `value(ofGeneration:)`, `restore(generation:)`, `MeetingStore.restoreIndexGeneration`) plus the documented manual procedure in `RECOVERY.md`. It does not ship the picker UI that shows *"42 · 0 meetings · 3 min ago"* beside *"41 · 17 meetings · yesterday"*, which is what makes the mechanism usable by a non-technical user. **Privacy trade, named explicitly:** retained generations keep the content of deleted meetings — transcripts, notes, summaries — for a bounded window: the newest 3 saves, the hour/day/week anchors, and the high-water pin. "Delete" therefore does not immediately erase every copy. The **anchors** set the bound, so the longest a deleted meeting's content survives is the oldest anchor — a week — plus however long the high-water generation stays the high-water generation, which can be indefinite. The `byteBudget` is a ceiling, not the bound (§7.2); it only ever shortens this window. A *shred on delete* / *forget history* command belongs to F192 and should be filed with this design.
 
 **Semantic detection.** Nothing in this write protocol can tell a valid-but-wrong generation from a valid one. Only `MeetingStore`'s `.suspectEmpty` check does any semantic work, and it is unchanged. F190's guarantee is recoverability, not detection — say so plainly in the ticket.
 

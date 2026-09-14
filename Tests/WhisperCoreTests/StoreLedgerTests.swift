@@ -76,6 +76,13 @@ func invariantLTreatsEveryUnusableLedgerAsAbsent() throws {
         ("valid JSON, wrong shape — something else entirely", Data(#"{"hello":"world"}"#.utf8)),
         ("valid JSON, right version, missing required fields",
          Data(#"{"formatVersion":1}"#.utf8)),
+        // Invariant L says an UNKNOWN formatVersion is no ledger, and 0 is unknown — no build ever
+        // wrote it. A `<=` fence only guards the future; it lets every version below 1 through,
+        // which is what a zero-filled or partially overwritten sidecar decodes to (F237).
+        ("valid JSON, formatVersion 0 — a version no build ever wrote",
+         Data(#"{"current":{"byteCount":42,"fingerprint":"0123456789abcdef","sequence":1,"wroteAtEpochSeconds":1757000000,"writer":"a1b2c3d4"},"formatVersion":0,"history":[],"historyAvailable":true,"writerRealm":"none"}"#.utf8)),
+        ("valid JSON, negative formatVersion — nonsense, not a downgrade",
+         Data(#"{"current":{"byteCount":42,"fingerprint":"0123456789abcdef","sequence":1,"wroteAtEpochSeconds":1757000000,"writer":"a1b2c3d4"},"formatVersion":-1,"history":[],"historyAvailable":true,"writerRealm":"none"}"#.utf8)),
     ]
 
     for (name, bytes) in unusable {
