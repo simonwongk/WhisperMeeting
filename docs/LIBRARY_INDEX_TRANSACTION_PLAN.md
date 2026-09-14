@@ -160,8 +160,14 @@ git commit -m "fix(storage): persist the index before deleting audio, keep a fai
 - Test: `Tests/WhisperCoreTests/StoreFingerprintTests.swift`
 
 **Interfaces:**
-- Produces: `StoreFingerprint` (`Sendable`, `Equatable`, `Codable`), `init(_ data: Data)`,
-  `var hexString: String`, and pairing with `byteCount` at every comparison site.
+- Produces: `enum StoreFingerprint` with `static func of(_ data: Data) -> String`, paired with
+  `byteCount` at every comparison site.
+
+> **Corrected 2026-09-14 during execution.** This block previously described a
+> `Sendable`/`Equatable`/`Codable` struct with `init(_ data: Data)` and `var hexString: String`. That
+> contradicts design §2.1, which specifies an enum returning a `String`, and §2.2, where
+> `GenerationToken.fingerprint` is a `String`. The design wins — this plan's own header says to read
+> it first and that it carries the exact type signatures. Implemented per the design.
 
 Exact type, doc comment and the four-lane mixer are in design §2.1. It is **accident detection, not
 tamper resistance** — that claim belongs in the doc comment, because a reader who assumes otherwise
