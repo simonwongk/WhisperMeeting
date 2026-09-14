@@ -10,111 +10,146 @@ Nothing in this file applies to recording or transcription, which use separate c
 
 Contents
 --------
-  1. sherpa-onnx .................................... Apache License 2.0
-  2. ONNX Runtime ................................... MIT License
-  3. kaldi-native-fbank ............................. Apache License 2.0
-  4. kaldi-decoder .................................. Apache License 2.0
-  5. hclust-cpp / fastcluster ....................... BSD 2-Clause License
-  6. pyannote segmentation 3.0 (model weights) ...... MIT License
-  7. 3D-Speaker CAM++ (model weights) ............... Apache License 2.0
-  8. The full Apache License 2.0 text
+  1. FluidAudio ..................................... Apache License 2.0
+  2. pyannote community-1 — model weights ........... Creative Commons Attribution 4.0
+  3. WeSpeaker ...................................... Apache License 2.0
+  4. VBx ............................................ Apache License 2.0
+  5. fastcluster .................................... BSD 2-Clause License
+  6. The full Apache License 2.0 text
 
-Components 1, 3, 4 and 5 are statically linked into the single executable
-`sherpa-onnx-offline-speaker-diarization`. Their presence was confirmed by symbol inspection of
-that binary, not assumed from documentation.
+Component 1 is compiled into WhisperMeet itself; 4 and 5 are reimplemented inside it. Component 2
+is the set of Core ML model files downloaded by the installer; component 3 is the neural
+architecture one of those files realises.
 
 
 ==============================================================================
 
-1. sherpa-onnx
+1. FluidAudio
+-------------
+
+The speaker-diarization engine: the code that loads the models below, runs them, and groups the
+resulting voice embeddings into anonymous speaker clusters.
+
+    FluidAudio
+    Copyright Fluid Inference
+    https://github.com/FluidInference/FluidAudio
+
+Licensed under the Apache License, Version 2.0, reproduced in section 6.
+
+WhisperMeet uses FluidAudio version 0.15.7 unmodified, as a source dependency compiled into the
+app. Its optional NemoTextProcessing component — a prebuilt Rust framework for text normalisation
+that speaker analysis never calls — is deliberately not linked, so neither it nor its own chain of
+third-party notices travels with this app.
+
+The upstream project publishes no NOTICE file, so Apache-2.0 §4(d) is inert; §4(a), §4(b) and
+§4(c) apply and are satisfied here.
+
+
+==============================================================================
+
+2. pyannote community-1 — model weights
+---------------------------------------
+
+The four Core ML model bundles and the PLDA parameter file that speaker analysis downloads are a
+conversion of the pyannote `speaker-diarization-community-1` pipeline. They are the part of this
+feature that actually decides who spoke when.
+
+    Original work: pyannote/speaker-diarization-community-1
+    https://huggingface.co/pyannote/speaker-diarization-community-1
+    pyannote.audio, by Hervé Bredin and the pyannote contributors
+    https://github.com/pyannote/pyannote-audio
+
+    Converted work: FluidInference/speaker-diarization-coreml
+    https://huggingface.co/FluidInference/speaker-diarization-coreml
+    Converted by Fluid Inference
+
+Licensed under the Creative Commons Attribution 4.0 International Public License (CC BY 4.0).
+
+    https://creativecommons.org/licenses/by/4.0/legalcode
+    https://creativecommons.org/licenses/by/4.0/
+
+CC BY 4.0 §3(a)(1)(C) is satisfied by that link: the licence permits supplying its URI rather than
+reproducing its ~7,000-word text, and that is what is done here. The licence text is not otherwise
+abridged or altered.
+
+**Changes were made.** The models WhisperMeet downloads are not the original PyTorch weights. Fluid
+Inference converted the pipeline to Apple Core ML (`.mlmodelc`) with coremltools, split it into
+separate segmentation, filterbank, embedding and PLDA models, and reduced precision to FP32 on
+CPU/GPU and FP16 on the Neural Engine. That conversion changes the numbers the pipeline produces
+slightly; it is a modification, and this paragraph is the indication of modification CC BY 4.0
+§3(a)(1)(B) requires. WhisperMeet itself modifies neither the original nor the conversion — it
+downloads the converted files byte for byte, verified against pinned SHA-256 hashes.
+
+No warranty is given, and none of the above is an endorsement of WhisperMeet by pyannote, by Hervé
+Bredin, or by Fluid Inference. To the extent possible under the licence, the material is provided
+as-is and the licensor disclaims all warranties, express or implied, as set out in §5 of the
+licence linked above.
+
+Neither the original repository nor the converted one ships a licence file. This notice is
+therefore authored by WhisperMeet from the licence each states: the upstream model card declares
+`license: cc-by-4.0`, and every converted artifact carries `"license": "CC-BY-4.0"` together with
+`"version": "pyannote-speaker-diarization-community-1"` in its own embedded metadata, which is
+where this attribution comes from.
+
+If you use this in academic work, the pyannote authors ask that you cite their papers; see
+https://github.com/pyannote/pyannote-audio.
+
+
+==============================================================================
+
+3. WeSpeaker
+------------
+
+The speaker-embedding half of the pipeline above is a WeSpeaker ResNet34 network. No WeSpeaker code
+or checkpoint is shipped — the architecture reaches WhisperMeet only through the converted
+community-1 weights in section 2 — but the project is credited here because that is where the
+design came from.
+
+    WeSpeaker
+    https://github.com/wenet-e2e/wespeaker
+
+Licensed under the Apache License, Version 2.0, reproduced in section 6.
+
+
+==============================================================================
+
+4. VBx
+------
+
+Variational Bayes HMM clustering of x-vector sequences: the algorithm that turns per-segment voice
+embeddings into speaker clusters. FluidAudio reimplements it in Swift; the notice below is the one
+it bundles for the original project.
+
+    Copyright 2021-2024 BUT Speech@FIT (original VBx project)
+    https://github.com/BUTSpeechFIT/VBx
+
+Licensed under the Apache License, Version 2.0, reproduced in section 6.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+
+==============================================================================
+
+5. fastcluster
 --------------
 
-Speech-processing toolkit. WhisperMeet ships one prebuilt executable from its official
-`-no-tts` macOS arm64 release: `sherpa-onnx-offline-speaker-diarization`.
-
-    Copyright (c) the k2-fsa authors
-    https://github.com/k2-fsa/sherpa-onnx
-
-Licensed under the Apache License, Version 2.0, reproduced in section 8.
-
-WhisperMeet redistributes this binary unmodified. The upstream project publishes no NOTICE file.
-
-The `-no-tts` distribution is used deliberately: the default distributions, including the
-`sherpa-onnx` Python wheel, statically link espeak-ng, which is GPL-3.0-or-later. The binary
-WhisperMeet ships contains no espeak-ng code; this is verified at install time and in the test
-suite by checking that the executable exports no espeak symbols.
-
-==============================================================================
-
-2. ONNX Runtime
----------------
-
-Inference engine. WhisperMeet ships `libonnxruntime.dylib` version 1.28.2, unmodified, from the
-same sherpa-onnx release.
-
-    https://github.com/microsoft/onnxruntime
-
-MIT License
-
-Copyright (c) Microsoft Corporation
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-==============================================================================
-
-3. kaldi-native-fbank
----------------------
-
-Filterbank feature extraction, statically linked into the diarization executable.
-
-    Copyright (c) the kaldi-native-fbank authors
-    https://github.com/csukuangfj/kaldi-native-fbank
-
-Licensed under the Apache License, Version 2.0, reproduced in section 8.
-
-==============================================================================
-
-4. kaldi-decoder
-----------------
-
-Decoding utilities, statically linked into the diarization executable.
-
-    Copyright (c) the kaldi-decoder authors
-    https://github.com/csukuangfj/kaldi-decoder
-
-Licensed under the Apache License, Version 2.0, reproduced in section 8.
-
-==============================================================================
-
-5. hclust-cpp / fastcluster
----------------------------
-
-Hierarchical clustering. This is the component that groups voice embeddings into the anonymous
-speaker clusters WhisperMeet displays. Statically linked into the diarization executable.
-
-    https://github.com/csukuangfj/hclust-cpp
+Hierarchical agglomerative clustering, used to seed the clustering step above. FluidAudio
+reimplements it in Swift and bundles the notice below, which it is a condition of the licence to
+reproduce in binary distributions such as this app.
 
 Copyright:
-  * fastcluster_dm.cpp & fastcluster_R_dm.cpp:
-     © 2011 Daniel Müllner <http://danifold.net>
-  * fastcluster.(h|cpp) & demo.cpp & plotresult.r:
-     © 2018 Christoph Dalitz <http://www.hsnr.de/ipattern/>
+  * Until package version 1.1.23: © 2011 Daniel Müllner <https://danifold.net>
+  * All changes from version 1.1.24 on: © Google Inc. <https://www.google.com>
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
@@ -124,72 +159,13 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-==============================================================================
-
-6. pyannote segmentation 3.0 — model weights
---------------------------------------------
-
-Speech-segmentation model. WhisperMeet downloads the ONNX conversion published by the sherpa-onnx
-project as `sherpa-onnx-pyannote-segmentation-3-0`.
-
-    Original model: pyannote/segmentation-3.0, from the pyannote.audio project (Hervé Bredin and
-    contributors).
-    Conversion: https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-segmentation-models
-
-The downloaded archive carries its own LICENSE file, which WhisperMeet keeps on disk beside the
-model. It reads (the upstream project's own copy of this notice states 2023; both are reproduced
-here because the artifact we download says 2022):
-
-MIT License
-
-Copyright (c) 2022 CNRS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-    Copyright (c) 2023 CNRS
-
-If you use this in academic work, the pyannote.audio authors ask that you cite their papers; see
-https://github.com/pyannote/pyannote-audio.
 
 ==============================================================================
 
-7. 3D-Speaker CAM++ — model weights
------------------------------------
-
-Speaker-embedding model, `speech_campplus_sv_zh_en_16k-common_advanced`. It is a single bilingual
-model covering both English and Mandarin, which is why WhisperMeet needs only one.
-
-    3D-Speaker, ModelScope / Alibaba (`iic`)
-    https://github.com/modelscope/3D-Speaker
-    https://www.modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced/summary
-
-Licensed under the Apache License, Version 2.0, reproduced in section 8.
-
-The model file's embedded metadata records its own provenance. WhisperMeet does not strip it.
-
-==============================================================================
-
-8. Apache License, Version 2.0
+6. Apache License, Version 2.0
 ------------------------------
 
-Applies to sherpa-onnx, kaldi-native-fbank, kaldi-decoder, and the 3D-Speaker CAM++ model, as
-noted above.
+Applies to FluidAudio, WeSpeaker, and VBx, as noted above.
 
                                  Apache License
                            Version 2.0, January 2004

@@ -14,6 +14,32 @@ reproduced from memory — regenerate it by following §6 and §7 against the pi
 
 ## 1. Decision
 
+> ## Reversed 2026-09-13 — FluidAudio adopted (F216/F219)
+>
+> The constraint that decided this record — *no new SwiftPM third-party dependency* — was lifted by
+> the product owner. That is trigger **2** in §3's own "What would make us revisit" list, and §3
+> already recorded that FluidAudio is the better diarizer on accuracy, speed and staged size. The
+> runtime is now **FluidAudio 0.15.7**, pinned `exact:` with `traits: []`, imported only from
+> `Sources/WhisperMeet/`, running the pyannote community-1 Core ML conversion in-process.
+>
+> **What is current below:** §1's Pins and Configuration pin, §2's licence ledger, and §6's installer
+> contract — all rewritten for the Core ML payload. **What is history below:** the sherpa-onnx
+> selection argument in this section, §3–§5, §6b and §7. They are kept because the reasoning that
+> rejected each foreclosed alternative is still binding (§2's "Explicitly foreclosed" list in
+> particular), and because a decision record that deletes the case it argued cannot be audited.
+>
+> Two things §3 held against FluidAudio survived the reversal and are now handled in code rather than
+> avoided:
+> - **`prepareModels()` deletes the staged models on any load failure.** It is never called.
+>   `OfflineDiarizerModels.load(from:configuration:)` is, with `ModelHub.offlineMode = true` set
+>   before any loader is touched. A test damages a staged tree, runs the real loader, and asserts
+>   every file survives.
+> - **Licence provenance is asserted, not shipped.** Still true — the Hugging Face repo has no
+>   LICENSE file (raw `LICENSE` → HTTP 404). It is stronger than §3 knew, though: every downloaded
+>   artifact carries `"license": "CC-BY-4.0"` and `"version": "pyannote-speaker-diarization-community-1"`
+>   in its own embedded metadata, so the claim travels *inside* the bytes we hash. §2 records the
+>   attribution we author from it.
+
 **Selected: sherpa-onnx 1.13.8, shipped as the prebuilt `-no-tts-` native CLI
 `sherpa-onnx-offline-speaker-diarization`, invoked as a subprocess. No Python, no pip, no SwiftPM
 dependency.**
@@ -47,57 +73,80 @@ It is clean, it reproduces the Python results exactly, and it needs two files on
 
 ### Pins
 
+**Superseded 2026-09-13 (F216/F219).** The sherpa-onnx pins this section carried are in §6b, kept as
+the record of the route that was built and then replaced. What follows is what
+`Scripts/setup-speaker-diarization.sh` installs today.
+
+Every file below was downloaded twice, independently, and hashed with `shasum -a 256`; the two runs
+agreed byte for byte. The four `.mlmodelc` entries are **directories**, not files, which is why each
+is pinned leaf by leaf: `mkdir -p` runs before the first byte of a download, so a per-directory check
+reports "present" for an install that fetched nothing.
+
 | Role | Artifact | Bytes | SHA-256 |
 |---|---|---:|---|
-| Runtime tarball | `sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts.tar.bz2` | 18,252,168 | `91b96512c4fa1960f8a9ed5360a6c8dda53a4b5015d0590244f14086a234557a` |
-| └ kept: diarization CLI | `bin/sherpa-onnx-offline-speaker-diarization` | 405,440 | `e1170a93308867d8e343ac22a00b46b1d8e786c763c32a17caff07cf934ff66f` |
-| └ kept: ONNX Runtime | `lib/libonnxruntime.dylib` | 28,775,120 | `3567d114f7299d559993e536d605a6f46d7bc9d2542004accc80ee9bf5457f0b` |
-| Segmentation tarball | `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` | 6,958,444 | `24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488` |
-| └ kept: model | `model.onnx` | 5,992,913 | `220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079` |
-| └ kept: licence | `LICENSE` (MIT, © 2022 CNRS) | 1,061 | `14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba` |
-| └ kept: provenance | `README.md` | 115 | `0380ed76a50efcc421dc62f251ed06e8349688466beac3177bee6e00dc336bfc` |
-| Embedding model | `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx` | 28,281,164 | `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2` |
+| Segmentation (pyannote powerset, 10 s) | `Segmentation.mlmodelc/analytics/coremldata.bin` | 243 | `64265f8e7ad41a5f68d630c15288c2499cca5892ad49e20096819cdeac004cdb` |
+| └ | `Segmentation.mlmodelc/coremldata.bin` | 812 | `ea51481b8bd3e496ad3cf16f066ddaa37f20e8772eaac76b3393c28de20e06bc` |
+| └ | `Segmentation.mlmodelc/metadata.json` | 3,410 | `88dbf0b07208fe142e1729c2b4c974ad3599fcb2ae5d5f18fce782b225384124` |
+| └ | `Segmentation.mlmodelc/model.mil` | 43,063 | `d37e4ce30b406a6b34f765f769b9baed3178cc0c2b2e299c641daa43a052dd3f` |
+| └ | `Segmentation.mlmodelc/weights/weight.bin` | 5,959,360 | `c3189a64946c75bc24fcb98afe89ad78c52bdbadfdf65e857fb1b81e2cc9fbb2` |
+| Filterbank frontend | `FBank.mlmodelc/analytics/coremldata.bin` | 243 | `0e8bd3a8b82ac123580989f490e4d9245127c535857630b543311268accc3f0a` |
+| └ | `FBank.mlmodelc/coremldata.bin` | 853 | `57ac436bb0671cbb5527a339134d695f752eb77f7a18966b93c6835335595759` |
+| └ | `FBank.mlmodelc/metadata.json` | 3,409 | `2623785f5d186893b82d01e84aa33a7704ef763c3309e02055f22dc9d871ce9a` |
+| └ | `FBank.mlmodelc/model.mil` | 15,667 | `27aaeb21569e81bdbe2eef87789f50a37cfea800039bd134448a9417de2f30ed` |
+| └ | `FBank.mlmodelc/weights/weight.bin` | 1,776,896 | `9e83fdd3ea78064b078069e4d9141603c61c47a27fd19e7e3142ff7476f8db36` |
+| Speaker embedding (WeSpeaker ResNet34) | `Embedding.mlmodelc/analytics/coremldata.bin` | 243 | `8d6706436639b53830b4dbe8aaf9c9a843f7f582d63e16f3cb8bb7c6ccd58682` |
+| └ | `Embedding.mlmodelc/coremldata.bin` | 704 | `4a705bac27d151d9642f37609296042a15602a42253039e0921dc9e75da7e004` |
+| └ | `Embedding.mlmodelc/metadata.json` | 2,818 | `1854371eb6b438fb8aeac96afb45c999af7902581c06afdfcd7ff3cb1ce66be5` |
+| └ | `Embedding.mlmodelc/model.mil` | 78,432 | `22fa958aef72a561c21f874a07cbdcd30fdf40ee961c0bc2fb67c119273b46d3` |
+| └ | `Embedding.mlmodelc/weights/weight.bin` | 13,412,288 | `99356b2985b8d43880a657024d941d450b38820451ccff903f76ed4e52d1868b` |
+| PLDA rho (VBx clustering) | `PldaRho.mlmodelc/analytics/coremldata.bin` | 243 | `8940ea6044dbcbefa22da8cc41e0b485e1fb5ed89aecaf37c6e0c483a97ddcd7` |
+| └ | `PldaRho.mlmodelc/coremldata.bin` | 763 | `4d9741477f721c79b09fcdfe455110c4b7d4272e2de3496bf1729d966d3ee418` |
+| └ | `PldaRho.mlmodelc/metadata.json` | 2,749 | `b314cf25a93e46b4076883a6f5a2f8848b73c3851bd9d36074d067f35a1c7945` |
+| └ | `PldaRho.mlmodelc/model.mil` | 7,613 | `83aee2e5310d19b5f202aea97d07a0e12102556d1b32ef3ed08b36f7f9725041` |
+| └ | `PldaRho.mlmodelc/weights/weight.bin` | 200,192 | `80f7d229202636d372428c90596f11a91545f07da77259f07153aaf225914a36` |
+| PLDA parameters | `plda-parameters.json` | 89,416 | `38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f` |
 
-URLs (all fetched anonymously — no token, no account, no click-through):
+**Download total: 21,599,417 B (20.6 MiB). On disk after install: the same — there is nothing to
+extract and nothing to prune.**
 
-```
-https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts.tar.bz2
-https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
-https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
-```
+URLs — every file at `https://huggingface.co/FluidInference/speaker-diarization-coreml/resolve/main/<artifact>`,
+fetched anonymously. No token, no account, no click-through, no `.netrc`.
 
 Notes on the pins:
-- **`speaker-recongition-models` is a real upstream typo** and must be hard-coded.
-  `speaker-recognition-models` returns HTTP 404.
-- The embedding hash matches the release's own `checksum.txt` verbatim. The segmentation release
-  publishes no checksums; those three hashes are ours, computed from the artifact we downloaded.
-- Version self-report from the shipped binary:
-  `sherpa-onnx version : 1.13.8 / Git SHA1: 11afbd00 / Git date: Thu Sep 10 13:52:45 2026 / onnxruntime version : 1.28.2`.
-- **Download total: 53,491,776 B (51.0 MiB). On disk after pruning: 63,455,813 B (60.5 MiB).**
-- Apple Silicon only, matching the existing Qwen3-ASR constraint. A
-  `-osx-universal2-shared-no-tts.tar.bz2` and an `-osx-x64-` variant exist on the same release but
-  were **not** downloaded or verified; do not pin them without repeating this work.
+- **The staged directory must be named `speaker-diarization`, not `speaker-diarization-coreml`.**
+  FluidAudio resolves `<models parent>/<Repo.diarizer.folderName>` and `folderName` strips the
+  `-coreml` suffix from the Hugging Face slug. Staging under the repo name fails with
+  `DownloadError.modelMissing(repo: "speaker-diarization", …)` — an error naming the *folder* it
+  looked in rather than the repo it wanted, so it misdirects. Verified by execution.
+- The repository also holds `wespeaker*.mlmodelc`, `pyannote_segmentation.mlmodelc`, `PLDA.mlmodelc`,
+  an `mlpackages/` tree and `plots/`. **None of those are downloaded.** They belong to the legacy
+  streaming `DiarizerManager`, not to `ModelNames.OfflineDiarizer.requiredModels`, and the installer's
+  completeness check refuses a staged tree that contains anything outside the 21 files above.
+- Apple Silicon only, matching the existing Qwen3-ASR constraint. The bundles are Core ML compiled
+  units; whether they load is a property of this machine, which is what the install-time smoke test
+  exists to establish before anything is activated.
 
 ### Configuration pin (this is part of the decision, not tuning)
 
-```
---clustering.cluster-threshold=0.40     # re-derived on the F217 corpus; see the note below
---segmentation.num-threads=4 --embedding.num-threads=4
---clustering.compute-confidence=true
---print-args=false
-# never --clustering.num-clusters
-# never model.int8.onnx
+```swift
+clustering.threshold = 0.6              // FluidAudio's community preset — see below
+segmentation = .community               // the configuration FluidAudio's own DER numbers used
+embedding    = .community
+vbx          = .community
+postProcessing = .community
+// never clustering.numSpeakers / minSpeakers / maxSpeakers — left nil
+// never prepareModels() — see §6
 ```
 
-> **Threshold re-pinned 0.30 → 0.40 on 2026-09-13 (F217).** The 0.30 above was calibrated on five
-> two-speaker clips, which is the wrong sample for the cases that actually fail. Swept over seven
-> thresholds × 18 corpus fixtures and scored as the product behaves (conservative overlay plus
-> single-cluster suppression): 0.3–0.6 is a flat plateau, 0.7 falls off a cliff, and **0.40 gives the
-> best displayed-label precision, 90.8 % at 68.8 % coverage**. The axis is asymmetric, which is why
-> this is not simply "tune for DER": too low over-splits, and the overlay abstains on the rows that
-> become ambiguous; too high merges two speakers into one cluster, which no guard in the product can
-> detect. Erring low costs coverage, erring high costs correctness. Full reasoning in
-> `DIARIZATION_SCORECARD.md`.
+> **The threshold did not carry across, and could not.** sherpa-onnx's
+> `--clustering.cluster-threshold=0.40` was re-derived on the F217 corpus as a **cosine distance**.
+> FluidAudio's threshold is a **Euclidean distance in PLDA space** (its v0.15.6 semantics fix); the
+> two are not comparable and map as `euclidean = sqrt(2 − 2·cosine)`, so reusing 0.40 would not be
+> conservative, it would be a far more aggressive setting that over-splits every meeting. 0.6 is the
+> value upstream calibrated on pyannote community-1 and is the only defensible starting point.
+> **It is not calibrated for this product.** Re-deriving it on annotated audio is F225; FluidAudio's
+> `prepare`/`cluster` split makes that cheap, because a threshold sweep re-clusters in ~0.25 s
+> without re-running the models.
 
 ### What this decision is not
 
@@ -110,8 +159,45 @@ absorption. See §8.
 
 ## 2. Licence and attribution ledger
 
+### Current — FluidAudio + pyannote community-1 (Core ML)
+
+`Resources/THIRD-PARTY-NOTICES.txt` is authored from this table and is copied into the runtime
+directory by the installer, which refuses to activate without it.
+
+| Artifact | Upstream project | Licence | Redistribution OK? | Attribution the app must show | Source |
+|---|---|---|---|---|---|
+| FluidAudio 0.15.7 (compiled into WhisperMeet) | FluidInference/FluidAudio | Apache-2.0 | **Yes** | Full Apache-2.0 text; "FluidAudio, © Fluid Inference". No upstream `NOTICE` file exists, so §4(d) is inert; §4(a)/(b)/(c) apply | https://github.com/FluidInference/FluidAudio/blob/main/LICENSE |
+| The 21 staged Core ML files (§1 Pins) | pyannote `speaker-diarization-community-1`, converted by Fluid Inference | **CC-BY-4.0** | **Yes** | Attribution to pyannote.audio / Hervé Bredin **and** to the converter, a link to the licence, **and a statement that changes were made** (the Core ML conversion is the change). Authored by us — see below | https://huggingface.co/FluidInference/speaker-diarization-coreml |
+| WeSpeaker ResNet34 (the embedding network realised by `Embedding.mlmodelc`) | wenet-e2e/wespeaker | Apache-2.0 | **Yes** — no WeSpeaker code or checkpoint is shipped; the architecture arrives only through the community-1 weights | Apache-2.0 text; credit the project | https://github.com/wenet-e2e/wespeaker |
+| VBx (reimplemented in Swift inside FluidAudio) | BUTSpeechFIT/VBx | Apache-2.0 | **Yes** | Apache-2.0 text; `Copyright 2021-2024 BUT Speech@FIT`. FluidAudio bundles this notice in `ThirdPartyLicenses/vbx-LICENSE.md` and it must travel with the app | FluidAudio `ThirdPartyLicenses/vbx-LICENSE.md` |
+| fastcluster (reimplemented in Swift inside FluidAudio) | fastcluster | BSD-2-Clause | **Yes**, with the binary-form condition | **Reproduce `© 2011 Daniel Müllner`, `changes from 1.1.24 on: © Google Inc.`, both conditions and the all-caps disclaimer.** FluidAudio bundles it in `ThirdPartyLicenses/fastcluster-LICENSE.md` | FluidAudio `ThirdPartyLicenses/fastcluster-LICENSE.md` |
+| NemoTextProcessing (prebuilt Rust xcframework) | FluidInference/text-processing-rs | Apache-2.0 | **Not shipped** | — `traits: []` removes the linkage, so neither it nor its NVIDIA NeMo licence chain travels with the app. It is still *downloaded* at `swift package resolve` time; traits control linkage, not fetching | FluidAudio `ThirdPartyLicenses/NemoTextProcessing-LICENSE.md` |
+
+**Neither repository ships a licence file.** The upstream model card declares `license: cc-by-4.0`
+and is `gated: auto`; the converted repo declares `license: cc-by-4.0` in README front-matter with
+`base_model: pyannote/speaker-diarization-community-1`, `base_model_relation: finetune`, and raw
+`LICENSE` returns **HTTP 404**. The evidence that survives a README edit is inside the artifacts: all
+four `metadata.json` files and `plda-parameters.json` carry `"license": "CC-BY-4.0"`,
+`"author": "Fluid Inference"` and `"version": "pyannote-speaker-diarization-community-1"`, and those
+files are SHA-256 pinned. `THIRD-PARTY-NOTICES.txt` is therefore authored by us from that evidence.
+
+**On re-hosting an ungated conversion of a gated upstream.** F216's gate requires this reasoning to be
+explicit rather than assumed: CC-BY-4.0 permits it. Gating is a distribution choice made by the
+upstream host, not a term of the licence, and CC-BY-4.0 §2(a)(1) grants the right to reproduce and
+share the material, §2(a)(5)(A) forbids the licensor from imposing additional restrictions, and
+§4 contains no anti-circumvention term reaching a form the licensor themselves published. The
+obligations that *do* bind are attribution, the licence link, and the indication of modification —
+all three discharged in `THIRD-PARTY-NOTICES.txt`.
+
+**What CC-BY-4.0 costs us that MIT did not.** It is not share-alike, so nothing about WhisperMeet's
+own licensing changes. It does require the notice to survive in the shipped product, which is why the
+installer treats a missing `THIRD-PARTY-NOTICES.txt` as a refusal rather than a warning, and why the
+notice is copied into the runtime directory as well as the app bundle.
+
+### Historical — sherpa-onnx (superseded 2026-09-13)
+
 Everything marked "verified present" was confirmed by symbol table or string inspection of the
-binary we actually ship (`bin/sherpa-onnx-offline-speaker-diarization`, `lib/libonnxruntime.dylib`).
+binary we actually shipped (`bin/sherpa-onnx-offline-speaker-diarization`, `lib/libonnxruntime.dylib`).
 
 | Artifact | Upstream project | Licence | Redistribution OK? | Attribution the app must show | Source URL |
 |---|---|---|---|---|---|
@@ -154,6 +240,10 @@ bundle, surfaced in About → Legal, and copied into the runtime directory by th
 ---
 
 ## 3. Why not FluidAudio
+
+> **Historical (superseded 2026-09-13).** The dispositive reason below — the no-SPM-dependency
+> constraint — was lifted. Everything else in this section still reads true and is why the adoption
+> was done the way it was; the landmines it names are the ones the code now guards against.
 
 FluidAudio is the better diarizer. That is not in dispute and it should be recorded plainly, because
 the decision is a trade, not a verdict on quality.
@@ -410,6 +500,168 @@ Segmentation runs first with no progress; on `en` it took 1.030 s of a 3.688 s t
 
 ## 6. Installer contract — `Scripts/setup-speaker-diarization.sh`
 
+Same skeleton as `Scripts/setup-qwen-asr.sh` and as the sherpa-era script this replaces: cross-process
+lock, orphan reclaim, staged install, verify-before-swap, atomic activation with rollback. What
+changed is everything below the skeleton — no Python, no venv, no tarballs to extract, no native
+binary, and 21.6 MB of Core ML bundles instead of 51 MB of downloads.
+
+**Target:** `~/Library/Application Support/WhisperMeet/Runtime/Diarization` (overridable as `$1`).
+Models land at `<target>/models/speaker-diarization/…` — the extra `models` level exists because
+FluidAudio is handed a models *parent* directory and appends the folder name itself.
+
+**Names (unchanged):** staging `.Diarization-install-$$`, backup `.Diarization-backup-$$`, lock
+`.Diarization-install.lock` acquired with `/usr/bin/shlock -p $$ -f`, flags `activation_complete=0`
+and `lock_acquired=0`.
+
+**Pinned constants at the top of the script:** the repo slug, the base URL, `model_directory_name`
+(with the comment saying why it is not the slug), and `model_manifest` — 21 `"<relative path> <sha256>"`
+entries, verbatim from §1.
+
+**Preflight:**
+1. `RECOVERY_ONLY` guard first. `DIARIZATION_INSTALL_RECOVERY_ONLY=1` skips the platform check, the
+   notices check, the smoke-test-command check and all downloads, and exits 0 immediately after the
+   reclaim block, so a build missing a bundled file can still reclaim an orphaned runtime at launch
+   (F33).
+2. Outside recovery mode: require `Darwin` + `arm64`.
+3. Outside recovery mode: require the bundled `THIRD-PARTY-NOTICES.txt` next to the script. The
+   runtime is not shippable without it, and CC-BY-4.0 makes that a licence obligation rather than a
+   nicety.
+4. Outside recovery mode: require an executable `smoke_test_command`. Checked **before** the
+   download, because discovering after 21.6 MB that nothing can verify the payload is a worse way to
+   say the same no.
+5. `mkdir -p "$runtime_parent"`.
+
+**Completeness predicate**, used by the reclaim logic and by the final check before activation:
+
+```sh
+runtime_is_complete() {
+  candidate="$1"
+  [[ -f "$candidate/THIRD-PARTY-NOTICES.txt" && -f "$candidate/MANIFEST" ]] || return 1
+  for manifest_entry in "${model_manifest[@]}"; do
+    [[ -f "$candidate/models/$model_directory_name/${manifest_entry%% *}" ]] || return 1
+  done
+  return 0
+}
+```
+
+It requires **exactly** what `FluidAudioDiarizationRuntime.requiredModelFiles` requires, and
+`diarizationInstallerManifestMatchesTheSwiftRequiredFiles` compares the two lists mechanically. A
+subset on either side is how a tree the installer would refuse gets reported to the app as healthy —
+a defect this project has already shipped once, which is why the check is a test and not a convention.
+
+**Trap and lock:** `trap cleanup_and_restore EXIT` restoring `backup → target` when
+`activation_complete -eq 0 && ! -e target && -e backup`, removing the staging directory, and releasing
+the lock; `trap 'exit 130' HUP INT TERM`. Unchanged.
+
+**Reclaim (under the lock, before any download):** promote a *complete* orphaned
+`.Diarization-backup-*` if the canonical path is missing; delete incomplete backups; delete every
+`.Diarization-install-*`. Then, if `RECOVERY_ONLY`, `exit 0`.
+
+**Disk check:** ≥ 128 MiB free on `$runtime_parent` — the sherpa era's 512 MiB reduced to match a
+payload that shrank by two thirds. Refusing a user with 300 MB free would be a refusal for a reason
+that no longer exists.
+
+**Download and hash in one loop.** `curl -fsSL --proto '=https' --tlsv1.2`, no credentials, no
+`.netrc`, no token environment variable read — the repository is ungated.
+
+```sh
+for entry in "${model_manifest[@]}"; do
+  relative_path="${entry%% *}"
+  expected_sha256="${entry##* }"
+  destination="$staged_models/$relative_path"
+  mkdir -p "${destination:h}"
+  download "$model_base_url/$relative_path" "$destination"
+  verify_sha256 "$destination" "$expected_sha256" "$relative_path"
+done
+```
+
+One list, not two. The sherpa script had three downloads and five separate payload checks, and
+keeping those two lists in agreement was manual; here the iteration that fetches a file is the
+iteration that hashes it, so "downloaded but never verified" is not a state the script can be edited
+into.
+
+**Manifest-completeness gate — the replacement for the espeak and socket symbol gates.** Those read a
+native executable's symbol table to prove no GPL-3.0 espeak-ng was linked and no socket could be
+opened. A `.mlmodelc` bundle is data: it exports no symbols, links nothing, and cannot open a socket,
+so both gates are not merely unnecessary but meaningless — they would be auditing something the
+installer no longer installs. What survives is the question they really asked, *is the payload exactly
+what we pinned?*, and it is asked directly:
+
+```sh
+staged_models_match_manifest() {
+  candidate="$1"
+  [[ -d "$candidate" ]] || return 1
+  if [[ -n "$(find "$candidate" ! -type d ! -type f -print -quit 2>/dev/null)" ]]; then
+    return 1
+  fi
+  staged_files="$(cd "$candidate" && find . -type f -print | sed 's|^\./||' | sort)"
+  pinned_files="$(print -l -- "${model_manifest[@]%% *}" | sort)"
+  [[ "$staged_files" == "$pinned_files" ]]
+}
+```
+
+Set equality, not a count: an **extra** file is an unpinned, unhashed payload, and the `! -type d
+! -type f` probe refuses symlinks, which are a path out of the staged tree and into anything on the
+machine.
+
+**Notices and MANIFEST:** `cp` the bundled `THIRD-PARTY-NOTICES.txt` into the staging root,
+`chmod 644`. The MANIFEST records `model_repo`, `model_directory`, `runtime_id`, `runtime_version`,
+`cluster_threshold`, and one `sha256 <hash> <path>` line per pinned file, so an installed tree
+describes its own provenance.
+
+**Smoke test before activation.** The sherpa script ran the pinned CLI over a generated silent WAV,
+because `--help` exits 0 and proves nothing about inference. The same argument applies with more
+force here and the same test is kept — but nothing on a stock Mac can load a Core ML bundle from a
+shell, and the diarizer is no longer a separate binary. So the installer calls **this app** back:
+
+```sh
+"$smoke_test_command" --diarization-smoke-test "$staging_directory/models"
+```
+
+`smoke_test_command` is `Contents/MacOS/WhisperMeet`, one directory over from the
+`Contents/Resources` the script itself lives in, with a `.build/{release,debug}/WhisperMeet` fallback
+for a source checkout — the same sibling-resolution shape the notices file uses.
+`DiarizationInstallSmokeTest` runs before `App.main()`, so no window, `NSApplication` or permission
+prompt is created; it generates one second of 16 kHz mono silence in a temporary directory, loads all
+four bundles through `OfflineDiarizerModels.load` — **never `prepareModels()`** — runs the pipeline,
+and exits non-zero unless the run produced zero speaker turns.
+
+Two honest limits, recorded rather than implied away:
+- **Silence does not exercise clustering.** There is nothing to cluster. What it does exercise is the
+  expensive and machine-specific half: compiling and loading all four Core ML bundles and reading the
+  PLDA parameters, which is the failure this gate exists to catch.
+- **Silence is not "zero segments" to FluidAudio.** It throws
+  `OfflineDiarizationError.noSpeechDetected`. The adapter maps that to an empty result, because "no
+  speech in this recording" is a result and not a failure — surfaced raw it would tell a user whose
+  microphone was muted for an hour that their analysis had crashed. Verified by execution.
+
+Silence is also deliberately *generated*, never taken from a model release: every `.wav` in the
+releases this project has surveyed carries no licence statement at all.
+
+**Atomic activation with rollback** — byte for byte the Qwen pattern, unchanged from the sherpa
+script: `target → backup`, `staging → target`, restore the backup if the swap fails,
+`activation_complete=1`, remove the backup, release the lock, clear the trap.
+
+**Final on-disk layout (20.6 MiB):**
+
+```
+~/Library/Application Support/WhisperMeet/Runtime/Diarization/
+  models/speaker-diarization/Segmentation.mlmodelc/   5,  6,006,888 B
+  models/speaker-diarization/FBank.mlmodelc/          5,  1,797,068 B
+  models/speaker-diarization/Embedding.mlmodelc/      5, 13,494,485 B
+  models/speaker-diarization/PldaRho.mlmodelc/        5,    211,560 B
+  models/speaker-diarization/plda-parameters.json           89,416 B
+  THIRD-PARTY-NOTICES.txt
+  MANIFEST
+```
+
+---
+
+## 6b. Installer contract — sherpa-onnx (superseded 2026-09-13)
+
+Kept because the tarball prune, the espeak gate and the socket gate are the reasoning that would have
+to be redone if this project ever ships a native inference binary again.
+
 Same skeleton as `Scripts/setup-qwen-asr.sh`, with the pip/venv stage replaced by tarball extraction
 and an aggressive prune. No Homebrew, no Python, no `pip`.
 
@@ -563,7 +815,12 @@ print "Speaker analysis is ready at $target_directory"
 
 ---
 
-## 7. Helper contract
+## 7. Helper contract — sherpa-onnx (superseded 2026-09-13)
+
+> **Historical.** There is no subprocess any more: FluidAudio runs in-process, so the argv/stdout
+> grammar below describes nothing that ships. What replaced it is `FluidAudioDiarizationClient`,
+> whose contract is the same `SpeakerDiarizationResult` this grammar was parsed into — which is why
+> nothing above the adapter seam changed. The sidecar JSON in this section is still current.
 
 **There is no Python helper.** The decision removes the interpreter, so `Scripts/` gains no new
 `.py` file and the `Runtime/Diarization` tree contains no venv. The "helper" is the pinned binary,

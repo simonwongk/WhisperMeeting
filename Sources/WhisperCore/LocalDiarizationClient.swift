@@ -35,69 +35,14 @@ public struct DiarizationRuntime: Sendable {
             .appendingPathComponent("Diarization", isDirectory: true)
     }
 
-    public static func executable(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("bin/sherpa-onnx-offline-speaker-diarization")
-    }
-
-    public static func segmentationModel(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("models/segmentation/model.onnx")
-    }
-
-    public static func embeddingModel(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("models/embedding/campplus_zh_en.onnx")
-    }
-
-    /// The executable links this by `@rpath`, so a tree missing it launches and dies immediately
-    /// with a dyld error no `LocalDiarizationError` case maps — the alert would carry a raw linker
-    /// message instead of "Reinstall it in Settings".
-    public static func onnxRuntimeLibrary(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("lib/libonnxruntime.dylib")
-    }
-
-    /// The segmentation model's licence travels with the model. A tree the app calls installed but
-    /// that carries no licence is a compliance defect, not a cosmetic one.
-    public static func segmentationLicense(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("models/segmentation/LICENSE")
-    }
-
-    public static func thirdPartyNotices(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("THIRD-PARTY-NOTICES.txt")
-    }
-
-    public static func manifest(applicationSupport: URL? = nil) -> URL {
-        managedDirectory(applicationSupport: applicationSupport)
-            .appendingPathComponent("MANIFEST")
-    }
-
-    /// Every required file, probed on the filesystem. An interrupted install leaves the directory
-    /// present but incomplete, so "the folder exists" is never the question asked — the same lesson
-    /// `QwenASRRuntime.isInstalled` and `LocalWhisperRuntime.mlxModelCached` encode.
-    ///
-    /// These are exactly the seven files `runtime_is_complete()` requires in
-    /// `Scripts/setup-speaker-diarization.sh` (DIARIZATION_RUNTIME_DECISION.md's completeness
-    /// predicate), and the two predicates must name the same seven: checking a subset here is how a
-    /// tree the installer would call incomplete gets reported healthy, enabling a menu entry whose
-    /// first run dies on `@rpath/libonnxruntime.dylib` — an error this adapter has no case for.
-    public static func isInstalled(applicationSupport: URL? = nil) -> Bool {
-        let files = FileManager.default
-        guard files.isExecutableFile(
-            atPath: executable(applicationSupport: applicationSupport).path
-        ) else { return false }
-        return [
-            onnxRuntimeLibrary(applicationSupport: applicationSupport),
-            segmentationModel(applicationSupport: applicationSupport),
-            segmentationLicense(applicationSupport: applicationSupport),
-            embeddingModel(applicationSupport: applicationSupport),
-            thirdPartyNotices(applicationSupport: applicationSupport),
-            manifest(applicationSupport: applicationSupport)
-        ].allSatisfy { files.fileExists(atPath: $0.path) }
-    }
+    // The sherpa-onnx era's path accessors — `executable`, `segmentationModel`, `embeddingModel`,
+    // `onnxRuntimeLibrary`, `segmentationLicense`, `thirdPartyNotices`, `manifest` — and the
+    // `isInstalled` probe built on them were removed when F216 swapped the runtime to FluidAudio.
+    // They named files the installer no longer downloads, so they were not merely unused: they were
+    // a second, contradictory answer to "is speaker analysis installed". The app's real answer is
+    // `FluidAudioDiarizationRuntime.isInstalled`, which is compared file-for-file against
+    // `Scripts/setup-speaker-diarization.sh`'s manifest by a test. Keeping a stale probe beside it
+    // is exactly the drift that test exists to prevent.
 }
 
 /// One completed analysis. Anonymous by construction: intervals and a count, never a name, an

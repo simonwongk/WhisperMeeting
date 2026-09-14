@@ -14,17 +14,40 @@ import WhisperCore
 /// looked in rather than the repo it wanted, and therefore actively misdirects. Verified by
 /// execution during the F216 evaluation.
 enum FluidAudioDiarizationRuntime {
-    /// The five artifacts the offline diarizer loads: four compiled Core ML bundles and the PLDA
-    /// parameters, 21.6 MB in total. Exactly `ModelNames.OfflineDiarizer.requiredModels`, spelled
-    /// out here so the installed-tree probe below and the installer's manifest can be compared by
-    /// inspection (the same discipline `DiarizationRuntime.isInstalled` follows).
-    static let requiredModelFiles = [
+    /// The five artifacts the offline diarizer asks for: four compiled Core ML bundles and the PLDA
+    /// parameters. Exactly `ModelNames.OfflineDiarizer.requiredModels`, and the roots of the 21
+    /// paths below.
+    static let requiredModelArtifacts = [
         "Segmentation.mlmodelc",
         "FBank.mlmodelc",
         "Embedding.mlmodelc",
         "PldaRho.mlmodelc",
         "plda-parameters.json"
     ]
+
+    /// Every file a complete install contains, 21.6 MB in total — and the reason the list is not
+    /// simply the five names above.
+    ///
+    /// Four of the five artifacts are `.mlmodelc` **directories**, and
+    /// `FileManager.fileExists(atPath:)` is true for a directory. The installer creates each
+    /// directory with `mkdir -p` before fetching the first byte into it, so an install interrupted
+    /// anywhere in the middle leaves all five names present and the app reporting a healthy
+    /// runtime over an empty tree. Naming the leaves instead makes "present" mean "downloaded".
+    ///
+    /// This list and `model_manifest` in `Scripts/setup-speaker-diarization.sh` must stay
+    /// identical; `diarizationInstallerManifestMatchesTheSwiftRequiredFiles` compares them
+    /// mechanically, because the last time two such lists were kept in step by inspection they
+    /// drifted.
+    static let requiredModelFiles: [String] = requiredModelArtifacts.flatMap { artifact -> [String] in
+        guard artifact.hasSuffix(".mlmodelc") else { return [artifact] }
+        return [
+            "analytics/coremldata.bin",
+            "coremldata.bin",
+            "metadata.json",
+            "model.mil",
+            "weights/weight.bin"
+        ].map { "\(artifact)/\($0)" }
+    }
 
     /// FluidAudio's own community preset. **Not** `DiarizationRuntime.clusterThreshold` (0.40):
     /// that number was derived on the F217 corpus against sherpa-onnx, whose threshold is a cosine
@@ -60,8 +83,13 @@ enum FluidAudioDiarizationRuntime {
 
     static func isInstalled(inParent parent: URL) -> Bool {
         let directory = parent.appendingPathComponent("speaker-diarization", isDirectory: true)
-        return requiredModelFiles.allSatisfy {
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+        return requiredModelFiles.allSatisfy { relativePath in
+            var isDirectory: ObjCBool = false
+            let present = FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(relativePath).path,
+                isDirectory: &isDirectory
+            )
+            return present && !isDirectory.boolValue
         }
     }
 }
@@ -296,6 +324,15 @@ struct FluidAudioDiarizationClient: Sendable {
                 guard total > 0 else { return }
                 report(min(1, max(0, Double(processed) / Double(total))))
             }
+        } catch OfflineDiarizationError.noSpeechDetected {
+            // "No speech in this recording" is a RESULT, not a failure. FluidAudio throws where
+            // sherpa-onnx printed zero segment lines, and surfaced raw that throw becomes
+            // `LocalDiarizationError.processFailed`: a meeting recorded with the microphone muted
+            // throughout would be reported to the user as a broken analysis they should retry.
+            // Every layer above this one already handles a zero-turn result — the overlay abstains,
+            // the sidecar records a count of 0 — so the empty list is what they get. Verified by
+            // execution: one second of digital silence throws this case rather than returning [].
+            return []
         } catch {
             throw Self.failure(error, whileLoadingModels: false)
         }

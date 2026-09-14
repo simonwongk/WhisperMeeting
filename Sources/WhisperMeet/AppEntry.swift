@@ -2,7 +2,28 @@ import SwiftUI
 import ServiceManagement
 import WhisperCore
 
+/// The process entry point.
+///
+/// It exists only so `Scripts/setup-speaker-diarization.sh` can call this executable back to prove
+/// the speaker-analysis models it just staged actually load and run before it activates them
+/// (F216). Nothing on a stock Mac can load a Core ML bundle from a shell, and the diarizer is no
+/// longer a separate binary the installer could run — it is a library inside this app — so the app
+/// is the only program that can answer the question.
+///
+/// Every ordinary launch falls straight through to `WhisperMeetApp.main()`, which is exactly what
+/// `@main` on the `App` did before. The smoke-test branch returns `Never` and runs before any
+/// SwiftUI scene, `NSApplication`, window, or permission prompt is created, so a headless run never
+/// shows a second app in the Dock or touches the user's library.
 @main
+enum WhisperMeetLauncher {
+    static func main() {
+        if let models = DiarizationInstallSmokeTest.modelsParentDirectory(in: CommandLine.arguments) {
+            DiarizationInstallSmokeTest.runAndExit(modelsParentDirectory: models)
+        }
+        WhisperMeetApp.main()
+    }
+}
+
 struct WhisperMeetApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var dictation = DictationController()

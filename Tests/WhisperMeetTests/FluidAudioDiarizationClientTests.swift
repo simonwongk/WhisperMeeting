@@ -193,18 +193,15 @@ func fluidAudioAdapterKeepsStagedModelsAfterAFailedLoad() async throws {
     let parent = try temporaryDirectory("FluidAudioDamaged")
     defer { try? FileManager.default.removeItem(at: parent) }
     let models = parent.appendingPathComponent("speaker-diarization", isDirectory: true)
+    // Every pinned file present so the tree passes `isInstalled`, and every one of them garbage so
+    // the LOADER is what fails. A tree that fails the install probe would stop at
+    // `runtimeNotInstalled` and never reach the purge path this test is about.
     for name in FluidAudioDiarizationRuntime.requiredModelFiles {
         let url = models.appendingPathComponent(name)
-        if name.hasSuffix(".mlmodelc") {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            try Data("not a compiled model".utf8)
-                .write(to: url.appendingPathComponent("coremldata.bin"))
-        } else {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try Data("{}".utf8).write(to: url)
-        }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("not a compiled model".utf8).write(to: url)
     }
     // A REAL readable recording, so the run reaches the model loader rather than stopping at the
     // audio pre-check — the point of this test is what the loader's failure path does.
