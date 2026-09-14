@@ -229,6 +229,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         if primaryExists,
            let data = try? io.read(primaryURL, .readPrimary),
            let value = try? decoder.decode(Value.self, from: data) {
+            if isDivergent(primaryBytes: data, ledger: ledger) {
+                // Preserve BOTH data files before reporting, so whichever branch the user does not
+                // choose still exists. Copies, never moves — the live files stay exactly as found,
+                // because they are the evidence.
+                _ = try? StoreQuarantine.preserve(fileAt: primaryURL, using: io)
+                _ = try? StoreQuarantine.preserve(fileAt: backupURL, using: io)
+                // Returns the primary's value rather than throwing. A throw leaves
+                // `MeetingStore.meetings` empty, which renders as zero meetings plus a read-only
+                // banner — visually indistinguishable from the wipe this design exists to prevent.
+                // No token: nothing may arm a checked write against a lineage we cannot vouch for.
+                return LoadResult(value: value, health: .divergentGenerations, repairs: repairs)
+            }
             return LoadResult(
                 value: value,
                 health: .complete,
@@ -661,18 +673,109 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     }
 
     /// Conflict branches awaiting a decision. They are never pruned automatically.
+    ///
+    /// A branch that cannot be READ is still listed (F236). Dropping it would be worse here than
+    /// anywhere else in this module: a retained generation is one of several copies of a lineage,
+    /// but a conflict branch is a losing writer's work and exists nowhere else. Omitting it tells
+    /// the user there is nothing to resolve, and the next cleanup takes it.
+    ///
+    /// The name carries both the sequence and the fingerprint, so an unreadable branch is still
+    /// fully identified; only `bytesMatchName` goes false, because nothing was verified. The size
+    /// comes from a `stat`, which costs nothing and lets the list show what is there.
     public func conflictBranches() throws -> [RetainedGeneration] {
         let names = (try? io.contentsOfDirectory(history.directoryURL, .listHistory)) ?? []
-        return names.filter { $0.hasPrefix("conflict-") }.compactMap { name in
-            guard let bytes = try? io.read(
-                history.directoryURL.appendingPathComponent(name), .readHistoryEntry
-            ) else { return nil }
+        return names.filter { $0.hasPrefix("conflict-") }.map { name in
+            let url = history.directoryURL.appendingPathComponent(name)
+            let claimed = Self.conflictBranchName(name)
+            guard let bytes = try? io.read(url, .readHistoryEntry) else {
+                return RetainedGeneration(
+                    name: name,
+                    sequence: claimed?.sequence ?? 0,
+                    fingerprint: claimed?.fingerprint ?? "",
+                    byteCount: Int(io.identity(url)?.size ?? 0),
+                    wroteAtEpochSeconds: nil,
+                    recordCount: nil,
+                    bytesMatchName: false
+                )
+            }
+            let actual = io.fingerprint(bytes)
             return RetainedGeneration(
-                name: name, sequence: 0, fingerprint: io.fingerprint(bytes),
-                byteCount: bytes.count, wroteAtEpochSeconds: nil, recordCount: nil,
-                bytesMatchName: true
+                name: name,
+                sequence: claimed?.sequence ?? 0,
+                fingerprint: actual,
+                byteCount: bytes.count,
+                wroteAtEpochSeconds: nil,
+                recordCount: nil,
+                // An unparseable name cannot vouch for anything, so it is not reported as verified.
+                bytesMatchName: claimed?.fingerprint == actual
             )
         }
+        .sorted { $0.sequence > $1.sequence }
+    }
+
+    /// `conflict-<9-digit sequence>-<8 hex writer>-<16 hex fingerprint>.json`, or nil.
+    ///
+    /// Lives here rather than beside `StoreHistory.parse` because a conflict branch is written by
+    /// `compareAndSwap` in this file, and the two name formats have no reason to share a parser —
+    /// `parse` deliberately refuses `conflict-` names so a branch can never enter the retained set
+    /// and be pruned as a generation.
+    static func conflictBranchName(_ name: String) -> (sequence: UInt64, fingerprint: String)? {
+        guard name.hasPrefix("conflict-"), name.hasSuffix(".json") else { return nil }
+        let parts = name.dropFirst(9).dropLast(5).split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, let sequence = UInt64(parts[0]) else { return nil }
+        let fingerprint = String(parts[2])
+        guard fingerprint.count == 16,
+              fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
+        else { return nil }
+        return (sequence, fingerprint)
+    }
+
+    /// Whether the primary belongs to a second lineage (F190). All five conditions must hold.
+    ///
+    /// Every one of them is a chance to adopt instead, and that asymmetry is deliberate. A false
+    /// read-only library is itself a harm — F187's `.suspectEmpty` over-fire turned "deleted my last
+    /// meeting, then crashed while recording" into a locked library with no in-app way out — so this
+    /// fires only on positive evidence of two branches, never on a crash, an old bundle's write, or
+    /// a documented hand-restore.
+    ///
+    /// Note that conditions 2, 4 and 5 interlock: with the archive unreadable, condition 5 can only
+    /// be met by `backup == current`, which condition 4 rejects. So the DIRECTORY half of condition 2
+    /// is logically redundant (¬2 ⇒ ¬(4 ∧ 5)) and is kept only because it states the intent. The
+    /// `ledger.historyAvailable` half is not redundant: a writer that could not retain leaves a
+    /// readable archive that still holds `current`, and that flag is then the only thing preventing a
+    /// false read-only library.
+    private func isDivergent(primaryBytes: Data, ledger: StoreLedger?) -> Bool {
+        // 1. A ledger this build understands. Without one there is no record to contradict, and
+        //    Invariant L requires pre-F190 behaviour.
+        guard let ledger else { return false }
+
+        // 2. History that is readable, and a writer that had it. Without the archive there is no
+        //    evidence of a second branch — only an unexplained primary, which is a crash far more
+        //    often than a rival writer.
+        guard ledger.historyAvailable, io.isDirectory(history.directoryURL) == true else {
+            return false
+        }
+        let archivedFingerprints = Set(history.entries().map(\.fingerprint))
+
+        // 3. The primary matches NO generation this library recorded — not `current`, not
+        //    `previous`, not any history record, and no file in the archive. A match anywhere makes
+        //    it a rollback or our own uncommitted install, both of which are adopted.
+        let primaryFingerprint = io.fingerprint(primaryBytes)
+        var known = Set([ledger.current.fingerprint])
+        if let previous = ledger.previous { known.insert(previous.fingerprint) }
+        for record in ledger.history { known.insert(record.fingerprint) }
+        guard !known.contains(primaryFingerprint),
+              !archivedFingerprints.contains(primaryFingerprint) else { return false }
+
+        // 4. The backup is not our current generation. If it is, a non-F190 writer rotated us into
+        //    the backup and installed its own primary, which PROVES its primary descends from us.
+        let backupFingerprint = (try? io.read(backupURL, .readBackup)).map { io.fingerprint($0) }
+        guard backupFingerprint != ledger.current.fingerprint else { return false }
+
+        // 5. Our recorded generation is still retrievable, so there genuinely is a second branch to
+        //    choose between. Otherwise the user would be offered a choice between one branch and
+        //    nothing — a read-only library with no second option to pick.
+        return archivedFingerprints.contains(ledger.current.fingerprint)
     }
 
     /// The generation the primary's bytes are.

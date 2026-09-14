@@ -245,3 +245,54 @@ func anUncheckedSaveIsStillLastWriterWins() throws {
     let reloaded = try #require(try store.load())
     #expect(reloaded.value == [Note(title: "Two")])
 }
+
+// F236 (reported by a review of Tasks 3-5, in a file that review did not own). `conflictBranches()`
+// dropped any branch it could not read. That is worse here than in `retained()`: a retained
+// generation is one of several copies of a lineage, but a conflict branch is a LOSING WRITER'S WORK
+// and exists nowhere else. Omitting it from the list is how it gets lost for good — the user is
+// told there is nothing to resolve, and the next cleanup takes it.
+//
+// Skipped as root: the scenario is "the file cannot be read", staged with chmod 0o000, and root
+// ignores permission bits.
+
+@Test(
+    "A conflict branch that cannot be read is still listed, never silently dropped (F190/F236)",
+    .enabled(if: getuid() != 0)
+)
+func anUnreadableConflictBranchIsStillListed() throws {
+    let fixture = try makeFixture()
+    defer {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: fixture.historyURL.appendingPathComponent("unreadable").path
+        )
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+    let store = makeStore(fixture)
+    _ = try store.save([Note(title: "Base")])
+    let base = try #require(try store.load())
+    let sharedToken = try #require(base.token)
+    _ = try store.save([Note(title: "Winner")], expecting: sharedToken)
+
+    // Produce a real conflict branch, then make it unreadable the way a permissions problem would.
+    var preserved: String?
+    do {
+        _ = try store.save([Note(title: "Loser")], expecting: sharedToken)
+    } catch let error as BackupJSONStoreError {
+        if case let .generationConflict(_, _, _, name) = error { preserved = name }
+    }
+    let name = try #require(preserved)
+    let branchURL = fixture.historyURL.appendingPathComponent(name)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: branchURL.path)
+
+    let branches = try store.conflictBranches()
+    let entry = try #require(
+        branches.first { $0.name == name },
+        "the unreadable branch was dropped from the list, so the user is told there is nothing to resolve"
+    )
+    #expect(!entry.bytesMatchName, "an unverifiable branch must not be reported as verified")
+    // Its size still comes back, from a stat rather than a read, so the list can show what is there.
+    #expect(entry.byteCount > 0)
+    // And the name still identifies it: the fingerprint is in the name, not only in the bytes.
+    #expect(entry.fingerprint.count == 16)
+}
