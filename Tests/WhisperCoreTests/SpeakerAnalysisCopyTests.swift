@@ -44,6 +44,32 @@ func speakerAnalysisDisclosureNamesTheMergedVoiceWeakness() {
     #expect(message.contains("can be wrong") || message.contains("guesses"))
 }
 
+@Test("The disclosure and the legend both say only one of two simultaneous voices is labelled (F232)")
+func speakerAnalysisCopyNamesTheSimultaneousSpeechLimit() {
+    // Measured, not hypothetical. On audio with 8.1 s of certain simultaneous speech
+    // (`Scripts/bench/diarization/make-ui-fixtures.sh audio` → `probe-overlap.wav`) the runtime
+    // returns ZERO intersecting turns and hands the whole overlap window to one speaker as ordinary
+    // confident speech. The PRD's overlap veto is therefore dead in production and cannot be revived
+    // from our side — pyannote community-1 discards the simultaneity internally (F223, closed
+    // invalid; F232 carries the runtime question).
+    //
+    // So the copy has to carry it. Both surfaces, because they are read at different moments: the
+    // disclosure before agreeing to run, the legend every time the labels are looked at. Saying it
+    // only in the disclosure means a person who clicked through once never sees it again.
+    for text in [SpeakerAnalysisCopy.disclosureMessage, SpeakerAnalysisCopy.legendNotice] {
+        let lowered = text.lowercased()
+        #expect(
+            lowered.contains("at the same time") || lowered.contains("over each other")
+                || lowered.contains("talk over"),
+            "copy does not mention simultaneous speech: \(text)"
+        )
+        #expect(
+            lowered.contains("only one"),
+            "copy does not say that only one of the two voices is labelled: \(text)"
+        )
+    }
+}
+
 @Test("No speaker-analysis string claims a person was recognized, identified, or verified (F220)")
 func speakerAnalysisCopyNeverClaimsIdentity() {
     // `AccessibilityPhrase.swift:4` and the PRD bind this: a label is a guess about voices, never a

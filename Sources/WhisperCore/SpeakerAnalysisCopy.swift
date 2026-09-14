@@ -43,14 +43,22 @@ public enum SpeakerAnalysisCopy {
     /// two-person conversations into one voice, so it is a measured weakness stated up front. A
     /// person told this reads a wrong label as a known limit; a person not told reads it as who
     /// spoke.
+    ///
+    /// The simultaneous-speech sentence is the same kind of statement and was added for the same
+    /// reason (F232). Given audio with 8.1 s of certain overlap the runtime reports ZERO
+    /// intersecting turns and attributes the whole window to one speaker as ordinary confident
+    /// speech, so the PRD's overlap veto never fires and nothing in this repository can make it —
+    /// pyannote community-1 discards the simultaneity before returning. Until that is a runtime
+    /// decision (F232), the only honest place for it is here.
     public static let disclosureMessage = """
     WhisperMeet will look for speaker turns using a model on this Mac. Nothing is uploaded, and your \
     recording, transcript, and notes are not changed.
 
     It marks parts of the transcript with anonymous labels such as “Speaker 1”. It does not identify \
     people, and the labels are guesses that can be wrong: voices that sound alike are sometimes \
-    merged into a single label, so one label can cover two people. You can rename a label for this \
-    meeting, clear the labels, or analyze again at any time.
+    merged into a single label, so one label can cover two people, and when two people talk at the \
+    same time only one of them is labelled. You can rename a label for this meeting, clear the \
+    labels, or analyze again at any time.
     """
 
     /// Shown while the installer runs. The size is the real pinned payload, so a stalled download is
@@ -88,9 +96,10 @@ public enum SpeakerAnalysisCopy {
     public static let legendNotice = """
     These labels were inferred on this Mac by local analysis of the audio. They group similar-sounding \
     voices inside this one meeting — they are labels for voices, not for people, and they can be \
-    wrong: voices that sound alike are sometimes merged into a single label. Rename a label to \
-    whatever is useful to you; your labels stay with this meeting and never appear in the transcript, \
-    an ordinary export, or a summary.
+    wrong: voices that sound alike are sometimes merged into a single label, and when two people talk \
+    at the same time only one of them is labelled. Rename a label to whatever is useful to you; your \
+    labels stay with this meeting and never appear in the transcript, an ordinary export, or a \
+    summary.
     """
 
     /// The banner's first line for one review state.
