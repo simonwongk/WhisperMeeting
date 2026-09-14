@@ -44,6 +44,7 @@ deliberately static—after editing a board file, run the two commands documente
 | [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) | `F216` — the adopted local diarization runtime (FluidAudio) and why, with per-artifact licences, pinned hashes, the verified landmines, and the superseded sherpa-onnx route kept as history. |
 | [`DIARIZATION_SCORECARD.md`](DIARIZATION_SCORECARD.md) | `F217`/`F221` — what speaker analysis actually measures on real and synthetic audio, which claims were retracted, and why the PRD's quality gate cannot be evaluated as written. |
 | [`SPEAKER_DIARIZATION_PLAN.md`](SPEAKER_DIARIZATION_PLAN.md) | `F216`–`F221` — the 17-task implementation sequence for that decision. |
+| [`SPEAKER_ANALYSIS_UI_TEST_PROMPT.md`](SPEAKER_ANALYSIS_UI_TEST_PROMPT.md) | A hand-off prompt for an agent with Accessibility permission to verify the speaker-analysis interface, VoiceOver and keyboard paths in the installed app — the F221 gates that need a driver this session did not have. |
 
 ## Historical planning records
 
