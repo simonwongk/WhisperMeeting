@@ -398,9 +398,14 @@ nothing else — same 695 tests, same warnings-as-errors release build, byte-ide
 `.macOS(.v15)` / `swiftLanguageModes: [.v5]` are unchanged.
 
 **FluidAudio is this repo's first third-party SwiftPM dependency** (F216, pinned `exact: "0.15.7"`).
-It is a dependency of the **`WhisperMeet` target only**; `WhisperCore` gets nothing, so the purity
-rule below is enforced by the manifest and not merely by convention — `import FluidAudio` from
-`Sources/WhisperCore/` fails to build.
+It is a dependency of the **`WhisperMeet` target only**; `WhisperCore` gets nothing, so
+`import FluidAudio` from `Sources/WhisperCore/` fails to build.
+
+Do not read that as the purity rule being manifest-enforced in general. SwiftPM only refuses the
+import because `WhisperCore` declares no dependency on that package — the same manifest says nothing
+about `AppKit`, `SwiftUI`, `os` or any other system framework, every one of which `WhisperCore`
+would happily import. The rule below is still upheld by review and by the grep in the definition of
+done, not by the build system.
 
 ## WhisperCore purity rule
 

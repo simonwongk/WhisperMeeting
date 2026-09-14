@@ -15,6 +15,18 @@ swift build --disable-sandbox -c release
 app_dir=".build/WhisperMeet.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp ".build/release/WhisperMeet" "$app_dir/Contents/MacOS/WhisperMeet"
+# SwiftPM emits a resource bundle for any dependency declaring `.process(...)` resources —
+# FluidAudio does, for its TTS grapheme-to-phoneme tables. `Bundle.module` resolves it through
+# `Bundle.main.resourceURL`, which for an .app is Contents/Resources, and traps if it is absent — so
+# `swift run` and the packaged app would otherwise diverge in a way that only appears after
+# distribution. It goes in Resources, NOT next to the executable: a nested bundle in Contents/MacOS
+# makes `codesign` reject the whole app with "bundle format unrecognized, invalid, or unsuitable".
+# Diarization never touches that code path today; shipping the bundle keeps it from becoming a
+# distribution-only crash if it ever does (F216).
+for resource_bundle in .build/release/*.bundle; do
+  [[ -e "$resource_bundle" ]] || continue
+  cp -R "$resource_bundle" "$app_dir/Contents/Resources/"
+done
 cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 cp "Scripts/setup-local-whisper.sh" "$app_dir/Contents/Resources/setup-local-whisper.sh"

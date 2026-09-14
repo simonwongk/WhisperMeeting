@@ -6,7 +6,7 @@
 
 **Architecture:** A pinned native `sherpa-onnx` binary runs as a subprocess over a 16 kHz mono copy of the canonical recording. Its anonymous turns are validated by Foundation-only code in `WhisperCore`, stored in a strict versioned `Recordings/<uuid>/diarization.json` sidecar, and reconciled into a **display-only** overlay at render time. `TranscriptSegment.speaker` is never populated; `meetings.json` never changes.
 
-**Tech Stack:** Swift 6 (language mode 5), SwiftPM, swift-testing, SwiftUI, zsh installer scripts, Python 3 for the benchmark harness. **No new SwiftPM dependency.**
+**Tech Stack:** Swift 6 (language mode 5, swift-tools 6.2), SwiftPM, swift-testing, SwiftUI, zsh installer scripts, Python 3 for the benchmark harness. **One third-party dependency: FluidAudio, WhisperMeet target only.**
 
 **Spec:** [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) and [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) (created in Task 1).
 
@@ -15,7 +15,7 @@
 ## Global constraints
 
 - **WhisperCore purity.** Every file in `Sources/WhisperCore/` imports only `Foundation`. No `CryptoKit`, `AVFoundation`, `AppKit`, `SwiftUI`, `CoreML`, or any third-party runtime. The single sanctioned exception (`Darwin` in `WarmWhisperDictationEngine.swift`) is not extended.
-- **No new SwiftPM dependency.** `Package.swift` gains no `dependencies:` array.
+- **One third-party SwiftPM dependency, authorised 2026-09-13.** FluidAudio, pinned `exact: "0.15.7"`, on the **WhisperMeet target only**; `WhisperCore` keeps its Foundation-only rule. The original constraint was "no new SwiftPM dependency"; the product owner lifted it after sherpa-onnx failed real-meeting validation and FluidAudio passed the same test. The manifest moved to swift-tools 6.2 solely so `traits: []` can keep FluidAudio's unrelated NemoTextProcessing Rust staticlib out of the shipped binary — verified: 0 `rustfst`, 0 `NemoTextProcessing`, 0 `flate2` symbols in the release executable. See `DIARIZATION_RUNTIME_DECISION.md` §1.
 - **`TranscriptSegment.speaker` stays `nil`.** Never write a label into it. `TranscriptFormatter.isEdited` compares `transcriptText` against `TranscriptFormatter.timestamped(segments)`, so a populated `speaker` would mark every existing meeting user-edited; `speaker` is also part of `TranscriptSegment.id`, which is SwiftUI's row identity.
 - **No label leaves the default paths.** `transcriptText`, `notes.md`, Copy, search, the nine existing export formats, local summaries, and the Claude request stay label-free. Only the two new labeled formats carry them.
 - **No `meetings.json` schema change and no new `MeetingStatus` case.**
