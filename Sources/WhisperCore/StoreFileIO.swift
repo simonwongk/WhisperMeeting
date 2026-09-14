@@ -86,6 +86,9 @@ public struct StoreFileIO: Sendable {
     public var fingerprint: @Sendable (Data) -> String
     public var fileExists: @Sendable (URL) -> Bool
 
+    // Design §2.3 also lists `openLease`. It is deferred, not forgotten: its return type is
+    // `LibraryWriterLeaseHandle`, which Task 9 introduces. It lands with that task.
+
     public init(
         read: @escaping @Sendable (URL, StoreWritePhase) throws -> Data,
         writeAtomically: @escaping @Sendable (Data, URL, StoreWritePhase) throws -> Void,

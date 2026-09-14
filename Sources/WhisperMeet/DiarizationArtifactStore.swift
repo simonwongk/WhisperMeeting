@@ -108,7 +108,7 @@ enum DiarizationArtifactStore {
             // The sibling's name travels with the outcome too: that copy is the user's only route
             // back to the aliases they typed, and a file they cannot name is a file they will never
             // find in a folder they did not know they had.
-            return .unavailable(.corrupt(quarantinedAs: quarantine(url, using: fileManager)))
+            return .unavailable(.corrupt(quarantinedAs: quarantine(url)))
         }
     }
 
@@ -197,7 +197,7 @@ enum DiarizationArtifactStore {
     /// Returns the sibling's name so the outcome can carry it; nil when nothing was copied, which
     /// on this path means either "no file" or "the copy failed" — indistinguishable, and deliberately
     /// so: on the load path nothing is being overwritten, so neither changes what the caller does.
-    private static func quarantine(_ url: URL, using fileManager: FileManager) -> String? {
+    private static func quarantine(_ url: URL) -> String? {
         try? StoreQuarantine.preserve(fileAt: url)
     }
 }

@@ -14,6 +14,10 @@ import Testing
 
 /// Wraps `.live` and injects only the *error*, so real bytes land in a real temp directory and each
 /// case can then assert the true on-disk state afterwards.
+///
+/// Deliberately module-scoped while every other helper in this file is `private`:
+/// `BackupJSONStoreTransactionTests` and `BackupJSONStoreRecoveryTests` both drive the write
+/// protocol through it. A tidy-up that tightens this to `private` breaks both suites.
 final class ScriptedStoreIO: @unchecked Sendable {
     private let lock = NSLock()
     private let failingPhase: StoreWritePhase?

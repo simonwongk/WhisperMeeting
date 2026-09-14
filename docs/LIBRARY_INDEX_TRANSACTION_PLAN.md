@@ -236,8 +236,19 @@ or unknown-`formatVersion` all mean *no ledger*, and the store then behaves exac
 - Test: `Tests/WhisperCoreTests/StoreHistoryTests.swift`
 
 **Interfaces:**
-- Produces: `StoreHistory` with `record(_:generation:fingerprint:io:)`, `retained()` →
-  `[RetainedGeneration]`, `prune(byteBudget:anchors:)`, `value(ofGeneration:)`.
+- Produces: `StoreHistory` with `record(stagedAt:generation:fingerprint:)`, `retained(ledger:)` →
+  `[RetainedGeneration]`, `entries()`, `data(of:)`, `conflictBranchCount()`, and
+  `prune(policy:now:recordCounts:writtenAt:liveFingerprints:)`.
+
+> **Corrected 2026-09-14 after review (F238).** This block previously read
+> `record(_:generation:fingerprint:io:)`, `retained()`, `prune(byteBudget:anchors:)`,
+> `value(ofGeneration:)`. What shipped differs on four counts, each deliberate:
+> `io` is injected once at `init` rather than per call (Task 3's seam); `retained(ledger:)` takes
+> the ledger because the record counts and times live there; `prune` takes the whole
+> `RetentionPolicy` plus an **injected `now`**, which is what makes the age anchors testable
+> without sleeping; and the reader is `data(of:)`, returning verified bytes for one
+> `RetainedGeneration`, because the caller already holds the entry it picked from the list.
+> `entries()` is the stat-only listing the save path uses — see the note under Step 3.
 
 **The load-bearing rule, verified on this machine (design §11): never `link(2)`.** A hard link makes
 the retained generation an alias of the live file, so `cp good.json meetings.json`, a shell redirect,
@@ -264,7 +275,18 @@ func retainedGenerationIsIndependentOfTheLiveFile() throws {
 - [ ] **Step 2: Run and watch it fail** if implemented with `link(2)`; this test is why the design
       forbids it.
 - [ ] **Step 3: Implement with `copyItem` and the §7 retention policy.**
+
+      Pruning reads names, sizes and mtimes only — `entries()`, one `stat` per file. It must never
+      call `retained()`, which reads and re-fingerprints every generation: on the save path that
+      was ~8 MB of reads per keystroke at three generations, and it took the release save cost from
+      23.2 ms to 68.1 ms at 2.6 MB. The mtime from that same `stat` is also what keeps the age
+      anchors working when there is no ledger (F234).
+
 - [ ] **Step 4: Write and run the burst test** — 50 rapid saves must not evict the anchors.
+
+      State the budget explicitly and assert that something was actually pruned. With the default
+      256 MB budget and small fixtures nothing is ever evicted, so a retention test written without
+      those two precautions passes with the rule it is testing deleted (F233).
 - [ ] **Step 5: Commit** — `feat(storage): content-addressed retained generations (F190)`.
 
 ---
