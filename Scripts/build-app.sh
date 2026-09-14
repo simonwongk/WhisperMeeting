@@ -25,6 +25,9 @@ cp ".build/release/WhisperMeet" "$app_dir/Contents/MacOS/WhisperMeet"
 # distribution-only crash if it ever does (F216).
 for resource_bundle in .build/release/*.bundle; do
   [[ -e "$resource_bundle" ]] || continue
+  # Remove any previous copy first: codesign leaves the bundle's files read-only, so a plain
+  # `cp -R` over an existing one fails with "Permission denied" on the second build.
+  rm -rf "$app_dir/Contents/Resources/${resource_bundle:t}"
   cp -R "$resource_bundle" "$app_dir/Contents/Resources/"
 done
 cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
