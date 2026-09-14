@@ -1278,6 +1278,7 @@ struct SettingsView: View {
                     .disabled(
                         model.isInstallingRuntime
                             || model.isInstallingQwenRuntime
+                            || model.isInstallingDiarizationRuntime
                             || model.hasActiveTranscription
                             || model.isMicrophoneBusy
                             || model.isImporting
@@ -1311,6 +1312,7 @@ struct SettingsView: View {
                         .disabled(
                             model.isInstallingRuntime
                                 || model.isInstallingQwenRuntime
+                                || model.isInstallingDiarizationRuntime
                                 || model.hasActiveTranscription
                                 || model.isMicrophoneBusy
                                 || model.isImporting
@@ -1329,6 +1331,52 @@ struct SettingsView: View {
                     Text("Qwen3-ASR requires an Apple-silicon Mac; Whisper remains available here.")
                         .foregroundStyle(.secondary)
                 }
+                // F220: the optional speaker-analysis model, mirroring the Qwen row above — same
+                // architecture gate, same Install / Repair or Update verb, same compound disabled
+                // rule, same indeterminate progress line. It is separate from transcription because
+                // it is optional, post-meeting, and nothing else depends on it.
+                if AppModel.diarizationIsSupportedOnCurrentMac {
+                    HStack {
+                        Label(
+                            model.isDiarizationInstalled
+                                ? "Speaker analysis ready"
+                                : "Speaker analysis not installed",
+                            systemImage: model.isDiarizationInstalled
+                                ? "checkmark.circle.fill"
+                                : "arrow.down.circle"
+                        )
+                        .foregroundStyle(model.isDiarizationInstalled ? .green : .orange)
+                        Spacer()
+                        Button(model.isDiarizationInstalled ? "Repair or Update" : "Install Speaker Analysis") {
+                            model.installSpeakerDiarization()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(
+                            model.isInstallingRuntime
+                                || model.isInstallingQwenRuntime
+                                || model.isInstallingDiarizationRuntime
+                                || model.hasActiveTranscription
+                                || model.isRunningAuxiliaryEngine
+                                || model.isMicrophoneBusy
+                                || model.isImporting
+                                || dictation.isActive
+                        )
+                    }
+                    if model.isInstallingDiarizationRuntime {
+                        ProgressView(SpeakerAnalysisCopy.installProgressLabel)
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
+                    } else if let message = model.diarizationInstallationMessage {
+                        Text(message)
+                            .foregroundStyle(.secondary)
+                            .transition(.gentleFade(reduceMotion: reduceMotion))
+                    }
+                    Text(SpeakerAnalysisCopy.installDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(SpeakerAnalysisCopy.appleSiliconOnly)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Audio and transcripts stay on this Mac. No account, API key, or usage payment is required.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1342,6 +1390,8 @@ struct SettingsView: View {
             .animation(reduceMotion ? nil : .uiSpring, value: model.installationMessage)
             .animation(reduceMotion ? nil : .uiSpring, value: model.isInstallingQwenRuntime)
             .animation(reduceMotion ? nil : .uiSpring, value: model.qwenInstallationMessage)
+            .animation(reduceMotion ? nil : .uiSpring, value: model.isInstallingDiarizationRuntime)
+            .animation(reduceMotion ? nil : .uiSpring, value: model.diarizationInstallationMessage)
 
             Section(header: Label("Meeting library", systemImage: "books.vertical")) {
                 HStack {
@@ -1508,6 +1558,7 @@ struct SettingsView: View {
                                 model.isInstallingSummarizer
                                     || model.isInstallingRuntime
                                     || model.isInstallingQwenRuntime
+                                    || model.isInstallingDiarizationRuntime
                                     || model.hasActiveTranscription
                                     || model.isMicrophoneBusy
                                     || model.isImporting
@@ -2175,6 +2226,9 @@ private struct TranscriptDetailView: View {
     let meetingID: UUID
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
+    // F220: the disclosure shown before every speaker analysis — the inverse of `confirmSummarize`,
+    // which warns that content leaves this Mac.
+    @State private var confirmDiarization = false
     @AppStorage("summaryStyle") private var summaryStyle: SummaryStyle = .balanced
     // F178: the meeting template reshapes the summary's structure (independent of the length/emphasis
     // that `summaryStyle` controls). Persisted like the style; local-only.
@@ -2298,6 +2352,15 @@ private struct TranscriptDetailView: View {
                 Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
             } message: {
                 Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
+            }
+            // F220: the same shape as the Claude confirmation above, stating the opposite boundary —
+            // the analysis stays on this Mac — and then saying plainly what the result is worth. The
+            // copy is pinned by `SpeakerAnalysisCopyTests`; nothing about it is decided here.
+            .alert(SpeakerAnalysisCopy.disclosureTitle, isPresented: $confirmDiarization) {
+                Button("Cancel", role: .cancel) {}
+                Button("Analyze") { model.requestSpeakerDiarization(for: meetingID) }
+            } message: {
+                Text(SpeakerAnalysisCopy.disclosureMessage)
             }
             .sheet(isPresented: Binding(
                 get: { vocabularySuggestions != nil },
@@ -2740,9 +2803,22 @@ private struct TranscriptDetailView: View {
                         exportMeetingNotes(meeting: meeting)
                     }
                     Divider()
-                    ForEach(TranscriptExportFormat.allCases, id: \.self) { format in
+                    // F220: the NINE ordinary formats, listed explicitly by `standardFormats` rather
+                    // than by `allCases`. A labeled format added to the enum must never opt itself
+                    // into this list — a speaker label reaching an ordinary export is the leak this
+                    // whole feature is built to avoid.
+                    ForEach(TranscriptExportFormat.standardFormats, id: \.self) { format in
                         Button(format.displayName) {
                             exportTranscript(meeting: meeting, format: format)
+                        }
+                    }
+                    // Offered only when there are labels to carry: no analysis, a stale one, or a
+                    // single distinguished voice all produce no request, and the action is absent
+                    // rather than exporting a file identical to the ordinary transcript.
+                    if model.speakerLabeledExportRequest(for: meetingID) != nil {
+                        Divider()
+                        Button(TranscriptExportFormat.labeledMarkdown.displayName) {
+                            exportSpeakerLabeledTranscript(meeting: meeting)
                         }
                     }
                 }
@@ -2826,7 +2902,15 @@ private struct TranscriptDetailView: View {
     /// descriptive labels; when something is disabled, a plain-language footnote in the same menu
     /// says why instead of leaving a mystery-gray row.
     private func improveMenu(_ meeting: MeetingRecord) -> some View {
-        Menu {
+        // F220: Apple-silicon only, like Qwen3-ASR and local summaries — on Intel the entry is absent
+        // and the Settings row says why. The reason is resolved once here rather than inside
+        // `.disabled` and again in the footnote, so the greyed-out row and the sentence explaining it
+        // can never disagree.
+        let offersSpeakerAnalysis = AppModel.diarizationIsSupportedOnCurrentMac
+        let speakerReason = offersSpeakerAnalysis
+            ? model.speakerAnalysisUnavailability(for: meeting)
+            : nil
+        return Menu {
             Button {
                 suggestVocabulary(meeting)
             } label: {
@@ -2893,7 +2977,20 @@ private struct TranscriptDetailView: View {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
             .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited)
-            if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty {
+            // F220: optional, post-meeting, entirely local speaker-turn analysis. The disclosure
+            // always comes first — this button opens it and nothing else, so no analysis can start
+            // without the user having read what the labels are and are not.
+            if offersSpeakerAnalysis {
+                Divider()
+                Button {
+                    confirmDiarization = true
+                } label: {
+                    Label(SpeakerAnalysisCopy.menuItemTitle, systemImage: "person.wave.2")
+                }
+                .disabled(speakerReason != nil)
+            }
+            if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
+                || speakerReason != nil {
                 Divider()
                 if meeting.isTranscriptEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
@@ -2904,12 +3001,15 @@ private struct TranscriptDetailView: View {
                 if store.replacementRules.isEmpty {
                     Text("Replacement rules (exact heard → preferred) are added in the Vocabulary tab.")
                 }
+                if let speakerReason {
+                    Text(SpeakerAnalysisCopy.footnote(for: speakerReason))
+                }
             }
         } label: {
             Label("Improve", systemImage: "sparkles")
         }
         .fixedSize()
-        .help("Tools that improve this transcript's accuracy: vocabulary suggestions, spelling corrections, and a second engine's comparison. Everything runs on this Mac.")
+        .help("Tools that work on this transcript: vocabulary suggestions, spelling corrections, a second engine's comparison, and optional anonymous speaker-turn analysis. Everything runs on this Mac.")
     }
 
     /// Ongoing improvement work surfaced as a labeled status line under the header instead of a
@@ -3037,6 +3137,23 @@ private struct TranscriptDetailView: View {
             TranscriptExporter.render(format, request),
             suggestedName: current.title,
             fileExtension: format.fileExtension
+        )
+    }
+
+    /// The one export that carries the anonymous speaker overlay (F220). A separate, named action —
+    /// never a variant of an ordinary format — and it asks `AppModel` for the payload, so the labels
+    /// and the rows are assembled in the single place allowed to put them in an export request.
+    private func exportSpeakerLabeledTranscript(meeting: MeetingRecord) {
+        guard let request = model.speakerLabeledExportRequest(for: meeting.id) else {
+            // Only reachable if the analysis was cleared or went stale between the menu opening and
+            // the click. Say so rather than writing an unlabeled file under a labeled name.
+            model.alertMessage = "There are no speaker labels to export for this meeting. Your transcript is unchanged."
+            return
+        }
+        saveExport(
+            TranscriptExporter.render(.labeledMarkdown, request),
+            suggestedName: "\(request.title) with Speaker Labels",
+            fileExtension: TranscriptExportFormat.labeledMarkdown.fileExtension
         )
     }
 

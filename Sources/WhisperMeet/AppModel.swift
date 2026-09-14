@@ -780,6 +780,64 @@ final class AppModel: ObservableObject {
         meeting.status == .completed && isNativeRecording(meeting) && hasUsableTimings(meeting)
     }
 
+    /// Why the "Analyze Speaker Turns…" entry cannot run for this meeting right now, or nil when it
+    /// can. The menu disables itself on this and prints `SpeakerAnalysisCopy.footnote(for:)` beneath
+    /// the divider, so a greyed-out row always says why (F220).
+    ///
+    /// The order is what a person can act on, NOT the order `requestSpeakerDiarization` checks in.
+    /// Facts about this meeting never change, so they are said first; an install is a one-time
+    /// action; the busy states clear on their own and are said last. Those guards remain the
+    /// authority — this decides only what the menu shows, and every refusal is re-made there with an
+    /// alert naming the action attempted.
+    func speakerAnalysisUnavailability(for meeting: MeetingRecord) -> SpeakerAnalysisUnavailability? {
+        if meeting.status != .completed || !isNativeRecording(meeting) { return .unsupportedRecording }
+        if !hasUsableTimings(meeting) { return .noTimestamps }
+        // Said before the model check: installing 21.6 MB to reach a library that cannot save the
+        // result is a download spent for nothing (the F187 rule, applied to the entry point).
+        if store.isDegraded { return .libraryReadOnly }
+        if isInstallingDiarizationRuntime { return .installing }
+        // The PUBLISHED flag, not the `isDiarizationModelInstalled` probe: this is read on every
+        // render of the transcript detail view, and that probe stats 21 model files. `refreshRuntime`
+        // maintains the flag at launch and after an install; `requestSpeakerDiarization` re-probes the
+        // disk for real, so a model deleted behind the app's back still fails honestly there rather
+        // than being missed here (the F160 rule — no filesystem work inside a view body).
+        if !isDiarizationInstalled { return .modelNotInstalled }
+        if diarizationRunningID != nil { return .analyzing }
+        if hasActiveTranscription || isRunningAuxiliaryEngine || isDictationActive()
+            || isInstallingRecognitionRuntime || isMicrophoneBusy || isImporting {
+            return .busy
+        }
+        return nil
+    }
+
+    /// The payload for the Export menu's labeled action, or nil when there is nothing to label —
+    /// no analysis, a stale one, or a single distinguished voice. The menu shows the action only
+    /// when this is non-nil, so "export with speaker labels" is never offered over a file that would
+    /// come out identical to the ordinary transcript (F220).
+    ///
+    /// Built here rather than in the view because this is the ONE place labels are allowed to meet an
+    /// export request: `speakerLabels`/`speakerRows` are read by the two labeled formats and by
+    /// nothing else, and the nine standard formats render the very same request label-free
+    /// (`labeledExportIsOfferedOnlyOnceAnOverlayExists` pins both halves).
+    func speakerLabeledExportRequest(for id: UUID) -> TranscriptExportRequest? {
+        guard let meeting = store.meeting(id: id) else { return nil }
+        // `speakerOverlay` already withholds a stale result; `clusterIDs` is empty for the
+        // single-cluster case, whose rows are all `.unlabeled`.
+        guard let presentation = speakerOverlay(for: id), !presentation.clusterIDs.isEmpty else {
+            return nil
+        }
+        return TranscriptExportRequest(
+            title: meeting.title,
+            languageCode: meeting.languageCode,
+            durationSeconds: meeting.duration,
+            transcriptText: meeting.transcriptText,
+            segments: meeting.segments,
+            markers: meeting.orderedMarkers,
+            speakerLabels: presentation.aliases,
+            speakerRows: presentation.rows
+        )
+    }
+
     private func isNativeRecording(_ meeting: MeetingRecord) -> Bool {
         meeting.source == nil
             && Self.nativeRecordingFileNames.contains(
