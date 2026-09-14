@@ -67,12 +67,59 @@ with wave.open(destination, "wb") as out:
 print("  -> %s (%.0f min)" % (destination, repeats * seconds / 60))
 PY
 
+  # --- 3. Genuine simultaneous speech ----------------------------------------------------------
+  # Not a UI state — a claim about the runtime. F223 proposed deriving `.overlap` by splitting
+  # intersecting raw turns, which assumes the runtime reports simultaneity. This file settles it:
+  # two voices talking at once, with the overlap window printed so the answer is checkable.
+  print "Generating the overlapping-speech probe fixture…"
+  say -v Samantha -o "$work/spk-a.aiff" \
+    "I want to walk through the migration plan before anyone commits to a date, because the \
+     rollback path is the part that worries me and I do not think we have written it down anywhere \
+     yet. If the index write fails halfway we need to know exactly what state the library is in."
+  say -v Daniel -o "$work/spk-b.aiff" \
+    "The numbers from last quarter are not comparable to these, and I keep saying that in every \
+     meeting. We changed how we count active sessions in March, so anything before March is a \
+     different metric wearing the same name. Please stop putting them on the same chart."
+  /usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 "$work/spk-a.aiff" "$work/spk-a.wav"
+  /usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 "$work/spk-b.aiff" "$work/spk-b.wav"
+
+  python3 - "$work/spk-a.wav" "$work/spk-b.wav" "$target/probe-overlap.wav" <<'PY'
+import sys, wave, array
+
+def read(path):
+    with wave.open(path) as source:
+        assert source.getnchannels() == 1 and source.getsampwidth() == 2
+        assert source.getframerate() == 16000
+        return array.array("h", source.readframes(source.getnframes()))
+
+a, b = read(sys.argv[1]), read(sys.argv[2])
+rate = 16000
+solo = 6 * rate                       # A alone long enough to be clustered on its own first
+both = min(len(a) - solo, len(b))     # then both at once, each halved so the sum cannot clip
+
+out = array.array("h", a[:solo])
+for i in range(both):
+    out.append(max(-32768, min(32767, a[solo + i] // 2 + b[i] // 2)))
+out.extend(b[both:])                  # then B alone, so B is clusterable on its own too
+
+with wave.open(sys.argv[3], "wb") as destination:
+    destination.setnchannels(1); destination.setsampwidth(2); destination.setframerate(rate)
+    destination.writeframes(out.tobytes())
+
+print("  -> %s" % sys.argv[3])
+print("     A alone 0.0-%.1fs | BOTH SPEAKING %.1f-%.1fs | B alone %.1f-%.1fs"
+      % (solo / rate, solo / rate, (solo + both) / rate, (solo + both) / rate, len(out) / rate))
+PY
+
   print ""
   print "Import both with File > Import Recordings… , then:"
   print "  ui-single-voice.wav  — transcribe it, then Analyze Speaker Turns."
   print "                         Expect NO labels and \"Only one voice could be told apart\"."
   print "  ui-long-cancel.wav   — transcribe it, then Analyze and press Cancel mid-run."
   print "                         Expect the transcript intact and no diarization.json written."
+  print ""
+  print "probe-overlap.wav is not a UI fixture: it answers whether the runtime reports simultaneous"
+  print "speech at all. Measured 2026-09-13 — it does not. See docs/DIARIZATION_SCORECARD.md."
   print ""
   print "For the no-transcript state: import either file and do NOT transcribe it. The Improve"
   print "menu's Analyze item must be absent or disabled, with a footnote saying why."

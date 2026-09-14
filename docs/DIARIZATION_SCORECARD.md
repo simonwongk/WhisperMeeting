@@ -350,7 +350,34 @@ installer, and nothing above the seam moved.
    and the quality gate stays unevaluable.
 2. **Re-derive the clustering threshold on it (F225).** 0.6 is upstream's value, not ours, and a
    sweep point now costs 0.2 s.
-3. **Make the overlap veto reachable (F223).** FluidAudio reported no intersecting turns in 202
-   turns, so simultaneous speech still arrives unmarked and can be named confidently.
+3. **Overlap detection is not available from this runtime at all (F223 closed invalid; F232).**
+   Measured directly rather than inferred from a meeting that may simply have had no overlap: a
+   fixture with 8.1 s of *certain* simultaneous speech
+   (`Scripts/bench/diarization/make-ui-fixtures.sh audio` → `probe-overlap.wav`; speaker A alone
+   0.0–6.0 s, **both talking 6.0–14.1 s**, speaker B alone 14.1–20.9 s) returns:
+
+   ```text
+   PROBE audio=20.9s turns=3 speakers=2
+   PROBE turn c0  0.00-14.06 speech
+   PROBE turn c1 14.48-18.25 speech
+   PROBE turn c1 18.59-20.90 speech
+   PROBE intersections=0
+   ```
+
+   Both speakers are found, so this is not a clustering failure. The entire overlap window is
+   attributed to c0 as ordinary confident speech, and **no two turns intersect** — the pyannote
+   community-1 pipeline resolves simultaneity to a single winner before `OfflineDiarizerManager`
+   returns. F223's proposed fix (split intersecting raw turns in `densify`) therefore cannot fire:
+   there is nothing to split, and implementing it would add live-looking dead code one layer below
+   the dead veto it was meant to feed.
+
+   This also makes the risk concrete rather than theoretical: 6.0–14.1 s would be labelled
+   "Speaker 1" with full confidence while two people are talking. That is the persuasive wrong
+   label `SpeakerOverlay` exists to prevent, and neither the coverage rule nor the margin rule nor
+   single-cluster suppression can see it.
+
+   FluidAudio does ship a second architecture, **Sortformer** (`OfflineSortformerDiarizer`,
+   `DiarizerTimeline`), whose per-speaker activity tracks are structurally capable of representing
+   two speakers active at once. Whether it is worth adopting is F232, not a change to make silently.
 4. **Floor-configuration and long-recording runs.** 615.5 MiB at 35 minutes is comfortable; nothing
    here measured 90 minutes or an 8 GB machine, and the system gate names both.
