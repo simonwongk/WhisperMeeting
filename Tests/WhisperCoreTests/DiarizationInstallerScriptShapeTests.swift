@@ -263,7 +263,9 @@ func diarizationInstallerScriptAndNoticesAreBundled() throws {
     ))
     #expect(build.contains(#"chmod +x "$app_dir/Contents/Resources/setup-speaker-diarization.sh""#))
 
-    let signing = try #require(build.range(of: "codesign"))
+    // Match the actual invocation, not the word: a comment explaining a signing pitfall would
+    // otherwise register as "signing happens here" and invert the whole ordering check.
+    let signing = try #require(build.range(of: "codesign --force"))
     #expect(scriptCopy.upperBound < signing.lowerBound,
             "a resource copied after codesign invalidates the signature")
     #expect(noticesCopy.upperBound < signing.lowerBound)
