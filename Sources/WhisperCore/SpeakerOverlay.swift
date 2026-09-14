@@ -203,17 +203,23 @@ public enum SpeakerOverlay {
     /// cluster must clear both the coverage floor and the margin over the runner-up.
     ///
     /// **The overlap veto is implemented and tested, and is currently UNREACHABLE IN PRODUCTION.**
-    /// The selected runtime does not report overlap: it reports one speaker per interval, so
-    /// `SpeakerTurns.densify` — the only production constructor of a `SpeakerTurn` — has
-    /// no simultaneity to copy and produces `.speech`/`.uncertain` only. Nothing outside test
-    /// fixtures builds a `.overlap` turn, so this branch never fires on real output. Intersecting
-    /// same-time turns are therefore NOT currently marked: two people talking at once arrive as two
-    /// intersecting `.speech` intervals, pass through unmarked, and the rule below may then name one
-    /// of them confidently — the precise case the veto exists to stop. Deriving `.overlap` from
-    /// intersecting raw turns is interval splitting with its own failure modes, so it is deferred to
-    /// F223 rather than improvised here; `overlayVetoIsUnreachableFromRuntimeOutput` pins the gap so
-    /// it cannot be forgotten, and `docs/DIARIZATION_RUNTIME_DECISION.md` §8 carries it as a
-    /// residual risk.
+    /// The selected runtime does not report overlap, and this was measured rather than assumed.
+    /// Given audio with 8.1 s of certain simultaneous speech
+    /// (`Scripts/bench/diarization/make-ui-fixtures.sh audio` → `probe-overlap.wav`) it returns
+    /// three turns and **zero intersections**, attributing the entire overlap window to one speaker
+    /// as ordinary confident speech. Both speakers are found, so it is not a clustering failure:
+    /// pyannote community-1 resolves simultaneity to a single winner internally.
+    ///
+    /// So two people talking at once do **not** arrive as two intersecting `.speech` intervals —
+    /// they arrive as one interval belonging to whichever voice won — and the rule below then names
+    /// that voice confidently over a stretch where both were speaking. That is the precise case the
+    /// veto exists to stop, and no amount of work in `SpeakerTurns.densify` can restore information
+    /// the runtime discarded before returning. (F223 proposed exactly that and was closed invalid on
+    /// this evidence.) Fixing it means a runtime that can represent two speakers at once — FluidAudio
+    /// ships Sortformer, whose per-speaker activity tracks can — which is F232.
+    ///
+    /// `overlayVetoIsUnreachableFromRuntimeOutput` pins the gap so it cannot be forgotten, and
+    /// `docs/DIARIZATION_SCORECARD.md` carries the measurement.
     private static func label(
         coverageByCluster: [Int: TimeInterval],
         overlapSeconds: TimeInterval,

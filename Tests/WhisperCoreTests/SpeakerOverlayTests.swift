@@ -85,16 +85,25 @@ func overlayVetoesOnOverlap() {
     #expect(rows == [SpeakerOverlayRow(segmentIndex: 0, label: .overlapping)])
 }
 
-@Test("The overlap veto is unreachable from runtime output, so simultaneous speech is named (F223)")
+@Test("The overlap veto is unreachable from runtime output, so simultaneous speech is named (F232)")
 func overlayVetoIsUnreachableFromRuntimeOutput() {
     // The test above is the PRD's veto — "an overlap anywhere in the segment vetoes a name" — and it
     // passes only because its fixture hand-builds a `.overlap` turn. Nothing in the shipped pipeline
-    // ever does: `SpeakerTurns.densify` is the only production constructor of a
-    // `SpeakerTurn`, the runtime reports one speaker per interval and never reports simultaneity, so
-    // densify has nothing to copy and emits `.speech`/`.uncertain` only. F223 tracks deriving
-    // `.overlap` from intersecting raw turns; until it lands the veto is dead code in production.
+    // ever does, and the reason is a layer lower than it looks.
     //
-    // This test RECORDS that gap rather than approving it. When F223 lands it goes red — that is the
+    // F223 proposed deriving `.overlap` by splitting intersecting raw turns. That was closed invalid
+    // on measurement: given audio with 8.1 s of certain simultaneous speech
+    // (`Scripts/bench/diarization/make-ui-fixtures.sh audio` → `probe-overlap.wav`) the runtime
+    // returns three turns and ZERO intersections, attributing the whole overlap window to one
+    // speaker as ordinary confident speech. Both speakers are found, so it is not a clustering
+    // failure — pyannote community-1 resolves simultaneity to a single winner before
+    // `OfflineDiarizerManager` returns. There is nothing for `densify` to split.
+    //
+    // So this file cannot be fixed from `densify`, and F232 tracks the real question: whether to
+    // adopt a runtime that can represent two speakers at once (FluidAudio ships Sortformer, whose
+    // per-speaker activity tracks can) or to state the limitation in the product copy.
+    //
+    // This test RECORDS the gap rather than approving it. When F232 lands it goes red — that is the
     // alarm, and the answer is to flip the expectations here and amend both
     // `docs/SPEAKER_DIARIZATION_PLAN.md` and the veto's doc comment, never to delete it.
     let raw = [
