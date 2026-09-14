@@ -367,6 +367,24 @@ final class AppModel: ObservableObject {
         isInstallingRuntime || isInstallingQwenRuntime
     }
 
+    /// Whether ANY model install is in flight. Every installer's own admission guard asks this one
+    /// question (F228).
+    ///
+    /// The narrower `isInstallingRecognitionRuntime` above still exists because the transcription
+    /// and recording paths genuinely only care about Whisper and Qwen — a summarizer download must
+    /// not block a recording. Installers are different: two of them at once compete for network and
+    /// disk, and both call `refreshRuntime()` when they finish, so the slower one reports its result
+    /// against state the faster one has already replaced.
+    ///
+    /// One property rather than a clause added to each guard, because the asymmetry this replaced
+    /// was built exactly that way: `installSpeakerDiarization` listed all four flags while
+    /// `installLocalWhisper` and `installQwenASR` listed only the recognition pair, so neither of
+    /// them refused during a speaker-analysis install — or, unnoticed when this was filed, during a
+    /// summarizer install either. A flag added here in future is wrong in one place, not four.
+    var isInstallingAnyRuntime: Bool {
+        isInstallingRecognitionRuntime || isInstallingSummarizer || isInstallingDiarizationRuntime
+    }
+
     /// Wires the reverse of dictation's own meeting-active guard: lets `startRecording()` refuse to
     /// start while dictation currently owns the microphone. See `AppEntry`'s `.task` for the call site.
     func configureDictationGuard(_ isActive: @escaping () -> Bool) {
@@ -1492,7 +1510,7 @@ final class AppModel: ObservableObject {
     }
 
     func installLocalWhisper() {
-        guard !isInstallingRecognitionRuntime,
+        guard !isInstallingAnyRuntime,
               !isMicrophoneBusy,
               !isImporting,
               !hasActiveTranscription,
@@ -1530,7 +1548,7 @@ final class AppModel: ObservableObject {
     }
 
     func installQwenASR() {
-        guard !isInstallingRecognitionRuntime,
+        guard !isInstallingAnyRuntime,
               !isMicrophoneBusy,
               !isImporting,
               !hasActiveTranscription,
@@ -1575,8 +1593,7 @@ final class AppModel: ObservableObject {
     /// `installQwenASR`: resolve the bundled installer, run it off-actor exporting the chosen model
     /// repository, then refresh and report. The previous model is preserved on failure.
     func installSummarizer() {
-        guard !isInstallingRecognitionRuntime,
-              !isInstallingSummarizer,
+        guard !isInstallingAnyRuntime,
               !isMicrophoneBusy,
               !isImporting,
               !hasActiveTranscription,
@@ -1633,9 +1650,7 @@ final class AppModel: ObservableObject {
     /// The guard also refuses while an analysis is running: the installer swaps the very binary that
     /// run is executing.
     func installSpeakerDiarization() {
-        guard !isInstallingRecognitionRuntime,
-              !isInstallingSummarizer,
-              !isInstallingDiarizationRuntime,
+        guard !isInstallingAnyRuntime,
               diarizationRunningID == nil, // never swap the runtime under a running analysis
               !isMicrophoneBusy,
               !isImporting,

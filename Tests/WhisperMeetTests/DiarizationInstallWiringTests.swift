@@ -276,3 +276,99 @@ func reclaimDiarizationRunsAtStartupBeforeTheRuntimeProbe() async throws {
     #expect(spy.events.contains("probe"))
     #expect(model.isDiarizationInstalled)            // restored runtime, visible on this same launch
 }
+
+// F228 — the reverse of the guard above. `installSpeakerDiarization` refuses while any other
+// install runs, but the other three never learned about it: `installLocalWhisper` and
+// `installQwenASR` guard only `isInstallingRecognitionRuntime` (Whisper + Qwen), so they would
+// start on top of a running speaker-analysis install — and, as it turns out, on top of a running
+// summarizer install too, which the ticket did not notice. Two installers then compete for network
+// and disk and both call `refreshRuntime()` on completion, so the slower one reports its result
+// against state the faster one has already replaced.
+//
+// The Settings row's `.disabled` currently hides this, which is exactly why it needs a test: the
+// hole reappears the moment a menu command or a first-run flow calls an installer without
+// repeating the button's condition.
+//
+// How a refusal is observed without a seam on the other three installers: in the test bundle
+// `Bundle.main.url(forResource:)` finds no installer script, so an installer that gets PAST its
+// busy guard sets `alertMessage` to "…installer is missing". A guard that refuses returns before
+// that line. So `alertMessage == nil` means the request was refused, and the control at the end
+// proves the assertion is not vacuous by letting the same call through.
+
+@MainActor
+@Test("The other three model installers refuse while speaker analysis is installing (F228)")
+func otherInstallersRefuseWhileTheDiarizationInstallIsRunning() async throws {
+    let fixture = try makeInstallFixture()
+    defer {
+        try? FileManager.default.removeItem(at: fixture.storeRoot)
+        try? FileManager.default.removeItem(at: fixture.runtimeParent)
+    }
+    let model = fixture.model
+    let spy = InstallSpy()
+    let gate = InstallSpy()
+    model.runDiarizationInstaller = { script, runtime in
+        spy.record(script: script, runtime: runtime)
+        while !gate.isInstalled { await Task.yield() }
+    }
+
+    model.installSpeakerDiarization()
+    await settle { spy.calls.count == 1 }
+    #expect(model.isInstallingDiarizationRuntime)
+
+    model.installLocalWhisper()
+    await settle()
+    #expect(model.alertMessage == nil, "installLocalWhisper ran while speaker analysis was installing")
+    #expect(!model.isInstallingRuntime)
+
+    model.installQwenASR()
+    await settle()
+    #expect(model.alertMessage == nil, "installQwenASR ran while speaker analysis was installing")
+    #expect(!model.isInstallingQwenRuntime)
+
+    model.installSummarizer()
+    await settle()
+    #expect(model.alertMessage == nil, "installSummarizer ran while speaker analysis was installing")
+    #expect(!model.isInstallingSummarizer)
+
+    #expect(spy.calls.count == 1) // and none of them disturbed the install that was already running
+
+    gate.markInstalled()
+    await settle { !model.isInstallingDiarizationRuntime }
+
+    // The control. With nothing in flight the same call goes through and reaches the missing-script
+    // branch, so the three assertions above were about the guard and not about a call that could
+    // never have done anything.
+    model.installLocalWhisper()
+    await settle()
+    #expect(model.alertMessage?.contains("installer is missing") == true)
+}
+
+// F228 — the same hole in the other direction, and the reason the fix is one shared property rather
+// than three added clauses. `isInstallingAnyRuntime` is the single question every installer asks;
+// a flag added to `AppModel` in future is wrong in one place instead of three.
+
+@MainActor
+@Test("One property answers whether any runtime install is in flight (F228)")
+func installingAnyRuntimeCoversEveryInstallFlag() async throws {
+    let fixture = try makeInstallFixture()
+    defer {
+        try? FileManager.default.removeItem(at: fixture.storeRoot)
+        try? FileManager.default.removeItem(at: fixture.runtimeParent)
+    }
+    let model = fixture.model
+    #expect(!model.isInstallingAnyRuntime)
+
+    let gate = InstallSpy()
+    model.runDiarizationInstaller = { _, _ in while !gate.isInstalled { await Task.yield() } }
+    model.installSpeakerDiarization()
+    await settle { model.isInstallingDiarizationRuntime }
+    #expect(model.isInstallingAnyRuntime, "a speaker-analysis install is a runtime install")
+
+    gate.markInstalled()
+    await settle { !model.isInstallingDiarizationRuntime }
+    #expect(!model.isInstallingAnyRuntime)
+
+    // The recognition pair is already covered by `isInstallingRecognitionRuntime`; the property must
+    // subsume it rather than replace it, because other callers still ask the narrower question.
+    #expect(!model.isInstallingRecognitionRuntime)
+}
