@@ -9,6 +9,35 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Speaker analysis — anonymous, local, and honest about what it doesn't know (F216–F221)
+
+You can now ask a finished meeting **Analyze Speaker Turns**. A model on your Mac groups the audio
+into anonymous voice clusters and labels parts of the transcript "Speaker 1", "Speaker 2". You can
+rename a label for that one meeting. Nothing is sent anywhere, your recording and transcript are
+never modified, and Copy, notes, search, summaries and all nine ordinary exports stay unlabeled —
+including labels is a separate export you choose.
+
+It is deliberately reluctant. A row gets a name only when one voice covers at least 80% of it and
+beats the runner-up by 20 points with no overlap reported; otherwise it says Uncertain or shows
+nothing. If the analysis can only tell one voice apart it shows no labels at all and says so, because
+labelling a failed separation "Speaker 1" and letting you rename it to a person would put one
+person's words under another's name.
+
+**The runtime was chosen twice.** The first, sherpa-onnx, passed a synthetic benchmark at 90.8%
+displayed-label precision — and then produced between 33 and 179 speaker clusters on a real
+35-minute meeting, at every setting tried. The synthetic corpus had been actively misleading:
+utterances from one text-to-speech voice are nearly identical, so a clustering threshold tuned on
+them sits far below what real speech needs. That corpus is still used for correctness and is now
+documented as unusable for calibration. FluidAudio replaced it: 4 clusters on the same meeting,
+615 MB instead of 3.2 GB, 6 seconds instead of 79, bit-identical across runs. It is this project's
+first third-party dependency, confined to the app target.
+
+**What is not claimed:** no accuracy figure for real meetings. Measuring one needs ground-truth
+annotation that does not exist, so the scorecard reports cluster counts, resource use and
+determinism, and says plainly that a plausible speaker count is a sanity check rather than a quality
+gate. Labels are inferred and can be wrong — voices that sound alike may be merged — and the
+interface says so before you run it. See `DIARIZATION_SCORECARD.md`.
+
 ## Storage — saving the library stops getting slower as it grows (F211)
 
 - **Every library edit re-decoded the whole index twice, on the main thread (F211).** Renaming a
