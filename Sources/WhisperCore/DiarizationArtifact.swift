@@ -72,6 +72,27 @@ public struct DiarizationArtifactV1: Codable, Sendable, Equatable {
         self.turns = turns
         self.aliases = aliases
     }
+
+    /// The largest prefix of a typed name this codec will accept, or `nil` when no prefix can fit.
+    ///
+    /// The bound is enforced in two units — `maximumAliasLength` characters *and*
+    /// `4 × maximumAliasLength` UTF-8 bytes — and a caller that clamps in only one of them hands
+    /// `encode` a value it refuses: 64 graphemes of flag emoji is 512 bytes, of ZWJ family sequences
+    /// 1600, of Devanagari 768. That is why the clamp lives here, beside the rule it satisfies,
+    /// rather than as a second copy of the arithmetic in whatever calls it (F227).
+    ///
+    /// An empty result means "clear this alias", so a name whose very first character is heavier than
+    /// the whole bound returns `nil` instead: silently turning an unusable name into a deletion would
+    /// throw away the label already stored.
+    public static func clampedAlias(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var alias = String(trimmed.prefix(maximumAliasLength))
+        while alias.utf8.count > 4 * maximumAliasLength {
+            alias.removeLast()
+        }
+        guard !alias.isEmpty || trimmed.isEmpty else { return nil }
+        return alias
+    }
 }
 
 public enum DiarizationArtifactError: Error, Sendable, Equatable {
@@ -81,6 +102,26 @@ public enum DiarizationArtifactError: Error, Sendable, Equatable {
     case newerSchema(Int)
     /// Decodable but not trustworthy. The payload names the failed rule.
     case malformed(String)
+}
+
+extension DiarizationArtifactError: LocalizedError {
+    /// `AppModel` puts `error.localizedDescription` straight into an alert, and a bare `Error` renders
+    /// there as "The operation couldn't be completed. (WhisperCore.DiarizationArtifactError error 2.)"
+    /// — an internal enum ordinal shown to someone who was only trying to name a speaker. Every case
+    /// ends by saying the transcript is unchanged, because labels are an optional extra and losing one
+    /// is never losing the meeting (F227).
+    public var errorDescription: String? {
+        switch self {
+        case .unreadable:
+            return "That meeting's speaker analysis could not be saved, because its file is not readable. Your transcript is unchanged."
+        case let .newerSchema(version):
+            return "That meeting's speaker analysis was written by a newer version of WhisperMeet (format \(version)), so it could not be saved. Your transcript is unchanged."
+        case .malformed:
+            // The payload names an internal rule ("aliasLength", "reversedInterval"); it belongs in a
+            // ticket, not in an alert, so the message says what it means for the user instead.
+            return "That meeting's speaker analysis could not be saved, because the result did not pass its own consistency checks. Your transcript is unchanged."
+        }
+    }
 }
 
 extension JSONEncoder {

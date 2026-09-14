@@ -372,3 +372,75 @@ func diarizationRenameExplainsWhyTheSidecarCouldNotBeRead() async throws {
     #expect((try FileManager.default.contentsOfDirectory(atPath: directory.path))
         .filter { $0.hasPrefix("diarization.unreadable-") }.count == 1)
 }
+
+@MainActor
+@Test("A rename of 64 flag emoji clamps to the codec's byte bound and comes back intact (F227)")
+func diarizationRenameClampsAliasToTheCodecByteBound() async throws {
+    // Genuinely red without the fix: `renameSpeaker` clamps with `.prefix(maximumAliasLength)`, which
+    // counts GRAPHEMES, while the codec bounds an alias at `4 * maximumAliasLength` UTF-8 bytes. 64
+    // flag emoji is 64 graphemes and 512 bytes, so the clamp hands `encode` a value it refuses and the
+    // rename dies with `.malformed("aliasLength")` — a name a user could reasonably type, in a control
+    // that offers no way to know why it failed.
+    let fixture = try makeFixture()
+    fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
+    fixture.model.requestSpeakerDiarization(for: fixture.id)
+    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+
+    let wavBefore = try Data(contentsOf: fixture.wavURL)
+    let transcriptBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.transcriptText)
+    let turnsBefore = try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).turns
+
+    let typed = String(repeating: "\u{1F1FA}\u{1F1F8}", count: 64)
+    #expect(typed.count == 64)          // inside the grapheme bound the old clamp enforced…
+    #expect(typed.utf8.count == 512)    // …and twice the byte bound the codec enforces
+    fixture.model.renameSpeaker(clusterID: 1, to: typed, in: fixture.id)
+
+    #expect(fixture.model.alertMessage == nil)
+    let stored = try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL))
+    let saved = try #require(stored.aliases["1"])
+    #expect(!saved.isEmpty)
+    #expect(saved.utf8.count <= 4 * DiarizationArtifactV1.maximumAliasLength)
+    #expect(saved.count <= DiarizationArtifactV1.maximumAliasLength)
+    // Clamped, not mangled: whole flags only, and a prefix of what was typed.
+    #expect(typed.hasPrefix(saved))
+    #expect(saved == String(repeating: "\u{1F1FA}\u{1F1F8}", count: 32))
+    // It survives the round trip the codec would otherwise have refused outright.
+    #expect(fixture.model.speakerOverlay(for: fixture.id)?.aliases == [1: saved])
+    #expect(stored.turns == turnsBefore)
+    #expect(try Data(contentsOf: fixture.wavURL) == wavBefore)
+    #expect(fixture.model.store.meeting(id: fixture.id)?.transcriptText == transcriptBefore)
+}
+
+@MainActor
+@Test("A name too heavy for one character is refused, never turned into a deletion (F227)")
+func diarizationRenameRefusesAnAliasNoPrefixCanFit() async throws {
+    // This one is red against the obvious FIX rather than against the old code, and that is the point:
+    // a byte clamp that just drops characters until the value fits empties a string whose FIRST
+    // grapheme already exceeds the bound (one 'a' under 300 combining acutes is 601 bytes), and
+    // `renameSpeaker` reads an empty alias as "clear this label". Measured with the guard removed from
+    // `clampedAlias`: the saved "Ada" is DELETED and no alert is shown. The old grapheme-only clamp
+    // happened to pass here by failing in `encode` instead, so without this test the fix could quietly
+    // trade a refusal for a silent deletion.
+    let fixture = try makeFixture()
+    fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
+    fixture.model.requestSpeakerDiarization(for: fixture.id)
+    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    fixture.model.renameSpeaker(clusterID: 1, to: "Ada", in: fixture.id)
+    #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases == ["1": "Ada"])
+
+    let heavy = "a" + String(repeating: "\u{0301}", count: 300)
+    #expect(heavy.count == 1)
+    #expect(heavy.utf8.count == 601)
+    fixture.model.renameSpeaker(clusterID: 1, to: heavy, in: fixture.id)
+
+    #expect(fixture.model.alertMessage != nil)
+    #expect(fixture.model.alertMessage?.contains("transcript is unchanged") == true)
+    #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases == ["1": "Ada"])
+    #expect(fixture.model.speakerOverlay(for: fixture.id)?.aliases == [1: "Ada"])
+
+    // Clearing a label is still a deliberate empty string, and still works.
+    fixture.model.alertMessage = nil
+    fixture.model.renameSpeaker(clusterID: 1, to: "   ", in: fixture.id)
+    #expect(fixture.model.alertMessage == nil)
+    #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases.isEmpty)
+}

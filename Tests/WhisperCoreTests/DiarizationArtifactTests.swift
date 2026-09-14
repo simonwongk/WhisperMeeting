@@ -252,3 +252,49 @@ func artifactRefusesNonCanonicalAliasKeys() throws {
         #expect(thrown as? DiarizationArtifactError == .malformed("aliasKey"), "key \(key) was accepted")
     }
 }
+
+@Test("Every codec failure reads as a sentence about the analysis, never a raw enum (F227)")
+func artifactErrorsDescribeThemselvesToTheUser() {
+    // Genuinely red without the fix: `DiarizationArtifactError` is a bare `Error`, so Foundation's
+    // bridge renders `errorDescription` as nil and `localizedDescription` as
+    // "The operation couldn't be completed. (WhisperCore.DiarizationArtifactError error 2.)".
+    // `AppModel.renameSpeaker` and `runSpeakerDiarization` both surface `error.localizedDescription`
+    // straight into `alertMessage`, so that fallback is what a user reads when a label fails to save.
+    for error in [DiarizationArtifactError.unreadable,
+                  .newerSchema(2),
+                  .malformed("aliasLength")] {
+        let sentence = error.localizedDescription
+        #expect((error as LocalizedError).errorDescription != nil, "\(error) has no user-facing text")
+        #expect(!sentence.contains("couldn't be completed"), "\(error) rendered the Foundation fallback")
+        #expect(!sentence.contains("DiarizationArtifactError"), "\(error) leaked its enum name: \(sentence)")
+        // Labels are an optional extra; losing one is never losing the meeting, and the message says so.
+        #expect(sentence.contains("transcript is unchanged"), "\(error) did not reassure: \(sentence)")
+    }
+}
+
+@Test("An alias is clamped to what the codec will actually accept, in bytes as well as characters (F227)")
+func artifactClampsAnAliasToWhatTheCodecWillAccept() throws {
+    // Genuinely red without the fix: there is no such helper, and the only clamp in the tree
+    // (`AppModel.renameSpeaker`) counts graphemes while `validate` bounds bytes too. The rule belongs
+    // beside the bound it enforces — a second copy of `4 * maximumAliasLength` in the app target is
+    // exactly the drift that produced this defect.
+    #expect(DiarizationArtifactV1.clampedAlias("  Ada  ") == "Ada")
+    #expect(DiarizationArtifactV1.clampedAlias("   ") == "")          // a deliberate clear
+    #expect(DiarizationArtifactV1.clampedAlias("") == "")
+
+    let flags = String(repeating: "\u{1F1FA}\u{1F1F8}", count: 64)    // 64 graphemes, 512 UTF-8 bytes
+    let clamped = try #require(DiarizationArtifactV1.clampedAlias(flags))
+    #expect(clamped == String(repeating: "\u{1F1FA}\u{1F1F8}", count: 32))
+
+    // A single character heavier than the whole bound cannot be clamped into anything usable, and an
+    // empty result would read as "clear the label" — so it is unrepresentable, not empty.
+    #expect(DiarizationArtifactV1.clampedAlias("a" + String(repeating: "\u{0301}", count: 300)) == nil)
+
+    // Whatever comes back is something `encode` accepts: the codec's refusal is unreachable.
+    for raw in ["Ada", flags, String(repeating: "\u{0915}\u{094D}\u{0937}\u{093F}", count: 64)] {
+        let alias = try #require(DiarizationArtifactV1.clampedAlias(raw))
+        #expect(throws: Never.self) {
+            try DiarizationArtifactCodec.encode(artifact(aliases: ["0": alias]))
+        }
+    }
+}

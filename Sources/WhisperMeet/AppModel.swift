@@ -988,10 +988,16 @@ final class AppModel: ObservableObject {
             return
         }
         var updated = artifact
-        let trimmed = String(
-            alias.trimmingCharacters(in: .whitespacesAndNewlines)
-                .prefix(DiarizationArtifactV1.maximumAliasLength)
-        )
+        // Clamped by the codec's own rule, in bytes as well as characters. A `.prefix` on graphemes
+        // alone satisfies half the bound and hands `encode` a value it refuses — 64 flag emoji is 512
+        // UTF-8 bytes, 64 Devanagari clusters 768 — so an ordinary name in a non-Latin script used to
+        // die on the way to disk (F227).
+        guard let trimmed = DiarizationArtifactV1.clampedAlias(alias) else {
+            // No prefix of this name fits, and an empty alias means "clear the label" — so saving it
+            // would delete the name already on this speaker rather than store the new one.
+            alertMessage = "That name is too long to save as a speaker label. Your transcript is unchanged, and so is the label already on this speaker."
+            return
+        }
         if trimmed.isEmpty {
             updated.aliases.removeValue(forKey: String(clusterID))
         } else {
