@@ -118,3 +118,26 @@ func validationRejectsNonFiniteDuration() {
         try SpeakerTurns.validate([turn(0, 5)], durationSeconds: .nan)
     }
 }
+
+// F219 — the diagnostic payload is the leak risk, not the message. FluidAudioDiarizationClient puts
+// `String(describing: error)` into these cases, and a FluidAudio/Foundation error routinely embeds
+// the audio URL — a path under Recordings/<uuid>/. AppModel renders `error.localizedDescription`
+// straight into an alert. Today `errorDescription` ignores the payload entirely, so nothing leaks;
+// nothing but this test stops a future `"…did not finish: \(detail)"` from putting a recording path
+// in front of a person. The invariant outlived the subprocess client that used to test it.
+
+@Test("A diarization failure never renders its diagnostic payload (F219)")
+func diarizationErrorsNeverRenderTheirDiagnostic() throws {
+    let secret = "/Users/someone/Library/Application Support/WhisperMeet/Recordings/secret.wav"
+    let cases: [LocalDiarizationError] = [
+        .runtimeDamaged(secret), .audioUnreadable(secret),
+        .sampleRateMismatch(secret), .processFailed(secret)
+    ]
+    for error in cases {
+        let message = try #require(error.errorDescription)
+        #expect(!message.contains(secret))
+        #expect(!message.contains("/Users/"))
+        #expect(!message.contains("Recordings/"))
+        #expect(message.lowercased().contains("transcript"))
+    }
+}

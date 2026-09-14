@@ -421,3 +421,21 @@ func analysisSecondsMeasuresAConvertedRecordingCorrectly() throws {
     let seconds = AppModel.analysisSeconds(of: converted, fallback: -1)
     #expect(abs(seconds - 10) < 0.05, "measured \(seconds)s for a 10-second recording")
 }
+
+// F216/F219 — silence is a RESULT, not a failure. The predecessor test for this ran unconditionally;
+// its successor is gated on real models being staged, so on an ordinary machine nothing covers it.
+// The path needs no models at all — the adapter takes an injectable runner — and a regression that
+// made an empty segment list throw would turn a muted-microphone meeting into a red "Speaker
+// analysis did not finish" alert with no test to catch it.
+
+@Test("A runtime that reports no segments yields an empty result, not a failure (F216/F219)")
+func fluidAudioAdapterTreatsNoSegmentsAsAnEmptyResult() async throws {
+    let client = FluidAudioDiarizationClient(run: { _, _ in [] })
+    let result = try await client.diarize(
+        audioURL: URL(fileURLWithPath: "/tmp/does-not-need-to-exist.wav"),
+        durationSeconds: 1,
+        progress: { _ in }
+    )
+    #expect(result.turns.isEmpty)
+    #expect(result.speakerCount == 0)
+}
