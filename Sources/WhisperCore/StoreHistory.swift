@@ -312,10 +312,11 @@ public struct StoreHistory: Sendable {
 
         // Then, and only then, the byte budget TRIMS what the rules kept — it never rescues what
         // they did not (design §7.2). The inverse reading is tempting, because more history is more
-        // recoverable, but it turns the policy into "keep every generation that fits": ~120 of them
-        // per store at the real 2.1 MB index, ~1 GB per library, and a deleted meeting's transcript
-        // surviving ~120 saves instead of the week §13 promises the user. Retention depth is bought
-        // with the anchors, which are bounded, not with the budget, which is a ceiling.
+        // recoverable, but it turns the policy into "keep every generation that fits": ~100-120 of
+        // them per store at a 2-3 MB index, ~1 GB per library across four stores, and a deleted
+        // meeting's transcript surviving that many saves instead of the week §13 promises the user.
+        // Retention depth is bought with the anchors, which are bounded, not with the budget, which
+        // is a ceiling.
         //
         // Oldest-first, and only among rule-2 anchors: rules 1, 3 and 4 are exempt, so the budget
         // can never take the newest generations, the high-water pin, or bytes that are live.

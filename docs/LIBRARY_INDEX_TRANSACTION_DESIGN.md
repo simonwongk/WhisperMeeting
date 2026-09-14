@@ -661,15 +661,15 @@ public struct RetentionPolicy: Sendable, Equatable {
 A `g-` entry is kept when, and only when, some rule keeps it — no rule applies, and it is deleted on
 the next prune, however much room the budget has left. (The necessity reading alone, *"pruned only
 when no rule keeps it"*, is what the first implementation took: it let the budget rescue whatever
-fit, which at the real 2.1 MB index retained ~120 generations per store instead of the seven or so
-below. F235.) The rules:
+fit, which at a real index — 2.1 MB when F211 measured it, 2.6 MB by the time Task 6 did — retained
+~100–120 generations per store instead of the seven or so below. F235.) The rules:
 
 1. It is among the newest `recentCount`.
 2. It is the newest generation older than anchor A, for some A in `ageAnchors` (one slot per anchor).
 3. `pinHighWaterRecordCount` and it has the greatest known `recordCount` of all retained generations, and no *newer* retained generation has `recordCount >= ` it. Exactly one such pin exists.
 4. Its `(fingerprint, byteCount)` equals the live primary's or the backup's — never delete the bytes that are live.
 
-Then a byte budget, which **trims** the kept set and never rescues anything outside it: if what the rules kept exceeds `byteBudget`, drop oldest-first, but never anything kept by rules 1, 3 or 4. Only rule-2 anchors are droppable, so the budget is a ceiling on an already-bounded set — in the steady state it does nothing at all. At the real 2.1 MB index the rules retain seven or eight generations, about 16 MB per store.
+Then a byte budget, which **trims** the kept set and never rescues anything outside it: if what the rules kept exceeds `byteBudget`, drop oldest-first, but never anything kept by rules 1, 3 or 4. Only rule-2 anchors are droppable, so the budget is a ceiling on an already-bounded set — in the steady state it does nothing at all. The rules retain seven or eight generations, which at a 2–3 MB index is roughly 15–20 MB per store. (That is arithmetic from the rules, not a benchmark, and the index size is the measured one, not a fixed property — re-take it before relying on the figure.)
 
 `conflict-` files are **never automatically pruned** — they are unique user data that exists nowhere else. When their count reaches `maxConflictBranches` a new conflict is still preserved and `SaveOutcome.conflictBranchBacklog` reports the count so the app can ask the user to resolve them.
 
