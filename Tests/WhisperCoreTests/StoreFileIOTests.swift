@@ -119,9 +119,14 @@ func faultInjectionTargetsOnePhaseAndOneOccurrence() throws {
     let primaryURL = directory.appendingPathComponent("meetings.json")
     let backupURL = directory.appendingPathComponent("meetings.backup.json")
 
-    // Fail the SECOND rotateBackup. The first save must therefore succeed completely, which is what
+    // Fail the SECOND install. The first save must therefore succeed completely, which is what
     // proves the double is delegating to `.live` rather than merely not throwing.
-    let scripted = ScriptedStoreIO(failing: .rotateBackup, occurrence: 2)
+    //
+    // `.install` and not `.rotateBackup`: install is exactly one rename per save, whereas the
+    // rotation is a copy plus a rename, so occurrence N of `.rotateBackup` does not correspond to
+    // save N. Targeting a phase whose count per save is not 1 is how an occurrence-based fault lands
+    // somewhere other than where the test says it does.
+    let scripted = ScriptedStoreIO(failing: .install, occurrence: 2)
     let store = BackupJSONStore<[StoredNote]>(
         primaryURL: primaryURL, backupURL: backupURL, io: scripted.io
     )
@@ -130,7 +135,7 @@ func faultInjectionTargetsOnePhaseAndOneOccurrence() throws {
     #expect(try #require(try store.load()).value == [StoredNote(title: "First")])
 
     #expect(throws: CocoaError.self) { try store.save([StoredNote(title: "Second")]) }
-    #expect(scripted.count(of: .rotateBackup) == 2)
+    #expect(scripted.count(of: .install) == 2)
     // The first save's bytes survive: the failure stopped the second save before it installed.
     #expect(try #require(try store.load()).value == [StoredNote(title: "First")])
 }

@@ -122,6 +122,31 @@ public struct StoreHistory: Sendable {
         "g-\(String(format: "%09llu", generation))-\(fingerprint).json"
     }
 
+    /// Every generation on disk by NAME and SIZE only — `stat(2)`, no reads, no fingerprints.
+    ///
+    /// This is what the save path uses. `retained()` reads and re-fingerprints every entry to
+    /// report whether its bytes still match its name, which is right for the recovery list and
+    /// ruinous per save: at 2.6 MB and three generations it put ~8 MB of reads and three full
+    /// fingerprints on the main actor every time the user typed. Pruning needs sizes and names, and
+    /// `identity(_:)` supplies both for the cost of a stat.
+    func entries() -> [RetainedGeneration] {
+        let names = (try? io.contentsOfDirectory(directoryURL, .listHistory)) ?? []
+        return names.compactMap { name -> RetainedGeneration? in
+            guard let parsed = Self.parse(name) else { return nil }
+            let size = io.identity(directoryURL.appendingPathComponent(name))?.size ?? 0
+            return RetainedGeneration(
+                name: name,
+                sequence: parsed.sequence,
+                fingerprint: parsed.fingerprint,
+                byteCount: Int(size),
+                wroteAtEpochSeconds: nil,
+                recordCount: nil,
+                bytesMatchName: true
+            )
+        }
+        .sorted { $0.sequence > $1.sequence }
+    }
+
     /// Every generation on disk, newest first, joined with whatever the ledger knows.
     ///
     /// An entry whose bytes no longer match its name is reported with `bytesMatchName == false` and
@@ -188,8 +213,8 @@ public struct StoreHistory: Sendable {
         writtenAt: [String: Int],
         liveFingerprints: [String]
     ) -> [String] {
-        let entries = retained().map { entry -> RetainedGeneration in
-            guard entry.recordCount == nil, let count = recordCounts[entry.name] else { return entry }
+        let entries = entries().map { entry -> RetainedGeneration in
+            guard let count = recordCounts[entry.name] else { return entry }
             return RetainedGeneration(
                 name: entry.name, sequence: entry.sequence, fingerprint: entry.fingerprint,
                 byteCount: entry.byteCount,
