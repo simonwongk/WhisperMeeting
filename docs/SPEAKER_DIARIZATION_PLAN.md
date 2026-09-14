@@ -2010,7 +2010,7 @@ Add `speakerLabels: [Int: String]?` to `TranscriptExportRequest` (defaulted `nil
 **Files:**
 - Modify: `Sources/WhisperMeet/ContentView.swift`
 
-- [ ] **Step 1: Add the Improve-menu entry**
+- [x] **Step 1: Add the Improve-menu entry**
 
 In `improveMenu` (ContentView.swift:2825-2913), after the `Second Opinion` item, add a `Divider()` and:
 
@@ -2030,7 +2030,7 @@ Button {
 
 Extend the trailing footnote block with the matching plain-language reasons: no usable timestamps, analysis already running, model not installed.
 
-- [ ] **Step 2: Add the first-run disclosure**
+- [x] **Step 2: Add the first-run disclosure**
 
 An `.alert` in the `TranscriptDetailView` modifier chain, next to the existing `confirmSummarize` one — but stating the opposite boundary:
 
@@ -2043,15 +2043,15 @@ An `.alert` in the `TranscriptDetailView` modifier chain, next to the existing `
 }
 ```
 
-- [ ] **Step 3: Add the Settings install row**
+- [x] **Step 3: Add the Settings install row**
 
 Beside the Qwen row (ContentView.swift:1297-1344), same shape: architecture gate, `Install`/`Repair or Update` button, the same compound `.disabled`, an indeterminate `ProgressView("Installing about 60 MB…")`, and disclosure copy naming the publisher, the size, the storage location, and that **only model files are downloaded — never meeting content**.
 
-- [ ] **Step 4: Switch the export menu to the standard list**
+- [x] **Step 4: Switch the export menu to the standard list**
 
 Change `ForEach(TranscriptExportFormat.allCases, id: \.self)` to `ForEach(TranscriptExportFormat.standardFormats, id: \.self)`, and add a separate `Button("Transcript with Speaker Labels (.md)")` below a `Divider()`, shown only when an overlay exists.
 
-- [ ] **Step 5: Build and commit**
+- [x] **Step 5: Build and commit**
 
 ```bash
 swift build --disable-sandbox -c release -Xswiftc -warnings-as-errors
