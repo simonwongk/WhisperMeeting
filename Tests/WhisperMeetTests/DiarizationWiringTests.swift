@@ -399,7 +399,7 @@ func diarizationRenameClampsAliasToTheCodecByteBound() async throws {
     let stored = try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL))
     let saved = try #require(stored.aliases["1"])
     #expect(!saved.isEmpty)
-    #expect(saved.utf8.count <= 4 * DiarizationArtifactV1.maximumAliasLength)
+    #expect(saved.utf8.count <= DiarizationArtifactV1.maximumAliasByteLength)
     #expect(saved.count <= DiarizationArtifactV1.maximumAliasLength)
     // Clamped, not mangled: whole flags only, and a prefix of what was typed.
     #expect(typed.hasPrefix(saved))

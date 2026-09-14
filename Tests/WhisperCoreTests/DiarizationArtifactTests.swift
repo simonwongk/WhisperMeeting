@@ -265,7 +265,10 @@ func artifactErrorsDescribeThemselvesToTheUser() {
                   .malformed("aliasLength")] {
         let sentence = error.localizedDescription
         #expect((error as LocalizedError).errorDescription != nil, "\(error) has no user-facing text")
-        #expect(!sentence.contains("couldn't be completed"), "\(error) rendered the Foundation fallback")
+        // Anchor on the stable ASCII prefix. The obvious literal "couldn't be completed" uses
+        // U+0027 while Foundation renders U+2019, so it matched nothing and this assertion — the one
+        // whose whole purpose is catching the fallback — was inert.
+        #expect(!sentence.contains("The operation could"), "\(error) rendered the Foundation fallback")
         #expect(!sentence.contains("DiarizationArtifactError"), "\(error) leaked its enum name: \(sentence)")
         // Labels are an optional extra; losing one is never losing the meeting, and the message says so.
         #expect(sentence.contains("transcript is unchanged"), "\(error) did not reassure: \(sentence)")

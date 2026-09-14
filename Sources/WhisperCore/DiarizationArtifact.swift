@@ -42,6 +42,12 @@ public struct DiarizationArtifactV1: Codable, Sendable, Equatable {
     public static let currentSchemaVersion = 1
     public static let maximumAliasLength = 64
 
+    /// The same bound in UTF-8 bytes. Named once because F227 was precisely two copies of one rule
+    /// drifting apart: the codec counted bytes while the caller clamped graphemes, and 64 graphemes
+    /// of flag emoji is 512 bytes. Four bytes per character admits any legitimate 64-character
+    /// alias in any script.
+    public static let maximumAliasByteLength = 4 * maximumAliasLength
+
     public let schemaVersion: Int
     public let meetingID: UUID
     public let recording: DiarizationRecordingReference
@@ -87,7 +93,7 @@ public struct DiarizationArtifactV1: Codable, Sendable, Equatable {
     public static func clampedAlias(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         var alias = String(trimmed.prefix(maximumAliasLength))
-        while alias.utf8.count > 4 * maximumAliasLength {
+        while alias.utf8.count > maximumAliasByteLength {
             alias.removeLast()
         }
         guard !alias.isEmpty || trimmed.isEmpty else { return nil }
@@ -203,7 +209,7 @@ public enum DiarizationArtifactCodec {
             // of them is 2.5 MB and still passes a count-only bound — and the sidecar becomes the
             // text dump this bound exists to prevent. 4x admits any legitimate 64-character alias.
             guard alias.count <= DiarizationArtifactV1.maximumAliasLength,
-                  alias.utf8.count <= 4 * DiarizationArtifactV1.maximumAliasLength else {
+                  alias.utf8.count <= DiarizationArtifactV1.maximumAliasByteLength else {
                 throw DiarizationArtifactError.malformed("aliasLength")
             }
         }
