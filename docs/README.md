@@ -41,7 +41,8 @@ deliberately static—after editing a board file, run the two commands documente
 | [`LIBRARY_INDEX_TRANSACTION_PLAN.md`](LIBRARY_INDEX_TRANSACTION_PLAN.md) | F190 — the 11-task implementation sequence for that design. Task 1 shipped; 2–11 open. |
 | [`URL_IMPORT_PLAN.md`](URL_IMPORT_PLAN.md) | Proposed plan (`F175`) for importing audio from a pasted link. Not started; decisions and verified traps recorded before any code. |
 | [`SPEAKER_DIARIZATION_PRD.md`](SPEAKER_DIARIZATION_PRD.md) | The requirements (`F215`) for optional local anonymous speaker-turn labels. **Approved 2026-09-13**; the runtime recommendation is superseded by the decision record below. |
-| [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) | `F216` — which local diarization runtime was selected and why, with per-artifact licences, pinned hashes, and the offline evidence. |
+| [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISION.md) | `F216` — the adopted local diarization runtime (FluidAudio) and why, with per-artifact licences, pinned hashes, the verified landmines, and the superseded sherpa-onnx route kept as history. |
+| [`DIARIZATION_SCORECARD.md`](DIARIZATION_SCORECARD.md) | `F217`/`F221` — what speaker analysis actually measures on real and synthetic audio, which claims were retracted, and why the PRD's quality gate cannot be evaluated as written. |
 | [`SPEAKER_DIARIZATION_PLAN.md`](SPEAKER_DIARIZATION_PLAN.md) | `F216`–`F221` — the 17-task implementation sequence for that decision. |
 
 ## Historical planning records
