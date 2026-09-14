@@ -17,6 +17,13 @@ public enum PersistedStoreHealth: Sendable, Equatable {
     /// recording. Folders from an interrupted capture are excluded and do not count here — see
     /// `MeetingStore.finalizedRecordingFolderCount()` for why counting those locked the library.
     case suspectEmpty(recordingFolderCount: Int)
+    /// Two genuine lineages were found and neither may be silently discarded (F190). Both bodies
+    /// decode; the primary belongs to no generation this library recorded, and the recorded one is
+    /// still retrievable — so there really is a choice to be made, and only the user can make it.
+    ///
+    /// Declared on positive evidence only, and the bias is explicitly toward adopting: a false
+    /// read-only library is itself a harm, as `.suspectEmpty`'s over-fire already demonstrated.
+    case divergentGenerations
     /// The store could not be read at all (I/O, permissions).
     case unavailable(String)
 
@@ -39,14 +46,17 @@ public enum PersistedStoreHealth: Sendable, Equatable {
         case .complete: return 0
         // The whole value, one generation stale.
         case .recoveredFromBackup: return 1
+        // Everything is present, but which branch is the user's is unknown (F190). Ranked below
+        // `.partiallySalvaged` because nothing is missing here — the ambiguity is the damage.
+        case .divergentGenerations: return 2
         // Some records are gone, the rest are trustworthy.
-        case .partiallySalvaged: return 2
+        case .partiallySalvaged: return 3
         // Nothing loaded and folders exist, so everything appears to be missing.
-        case .suspectEmpty: return 3
+        case .suspectEmpty: return 4
         // Nothing decoded at all; the bytes at least survive in quarantine.
-        case .unreadable: return 4
+        case .unreadable: return 5
         // The store could not even be read, so we cannot say what is or is not there.
-        case .unavailable: return 5
+        case .unavailable: return 6
         }
     }
 

@@ -229,6 +229,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         if primaryExists,
            let data = try? io.read(primaryURL, .readPrimary),
            let value = try? decoder.decode(Value.self, from: data) {
+            if isDivergent(primaryBytes: data, ledger: ledger) {
+                // Preserve BOTH data files before reporting, so whichever branch the user does not
+                // choose still exists. Copies, never moves — the live files stay exactly as found,
+                // because they are the evidence.
+                _ = try? StoreQuarantine.preserve(fileAt: primaryURL, using: io)
+                _ = try? StoreQuarantine.preserve(fileAt: backupURL, using: io)
+                // Returns the primary's value rather than throwing. A throw leaves
+                // `MeetingStore.meetings` empty, which renders as zero meetings plus a read-only
+                // banner — visually indistinguishable from the wipe this design exists to prevent.
+                // No token: nothing may arm a checked write against a lineage we cannot vouch for.
+                return LoadResult(value: value, health: .divergentGenerations, repairs: repairs)
+            }
             return LoadResult(
                 value: value,
                 health: .complete,
@@ -673,6 +685,54 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 bytesMatchName: true
             )
         }
+    }
+
+    /// Whether the primary belongs to a second lineage (F190). All five conditions must hold.
+    ///
+    /// Every one of them is a chance to adopt instead, and that asymmetry is deliberate. A false
+    /// read-only library is itself a harm — F187's `.suspectEmpty` over-fire turned "deleted my last
+    /// meeting, then crashed while recording" into a locked library with no in-app way out — so this
+    /// fires only on positive evidence of two branches, never on a crash, an old bundle's write, or
+    /// a documented hand-restore.
+    ///
+    /// Note that conditions 2, 4 and 5 interlock: with the archive unreadable, condition 5 can only
+    /// be met by `backup == current`, which condition 4 rejects. So the DIRECTORY half of condition 2
+    /// is logically redundant (¬2 ⇒ ¬(4 ∧ 5)) and is kept only because it states the intent. The
+    /// `ledger.historyAvailable` half is not redundant: a writer that could not retain leaves a
+    /// readable archive that still holds `current`, and that flag is then the only thing preventing a
+    /// false read-only library.
+    private func isDivergent(primaryBytes: Data, ledger: StoreLedger?) -> Bool {
+        // 1. A ledger this build understands. Without one there is no record to contradict, and
+        //    Invariant L requires pre-F190 behaviour.
+        guard let ledger else { return false }
+
+        // 2. History that is readable, and a writer that had it. Without the archive there is no
+        //    evidence of a second branch — only an unexplained primary, which is a crash far more
+        //    often than a rival writer.
+        guard ledger.historyAvailable, io.isDirectory(history.directoryURL) == true else {
+            return false
+        }
+        let archivedFingerprints = Set(history.entries().map(\.fingerprint))
+
+        // 3. The primary matches NO generation this library recorded — not `current`, not
+        //    `previous`, not any history record, and no file in the archive. A match anywhere makes
+        //    it a rollback or our own uncommitted install, both of which are adopted.
+        let primaryFingerprint = io.fingerprint(primaryBytes)
+        var known = Set([ledger.current.fingerprint])
+        if let previous = ledger.previous { known.insert(previous.fingerprint) }
+        for record in ledger.history { known.insert(record.fingerprint) }
+        guard !known.contains(primaryFingerprint),
+              !archivedFingerprints.contains(primaryFingerprint) else { return false }
+
+        // 4. The backup is not our current generation. If it is, a non-F190 writer rotated us into
+        //    the backup and installed its own primary, which PROVES its primary descends from us.
+        let backupFingerprint = (try? io.read(backupURL, .readBackup)).map { io.fingerprint($0) }
+        guard backupFingerprint != ledger.current.fingerprint else { return false }
+
+        // 5. Our recorded generation is still retrievable, so there genuinely is a second branch to
+        //    choose between. Otherwise the user would be offered a choice between one branch and
+        //    nothing — a read-only library with no second option to pick.
+        return archivedFingerprints.contains(ledger.current.fingerprint)
     }
 
     /// The generation the primary's bytes are.
