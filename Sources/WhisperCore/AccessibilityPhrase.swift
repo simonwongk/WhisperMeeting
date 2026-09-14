@@ -19,6 +19,18 @@ public enum AccessibilityPhrase {
         "Marker \(label) at \(TranscriptFormatter.timestamp(offset))"
     }
 
+    /// Reads one anonymous speaker label on a transcript line. Always says "inferred" — and says it
+    /// before the words, so the qualification is heard rather than tacked on at the end (F220).
+    ///
+    /// This is where the rule at the top of this file is easiest to break: on screen the label sits
+    /// inside a legend that explains what it is and is not, but VoiceOver reads the row alone. A
+    /// bare "Nadia, 02:05, we should ship it" is indistinguishable from a claim that Nadia spoke, so
+    /// the qualification travels with the label itself. `label` is equally an anonymous cluster name
+    /// or a label the reader typed: both are guesses about voices, so both are spoken the same way.
+    public static func speakerLabel(_ label: String, offset: TimeInterval, text: String) -> String {
+        "\(label), inferred, \(TranscriptFormatter.timestamp(offset)), \(text)"
+    }
+
     public static func levelMeter(channel: String, level: Float) -> String {
         "\(channel) level \(Int((max(0, min(1, level)) * 100).rounded())) percent"
     }

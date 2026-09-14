@@ -2067,7 +2067,7 @@ git commit -m "feat(diarization): add the analyze entry point, disclosure, and i
 - Modify: `Sources/WhisperMeet/ContentView.swift`, `Sources/WhisperCore/AccessibilityPhrase.swift`
 - Test: `Tests/WhisperCoreTests/AccessibilityPhraseTests.swift` (extend)
 
-- [ ] **Step 1: Add the VoiceOver phrase**
+- [x] **Step 1: Add the VoiceOver phrase**
 
 In `AccessibilityPhrase.swift`, which already carries the rule "never implies identified speakers (F71)":
 
@@ -2081,29 +2081,29 @@ public static func speakerLabel(_ label: String, offset: TimeInterval, text: Str
 
 Test it says "inferred" and never "recognized"/"identified".
 
-- [ ] **Step 2: Render the label in the transcript row**
+- [x] **Step 2: Render the label in the transcript row**
 
 In `segmentRow` (ContentView.swift:4036-4094), between the timestamp column and the text, add a fixed-width label column shown only when an overlay exists — matching `metadataChip`'s quiet register (`.font(.callout)`, `.foregroundStyle(.secondary)`, `.padding(.horizontal, 9)/.padding(.vertical, 3)`, `.background(.quaternary.opacity(0.5), in: Capsule())`). Text, never colour alone. Precompute `labelsByIndex: [Int: String]` in `init`/`.task`, never in the row body — the F160 rule.
 
-- [ ] **Step 3: Add the legend**
+- [x] **Step 3: Add the legend**
 
 Above the transcript scroll view, matching `qualityReviewBanner`'s shape (`HStack(spacing: 8)`, `.padding(10)`, `.bannerSurface(.blue)`): the cluster list in first-appearance order, a "labels are inferred, not identified" sentence, and `Rename…` / `Clear` / `Analyze Again` buttons.
 
-- [ ] **Step 4: Rename, clear, rerun**
+- [x] **Step 4: Rename, clear, rerun**
 
 Rename is an inline-`TextField` alert, matching the marker-rename pattern at ContentView.swift:3916-3930, with the field labeled **"Your label"** — never "name" or "who". Clear uses a `.confirmationDialog` with a `role: .destructive` verb and a `Keep labels` cancel. Rerun states plainly that new labels are created and existing ones are replaced.
 
-- [ ] **Step 5: The states**
+- [x] **Step 5: The states**
 
 Render each PRD state distinctly: analyzing (progress + Cancel), stale (labels hidden + explanation), unavailable (plain reason + the transcript is safe), no turns found, model missing, and **only one voice distinguished**.
 
 The single-voice state is not an error and must not read like one. Wording along the lines of: *"Only one voice could be told apart in this recording, so no speaker labels are shown. This happens with a single speaker, and also when two people's voices sound alike."* Offer Analyze Again and Clear; do not offer Rename.
 
-- [ ] **Step 5b: Say what the limitation actually is**
+- [x] **Step 5b: Say what the limitation actually is**
 
 The legend and the first-run disclosure must both state that voices which sound similar may be merged into one label — this is the runtime's measured weakness, not a hypothetical. Do not bury it in documentation only. A person who is told this up front reads a wrong label as a known limitation; a person who is not reads it as a fact about who spoke.
 
-- [ ] **Step 6: Build and commit**
+- [x] **Step 6: Build and commit**
 
 ```bash
 swift build --disable-sandbox -c release -Xswiftc -warnings-as-errors

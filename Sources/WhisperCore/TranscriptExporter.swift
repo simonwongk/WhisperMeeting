@@ -350,9 +350,9 @@ public enum TranscriptExporter {
             // quoted out of this file still says the name is a label someone typed.
             return markdown ? "**\(alias)** (your label): " : "\(alias) (your label): "
         case .overlapping:
-            return plain("Overlapping voices")
+            return plain(SpeakerOverlay.overlappingName)
         case .uncertain:
-            return plain("Unclear which voice")
+            return plain(SpeakerOverlay.uncertainName)
         case .unlabeled:
             return ""
         }
@@ -362,9 +362,7 @@ public enum TranscriptExporter {
     /// length and trims the ends but keeps interior newlines, and one of those would split a
     /// transcript line in two; an empty or blank alias means the label was cleared.
     private static func typedName(_ alias: String?) -> String? {
-        guard let alias else { return nil }
-        let folded = alias.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return folded.isEmpty ? nil : folded
+        SpeakerOverlay.typedAlias(alias)
     }
 
     /// The overlay keyed by segment index — but only while it still describes the lines about to be

@@ -127,6 +127,62 @@ public enum SpeakerOverlay {
         return start
     }
 
+    // MARK: - Display names (F220)
+
+    /// What a row says when more than one voice may be active in it. Shared by the transcript chip and
+    /// the labeled exports so the two never drift into two vocabularies for the same finding.
+    public static let overlappingName = "Overlapping voices"
+
+    /// What a row says when voices are present but none of them can be named.
+    public static let uncertainName = "Unclear which voice"
+
+    /// A label the reader typed, folded onto one line — or nil when they cleared it.
+    ///
+    /// `DiarizationArtifactV1.clampedAlias` bounds the length and trims the ends but keeps interior
+    /// newlines, and one of those would split a transcript line (or a one-line chip) in two.
+    public static func typedAlias(_ alias: String?) -> String? {
+        guard let alias else { return nil }
+        let folded = alias.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return folded.isEmpty ? nil : folded
+    }
+
+    /// The visible name for one row's label, or nil when the row carries no label at all.
+    ///
+    /// `.unlabeled` returns nil rather than an empty string on purpose: an empty chip beside a line
+    /// reads as a fourth kind of speaker, which is precisely the persuasive-but-meaningless thing the
+    /// abstention exists to avoid.
+    public static func displayName(for label: SpeakerOverlayLabel, aliases: [Int: String]) -> String? {
+        switch label {
+        case let .speaker(clusterID):
+            return typedAlias(aliases[clusterID]) ?? TranscriptExporter.anonymousSpeakerName(clusterID: clusterID)
+        case .overlapping:
+            return overlappingName
+        case .uncertain:
+            return uncertainName
+        case .unlabeled:
+            return nil
+        }
+    }
+
+    /// Every row's visible label, keyed by segment index — computed ONCE, off the render path (F220).
+    ///
+    /// The transcript view redraws on the 4 Hz playback tick. Resolving a row's label inside the row
+    /// body would put an overlay search and an alias lookup on every visible line, four times a
+    /// second, which is the exact shape of the regression F160 documents for the search highlighter.
+    /// So the view stores this map and the row body does one dictionary read.
+    public static func labelsByIndex(
+        rows: [SpeakerOverlayRow],
+        aliases: [Int: String]
+    ) -> [Int: String] {
+        var labels: [Int: String] = [:]
+        labels.reserveCapacity(rows.count)
+        for row in rows {
+            guard let name = displayName(for: row.label, aliases: aliases) else { continue }
+            labels[row.segmentIndex] = name
+        }
+        return labels
+    }
+
     /// The distinct clusters actually shown, in first-appearance order — the legend's row order, so
     /// it matches the reading order of the transcript rather than a numeric sort.
     public static func clusterIDs(in rows: [SpeakerOverlayRow]) -> [Int] {

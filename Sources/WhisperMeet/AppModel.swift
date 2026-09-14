@@ -111,6 +111,18 @@ struct SpeakerOverlayPresentation: Sendable, Equatable {
     /// would attribute the other person's words to the name typed — so nothing is labelled and rename
     /// is refused (the F216/F217 single-cluster rule).
     let isSingleCluster: Bool
+    /// How many intervals the stored result contains. Zero means the analysis found no speech at all,
+    /// which the review surface has to say differently from "one voice" — "a single speaker" would be
+    /// a claim about a recording in which nothing was found (F220).
+    let turnCount: Int
+    /// How many distinct clusters the stored TURNS carry, before the overlay's conservative rule runs.
+    /// Two or more of these with an empty `clusterIDs` means voices WERE told apart and no line could
+    /// be attributed — which must not be reported as "only one voice", because that is false (F220).
+    let distinguishedVoiceCount: Int
+    /// A saved result exists but could not be read. Kept distinct from "no result at all" so someone
+    /// who already ran an analysis is told their file is unreachable rather than being quietly invited
+    /// to run one for the first time (F220).
+    let isUnreadable: Bool
 }
 
 @MainActor
@@ -567,6 +579,9 @@ final class AppModel: ObservableObject {
     /// The install row's plain-language status line — what is happening, or what happened. Mirrors
     /// `qwenInstallationMessage`; nil until an install is attempted (F219).
     @Published private(set) var diarizationInstallationMessage: String?
+    /// Bumped whenever a meeting's stored speaker analysis changes. `PlayableTranscriptView` watches
+    /// it to rebuild its precomputed label map; nothing else reads it (F220).
+    @Published private(set) var speakerOverlayRevision = 0
     /// The in-flight analysis, held so `cancelSpeakerDiarization()` can stop it.
     private var diarizationTask: Task<Void, Never>?
     /// One meeting's computed overlay, keyed by the timings it was computed from. Single-entry on
@@ -1098,8 +1113,47 @@ final class AppModel: ObservableObject {
     /// The labels to render for one meeting, or nil when none may be shown. A stale result is withheld
     /// here rather than re-mapped onto timings it was never computed against.
     func speakerOverlay(for id: UUID) -> SpeakerOverlayPresentation? {
-        guard let presentation = diarizationPresentation(for: id), !presentation.isStale else { return nil }
+        guard let presentation = diarizationPresentation(for: id),
+              !presentation.isStale, !presentation.isUnreadable else { return nil }
         return presentation
+    }
+
+    /// What the transcript's review banner shows for one meeting (F220).
+    ///
+    /// Five of these end with no labels on screen, and they are deliberately NOT collapsed: a person
+    /// who ran an analysis and then sees an ordinary transcript has no way to tell "one voice",
+    /// "nothing found", "your file is damaged" and "these labels no longer line up" apart, and the
+    /// right next action differs in each. `SpeakerAnalysisCopy.reviewHeadline/reviewDetail` supply the
+    /// words; this decides only which of them applies.
+    ///
+    /// Computed from the cached presentation, so a call is a dictionary hit plus a timing fingerprint —
+    /// but the view still stores the result rather than calling this from a body, because the body
+    /// runs on the 4 Hz playback tick (the F160 rule).
+    func speakerReviewState(for id: UUID) -> SpeakerReviewState {
+        if diarizationRunningID == id { return .analyzing }
+        guard let presentation = diarizationPresentation(for: id) else { return .notAnalyzed }
+        if presentation.isUnreadable { return .unreadable }
+        if presentation.isStale { return .stale }
+        if presentation.turnCount == 0 { return .noTurnsFound }
+        // Asked of the stored TURNS, not of the rows: if two voices were told apart and the overlay
+        // still could not attribute a line, saying "only one voice" would be false.
+        if presentation.distinguishedVoiceCount <= 1 { return .singleVoice }
+        if presentation.clusterIDs.count < 2 { return .noConfidentLabels }
+        return .labeled
+    }
+
+    /// The visible label for each transcript row, keyed by segment index — built ONCE per change and
+    /// read by the row body as a single dictionary lookup (F220).
+    ///
+    /// This is the whole point of the layer: `PlayableTranscriptView` redraws every visible row on the
+    /// 4 Hz playback tick, so resolving a label per row would put an overlay search and an alias
+    /// lookup on the render path — the regression F160 documents for the search highlighter, repeated.
+    /// Empty whenever no labels may be shown, which is also every state but `.labeled`.
+    func speakerRowLabels(for id: UUID) -> [Int: String] {
+        guard let presentation = speakerOverlay(for: id), !presentation.clusterIDs.isEmpty else {
+            return [:]
+        }
+        return SpeakerOverlay.labelsByIndex(rows: presentation.rows, aliases: presentation.aliases)
     }
 
     /// The full state, INCLUDING a stale result — which the review surface has to explain plainly
@@ -1122,14 +1176,32 @@ final class AppModel: ObservableObject {
         // Deliberately loaded WITHOUT the recording hash: hashing a multi-gigabyte recording belongs on
         // the analysis path, not on a render. The app never mutates a recording, so that hash is a
         // corruption check; the timing fingerprint is the one that moves during normal use.
-        guard case let .ready(artifact) = DiarizationArtifactStore.load(
-            meetingID: meeting.id, in: store.rootDirectory
-        ) else {
+        let artifact: DiarizationArtifactV1
+        switch DiarizationArtifactStore.load(meetingID: meeting.id, in: store.rootDirectory) {
+        case let .ready(loaded):
+            artifact = loaded
+        case .absent:
             return nil
+        case .stale:
+            // The recording's own bytes changed. Loaded here without the audio hash, so this is the
+            // shape a future caller could produce; reported as stale rather than silently as nothing.
+            return SpeakerOverlayPresentation(
+                rows: [], clusterIDs: [], aliases: [:], isStale: true, isSingleCluster: false,
+                turnCount: 0, distinguishedVoiceCount: 0, isUnreadable: false
+            )
+        case .unavailable:
+            return SpeakerOverlayPresentation(
+                rows: [], clusterIDs: [], aliases: [:], isStale: false, isSingleCluster: false,
+                turnCount: 0, distinguishedVoiceCount: 0, isUnreadable: true
+            )
         }
+        let turnCount = artifact.turns.count
+        let distinguishedVoiceCount = Set(artifact.turns.map(\.clusterID)).count
         guard artifact.transcriptTimingFingerprint == fingerprint else {
             return SpeakerOverlayPresentation(
-                rows: [], clusterIDs: [], aliases: [:], isStale: true, isSingleCluster: false
+                rows: [], clusterIDs: [], aliases: [:], isStale: true, isSingleCluster: false,
+                turnCount: turnCount, distinguishedVoiceCount: distinguishedVoiceCount,
+                isUnreadable: false
             )
         }
         let rows = SpeakerOverlay.rows(
@@ -1141,7 +1213,9 @@ final class AppModel: ObservableObject {
         guard clusterIDs.count >= 2 else {
             return SpeakerOverlayPresentation(
                 rows: rows.map { SpeakerOverlayRow(segmentIndex: $0.segmentIndex, label: .unlabeled) },
-                clusterIDs: [], aliases: [:], isStale: false, isSingleCluster: true
+                clusterIDs: [], aliases: [:], isStale: false, isSingleCluster: true,
+                turnCount: turnCount, distinguishedVoiceCount: distinguishedVoiceCount,
+                isUnreadable: false
             )
         }
         var aliases: [Int: String] = [:]
@@ -1150,7 +1224,9 @@ final class AppModel: ObservableObject {
             aliases[clusterID] = value
         }
         return SpeakerOverlayPresentation(
-            rows: rows, clusterIDs: clusterIDs, aliases: aliases, isStale: false, isSingleCluster: false
+            rows: rows, clusterIDs: clusterIDs, aliases: aliases, isStale: false,
+            isSingleCluster: false, turnCount: turnCount,
+            distinguishedVoiceCount: distinguishedVoiceCount, isUnreadable: false
         )
     }
 
@@ -1158,6 +1234,10 @@ final class AppModel: ObservableObject {
     /// edited transcript misses by construction; only a change to the artifact itself needs this.
     private func invalidateSpeakerOverlayCache() {
         speakerOverlayCache = nil
+        // The transcript view precomputes its row labels off the render path, so it needs an explicit
+        // signal that the stored analysis moved — a finished run, a rename, a clear. Publishing a
+        // counter rather than the labels themselves keeps the 4 Hz playback tick out of this entirely.
+        speakerOverlayRevision &+= 1
     }
 
     /// Re-transcribe a single segment (F92): slice that segment's audio from `meeting.wav`, run the

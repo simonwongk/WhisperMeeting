@@ -3806,6 +3806,19 @@ private struct PlayableTranscriptView: View {
     // Marker rename.
     @State private var renamingMarker: RecordingMarker?
     @State private var renameText = ""
+    // Anonymous speaker labels (F220). Every one of these is PRECOMPUTED and stored, never derived in
+    // a row body: this view redraws every visible row on the 4 Hz playback tick, so a per-row overlay
+    // search plus an alias lookup there is the exact regression F160 documents for the search
+    // highlighter. `refreshSpeakerReview()` rebuilds them when the stored analysis actually changes.
+    @State private var speakerLabelsByIndex: [Int: String] = [:]
+    @State private var speakerReviewState: SpeakerReviewState = .notAnalyzed
+    @State private var speakerClusterIDs: [Int] = []
+    @State private var speakerAliases: [Int: String] = [:]
+    // Speaker-label rename / clear / rerun.
+    @State private var renamingSpeakerCluster: Int?
+    @State private var speakerRenameText = ""
+    @State private var confirmClearSpeakerLabels = false
+    @State private var confirmAnalyzeAgain = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Distinguishes chevron navigation (glides) from typing (snaps): recomputeVisible() leaves
     // this false; moveSearchSelection(by:) sets it just before changing the selection.
@@ -3975,6 +3988,13 @@ private struct PlayableTranscriptView: View {
                 qualityReviewBanner
             }
 
+            // F220. Shown for every state except "never analyzed" — five of them end with no labels
+            // on screen, and an unexplained ordinary transcript is the one outcome a person who just
+            // ran an analysis cannot interpret.
+            if speakerReviewState.showsReviewBanner {
+                speakerReviewBanner
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
@@ -4029,6 +4049,51 @@ private struct PlayableTranscriptView: View {
             playback.seek(to: time)
             playback.player.play()
             seekRequest = nil
+        }
+        // The precomputed labels are rebuilt only when the stored analysis moves: on appearance, when
+        // a run starts or stops, and when `invalidateSpeakerOverlayCache()` bumps the revision after
+        // an analysis, a rename, or a clear. Never on the playback tick (F160/F220).
+        .task { refreshSpeakerReview() }
+        .onChange(of: model.speakerOverlayRevision) { _, _ in refreshSpeakerReview() }
+        .onChange(of: model.diarizationRunningID) { _, _ in refreshSpeakerReview() }
+        .alert(SpeakerAnalysisCopy.renameTitle, isPresented: Binding(
+            get: { renamingSpeakerCluster != nil },
+            set: { if !$0 { renamingSpeakerCluster = nil } }
+        )) {
+            TextField(SpeakerAnalysisCopy.renameFieldLabel, text: $speakerRenameText)
+            Button(SpeakerAnalysisCopy.renameSaveButton) {
+                if let clusterID = renamingSpeakerCluster {
+                    model.renameSpeaker(clusterID: clusterID, to: speakerRenameText, in: meetingID)
+                }
+                renamingSpeakerCluster = nil
+            }
+            Button("Cancel", role: .cancel) { renamingSpeakerCluster = nil }
+        } message: {
+            Text(SpeakerAnalysisCopy.renameMessage)
+        }
+        // Destructive and irreversible, so it is confirmed — and the cancel verb says what keeping
+        // them costs rather than leaving "Cancel" to mean two different things.
+        .confirmationDialog(
+            SpeakerAnalysisCopy.clearTitle,
+            isPresented: $confirmClearSpeakerLabels,
+            titleVisibility: .visible
+        ) {
+            Button(SpeakerAnalysisCopy.clearConfirmButton, role: .destructive) {
+                model.clearSpeakerDiarization(for: meetingID)
+            }
+            Button(SpeakerAnalysisCopy.clearCancelButton, role: .cancel) {}
+        } message: {
+            Text(SpeakerAnalysisCopy.clearMessage)
+        }
+        // A rerun is not a refresh: clusters are formed afresh and typed labels are deliberately not
+        // carried across, so it is confirmed with that said plainly.
+        .alert(SpeakerAnalysisCopy.analyzeAgainTitle, isPresented: $confirmAnalyzeAgain) {
+            Button("Cancel", role: .cancel) {}
+            Button(SpeakerAnalysisCopy.analyzeAgainButton) {
+                model.requestSpeakerDiarization(for: meetingID)
+            }
+        } message: {
+            Text(SpeakerAnalysisCopy.analyzeAgainMessage)
         }
         .alert("Rename Marker", isPresented: Binding(
             get: { renamingMarker != nil },
@@ -4113,6 +4178,152 @@ private struct PlayableTranscriptView: View {
         }
     }
 
+    // MARK: - Anonymous speaker labels (F220)
+
+    /// Rebuilds everything the label column and the banner read. Called on appearance and whenever the
+    /// stored analysis changes — never from a view body, because this touches the sidecar-backed
+    /// overlay and the body runs on the 4 Hz playback tick (the F160 rule).
+    private func refreshSpeakerReview() {
+        speakerReviewState = model.speakerReviewState(for: meetingID)
+        speakerLabelsByIndex = model.speakerRowLabels(for: meetingID)
+        let presentation = model.speakerOverlay(for: meetingID)
+        speakerClusterIDs = presentation?.clusterIDs ?? []
+        speakerAliases = presentation?.aliases ?? [:]
+    }
+
+    /// Why "Analyze Again" cannot run right now, or nil. The same rule the Improve menu uses, so a
+    /// missing model, a busy Mac or a read-only library is stated here in the same words instead of
+    /// leaving a dead button (`SpeakerAnalysisCopy.footnote(for:)`).
+    private var speakerRerunUnavailability: SpeakerAnalysisUnavailability? {
+        guard let meeting = store.meeting(id: meetingID) else { return nil }
+        return model.speakerAnalysisUnavailability(for: meeting)
+    }
+
+    /// The legend. One banner that renders every state the PRD names — analyzing, stale, unreadable,
+    /// no turns found, only one voice, nothing confidently attributable, and labels on screen — each
+    /// with its own headline and its own plain explanation, plus the actions that state allows.
+    private var speakerReviewBanner: some View {
+        // Resolved once per render and handed down: `speakerAnalysisUnavailability` walks the meeting
+        // list, and the banner needs the same answer twice (the button's enablement and the footnote
+        // that says why it is off).
+        let rerunReason = speakerReviewState.offersAnalyzeAgain ? speakerRerunUnavailability : nil
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if speakerReviewState == .analyzing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "person.wave.2").foregroundStyle(.blue)
+                }
+                Text(SpeakerAnalysisCopy.reviewHeadline(for: speakerReviewState))
+                    .font(.callout.weight(.medium))
+                    .help(SpeakerAnalysisCopy.reviewDetail(for: speakerReviewState))
+                Spacer(minLength: 8)
+                speakerReviewActions(rerunReason: rerunReason)
+            }
+            if speakerReviewState == .analyzing, let fraction = model.diarizationProgress {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel("Speaker analysis \(Int((fraction * 100).rounded())) percent complete")
+            }
+            if speakerReviewState == .labeled, !speakerClusterIDs.isEmpty {
+                speakerLegendChips
+            }
+            // For a labeled result the legend notice is the longer form: it also says a label is
+            // renameable and that it never leaves this meeting. Every other state gets its own
+            // explanation of what happened and what survived it.
+            Text(speakerReviewState == .labeled
+                ? SpeakerAnalysisCopy.legendNotice
+                : SpeakerAnalysisCopy.reviewDetail(for: speakerReviewState))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            // A greyed-out "Analyze Again" always says why, in the same words as the Improve menu.
+            if let reason = rerunReason {
+                Text(SpeakerAnalysisCopy.footnote(for: reason))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .bannerSurface(.blue)
+    }
+
+    @ViewBuilder
+    private func speakerReviewActions(rerunReason: SpeakerAnalysisUnavailability?) -> some View {
+        if speakerReviewState == .analyzing {
+            Button(SpeakerAnalysisCopy.cancelAnalysisButton) { model.cancelSpeakerDiarization() }
+                .buttonStyle(LinkPressStyle())
+                .help("Stop the analysis. Nothing has been saved yet, so nothing is lost.")
+        } else {
+            if speakerReviewState.offersAnalyzeAgain {
+                Button(SpeakerAnalysisCopy.analyzeAgainButton) { confirmAnalyzeAgain = true }
+                    .buttonStyle(LinkPressStyle())
+                    .disabled(rerunReason != nil)
+            }
+            if speakerReviewState.offersClear {
+                Button(SpeakerAnalysisCopy.clearConfirmButton) { confirmClearSpeakerLabels = true }
+                    .buttonStyle(LinkPressStyle())
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// The clusters actually on screen, in first-appearance order, each one a rename target. Text —
+    /// never colour alone: the chip reads its own label, so the legend still works in greyscale, at
+    /// any Dynamic Type size, and under VoiceOver.
+    private var speakerLegendChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(speakerClusterIDs, id: \.self) { clusterID in
+                    let name = SpeakerOverlay.typedAlias(speakerAliases[clusterID])
+                        ?? TranscriptExporter.anonymousSpeakerName(clusterID: clusterID)
+                    Button {
+                        speakerRenameText = speakerAliases[clusterID] ?? ""
+                        renamingSpeakerCluster = clusterID
+                    } label: {
+                        Label(name, systemImage: "pencil")
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.quaternary.opacity(0.5), in: Capsule())
+                            .overlay(Capsule().strokeBorder(.separator, lineWidth: 1))
+                    }
+                    .buttonStyle(PressableChipStyle())
+                    .help("Rename this label. It applies to this meeting only.")
+                    .accessibilityLabel("\(name), inferred label")
+                    .accessibilityHint("Rename this label for this meeting")
+                }
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    /// The label column for one row. A capsule in `metadataChip`'s quiet register, and an invisible
+    /// one of the same width for a row the analysis could not attribute — so the timestamps and the
+    /// text below stay in a straight line instead of jumping column to column down the transcript.
+    @ViewBuilder
+    private func speakerLabelColumn(_ label: String?) -> some View {
+        Group {
+            if let label {
+                Text(label)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
+                    .help(label)
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        }
+        .frame(width: 132, alignment: .leading)
+    }
+
     private var qualityReviewBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.bubble")
@@ -4157,6 +4368,9 @@ private struct PlayableTranscriptView: View {
         // Quality markers are suppressed during search, when the explaining banner is hidden.
         let flags = isSearching ? nil : flagsByIndex[index]
         let isReviewTarget = index == reviewTargetID && !isSearching
+        // One dictionary read. The map was built by `refreshSpeakerReview()` when the stored analysis
+        // last changed, NOT here: this body runs for every visible row on the 4 Hz playback tick.
+        let speakerLabel = speakerLabelsByIndex[index]
         Button {
             if let start = segment.start { playback.seek(to: start) }
         } label: {
@@ -4170,6 +4384,12 @@ private struct PlayableTranscriptView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(isActive ? Color.accentColor : .secondary)
                     .frame(width: 52, alignment: .leading)
+                // The column appears only once an analysis has labels to show, and then it appears on
+                // every row — including the unlabeled ones, which get an empty column rather than
+                // none, so the text below does not shift left and right down the transcript.
+                if !speakerLabelsByIndex.isEmpty {
+                    speakerLabelColumn(speakerLabel)
+                }
                 highlightedText(segment.text, segmentIndex: index)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -4193,6 +4413,12 @@ private struct PlayableTranscriptView: View {
         }
         .buttonStyle(.plain)
         .help(flags.map(qualityHelp) ?? "")
+        // VoiceOver reads the row on its own, without the legend that explains what a label is. The
+        // qualification has to travel with the label, so the whole row is spoken through
+        // `AccessibilityPhrase.speakerLabel`, which always says "inferred" (F220).
+        .modifier(SpeakerRowAccessibility(
+            label: speakerLabel, offset: segment.start ?? 0, text: segment.text
+        ))
         .contextMenu {
             Button("Copy Text") { copyToPasteboard(segment.text) }
             if let start = segment.start {
@@ -4233,6 +4459,27 @@ private struct PlayableTranscriptView: View {
     private func copyToPasteboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+/// Speaks a transcript row as "<label>, inferred, <timestamp>, <text>" when it carries an anonymous
+/// speaker label, and leaves the row's default reading alone when it does not (F220).
+///
+/// A modifier rather than an `if` in the row body because `.accessibilityLabel` cannot be applied
+/// conditionally without branching the view type inside the `Button`'s label builder.
+private struct SpeakerRowAccessibility: ViewModifier {
+    let label: String?
+    let offset: TimeInterval
+    let text: String
+
+    func body(content: Content) -> some View {
+        if let label {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(AccessibilityPhrase.speakerLabel(label, offset: offset, text: text))
+        } else {
+            content
+        }
     }
 }
 
