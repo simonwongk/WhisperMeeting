@@ -286,7 +286,9 @@ func diarizationRerunDropsPreviousAliases() async throws {
     let stored = try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL))
     #expect(stored.aliases.isEmpty)
     #expect(stored.turns.first?.clusterID == 1)   // the new result, not the old one
-    #expect(fixture.model.speakerOverlay(for: fixture.id)?.clusterIDs == [1, 0])
+    // Ascending id, not order of first labelled row: the legend shows "Speaker \(id + 1)", so any
+    // other order makes it read out of sequence (F220, caught on a real meeting).
+    #expect(fixture.model.speakerOverlay(for: fixture.id)?.clusterIDs == [0, 1])
 }
 
 @MainActor

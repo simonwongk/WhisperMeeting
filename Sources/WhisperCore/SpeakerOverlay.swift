@@ -183,17 +183,20 @@ public enum SpeakerOverlay {
         return labels
     }
 
-    /// The distinct clusters actually shown, in first-appearance order — the legend's row order, so
-    /// it matches the reading order of the transcript rather than a numeric sort.
+    /// The distinct clusters actually shown, in ascending id order — which is the order of the
+    /// numbers the legend renders, since a cluster's id is its "Speaker n" number.
     public static func clusterIDs(in rows: [SpeakerOverlayRow]) -> [Int] {
         var seen: Set<Int> = []
-        var ordered: [Int] = []
         for row in rows {
-            guard case let .speaker(clusterID) = row.label, !seen.contains(clusterID) else { continue }
+            guard case let .speaker(clusterID) = row.label else { continue }
             seen.insert(clusterID)
-            ordered.append(clusterID)
         }
-        return ordered
+        // Sorted by the id, because the id IS the number the legend shows ("Speaker \(id + 1)").
+        // Ordering by first labelled row instead looks like first-appearance order but is not:
+        // `densify` already numbers clusters by the first TURN each one speaks, and the row carrying
+        // that turn is very often abstained — 242 of 627 rows on the meeting where this was caught.
+        // The legend then reads "Speaker 2, Speaker 1, Speaker 4, Speaker 3" and looks broken (F220).
+        return seen.sorted()
     }
 
     /// The PRD's rule, in one place: an overlap anywhere in the segment vetoes a name; otherwise a

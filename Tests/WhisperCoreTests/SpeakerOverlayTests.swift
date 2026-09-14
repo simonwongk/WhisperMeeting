@@ -174,15 +174,19 @@ func overlayWithNoTurnsLabelsNothing() {
     ])
 }
 
-@Test("Cluster ids are listed in first-appearance order for a stable legend (F218)")
-func overlayListsClustersInFirstAppearanceOrder() {
+// The expectation here CHANGED, and the old one was the defect: it asserted [2, 0], i.e. order of
+// first labelled row. Running a real 47-minute meeting rendered a legend reading
+// "Speaker 2, Speaker 1, Speaker 4, Speaker 3" because of exactly this. Ids are already assigned by
+// first-appearance of turn, so the legend must follow the id it displays (F220).
+@Test("Cluster ids are listed in the order of the numbers the legend shows (F218/F220)")
+func overlayListsClustersInDisplayedNumberOrder() {
     let rows = [
         SpeakerOverlayRow(segmentIndex: 0, label: .speaker(clusterID: 2)),
         SpeakerOverlayRow(segmentIndex: 1, label: .uncertain),
         SpeakerOverlayRow(segmentIndex: 2, label: .speaker(clusterID: 0)),
         SpeakerOverlayRow(segmentIndex: 3, label: .speaker(clusterID: 2))
     ]
-    #expect(SpeakerOverlay.clusterIDs(in: rows) == [2, 0])
+    #expect(SpeakerOverlay.clusterIDs(in: rows) == [0, 2])
 }
 
 @Test("Reconciling a long transcript against many turns stays linear (F218)")
@@ -233,4 +237,22 @@ func overlayToleratesUnsortableSegments() {
         SpeakerOverlayRow(segmentIndex: 2, label: .unlabeled),
         SpeakerOverlayRow(segmentIndex: 3, label: .speaker(clusterID: 0))
     ])
+}
+
+// F220 — found by running the real app on a real meeting: the legend rendered
+// "Speaker 2, Speaker 1, Speaker 4, Speaker 3". Cluster ids are already assigned in first-appearance
+// order of TURNS by densify, but this returned first-appearance order of LABELLED ROWS. When the
+// first turn's row is abstained — which happens constantly, 242 of 627 rows on that meeting — the
+// two orders disagree and the legend shows its numbers out of sequence. The displayed number is the
+// cluster id, so the legend must be ordered by that same id or it contradicts itself.
+@Test("The legend lists speakers in their numbered order, not order of first labelled row (F220)")
+func overlayLegendIsOrderedByTheNumberItDisplays() {
+    let rows = [
+        SpeakerOverlayRow(segmentIndex: 0, label: .uncertain),          // cluster 0 spoke, abstained
+        SpeakerOverlayRow(segmentIndex: 1, label: .speaker(clusterID: 1)),
+        SpeakerOverlayRow(segmentIndex: 2, label: .speaker(clusterID: 0)),
+        SpeakerOverlayRow(segmentIndex: 3, label: .speaker(clusterID: 3)),
+        SpeakerOverlayRow(segmentIndex: 4, label: .speaker(clusterID: 2))
+    ]
+    #expect(SpeakerOverlay.clusterIDs(in: rows) == [0, 1, 2, 3])
 }
