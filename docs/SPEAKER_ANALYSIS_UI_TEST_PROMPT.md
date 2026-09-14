@@ -106,6 +106,23 @@ With labels showing and a speaker renamed to something unmistakable:
 - **Reduce Motion**: confirm nothing breaks.
 
 ### 8. States worth forcing
+
+Fixtures for these exist — generate them first, they are synthetic speech and belong to no one:
+
+```bash
+cd /Users/simonwang/Documents/Whisper
+./Scripts/bench/diarization/make-ui-fixtures.sh audio /tmp/wm-fixtures
+```
+
+- `ui-single-voice.wav` — measured to produce exactly 1 cluster. Import, transcribe, analyse.
+- `ui-long-cancel.wav` — 3 hours, analyses in 59 s at 1.5 GB peak. That is the Cancel window; a real
+  46-minute meeting finishes in ~15 s, which is too fast to click.
+- Import either and leave it **untranscribed** for the no-transcript gating state.
+- `make-ui-fixtures.sh models off` parks the installed models so you can read the
+  not-installed copy; `models on` restores them. It is a rename, not a delete.
+
+Delete the fixture meetings when you are done.
+
 - **Only one voice**: if any meeting yields a single cluster, the UI must show **no labels at all**
   plus "Only one voice could be told apart" — not every row labelled "Speaker 1". This matters: if
   every row said Speaker 1 and you renamed it, one person's words would be filed under another's name.

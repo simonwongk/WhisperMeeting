@@ -248,6 +248,19 @@ the whole call.
 `/usr/bin/time -l` over the whole process, including Core ML compile and load (0.07–0.09 s warm) and
 the audio read. The repeat run measured RTF 0.00285 and 625 197 056 B (596.2 MiB) peak RSS.
 
+**Memory scales with duration, and it is the number worth watching.** Peak RSS is not flat — the
+whole file is held and clustered at once, so a longer meeting costs more:
+
+| audio duration | wall clock | peak RSS |
+|---:|---:|---:|
+| 35.3 min (the real meeting) | 5.9 s | 615 MiB |
+| 180.0 min (`ui-long-cancel.wav`) | 59.2 s | **1 538 MiB** |
+
+Roughly 8.5 MiB per minute of audio. Three hours — longer than any meeting this app has recorded —
+stays inside 1.5 GB, so no duration cap is needed on the machines this ships to. Measured with
+`Scripts/bench/diarization/make-ui-fixtures.sh audio`, which builds that three-hour fixture; it exists
+because a 46-minute meeting analyses in ~15 s, too fast to exercise the Cancel button (F230).
+
 **Determinism is bit-identical, not merely equivalent.** Three consecutive runs on the microphone
 track produced byte-identical turn dumps — `shasum -a 256` returned
 `9d37db23234ae17e013a08fe0942a817d97d3960520a50578d970f0697c225d0` for all three, and for two further
