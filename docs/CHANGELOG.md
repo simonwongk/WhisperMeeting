@@ -9,6 +9,31 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Library index writes are transactional (F190)
+
+Saving the meeting index is now a transaction with a recorded lineage, so a crash, a full disk, or a
+second copy of WhisperMeet can no longer silently discard a writer's changes.
+
+- Every save commits a numbered **generation** and keeps past generations as independent copies
+  beside the index. A save that would wipe the library no longer destroys what came before it, and a
+  past generation can be restored — as a new save, so the restore is itself undoable.
+- A save that loses a race to another writer is **refused and preserved**, never silently applied or
+  discarded. Both versions stay on disk and the app says which is which.
+- The library reports when it finds two genuinely different versions of the index rather than picking
+  one, and it opens read-only until you choose. Adopting is the default bias everywhere else: a
+  crash, an older build's write, or a hand-restore is never reported as a conflict.
+- A single-writer lease tells you when another copy of the app has the library open. It is advisory
+  only and never makes a library read-only.
+- Everything added is advisory. Delete the new sidecar files and the library opens exactly as it did
+  before, which is what keeps the documented hand-recovery procedures working.
+
+Saving is also faster: the index is written once per save instead of twice, measured at 23.2 ms for a
+2.6 MB library against 60.3 ms without the write memory.
+
+**Privacy note.** Retained generations contain the text of deleted meetings until they age out —
+about a week, with one indefinite exception. Audio is removed immediately. See
+`docs/RECOVERY.md`; a command to clear them is tracked as F239.
+
 ## Speaker analysis — anonymous, local, and honest about what it doesn't know (F216–F221)
 
 You can now ask a finished meeting **Analyze Speaker Turns**. A model on your Mac groups the audio

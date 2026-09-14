@@ -181,3 +181,109 @@ func aSaveFailureMessageSurvivesTheNextStep() throws {
     #expect(store.storageErrorMessage?.isEmpty == false)
     _ = message
 }
+
+// F190 Task 11 — the app-level restore. This is the one call standing between "the bytes survive on
+// disk" and "the user gets their library back", and it is also the only mutator in `MeetingStore`
+// that must work while the library is READ-ONLY. Everything else is refused when health is not
+// complete; a recovery action that were refused for the same reason would leave the exact dead end
+// F193 was filed for.
+
+@Test("The recovery list distinguishes a real generation from a wipe (F190)")
+@MainActor
+func theRecoveryListShowsRecordCounts() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = MeetingStore(rootDirectory: root)
+    for index in 0..<17 { store.upsert(meeting("meeting \(index)")) }
+
+    let generations = try store.indexGenerations()
+    // "42 · 0 meetings · 3 min ago" beside "41 · 17 meetings · yesterday" is exactly the
+    // discrimination the 2026-08-14 recovery failed to make.
+    #expect(generations.contains { $0.recordCount == 17 })
+    #expect(generations.allSatisfy { $0.bytesMatchName })
+}
+
+@Test("Restoring a generation brings the library back and is itself undoable (F190)")
+@MainActor
+func restoringAGenerationBringsTheLibraryBack() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = MeetingStore(rootDirectory: root)
+    for index in 0..<17 { store.upsert(meeting("meeting \(index)")) }
+    let realCount = store.meetings.count
+
+    // The wipe: every meeting deleted, committed as a perfectly valid empty generation.
+    for record in store.meetings { store.delete(id: record.id) }
+    #expect(store.meetings.isEmpty)
+
+    let target = try #require(
+        try store.indexGenerations().first { $0.recordCount == realCount },
+        "the 17-meeting generation is not in the recovery list"
+    )
+    try store.restoreIndexGeneration(target)
+
+    #expect(store.meetings.count == realCount, "the restore did not reach memory")
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meetings.count == realCount, "the restore did not reach disk")
+    #expect(reopened.health == .complete)
+    // Append-only, so the empty generation is still there and the restore can be undone.
+    #expect(try reopened.indexGenerations().contains { $0.recordCount == 0 })
+}
+
+@Test("A restore works on a read-only library, and what it does and does not fix (F190)")
+@MainActor
+func restoringWorksWhileTheLibraryIsReadOnly() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // The incident shape exactly: a real library, then a valid-but-empty index beside recording
+    // folders that hold finished recordings. That is `.suspectEmpty` — degraded, every mutator
+    // refused — and it is the state a user would actually be trying to recover from.
+    let seed = MeetingStore(rootDirectory: root)
+    let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
+    for index in 0..<3 {
+        let id = UUID()
+        let directory = recordings.appendingPathComponent(id.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var wav = WAVWriter.header(sampleRate: 16_000, dataByteCount: 32_000)
+        wav.append(Data(count: 32_000))
+        try wav.write(to: directory.appendingPathComponent("meeting.wav"))
+        seed.upsert(MeetingRecord(
+            id: id, title: "meeting \(index),",
+            recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed
+        ))
+    }
+    let realCount = seed.meetings.count
+    for record in seed.meetings { seed.update(id: record.id) { $0.title = "kept" } }
+    // Wipe the index only — the recordings stay, which is what makes it suspicious.
+    try Data("[]".utf8).write(to: root.appendingPathComponent("meetings.json"), options: .atomic)
+    try Data("[]".utf8).write(to: root.appendingPathComponent("meetings.backup.json"), options: .atomic)
+
+    let damaged = MeetingStore(rootDirectory: root)
+    #expect(damaged.isDegraded, "expected a degraded library to recover from")
+    #expect(damaged.meetings.isEmpty)
+    // Ordinary mutation is refused, as F187 requires.
+    damaged.upsert(meeting("should be refused"))
+    #expect(damaged.meetings.isEmpty)
+
+    // The recovery action is NOT refused. It does not trust memory at all: the bytes come off disk,
+    // verified against the fingerprint in their own name and decoded before anything is installed.
+    let target = try #require(
+        try damaged.indexGenerations().first { $0.recordCount == realCount },
+        "the real generation is not offered while degraded"
+    )
+    try damaged.restoreIndexGeneration(target)
+
+    // The bytes are back on disk — the part that matters, and the part that was irrecoverable before.
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meetings.count == realCount)
+    #expect(reopened.health == .complete)
+    #expect(!reopened.isDegraded)
+
+    // What it does NOT fix, pinned so it is not a surprise: `degrade(to:)` only ever worsens, and
+    // one health value is shared by the meeting, vocabulary and replacement-rule stores. Clearing it
+    // here could re-open mutation over a vocabulary index that is still corrupt, so this instance
+    // stays read-only and the user must relaunch. Making recovery complete without a relaunch is
+    // F193's job, not this mechanism's.
+    #expect(damaged.isDegraded, "if this ever passes, re-read the comment above before celebrating")
+}

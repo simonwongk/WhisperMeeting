@@ -672,6 +672,33 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         history.retained(ledger: StoreLedger.read(at: ledgerURL, using: io))
     }
 
+    /// Brings a retained generation back as the current one (F190).
+    ///
+    /// **Append-only.** The chosen bytes are committed as a NEW generation through the ordinary
+    /// algorithm, so a restore is itself undoable and the generation being replaced stays on disk as
+    /// evidence until it ages out. A restore that rewound the lineage in place would be one more way
+    /// to lose data, which is the opposite of the point.
+    ///
+    /// Verified twice before anything is installed: the bytes must match the fingerprint in their own
+    /// file name, and they must decode as `Value`. Restoring bytes that are not the ones the user
+    /// picked from a list is worse than refusing, because they would have no way to know.
+    ///
+    /// This is the call that makes F190's guarantee real. That guarantee is **recoverability, not
+    /// detection**: nothing in a write protocol can tell a valid-but-wrong generation from a valid
+    /// one — `[]`, or ten blank stubs, decodes cleanly and `.complete` is an honest report of it.
+    /// What the design promises is that committing such a generation cannot destroy the last real
+    /// ones, and that this brings one back.
+    @discardableResult
+    public func restore(generation: RetainedGeneration) throws -> SaveOutcome {
+        let bytes = try history.data(of: generation)
+        let value = try decoder.decode(Value.self, from: bytes)
+        // `expecting:` is deliberately the CURRENT generation rather than the restored one: a
+        // restore is an ordinary write that happens to carry old content, and it must lose a race
+        // with a live sibling writer exactly like any other.
+        let current = try? load()
+        return try save(value, expecting: current?.token)
+    }
+
     /// Conflict branches awaiting a decision. They are never pruned automatically.
     ///
     /// A branch that cannot be READ is still listed (F236). Dropping it would be worse here than

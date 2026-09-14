@@ -853,6 +853,36 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// Every retained index generation, newest first, for a recovery list (F190).
+    ///
+    /// Readable while the library is degraded — it reads and reports, and changes nothing.
+    func indexGenerations() throws -> [RetainedGeneration] {
+        try meetingFiles.retainedGenerations()
+    }
+
+    /// Brings a retained generation back as the current index (F190).
+    ///
+    /// **The one mutator that works while the library is read-only,** and deliberately so. Every
+    /// other mutator is refused when `health` is not `.complete`; a recovery action refused for the
+    /// same reason would leave exactly the dead end F193 was filed for — a library that explains it
+    /// is damaged and offers no way out. It is safe to allow because it does not trust the in-memory
+    /// value at all: the bytes come off disk, are verified against the fingerprint in their own file
+    /// name, and are decoded before anything is installed.
+    ///
+    /// Append-only, through the ordinary write algorithm, so the generation being replaced stays on
+    /// disk and the restore is itself undoable.
+    func restoreIndexGeneration(_ generation: RetainedGeneration) throws {
+        let outcome = try meetingFiles.restore(generation: generation)
+        meetingsToken = outcome.token
+        persistCommitCount += 1
+        // Re-read rather than decoding into memory a second time, so `meetings` and the ordering
+        // come from exactly the bytes that are now on disk.
+        loadMeetings()
+        writeConflict = nil
+        unsavedChanges = false
+        storageErrorMessage = nil
+    }
+
     /// Re-reads the library after a lost race, so the next save can succeed.
     ///
     /// A conflict is a transient race, not a damaged library: nothing was made read-only, and the
