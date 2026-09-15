@@ -164,15 +164,28 @@ def _install_fake_mlx(transcription, aligner_items=None):
     stt.utils = utils
     mlx_audio = ModuleType("mlx_audio")
     mlx_audio.stt = stt
+    # F240: main() patches the qwen3_asr module's mask builder before loading any model, so the fake
+    # tree has to carry one for the patch to land on.
+    qwen3_asr = ModuleType("mlx_audio.stt.models.qwen3_asr.qwen3_asr")
+    qwen3_asr.create_additive_causal_mask = lambda N, offset=0: _StockMaskArray(N, offset)
+    qwen3_asr_pkg = ModuleType("mlx_audio.stt.models.qwen3_asr")
+    qwen3_asr_pkg.qwen3_asr = qwen3_asr
+    models = ModuleType("mlx_audio.stt.models")
+    models.qwen3_asr = qwen3_asr_pkg
+    stt.models = models
     for name, module in {
         "mlx": mlx, "mlx.core": core, "numpy": numpy,
         "mlx_audio": mlx_audio, "mlx_audio.stt": stt, "mlx_audio.stt.utils": utils,
+        "mlx_audio.stt.models": models,
+        "mlx_audio.stt.models.qwen3_asr": qwen3_asr_pkg,
+        "mlx_audio.stt.models.qwen3_asr.qwen3_asr": qwen3_asr,
     }.items():
         sys.modules[name] = module
+    return qwen3_asr
 
 
 def _run_main(transcription, language="auto", aligner_items=None):
-    _install_fake_mlx(transcription, aligner_items=aligner_items)
+    fake_qwen3_asr = _install_fake_mlx(transcription, aligner_items=aligner_items)
     directory = tempfile.mkdtemp()
     output = os.path.join(directory, "out.json")
     audio = os.path.join(directory, "audio.wav")
@@ -190,7 +203,7 @@ def _run_main(transcription, language="auto", aligner_items=None):
     if os.path.exists(output):
         with open(output, encoding="utf-8") as handle:
             payload = json.load(handle)
-    return code, payload
+    return code, payload, fake_qwen3_asr
 
 
 class EmptyTranscriptTests(unittest.TestCase):
@@ -198,11 +211,166 @@ class EmptyTranscriptTests(unittest.TestCase):
 
     def test_empty_text_writes_empty_payload_and_exits_zero(self):
         transcription = SimpleNamespace(text="   ", segments=[])
-        code, payload = _run_main(transcription)
+        code, payload, _module = _run_main(transcription)
         self.assertEqual(code, 0)
         self.assertIsNotNone(payload)
         self.assertEqual(payload["text"], "")
         self.assertEqual(payload["alignedItems"], [])
+
+    def test_main_installs_the_fused_mask_before_loading_models(self):
+        """F240 — the patch has to be in place for both the ASR decoder and the forced aligner."""
+        _code, _payload, module = _run_main(SimpleNamespace(text="   ", segments=[]))
+        self.assertTrue(getattr(module, "_whispermeet_fused_mask", False))
+        self.assertIsNone(module.create_additive_causal_mask(1, offset=5).astype("float16"))
+
+
+class _ScriptedStep:
+    """A fake batched decoder step for F240.
+
+    Each ORIGINAL row emits its own scripted token sequence, independent of which rows are still
+    alive, so a test can assert that eviction changes only the WIDTH the step is called with and
+    never the tokens a row produces. `widths` records the batch width of every call.
+
+    `evictable=False` deliberately leaves the instance with no `filter` attribute, which is how a
+    plain callable (the three pre-F240 tests, and the sequential fallback) must still behave.
+    """
+
+    def __init__(self, scripts, evictable):
+        self.scripts = scripts
+        self.rows = list(range(len(scripts)))  # original row index per live position
+        self.pos = [0] * len(scripts)
+        self.widths = []
+        if evictable:
+            self.filter = self._filter
+
+    def _filter(self, keep):
+        self.rows = [self.rows[i] for i in keep]
+
+    def __call__(self, tokens):
+        self.widths.append(len(tokens))
+        out = []
+        for row in self.rows:
+            index = self.pos[row]
+            self.pos[row] = index + 1
+            out.append(self.scripts[row][index] if index < len(self.scripts[row]) else 99)
+        return out
+
+
+class GreedyDecodeRowsEvictionTests(unittest.TestCase):
+    """F240 — a row that hit EOS must stop being decoded, without changing any row's output.
+
+    Measured motivation: over 12 real 60 s chunks at the shipped batch of 4, 2556 row-steps produced
+    1937 useful tokens (24.2% discarded), and the batch holding two near-silent chunks discarded
+    52.1% — rows of 7 and 21 tokens dragged through all 236 steps of their loudest neighbour.
+    """
+
+    SCRIPTS = [[5, 7, 8, 99], [6, 99]]
+    FIRST = [1, 2]
+    EXPECTED = [[1, 5, 7, 8], [2, 6]]
+
+    def test_evicts_a_finished_row_and_keeps_every_output(self):
+        step = _ScriptedStep(self.SCRIPTS, evictable=True)
+        rows = qwen.greedy_decode_rows(self.FIRST, step, {99}, max_tokens=50)
+        self.assertEqual(rows, self.EXPECTED)
+        # Row 1 finishes on the third iteration, so the batch must narrow 2 -> 1 from then on.
+        self.assertEqual(step.widths, [2, 2, 1, 1])
+
+    def test_eviction_does_not_change_the_result(self):
+        without = qwen.greedy_decode_rows(
+            self.FIRST, _ScriptedStep(self.SCRIPTS, evictable=False), {99}, max_tokens=50
+        )
+        with_eviction = qwen.greedy_decode_rows(
+            self.FIRST, _ScriptedStep(self.SCRIPTS, evictable=True), {99}, max_tokens=50
+        )
+        self.assertEqual(without, with_eviction)
+
+    def test_a_plain_callable_without_filter_is_never_narrowed(self):
+        """The pre-F240 contract: `step` may be a bare callable, and then every row is fed to the end."""
+        step = _ScriptedStep(self.SCRIPTS, evictable=False)
+        rows = qwen.greedy_decode_rows(self.FIRST, step, {99}, max_tokens=50)
+        self.assertEqual(rows, self.EXPECTED)
+        self.assertEqual(step.widths, [2, 2, 2, 2])
+
+    def test_all_rows_finishing_together_never_calls_filter(self):
+        """Nothing to evict when the whole batch ends on the same step — filter must not be called."""
+        step = _ScriptedStep([[99], [99]], evictable=True)
+        called = []
+        step.filter = lambda keep: called.append(keep)
+        rows = qwen.greedy_decode_rows([1, 2], step, {99}, max_tokens=50)
+        self.assertEqual(rows, [[1], [2]])
+        self.assertEqual(called, [])
+
+
+class _StockMaskArray:
+    """Stands in for the mx.array the stock mask builder returns, recording the dtype asked for."""
+
+    def __init__(self, n, offset):
+        self.n, self.offset, self.asked = n, offset, []
+
+    def astype(self, dtype):
+        self.asked.append(dtype)
+        return self
+
+
+class FusedAttentionMaskTests(unittest.TestCase):
+    """F240 — the fused kernel's own mask replaces the materialized one where they are equivalent."""
+
+    def _module(self):
+        built = []
+
+        def stock(N, offset=0):
+            array = _StockMaskArray(N, offset)
+            built.append(array)
+            return array
+
+        return SimpleNamespace(create_additive_causal_mask=stock), built
+
+    def test_decode_step_resolves_to_no_mask(self):
+        """L == 1: the stock mask row is all zeros, so `None` is exact and takes the fused path."""
+        module, built = self._module()
+        self.assertTrue(qwen.install_fused_attention_mask(module))
+        self.assertIsNone(module.create_additive_causal_mask(1, offset=873).astype("float16"))
+        self.assertEqual(built, [])  # the stock array is never even allocated
+
+    def test_prefill_resolves_to_the_causal_string(self):
+        """offset == 0: linds and rinds are both arange(N), i.e. a plain causal mask."""
+        module, built = self._module()
+        qwen.install_fused_attention_mask(module)
+        self.assertEqual(module.create_additive_causal_mask(736).astype("float16"), "causal")
+        self.assertEqual(module.create_additive_causal_mask(736, offset=0).astype("float16"), "causal")
+        self.assertEqual(built, [])
+
+    def test_any_other_shape_keeps_the_stock_array(self):
+        """Not a shape this app reaches, but the patch must narrow behaviour nowhere."""
+        module, built = self._module()
+        qwen.install_fused_attention_mask(module)
+        resolved = module.create_additive_causal_mask(4, offset=9).astype("float16")
+        self.assertEqual(len(built), 1)
+        self.assertIs(resolved, built[0])
+        self.assertEqual((built[0].n, built[0].offset), (4, 9))
+        self.assertEqual(built[0].asked, ["float16"])
+
+    def test_install_is_idempotent(self):
+        module, _ = self._module()
+        self.assertTrue(qwen.install_fused_attention_mask(module))
+        patched = module.create_additive_causal_mask
+        self.assertFalse(qwen.install_fused_attention_mask(module))
+        self.assertIs(module.create_additive_causal_mask, patched)
+
+    def test_kill_switch_leaves_the_stock_builder_in_place(self):
+        module, _ = self._module()
+        stock = module.create_additive_causal_mask
+        os.environ[qwen.FAST_ATTENTION_ENV] = "0"
+        try:
+            self.assertFalse(qwen.install_fused_attention_mask(module))
+            self.assertIs(module.create_additive_causal_mask, stock)
+        finally:
+            del os.environ[qwen.FAST_ATTENTION_ENV]
+
+    def test_enabled_by_default_and_only_zero_disables(self):
+        self.assertTrue(qwen.fast_attention_enabled({}))
+        self.assertTrue(qwen.fast_attention_enabled({qwen.FAST_ATTENTION_ENV: "1"}))
+        self.assertFalse(qwen.fast_attention_enabled({qwen.FAST_ATTENTION_ENV: "0"}))
 
 
 if __name__ == "__main__":

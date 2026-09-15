@@ -20,6 +20,68 @@ ASR_BATCH_SIZE = 4
 ASR_MAX_TOKENS = 8192
 # Qwen3 end-of-turn / end-of-text ids, as mlx-audio's own `stream_generate` stops on them.
 ASR_EOS_TOKEN_IDS = (151645, 151643)
+# F240: set to "0" to restore mlx-audio's stock materialized attention mask. The fast path is a
+# monkey-patch on a pinned library, so a field regression should be a restart, not a rebuild.
+FAST_ATTENTION_ENV = "WHISPERMEET_QWEN_FAST_ATTENTION"
+
+
+def fast_attention_enabled(environ=None):
+    """Whether the F240 fused-mask patch should be installed (default on)."""
+    return (os.environ if environ is None else environ).get(FAST_ATTENTION_ENV, "1") != "0"
+
+
+class _FusedAttentionMask:
+    """Defers the mask decision to the call site's `.astype(dtype)` (F240).
+
+    `TextAttention.__call__` does `create_additive_causal_mask(L, offset).astype(queries.dtype)` and
+    hands the result to `mx.fast.scaled_dot_product_attention`. That kernel also accepts `None` and
+    the string `"causal"`, which take a fused path instead of reading an explicit array — but the
+    `.astype` call in between means a patched function cannot simply return a string. This stands in
+    for the array and resolves at `.astype` time.
+
+    Patching the mask builder rather than copying `TextAttention.__call__` keeps the change to the
+    one thing that is actually wrong. It also fails loudly — with `AttributeError` — if a future
+    mlx-audio changes the call site, instead of silently diverging from an upstream edit.
+    """
+
+    __slots__ = ("_resolve",)
+
+    def __init__(self, resolve):
+        self._resolve = resolve
+
+    def astype(self, dtype):
+        return self._resolve(dtype)
+
+
+def install_fused_attention_mask(module):
+    """Replace the materialized additive causal mask with the fused kernel's own (F240).
+
+    Two cases are provably equivalent to the array the stock builder returns, and they are the only
+    two this app reaches:
+
+    - `N == 1` (every decode step): `linds` is `[offset]` and `rinds` is `arange(offset + 1)`, so
+      `offset < j` is False for every `j <= offset` — the row is all zeros, i.e. no mask at all.
+    - `offset == 0` (every prefill, and the forced aligner, which runs with `cache=None`): `linds`
+      and `rinds` are both `arange(N)`, which is exactly a causal mask.
+
+    Any other shape keeps the stock array, so this narrows behaviour nowhere. Returns True when the
+    patch was installed, False when it was already present or disabled.
+    """
+    if not fast_attention_enabled() or getattr(module, "_whispermeet_fused_mask", False):
+        return False
+    original = module.create_additive_causal_mask
+
+    def fused_causal_mask(N: int, offset: int = 0):
+        if N == 1:
+            return _FusedAttentionMask(lambda _dtype: None)
+        if offset == 0:
+            return _FusedAttentionMask(lambda _dtype: "causal")
+        stock = original(N, offset=offset)
+        return _FusedAttentionMask(stock.astype)
+
+    module.create_additive_causal_mask = fused_causal_mask
+    module._whispermeet_fused_mask = True
+    return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -149,25 +211,45 @@ def plan_batches(chunk_count: int, batch_size: int) -> list[list[int]]:
 
 
 def greedy_decode_rows(first, step, eos_ids, max_tokens):
-    """Batched greedy decoding bookkeeping (F213).
+    """Batched greedy decoding bookkeeping (F213; row eviction added by F240).
 
     `first` is the argmax after the prefill for each row; `step(tokens)` feeds one token per row
-    and returns the next argmax per row. A row stops collecting at its EOS but keeps being fed —
-    the batch runs until every row is done — so its later tokens are simply ignored.
+    and returns the next argmax per row.
+
+    If `step` exposes a `filter(keep)` callable, a row that reaches its EOS is EVICTED from the
+    batch: `filter` receives the positions — indices into the current, possibly already-narrowed
+    batch — that survive, so the caller can narrow its KV cache to match, and decoding continues at
+    the smaller width. Measured over 12 real 60 s chunks at the shipped batch of 4, 2556 row-steps
+    produced 1937 useful tokens (24.2% discarded), and the batch holding two near-silent chunks
+    discarded 52.1% — rows of 7 and 21 tokens dragged through all 236 steps of their loudest
+    neighbour. Eviction never changes what a row emits, only how long the batch stays wide.
+
+    Without that attribute the pre-F240 behaviour is kept exactly: a finished row keeps being fed
+    until every row is done and its later tokens are ignored. `step` is a bare lambda in the unit
+    tests, so `filter` must stay optional rather than become a required contract.
     """
     outputs = [[] for _ in first]
     done = [False] * len(first)
+    active = list(range(len(first)))  # original row index for each live batch position
     tokens = list(first)
+    evict = getattr(step, "filter", None)
     for _ in range(max_tokens):
-        for row, token in enumerate(tokens):
+        keep = []
+        for position, token in enumerate(tokens):
+            row = active[position]
             if done[row]:
                 continue
             if token in eos_ids:
                 done[row] = True
             else:
                 outputs[row].append(token)
+                keep.append(position)
         if all(done):
             break
+        if evict is not None and len(keep) != len(tokens):
+            evict(keep)
+            active = [active[position] for position in keep]
+            tokens = [tokens[position] for position in keep]
         tokens = step(tokens)
     return outputs
 
@@ -191,7 +273,14 @@ def _decode_batch(asr, np, mx, KVCache, batch_audio, language):
         if audio_tokens is not None and count != audio_tokens:
             raise ValueError(f"audio token count mismatch in batch: {count} vs {audio_tokens}")
         audio_tokens = count
-    audio_features = asr.get_audio_features(mx.concatenate(features), mx.concatenate(masks))
+    # F240: encode each chunk on its own rather than as one batch. `AudioEncoder` flattens a batch
+    # into a single long sequence guarded by a dense block mask, and MLX's attention kernel has no
+    # all-masked-block skip, so a batch of four computes ~9.73M score entries to use ~314k. Attention
+    # blocks never span a chunk boundary, so this is the same computation with the waste removed —
+    # and the waste grows quadratically with batch width.
+    audio_features = mx.concatenate(
+        [asr.get_audio_features(f, m) for f, m in zip(features, masks)]
+    )
     mx.eval(audio_features)
 
     prompt = asr._build_prompt(audio_tokens, language)
@@ -217,6 +306,23 @@ def _decode_batch(asr, np, mx, KVCache, batch_audio, language):
         next_tokens = mx.argmax(next_logits[:, -1, :], axis=-1)
         mx.async_eval(next_tokens)
         return next_tokens.tolist()
+
+    def evict(keep):
+        """Narrow every layer's KV cache to the rows still decoding (F240).
+
+        `keep` holds positions into the current batch, so a plain gather on axis 0 — which is the
+        batch axis of KVCache's (B, n_kv_heads, capacity, head_dim) buffers — is all that is needed.
+        `offset` is a step counter shared by every row and does not change. The next
+        `update_and_fetch` then sees an incoming batch and a cache that agree on B.
+        """
+        rows = mx.array(keep, mx.uint32)
+        for layer_cache in cache:
+            if layer_cache.keys is None:
+                continue
+            layer_cache.keys = layer_cache.keys[rows]
+            layer_cache.values = layer_cache.values[rows]
+
+    step.filter = evict
 
     rows = greedy_decode_rows(first.tolist(), step, set(ASR_EOS_TOKEN_IDS), ASR_MAX_TOKENS)
     return [asr._tokenizer.decode(row, skip_special_tokens=True) for row in rows]
@@ -290,7 +396,12 @@ def write_payload(output_path: str, payload: dict) -> None:
 def main() -> int:
     import mlx.core as mx
     import numpy as np
+    from mlx_audio.stt.models.qwen3_asr import qwen3_asr
     from mlx_audio.stt.utils import load_audio, load_model
+
+    # F240. Installed before any model is built so both the ASR decoder and the forced aligner get
+    # it — the aligner imports the same `TextModel` from this module (qwen3_forced_aligner.py:12).
+    install_fused_attention_mask(qwen3_asr)
 
     args = parse_args()
     audio = np.asarray(load_audio(args.audio))
