@@ -968,11 +968,34 @@ final class MeetingStore: ObservableObject {
         meetingsToken = outcome.token
         persistCommitCount += 1
         // Re-read rather than decoding into memory a second time, so `meetings` and the ordering
-        // come from exactly the bytes that are now on disk.
-        loadMeetings()
+        // come from exactly the bytes that are now on disk — and re-evaluate health, so a successful
+        // restore actually returns the library to a writable state (F193). Before this, restore
+        // brought the records back and left every mutator still refusing, because `health` only ever
+        // worsened: the user completed a recovery and their next edit vanished silently.
+        revalidateHealth()
         writeConflict = nil
         unsavedChanges = false
         storageErrorMessage = nil
+    }
+
+    /// Recomputes `health` from all three persisted stores, exactly as `init` does (F193).
+    ///
+    /// This is the **only** place `health` is assigned outside `degrade(to:)`, and the reset is safe
+    /// only because all three loads run immediately after it. `degrade`'s refusal to improve exists
+    /// because one shared value gates three files, and its own comment gives the failure a plain
+    /// assignment causes: "a perfectly readable `vocabulary.json` loading after a corrupt
+    /// `meetings.json` puts `.complete` back and silently re-opens every mutator on a library that
+    /// cannot be read". That hazard is a *partial* update. Here the invariant is preserved by
+    /// restating it — after these three calls `health` is again the worst state any store currently
+    /// loads to, not the worst it ever reached. A store that is still broken degrades it right back,
+    /// so recovery cannot whitewash a library that is still unreadable.
+    ///
+    /// Only recovery may call this. Nothing on a save path should reconsider health.
+    private func revalidateHealth() {
+        health = .complete
+        loadMeetings()
+        loadVocabulary()
+        loadReplacementRules()
     }
 
     /// Re-reads the library after a lost race, so the next save can succeed.

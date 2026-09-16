@@ -280,10 +280,19 @@ func restoringWorksWhileTheLibraryIsReadOnly() throws {
     #expect(reopened.health == .complete)
     #expect(!reopened.isDegraded)
 
-    // What it does NOT fix, pinned so it is not a surprise: `degrade(to:)` only ever worsens, and
-    // one health value is shared by the meeting, vocabulary and replacement-rule stores. Clearing it
-    // here could re-open mutation over a vocabulary index that is still corrupt, so this instance
-    // stays read-only and the user must relaunch. Making recovery complete without a relaunch is
-    // F193's job, not this mechanism's.
-    #expect(damaged.isDegraded, "if this ever passes, re-read the comment above before celebrating")
+    // F193 has since done its job, and this is where that shows. This assertion used to read
+    // `#expect(damaged.isDegraded)` with a note that the live instance stays read-only and the user
+    // must relaunch, because `degrade(to:)` only ever worsens and one health value is shared by the
+    // meeting, vocabulary and replacement-rule stores — so clearing it here could have re-opened
+    // mutation over a vocabulary index that was still corrupt.
+    //
+    // That hazard was real and is still respected. `restoreIndexGeneration` does not clear health;
+    // it calls `revalidateHealth()`, which resets and then re-runs all three loads, so the value is
+    // again the worst state any store *currently* loads to rather than the worst it ever reached. A
+    // library whose vocabulary is still unreadable therefore stays read-only —
+    // `revalidationDoesNotWhitewashAStillBrokenLibrary` in `LibraryRecoveryActionTests.swift` is the
+    // test that holds that line, and it is the one to read if this ever needs revisiting.
+    #expect(!damaged.isDegraded, "F193: a restore must return the live instance to a writable state")
+    #expect(damaged.health == .complete)
+    #expect(damaged.meetings.count == realCount, "the live instance sees the restored records too")
 }
