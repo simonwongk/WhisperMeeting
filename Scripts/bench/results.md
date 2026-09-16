@@ -3,6 +3,26 @@
 Warm release→text latency (model resident) + accuracy. Lower is better everywhere.
 CER normalized 繁→簡 (OpenCC) with punctuation/spaces stripped.
 
+## Scope — this is a DICTATION benchmark, not a meeting benchmark
+
+Read before quoting any number here. All ten clips are short (about 2–3 s), which is the Quick
+Dictation shape. For meetings these numbers are invalid, and for a different reason per engine:
+
+- **Every row is warm.** `benchmark.py:201-206` calls each engine once and discards the timing, so
+  no row includes model load. A real meeting pays that load once (measured elsewhere at 2–11 s).
+- **Whisper rows** (`pytorch-turbo`, `mlx-turbo-*`): Whisper pads every input to a 30 s mel window,
+  so a 3 s clip pays one full encoder pass and roughly ten tokens of decode. Long-form audio pays
+  that same encoder per window but far more decode per window. These rows are therefore
+  encoder-dominated and **understate decode cost** — which is exactly where a CPU fp32 path is
+  worst. Do not extrapolate a realtime factor for a meeting from them.
+- **Qwen row**: does not go through `Scripts/qwen_transcribe.py` at all. `benchmark.py:59-70` starts
+  a resident daemon (`bench/qwen_server.py`). And because `transcribe_batched` returns `None` for a
+  single chunk (`qwen_transcribe.py:225-237`), a 3 s clip never exercises the batched 60 s × 4
+  meeting path or the forced aligner. The production meeting path is untested by this file.
+
+The repo has no long-form ASR measurement. Until one exists, treat a meeting-speed claim sourced
+from this table as unsupported.
+
 ## Summary
 
 | engine | avg sec | EN WER | 中文 CER | code-switch CER |
