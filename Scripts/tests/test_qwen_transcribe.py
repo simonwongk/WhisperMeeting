@@ -467,5 +467,98 @@ class JoinedTextTests(unittest.TestCase):
             qwen.joined_text(["alpha", None, "beta"])
 
 
+class DegenerateCycleLengthTests(unittest.TestCase):
+    """F260 — the pure tail-cycle detector behind the decoder's repetition guard.
+
+    Real exhibit it exists for: a six-second chunk decoded to `"No, "` x4034 (~8,000 tokens), i.e.
+    the loop stopped only because it hit `ASR_MAX_TOKENS`. Qwen3-ASR's greedy decode has no
+    repetition penalty, so nothing else ends a cycle.
+    """
+
+    def test_no_cycle_in_ordinary_output(self):
+        self.assertIsNone(qwen.degenerate_cycle_length(list(range(40))))
+
+    def test_a_single_token_repeated_to_the_threshold_is_a_cycle_of_one(self):
+        tokens = [7] * qwen.ASR_MAX_CYCLE_REPS
+        self.assertEqual(qwen.degenerate_cycle_length(tokens), 1)
+
+    def test_one_repeat_short_of_the_threshold_is_not_a_cycle(self):
+        # The false-positive guard: genuine speech does repeat a word a handful of times.
+        tokens = [7] * (qwen.ASR_MAX_CYCLE_REPS - 1)
+        self.assertIsNone(qwen.degenerate_cycle_length(tokens))
+
+    def test_a_two_token_cycle_is_detected_at_its_own_length(self):
+        tokens = [4, 9] * qwen.ASR_MAX_CYCLE_REPS
+        self.assertEqual(qwen.degenerate_cycle_length(tokens), 2)
+
+    def test_a_cycle_longer_than_the_window_is_not_detected(self):
+        block = list(range(qwen.ASR_MAX_CYCLE_LEN + 1))
+        self.assertIsNone(qwen.degenerate_cycle_length(block * qwen.ASR_MAX_CYCLE_REPS))
+
+    def test_a_cycle_that_was_broken_by_real_speech_is_not_flagged(self):
+        tokens = [7] * qwen.ASR_MAX_CYCLE_REPS + [1, 2, 3, 4]
+        self.assertIsNone(qwen.degenerate_cycle_length(tokens))
+
+
+class _CyclingStep:
+    """A `step` that feeds one fixed cycle forever — the shape a stuck decoder produces."""
+
+    def __init__(self, cycle, rows=1, evictable=False):
+        self.cycle = cycle
+        self.calls = 0
+        self.widths = []
+        self.rows = rows
+        if evictable:
+            self.filter = lambda keep: None
+
+    def __call__(self, tokens):
+        self.widths.append(len(tokens))
+        token = self.cycle[self.calls % len(self.cycle)]
+        self.calls += 1
+        return [token] * len(tokens)
+
+
+class GreedyDecodeRepetitionGuardTests(unittest.TestCase):
+    """F260 — a stuck row must stop at the guard, not run to `max_tokens`."""
+
+    def test_a_single_token_loop_stops_at_the_guard_not_max_tokens(self):
+        rows = qwen.greedy_decode_rows([7], _CyclingStep([7]), {99}, max_tokens=4096)
+        self.assertEqual(rows, [[7] * qwen.ASR_MAX_CYCLE_REPS])
+
+    def test_a_two_token_loop_stops_at_the_guard(self):
+        rows = qwen.greedy_decode_rows([4], _CyclingStep([9, 4]), {99}, max_tokens=4096)
+        self.assertEqual(rows[0], [4, 9] * qwen.ASR_MAX_CYCLE_REPS)
+
+    def test_the_guard_never_runs_to_the_token_ceiling(self):
+        """The regression this ticket is about: 8,192 tokens of one repeated unit."""
+        rows = qwen.greedy_decode_rows([7], _CyclingStep([7]), {99}, max_tokens=qwen.ASR_MAX_TOKENS)
+        self.assertLess(len(rows[0]), 64)
+
+    def test_a_short_natural_repetition_is_decoded_in_full(self):
+        """"No, no, no." is real speech; only a machine says it sixteen times running."""
+        script = [[5, 5, 5, 8, 99]]
+        step = _ScriptedStep(script, evictable=False)
+        rows = qwen.greedy_decode_rows([5], step, {99}, max_tokens=50)
+        self.assertEqual(rows, [[5, 5, 5, 5, 8]])
+
+    def test_a_guarded_row_is_evicted_and_its_neighbour_keeps_decoding(self):
+        """It must exit through F240's eviction path, not a second exit of its own.
+
+        A single stuck row cannot show this: the loop breaks on `all(done)` before it ever evicts,
+        which `test_all_rows_finishing_together_never_calls_filter` already pins. So batch a stuck
+        row against a healthy one and watch the width narrow while the neighbour finishes intact.
+        """
+        stuck = [7] * 40
+        healthy = list(range(100, 130)) + [99]
+        step = _ScriptedStep([stuck, healthy], evictable=True)
+        rows = qwen.greedy_decode_rows([7, 100], step, {99}, max_tokens=4096)
+
+        self.assertEqual(rows[0], [7] * qwen.ASR_MAX_CYCLE_REPS)
+        self.assertEqual(rows[1], [100] + healthy[:-1])
+        # The batch starts at 2 and narrows to 1 once the guard retires the stuck row.
+        self.assertEqual(step.widths[0], 2)
+        self.assertEqual(step.widths[-1], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

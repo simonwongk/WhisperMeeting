@@ -333,18 +333,37 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// `whisperExecutable` and `qwenInstalled` are injected so the engine/runtime reconciliation
+    /// below is testable (F262). They cannot come from the `findWhisperExecutable` stored property:
+    /// reading it touches `self`, which is illegal until `selectedEngine` has a value — and the
+    /// value of `selectedEngine` is exactly what depends on them.
     init(
         store: MeetingStore,
         recorder: AudioCaptureEngine,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        whisperExecutable: @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() },
+        qwenInstalled: @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
     ) {
         self.store = store
         self.recorder = recorder
         self.defaults = defaults
         let storedEngine = MeetingTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.modelKey) ?? ""
-        ) ?? .whisperLarge
-        selectedEngine = storedEngine.isSupportedOnCurrentMac ? storedEngine : .whisperLarge
+        )
+        // F262: a missing preference is not a choice, so default to an engine that is actually
+        // installed rather than to Whisper Large unconditionally — which left a Qwen-only Mac with a
+        // selection it could never satisfy, and no way to notice but the Settings picker. A stored
+        // choice is preserved even when uninstalled; `transcriptionUnavailableMessage` handles that,
+        // because this initial assignment does not fire `selectedEngine`'s persisting `didSet`,
+        // while a silent switch later would overwrite the user's choice on disk.
+        let whisperURL = whisperExecutable()
+        let qwenIsInstalled = qwenInstalled()
+        selectedEngine = TranscriptionEngineAvailability.initialSelection(
+            stored: storedEngine,
+            isWhisperInstalled: whisperURL != nil,
+            isQwenInstalled: qwenIsInstalled,
+            isQwenSupported: MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac
+        )
         selectedLanguage = WhisperLanguage(
             rawValue: defaults.string(forKey: Self.languageKey) ?? ""
         ) ?? .automatic
@@ -353,8 +372,9 @@ final class AppModel: ObservableObject {
         ) ?? .local
         // Off unless the user has explicitly turned it on (F183).
         linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
-        runtimeExecutableURL = findWhisperExecutable()
-        isQwenInstalled = QwenASRRuntime.isInstalled()
+        // Reuse the probes already run above rather than hitting the filesystem twice.
+        runtimeExecutableURL = whisperURL
+        isQwenInstalled = qwenIsInstalled
         isSummarizerInstalled = isSummarizerModelInstalled()
         isDiarizationInstalled = isDiarizationModelInstalled()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
@@ -367,6 +387,19 @@ final class AppModel: ObservableObject {
 
     var isSelectedEngineInstalled: Bool {
         selectedEngine == .qwenBalanced ? isQwenInstalled : isRuntimeInstalled
+    }
+
+    /// Why transcription cannot start, or nil when it can (F262).
+    ///
+    /// Replaces "Install the selected transcription model in Settings", which reads as false to a
+    /// user who has just installed a model — it simply was not the selected one. This names both
+    /// sides of the mismatch and points at the picker that fixes it.
+    var transcriptionUnavailableMessage: String? {
+        TranscriptionEngineAvailability.unavailableMessage(
+            selected: selectedEngine,
+            isWhisperInstalled: isRuntimeInstalled,
+            isQwenInstalled: isQwenInstalled
+        )
     }
 
     var isInstallingRecognitionRuntime: Bool {
@@ -1806,7 +1839,9 @@ final class AppModel: ObservableObject {
             if isSelectedEngineInstalled {
                 beginTranscription(id: id)
             } else {
-                alertMessage = "Recording saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
+                // F262: name the engine that is installed instead of telling a user who just
+                // installed one to install one.
+                alertMessage = transcriptionUnavailableMessage
             }
             return id
         } catch let recordingError {
@@ -2243,7 +2278,7 @@ final class AppModel: ObservableObject {
         if isSelectedEngineInstalled {
             beginTranscription(id: id)
         } else {
-            alertMessage = "Recording imported and saved on this Mac. Install the selected transcription model in Settings, then choose Transcribe."
+            alertMessage = transcriptionUnavailableMessage
         }
         return id
     }
@@ -2341,9 +2376,14 @@ final class AppModel: ObservableObject {
             ? isQwenInstalled
             : isRuntimeInstalled
         guard engineIsInstalled else {
-            alertMessage = settings.engine == .qwenBalanced
-                ? QwenASRError.runtimeNotInstalled.localizedDescription
-                : LocalWhisperError.runtimeNotInstalled.localizedDescription
+            // F262: one message for all three gates. The per-engine "install this runtime" strings
+            // are still right when nothing else is installed, but they cannot say "…and the other
+            // engine you just installed is available", which is the case that confused users.
+            alertMessage = TranscriptionEngineAvailability.unavailableMessage(
+                selected: settings.engine,
+                isWhisperInstalled: isRuntimeInstalled,
+                isQwenInstalled: isQwenInstalled
+            )
             return
         }
         guard transcription.enqueue(id) else { return }

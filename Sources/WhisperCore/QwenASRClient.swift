@@ -191,12 +191,25 @@ public struct QwenASRClient: Sendable {
         // are none: text present but no reconciled segments. Guarding here (rather than only on the
         // helper-silent branch) keeps the message truthful even if a future helper emits a warning
         // alongside usable word timings — we would never show "unavailable" over a seekable transcript.
-        guard !text.isEmpty, segments.isEmpty else { return nil }
-        if let helperWarning = payload.alignmentWarning {
-            return "Timestamp alignment unavailable; complete text preserved. \(helperWarning)"
+        guard !text.isEmpty else { return nil }
+        if segments.isEmpty {
+            if let helperWarning = payload.alignmentWarning {
+                return "Timestamp alignment unavailable; complete text preserved. \(helperWarning)"
+            }
+            return "Timestamp alignment unavailable; complete text preserved. "
+                + "The recognizer's word timings could not be matched to the transcript."
         }
-        return "Timestamp alignment unavailable; complete text preserved. "
-            + "The recognizer's word timings could not be matched to the transcript."
+
+        // F263: alignment now degrades per sentence, so a transcript can be MOSTLY seekable with a
+        // few passages untimed. Saying "unavailable" over that would be false, and saying nothing
+        // would leave the gaps unexplained — so describe exactly what happened.
+        let untimed = segments.filter { $0.start == nil }.count
+        guard untimed > 0 else { return nil }
+        let passages = untimed == 1 ? "passage" : "passages"
+        let pronoun = untimed == 1 ? "it is" : "they are"
+        return "\(untimed) \(passages) could not be matched to the recognizer's word timings, so "
+            + "\(pronoun) shown without a timestamp. The text is complete, and the rest of the "
+            + "transcript is seekable."
     }
 
     private var runtimeIsComplete: Bool {
