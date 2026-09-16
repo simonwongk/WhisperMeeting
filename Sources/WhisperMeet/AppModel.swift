@@ -217,6 +217,12 @@ final class AppModel: ObservableObject {
     /// A probed link whose duration is above `longMediaDurationThreshold`, awaiting explicit
     /// confirmation. Never a hard cap — a legitimate 4-hour conference recording stays possible.
     @Published var pendingLongMediaConfirmation: MediaProbe?
+    /// Retained index generations offered for review while a recovery decision is pending (F193),
+    /// newest first. Non-nil only between `requestLibraryRecovery()` and the user acting on it,
+    /// which is what makes recovery explicit: the ticket requires it "never run automatically", so
+    /// the offer and the act are two separate calls. Deliberately the same shape as
+    /// `pendingLongMediaConfirmation` above, so this model has one confirmation idiom, not two.
+    @Published var pendingLibraryRecovery: [RetainedGeneration]?
     /// Whether the user has opted into the link-import feature. Off by default: every other
     /// boundary-crossing capability in this app is opt-in (Qwen, Claude summaries), so the network
     /// path is explicit rather than ambient.
@@ -2915,6 +2921,72 @@ extension AppModel {
     /// never be greyed out without the menu saying why.
     var libraryReadOnlyFootnote: String? {
         store.isDegraded ? ReadOnlyLibraryNotice.menuFootnote : nil
+    }
+
+    /// Offers the retained index generations for review — the way out of a read-only library.
+    ///
+    /// `ReadOnlyLibraryNotice` tells the user to "resolve recovery" in four places; until F193 there
+    /// was nothing in the app that could. Reads and reports only: listing generations is safe while
+    /// degraded because it touches nothing.
+    func requestLibraryRecovery() {
+        guard store.isDegraded else {
+            // Rolling an older index over a healthy library is data loss dressed as a repair, so it
+            // is refused rather than offered. Say so, rather than presenting an empty sheet.
+            alertMessage = """
+                The meeting library is readable, so there is nothing to recover. \
+                Restoring an earlier copy would discard newer meetings.
+                """
+            return
+        }
+        do {
+            let generations = try store.indexGenerations()
+            guard !generations.isEmpty else {
+                alertMessage = """
+                    \(ReadOnlyLibraryNotice.lead) No earlier copy of the index was retained, so it \
+                    cannot be restored from inside WhisperMeet. Your recordings are untouched — see \
+                    Recovery in the documentation for the manual steps.
+                    """
+                return
+            }
+            pendingLibraryRecovery = generations
+        } catch {
+            alertMessage = """
+                \(ReadOnlyLibraryNotice.lead) The retained copies could not be listed. \
+                Your recordings are untouched. \(error.localizedDescription)
+                """
+        }
+    }
+
+    /// Restores one reviewed generation. Does nothing at all unless `confirmed` is true (F193).
+    ///
+    /// The unconfirmed call is not a no-op by accident — it is the seam the UI's confirmation dialog
+    /// hangs on, in the same shape as `importFromURL(_:confirmedLongDuration:)`. Audio is never
+    /// touched: this replaces an index, and the quarantined bytes of the damaged one stay on disk
+    /// because the restore goes through the ordinary append-only write.
+    func recoverLibrary(from generation: RetainedGeneration, confirmed: Bool = false) {
+        guard confirmed else { return }
+        do {
+            try store.restoreIndexGeneration(generation)
+            pendingLibraryRecovery = nil
+            if store.isDegraded {
+                // The index came back but the library is still not writable, so another persisted
+                // store is damaged too. Never report success in that case — the F187 honesty rule.
+                alertMessage = """
+                    The meeting index was restored, but WhisperMeet still could not fully read its \
+                    library, so it stays in read-only mode. Your recordings are untouched.
+                    """
+            }
+        } catch {
+            alertMessage = """
+                The meeting index could not be restored. Nothing was changed and your recordings are \
+                untouched. \(error.localizedDescription)
+                """
+        }
+    }
+
+    /// Dismisses a pending recovery offer without restoring anything.
+    func cancelLibraryRecovery() {
+        pendingLibraryRecovery = nil
     }
 
     func verifyLibraryIntegrity() -> [LibraryIntegrityResult] {
