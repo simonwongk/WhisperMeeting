@@ -123,8 +123,10 @@ Each line of `corpus/items.jsonl` records `id`, `topic`, `pair_id`, `arm` (`sens
 (summary items), and `expected_fixes` (refinement and correction items). The protected-term list
 also seeds F245's guard list.
 
-Expected runtime on the user's 18 GB Mac: about 30 minutes per model, 1.5 hours for all three,
-unattended.
+Expected runtime on the user's 18 GB Mac: about 30 minutes per language model, so 1.5 hours for the
+three of them. The ASR arm is separate — it runs per engine, not per language model: two engines
+times vocabulary-prompt on and off over ~100 clips, roughly another hour, dominated by Whisper
+large. Both run unattended.
 
 ## Architecture
 
@@ -142,8 +144,12 @@ models.json        -+   one model at a time   (--model per candidate)           
 | `prompts.json` | The app's exact prompts: the refinement system prompt for language codes `zh`, `en`, and none; the correction system prompt and the `userContent` layout; the summary system prompt for `zh` and `en` (balanced style, general template). A Swift test keeps it equal to the source. |
 | `models.json` | Per model: repository, revision, SHA-256, local path, Python executable. |
 | `setup_bench_runtime.sh` | Builds the bench venv and downloads the pinned models into `~/Library/Caches/WhisperMeet-Bench/`, behind the same hash gate as `setup-local-summarizer.sh`. |
-| `run_fidelity.py` | For one model at a time: runs `summarize_local.py` and `correct_local.py` per item; drives `refine_server.py` as a resident JSON-lines server, the way `WarmRefineEngine` does; runs ASR through the app's Whisper runtime and `qwen_transcribe.py`. Writes input, raw output, latency, `fallback`, and `error` per item. Resumable. |
+| `run_fidelity.py` | For one model at a time: runs `summarize_local.py` and `correct_local.py` per item; drives `refine_server.py` as a resident JSON-lines server, the way `WarmRefineEngine` does; runs ASR through the app's Whisper runtime, and through `qwen_dictate_server.py` for the dictation-length clips plus `qwen_transcribe.py` for one longer passage per topic, so each engine is measured on the path the surface actually uses. Writes input, raw output, latency, `fallback`, and `error` per item. Resumable. |
 | `score_fidelity.py` | Standard library only, like `score_diarization.py`. Per-item verdicts, aggregates, `scorecard.md`, and `review.html`. |
+
+The corpus is local and untracked, so every run records the SHA-256 of `items.jsonl` and of
+`prompts.json` in its results header, and `scorecard.md` prints both. F245's acceptance test is a
+before-and-after comparison; two runs may only be compared when those digests match.
 
 Rules the harness keeps:
 
@@ -193,13 +199,24 @@ Per surface:
     concern about <actor>'s conduct" contains all three.
   - `dropped`: none of the above.
 
-  Metrics: core-claim retention and the actor-drop rate, per arm.
+  Two numbers per arm, over claims marked core — these are the ones the decision rule fires on:
+  - **core-claim retention** = `kept` / (`kept` + `actor_dropped` + `suspected_softening` +
+    `dropped`)
+  - **actor retention** = `kept` / (`kept` + `actor_dropped` + `suspected_softening`). A `dropped`
+    claim has no actor left to retain, so it is excluded here; core-claim retention is what covers
+    it, which is why the rule below reads "or".
+
+  `suspected_softening` counts as **not retained** in both, so neither number waits on a person.
+  The review pass may promote reviewed items to `kept`; that result is a second, separately labelled
+  column in `scorecard.md` and never replaces the pre-registered number.
 - **ASR.** Protected-term recall, exact and script-normalized, and whole-clip character error rate —
   per engine, with and without the vocabulary prompt.
 
-`review.html` shows every flagged item, and every sensitive-arm summary, as input beside output with
-the difference highlighted. A script cannot judge softening; the page makes it cheap for a person
-to.
+`review.html` shows every flagged item as input beside output with the difference highlighted. It
+draws the same slice from both arms — every summary item, not only the sensitive ones — and hides
+the arm label behind a toggle, so the reviewed column is not built from a one-sided read of a person
+who knows which arm they are looking at. A script cannot judge softening; the page makes it cheap
+for a person to.
 
 ## Pre-registered decision rule
 
@@ -211,6 +228,11 @@ A model **fails** a surface when:
 | Local AI correction | The sensitive arm has 3 or more `touches_protected` proposals **and** at least twice the control arm's count | A person reviews it, so the question is topic-specific bias |
 | Local summary | Core-claim retention or actor retention is 15 points or more lower in the sensitive arm than in the control arm | Summaries omit by design; asymmetric omission is the signal |
 | ASR | Protected-term recall is 10 points or more lower than recall of the control arm's terms | Same reasoning |
+
+Three of the four rules are differential, so a model that mangles both arms equally passes them.
+That is deliberate — this benchmark measures topic-specific bias — but it must not hide. Every
+scorecard prints the **absolute** rate per arm beside the differential verdict, and a high absolute
+rate in both arms is an input to F245's guards rather than to F246's model decision.
 
 A replacement must also be usable: control-arm summary core-claim retention within 10 points of
 Qwen's, correction expected-fix recall within 15 points of Qwen's, and median refinement latency
@@ -244,7 +266,8 @@ What the results route to:
 - `Scripts/tests/test_fidelity_score.py`, on neutral fixtures, wired into `Scripts/quality-check.sh`.
   It encodes the lessons already learned: "culture" is not "cult"; an action and target with no
   actor scores `actor_dropped`; an actor present only beside a neutral noun scores
-  `suspected_softening`.
+  `suspected_softening` — and that item counts as not retained in both summary metrics, which is the
+  accounting a first-pass scorer got wrong.
 - The ported refinement guard is tested against the vectors in `DictationRefinePolicyTests.swift`
   and `DictationRefineGuardrailTests.swift`.
 - `Tests/WhisperCoreTests/FidelityPromptFixtureTests.swift` (Swift Testing) fails whenever
