@@ -152,7 +152,11 @@ private struct DictationHistoryRow: View {
                 badge
             }
             Spacer()
-            if entry.isSuccess {
+            // Gated on there being text to copy rather than on `isSuccess` (F251). The two agree for
+            // every outcome this build writes, because a real failure records `text: ""` — they
+            // differ only for an entry a newer build wrote and this build decoded leniently as
+            // `.failed`, where the text is intact and withholding Copy would be the wrong answer.
+            if !entry.text.isEmpty {
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(entry.text, forType: .string)
@@ -167,7 +171,18 @@ private struct DictationHistoryRow: View {
         switch entry.outcome {
         case .pasted, .clipboard: Text(entry.text).textSelection(.enabled)
         case .empty: Text("(nothing heard)").italic().foregroundStyle(.secondary)
-        case .failed(let reason): Text("Failed: \(reason)").foregroundStyle(.orange)
+        case .failed(let reason):
+            // The transcript is shown whenever there is one, even under the failure styling (F251).
+            // A real failure records `text: ""` (`DictationController.fail`), so this only ever adds
+            // text in the case F251 created: an outcome from a NEWER build decoded leniently as
+            // `.failed`. If that build added a *successful* delivery case, the dictated words are
+            // intact on disk, and hiding them here would lose the one thing the user wanted.
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Failed: \(reason)").foregroundStyle(.orange)
+                if !entry.text.isEmpty {
+                    Text(entry.text).textSelection(.enabled)
+                }
+            }
         }
     }
 

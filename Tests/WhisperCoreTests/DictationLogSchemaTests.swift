@@ -124,3 +124,69 @@ func emptyOutcomeObjectStillThrows() {
         _ = try JSONDecoder().decode(DictationLogEntry.Outcome.self, from: Data("{}".utf8))
     }
 }
+
+@Test("An unknown sibling key beside a known case is tolerated, not rejected")
+func unknownSiblingKeyIsTolerated() throws {
+    // The forward-compatible direction, and the shape this leniency most needs to survive: the
+    // likeliest next change to this type is a hand-written encoder that adds a key beside the case
+    // (F250 prescribes exactly that). An earlier version of this decoder required exactly one key
+    // and threw on this input, reintroducing the whole-log failure it was written to close.
+    let outcome = try JSONDecoder().decode(
+        DictationLogEntry.Outcome.self,
+        from: Data(#"{"failed":{"_0":"disk full"},"note":"added by a newer build"}"#.utf8)
+    )
+    #expect(outcome == .failed("disk full"))
+}
+
+@Test("Two known cases at once is corruption and still throws")
+func twoKnownCasesThrow() {
+    // No encoder writes this, so it is damage rather than a version skew.
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(
+            DictationLogEntry.Outcome.self,
+            from: Data(#"{"pasted":{},"clipboard":{}}"#.utf8)
+        )
+    }
+}
+
+@Test("A failed payload is read by name, so extra payload keys cannot lose the reason")
+func failedReasonIsReadByName() throws {
+    let decoder = JSONDecoder()
+    func decode(_ json: String) throws -> DictationLogEntry.Outcome {
+        try decoder.decode(DictationLogEntry.Outcome.self, from: Data(json.utf8))
+    }
+    // The shape a future `case failed(String, Int)` would write. Reading `allKeys.first` here
+    // returned the reason or "" AT RANDOM between processes; `_0` by name is deterministic.
+    #expect(try decode(#"{"failed":{"_0":"real reason","_1":7}}"#) == .failed("real reason"))
+    // Run it enough times that a nondeterministic read would be caught rather than fluked.
+    for _ in 0..<50 {
+        #expect(try decode(#"{"failed":{"_0":"real reason","_1":7}}"#) == .failed("real reason"))
+    }
+}
+
+@Test("An unreadable failed payload says so instead of accusing with an empty reason")
+func unreadableFailedPayloadGetsAPlaceholder() throws {
+    let decoder = JSONDecoder()
+    func decode(_ json: String) throws -> DictationLogEntry.Outcome {
+        try decoder.decode(DictationLogEntry.Outcome.self, from: Data(json.utf8))
+    }
+    // `.failed("")` renders as "Failed: " in the dictation history — an accusation with no content.
+    #expect(try decode(#"{"failed":{}}"#) == .failed("the reason could not be read"))
+    #expect(try decode(#"{"failed":{"_0":123}}"#) == .failed("the reason could not be read"))
+}
+
+@Test("An unknown case with siblings names them deterministically")
+func unknownCaseWithSiblingsIsDeterministic() throws {
+    let decoder = JSONDecoder()
+    let json = #"{"teleported":{},"note":"x"}"#
+    let first = try decoder.decode(DictationLogEntry.Outcome.self, from: Data(json.utf8))
+    // Sorted, so the recorded reason is the same on every machine and every run.
+    guard case let .failed(reason) = first else {
+        Issue.record("expected .failed, got \(first)")
+        return
+    }
+    #expect(reason.contains("note, teleported"))
+    for _ in 0..<50 {
+        #expect(try decoder.decode(DictationLogEntry.Outcome.self, from: Data(json.utf8)) == first)
+    }
+}

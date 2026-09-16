@@ -21,10 +21,12 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         }
 
         /// Lenient decode (F251), for the reason F188 established: this is an associated-value enum
-        /// with synthesized `Codable`, so a case written by a NEWER build threw `dataCorrupted` —
-        /// and because `dictation-log.json` decodes as one `DictationLog` value, that single entry
-        /// made the user's whole dictation history unreadable. The synthesized decoder rejects an
-        /// unknown key with "Invalid number of keys found, expected one".
+        /// with synthesized `Codable`, so a case written by a NEWER build threw
+        /// `DecodingError.typeMismatch` — "Invalid number of keys found, expected one." — and
+        /// because `dictation-log.json` decodes as one `DictationLog` value, that single entry made
+        /// the user's whole dictation history unreadable. (An earlier version of this comment said
+        /// `dataCorrupted`; the message was right but the case was wrong, which would send someone
+        /// debugging by error case looking for the wrong thing.)
         ///
         /// The wire format is deliberately unchanged. The obvious-looking fix — persisting the
         /// discriminant as a plain string, the way the sibling `refinement` field already does — was
@@ -39,30 +41,57 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         /// information is degraded rather than destroyed, unlike a fallback to `.empty`. A
         /// structurally empty object still throws: leniency is for values this build does not
         /// recognise, not for corruption.
+        private static let knownCases: Set<String> = ["pasted", "clipboard", "empty", "failed"]
+
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: AnyKey.self)
-            guard let key = container.allKeys.first, container.allKeys.count == 1 else {
+            // Sorted, so every message and every fallback below is deterministic. `allKeys` order is
+            // not stable across processes, and an earlier version of this initialiser read
+            // `allKeys.first`, which made the decode of `{"failed":{"_0":"reason","_1":7}}` return
+            // the reason or "" at random between runs.
+            let names = container.allKeys.map(\.stringValue).sorted()
+            guard !names.isEmpty else {
                 throw DecodingError.dataCorrupted(
                     .init(
                         codingPath: decoder.codingPath,
-                        debugDescription:
-                            "expected exactly one outcome key, found \(container.allKeys.count)"
+                        debugDescription: "an outcome object carries no case at all"
                     )
                 )
             }
-            switch key.stringValue {
+            let recognized = names.filter(Self.knownCases.contains)
+            // Two known cases at once is corruption, not a version skew — no encoder writes it.
+            guard recognized.count <= 1 else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "an outcome object carries two cases: \(recognized)"
+                    )
+                )
+            }
+            // An unrecognised SIBLING key is tolerated rather than rejected, which is the
+            // forward-compatible direction and the one this leniency exists for: the likeliest next
+            // change to this type is a hand-written encoder that adds a key beside the case (F250
+            // prescribes exactly that shape), and refusing it would reintroduce the whole-log
+            // failure this initialiser was written to close.
+            switch recognized.first {
             case "pasted": self = .pasted
             case "clipboard": self = .clipboard
             case "empty": self = .empty
             case "failed":
+                let key = AnyKey(stringValue: "failed")!
                 let nested = try container.nestedContainer(keyedBy: AnyKey.self, forKey: key)
-                let reason = nested.allKeys.first.flatMap {
-                    try? nested.decode(String.self, forKey: $0)
-                }
-                self = .failed(reason ?? "")
+                // By NAME first. `_0` is the label the synthesized encoder writes for the single
+                // associated value; falling back to the lowest-sorted key covers a future shape
+                // without guessing nondeterministically, and a non-string payload lands on the
+                // placeholder rather than an empty accusation.
+                let byName = try? nested.decode(String.self, forKey: AnyKey(stringValue: "_0")!)
+                let byOrder = nested.allKeys.map(\.stringValue).sorted().first
+                    .flatMap { AnyKey(stringValue: $0) }
+                    .flatMap { try? nested.decode(String.self, forKey: $0) }
+                self = .failed(byName ?? byOrder ?? "the reason could not be read")
             default:
                 self = .failed(
-                    "Recorded by a newer version of WhisperMeet (\(key.stringValue))."
+                    "Recorded by a newer version of WhisperMeet (\(names.joined(separator: ", ")))."
                 )
             }
         }
