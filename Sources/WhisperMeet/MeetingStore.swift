@@ -635,6 +635,42 @@ final class MeetingStore: ObservableObject {
         update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
 
+    /// Adds one tag across a selection with a single index write (F40's rule: don't write per record).
+    /// Normalization goes through `MeetingTags.normalized`, exactly as `setTags(id:_:)` does, so the
+    /// batch and single paths cannot diverge.
+    func addTag(_ tag: String, to ids: [UUID]) {
+        guard mutationIsAllowed() else { return }
+        let target = Set(ids)
+        var changed = false
+        for index in meetings.indices where target.contains(meetings[index].id) {
+            let merged = MeetingTags.normalized((meetings[index].tags ?? []) + [tag])
+            guard merged != meetings[index].tags else { continue }
+            meetings[index].tags = merged.isEmpty ? nil : merged
+            changed = true
+        }
+        guard changed else { return }
+        persistMeetings()
+    }
+
+    /// Removes one tag from every meeting in the selection, matched case-insensitively so it agrees
+    /// with `MeetingTags.normalized`'s own de-duplication rule.
+    func removeTag(_ tag: String, from ids: [UUID]) {
+        guard mutationIsAllowed() else { return }
+        let target = Set(ids)
+        let needle = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        var changed = false
+        for index in meetings.indices where target.contains(meetings[index].id) {
+            guard let existing = meetings[index].tags else { continue }
+            let remaining = existing.filter { $0.lowercased() != needle }
+            guard remaining.count != existing.count else { continue }
+            meetings[index].tags = remaining.isEmpty ? nil : remaining
+            changed = true
+        }
+        guard changed else { return }
+        persistMeetings()
+    }
+
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
     func togglePin(id: UUID) {
         guard mutationIsAllowed() else { return }
@@ -720,6 +756,62 @@ final class MeetingStore: ObservableObject {
             return
         }
         storageErrorMessage = nil
+    }
+
+    /// Deletes several meetings in one pass: one read-only check, one index write. Looping
+    /// `delete(id:)` would run a full index write per meeting, the same cost F40 removed from
+    /// per-keystroke transcript edits (F199).
+    ///
+    /// Per record this keeps both existing invariants: the containment check that stops a corrupt or
+    /// empty `recordingPath` resolving outside the library (F148 #6), and the read-only guard ahead of
+    /// any filesystem side effect, because `removeRecordingDirectory` runs before the index is
+    /// persisted (F187). No notes-sidecar hook, matching `delete(id:)` — the sidecar lives in the
+    /// recording folder, which dies with the meeting. Returns the ids actually removed.
+    @discardableResult
+    func delete(ids: [UUID]) -> [UUID] {
+        guard mutationIsAllowed() else { return [] }
+        var removed: [UUID] = []
+        var keptTitles: [String] = []
+        var escapedLibrary = false
+        for id in ids {
+            guard let meeting = meeting(id: id) else { continue }
+            let directory = recordingURL(for: meeting).deletingLastPathComponent()
+            guard isWithinLibrary(directory),
+                  directory.standardizedFileURL != rootDirectory.standardizedFileURL else {
+                // Index entry only — nothing on disk is touched, exactly as `delete(id:)` does.
+                removed.append(id)
+                escapedLibrary = true
+                continue
+            }
+            do {
+                try removeRecordingDirectory(directory)
+                removed.append(id)
+            } catch {
+                // Don't half-delete: keep the meeting so the library stays consistent.
+                keptTitles.append(meeting.title)
+            }
+        }
+        guard !removed.isEmpty else {
+            if !keptTitles.isEmpty {
+                storageErrorMessage = Self.batchDeleteFailureMessage(keptTitles)
+            }
+            return []
+        }
+        let removing = Set(removed)
+        meetings.removeAll { removing.contains($0.id) }
+        persistMeetings()
+        // After `persistMeetings()`, which clears `storageErrorMessage` on a successful write.
+        if !keptTitles.isEmpty {
+            storageErrorMessage = Self.batchDeleteFailureMessage(keptTitles)
+        } else if escapedLibrary {
+            storageErrorMessage = "One or more meetings had a recording path outside the library, so no files were deleted from disk for them; they were removed from the list."
+        }
+        return removed
+    }
+
+    private static func batchDeleteFailureMessage(_ titles: [String]) -> String {
+        let names = titles.map { "“\($0)”" }.joined(separator: ", ")
+        return "\(titles.count) meeting(s) could not have their recordings removed, so they were kept to avoid an inconsistent library: \(names)."
     }
 
     func addVocabulary(_ terms: [String]) {

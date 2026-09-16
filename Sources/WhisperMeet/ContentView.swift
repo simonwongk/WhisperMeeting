@@ -24,9 +24,15 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
     @ObservedObject private var store: MeetingStore
-    @State private var selection: SidebarItem? = .record
+    // A set, not an optional: this is what gives the sidebar macOS's native shift-range and
+    // ⌘-toggle selection. Navigation rows share the list with meetings, so a shift-range can
+    // include them; `selectedMeetingIDs` filters them out rather than trying to make them
+    // unselectable, which a single SwiftUI `List` cannot express.
+    @State private var selection: Set<SidebarItem> = [.record]
     @State private var selectedTags: Set<String> = []
-    @State private var pendingDeletion: MeetingRecord?
+    /// Meetings awaiting delete confirmation. A list rather than one record, so a multi-selection
+    /// confirms once and names everything it is about to remove.
+    @State private var pendingDeletion: [MeetingRecord] = []
     @State private var searchText = ""
     // F180 "Ask Meetings" query + scope, held here (like searchText/selectedTags) so they survive the
     // detail view's per-selection recreation and are restored on return.
@@ -63,6 +69,21 @@ struct ContentView: View {
         }
     }
 
+    /// The selected meetings in sidebar order. Navigation items in the selection are ignored, so a
+    /// shift-range that crosses the Meetings section boundary never "selects Settings".
+    private var selectedMeetingIDs: [UUID] {
+        let chosen = Set(selection.compactMap { item -> UUID? in
+            if case let .meeting(id) = item { return id }
+            return nil
+        })
+        return filteredMeetings.map(\.id).filter { chosen.contains($0) }
+    }
+
+    /// The single selected item, when exactly one thing is selected.
+    private var singleSelection: SidebarItem? {
+        selection.count == 1 ? selection.first : nil
+    }
+
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
@@ -95,16 +116,28 @@ struct ContentView: View {
                         MeetingRow(meeting: meeting, selectedTags: $selectedTags)
                             .tag(SidebarItem.meeting(meeting.id))
                             .contextMenu {
-                                Button((meeting.pinned ?? false) ? "Unpin" : "Pin to Top") {
-                                    // The row glides to its new position instead of teleporting
-                                    // (F116). Call-site animation, so search filtering stays
-                                    // instant.
-                                    withAnimation(reduceMotion ? nil : .uiSpring) {
-                                        store.togglePin(id: meeting.id)
+                                // Right-clicking inside a multi-selection acts on the whole
+                                // selection; right-clicking outside it keeps the single-row menu,
+                                // which is the Finder grammar users already expect.
+                                let batch = selectedMeetingIDs.count > 1
+                                    && selectedMeetingIDs.contains(meeting.id)
+                                if batch {
+                                    Button("Delete \(selectedMeetingIDs.count) Meetings", role: .destructive) {
+                                        let chosen = Set(selectedMeetingIDs)
+                                        pendingDeletion = store.meetings.filter { chosen.contains($0.id) }
                                     }
-                                }
-                                Button("Delete Meeting", role: .destructive) {
-                                    pendingDeletion = meeting
+                                } else {
+                                    Button((meeting.pinned ?? false) ? "Unpin" : "Pin to Top") {
+                                        // The row glides to its new position instead of teleporting
+                                        // (F116). Call-site animation, so search filtering stays
+                                        // instant.
+                                        withAnimation(reduceMotion ? nil : .uiSpring) {
+                                            store.togglePin(id: meeting.id)
+                                        }
+                                    }
+                                    Button("Delete Meeting", role: .destructive) {
+                                        pendingDeletion = [meeting]
+                                    }
                                 }
                             }
                     }
@@ -123,7 +156,7 @@ struct ContentView: View {
         // detail view's per-selection recreation). The detail view consumes the seek on appear.
         .onChange(of: model.pendingNavigation) { _, request in
             guard let request else { return }
-            selection = .meeting(request.meetingID)
+            selection = [.meeting(request.meetingID)]
         }
         .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
@@ -150,39 +183,60 @@ struct ContentView: View {
                 .joined(separator: "\n\n"))
         }
         .confirmationDialog(
-            "Permanently delete this meeting?",
+            pendingDeletion.count > 1
+                ? "Permanently delete \(pendingDeletion.count) meetings?"
+                : "Permanently delete this meeting?",
             isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
+                get: { !pendingDeletion.isEmpty },
+                set: { if !$0 { pendingDeletion = [] } }
             ),
             titleVisibility: .visible
         ) {
             Button("Delete Recording and Transcript", role: .destructive) {
-                guard let meeting = pendingDeletion else { return }
-                // Only the list mutation animates (the row collapses); the selection swap stays
-                // outside the transaction so the detail column changes instantly (F116).
+                let doomed = pendingDeletion
+                guard !doomed.isEmpty else { return }
+                // Only the list mutation animates (rows collapse); the selection swap stays outside
+                // the transaction so the detail column changes instantly (F116).
                 withAnimation(reduceMotion ? nil : .uiSpring) {
-                    model.deleteMeeting(id: meeting.id)
+                    model.deleteMeetings(ids: doomed.map(\.id))
                 }
-                if selection == .meeting(meeting.id) {
-                    selection = .record
-                }
-                pendingDeletion = nil
+                let removed = Set(doomed.map { SidebarItem.meeting($0.id) })
+                selection.subtract(removed)
+                if selection.isEmpty { selection = [.record] }
+                pendingDeletion = []
             }
             Button("Keep Meeting", role: .cancel) {
-                pendingDeletion = nil
+                pendingDeletion = []
             }
         } message: {
-            Text("This removes the local recording, its source tracks, and its transcript. This action cannot be undone by WhisperMeet.")
+            if pendingDeletion.count > 1 {
+                Text("This removes the local recording, its source tracks, and its transcript for each of:\n\n"
+                    + pendingDeletion.map { "• \($0.title)" }.joined(separator: "\n")
+                    + "\n\nThis action cannot be undone by WhisperMeet.")
+            } else {
+                Text("This removes the local recording, its source tracks, and its transcript. This action cannot be undone by WhisperMeet.")
+            }
         }
     }
 
     @ViewBuilder
     private var detail: some View {
-        switch selection ?? .record {
+        if selectedMeetingIDs.count > 1 {
+            MeetingBatchView(store: store, meetingIDs: selectedMeetingIDs) {
+                let chosen = Set(selectedMeetingIDs)
+                pendingDeletion = store.meetings.filter { chosen.contains($0.id) }
+            }
+        } else {
+            singleDetail
+        }
+    }
+
+    @ViewBuilder
+    private var singleDetail: some View {
+        switch singleSelection ?? .record {
         case .record:
             RecordMeetingView(model: model) { meetingID in
-                selection = .meeting(meetingID)
+                selection = [.meeting(meetingID)]
             }
         case .vocabulary:
             VocabularyView(store: store)
@@ -3196,7 +3250,8 @@ private struct TranscriptDetailView: View {
 
 /// A left-aligned wrapping layout for tag chips (F171): rows fill the proposed width then wrap,
 /// like text. Sized by the sum of its rows so it composes with the surrounding VStack.
-private struct WrapLayout: Layout {
+/// Used by `TagChipsEditor` here and by `MeetingBatchView` in its own file.
+struct WrapLayout: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
