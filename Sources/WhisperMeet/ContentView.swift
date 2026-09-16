@@ -1497,7 +1497,7 @@ struct SettingsView: View {
                 }
                 Text("Whisper Large remains the default. Qwen3-ASR was the most accurate option in the app's short English, Mandarin, and mixed-language benchmark while remaining fast; it is opt-in until it is proven on long, real meetings.")
                     .foregroundStyle(.secondary)
-                Text("Qwen does not yet use Business Vocabulary. Both engines produce timestamps but do not identify different people. WhisperMeet still preserves separate microphone and system-audio source files.")
+                Text("Qwen does not yet use Business Vocabulary. Whisper always produces timestamps; Qwen reconciles its own word timings against the transcript, so a passage it cannot match is kept as text without a timestamp and says so. Neither engine identifies different people. WhisperMeet still preserves separate microphone and system-audio source files.")
                     .foregroundStyle(.secondary)
             }
 

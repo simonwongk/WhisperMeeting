@@ -143,6 +143,18 @@ public enum TranscriptQuality {
         let lines = segments
             .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+
+        // F261: a loop packed inside ONE segment, which the dominance arithmetic below cannot see.
+        // Checked first, and deliberately *before* the minimum-segment bar: that bar exists because
+        // calling a decode degenerate from a handful of lines needs corroborating evidence, whereas
+        // one unit repeated twenty-plus times without a break inside a single line is self-evidently
+        // not speech and needs none.
+        for line in lines {
+            if let run = degenerateRun(in: line) {
+                return degenerateRunNotice(run)
+            }
+        }
+
         guard lines.count >= repetitionMinimumSegments else { return nil }
 
         var counts: [String: Int] = [:]
@@ -160,6 +172,88 @@ public enum TranscriptQuality {
         This transcript looks like a decode that got stuck: one line repeats \(repeats) times, \
         about \(percent)% of it. The recording itself is fine — try Second Opinion with the other \
         engine, or transcribe it again.
+        """
+    }
+
+    // MARK: - Within-segment degenerate runs (F261)
+
+    /// One unit repeated back-to-back, with no break, inside a single segment.
+    struct DegenerateRun: Equatable {
+        let unit: String
+        let repeats: Int
+    }
+
+    /// How many consecutive repeats of one unit make a passage degenerate rather than emphatic.
+    /// People do say "no, no, no" and "对，对，对" — three or four times, not twenty. Set well above
+    /// real speech because the notice accuses a transcript, and a false accusation is worse than a
+    /// missed one. The observed loop repeated its unit **4,034** times, so the bar has enormous
+    /// headroom on the side that matters.
+    static let degenerateRunMinimumRepeats = 20
+    /// Only short units loop in practice (a token or two: `"No, "`, `"他们，"`). Bounding the unit
+    /// keeps the scan linear and stops a long legitimately-repeated clause from being accused.
+    static let degenerateRunMaximumUnitLength = 16
+
+    /// The shortest unit that repeats at least `degenerateRunMinimumRepeats` times consecutively
+    /// anywhere in `text`, or nil (F261).
+    ///
+    /// Character-based, so it works identically for space-delimited text and for CJK runs that have
+    /// no word boundaries — the two shapes the user reported. It reads only the text: Qwen segments
+    /// carry no model metrics, so nothing here may depend on `compression_ratio`.
+    static func degenerateRun(in text: String) -> DegenerateRun? {
+        let characters = Array(text)
+        guard characters.count >= degenerateRunMinimumRepeats else { return nil }
+
+        for unitLength in 1...degenerateRunMaximumUnitLength {
+            // A run needs this much room to exist at all; longer units need even more, so stop.
+            guard characters.count >= unitLength * degenerateRunMinimumRepeats else { break }
+            var start = 0
+            while start + unitLength * degenerateRunMinimumRepeats <= characters.count {
+                var repeats = 1
+                var next = start + unitLength
+                while next + unitLength <= characters.count,
+                      blocksMatch(characters, start, next, length: unitLength) {
+                    repeats += 1
+                    next += unitLength
+                }
+                if repeats >= degenerateRunMinimumRepeats {
+                    // The first hit is the shortest unit, which is the one worth reporting: a
+                    // `"No, "` loop should be described as `"No, "`, not as `"No, No, "`.
+                    return DegenerateRun(
+                        unit: String(characters[start..<(start + unitLength)]),
+                        repeats: repeats
+                    )
+                }
+                // Skip the run we just measured rather than re-walking it from the next character,
+                // which is what keeps a 16,000-character segment linear instead of quadratic.
+                start += max(1, (repeats - 1) * unitLength)
+            }
+        }
+        return nil
+    }
+
+    /// Element-wise block comparison — avoids allocating a sub-array per candidate position.
+    private static func blocksMatch(
+        _ characters: [Character],
+        _ left: Int,
+        _ right: Int,
+        length: Int
+    ) -> Bool {
+        for offset in 0..<length where characters[left + offset] != characters[right + offset] {
+            return false
+        }
+        return true
+    }
+
+    /// Plain language for a within-segment run. Like the cross-segment notice it only ever *warns*:
+    /// the recording is the source of truth, and collapsing the run would destroy the evidence that
+    /// `TranscriptComparison`, `isTranscriptEdited` and the quality review all measure against.
+    private static func degenerateRunNotice(_ run: DegenerateRun) -> String {
+        let unit = run.unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = unit.isEmpty ? run.unit : unit
+        return """
+        This transcript has a passage where the decode got stuck: “\(shown)” repeats \(run.repeats) \
+        times in a row, which is not something a person said. The recording itself is fine — try \
+        Second Opinion with the other engine, or transcribe it again.
         """
     }
 

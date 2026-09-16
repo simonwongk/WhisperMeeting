@@ -20,6 +20,18 @@ ASR_BATCH_SIZE = 4
 ASR_MAX_TOKENS = 8192
 # Qwen3 end-of-turn / end-of-text ids, as mlx-audio's own `stream_generate` stops on them.
 ASR_EOS_TOKEN_IDS = (151645, 151643)
+# F260: greedy decoding has no repetition penalty, so a row that falls into a cycle emits it until
+# ASR_MAX_TOKENS. A real meeting produced `"No, "` x4034 (~8,000 tokens) for six seconds of audio,
+# i.e. it stopped only at the ceiling. A cycle of at most ASR_MAX_CYCLE_LEN tokens repeated
+# ASR_MAX_CYCLE_REPS times consecutively ends the row instead.
+#
+# ASR_MAX_CYCLE_REPS is deliberately far above natural speech: people say "no, no, no" three or four
+# times, never sixteen identical blocks in a row. Checking only every ASR_CYCLE_CHECK_STRIDE tokens
+# keeps the scan off the per-token hot path; because ASR_MAX_CYCLE_REPS is a multiple of the stride,
+# a pure cycle of length L still trips it at exactly L * ASR_MAX_CYCLE_REPS tokens.
+ASR_MAX_CYCLE_LEN = 8
+ASR_MAX_CYCLE_REPS = 16
+ASR_CYCLE_CHECK_STRIDE = 4
 # F240: set to "0" to restore mlx-audio's stock materialized attention mask. The fast path is a
 # monkey-patch on a pinned library, so a field regression should be a restart, not a rebuild.
 FAST_ATTENTION_ENV = "WHISPERMEET_QWEN_FAST_ATTENTION"
@@ -267,6 +279,35 @@ def plan_batches(chunk_count: int, batch_size: int) -> list[list[int]]:
     return batches
 
 
+def degenerate_cycle_length(
+    tokens,
+    max_cycle_len=ASR_MAX_CYCLE_LEN,
+    min_reps=ASR_MAX_CYCLE_REPS,
+    stride=ASR_CYCLE_CHECK_STRIDE,
+):
+    """The length of the shortest block that repeats `min_reps` times at the tail, else None (F260).
+
+    Only the tail matters: a decoder that has fallen into a cycle never leaves it, and a cycle that
+    real speech has since broken is not a runaway. Returns None without scanning unless the length
+    is a multiple of `stride`, so the caller can invoke this per token cheaply.
+    """
+    count = len(tokens)
+    if count < min_reps or count % stride:
+        return None
+    for length in range(1, max_cycle_len + 1):
+        if count < length * min_reps:
+            break
+        block = tokens[count - length:]
+        reps = 1
+        position = count - 2 * length
+        while position >= 0 and reps < min_reps and tokens[position:position + length] == block:
+            reps += 1
+            position -= length
+        if reps >= min_reps:
+            return length
+    return None
+
+
 def greedy_decode_rows(first, step, eos_ids, max_tokens):
     """Batched greedy decoding bookkeeping (F213; row eviction added by F240).
 
@@ -300,7 +341,12 @@ def greedy_decode_rows(first, step, eos_ids, max_tokens):
                 done[row] = True
             else:
                 outputs[row].append(token)
-                keep.append(position)
+                # F260: a row stuck in a cycle finishes here rather than at `max_tokens`. It leaves
+                # through the same `keep`/eviction path as an EOS row, so there is one exit, not two.
+                if degenerate_cycle_length(outputs[row]) is not None:
+                    done[row] = True
+                else:
+                    keep.append(position)
         if all(done):
             break
         if evict is not None and len(keep) != len(tokens):

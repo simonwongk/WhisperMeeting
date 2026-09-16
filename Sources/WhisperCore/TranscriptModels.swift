@@ -25,6 +25,16 @@ public enum MeetingTranscriptionEngine: String, Codable, CaseIterable, Sendable,
         }
     }
 
+    /// The engine's bare name, for use inside a sentence. `displayName` carries a trailing
+    /// qualifier ("Whisper Large — best-established") that reads badly mid-message (F262).
+    public var shortDisplayName: String {
+        switch self {
+        case .whisperLarge: "Whisper Large"
+        case .whisperTurbo: "Whisper Turbo"
+        case .qwenBalanced: "Qwen3-ASR"
+        }
+    }
+
     public var whisperModel: WhisperModel? {
         switch self {
         case .whisperLarge: .large
