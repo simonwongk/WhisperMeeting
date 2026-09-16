@@ -26,6 +26,19 @@ public enum RecordingHealthAdvisory {
         if report.warnings.contains(.lowStorage) {
             notes.append("Storage ran low while recording.")
         }
-        return notes.isEmpty ? nil : notes.joined(separator: " ")
+        // A flagged report with nothing to say about it (F188). Every note above reads `warnings`,
+        // so a report written by a NEWER build — whose status or whose only warning this build does
+        // not recognise — used to fall out of here as `nil` and render no advisory at all: the user
+        // was shown a clean recording precisely because it had been flagged. `worstStatus` is a gate
+        // here and never text, so it cannot carry the severity on its own; this is the only place the
+        // fact can surface. Reachable since the lenient decode landed, which maps an unknown status
+        // to `.caution` and drops unknown warnings.
+        guard !notes.isEmpty else {
+            return """
+                This recording was flagged, but by a newer version of WhisperMeet — this version \
+                cannot describe why. The recording itself is untouched.
+                """
+        }
+        return notes.joined(separator: " ")
     }
 }

@@ -137,11 +137,14 @@ def detected_language_code(text: str) -> str:
 
 # F243: the largest amplitude a chunk may reach and still count as COMPLETELY silent — one
 # least-significant bit of a 16-bit sample, about -90 dBFS. Read literally, by the user's decision:
-# this is a "there is nothing here" test, NOT voice-activity detection. One LSB is the smallest
-# non-zero signal the source format can represent, so anything above it is real signal, however
-# quiet. F242 measured that a sparse chunk holding only 7 tokens of speech still costs a full decode;
-# such a chunk is deliberately NOT dropped, so this gate is worth only what genuinely empty audio a
-# recording contains — which for an ordinary meeting may be none at all.
+# this is a "there is nothing here" test, NOT voice-activity detection. A value at or below one LSB
+# is indistinguishable from silence in the source format itself, which is the whole justification —
+# not a judgement about audibility, which would be exactly the VAD this disclaims.
+#
+# F240 measured that a chunk holding only 7 tokens of speech still pays a full decode (see
+# `greedy_decode_rows`); F242 derived its ~8.6% estimate from that. Such a chunk is real, sparse
+# speech and is deliberately NOT dropped here, so this gate is worth only what genuinely empty audio
+# a recording contains — which for an ordinary meeting may be none at all.
 SILENCE_PEAK_EPSILON = 1.0 / 32768
 
 
@@ -162,6 +165,31 @@ def silent_chunk_indices(chunks, peak_amplitude_of) -> set:
         for index, (chunk_audio, _offset) in enumerate(chunks)
         if is_completely_silent(peak_amplitude_of(chunk_audio))
     }
+
+
+def decoding_indices(batch, silent) -> list:
+    """The members of one planned batch that still need decoding (F243).
+
+    Extracted from `transcribe_batched` so the index bookkeeping is testable: the loop there cannot
+    be exercised by a unit test because it needs a loaded model, and this is the part of it that
+    could actually be wrong. Order is preserved, because `_decode_batch`'s results are zipped back
+    against it positionally.
+    """
+    return [index for index in batch if index not in silent]
+
+
+def joined_text(texts) -> str:
+    """The whole-transcript text from per-chunk texts (F243).
+
+    Empty strings are skipped — a silent chunk contributes no words and concatenating its "" would
+    leave a run of spaces. `None` is NOT skipped: it means a chunk was neither decoded nor marked
+    silent, which is a bug in the batch plan rather than an empty transcript. Raising keeps the
+    pre-F243 behaviour, where a `None` here raised `TypeError` inside `transcribe` and fell back to
+    the library's sequential decode — a safe outcome that silently skipping would have removed.
+    """
+    if any(text is None for text in texts):
+        raise ValueError("every chunk must be decoded or marked silent before joining")
+    return " ".join(text for text in texts if text)
 
 
 def build_chunks(segments):
@@ -385,7 +413,7 @@ def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
     # The same tqdm "Processing chunks" bar mlx-audio prints, which QwenProgressParser reads (F101).
     with tqdm(total=len(chunks), desc="Processing chunks") as progress:
         for batch in plan_batches(len(chunks), batch_size):
-            decoding = [index for index in batch if index not in silent]
+            decoding = decoding_indices(batch, silent)
             if not decoding:
                 # Advance by the FULL batch even though nothing ran, so the bar still reaches 100%
                 # and the app's determinate progress (F101) does not stall on a silent stretch.
@@ -403,11 +431,7 @@ def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
                 texts[index] = text
             mx.clear_cache()
             progress.update(len(batch))
-    # Skip empties when joining: a silent chunk contributes no words, and concatenating its ""
-    # would leave a double space in the transcript.
-    return SimpleNamespace(
-        text=" ".join(text for text in texts if text), segments=segments_for(chunks, texts)
-    )
+    return SimpleNamespace(text=joined_text(texts), segments=segments_for(chunks, texts))
 
 
 def transcribe(asr, audio, language, chunk_duration=ASR_CHUNK_SECONDS, batch_size=ASR_BATCH_SIZE):

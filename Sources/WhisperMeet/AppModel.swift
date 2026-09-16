@@ -2963,11 +2963,28 @@ extension AppModel {
     /// hangs on, in the same shape as `importFromURL(_:confirmedLongDuration:)`. Audio is never
     /// touched: this replaces an index, and the quarantined bytes of the damaged one stay on disk
     /// because the restore goes through the ordinary append-only write.
-    func recoverLibrary(from generation: RetainedGeneration, confirmed: Bool = false) {
+    func recoverLibrary(from generation: RetainedGeneration, confirmed: Bool) {
         guard confirmed else { return }
+        // "User-reviewed" made structural rather than conventional (F193): only a generation this
+        // model actually offered can be restored. Without this, a caller could restore one the user
+        // never saw, which is the whole property the ticket asks for.
+        guard pendingLibraryRecovery?.contains(generation) == true else { return }
         do {
             try store.restoreIndexGeneration(generation)
             pendingLibraryRecovery = nil
+            if !store.isDegraded {
+                // Resume the work `performStartupRecovery` skipped while the library was read-only
+                // (F193). It sets `didPerformStartupRecovery` BEFORE its degraded early-return, so
+                // without this reset the notes-sidecar backfill and — the one that matters — the
+                // interrupted-recording rebuild never run in this session, and nothing tells the
+                // user to relaunch. `orphanedRecordings()` also returns [] while degraded, so the
+                // rebuild could not have run earlier even if it had been reached. Every step in
+                // that method is idempotent, so re-running it is safe; the store has just cleared
+                // `startupRecoveryMessages`, so it reports what the reload found, not the stale
+                // read-only notice.
+                didPerformStartupRecovery = false
+                Task { await performStartupRecovery() }
+            }
             if store.isDegraded {
                 // The index came back but the library is still not writable, so another persisted
                 // store is damaged too. Never report success in that case — the F187 honesty rule.
@@ -2977,6 +2994,9 @@ extension AppModel {
                     """
             }
         } catch {
+            // `pendingLibraryRecovery` is deliberately left populated: a restore can fail for a
+            // reason specific to one generation (unreadable bytes, a fingerprint mismatch), so the
+            // user keeps the list and can try an older one without starting over.
             alertMessage = """
                 The meeting index could not be restored. Nothing was changed and your recordings are \
                 untouched. \(error.localizedDescription)

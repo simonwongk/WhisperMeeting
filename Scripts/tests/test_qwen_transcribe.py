@@ -422,5 +422,50 @@ def _peak(chunk_audio):
     return max((abs(sample) for sample in chunk_audio), default=0.0)
 
 
+class DecodingIndicesTests(unittest.TestCase):
+    """F243 — which members of a planned batch still need decoding, and in what order."""
+
+    def test_silent_members_are_removed_and_order_is_kept(self):
+        # Order matters: `_decode_batch`'s results are zipped back against this list positionally,
+        # so a reordering would attach every transcript to the wrong chunk.
+        self.assertEqual(qwen.decoding_indices([0, 1, 2, 3], {1}), [0, 2, 3])
+        self.assertEqual(qwen.decoding_indices([4, 5, 6], {4, 6}), [5])
+
+    def test_a_fully_silent_batch_decodes_nothing(self):
+        self.assertEqual(qwen.decoding_indices([7], {7}), [])
+        self.assertEqual(qwen.decoding_indices([0, 1], {0, 1}), [])
+
+    def test_no_silence_leaves_the_batch_untouched(self):
+        self.assertEqual(qwen.decoding_indices([0, 1, 2, 3], set()), [0, 1, 2, 3])
+
+    def test_silent_indices_outside_this_batch_are_irrelevant(self):
+        self.assertEqual(qwen.decoding_indices([0, 1], {5, 9}), [0, 1])
+
+
+class JoinedTextTests(unittest.TestCase):
+    """F243 — a silent chunk must add no words and no stray whitespace."""
+
+    def test_empty_chunks_contribute_nothing(self):
+        self.assertEqual(qwen.joined_text(["alpha", "", "beta"]), "alpha beta")
+        self.assertEqual(qwen.joined_text(["", "", "only"]), "only")
+        self.assertEqual(qwen.joined_text(["alpha", "", ""]), "alpha")
+
+    def test_output_is_unchanged_when_nothing_is_silent(self):
+        """The regression guard: identical to the pre-F243 `" ".join(texts)` for non-empty texts."""
+        texts = ["one", "two", "three"]
+        self.assertEqual(qwen.joined_text(texts), " ".join(texts))
+
+    def test_all_silent_yields_an_empty_transcript(self):
+        # The headline case the gate exists for — a recording left running after everyone left.
+        # QwenASRClient turns this into its designed "no speech was detected" message.
+        self.assertEqual(qwen.joined_text(["", "", ""]), "")
+
+    def test_an_undecoded_chunk_raises_rather_than_being_skipped(self):
+        """A `None` slot is a batch-plan bug, not an empty transcript; it must fail loudly so
+        `transcribe` falls back to the library's sequential decode instead of shipping a hole."""
+        with self.assertRaises(ValueError):
+            qwen.joined_text(["alpha", None, "beta"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

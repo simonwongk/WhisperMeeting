@@ -84,11 +84,83 @@ struct PersistedSchemaCompatibilityTests {
         """
         let report = try decode(RecordingHealthReport.self, json)
         #expect(report.warnings.isEmpty)
-        // The severity survives even though no individual warning does, so the user still sees that
-        // the recording was at risk.
+        // `worstStatus` survives the decode — but on its own that tells the user nothing, and an
+        // earlier version of this test claimed otherwise. `RecordingHealthAdvisory.message` uses it
+        // only as a gate and derives every word from `warnings`, so this decoded value reaches no
+        // UI by itself. `aFlaggedReportWithNoKnownWarningsStillTellsTheUser` below is the test that
+        // holds the user-visible half; this one only pins the wire decode.
         #expect(report.worstStatus == .atRisk)
         #expect(report.microphoneStaleSeconds == 1.5)
         #expect(report.systemAudioEverDetected == false)
+    }
+
+    @Test("A flagged report whose warnings were all dropped still tells the user something")
+    func aFlaggedReportWithNoKnownWarningsStillTellsTheUser() throws {
+        // The user-visible half of the lenient warning decode. Before F188's review, this case
+        // rendered NOTHING: every note in `RecordingHealthAdvisory.message` reads `warnings`, so a
+        // report flagged by a newer build whose only warning this build cannot name fell through to
+        // `nil` — and the user was shown a clean recording precisely because it had been flagged.
+        let report = RecordingHealthReport(
+            warnings: [],
+            worstStatus: .atRisk,
+            microphoneStaleSeconds: 0,
+            systemAudioStaleSeconds: 0,
+            // True, so the `systemAudioEverDetected` note cannot fire and mask the gap.
+            systemAudioEverDetected: true
+        )
+        let message = try #require(
+            RecordingHealthAdvisory.message(for: report),
+            "a flagged recording must never render as healthy"
+        )
+        #expect(message.contains("newer version"))
+    }
+
+    @Test("A healthy report still renders no advisory at all")
+    func healthyReportStaysSilent() {
+        // The guard above must not turn every clean recording into a warning.
+        let report = RecordingHealthReport(
+            warnings: [],
+            worstStatus: .good,
+            microphoneStaleSeconds: 0,
+            systemAudioStaleSeconds: 0,
+            systemAudioEverDetected: true
+        )
+        #expect(RecordingHealthAdvisory.message(for: report) == nil)
+    }
+
+    @Test("A report with a known warning is described, not given the fallback")
+    func knownWarningKeepsItsOwnWording() throws {
+        let report = RecordingHealthReport(
+            warnings: [.lowStorage],
+            worstStatus: .caution,
+            microphoneStaleSeconds: 0,
+            systemAudioStaleSeconds: 0,
+            systemAudioEverDetected: true
+        )
+        let message = try #require(RecordingHealthAdvisory.message(for: report))
+        #expect(message.contains("Storage ran low"))
+        #expect(!message.contains("newer version"))
+    }
+
+    @Test("The on-disk shape of a health report is pinned, not just its round-trip")
+    func healthReportWireShapeIsPinned() throws {
+        // F188 asks for fixtures in BOTH directions. Every other test here decodes hand-written
+        // JSON (an old reader meeting new bytes) or round-trips within one build, which says nothing
+        // cross-version: a future refactor of `RecordingHealthReport` — `Set<Warning>` becoming an
+        // array of objects, say — would pass all of them and reproduce F177 exactly. This asserts
+        // the bytes this build WRITES. A single-warning report is used so the `Set` ordering is
+        // deterministic.
+        let report = RecordingHealthReport(
+            warnings: [.lowStorage],
+            worstStatus: .caution,
+            microphoneStaleSeconds: 1.5,
+            systemAudioStaleSeconds: 2,
+            systemAudioEverDetected: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let json = try #require(String(data: encoder.encode(report), encoding: .utf8))
+        #expect(json == #"{"microphoneStaleSeconds":1.5,"systemAudioEverDetected":true,"systemAudioStaleSeconds":2,"warnings":["lowStorage"],"worstStatus":"caution"}"#)
     }
 
     @Test("A health report with only known warnings is unchanged")

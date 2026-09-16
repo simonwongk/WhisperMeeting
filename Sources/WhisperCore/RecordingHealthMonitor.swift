@@ -130,9 +130,14 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
     /// invent a case; decoding the collection as `[String]` and filtering is the only way to drop an
     /// unknown member. Dropping rather than preserving is deliberate: a warning this build cannot
     /// name has no title to render and no explanation to offer, so keeping a placeholder would put
-    /// an unlabelled row in the health sheet. `worstStatus` still carries the severity the newer
-    /// build assigned, so the user is not told a risky recording was fine. Lossy: re-saving the
-    /// index drops the unknown warning.
+    /// an unlabelled row in the health sheet. Lossy: re-saving the index drops the unknown warning.
+    ///
+    /// The severity is NOT carried by `worstStatus` on its own, and an earlier version of this
+    /// comment wrongly claimed it was. `RecordingHealthAdvisory.message` uses `worstStatus` only as
+    /// a gate and derives every word from `warnings`, so a report whose only warning was dropped
+    /// rendered no advisory at all — the user saw a clean recording *because* it had been flagged.
+    /// That is why `RecordingHealthAdvisory` now states the flagged-but-unexplainable case
+    /// explicitly; this decode is only safe together with it.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let rawWarnings = try container.decode([String].self, forKey: .warnings)

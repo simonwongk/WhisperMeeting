@@ -975,7 +975,11 @@ final class MeetingStore: ObservableObject {
         revalidateHealth()
         writeConflict = nil
         unsavedChanges = false
-        storageErrorMessage = nil
+        // Only when the library really is writable again. Clearing this unconditionally asserted
+        // "no storage problem" about a library the reload had just found still unreadable.
+        if !isDegraded {
+            storageErrorMessage = nil
+        }
     }
 
     /// Recomputes `health` from all three persisted stores, exactly as `init` does (F193).
@@ -993,6 +997,12 @@ final class MeetingStore: ObservableObject {
     /// Only recovery may call this. Nothing on a save path should reconsider health.
     private func revalidateHealth() {
         health = .complete
+        // Cleared with `health`, and for the same reason: these describe the state being replaced.
+        // The three loads append to this as they go, so without the reset a recovery would leave the
+        // launch-time "read-only" message sitting in front of whatever the reload actually found —
+        // and `AppModel.performStartupRecovery`, which re-runs after a successful recovery, reads
+        // exactly this array.
+        startupRecoveryMessages = []
         loadMeetings()
         loadVocabulary()
         loadReplacementRules()

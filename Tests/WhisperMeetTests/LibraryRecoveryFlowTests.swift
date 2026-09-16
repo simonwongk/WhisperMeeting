@@ -81,13 +81,42 @@ func recoveryRequiresConfirmation() throws {
     model.requestLibraryRecovery()
     let generation = try #require(model.pendingLibraryRecovery?.first)
 
-    // The unconfirmed call must change nothing at all.
-    model.recoverLibrary(from: generation)
+    // Snapshot first. This fixture loaded from the intact BACKUP, so it already sees the record —
+    // asserting its absence would be wrong, and an earlier version of this test papered over that
+    // with a disjunction whose last term repeated the assertion above it, making the whole
+    // expectation unconditionally true. What actually matters is that nothing CHANGED.
+    let before = model.store.meetings
+    let healthBefore = model.store.health
+
+    model.recoverLibrary(from: generation, confirmed: false)
 
     #expect(model.store.isDegraded, "an unconfirmed recovery must not restore")
-    #expect(model.store.meetings.isEmpty || model.store.meeting(id: meeting.id) == nil
-            || model.store.isDegraded)
+    #expect(model.store.meetings == before, "an unconfirmed recovery must not touch the records")
+    #expect(model.store.health == healthBefore, "nor the library's health")
     #expect(model.pendingLibraryRecovery != nil, "the offer stays open until confirmed or dismissed")
+    // And the meeting on disk is still the pre-restore one.
+    #expect(MeetingStore(rootDirectory: root).meeting(id: meeting.id)?.title == "Quarterly review")
+}
+
+@Test("A generation that was never offered cannot be restored, even confirmed")
+@MainActor
+func recoveryRefusesAGenerationTheUserNeverSaw() throws {
+    let (root, meeting) = try makeDamagedLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = makeModel(rootDirectory: root)
+
+    // Read a real generation from the store WITHOUT going through requestLibraryRecovery, so it was
+    // never presented for review. F193 asks for a "user-reviewed" action; this makes that
+    // structural rather than a convention a future caller could quietly break.
+    let generation = try #require(try model.store.indexGenerations().first)
+    #expect(model.pendingLibraryRecovery == nil)
+
+    let before = model.store.meetings
+    model.recoverLibrary(from: generation, confirmed: true)
+
+    #expect(model.store.isDegraded, "a generation the user never reviewed must not be restored")
+    #expect(model.store.meetings == before)
+    #expect(MeetingStore(rootDirectory: root).meeting(id: meeting.id)?.title == "Quarterly review")
 }
 
 @Test("A confirmed recovery restores the library and makes it writable")
