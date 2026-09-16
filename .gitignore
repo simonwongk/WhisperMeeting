@@ -22,3 +22,8 @@ Scripts/tests/test_generate_tickets_dashboard.py
 # Generated diarization fixtures — regenerable from manifest.json, verified by manifest.lock.json
 Scripts/bench/diarization/out/
 Scripts/bench/diarization/.cache/
+
+# Content-fidelity bench (F244) — corpus, results and the sensitive appendix are local-only
+# (user decision 2026-09-14; the GitHub remote is public). Harness code and neutral fixtures are tracked.
+Scripts/bench/fidelity/corpus/
+Scripts/bench/fidelity/results/
