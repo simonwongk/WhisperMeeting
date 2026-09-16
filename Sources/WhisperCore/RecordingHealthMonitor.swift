@@ -36,6 +36,22 @@ public enum RecordingHealthStatus: String, Sendable, Equatable, Codable {
         case .atRisk: return 2
         }
     }
+
+    /// Lenient decode (F188). A status this build has never heard of — because a newer bundle wrote
+    /// the index — must not throw, because one `dataCorrupted` here fails the decode of the entire
+    /// `meetings.json` array. That is the mechanism behind the 2026-08-14 index wipe; F187 softened
+    /// its consequence to a read-only library and F190 made the prior generations restorable, but
+    /// neither stops the decode from failing. Follows the `MeetingStatus` precedent
+    /// (`MeetingStore.swift`), which has always decoded leniently.
+    ///
+    /// Unknown maps to `.caution`, whose own meaning — "worth a glance but the recording is not in
+    /// danger" — is exactly what an unrecognised status tells us. `.good` would hide a genuinely new
+    /// risk category; `.atRisk` would raise an alarming banner for something that may be benign.
+    /// Lossy: re-saving the index drops the unknown value.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = RecordingHealthStatus(rawValue: raw) ?? .caution
+    }
 }
 
 public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codable {
@@ -103,6 +119,32 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
         self.microphoneStaleSeconds = microphoneStaleSeconds
         self.systemAudioStaleSeconds = systemAudioStaleSeconds
         self.systemAudioEverDetected = systemAudioEverDetected
+    }
+
+    /// Lenient decode of `warnings` (F188), for the same reason `RecordingHealthStatus` decodes
+    /// leniently: a warning case added by a newer bundle must not fail the decode of the whole
+    /// `meetings.json` array.
+    ///
+    /// The leniency has to live here rather than on `RecordingHealthWarning` itself. `Decodable`
+    /// cannot express "skip this element", so a lenient initialiser on the enum would still have to
+    /// invent a case; decoding the collection as `[String]` and filtering is the only way to drop an
+    /// unknown member. Dropping rather than preserving is deliberate: a warning this build cannot
+    /// name has no title to render and no explanation to offer, so keeping a placeholder would put
+    /// an unlabelled row in the health sheet. `worstStatus` still carries the severity the newer
+    /// build assigned, so the user is not told a risky recording was fine. Lossy: re-saving the
+    /// index drops the unknown warning.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawWarnings = try container.decode([String].self, forKey: .warnings)
+        warnings = Set(rawWarnings.compactMap(RecordingHealthWarning.init(rawValue:)))
+        worstStatus = try container.decode(RecordingHealthStatus.self, forKey: .worstStatus)
+        microphoneStaleSeconds = try container.decode(
+            TimeInterval.self, forKey: .microphoneStaleSeconds
+        )
+        systemAudioStaleSeconds = try container.decode(
+            TimeInterval.self, forKey: .systemAudioStaleSeconds
+        )
+        systemAudioEverDetected = try container.decode(Bool.self, forKey: .systemAudioEverDetected)
     }
 }
 
