@@ -11,6 +11,61 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         case empty
         /// Failed, with a human-readable reason.
         case failed(String)
+
+        /// Accepts any key, so an unrecognised case can be read rather than rejected.
+        private struct AnyKey: CodingKey {
+            let stringValue: String
+            var intValue: Int? { nil }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { nil }
+        }
+
+        /// Lenient decode (F251), for the reason F188 established: this is an associated-value enum
+        /// with synthesized `Codable`, so a case written by a NEWER build threw `dataCorrupted` —
+        /// and because `dictation-log.json` decodes as one `DictationLog` value, that single entry
+        /// made the user's whole dictation history unreadable. The synthesized decoder rejects an
+        /// unknown key with "Invalid number of keys found, expected one".
+        ///
+        /// The wire format is deliberately unchanged. The obvious-looking fix — persisting the
+        /// discriminant as a plain string, the way the sibling `refinement` field already does — was
+        /// rejected: the existing shape is a single-key object (`{"pasted":{}}`,
+        /// `{"failed":{"_0":"reason"}}`, verified against a real on-disk log), so changing it would
+        /// make every entry already written unreadable. That is the same flag-day trap F188 records
+        /// for the meeting index, where introducing the fence is itself the incompatible change.
+        /// `outcomeWireShapeIsPinned` holds these bytes.
+        ///
+        /// An unknown case maps to `.failed`, carrying the case's own name. `.failed` is honest —
+        /// the entry did not succeed as far as this build can tell — and keeping the name means the
+        /// information is degraded rather than destroyed, unlike a fallback to `.empty`. A
+        /// structurally empty object still throws: leniency is for values this build does not
+        /// recognise, not for corruption.
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: AnyKey.self)
+            guard let key = container.allKeys.first, container.allKeys.count == 1 else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath,
+                        debugDescription:
+                            "expected exactly one outcome key, found \(container.allKeys.count)"
+                    )
+                )
+            }
+            switch key.stringValue {
+            case "pasted": self = .pasted
+            case "clipboard": self = .clipboard
+            case "empty": self = .empty
+            case "failed":
+                let nested = try container.nestedContainer(keyedBy: AnyKey.self, forKey: key)
+                let reason = nested.allKeys.first.flatMap {
+                    try? nested.decode(String.self, forKey: $0)
+                }
+                self = .failed(reason ?? "")
+            default:
+                self = .failed(
+                    "Recorded by a newer version of WhisperMeet (\(key.stringValue))."
+                )
+            }
+        }
     }
 
     public let id: UUID
