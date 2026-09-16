@@ -135,6 +135,35 @@ def detected_language_code(text: str) -> str:
     return "zh" if _cjk_is_majority(text) else "en"
 
 
+# F243: the largest amplitude a chunk may reach and still count as COMPLETELY silent — one
+# least-significant bit of a 16-bit sample, about -90 dBFS. Read literally, by the user's decision:
+# this is a "there is nothing here" test, NOT voice-activity detection. One LSB is the smallest
+# non-zero signal the source format can represent, so anything above it is real signal, however
+# quiet. F242 measured that a sparse chunk holding only 7 tokens of speech still costs a full decode;
+# such a chunk is deliberately NOT dropped, so this gate is worth only what genuinely empty audio a
+# recording contains — which for an ordinary meeting may be none at all.
+SILENCE_PEAK_EPSILON = 1.0 / 32768
+
+
+def is_completely_silent(peak_amplitude: float) -> bool:
+    """Whether a chunk's peak amplitude means it holds no signal at all (F243)."""
+    return peak_amplitude <= SILENCE_PEAK_EPSILON
+
+
+def silent_chunk_indices(chunks, peak_amplitude_of) -> set:
+    """Indices of chunks worth skipping entirely (F243).
+
+    Judged on PEAK, never on average or energy: one audible word in sixty seconds of room tone must
+    keep the whole chunk, and an average would wash it out. `peak_amplitude_of` is injected so the
+    predicate is testable without numpy, and so an empty chunk cannot raise on `np.max`.
+    """
+    return {
+        index
+        for index, (chunk_audio, _offset) in enumerate(chunks)
+        if is_completely_silent(peak_amplitude_of(chunk_audio))
+    }
+
+
 def build_chunks(segments):
     """Extract ASR segments defensively. On any schema drift (a changed mlx_audio segment shape),
     degrade to no chunks plus a warning so the complete `text` is still written, mirroring how
@@ -342,19 +371,43 @@ def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
     )
     if len(chunks) <= 1:
         return None
+    # F243: skip chunks that hold no signal at all. Each would otherwise pay a full mel extraction,
+    # a full audio-encoder pass and a full prefill — all compute-bound — to produce nothing. Their
+    # text is set to empty here, so `segments_for` still receives one entry per chunk and no
+    # surviving chunk's offset can shift.
+    silent = silent_chunk_indices(
+        chunks,
+        lambda chunk_audio: float(np.max(np.abs(chunk_audio))) if len(chunk_audio) else 0.0,
+    )
     texts = [None] * len(chunks)
+    for index in silent:
+        texts[index] = ""
     # The same tqdm "Processing chunks" bar mlx-audio prints, which QwenProgressParser reads (F101).
     with tqdm(total=len(chunks), desc="Processing chunks") as progress:
         for batch in plan_batches(len(chunks), batch_size):
-            longest = max(len(chunks[index][0]) for index in batch)
+            decoding = [index for index in batch if index not in silent]
+            if not decoding:
+                # Advance by the FULL batch even though nothing ran, so the bar still reaches 100%
+                # and the app's determinate progress (F101) does not stall on a silent stretch.
+                progress.update(len(batch))
+                continue
+            # Pad to the longest chunk STILL BEING DECODED. Dropping a silent chunk can therefore
+            # shorten the padding for its batch, which is a second, smaller saving.
+            longest = max(len(chunks[index][0]) for index in decoding)
             batch_audio = [
-                np.pad(chunks[index][0], (0, longest - len(chunks[index][0]))) for index in batch
+                np.pad(chunks[index][0], (0, longest - len(chunks[index][0]))) for index in decoding
             ]
-            for index, text in zip(batch, _decode_batch(asr, np, mx, KVCache, batch_audio, language)):
+            for index, text in zip(
+                decoding, _decode_batch(asr, np, mx, KVCache, batch_audio, language)
+            ):
                 texts[index] = text
             mx.clear_cache()
             progress.update(len(batch))
-    return SimpleNamespace(text=" ".join(texts), segments=segments_for(chunks, texts))
+    # Skip empties when joining: a silent chunk contributes no words, and concatenating its ""
+    # would leave a double space in the transcript.
+    return SimpleNamespace(
+        text=" ".join(text for text in texts if text), segments=segments_for(chunks, texts)
+    )
 
 
 def transcribe(asr, audio, language, chunk_duration=ASR_CHUNK_SECONDS, batch_size=ASR_BATCH_SIZE):

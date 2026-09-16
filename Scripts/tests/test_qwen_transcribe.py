@@ -373,5 +373,54 @@ class FusedAttentionMaskTests(unittest.TestCase):
         self.assertFalse(qwen.fast_attention_enabled({qwen.FAST_ATTENTION_ENV: "0"}))
 
 
+class CompletelySilentChunkTests(unittest.TestCase):
+    """F243 — a chunk with no signal at all is not worth an encoder pass.
+
+    The user's decision was explicit and narrow: drop a chunk only when it is COMPLETELY silent. So
+    the threshold is read literally rather than as a voice-activity judgement — one least-significant
+    bit of a 16-bit sample (about -90 dBFS) is the smallest non-zero signal the source format can
+    represent, and anything above it is not *completely* silent. A sparse chunk that holds a few
+    quiet words is NOT silent and must still be transcribed; that case is what the tests below pin.
+    """
+
+    def test_digital_silence_is_silent(self):
+        self.assertTrue(qwen.is_completely_silent(0.0))
+
+    def test_one_16_bit_lsb_is_still_silent(self):
+        # Exactly at the threshold: a single bit of dither is not audible content.
+        self.assertTrue(qwen.is_completely_silent(1.0 / 32768))
+
+    def test_anything_above_the_threshold_is_not_silent(self):
+        self.assertFalse(qwen.is_completely_silent(1.0 / 32768 * 1.01))
+        self.assertFalse(qwen.is_completely_silent(0.001))
+        self.assertFalse(qwen.is_completely_silent(0.5))
+
+    def test_a_single_quiet_sample_keeps_the_whole_chunk(self):
+        """The safety property: peak, not average. One word in 60 s of room tone must survive."""
+        chunks = [([0.0] * 9_999 + [0.02], 0.0)]
+        self.assertEqual(qwen.silent_chunk_indices(chunks, _peak), set())
+
+    def test_only_the_silent_chunks_are_selected(self):
+        chunks = [
+            ([0.0] * 10, 0.0),            # digital silence
+            ([0.0, 0.3, -0.4], 60.0),     # speech
+            ([1e-9] * 10, 120.0),         # far below one LSB
+            ([0.0, 1.0 / 32768], 180.0),  # exactly at the threshold
+            ([0.0, 0.01], 240.0),         # quiet but real
+        ]
+        self.assertEqual(qwen.silent_chunk_indices(chunks, _peak), {0, 2, 3})
+
+    def test_an_empty_chunk_counts_as_silent_and_never_raises(self):
+        self.assertEqual(qwen.silent_chunk_indices([([], 0.0)], _peak), {0})
+
+    def test_no_chunks_selects_nothing(self):
+        self.assertEqual(qwen.silent_chunk_indices([], _peak), set())
+
+
+def _peak(chunk_audio):
+    """The pure-Python stand-in for the numpy peak the helper is given in production."""
+    return max((abs(sample) for sample in chunk_audio), default=0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
