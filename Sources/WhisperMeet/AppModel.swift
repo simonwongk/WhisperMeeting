@@ -2446,9 +2446,27 @@ final class AppModel: ObservableObject {
         template: MeetingTemplate = .general
     ) async {
         let summarizer = makeSummarizer(engine, apiKey)
+        // F249: a summarization model never reads the `MM:SS  ` prefix that
+        // `TranscriptFormatter.timestamped` puts on every line for the transcript VIEW, but it pays
+        // for them — measured with the local model's own tokenizer at 7,278 of 30,784 prompt tokens
+        // (23.6%) on the largest meeting in this library, and 6,004 of 14,014 (42.8%) on another.
+        // That is prefill time on the local engine and input-token cost on the Claude engine, spent
+        // on digits the summary cannot use. Stripping happens here because `performSummarization` is
+        // the one choke point every caller passes through on the way to `makeSummarizer`, so a new
+        // entry point cannot skip it.
+        //
+        // Only when timed segments actually back the text. Without them a leading clock-like token
+        // ("3:00 PM", or a standup moved to "12:30") is prose the user typed, not a line prefix —
+        // the same rule `TranscriptExporter.render` already applies for `.plainText` (F42). This
+        // read is deliberately separate from the F177 one below, which stays after the await so its
+        // evidence resolution keeps reading the segments as they are when it runs.
+        let promptSegments = store.meeting(id: id)?.segments ?? []
+        let prompt = promptSegments.isEmpty
+            ? transcript
+            : TranscriptFormatter.stripTimestamps(transcript)
         do {
             let summary = try await summarizer.summarize(
-                transcript: transcript, language: language, style: style, template: template
+                transcript: prompt, language: language, style: style, template: template
             )
             // F177: link each action item to its best supporting transcript segment (quote + timestamp)
             // locally, from the stored segments — no extra model call, nothing leaves this Mac.
