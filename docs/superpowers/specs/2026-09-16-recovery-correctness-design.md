@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-16
 **Status:** Approved design, pre-implementation
-**Tickets:** F255 (high, recovery), F256 (medium, recovery) — filed by whisper-63, claimed by whisper-62
+**Tickets:** F255 (high, recovery), F256 (medium, recovery) — filed by whisper-37, claimed by whisper-62
 **Sub-project:** A of three. The seven-ticket recording/recovery set decomposes into A (F255, F256),
 B (F257 → F253 → F254) and C (F258, F259); the user approved that grouping and ordering on
 2026-09-16. A is independent of B and C and ships first.
