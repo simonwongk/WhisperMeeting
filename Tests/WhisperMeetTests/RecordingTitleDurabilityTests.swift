@@ -218,3 +218,97 @@ func whitespaceTitleIsNotATitle() async throws {
     let meeting = try #require(model.store.meeting(id: id))
     #expect(meeting.title.hasPrefix("Recovered Meeting"))
 }
+
+/// Writes a raw track into a live recording's folder, so a finalize has something to rebuild.
+///
+/// Without it `stopRecording` finds no audio, saves no meeting, and reports the no-usable-audio
+/// failure over whatever the finalize had already said — which is how the first draft of these two
+/// tests failed for a reason that had nothing to do with what they were testing.
+@MainActor
+private func writeTrack(for id: UUID, in model: AppModel) throws {
+    let folder = model.store.recordingDirectoryURL(for: id)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let samples = [Float](repeating: 0.25, count: 96_000)
+    try samples.withUnsafeBytes {
+        try Data($0).write(to: folder.appendingPathComponent("system-audio.f32"))
+    }
+}
+
+// MARK: - The interruption paths that end a recording (F298, found reviewing F294)
+
+@MainActor
+@Test("A recording ended by a dead capture keeps its title (F298)")
+func aFinalizedRecordingKeepsItsTitle() async throws {
+    // The hole in F298's first pass. Moving the title onto the model fixed the *sidecar*, but the
+    // two paths that end a recording without the user pressing stop still called
+    // `stopRecording(title: "")` — and the comment above each said why: "the title lives in
+    // `ContentView`'s `@State` and never reaches the model". That was true when written and false
+    // an hour later, which is the whole reason a comment stating a constraint has to be re-read
+    // when the constraint moves.
+    //
+    // So the meeting the user gets back from a lid close was named "Recording <date>" even though
+    // they had typed a name, which is precisely the case F298 exists for.
+    let (model, root, defaults, suite) = try makeTitleModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    model.recordingTitle = "Client call"
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    try writeTrack(for: id, in: model)
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+
+    // Over the padding cap, so the policy finalizes instead of restarting — the path that saves
+    // what was captured and ends the recording.
+    await model.handleCaptureInterruption(
+        trigger: .didWake,
+        gap: CaptureRestartPolicy.defaultMaximumPaddedGap + 60,
+        now: Date()
+    )
+
+    #expect(!model.recordingState.isLive, "the recording should have been finalized")
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.title == "Client call")
+}
+
+@MainActor
+@Test("A recording ended by a dead capture tells a windowless user it ended (F294)")
+func finalizeReachesAWindowlessUser() async throws {
+    // F294. `finalizeAfterFailedRestart` set only `captureRestartNotice`, a published property the
+    // window renders — so a user recording from the menu bar with no window open was told nothing
+    // when their recording *ended* because the display went away. That is the highest-stakes
+    // message in the app and it was the one F257's channel did not carry.
+    //
+    // Asserted on `alertMessage` rather than on the notification: `report(_:)` sets both, and the
+    // notification half is behind `NSApp`, which is nil here. The windowless decision itself is
+    // covered by `WindowlessAlertTests`.
+    let (model, root, defaults, suite) = try makeTitleModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    try writeTrack(for: id, in: model)
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+    await model.handleCaptureInterruption(
+        trigger: .didWake,
+        gap: CaptureRestartPolicy.defaultMaximumPaddedGap + 60,
+        now: Date()
+    )
+
+    // Two things are legitimately reported in this flow — the finalize notice, then the
+    // recovered-after-an-abnormal-finish message — and `alertMessage` holds the last. My first
+    // assertion required it to equal `captureRestartNotice`, which assumed a single message; that
+    // was a wrong expectation of mine, not a defect. What matters is the substance: a user with no
+    // window open is told the recording ended *and* that the audio was kept.
+    let message = try #require(model.alertMessage, "the user was never told the recording ended")
+    #expect(
+        message.contains("recovered and added to history") || message.contains("saved"),
+        "the message must say the audio was kept, not only that something went wrong: \(message)"
+    )
+    #expect(model.captureRestartNotice != nil, "the banner is still set for a user who has a window")
+}

@@ -292,15 +292,56 @@ final class AppModel: ObservableObject {
             return
         }
         let content = WindowlessAlert.content(for: message)
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        let notification = UNMutableNotificationContent()
-        notification.title = content.title
-        notification.body = content.body
-        center.add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: notification, trigger: nil)
-        )
+        Self.deliverNotification(title: content.title, body: content.body)
     }
+
+    /// Posts one user-facing notification, sequencing the post **after** the authorization result.
+    ///
+    /// F294. Both callers used to do this:
+    ///
+    /// ```swift
+    /// center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    /// center.add(UNNotificationRequest(...))          // immediately, not in the completion
+    /// ```
+    ///
+    /// `requestAuthorization` is asynchronous. On a first run the `add` is therefore evaluated while
+    /// the user is still looking at the system prompt, against settings that are not yet
+    /// authorized — so the post is not sequenced after their decision, and the notification most
+    /// likely to be lost is the **first** one. For `postWindowlessAlert` that is precisely the
+    /// notice F257 exists to deliver: the one telling a user with no window open that something
+    /// went wrong.
+    ///
+    /// Adding inside the completion is correct for every case: an already-authorized user's
+    /// callback returns immediately, a first-time grant now delivers, and a denial skips an `add`
+    /// that would have been dropped anyway.
+    ///
+    /// **There is no unit test for this, and there cannot be one here.** It is two
+    /// `UNUserNotificationCenter` calls behind a `guard let app = NSApp`, which is nil in a
+    /// headless test process — the same boundary F257 closed `partial` over, where "the delegate
+    /// fires without a window is AppKit's contract, taken on trust". What *is* tested is the
+    /// decision: `WindowlessAlert.shouldPost` and `.content`. The physical confirmation is the run
+    /// already waiting in `NEEDS_HUMAN.md`, and this fix is what makes that run meaningful — it
+    /// could otherwise have failed for a reason unrelated to what it was testing.
+    private static func deliverNotification(title: String, body: String) {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                guard granted else { return }
+                let notification = UNMutableNotificationContent()
+                notification.title = title
+                notification.body = body
+                // `current()` again rather than a captured `center`: the completion handler is
+                // `@Sendable` and `UNUserNotificationCenter` is not `Sendable`, so capturing it is
+                // an error under `-warnings-as-errors`. Only the release build says so — the debug
+                // build and the whole test suite passed with the capture in place, which is why the
+                // gate's step 4 exists and `swift test` is not a substitute for it.
+                UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(
+                        identifier: UUID().uuidString, content: notification, trigger: nil
+                    )
+                )
+            }
+    }
+
     /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
     @Published var showsShortcutsSheet = false
 
@@ -2354,14 +2395,19 @@ final class AppModel: ObservableObject {
                         ? "The meeting could not finish normally, and most of its audio could not be rebuilt. \(Self.severelyTruncatedRecoveryMessage)"
                         : "The meeting could not finish normally, but its recording was recovered and added to history."
                     if let recoveryWarning { alert += " \(recoveryWarning)" }
-                    alertMessage = alert + " \(recordingError.localizedDescription)"
+                    // F294: through `report` — a recording that could not finish normally is the
+                    // app's most serious message, and it reaches a user whose window is closed
+                    // only through this channel. The stop that produced it is often itself
+                    // triggered by sleep or a dead display, so "the user is right there" does not
+                    // hold for any of these three.
+                    report(alert + " \(recordingError.localizedDescription)")
                     return id
                 }
             } catch {
-                alertMessage = "The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(recordingError.localizedDescription) Recovery error: \(error.localizedDescription)"
+                report("The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(recordingError.localizedDescription) Recovery error: \(error.localizedDescription)")
                 return nil
             }
-            alertMessage = "No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(recordingError.localizedDescription)"
+            report("No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(recordingError.localizedDescription)")
             return nil
         }
     }
@@ -2523,7 +2569,8 @@ final class AppModel: ObservableObject {
         // `.stopping` is also the correct phase to be in: it is what makes Cancel refuse
         // (`canCancelRecording`), so a cancel cannot race this finalize — the same guard F139 added.
         recordingState = .stopping
-        Task { _ = await stopRecording(title: "") }
+        // F298: the user's title survives a sleep-triggered stop for the same reason.
+        Task { [recordingTitle] in _ = await stopRecording(title: recordingTitle) }
     }
 
     /// The last thing a restart did, for the banner. Nil when nothing has happened (F275).
@@ -2614,15 +2661,23 @@ final class AppModel: ObservableObject {
     /// Saves what was captured and tells the user why the recording ended (F275).
     private func finalizeAfterFailedRestart(trigger: CaptureRestartPolicy.Trigger) async {
         guard recordingState.isLive else { return }
-        captureRestartNotice = CaptureRestartPolicy.notice(for: .finalize, trigger: trigger)
+        let notice = CaptureRestartPolicy.notice(for: .finalize, trigger: trigger)
+        captureRestartNotice = notice
+        // F294: the banner is window-only, and this is the message saying the recording ENDED —
+        // the highest-stakes thing the app can tell someone, and the case F257's channel did not
+        // carry. A user recording from the menu bar with no window open learned nothing.
+        //
+        // Only when there is a notice: `notice(for:trigger:)` is optional and a nil one means the
+        // policy had nothing to say, which must not become an empty alert.
+        if let notice { report(notice) }
         // Synchronously, before the async stop, for the reason `handleSystemWillSleep` documents:
         // a second trigger arriving mid-stop must see `.stopping` and no-op rather than race it.
         recordingState = .stopping
-        // `""` for the same reason `handleSystemWillSleep` uses it: the title lives in
-        // `ContentView`'s `@State` and never reaches the model until `stopRecording(title:)` is
-        // called from the window. Moving it is F257's lifecycle work. The sidecar keeps the markers,
-        // which are the irreplaceable half.
-        _ = await stopRecording(title: "")
+        // F298: the user's own title, not `""`. The comment here used to explain that the title
+        // lived in `ContentView`'s `@State` and could not reach the model — true when written, and
+        // false once F298 moved it. This is the path that ends a recording *because* the capture
+        // died, so it is exactly the case where the typed name has to survive.
+        _ = await stopRecording(title: recordingTitle)
     }
 
     /// Reads the live recording's sidecar, applies `change`, and writes it back (F284).
@@ -3549,12 +3604,7 @@ final class AppModel: ObservableObject {
               let content = TranscriptionNotification.content(
                 title: title, outcome: outcome, segmentCount: segmentCount
               ) else { return }
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        let notification = UNMutableNotificationContent()
-        notification.title = content.title
-        notification.body = content.body
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: notification, trigger: nil))
+        Self.deliverNotification(title: content.title, body: content.body)
     }
 
     private func handleCancellation(id: UUID) {
