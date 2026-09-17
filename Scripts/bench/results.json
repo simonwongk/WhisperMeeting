@@ -463,8 +463,8 @@
     {
       "clip": "cs1",
       "lang": "cs",
-      "sec": 2.25,
-      "det": "en",
+      "sec": 2.244,
+      "det": "zh",
       "metric": "CER",
       "val": 0.0,
       "hyp": "我们的 deadline 是这个星期五。"
@@ -472,8 +472,8 @@
     {
       "clip": "cs2",
       "lang": "cs",
-      "sec": 2.187,
-      "det": "en",
+      "sec": 2.028,
+      "det": "zh",
       "metric": "CER",
       "val": 0.0,
       "hyp": "帮我 schedule 一个 meeting，明天下午。"
@@ -481,8 +481,8 @@
     {
       "clip": "cs3",
       "lang": "cs",
-      "sec": 1.934,
-      "det": "en",
+      "sec": 1.989,
+      "det": "zh",
       "metric": "CER",
       "val": 0.0,
       "hyp": "这个 bug 已经 fix 了，可以 merge 了。"
@@ -490,7 +490,7 @@
     {
       "clip": "en1",
       "lang": "en",
-      "sec": 1.891,
+      "sec": 1.887,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -499,7 +499,7 @@
     {
       "clip": "en2",
       "lang": "en",
-      "sec": 1.828,
+      "sec": 1.86,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -508,7 +508,7 @@
     {
       "clip": "en3",
       "lang": "en",
-      "sec": 1.888,
+      "sec": 1.929,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -517,7 +517,7 @@
     {
       "clip": "en4",
       "lang": "en",
-      "sec": 1.887,
+      "sec": 1.89,
       "det": "en",
       "metric": "WER",
       "val": 0.0,
@@ -526,7 +526,7 @@
     {
       "clip": "zh1",
       "lang": "zh",
-      "sec": 1.849,
+      "sec": 1.868,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -535,7 +535,7 @@
     {
       "clip": "zh2",
       "lang": "zh",
-      "sec": 1.799,
+      "sec": 1.83,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,
@@ -544,7 +544,7 @@
     {
       "clip": "zh3",
       "lang": "zh",
-      "sec": 1.853,
+      "sec": 1.867,
       "det": "zh",
       "metric": "CER",
       "val": 0.0,

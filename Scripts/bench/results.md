@@ -120,13 +120,13 @@ claim sourced from it as unsupported — see **F241** for the long-form fixture 
 
 | clip | lang | sec | detected | metric | value | transcript |
 |---|---|---|---|---|---|---|
-| cs1 | cs | 2.25 | en | CER | 0.0 | 我们的 deadline 是这个星期五。 |
-| cs2 | cs | 2.187 | en | CER | 0.0 | 帮我 schedule 一个 meeting，明天下午。 |
-| cs3 | cs | 1.934 | en | CER | 0.0 | 这个 bug 已经 fix 了，可以 merge 了。 |
-| en1 | en | 1.891 | en | WER | 0.0 | Can you send me the quarterly report by Friday afternoon? |
-| en2 | en | 1.828 | en | WER | 0.0 | Let's schedule the design review for next Tuesday at ten. |
-| en3 | en | 1.888 | en | WER | 0.0 | The build is failing on the release step. Please take a look. |
-| en4 | en | 1.887 | en | WER | 0.0 | Remind me to follow up with the vendor about the invoice. |
-| zh1 | zh | 1.849 | zh | CER | 0.0 | 帮我把今天的会议纪要发给团队。 |
-| zh2 | zh | 1.799 | zh | CER | 0.0 | 这个季度的销售数据看起来很不错。 |
-| zh3 | zh | 1.853 | zh | CER | 0.0 | 请提醒我下午三点跟客户开会。 |
+| cs1 | cs | 2.244 | zh | CER | 0.0 | 我们的 deadline 是这个星期五。 |
+| cs2 | cs | 2.028 | zh | CER | 0.0 | 帮我 schedule 一个 meeting，明天下午。 |
+| cs3 | cs | 1.989 | zh | CER | 0.0 | 这个 bug 已经 fix 了，可以 merge 了。 |
+| en1 | en | 1.887 | en | WER | 0.0 | Can you send me the quarterly report by Friday afternoon? |
+| en2 | en | 1.86 | en | WER | 0.0 | Let's schedule the design review for next Tuesday at ten. |
+| en3 | en | 1.929 | en | WER | 0.0 | The build is failing on the release step. Please take a look. |
+| en4 | en | 1.89 | en | WER | 0.0 | Remind me to follow up with the vendor about the invoice. |
+| zh1 | zh | 1.868 | zh | CER | 0.0 | 帮我把今天的会议纪要发给团队。 |
+| zh2 | zh | 1.83 | zh | CER | 0.0 | 这个季度的销售数据看起来很不错。 |
+| zh3 | zh | 1.867 | zh | CER | 0.0 | 请提醒我下午三点跟客户开会。 |

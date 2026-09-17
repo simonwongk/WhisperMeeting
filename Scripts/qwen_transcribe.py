@@ -114,20 +114,52 @@ def parse_args() -> argparse.Namespace:
 
 
 def _cjk_is_majority(text: str) -> bool:
-    """True when CJK ideographs are the strict majority of the non-whitespace characters.
+    """True when CJK ideographs are the strict majority of the text's **tokens**.
 
     Shared by the whole-transcript label (`detected_language_code`) and the per-chunk forced-aligner
     language (`alignment_language`) so both decide by majority script instead of flagging on any single
     CJK scalar (F41, F155). Ties and empty text are not Chinese.
+
+    **Tokens, not characters (F296).** Each CJK ideograph counts once; each run of Latin letters or
+    digits counts once, however long the word. Counting characters looked equivalent and is not,
+    because Chinese is dense per character: `我们的 deadline 是这个星期五。` is 9 CJK characters
+    against the 8 letters of one loanword — exactly 0.50, so a strict-majority-of-characters rule
+    called a Chinese sentence English. Measured, not imagined: F293's bench row labelled all three
+    committed code-switched clips `en` at shares of 0.50, 0.32 and 0.38.
+
+    The old rule was not wrong so much as symmetric where the two cases are not. Its reason (F41) was
+    the inverse: an English sentence mentioning one Chinese name has a couple of CJK characters and
+    must stay English. Under tokens it still does — `Let's meet in 北京 and then 上海 next week` is 4
+    CJK tokens against 8 Latin ones — because a name contributes as little to the Chinese side as a
+    loanword now contributes to the English side. That is the point: one token per word, either way.
+
+    (8 and not 7: an apostrophe ends a run, so `Let's` counts twice. Left alone deliberately rather
+    than special-cased — it can only push a contraction-bearing sentence further toward English,
+    which is the direction that sentence was already going, and a punctuation table maintained for
+    tidiness is a thing to get wrong later. Counted, not assumed: the first draft of this paragraph
+    said 7.)
     """
     cjk = 0
-    total = 0
+    other = 0
+    in_latin_run = False
     for char in text:
         if char.isspace():
+            in_latin_run = False
             continue
-        total += 1
         if "\u3400" <= char <= "\u9fff":
             cjk += 1
+            in_latin_run = False
+            continue
+        if char.isalnum():
+            # One token per word, so a long loanword does not outvote several Chinese words.
+            if not in_latin_run:
+                other += 1
+                in_latin_run = True
+            continue
+        # Punctuation counts for neither side and ends any run: it is shared between the scripts and
+        # a Chinese full stop should not tip a sentence toward Chinese.
+        in_latin_run = False
+    total = cjk + other
     return total > 0 and cjk * 2 > total
 
 

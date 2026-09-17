@@ -36,6 +36,34 @@ class DetectedLanguageCodeTests(unittest.TestCase):
     def test_empty_is_en(self):
         self.assertEqual(qwen.detected_language_code("   "), "en")
 
+    # F296 — measured on the committed bench clips by F293's meeting row, which labelled all three
+    # of the following `en`. They are Chinese sentences containing ordinary English tech vocabulary,
+    # and counting *characters* hands the decision to English because Chinese is dense per
+    # character: one Latin loanword outweighs several Chinese words. `cs1` lands on exactly 0.50 of
+    # non-whitespace characters, which a strict-majority rule excludes.
+    #
+    # It matters past the label. `QwenASRClient.swift:171` stores it as the meeting's
+    # `languageCode`, and `ClaudeSummarizer.systemPrompt` appends "The transcript's detected
+    # language code is …", so a Mandarin meeting would be summarized under an English hint.
+
+    def test_a_code_switched_mandarin_sentence_is_zh(self):
+        self.assertEqual(qwen.detected_language_code("我们的 deadline 是这个星期五。"), "zh")
+        self.assertEqual(qwen.detected_language_code("帮我 schedule 一个 meeting，明天下午。"), "zh")
+        self.assertEqual(qwen.detected_language_code("这个 bug 已经 fix 了，可以 merge 了。"), "zh")
+
+    def test_an_english_sentence_with_two_chinese_names_stays_en(self):
+        """The case the old rule existed to protect, which a naive fix would break — trading one
+        error for its mirror image. Two names rather than one, because one is the easy version."""
+        self.assertEqual(
+            qwen.detected_language_code("Let's meet in 北京 and then 上海 next week"), "en"
+        )
+        self.assertEqual(
+            qwen.detected_language_code("The 太极 workshop runs on Tuesday in the main hall"), "en"
+        )
+
+    def test_one_loanword_does_not_decide_a_short_chinese_sentence(self):
+        self.assertEqual(qwen.detected_language_code("请 review 一下"), "zh")
+
 
 class AlignmentLanguageTests(unittest.TestCase):
     """F155 — the per-chunk forced-aligner language must follow the MAJORITY script, not any single
@@ -53,6 +81,14 @@ class AlignmentLanguageTests(unittest.TestCase):
 
     def test_empty_text_is_english(self):
         self.assertEqual(qwen.alignment_language("   ", "auto"), "English")
+
+    def test_the_aligner_shares_the_token_rule(self):
+        """F296/F155 — both decide by the same rule on purpose, so fixing one and not the other
+        would leave the per-chunk aligner disagreeing with the transcript's own label."""
+        self.assertEqual(qwen.alignment_language("我们的 deadline 是这个星期五。", "auto"), "Chinese")
+        self.assertEqual(
+            qwen.alignment_language("Let's meet in 北京 and then 上海 next week", "auto"), "English"
+        )
 
     def test_explicit_request_overrides_text(self):
         # An explicit language request is honored regardless of the chunk's script mix.
