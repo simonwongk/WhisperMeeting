@@ -59,18 +59,31 @@ for suite in $script_suites; do
   python3 "$suite"
 done
 
-print "[3/5] Running the complete Swift test suite"
 # Run serially: several tests block a cooperative thread waiting on a real
 # subprocess (Qwen's readDataToEndOfFile, the warm dictation engine's readLine).
 # In parallel on a low-core CI runner those blocking waits exhaust the Swift
 # concurrency pool, so the tasks that cancel/terminate them are starved and the
 # suite stalls until timeouts (F115). One-at-a-time keeps a thread free.
 #
+# Build the tests BEFORE the timed section, so the watchdog bounds the RUN and not the compile
+# (F168). `swift test` does both, and on a cold `.build/debug` — a fresh checkout, or after `.build`
+# is cleared — a from-scratch build alone exceeds the 600 s bound. The watchdog then fired and the
+# gate exited 1 reporting an "F121 helper hang" when nothing had hung, wasting the whole run.
+#
+# Scaling the timeout was the alternative and this is better: it keeps the F121 bound tight where it
+# belongs instead of loosening it for every run to accommodate one, and it makes the watchdog's own
+# claim below — "normal runs finish in seconds" — true rather than aspirational. The build is
+# incremental, so `swift test` afterwards has nothing left to compile.
+print "[3/5] Building the test target (outside the watchdog — see F168)"
+swift build --build-tests --disable-sandbox "${testing_flags[@]}"
+
+print "[3/5] Running the complete Swift test suite"
+
 # Bounded watchdog (F121): even serially the helper can still wedge on a loaded/low-core machine, and
 # the residual hang used to sit SILENTLY until CI's 40-minute job cap. Bound the step: if it exceeds
 # WHISPERMEET_TEST_TIMEOUT seconds, sample the wedged swiftpm-testing-helper (so the stall is
 # diagnosable, not a silent timeout), print the last-started test, SIGKILL the helper, and fail loudly.
-# Normal runs finish in seconds — far under the bound.
+# Normal runs finish in seconds — far under the bound, and since F168 that is about the run alone.
 test_log="$(mktemp -t whispermeet-test.XXXXXX)"
 swift test --disable-sandbox --no-parallel "${testing_flags[@]}" >"$test_log" 2>&1 &
 test_pid=$!
