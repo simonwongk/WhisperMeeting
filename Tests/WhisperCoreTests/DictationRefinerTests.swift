@@ -7,14 +7,42 @@ private final class FakeRefineEngine: DictationRefineEngine, @unchecked Sendable
     private let lock = NSLock()
     private var _behavior: Behavior
     private var _refineCount = 0
+    /// Continuations waiting for `refine` to actually be ENTERED (F277).
+    private var _entryWaiters: [CheckedContinuation<Void, Never>] = []
     var refineCount: Int { lock.withLock { _refineCount } }
     init(_ behavior: Behavior) { _behavior = behavior }
     func warmUp() async throws {}
+
+    /// Returns once `refine` has been entered at least once.
+    ///
+    /// F277: `refineCount` was being used as a proxy for "the abandoned generation started", and
+    /// that proxy is racy. `instantSleep` makes the refiner's deadline fire immediately, so under
+    /// load the first `attempt` could return `.rawTimeout` before this engine's `refine` had even
+    /// been scheduled — leaving the count at 0. Observed once in a full-suite run alongside a
+    /// release build. Waiting on entry asserts what the test means instead of hoping for a
+    /// scheduling order the code never promised.
+    func waitUntilEntered() async {
+        await withCheckedContinuation { continuation in
+            let alreadyEntered = lock.withLock { () -> Bool in
+                if _refineCount > 0 { return true }
+                _entryWaiters.append(continuation)
+                return false
+            }
+            if alreadyEntered { continuation.resume() }
+        }
+    }
+
     func refine(_ request: RefineRequest) async throws -> String {
+        var waiters: [CheckedContinuation<Void, Never>] = []
         let behavior = lock.withLock { () -> Behavior in
             _refineCount += 1
+            waiters = _entryWaiters
+            _entryWaiters = []
             return _behavior
         }
+        // Resumed OUTSIDE the lock: resuming a continuation can run arbitrary code, and doing that
+        // while holding `lock` would risk re-entering it.
+        for waiter in waiters { waiter.resume() }
         switch behavior {
         case let .reply(text): return text
         case .fail: throw SummarizerError.helperFailed("boom")
@@ -93,6 +121,10 @@ func timeoutThenBusy() async {
     let refiner = DictationRefiner(engine: engine, sleep: instantSleep)
     let first = await refiner.attempt(text: "hello there", languageCode: "en")
     #expect(first == RefineAttempt(text: "hello there", outcome: .rawTimeout))
+    // Wait for the abandoned generation to actually START before asserting anything about it
+    // (F277). The deadline can fire before `refine` is scheduled, which is not a behaviour change —
+    // it is the test racing the runtime.
+    await engine.waitUntilEntered()
     // The abandoned generation is still occupying the engine — the next dictation must skip,
     // never queue behind it.
     let second = await refiner.attempt(text: "next words", languageCode: "en")

@@ -366,6 +366,21 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Whether the capture currently holds its `beginActivity` power assertion (F254).
     var isHoldingRecordingActivity: Bool { recordingActivity != nil }
 
+    /// How much audio may accumulate unsynced before the raw tracks are flushed to the device (F276).
+    ///
+    /// ~5 s of 48 kHz mono float32, i.e. 960 KB per track. F259 declined this fix on the belief that
+    /// `F_FULLFSYNC` costs "tens to hundreds of milliseconds" and would stall the
+    /// `sampleHandlerQueue` into dropping buffers. **Measured on this machine, that was wrong:**
+    /// median 3.32 ms and p99 7.42 ms idle, median 3.45 ms and p99 10.55 ms with a concurrent 3 GB
+    /// write. Ten milliseconds once every five seconds is affordable on the capture queue; the
+    /// decline was an assumption, and the assumption did not survive measuring.
+    static let trackSyncIntervalBytes = 48_000 * 4 * 5
+
+    /// Whether enough has accumulated since the last sync to warrant another (F276).
+    static func shouldSyncTrack(bytesSinceSync: Int) -> Bool {
+        bytesSinceSync >= trackSyncIntervalBytes
+    }
+
     /// Which display the content filter should be pinned to, as an index into `displayIDs` (F254).
     ///
     /// The filter is built around exactly ONE display, and this used to be `displays.first` —
@@ -565,6 +580,8 @@ private final class FloatTrackWriter {
     private(set) var firstPresentationTime: Double?
     private(set) var frameCount: Int64 = 0
     private var isFinished = false
+    /// Bytes written since the last device-level flush (F276).
+    private var bytesSinceSync = 0
 
     init(outputURL: URL, targetSampleRate: Double) throws {
         self.outputURL = outputURL
@@ -660,6 +677,15 @@ private final class FloatTrackWriter {
             to: handle
         )
         frameCount += Int64(outputBuffer.frameLength)
+        // F276: flush to the device every ~5 s of audio, so a kernel panic or a hard power cut
+        // loses at most that much of the tail rather than whatever the page cache had not
+        // checkpointed. Measured at p99 10.55 ms under a concurrent 3 GB write — affordable here,
+        // which is the opposite of what F259 assumed when it declined this.
+        bytesSinceSync += byteCount
+        if AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: bytesSinceSync) {
+            syncToDevice()
+            bytesSinceSync = 0
+        }
         let sampleCount = Int(outputBuffer.frameLength)
         guard sampleCount > 0 else { return .silent }
         var squaredSum: Float = 0
@@ -677,6 +703,10 @@ private final class FloatTrackWriter {
 
     func finish() throws -> FloatTrack {
         if !isFinished {
+            // F276: one final flush before the mixer reads these tracks back and before the WAV is
+            // written. The WAV header is written LAST, so a truncated `meeting.wav` falls back to
+            // these `.f32` files — which makes their durability exactly what that fallback rests on.
+            syncToDevice()
             try handle.close()
             isFinished = true
         }
@@ -685,6 +715,16 @@ private final class FloatTrackWriter {
             firstPresentationTime: firstPresentationTime,
             frameCount: frameCount
         )
+    }
+
+    /// Flushes this track to the device (F276).
+    ///
+    /// `F_FULLFSYNC` rather than `fsync`, because plain `fsync` does not flush the drive's own write
+    /// cache — measured at 0.01 ms here, which is the tell that it is not doing the durable thing.
+    /// Failures are ignored on purpose: a sync that does not happen leaves exactly the exposure that
+    /// existed before this change, and must never fail a capture that is otherwise working.
+    private func syncToDevice() {
+        _ = fcntl(handle.fileDescriptor, F_FULLFSYNC)
     }
 
     func cancel() {

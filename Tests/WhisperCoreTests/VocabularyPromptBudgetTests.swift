@@ -161,3 +161,58 @@ func echoGuardStillCatchesRealEchoes() {
     // …and never on a clip that scored as real speech.
     #expect(!VocabularyPrompt.shouldDropAsPromptEcho(echoed, terms: terms, noSpeechProb: 0.1))
 }
+
+// MARK: - F272: making the limit visible instead of silent
+
+@Test("Coverage reports how many terms actually reach the prompt (F272)")
+func coverageCountsFittingTerms() {
+    // F265 made trimming real, which made the Vocabulary screen's copy false: it said "every term
+    // shown below … is included in Whisper's local prompt". Some are not, and nothing said so — the
+    // user cannot tell which of their terms are actually biasing anything.
+    let terms = (1...100).map { "term\($0)" }
+    let coverage = VocabularyPrompt.coverage(of: terms)
+    #expect(coverage.total == 100)
+    #expect(coverage.fitting < 100)
+    #expect(coverage.fitting == VocabularyPrompt.promptedTerms(terms).count)
+    #expect(coverage.isTruncated)
+}
+
+@Test("A list that fits reports no truncation (F272)")
+func coverageOfAFittingList() {
+    let coverage = VocabularyPrompt.coverage(of: ["Acme", "Kubernetes", "客户成功"])
+    #expect(coverage.fitting == 3)
+    #expect(coverage.total == 3)
+    #expect(!coverage.isTruncated)
+}
+
+@Test("An empty list is not described as truncated (F272)")
+func coverageOfNothing() {
+    let coverage = VocabularyPrompt.coverage(of: [])
+    #expect(coverage.total == 0)
+    #expect(!coverage.isTruncated)
+}
+
+@Test("The notice appears only when terms are actually left out (F272)")
+func coverageNoticeOnlyWhenTruncated() {
+    #expect(VocabularyPrompt.coverageNotice(for: ["Acme", "Q3"]) == nil)
+    #expect(VocabularyPrompt.coverageNotice(for: []) == nil)
+
+    let notice = VocabularyPrompt.coverageNotice(for: (1...100).map { "term\($0)" })
+    #expect(notice != nil)
+    // It must say the real numbers, because "some terms were dropped" is not actionable — the user
+    // needs to know how far over they are to decide what to remove.
+    let fitting = VocabularyPrompt.coverage(of: (1...100).map { "term\($0)" }).fitting
+    #expect(notice?.contains("\(fitting)") == true)
+    #expect(notice?.contains("100") == true)
+}
+
+@Test("The Mandarin case is reported honestly, not as an English-sized limit (F272)")
+func coverageNoticeForMandarin() {
+    // 1.28 tokens/char means a CJK list runs out far sooner, which is exactly the user whose list
+    // silently stopped working. The notice must reflect their actual number.
+    let terms = (1...60).map { _ in "關鍵績效指標" }
+    let coverage = VocabularyPrompt.coverage(of: terms)
+    #expect(coverage.isTruncated)
+    #expect(coverage.fitting < 30, "a 6-character CJK term costs ~13 estimated tokens")
+    #expect(VocabularyPrompt.coverageNotice(for: terms)?.contains("\(coverage.fitting)") == true)
+}

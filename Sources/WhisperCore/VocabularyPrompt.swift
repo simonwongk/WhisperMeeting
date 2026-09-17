@@ -98,13 +98,49 @@ public enum VocabularyPrompt {
         String(promptedTerms(raw).joined(separator: ", ").prefix(maxCharacters))
     }
 
+    // MARK: - Making the limit visible (F272)
+
+    /// How many of a user's terms actually reach the prompt, against how many they have.
+    public struct PromptCoverage: Equatable, Sendable {
+        public let fitting: Int
+        public let total: Int
+        public var isTruncated: Bool { fitting < total }
+    }
+
+    /// The coverage of `raw` — what fits, out of what there is (F272).
+    ///
+    /// Exists because F265 made trimming real and therefore made it silent. Before the token budget,
+    /// the cap was 1,000 characters and any list that genuinely overran Whisper's budget had its
+    /// whole prompt evicted, so "which terms survived" was moot. Now some survive and some do not,
+    /// and the user has no way to tell which of their terms are biasing anything.
+    public static func coverage(of raw: [String]) -> PromptCoverage {
+        let capped = terms(raw)
+        return PromptCoverage(fitting: promptedTerms(raw).count, total: capped.count)
+    }
+
+    /// A plain-language notice when some terms do not fit, or nil when they all do (F272).
+    ///
+    /// Reports the real numbers rather than "some terms were dropped", because the latter is not
+    /// actionable — a user needs to know how far over they are to decide what to remove. Says
+    /// nothing about *which* terms are kept, because that is currently collation order and therefore
+    /// arbitrary; F272's remaining scope is whether the user should be able to prioritise.
+    public static func coverageNotice(for raw: [String]) -> String? {
+        let coverage = coverage(of: raw)
+        guard coverage.isTruncated else { return nil }
+        return """
+        \(coverage.fitting) of your \(coverage.total) terms fit the model's prompt budget. \
+        The rest are stored and searchable but are not sent to the recognizer — \
+        the limit is the model's, and non-Latin scripts use it up faster.
+        """
+    }
+
     /// Exactly the terms that reach `--initial_prompt` — what `build` keeps after budgeting (F265).
     ///
     /// Separate from `build` because two callers need the *list*, not the joined string: `build`
     /// itself, and `isPromptEcho`, which may only judge a transcript against terms the model was
     /// actually given. Whisper cannot regurgitate a term it never saw, so matching against a
     /// trimmed-out term can only delete real speech.
-    static func promptedTerms(_ raw: [String]) -> [String] {
+    public static func promptedTerms(_ raw: [String]) -> [String] {
         var kept: [String] = []
         for term in terms(raw) {
             // `continue`, not `break`: one term that does not fit must not discard the terms after

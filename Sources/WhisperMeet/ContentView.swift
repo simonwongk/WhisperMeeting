@@ -2146,8 +2146,16 @@ private struct VocabularyView: View {
                     }
                     .help("Copy a ready-made prompt to paste into any AI chat, then paste the terms it lists back into the Add box. Note: whatever you paste into that external chat (notes, rosters, docs) leaves this Mac and goes to that provider.")
                 }
-                Text("Every term shown below stays on this Mac and is included in Whisper’s local prompt. Up to 100 reviewed terms are kept.")
+                // F272: this used to claim "Every term shown below … is included in Whisper's local
+                // prompt". F265 made that false — the prompt is budgeted in tokens now, so a long
+                // list is trimmed. Say what is true, and show the real numbers when it bites.
+                Text("Every term shown below stays on this Mac. Up to 100 reviewed terms are kept, and as many as fit the model’s prompt budget are sent to the recognizer.")
                     .foregroundStyle(.secondary)
+                if let coverage = VocabularyPrompt.coverageNotice(for: store.vocabulary) {
+                    Label(coverage, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
                 Text("“Copy AI Prompt” is for an external AI chat: anything you paste there leaves this Mac. Don’t include confidential material.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
