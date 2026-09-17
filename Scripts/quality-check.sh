@@ -36,13 +36,28 @@ else
 fi
 
 print "[2/5] Running script regression suites"
-python3 Scripts/tests/test_qwen_transcribe.py
-python3 Scripts/tests/test_summarize_local.py
-python3 Scripts/tests/test_correct_local.py
-python3 Scripts/tests/test_refine_server.py
-python3 Scripts/tests/test_whisper_dictate_server.py
-python3 Scripts/tests/test_qwen_chat.py
-python3 Scripts/tests/test_score_diarization.py
+# Globbed, not listed. A hardcoded list is how a test file silently stops running: when this was a
+# list of seven, `test_generate_tickets_dashboard.py` was not in it and neither was
+# `test_fidelity_score.py` when it was added — both passed locally and neither was gated, which
+# is indistinguishable from not having written them.
+#
+# `(N)` so an empty directory is not a literal glob passed to python3, and the loop prints each file
+# because a suite that runs and says nothing is the same problem one step later.
+#
+# A glob also gets the gitignored ticketing suites right, where a list could not (F231). It NAMES no
+# local-only file — so a fresh clone, which has neither `generate-tickets-dashboard.py` nor its test,
+# simply finds fewer files and passes — while a working copy that has them runs them. That is how
+# `test_generate_tickets_dashboard.py` caught this very change: it had never run in the gate, and
+# the first thing it did once it could was fail on the list this glob replaced.
+script_suites=(Scripts/tests/test_*.py(N))
+if (( ${#script_suites} == 0 )); then
+  print -u2 "No script suites found under Scripts/tests — that is a bug in this gate, not a pass."
+  exit 1
+fi
+for suite in $script_suites; do
+  print "  $suite"
+  python3 "$suite"
+done
 
 print "[3/5] Running the complete Swift test suite"
 # Run serially: several tests block a cooperative thread waiting on a real
