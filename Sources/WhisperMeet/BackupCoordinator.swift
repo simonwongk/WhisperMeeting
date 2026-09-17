@@ -42,8 +42,38 @@ enum BackupCoordinator {
     /// Marker file written into a generation once it is fully copied+verified. A generation without it is
     /// an interrupted/partial run and is never counted or pruned as a real backup (F137).
     static let completionMarker = ".backup-complete"
-    /// The library entries that are backed up — never the whole Application Support dir (F137).
-    static let backedUpEntries = ["Recordings", "meetings.json", "vocabulary.json"]
+    /// The one definition of what a backup contains — never the whole Application Support dir
+    /// (F137). A list of CANDIDATES, not requirements: a fresh library has no
+    /// `replacement-rules.json` and no ledgers until its first save, and demanding them would make
+    /// the backup feature fail on a new install, which turns a safety feature into an obstacle.
+    ///
+    /// Derived from the index stems rather than written out, because writing them out is how two of
+    /// the three came to be missing (F191 slice A). The app persists three indexes and F190 gives
+    /// each one two siblings; the previous list had one stem with one file and one with none.
+    ///
+    /// What was wrong, in descending order of how visible it was to a user:
+    ///
+    /// - `replacement-rules.json` was absent entirely. The backup UI promises indexes and silently
+    ///   dropped one of the three.
+    /// - Every `.backup.json` was absent, so a restored library had no redundancy behind a single
+    ///   decode failure — the redundancy F190 exists to provide.
+    /// - Every `.ledger.json` was absent. Checked rather than assumed: this does NOT make a
+    ///   restored library read as divergent, because `isDivergent` opens with
+    ///   `guard let ledger else { return false }`. The cost is losing divergence detection until
+    ///   the next save, not a quarantine on first load.
+    static let indexStems = ["meetings", "vocabulary", "replacement-rules"]
+
+    /// Excluded deliberately, and asserted by a test so it stays a decision rather than an
+    /// oversight:
+    ///
+    /// - `meetings.history/` is a short undo window, not an archive (the F190 note says so), and
+    ///   copying a rolling buffer into every generation multiplies it by the retain count.
+    /// - Install logs and downloaded runtimes are not user data and are re-creatable.
+    /// - Quarantined `*.unreadable-*.json` files are evidence of one incident, kept in place by
+    ///   `StoreQuarantine` precisely so they sit beside the library they came from.
+    static let backedUpEntries: [String] = ["Recordings"] + indexStems.flatMap {
+        ["\($0).json", "\($0).backup.json", "\($0).ledger.json"]
+    }
 
     /// Back up `source` into `destination/<managedSubfolder>/<now>/`, retaining the newest `retain`
     /// complete generations.
@@ -204,9 +234,33 @@ enum BackupCoordinator {
         }
     }
 
-    private static func sha256(of url: URL) throws -> String {
-        let digest = SHA256.hash(data: try Data(contentsOf: url))
-        return digest.map { String(format: "%02x", $0) }.joined()
+    /// How much of a file is held in memory at once while hashing it.
+    ///
+    /// 1 MiB: large enough that a 4 GB recording costs ~4,000 reads rather than a syscall per page,
+    /// small enough that it is irrelevant beside the app's own footprint.
+    static let hashChunkByteCount = 1 << 20
+
+    /// Streams a file through SHA-256 (F191 slice B).
+    ///
+    /// Was `SHA256.hash(data: try Data(contentsOf: url))`, which reads the whole file into memory
+    /// to hash it. The backup hashes every changed file to verify the copy, and the files it exists
+    /// to protect are multi-gigabyte recordings — so the verification step was the one most likely
+    /// to fail on exactly the library that needed backing up most.
+    ///
+    /// The read is injected so the chunking itself is observable. "Memory did not grow" is not
+    /// something a test can assert honestly; how many times the reader was asked, and for how much,
+    /// is.
+    static func sha256(
+        of url: URL,
+        read: (FileHandle, Int) throws -> Data? = { try $0.read(upToCount: $1) }
+    ) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try read(handle, hashChunkByteCount), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Whether to reject a backup for lack of space. Rejects ONLY on a credible positive capacity
