@@ -66,7 +66,12 @@ func partlyUndecodableIndexKeepsItsReadableRecords() throws {
     #expect(store.meetings.count == 2)
     #expect(Set(store.meetings.map(\.id)) == [alpha.id, charlie.id])
     #expect(store.meetings.contains { $0.title == "Alpha" })
-    #expect(store.health == .partiallySalvaged(parkedIdentifiers: [bravo.id.uuidString]))
+    // Updated by F197: this expected the bare `bravo.id.uuidString`. The fixture removes `title`
+    // (the only way to fail exactly one element), so the record has an id and no title, and the name
+    // is now a description plus the short id rather than a raw UUID standing alone.
+    #expect(store.health == .partiallySalvaged(
+        parkedIdentifiers: ["untitled meeting (\(bravo.id.uuidString.prefix(8)))"]
+    ))
     // Salvage improves what the user can SEE, not what they can change: `.partiallySalvaged` does not
     // allow mutation, so a salvaged library is still open read-only.
     #expect(store.isDegraded)
@@ -77,26 +82,99 @@ func partlyUndecodableIndexKeepsItsReadableRecords() throws {
     #expect(quarantinedNames(in: root).count == 2)
 }
 
-@Test("A parked record is named by its id, then its title, then its position")
+@Test("A parked record is named by its title, with a short id to grep for (F197)")
 @MainActor
-func parkedIdentifiersPreferIDThenTitleThenPosition() throws {
+func parkedIdentifiersPreferTitleForDisplay() throws {
+    // This test previously pinned id-FIRST, and F197 is the correction. A bare UUID tells the user
+    // nothing they can act on: they are being asked to look for a meeting inside a quarantined JSON
+    // file, and what they remember is "Budget review", not `6F1A0000-…`. The short id stays
+    // alongside it, because that is the string they would actually grep for once they open the file
+    // — dropping it would trade one unusable name for another.
     let alpha = MeetingRecord(title: "Alpha")
     let bravo = MeetingRecord(title: "Bravo")
     var elements = try encodedElements([
         alpha, bravo, MeetingRecord(title: "Charlie"), MeetingRecord(title: "Delta")
     ])
-    elements[1].removeValue(forKey: "title") // id survives -> named by id
-    elements[2].removeValue(forKey: "id")    // no id, title survives -> named by title
+    elements[1].removeValue(forKey: "duration") // title AND id survive -> both shown
+    elements[2].removeValue(forKey: "id")       // no id -> title alone
     elements[3].removeValue(forKey: "id")
-    elements[3].removeValue(forKey: "title") // neither -> named by position
+    elements[3].removeValue(forKey: "title")    // neither -> position
 
     let (store, root) = try makeStore(index: elements)
     defer { try? FileManager.default.removeItem(at: root) }
 
     #expect(store.meetings.map(\.id) == [alpha.id])
+    let shortBravo = String(bravo.id.uuidString.prefix(8))
     #expect(store.health == .partiallySalvaged(
-        parkedIdentifiers: [bravo.id.uuidString, "Charlie", "record at index 3"]
+        parkedIdentifiers: ["Bravo (\(shortBravo))", "Charlie", "record at index 3"]
     ))
+}
+
+@Test("An untitled parked record is described, not left as a bare UUID (F197)")
+@MainActor
+func untitledParkedRecordIsDescribed() throws {
+    let alpha = MeetingRecord(title: "Alpha")
+    let bravo = MeetingRecord(title: "")
+    var elements = try encodedElements([alpha, bravo])
+    elements[1].removeValue(forKey: "duration")
+
+    let (store, root) = try makeStore(index: elements)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let shortBravo = String(bravo.id.uuidString.prefix(8))
+    #expect(store.health == .partiallySalvaged(
+        parkedIdentifiers: ["untitled meeting (\(shortBravo))"]
+    ))
+}
+
+@Test("The startup message names the parked meetings, not just how many (F197)")
+@MainActor
+func startupMessageNamesTheParkedRecords() throws {
+    // The store knew which records it parked and told the user only a count — "N meeting record(s)
+    // could not be read" — so they were informed that something was missing and given no way to
+    // tell what. Since salvage became reachable for the meeting index, that sentence is the only
+    // thing they see.
+    let alpha = MeetingRecord(title: "Alpha")
+    var elements = try encodedElements([
+        alpha, MeetingRecord(title: "Budget review"), MeetingRecord(title: "Hiring sync")
+    ])
+    elements[1].removeValue(forKey: "duration")
+    elements[2].removeValue(forKey: "duration")
+
+    let (store, root) = try makeStore(index: elements)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let message = try #require(
+        store.startupRecoveryMessages.first { $0.contains("could not be read") }
+    )
+    #expect(message.contains("2 meeting records"))
+    #expect(message.contains("Budget review"))
+    #expect(message.contains("Hiring sync"))
+    #expect(message.contains("preserved copy"))
+}
+
+@Test("A long list of parked records is summarised rather than printed whole (F197)")
+@MainActor
+func manyParkedRecordsAreSummarised() throws {
+    // A wholly-corrupt index can park hundreds. Naming every one turns an actionable message into a
+    // wall of text, so the message names a handful and counts the rest — the names exist to help a
+    // user recognise what to look for, and past a few they stop doing that.
+    let good = MeetingRecord(title: "Good")
+    var records = [good]
+    for index in 0..<12 { records.append(MeetingRecord(title: "Meeting \(index)")) }
+    var elements = try encodedElements(records)
+    for index in 1...12 { elements[index].removeValue(forKey: "duration") }
+
+    let (store, root) = try makeStore(index: elements)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let message = try #require(
+        store.startupRecoveryMessages.first { $0.contains("could not be read") }
+    )
+    #expect(message.contains("12 meeting records"))
+    #expect(message.contains("Meeting 0"))
+    #expect(message.contains("and 7 more"), "expected the tail to be counted, not listed")
+    #expect(!message.contains("Meeting 11"))
 }
 
 // An element that is not even a JSON object must be parked, not crash the salvage. A bare number

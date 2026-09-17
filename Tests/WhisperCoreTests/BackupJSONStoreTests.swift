@@ -223,3 +223,93 @@ func saveUsesTheForeignGenerationAsBackupNotItsCachedBytes() throws {
     let reloaded = try #require(try store.load())
     #expect(reloaded.value == [SavedMeeting(title: "Next")])
 }
+
+// MARK: - F197: salvage must present the best copy, not the first one that works
+
+@Test("Salvage picks the copy that rescues the most records, not the first (F197)")
+func salvagePicksTheRichestCopy() throws {
+    // `load()` iterated `[primaryURL, backupURL]` and returned the first successful salvage. So a
+    // primary that rescues two records beat a backup that would rescue nine, and the user was shown
+    // two. Nothing was lost — both files are quarantined and the library goes read-only — but the
+    // poorer result is what they were told about and what they had to work from.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F197-\(UUID().uuidString)", isDirectory: true)
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // Primary rescues 1 of 3; backup rescues 3 of 4. Both are unreadable as a whole, so both reach
+    // the element-wise salvage.
+    try Data(#"[{"title":"one"},{"title":1},{"title":2}]"#.utf8).write(to: primaryURL)
+    try Data(#"[{"title":"a"},{"title":"b"},{"title":"c"},{"title":9}]"#.utf8).write(to: backupURL)
+
+    let store = BackupJSONStore<[SavedMeeting]>(
+        primaryURL: primaryURL,
+        backupURL: backupURL,
+        salvage: elementWiseSalvage
+    )
+
+    let result = try #require(try store.load())
+    #expect(result.value.map(\.title) == ["a", "b", "c"], "kept the poorer primary salvage")
+    #expect(result.health == .partiallySalvaged(parkedIdentifiers: ["index 3"]))
+}
+
+@Test("A tie keeps the primary, so the choice is stable rather than arbitrary (F197)")
+func salvageTieKeepsThePrimary() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F197-tie-\(UUID().uuidString)", isDirectory: true)
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try Data(#"[{"title":"primary"},{"title":1}]"#.utf8).write(to: primaryURL)
+    try Data(#"[{"title":"backup"},{"title":1}]"#.utf8).write(to: backupURL)
+
+    let store = BackupJSONStore<[SavedMeeting]>(
+        primaryURL: primaryURL,
+        backupURL: backupURL,
+        salvage: elementWiseSalvage
+    )
+
+    // Equal counts: prefer the primary, because it is the live generation and the one a later save
+    // would be replacing. "Most records, primary on a tie" is a rule; "whichever came first" was an
+    // accident of loop order that happened to agree with it.
+    let result = try #require(try store.load())
+    #expect(result.value.map(\.title) == ["primary"])
+}
+
+@Test("A backup that salvages nothing does not displace a primary that salvages something (F197)")
+func anEmptyBackupSalvageIsNotPreferred() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F197-empty-\(UUID().uuidString)", isDirectory: true)
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try Data(#"[{"title":"kept"},{"title":1}]"#.utf8).write(to: primaryURL)
+    try Data(#"[{"title":1},{"title":2}]"#.utf8).write(to: backupURL)
+
+    let store = BackupJSONStore<[SavedMeeting]>(
+        primaryURL: primaryURL,
+        backupURL: backupURL,
+        salvage: elementWiseSalvage
+    )
+
+    let result = try #require(try store.load())
+    #expect(result.value.map(\.title) == ["kept"])
+}
+
+/// The shape `MeetingStore.salvageMeetings` has: keep what decodes, park what does not, nil when
+/// nothing decoded at all.
+private let elementWiseSalvage: @Sendable (Data) -> SalvagedValue<[SavedMeeting]>? = { data in
+    let elements = (try? JSONDecoder().decode([FailableDecodable<SavedMeeting>].self, from: data)) ?? []
+    var kept: [SavedMeeting] = []
+    var parked: [String] = []
+    for (index, element) in elements.enumerated() {
+        if let value = element.value { kept.append(value) } else { parked.append("index \(index)") }
+    }
+    return kept.isEmpty ? nil : SalvagedValue(value: kept, parkedIdentifiers: parked)
+}

@@ -41,9 +41,33 @@ public struct SalvagedValue<Value>: Sendable where Value: Sendable {
     public let value: Value
     public let parkedIdentifiers: [String]
 
-    public init(value: Value, parkedIdentifiers: [String]) {
+    /// How many records this salvage actually rescued, for choosing between two damaged copies
+    /// (F197). A closure returns `Value`, which `BackupJSONStore` cannot count generically, so the
+    /// salvage reports it — the same closure already knows, having just built `value` element by
+    /// element.
+    public let recoveredCount: Int
+
+    public init(value: Value, parkedIdentifiers: [String], recoveredCount: Int) {
         self.value = value
         self.parkedIdentifiers = parkedIdentifiers
+        self.recoveredCount = recoveredCount
+    }
+
+    /// The count derived from the value itself, for the array case — which is every real salvage,
+    /// since element-wise rescue only makes sense for a collection.
+    ///
+    /// Constrained rather than asking callers for a number they could get wrong: a `recoveredCount`
+    /// that disagreed with `value` would silently pick the worse of two damaged copies, which is
+    /// the bug F197 exists to fix, reintroduced through its own fix.
+    public init<Element>(
+        value: Value,
+        parkedIdentifiers: [String]
+    ) where Value == [Element] {
+        self.init(
+            value: value,
+            parkedIdentifiers: parkedIdentifiers,
+            recoveredCount: value.count
+        )
     }
 }
 
@@ -268,12 +292,28 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         }
 
         if let salvage {
+            // Try BOTH copies and present the one that rescues the most records (F197). This used to
+            // return the first success, so a primary that rescued two records beat a backup that
+            // would have rescued nine and the user was shown two. Nothing was lost — both files are
+            // quarantined above and the library goes read-only — but the poorer result is what they
+            // were told about and what they had to work from.
+            //
+            // The primary wins a tie, because it is the live generation and the one a later save
+            // would replace. "Most records, primary on a tie" is a rule; "whichever came first" was
+            // an accident of loop order that happened to agree with it in the common case.
+            var best: (value: Value, parked: [String], count: Int)?
             for (url, phase) in [(primaryURL, StoreWritePhase.readPrimary),
                                  (backupURL, StoreWritePhase.readBackup)] {
                 guard let data = try? io.read(url, phase), let rescued = salvage(data) else { continue }
+                let count = rescued.recoveredCount
+                if best == nil || count > best!.count {
+                    best = (rescued.value, rescued.parkedIdentifiers, count)
+                }
+            }
+            if let best {
                 return LoadResult(
-                    value: rescued.value,
-                    health: .partiallySalvaged(parkedIdentifiers: rescued.parkedIdentifiers)
+                    value: best.value,
+                    health: .partiallySalvaged(parkedIdentifiers: best.parked)
                 )
             }
         }

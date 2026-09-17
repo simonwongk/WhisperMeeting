@@ -1180,14 +1180,54 @@ final class MeetingStore: ObservableObject {
         return SalvagedValue(value: kept, parkedIdentifiers: parked)
     }
 
-    /// A name the user can look for inside the quarantined copy: the record's own id, else its title,
-    /// else its position in the file. Never fails — a record too damaged to identify is simply another
-    /// parked record, and losing its name must not cost the records around it (F187).
+    /// A name the user can look for inside the quarantined copy. Never fails — a record too damaged
+    /// to identify is simply another parked record, and losing its name must not cost the records
+    /// around it (F187).
+    ///
+    /// **Title first, then the short id (F197).** This preferred the bare UUID, which tells the user
+    /// nothing they can act on: they are being asked to find a meeting inside a quarantined JSON
+    /// file, and what they remember is "Budget review", not `6F1A0000-…`. The first eight characters
+    /// of the id stay alongside the title because that is the string they would actually grep for
+    /// once the file is open — dropping it would trade one unusable name for another.
     nonisolated private static func parkedIdentifier(for element: Any, at index: Int) -> String {
-        guard let object = element as? [String: Any] else { return "record at index \(index)" }
-        if let id = object["id"] as? String, !id.isEmpty { return id }
-        if let title = object["title"] as? String, !title.isEmpty { return title }
-        return "record at index \(index)"
+        let position = "record at index \(index)"
+        guard let object = element as? [String: Any] else { return position }
+        let title = (object["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let shortID = (object["id"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(8)) }
+        switch (title, shortID) {
+        case let (title?, shortID?): return "\(title) (\(shortID))"
+        case let (title?, nil): return title
+        // An id with no title: describe it rather than printing a raw UUID on its own, so the
+        // sentence still reads as being about a meeting.
+        case let (nil, shortID?): return "untitled meeting (\(shortID))"
+        case (nil, nil): return position
+        }
+    }
+
+    /// How many parked records to name before counting the remainder (F197).
+    ///
+    /// A wholly-corrupt index can park hundreds, and naming every one turns an actionable message
+    /// into a wall of text. The names exist so a user can recognise what to look for, and past a
+    /// handful they stop doing that.
+    private static let parkedNamesToList = 5
+
+    /// The startup message for a partially salvaged index (F197).
+    ///
+    /// It used to render only the count — "N meeting record(s) could not be read" — while the store
+    /// held the identifiers all along. The user was told something was missing and given no way to
+    /// tell what, and since salvage became reachable for the meeting index that sentence is the only
+    /// thing they see.
+    static func partialSalvageMessage(parked: [String]) -> String {
+        let count = parked.count
+        let noun = count == 1 ? "1 meeting record" : "\(count) meeting records"
+        let listed = parked.prefix(parkedNamesToList)
+        let remainder = count - listed.count
+        var named = listed.joined(separator: ", ")
+        if remainder > 0 { named += ", and \(remainder) more" }
+        return """
+        \(noun) could not be read and were left in the preserved copy: \(named). \
+        The rest of the library loaded. Nothing was written.
+        """
     }
 
     private func loadMeetings() {
@@ -1202,9 +1242,7 @@ final class MeetingStore: ObservableObject {
                 )
             }
             if case let .partiallySalvaged(parked) = result.health {
-                startupRecoveryMessages.append(
-                    "\(parked.count) meeting record(s) could not be read and were left in the preserved copy. The rest of the library loaded. Nothing was written."
-                )
+                startupRecoveryMessages.append(Self.partialSalvageMessage(parked: parked))
             }
             // A valid but empty index sitting next to FINALIZED recordings is suspicious, not normal:
             // that is the wipe shape — meetings that demonstrably happened, an index claiming none.
