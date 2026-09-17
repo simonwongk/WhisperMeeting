@@ -211,6 +211,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         case languageCode, confidence, segments, errorMessage, summary, transcriptNormalized
         case markers, pinned, notes, tags, healthReport, alignmentWarning, recoveryWarning
         case languageWarning, source, referenceSegments
+        // F304: these two were missing, so they were encoded and decoded by nothing — in-memory
+        // only. `recoverySource` IS F273's fix: that ticket exists because provenance lived in a
+        // field another path cleared, and the fix moved it into a field nothing persisted, so it
+        // survived transcription and not a reload. `staleTranscriptWarning` is F267's notice and
+        // failed the same way. A hand-written `CodingKeys` encodes only what it lists, and nothing
+        // warns about the rest — `MeetingRecordWireFormatTests` now enumerates the stored
+        // properties with `Mirror` so the omission cannot recur.
+        case recoverySource, staleTranscriptWarning
         case transcriptionEngineRawValue = "transcriptionEngine"
     }
 

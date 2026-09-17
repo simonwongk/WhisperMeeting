@@ -109,9 +109,24 @@ func typedSetterWritesTheRawValue() throws {
 func theWireKeySetIsPinned() throws {
     // F250 replaces `MeetingRecord`'s synthesized `CodingKeys` with a hand-written one, so that the
     // raw engine string can be stored under a differently-named property while keeping the on-disk
-    // key. Hand-writing `CodingKeys` on a 24-field persisted type is the kind of change that
-    // silently drops a field — and a dropped field here means every meeting loses it on the next
-    // save, with nothing failing. So the key set is pinned rather than trusted.
+    // key. Hand-writing `CodingKeys` on a persisted type is the kind of change that silently drops
+    // a field — and a dropped field here means every meeting loses it on the next save, with
+    // nothing failing. So the key set is pinned rather than trusted.
+    //
+    // **And this test did not catch the thing it was written for (F304).** F273 added
+    // `recoverySource` and F267 added `staleTranscriptWarning`; neither reached `CodingKeys`, so
+    // both were in-memory only — `recoverySource` being the entirety of F273's fix, which made that
+    // ticket's own defect reachable again through a reload. This test passed throughout, because it
+    // enumerates the expected keys **by hand**: a field that does not exist in the fixture is nil,
+    // a nil optional is omitted, and the literal set below matched. The comment under it even
+    // asserted "every field that CAN be non-nil is set", which was true when written and false as
+    // soon as a field was added.
+    //
+    // A hand-written list cannot notice a field nobody told it about. So the real guard is now
+    // `MeetingRecordWireFormatTests.everyStoredFieldIsEncoded`, which DERIVES the property list
+    // with `Mirror` instead of restating it. This test is kept for what it still does well — pinning
+    // the on-disk *names*, which a derived test cannot check, since renaming a key and renaming the
+    // property together would satisfy it.
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     let record = MeetingRecord(
@@ -133,6 +148,8 @@ func theWireKeySetIsPinned() throws {
         tags: ["tag"],
         alignmentWarning: "a",
         recoveryWarning: "r",
+        recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
+        staleTranscriptWarning: "s",
         languageWarning: "l",
         transcriptionEngine: .whisperLarge
     )
@@ -143,14 +160,16 @@ func theWireKeySetIsPinned() throws {
         "id", "title", "createdAt", "duration", "recordingPath", "status", "transcriptText",
         "languageCode", "confidence", "segments", "errorMessage",
         "transcriptNormalized", "markers", "pinned", "notes", "tags", "alignmentWarning",
-        "recoveryWarning", "languageWarning", "transcriptionEngine",
+        "recoveryWarning", "recoverySource", "staleTranscriptWarning", "languageWarning",
+        "transcriptionEngine",
     ]
-    // 20 keys for 24 fields: `summary`, `healthReport`, `source` and `referenceSegments` are nil.
-    #expect(expected.count == 20)
-    // `summary`, `healthReport`, `source` and `referenceSegments` are left nil above, and a nil
-    // optional is omitted rather than written as null — so they are absent by design, not by
-    // omission from CodingKeys. Every field that CAN be non-nil is set, so the set below is the
-    // full on-disk vocabulary minus those four.
+    // 22 keys for 26 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
+    // nil here, and a nil optional is omitted rather than written as null — so they are absent by
+    // design, not by omission from `CodingKeys`.
+    //
+    // These counts are the part that went stale, so they are stated rather than implied: 26 comes
+    // from `Mirror`, which `everyStoredFieldIsEncoded` reads directly. If this literal disagrees
+    // with the wire format again, that test is the one that will say which field.
     #expect(Set(object.keys) == expected,
             "a persisted field changed its on-disk name or stopped being written")
 }
