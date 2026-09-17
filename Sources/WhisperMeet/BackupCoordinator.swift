@@ -162,8 +162,23 @@ enum BackupCoordinator {
             }
         }
 
-        // Mark complete only after every file copied and verified, and while still staged — so the
-        // marker and the bytes become visible at the final name in one rename.
+        // The manifest, then the marker, both while still staged — so the whole evidence set
+        // becomes visible at the final name in one rename (F191 slice D).
+        //
+        // Built from `sourceFiles`, which is exactly the set that got into the generation. A
+        // hardlinked (skipped) file shares the previous generation's inode and therefore its
+        // contents, so the source hash describes it correctly.
+        //
+        // The marker stays. A generation written before this has no manifest and must still read
+        // as complete — an improvement that made older backups unrestorable would be data loss
+        // wearing a feature's clothes.
+        try BackupManifest(
+            generation: String(now),
+            createdAtEpoch: now,
+            files: sourceFiles.map {
+                .init(relativePath: $0.relativePath, size: $0.size, sha256: $0.contentHash)
+            }
+        ).write(to: generationDir)
         try Data().write(to: generationDir.appendingPathComponent(completionMarker))
 
         // Publish. A pre-existing generation at this stamp is replaced only now, after the
@@ -249,6 +264,9 @@ enum BackupCoordinator {
                 guard full.hasPrefix(rootPath + "/") else { continue }
                 // Never back up the backup marker itself when reading a prior generation.
                 if url.lastPathComponent == completionMarker { continue }
+                // Nor the manifest: it describes the generation's user data, so including it in
+                // the next generation's plan would make it a file that must describe itself.
+                if url.lastPathComponent == BackupManifest.fileName { continue }
                 result.append(BackupFile(
                     relativePath: String(full.dropFirst(rootPath.count + 1)),
                     size: Int64(values.fileSize ?? 0),
