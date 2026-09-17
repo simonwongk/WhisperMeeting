@@ -1,7 +1,13 @@
 import Foundation
 
 public struct RecoveredRecording: Sendable, Equatable {
-    public enum Source: Sendable, Equatable {
+    /// How a recovery produced its recording.
+    ///
+    /// `String`-backed so it can be persisted on the meeting (F273) — provenance kept as prose in
+    /// `errorMessage` was erased by the ordinary act of transcribing. Raw-value-backed rather than
+    /// stored as a Swift enum so an unfamiliar value from a newer build decodes and is ignored
+    /// instead of making the library unreadable, which is F250's rule one file over.
+    public enum Source: String, Sendable, Equatable {
         case existingCapture
         case importedRecording
         case rebuiltSourceTracks

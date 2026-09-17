@@ -1742,7 +1742,8 @@ final class AppModel: ObservableObject {
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: .failed,
                         errorMessage: Self.severelyTruncatedRecoveryMessage,
-                        recoveryWarning: recoveryWarning
+                        recoveryWarning: recoveryWarning,
+                        recoverySource: recovered.source.rawValue
                     ))
                     messages.append("\(failedTitle) needs attention. \(Self.severelyTruncatedRecoveryMessage)")
                     // The clock time belongs in the worse case too. Without this the startup alert
@@ -1759,7 +1760,10 @@ final class AppModel: ObservableObject {
                     errorMessage: recovered.wasRebuiltFromRawTracks
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
                         : "Recovered after an interruption. The original recording and source tracks were preserved.",
-                    recoveryWarning: recoveryWarning
+                    recoveryWarning: recoveryWarning,
+                    // F273: the same fact structurally, because `performTranscription` clears
+                    // `errorMessage` and used to take the provenance with it.
+                    recoverySource: recovered.source.rawValue
                 ))
                 // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
                 messages.append("\(title) was added back to meeting history.")
@@ -2137,7 +2141,8 @@ final class AppModel: ObservableObject {
                             ? Self.severelyTruncatedRecoveryMessage
                             : "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again.",
                         markers: recoveredMarkers,
-                        recoveryWarning: recoveryWarning
+                        recoveryWarning: recoveryWarning,
+                        recoverySource: recovered.source.rawValue
                     ))
                     var alert = severe
                         ? "The meeting could not finish normally, and most of its audio could not be rebuilt. \(Self.severelyTruncatedRecoveryMessage)"
@@ -3281,6 +3286,16 @@ final class AppModel: ObservableObject {
             $0.confidence = quality.isUnscored ? nil : quality.confidence
             $0.segments = effectiveSegments
             $0.errorMessage = nil
+            // F273: `recoverySource` is deliberately NOT cleared here. Provenance is true of the
+            // recording whatever happens to its transcript, and clearing `errorMessage` — which
+            // used to be the only place it lived — is the whole defect that ticket reports.
+            //
+            // `staleTranscriptWarning` IS cleared, and the two point opposite ways on purpose.
+            // F267 sets it when a rebuild leaves an old transcript describing audio that no longer
+            // exists; a fresh transcript describes the audio that is actually there, so keeping the
+            // notice would be a false claim in the other direction. My own F267 comment promised
+            // this and nothing did it until now.
+            $0.staleTranscriptWarning = nil
             // Carry the alignment warning onto the meeting so the detail view can explain why a
             // Qwen transcript has no seekable timestamps, instead of dropping it silently (F30).
             $0.alignmentWarning = result.alignmentWarning
@@ -3610,6 +3625,9 @@ extension AppModel {
             store.update(id: request.meetingID) { meeting in
                 meeting.duration = rebuilt.duration
                 meeting.recoveryWarning = Self.recoveryWarning(for: rebuilt)
+                // A second rebuild is still a rebuild: re-declare it, so a meeting whose first
+                // recovery predates F273 gains the provenance rather than staying silent (F273).
+                meeting.recoverySource = rebuilt.source.rawValue
                 // F281's rule in a new case. The transcript covers the old, shorter audio and its
                 // timestamps point into a file that has been superseded; it is kept because
                 // blanking it is forbidden and would be the greater harm, so the meeting says so

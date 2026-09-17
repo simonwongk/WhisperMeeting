@@ -2475,42 +2475,28 @@ private struct TranscriptDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.yellow.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-                    // F256: the rebuild stopped early, so this file is short by a known amount.
-                    // Deliberately NOT beside the alignment and language warnings in
-                    // `transcriptSection`, which the body renders only for `.completed` — a
-                    // truncated recovery is `.recorded`, and a severely truncated one `.failed`, so
-                    // the warning would have been invisible in both cases it exists for. It sits
-                    // beside the capture-health advisory instead, which is the same kind of
-                    // statement and renders at every status.
-                    if let warning = meeting.recoveryWarning {
-                        Label(warning, systemImage: "waveform.badge.exclamationmark")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .bannerSurface(.orange)
-                            .accessibilityElement(children: .combine)
-                    }
-                    // F267: the transcript describes audio that has since been replaced. Beside the
-                    // recovery warning because it is the same kind of statement, and rendered at
-                    // every status for the same reason - a `.recorded` meeting has one too.
-                    if let warning = meeting.staleTranscriptWarning {
-                        Label(warning, systemImage: "clock.badge.questionmark")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .bannerSurface(.orange)
-                            .accessibilityElement(children: .combine)
-                    }
-                    // F267: recovery used to be one-shot, so an imperfect rebuild was final even
-                    // with the intact source tracks sitting beside it. Offered only where it is
-                    // safe - never over a `meeting.wav` that finished normally.
-                    if model.canRebuildFromSourceTracks(id: meetingID) {
-                        Button("Rebuild Audio from Source Tracks...") {
-                            model.requestSourceRebuild(id: meetingID)
+                    // Everything true of the RECORDING rather than of the transcript, as one
+                    // list (F273). Was three hand-written banners, which is how F273's provenance
+                    // sentence came to exist in `notes.md` and nowhere on screen: a new member of
+                    // the family had to be added in two places to be visible. Now it cannot be.
+                    //
+                    // Beside the capture-health advisory and NOT in `transcriptSection`, which the
+                    // body renders only for `.completed` — a truncated recovery is `.recorded` and
+                    // a severe one `.failed`, so those are exactly the states that need it.
+                    let recordingCaveats = MeetingStore.recoveryCaveats(for: meeting)
+                    if !recordingCaveats.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(recordingCaveats, id: \.self) { caveat in
+                                Label(caveat, systemImage: "waveform.badge.exclamationmark")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
-                        .help("Mixes this meeting's original microphone and system tracks again. The current audio is kept.")
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .bannerSurface(.orange)
+                        .accessibilityElement(children: .combine)
                     }
                     tagsEditor
                     notesSection

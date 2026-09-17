@@ -74,6 +74,19 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Separate from `errorMessage`, which every recovered meeting already carries: that string
     /// explains the recovery, this one contradicts it.
     var recoveryWarning: String?
+    /// How this meeting was recovered, when it was (F273). Nil for every meeting that was never
+    /// recovered. Holds `RecoveredRecording.Source`'s raw value.
+    ///
+    /// **Structural rather than prose, and that is the fix.** The provenance used to live in
+    /// `errorMessage`, which `performTranscription` clears twice — once on start and once on
+    /// success — so transcribing a recovered meeting destroyed the only record that it had been
+    /// interrupted. Observed in a real 63-minute meeting, not hypothesised. A fact nothing else
+    /// owns cannot be erased by a path that owns a message, and the sentence is generated in one
+    /// place instead of stored in three.
+    ///
+    /// A `String` rather than the enum so a value a newer build writes decodes and is ignored
+    /// rather than making the index unreadable — F250's rule, one file over.
+    var recoverySource: String?
     /// A plain-language note when the meeting's audio was rebuilt after its transcript was made
     /// (F267), so the text describes a file that no longer exists and its timestamps point into a
     /// different one. Optional so older indexes decode.
@@ -153,6 +166,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         healthReport: RecordingHealthReport? = nil,
         alignmentWarning: String? = nil,
         recoveryWarning: String? = nil,
+        recoverySource: String? = nil,
         staleTranscriptWarning: String? = nil,
         languageWarning: String? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
@@ -179,6 +193,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.healthReport = healthReport
         self.alignmentWarning = alignmentWarning
         self.recoveryWarning = recoveryWarning
+        self.recoverySource = recoverySource
         self.staleTranscriptWarning = staleTranscriptWarning
         self.languageWarning = languageWarning
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
@@ -558,7 +573,7 @@ final class MeetingStore: ObservableObject {
             notes: meeting.notes,
             markers: meeting.orderedMarkers,
             segments: meeting.segments,
-            caveats: meetingCaveats(for: meeting)
+            caveats: Self.caveats(for: meeting)
         )
     }
 
@@ -573,13 +588,50 @@ final class MeetingStore: ObservableObject {
     /// because it is the only one of the three that says content is MISSING — the other two say the
     /// text is complete but a property of it is off. Doing only the first would have been the
     /// inconsistency this ticket was filed about.
-    private nonisolated static func meetingCaveats(for meeting: MeetingRecord) -> [String] {
-        [
-            meeting.recoveryWarning,
-            meeting.staleTranscriptWarning,
+    nonisolated static func caveats(for meeting: MeetingRecord) -> [String] {
+        recoveryCaveats(for: meeting) + [
             meeting.alignmentWarning,
             meeting.languageWarning,
         ].compactMap { $0 }
+    }
+
+    /// The caveats about the RECORDING, as opposed to about the transcript.
+    ///
+    /// Split out so the detail view can render this family as a list rather than as one
+    /// hand-written banner per field. Three separate banners is how the provenance sentence came
+    /// to exist in `notes.md` and nowhere on screen — a new member of the family has to be added
+    /// in two places to be visible, and F273 is a report of exactly that kind of omission.
+    ///
+    /// `alignmentWarning` and `languageWarning` stay out: they are about the transcript, they
+    /// already render inside `transcriptSection`, and including them here would double them up.
+    nonisolated static func recoveryCaveats(for meeting: MeetingRecord) -> [String] {
+        [
+            meeting.recoveryWarning,
+            meeting.staleTranscriptWarning,
+            provenanceCaveat(for: meeting),
+        ].compactMap { $0 }
+    }
+
+    /// The sentence F273 restored, generated from `recoverySource` rather than stored.
+    ///
+    /// The two cases say different things because they are true of different audio, and claiming
+    /// the stronger one for a preserved recording would be as wrong as omitting it. A rebuild has
+    /// no per-track start offsets — the manifest is written in `stop()`, which by definition did
+    /// not run — so recovery zero-aligns the channels, and that caveat about the audio is the half
+    /// F273 identified as mattering most. A recovery that found an already-finalized recording has
+    /// intact channels and only lost its index entry.
+    ///
+    /// An unrecognised value yields nothing: a raw identifier shown to a user would be worse than
+    /// silence, and F250's lenient rule is about surviving the unknown, not displaying it.
+    private nonisolated static func provenanceCaveat(for meeting: MeetingRecord) -> String? {
+        guard let raw = meeting.recoverySource,
+              let source = RecoveredRecording.Source(rawValue: raw) else { return nil }
+        switch source {
+        case .rebuiltSourceTracks:
+            return "This recording was rebuilt from its raw microphone and system tracks after an interruption, so the two channels are aligned to the start of the file rather than to each other."
+        case .existingCapture, .importedRecording:
+            return "This meeting was recovered after an interruption. The original recording and its source tracks were preserved."
+        }
     }
 
     func notesMarkdown(for meeting: MeetingRecord) -> String {
