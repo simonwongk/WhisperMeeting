@@ -142,5 +142,72 @@ class PrewarmDecodeOptionsTests(unittest.TestCase):
         self.assertEqual(calls[0]["path_or_hf_repo"], "repo/name")
 
 
+class TemperatureFallbackTests(unittest.TestCase):
+    """F210 — the ladder the single-window path replicates from `mlx_whisper.transcribe`.
+
+    Pinned rather than trusted, because the whole change rests on behaving identically to a pinned
+    library version. If a runtime upgrade moves these, this fails and the fast path should be
+    re-verified against the bench clips before shipping — which is what caught the segment-slicing
+    difference in the first place.
+    """
+
+    def test_the_ladder_matches_the_installed_transcribe(self):
+        self.assertEqual(server.FALLBACK_TEMPERATURES, (0.0, 0.2, 0.4, 0.6, 0.8, 1.0))
+        self.assertEqual(server.COMPRESSION_RATIO_THRESHOLD, 2.4)
+        self.assertEqual(server.LOGPROB_THRESHOLD, -1.0)
+        self.assertEqual(server.NO_SPEECH_THRESHOLD, 0.6)
+
+    def test_a_good_result_does_not_retry(self):
+        self.assertFalse(server.needs_temperature_fallback(1.2, -0.3, 0.05))
+
+    def test_repetitive_output_retries(self):
+        self.assertTrue(server.needs_temperature_fallback(3.0, -0.3, 0.05))
+
+    def test_low_confidence_retries(self):
+        self.assertTrue(server.needs_temperature_fallback(1.2, -1.5, 0.05))
+
+    def test_silence_is_accepted_rather_than_retried_six_times(self):
+        """The `no_speech` clause comes LAST and sets the flag back to False.
+
+        This is the ordering that makes the function worth having: written as one boolean
+        expression it reads as an `and`, and a silent clip would then be re-decoded at all six
+        temperatures — six encoder-free but not free decodes, for a clip with nothing in it.
+        """
+        self.assertFalse(server.needs_temperature_fallback(3.0, -1.5, 0.9))
+        # And a marginal clip just under the silence threshold still retries.
+        self.assertTrue(server.needs_temperature_fallback(3.0, -1.5, 0.6))
+
+    def test_thresholds_are_exclusive_at_the_boundary(self):
+        """`>` and `<`, not `>=`/`<=` — matching `transcribe.py:229/234/239` exactly."""
+        self.assertFalse(server.needs_temperature_fallback(2.4, -1.0, 0.0))
+
+
+class SingleWindowFastPathTests(unittest.TestCase):
+    """F210 — the fast path must DECLINE rather than fail, for anything it cannot handle.
+
+    Same principle as the raw-frames audio fast path above: a fast path that cannot be taken must
+    never fail a dictation. These run with no mlx installed, which is also the most important
+    decline case — CI has no runtime, and neither does a Mac that has not installed one.
+    """
+
+    def test_a_missing_runtime_declines_instead_of_raising(self):
+        self.assertIsNone(
+            server.transcribe_single_window(None, None, [0.0] * 1600, "repo/name", None, None)
+        )
+
+    def test_an_unexpected_failure_declines_instead_of_raising(self):
+        class Exploding:
+            float16 = "f16"
+
+            def __getattr__(self, name):
+                raise RuntimeError("runtime internals moved")
+
+        self.assertIsNone(
+            server.transcribe_single_window(
+                None, Exploding(), [0.0] * 1600, "repo/name", None, None
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
