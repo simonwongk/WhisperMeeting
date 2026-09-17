@@ -76,7 +76,7 @@ func olderRecordDecodesWithoutProvenance() throws {
 
 @Test("Transcribing a recovered meeting keeps its provenance and drops the stale-audio notice")
 @MainActor
-func transcriptionKeepsProvenanceAndClearsStaleness() async throws {
+func transcriptionKeepsProvenanceAndClearsStaleness() throws {
     // The two halves of what transcription owes a recovered meeting, and they point opposite ways.
     //
     // Provenance must SURVIVE: the recording was rebuilt whatever happens to its transcript, and
@@ -113,22 +113,26 @@ func transcriptionKeepsProvenanceAndClearsStaleness() async throws {
         staleTranscriptWarning: "This transcript was made from an earlier version of the audio."
     ))
 
-    // The real transcription path, through the engine seam the other suites use — not a shortcut
-    // that sets the fields this test is about.
-    model.runTranscriptionEngineOverride = { _, _ in
-        TranscriptionResult(
+    // `apply(result:to:)` is the function under test — it owns the `errorMessage = nil` and
+    // `staleTranscriptWarning = nil` lines — and calling it directly is synchronous.
+    //
+    // The first version of this test drove `beginTranscription` and polled for `.completed` with a
+    // 5 s budget, then asserted regardless of whether the wait had succeeded. It passed here and
+    // failed on the CI runner, where the queue needed longer, with two confusing assertion
+    // failures instead of one clear timeout. A test that asserts a consequence without requiring
+    // its precondition reports the wrong thing when it is slow, and a fixed budget makes "slow"
+    // a property of the host rather than of the code. Driving the real queue added no coverage of
+    // the change and one way to be wrong.
+    model.apply(
+        result: TranscriptionResult(
             id: "stub", text: "Hello from the rebuilt audio.", languageCode: "en",
             audioDuration: 1, confidence: 0.9,
             segments: [TranscriptSegment(
                 speaker: nil, start: 0, end: 1, text: "Hello from the rebuilt audio."
             )]
-        )
-    }
-    model.beginTranscription(id: id)
-    // The queue pumps asynchronously; wait for the terminal state rather than a fixed delay.
-    for _ in 0..<200 where model.store.meeting(id: id)?.status != .completed {
-        try await Task.sleep(for: .milliseconds(25))
-    }
+        ),
+        to: id
+    )
 
     let meeting = try #require(model.store.meeting(id: id))
     #expect(meeting.status == .completed)
