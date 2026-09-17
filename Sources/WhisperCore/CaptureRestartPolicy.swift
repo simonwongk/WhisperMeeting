@@ -130,8 +130,10 @@ public enum CaptureRestartPolicy {
     /// fails the comparison below.
     public static func saturatingFrames(_ value: Double) -> Int64 {
         guard value > 0 else { return 0 }
-        guard value < Double(Int64.max) else { return .max }
-        return Int64(value.rounded())
+        // Delegates to the shared conversion now that one exists; kept as a named function
+        // because `paddingFrames` reads better for it and the negative case differs (0, not
+        // `Int64.min`, since a negative frame count is meaningless here).
+        return Int64(saturating: value)
     }
 
     /// Bytes the padding costs on disk, across both raw float32 tracks.
@@ -174,7 +176,9 @@ public enum CaptureRestartPolicy {
     /// "1 min 32 sec" — coarse on purpose, since the number is a description of a hole in the audio
     /// rather than a measurement the user can act on to more precision than this.
     static func durationPhrase(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded())
+        // Saturating: `seconds` reaches here from wall-clock arithmetic and from a decoded
+        // sidecar, and `Int(Double)` traps rather than saturating.
+        let total = Int(saturating: seconds)
         guard total >= 60 else { return "\(total) sec" }
         let minutes = total / 60
         let remainder = total % 60

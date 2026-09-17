@@ -121,7 +121,9 @@ public enum FloatTrackMixer {
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
         try ThrowingFileHandleIO.write(
-            WAVWriter.header(sampleRate: UInt32(sampleRate), dataByteCount: dataByteCount),
+            // `sampleRate` is a `Double` parameter, so an absurd caller traps here — during
+            // `stop()`, which is the most expensive moment available.
+            WAVWriter.header(sampleRate: UInt32(saturating: sampleRate), dataByteCount: dataByteCount),
             to: output
         )
         return Double(writtenFrames) / sampleRate

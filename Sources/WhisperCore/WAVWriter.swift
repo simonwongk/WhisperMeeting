@@ -43,7 +43,13 @@ public enum WAVWriter {
     /// A complete WAV file (header + PCM payload) for the given float samples.
     public static func wavData(from samples: [Float], sampleRate: Int) -> Data {
         let pcm = pcm16Data(from: samples)
-        var data = header(sampleRate: UInt32(sampleRate), dataByteCount: UInt32(pcm.count))
+        // `UInt32(Int)` traps above `UInt32.max`. Every caller passes 16 kHz or 48 kHz, so this
+        // is a guard against a future one rather than a live defect — but it is one line, and the
+        // consequence is a crash while writing audio.
+        var data = header(
+            sampleRate: UInt32(saturating: Double(sampleRate)),
+            dataByteCount: UInt32(clamping: pcm.count)
+        )
         data.append(pcm)
         return data
     }

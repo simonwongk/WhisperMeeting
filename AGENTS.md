@@ -403,13 +403,31 @@ time the meeting is transcribed" was **one hour old**, written by the author of 
 described. Prose about behaviour has no test, and elapsed time is not required for it to go stale.
 
 **And expect it of the guards especially: a bound written to prevent an unbounded write can be the
-crash.** All three `Double`→`Int64` traps found on 2026-09-17 were inside guards — F151's gap cap,
-F275's padding conversion, and the mixer's front-padding. `Int64(Double)` **traps** on overflow in
-Swift rather than saturating, and `isFinite` does not cover it: `1e18` is finite and `1e18 × 48000`
-is far past `Int64.max`. In F151 the cap was applied *after* the conversion, so the bound never got
-the chance to act. Clamp or saturate in the `Double` domain, before converting — and check the next
-line too, since a saturated value then overflowed an `Int64` addition and moved the crash one line
-further from its cause.
+crash.** `Int(Double)` and `Int64(Double)` **trap** on overflow in Swift rather than saturating. On
+2026-09-17 that defect was found **nine times**: four one at a time, by accident, then five more by
+a sweep for the shape. Four of the first four were inside guards — F151's gap cap, F275's padding
+conversion, the mixer's front-padding, and F287's transcript formatter.
+
+Three things made it hard to see, and all three are worth checking for directly:
+
+- **`isFinite` does not help.** `1e30` is perfectly finite and far past `Int.max`. Several sites had
+  an `isFinite` guard and trapped anyway.
+- **Where there was a clamp, it was on the wrong side of the conversion.** `max(0, Int(seconds))`
+  traps before `max` runs; F151's 30-second cap was applied after its conversion.
+- **Fixing the conversion is not fixing the bug.** The next operation on the clamped value can be
+  wrong in its own way: a saturated frame count then overflowed an `Int64` multiply, and a clamped
+  hour count printed as `-1395096463:46:40` because `String(format: "%d")` reads 32 bits off the
+  varargs list where `%ld` matches `Int`. **A test that only asserts "did not crash" will not see
+  either.** Assert that the clamped value still *reads* correctly.
+
+The worst instance was not on the audio path: `MeetingRecord.duration` is a plain `Double`, so a
+`meetings.json` carrying `1e30` **decodes cleanly**, reports `.complete` health, and takes the app
+down drawing the sidebar — on every launch, with no UI left to recover in. Neither F187's lenient
+decode nor F250's raw-string round-trip can help, because nothing was malformed.
+
+Use `Int(saturating:)` / `Int64(saturating:)` / `UInt32(saturating:)` from
+`Sources/WhisperCore/SaturatingConversion.swift`. They are named to read like the standard library's
+`Int(exactly:)` so the next site is discoverable rather than needing someone to remember a helper.
 
 **Expect the first draft of a correctness fix to contain a new instance of the bug it fixes.** Named
 because it happened twice in one day, independently. F275's restart pads a gap with silence so the

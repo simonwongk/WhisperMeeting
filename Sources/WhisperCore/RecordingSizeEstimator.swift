@@ -14,12 +14,15 @@ public enum RecordingSizeEstimator {
 
     /// Bytes per second of the final mixed `meeting.wav` (mono, 16-bit).
     public static func mixedBytesPerSecond(sampleRate: Double = defaultSampleRate) -> Int64 {
-        Int64(sampleRate.rounded()) * 2
+        // Saturating: `sampleRate` is a `Double` parameter, so a caller's bad value would trap
+        // here rather than produce a wrong estimate — and this feeds the storage preflight, which
+        // exists to stop a recording failing.
+        Int64(saturating: sampleRate) * 2
     }
 
     /// Bytes per second written for both float32 source tracks combined (mono, 4 bytes/sample).
     public static func sourceBytesPerSecond(sampleRate: Double = defaultSampleRate) -> Int64 {
-        Int64(sampleRate.rounded()) * 4 * 2
+        Int64(saturating: sampleRate) * 4 * 2
     }
 
     /// Estimated size of the final `meeting.wav` for a recording of the given duration.

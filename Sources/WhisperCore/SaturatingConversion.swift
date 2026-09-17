@@ -1,0 +1,59 @@
+import Foundation
+
+/// `Double` → integer without trapping.
+///
+/// **Why this exists as shared code rather than a guard at each site.** `Int(Double)` and
+/// `Int64(Double)` **trap** on overflow in Swift rather than saturating, and on 2026-09-17 that
+/// defect was found five separate times in one day — F151's gap cap, F275's padding conversion,
+/// `FloatTrackMixer`'s front-padding, F287's transcript formatter, and then a sweep for the shape
+/// turned up five more sites. Four were found one at a time, by accident.
+///
+/// Every instance shared two properties worth naming:
+///
+/// - **`isFinite` does not help.** `1e30` is perfectly finite, and `1e30` is past `Int.max`. The
+///   value that took the app down on launch came from a `meetings.json` that decoded cleanly, so
+///   neither F187's lenient decode nor F250's raw-string round-trip could catch it — there was
+///   nothing malformed to be lenient about.
+/// - **Where there was a clamp, it was on the wrong side of the conversion.** `max(0, Int(seconds))`
+///   traps before `max` ever runs, and F151's 30-second cap was applied after its conversion for
+///   the same reason.
+///
+/// Named `saturating:` to read like the standard library's own `Int(exactly:)`, so it is
+/// discoverable at the call site rather than a local helper someone has to already know about.
+public extension Int {
+    /// `value` rounded to the nearest `Int`, saturating at the bounds rather than trapping.
+    ///
+    /// NaN is 0: it has no ordering, so saturating either way would be a guess about which end it
+    /// belongs at.
+    init(saturating value: Double) {
+        guard !value.isNaN else { self = 0; return }
+        // Compared as `Double` on purpose. `Double(Int.max)` rounds UP to 2^63 — one past the
+        // representable range — so a hand-written check that casts the other way is off by one at
+        // exactly the boundary it exists to guard.
+        if value >= Double(Int.max) { self = .max; return }
+        if value <= Double(Int.min) { self = .min; return }
+        self = Int(value.rounded())
+    }
+}
+
+public extension Int64 {
+    /// `value` rounded to the nearest `Int64`, saturating at the bounds rather than trapping.
+    init(saturating value: Double) {
+        guard !value.isNaN else { self = 0; return }
+        if value >= Double(Int64.max) { self = .max; return }
+        if value <= Double(Int64.min) { self = .min; return }
+        self = Int64(value.rounded())
+    }
+}
+
+public extension UInt32 {
+    /// `value` rounded to the nearest `UInt32`, saturating at the bounds rather than trapping.
+    ///
+    /// Reached through the WAV header's sample-rate field, where the argument is a `Double`
+    /// parameter a caller supplies.
+    init(saturating value: Double) {
+        guard !value.isNaN, value > 0 else { self = 0; return }
+        if value >= Double(UInt32.max) { self = .max; return }
+        self = UInt32(value.rounded())
+    }
+}

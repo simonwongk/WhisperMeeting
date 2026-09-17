@@ -918,7 +918,9 @@ private struct RecordMeetingView: View {
     }
 
     private func duration(_ interval: TimeInterval) -> String {
-        let total = max(0, Int(interval))
+        // `Int(saturating:)` before the clamp, not after: `max(0, Int(interval))` traps before
+        // `max` can run, which is F287's exact shape.
+        let total = max(0, Int(saturating: interval))
         return String(format: "%02d:%02d:%02d", total / 3_600, (total / 60) % 60, total % 60)
     }
 }
@@ -2930,7 +2932,7 @@ private struct TranscriptDetailView: View {
 
     private func etaText(_ seconds: TimeInterval?) -> String? {
         guard let seconds else { return nil }
-        let total = Int(seconds.rounded())
+        let total = Int(saturating: seconds)   // traps otherwise; see SaturatingConversion
         if total < 1 { return "Almost done" }
         if total < 60 { return "About \(total)s left" }
         let minutes = total / 60

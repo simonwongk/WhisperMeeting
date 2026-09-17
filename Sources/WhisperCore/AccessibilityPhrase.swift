@@ -46,7 +46,7 @@ public enum AccessibilityPhrase {
     }
 
     static func durationPhrase(_ seconds: TimeInterval) -> String {
-        let minutes = Int((seconds / 60).rounded())
+        let minutes = Int(saturating: seconds / 60)   // traps otherwise (F287's family)
         if minutes < 1 { return "less than a minute" }
         return "\(minutes) minute\(minutes == 1 ? "" : "s")"
     }

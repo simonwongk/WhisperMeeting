@@ -16,8 +16,12 @@ enum DiagnosticsExport {
         let mapped = meetings.map { meeting in
             DiagnosticsInput.Meeting(
                 id: meeting.id.uuidString,
-                createdAtEpoch: Int(meeting.createdAt.timeIntervalSince1970),
-                durationSeconds: Int(meeting.duration.rounded()),
+                // Saturating, both of them: `duration` is a plain `Double` in a decoded index, so
+                // an absurd value decodes cleanly (F287) — and diagnostics export is what a user
+                // reaches for when something is already wrong, so it is the worst possible place
+                // to crash.
+                createdAtEpoch: Int(saturating: meeting.createdAt.timeIntervalSince1970),
+                durationSeconds: Int(saturating: meeting.duration),
                 status: meeting.status.rawValue,
                 languageCode: meeting.languageCode,
                 segmentCount: meeting.segments.count,

@@ -361,7 +361,9 @@ public enum InterruptedRecordingRecovery {
             // in one place — this path runs *after* an interruption, so it is the last one that
             // should diverge.
             WAVWriter.header(
-                sampleRate: UInt32(sampleRate),
+                // Saturating, matching `FloatTrackMixer`'s identical line. Leaving one of a
+                // matched pair fixed is the F278/F282 duplication failure, so both move together.
+                sampleRate: UInt32(saturating: sampleRate),
                 dataByteCount: dataByteCount
             ),
             to: output
