@@ -168,6 +168,24 @@ private struct DictationHistoryRow: View {
     }
 
     @ViewBuilder private var content: some View {
+        // F266: an outcome this build does not recognise is a version skew, not a failure. It
+        // decodes to `.failed` so that one entry cannot make the whole log unreadable, but saying
+        // "Failed:" about it states something that did not happen — and `outcomeKind` now carries
+        // the real case name, so there is no longer any need to guess.
+        if entry.wasRecordedByANewerBuild {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Recorded by a newer version of WhisperMeet")
+                    .foregroundStyle(.secondary)
+                if !entry.text.isEmpty {
+                    Text(entry.text).textSelection(.enabled)
+                }
+            }
+        } else {
+            knownOutcomeContent
+        }
+    }
+
+    @ViewBuilder private var knownOutcomeContent: some View {
         switch entry.outcome {
         case .pasted, .clipboard: Text(entry.text).textSelection(.enabled)
         case .empty: Text("(nothing heard)").italic().foregroundStyle(.secondary)
@@ -187,13 +205,16 @@ private struct DictationHistoryRow: View {
     }
 
     private var badge: some View {
-        let (label, color): (String, Color)
+        var (label, color): (String, Color)
         switch entry.outcome {
         case .pasted: (label, color) = ("pasted", .green)
         case .clipboard: (label, color) = ("clipboard", .blue)
         case .empty: (label, color) = ("empty", .secondary)
         case .failed: (label, color) = ("failed", .orange)
         }
+        // The real case name, not "failed" (F266). Showing the name a newer build used is more
+        // useful than any label this one could invent, and it is the truth on disk.
+        if let kind = entry.outcomeKind { (label, color) = (kind, .secondary) }
         return Text(label)
             .font(.caption2)
             .padding(.horizontal, 6).padding(.vertical, 1)

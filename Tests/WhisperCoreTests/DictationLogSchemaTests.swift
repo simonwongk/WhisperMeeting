@@ -190,3 +190,94 @@ func unknownCaseWithSiblingsIsDeterministic() throws {
         #expect(try decoder.decode(DictationLogEntry.Outcome.self, from: Data(json.utf8)) == first)
     }
 }
+
+// MARK: - F266: a leniently-decoded outcome must not be rewritten as a real failure
+
+@Test("An unknown outcome keeps its true case name across a re-encode (F266)")
+func unknownOutcomeSurvivesAReEncode() throws {
+    // F251 stopped one entry making the whole log unreadable, but `DictationLogStore.persist()`
+    // re-encodes the ENTIRE log on every `record()`. So after a downgrade plus a single dictation,
+    // the unknown case was permanently rewritten on disk as a genuine failure — and the newer build
+    // then showed a fabricated failure for that entry forever.
+    let written = #"""
+    {"date":761000000,"id":"5E3A0000-0000-4000-8000-000000000001",
+     "outcome":{"discarded":{}},"text":"hello"}
+    """#
+    let decoder = JSONDecoder()
+    let entry = try decoder.decode(DictationLogEntry.self, from: Data(written.utf8))
+
+    // The true name is captured at decode time — there is nothing else to re-emit it from.
+    #expect(entry.outcomeKind == "discarded")
+    #expect(entry.text == "hello", "the dictated text must survive regardless")
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let round = try decoder.decode(DictationLogEntry.self, from: encoder.encode(entry))
+    #expect(round.outcomeKind == "discarded", "the case name was lost on the way back to disk")
+    #expect(round.text == "hello")
+}
+
+@Test("A pre-F251 reader still finds a known case in `outcome` (F266)")
+func oldBuildsStillDecodeTheEntry() throws {
+    // The reason `outcome` keeps holding the nearest KNOWN case instead of the true one: a build
+    // without F251's lenient decoder throws on an unrecognised case, and one such entry took the
+    // whole log with it. Changing `outcome` to carry the true name would reintroduce exactly that
+    // for every older build — the flag-day trap F188 records.
+    let written = #"{"date":761000000,"id":"5E3A0000-0000-4000-8000-000000000002","outcome":{"discarded":{}},"text":"x"}"#
+    let entry = try JSONDecoder().decode(DictationLogEntry.self, from: Data(written.utf8))
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let json = try #require(String(data: encoder.encode(entry), encoding: .utf8))
+
+    // `outcome` must still be a single-key object naming one of the four original cases.
+    #expect(json.contains(#""outcome":{"failed":"#), "an old build could no longer read this entry")
+    #expect(json.contains(#""outcomeKind":"discarded""#))
+}
+
+@Test("A known outcome writes no `outcomeKind` at all (F266)")
+func knownOutcomesGainNoExtraKey() throws {
+    // The field's PRESENCE is the signal that `outcome` is a degraded stand-in. Writing it for
+    // every entry would make it redundant on ~100% of them and remove that meaning, as well as
+    // changing the bytes of the common case for no benefit.
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let entry = DictationLogEntry(
+        id: UUID(uuidString: "5E3A0000-0000-4000-8000-000000000003")!,
+        date: Date(timeIntervalSinceReferenceDate: 761_000_000),
+        text: "ordinary",
+        outcome: .pasted
+    )
+    let json = try #require(String(data: encoder.encode(entry), encoding: .utf8))
+    #expect(!json.contains("outcomeKind"))
+    #expect(json.contains(#""outcome":{"pasted":{}}"#))
+}
+
+@Test("A future build's own `outcomeKind` is preferred over the degraded outcome (F266)")
+func outcomeKindWinsWhenBothArePresent() throws {
+    // The shape this build writes is the shape a newer build will read back. When both are present
+    // and disagree, the sibling is the truth and `outcome` is the stand-in.
+    let written = #"""
+    {"date":761000000,"id":"5E3A0000-0000-4000-8000-000000000004",
+     "outcome":{"failed":{"_0":"Recorded by a newer version of WhisperMeet (discarded)."}},
+     "outcomeKind":"discarded","text":"y"}
+    """#
+    let entry = try JSONDecoder().decode(DictationLogEntry.self, from: Data(written.utf8))
+    #expect(entry.outcomeKind == "discarded")
+    #expect(!entry.isSuccess)
+    // And it is reported as a version skew rather than as something that went wrong.
+    #expect(entry.wasRecordedByANewerBuild)
+}
+
+@Test("An unknown outcome is described as a newer build, not as a failure (F266)")
+func unknownOutcomeIsNotShownAsAFailure() throws {
+    let written = #"{"date":761000000,"id":"5E3A0000-0000-4000-8000-000000000005","outcome":{"queued":{}},"text":"z"}"#
+    let entry = try JSONDecoder().decode(DictationLogEntry.self, from: Data(written.utf8))
+    #expect(entry.wasRecordedByANewerBuild)
+
+    // A real failure must not be mistaken for one.
+    let genuine = DictationLogEntry(
+        id: UUID(), date: Date(), text: "", outcome: .failed("disk full")
+    )
+    #expect(!genuine.wasRecordedByANewerBuild)
+}
