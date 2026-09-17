@@ -278,3 +278,45 @@ func missingRecordingConfirmationOmitsTheCost() throws {
     let request = try #require(model.pendingSourceRebuild)
     #expect(!AppModel.rebuildConfirmationMessage(request).contains("grow"))
 }
+
+// MARK: - F306: the offer has to be reachable, not merely correct
+
+@Test("The view layer still reaches the source rebuild (F306)")
+func theRebuildOfferIsReachableFromTheView() throws {
+    // F273 consolidated three hand-written banners into one `ForEach` list — a good change — and
+    // deleted the Rebuild Audio button that lived inside one of them. `requestSourceRebuild` then
+    // had no production caller: the confirmation dialog reads `pendingSourceRebuild`, which only
+    // that method sets, so F267's entire rebuild became unreachable and `staleTranscriptWarning`
+    // could never be set. Every test in this file kept passing, because they all drive the model
+    // directly.
+    //
+    // Asserted against `ContentView`'s source, which is crude and is the honest option: the
+    // `WhisperMeet` target has no UI harness (F174's standing reason), so there is no way to render
+    // the view and look. `InstallReclaimTests` set the precedent of asserting against source when
+    // the behaviour itself is out of reach. It would have caught this exact regression, which is
+    // the bar that matters.
+    let url = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // WhisperMeetTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // repository root
+        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+        // Comments stripped, so a mention of the name in prose — including the explanation of this
+        // very regression — cannot satisfy the assertion. F285's false positive was exactly that.
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
+        .joined(separator: "\n")
+
+    #expect(
+        source.contains("requestSourceRebuild"),
+        "no view calls requestSourceRebuild, so the rebuild cannot be started — F267's mechanism is unreachable"
+    )
+    #expect(
+        source.contains("canRebuildFromSourceTracks"),
+        "the offer must be gated on whether raw tracks exist, or it is shown when it cannot work"
+    )
+    #expect(
+        source.contains("performSourceRebuild"),
+        "the confirmation must be able to run the rebuild"
+    )
+}

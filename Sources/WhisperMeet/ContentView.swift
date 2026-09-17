@@ -2601,6 +2601,25 @@ private struct TranscriptDetailView: View {
                         .bannerSurface(.orange)
                         .accessibilityElement(children: .combine)
                     }
+                    // F306: the offer, back, and deliberately NOT inside the banner above.
+                    //
+                    // It used to live inside one of the three hand-written banners F273 replaced,
+                    // and went with it — `requestSourceRebuild` then had no production caller at
+                    // all, so F267's whole rebuild was unreachable and `staleTranscriptWarning`
+                    // could never be set. A control nested inside a message is deleted whenever
+                    // that message is restructured; as its own sibling it survives the next
+                    // consolidation.
+                    //
+                    // Gated only on `canRebuildFromSourceTracks`, not on there being a caveat: raw
+                    // tracks worth rebuilding from can outlive the banner that first mentioned them,
+                    // and the previous coupling is what made this deletable.
+                    if model.canRebuildFromSourceTracks(id: meetingID) {
+                        Button("Rebuild Audio from Source Tracks…") {
+                            model.requestSourceRebuild(id: meetingID)
+                        }
+                        .buttonStyle(.link)
+                        .help("Mix the raw microphone and system tracks again, in case more audio survived than the first recovery found.")
+                    }
                     tagsEditor
                     notesSection
 
