@@ -168,3 +168,120 @@ func recoveryCaveatsExcludeTranscriptWarnings() {
     let all = MeetingStore.caveats(for: record)
     #expect(all.prefix(3) == recording.prefix(3))
 }
+
+// MARK: - F303: the recovery branch F273 missed
+
+@MainActor
+@Test("A recovered import macOS cannot verify still carries its provenance (F303)")
+func unverifiableImportCarriesProvenance() async throws {
+    // F273's principle applied to the one branch it skipped. `performStartupRecovery`'s
+    // unverified-import path upserted with `errorMessage` and none of the three fields
+    // `recoveryCaveats(for:)` renders — so this meeting showed no caveat at all, and the sentence
+    // explaining why it is `.failed` lived only in the field transcription clears twice.
+    //
+    // Its sibling branch two lines below sets `recoveryWarning` and `recoverySource`, which is what
+    // makes this an omission rather than a decision.
+    //
+    // Driven through the real recovery rather than by constructing a record, because the defect was
+    // in which arguments one call site passed — a hand-built `MeetingRecord` would have asserted my
+    // own understanding of the branch instead of the branch.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("UnverifiableImport-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // A protected imported file with bytes but no decodable audio: non-empty so recovery treats the
+    // folder as an interrupted import, undecodable so `loadDuration` returns 0 and the unverified
+    // branch is the one that fires.
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("not audio, but not empty either".utf8)
+        .write(to: folder.appendingPathComponent("recording.m4a"))
+
+    let suite = "F303.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root),
+        recorder: AudioCaptureEngine(),
+        defaults: UserDefaults(suiteName: suite)!
+    )
+    await model.performStartupRecovery()
+
+    let meeting = try #require(
+        model.store.meeting(id: id),
+        "the interrupted import should have been preserved as an entry at all"
+    )
+    #expect(meeting.status == .failed, "this is the unverified-import branch, not the ordinary one")
+
+    // The assertion that fails before the fix: the meeting renders no recording caveat, so nothing
+    // on screen or in `notes.md` says it came from an interrupted import.
+    let caveats = MeetingStore.recoveryCaveats(for: meeting)
+    #expect(!caveats.isEmpty, "a recovered meeting with no caveat cannot say it was recovered")
+    #expect(meeting.recoverySource == RecoveredRecording.Source.importedRecording.rawValue)
+}
+
+@MainActor
+@Test("That provenance survives the transcription that clears the error message (F303)")
+func unverifiableImportProvenanceSurvivesClearing() throws {
+    // The half that makes it worth fixing rather than merely inconsistent. `performTranscription`
+    // clears `errorMessage` on start and on success, and the comment at the branch says
+    // transcription is deliberately still offered for a `.failed` recovery "because the surviving
+    // audio may still be worth transcribing". Taking that offer used to leave a failure with no
+    // stated reason and no record of where it came from.
+    //
+    // Simulated by clearing the field the way transcription does, rather than driving a real
+    // transcription: the production line under test is the *upsert's* arguments, and driving a
+    // model subprocess would add a host dependency for no coverage — the mistake this ticket's
+    // predecessor shipped and had to fix.
+    var meeting = MeetingRecord(
+        id: UUID(),
+        title: "Unverified Import",
+        createdAt: Date(),
+        status: .failed,
+        errorMessage: "WhisperMeet preserved this interrupted import, but macOS could not verify it.",
+        recoverySource: RecoveredRecording.Source.importedRecording.rawValue
+    )
+    #expect(!MeetingStore.recoveryCaveats(for: meeting).isEmpty)
+
+    meeting.errorMessage = nil   // exactly what AppModel.swift:3515 and :3562 do
+    let after = MeetingStore.recoveryCaveats(for: meeting)
+    #expect(!after.isEmpty, "provenance must not live in a field transcription owns")
+    #expect(after.contains { $0.contains("recovered after an interruption") })
+}
+
+@MainActor
+@Test("An interrupted import that is entirely empty also carries its provenance (F303)")
+func emptyImportCarriesProvenance() async throws {
+    // The *other* unverified-import branch, and the two differ in a way that explains the original
+    // omission. `importedRecording(in:)` requires a non-empty file, so a zero-byte one makes
+    // `recover` return nil and lands in the `guard let recovered else` path — which has no
+    // `RecoveredRecording` to read a source from, while its sibling does. One had
+    // `recovered.source` to hand and the other did not, so the field was set in neither.
+    //
+    // Both are reachable and both preserve a real user file, so both need the provenance.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("EmptyImport-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    // Zero bytes: the candidate exists and is protected, but there is nothing to recover.
+    try Data().write(to: folder.appendingPathComponent("recording.m4a"))
+
+    let suite = "F303.empty.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root),
+        recorder: AudioCaptureEngine(),
+        defaults: UserDefaults(suiteName: suite)!
+    )
+    await model.performStartupRecovery()
+
+    let meeting = try #require(model.store.meeting(id: id), "the empty import must still be kept")
+    #expect(meeting.status == .failed)
+    #expect(meeting.recoverySource == RecoveredRecording.Source.importedRecording.rawValue)
+    #expect(!MeetingStore.recoveryCaveats(for: meeting).isEmpty)
+}

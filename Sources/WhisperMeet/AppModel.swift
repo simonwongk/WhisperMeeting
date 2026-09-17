@@ -1905,7 +1905,14 @@ final class AppModel: ObservableObject {
                             createdAt: orphan.createdAt,
                             recordingPath: store.relativeRecordingPath(for: imported),
                             status: .failed,
-                            errorMessage: message
+                            errorMessage: message,
+                            // F303: stated literally because there is no `RecoveredRecording` here
+                            // — this branch is the `guard let recovered else`, reached precisely
+                            // via `importedRecordingCandidate`, so the source is known from how we
+                            // got here. That asymmetry with the branch below is why F273 missed
+                            // both: the sibling had `recovered.source` to hand and this one did
+                            // not, so the omission reads as a scope limit rather than a decision.
+                            recoverySource: RecoveredRecording.Source.importedRecording.rawValue
                         ))
                         messages.append("\(failedTitle) needs attention. \(message)")
                         continue
@@ -1941,7 +1948,16 @@ final class AppModel: ObservableObject {
                         createdAt: orphan.createdAt,
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: .failed,
-                        errorMessage: message
+                        errorMessage: message,
+                        // F303: without this the meeting renders no recording caveat at all —
+                        // `recoveryCaveats(for:)` is built from `recoveryWarning`,
+                        // `staleTranscriptWarning` and `recoverySource`, and this upsert set none
+                        // of the three. So the only record that it came from an interrupted import
+                        // was `errorMessage`, which `performTranscription` clears on start and on
+                        // success. That is F273's defect exactly, in the branch F273 skipped, and
+                        // transcription is deliberately still offered here (see the comment below
+                        // on the severely-truncated sibling).
+                        recoverySource: recovered.source.rawValue
                     ))
                     messages.append("\(failedTitle) needs attention. \(message)")
                     continue
