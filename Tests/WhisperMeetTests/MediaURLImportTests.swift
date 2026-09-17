@@ -19,7 +19,17 @@ private func makeModel() throws -> (AppModel, URL) {
         .appendingPathComponent("MediaURLImportTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let defaults = UserDefaults(suiteName: "F183.\(UUID().uuidString)")!
-    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
+    // Pin the runtime probes (F262) so these tests do not depend on what the host has installed.
+    // Whichever engine is selected is reported present, so the import path posts no engine notice on
+    // a dev Mac OR on CI — which is what made the alert assertion below machine-dependent and let a
+    // message change pass locally and fail on the runner.
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root),
+        recorder: AudioCaptureEngine(),
+        defaults: defaults,
+        whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") },
+        qwenInstalled: { true }
+    )
     model.linkImportEnabled = true // the feature is off by default; these tests opt in explicitly
     return (model, root)
 }
@@ -59,13 +69,18 @@ func linkImportCreatesMeetingWithProvenance() async throws {
     #expect(meeting.tags == ["YouTube"])                       // provenance mirrored as a tag
     #expect(meeting.referenceSegments?.first?.text == "caption line")
     #expect(box.captionLangs == "en")                          // pinned to the video's own language
-    // NOT `alertMessage == nil`: when no transcription engine is installed, the shared adopt path posts
-    // a benign "install the model, then choose Transcribe" notice. That is success, not failure — and
-    // asserting nil made this test pass on a dev Mac with the runtime installed and fail on CI without
-    // it. Assert the import raised no *error* instead, which holds on either machine.
+    // The import must raise no *error*. A benign engine-not-installed notice is success, not failure,
+    // but it is no longer possible here: the probes are pinned in `makeModel`, so the selected engine
+    // always reads as installed and this is now a plain nil assertion on both machines.
+    //
+    // History worth keeping: this was `notice == nil || notice.contains("Install the selected
+    // transcription model")`, matching the literal copy. That copy changed in F262, which broke the
+    // test on CI while it still passed on a dev Mac — the exact machine dependence the previous
+    // comment here warned about, reintroduced by matching a message instead of removing the
+    // dependence. If a benign notice ever becomes possible again, compare against
+    // `model.transcriptionUnavailableMessage` rather than re-pasting its text.
     let notice = model.alertMessage
-    #expect(notice == nil || notice?.contains("Install the selected transcription model") == true,
-            "unexpected alert after a successful link import: \(notice ?? "nil")")
+    #expect(notice == nil, "unexpected alert after a successful link import: \(notice ?? "nil")")
     // The provenance sidecar is written into the meeting folder before the bytes arrive.
     let sidecar = model.store.recordingDirectoryURL(for: id)
         .appendingPathComponent(MediaSource.sidecarFilename)
