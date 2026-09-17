@@ -1558,7 +1558,7 @@ final class AppModel: ObservableObject {
                 // because they are the only remaining route to the missing audio — nothing re-runs
                 // recovery on a folder once it is indexed (F267).
                 let recoveryWarning = recovered.truncatedAtSeconds.map {
-                    "The rebuilt audio stops at \(TranscriptFormatter.clock($0)) because a source track could not be read past that point. The original microphone and system tracks are still in this meeting's folder and have not been changed."
+                    "The rebuilt audio stops at \(TranscriptFormatter.clock($0)) because a source track could not be read past that point. Anything recorded after that is missing from this file."
                 }
                 // Below a tenth of what the tracks promised, "technically recovered" would
                 // masquerade as recovered — a two-second stub titled like an ordinary meeting. It
@@ -1566,7 +1566,7 @@ final class AppModel: ObservableObject {
                 // transcription from being offered on audio that is mostly gone.
                 if recovered.isSeverelyTruncated {
                     let failedTitle = "Partly Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
-                    let message = "Only \(TranscriptFormatter.clock(duration)) of this recording could be rebuilt before a source track became unreadable. The original microphone and system tracks are still in this meeting's folder and have not been changed."
+                    let message = "Most of this recording could not be rebuilt because a source track became unreadable. The original microphone and system tracks are still in this meeting's folder and have not been changed."
                     store.upsert(MeetingRecord(
                         id: orphan.id,
                         title: failedTitle,

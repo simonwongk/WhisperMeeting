@@ -2372,6 +2372,22 @@ private struct TranscriptDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.yellow.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
+                    // F256: the rebuild stopped early, so this file is short by a known amount.
+                    // Deliberately NOT beside the alignment and language warnings in
+                    // `transcriptSection`, which the body renders only for `.completed` — a
+                    // truncated recovery is `.recorded`, and a severely truncated one `.failed`, so
+                    // the warning would have been invisible in both cases it exists for. It sits
+                    // beside the capture-health advisory instead, which is the same kind of
+                    // statement and renders at every status.
+                    if let warning = meeting.recoveryWarning {
+                        Label(warning, systemImage: "waveform.badge.exclamationmark")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .accessibilityElement(children: .combine)
+                    }
                     tagsEditor
                     notesSection
 
