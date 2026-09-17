@@ -17,7 +17,7 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 | 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
 | 2 | **F275** | ~15 min | Two lid-close recordings. This is the durability question you originally asked; the restart logic is tested, but no test can prove a real lid close behaves the way the tests assume. |
 | 3 | **F288** | ~2 min | One look at Settings → Library. The backup restore is built and tested; nobody has confirmed the screen renders, and an unreachable restore is not a restore. |
-| 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Same shape: the logic is tested, the surfacing is not. |
+| 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Worth doing *with* row 2 — a recording that ends because the capture died now goes through the notification channel too, so one lid close exercises both. |
 | 5 | **F239** | one decision | Should deleting a meeting also shred it from the index history? My recommendation is in the entry (opt-in). Pure preference — there is no wrong answer. |
 | 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
 | 7 | **F230** | ~20 min | VoiceOver on the speaker screens. Real work, and the least urgent — it gates polish, not correctness. |
@@ -154,9 +154,25 @@ promise, not this code's.
    folder, then launch and add a tag), confirm you get a **notification** saying changes could not be
    saved rather than nothing at all. Put the permissions back with `chmod 700` afterwards.
 
-Expected: a notification for anything that would have been an alert, and no lost edit on quit. If a
-notification never appears, check that WhisperMeet is allowed to notify in System Settings →
-Notifications — the app asks the first time it needs to, which may be during this test.
+Expected: a notification for anything that would have been an alert, and no lost edit on quit.
+
+**Two things changed after this entry was written, and both affect what you will see.**
+
+The app used to ask for notification permission at the moment it wanted to post, and then post
+*immediately* without waiting for your answer — so the very first notification was the one most
+likely to be dropped, which for this test is the one being tested. It now waits for the answer
+before posting. If macOS shows you the permission prompt during step 4, allow it and the notice
+still arrives; before, allowing it would have been too late for that first message.
+
+And step 2 got stricter. A recording that **ends because the capture died** — lid closed on a
+docked Mac, display disconnected — used to tell you only through a banner in the window, which is
+the one thing you will not have open. It now goes through the same notification channel, along with
+the three "your recording could not be finalized" messages. So if you want to exercise the case
+that matters most, **close the lid mid-recording** instead of pressing Stop, then reopen: you should
+be told the recording ended and that the audio was kept. That overlaps with the F275 runs above, so
+doing those two together covers both entries.
+
+If a notification never appears at all, check System Settings → Notifications for WhisperMeet.
 
 What is still window-only, deliberately: the live recording-health banner. Telling you about a
 degrading recording while you have no window open needs the menu itself to carry it, which is a
