@@ -150,6 +150,7 @@ func theWireKeySetIsPinned() throws {
         recoveryWarning: "r",
         recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
         staleTranscriptWarning: "s",
+        recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
         languageWarning: "l",
         transcriptionEngine: .whisperLarge
     )
@@ -160,10 +161,10 @@ func theWireKeySetIsPinned() throws {
         "id", "title", "createdAt", "duration", "recordingPath", "status", "transcriptText",
         "languageCode", "confidence", "segments", "errorMessage",
         "transcriptNormalized", "markers", "pinned", "notes", "tags", "alignmentWarning",
-        "recoveryWarning", "recoverySource", "staleTranscriptWarning", "languageWarning",
-        "transcriptionEngine",
+        "recoveryWarning", "recoverySource", "staleTranscriptWarning", "recoveryInterruption",
+        "languageWarning", "transcriptionEngine",
     ]
-    // 22 keys for 26 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
+    // 23 keys for 27 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
     // nil here, and a nil optional is omitted rather than written as null — so they are absent by
     // design, not by omission from `CodingKeys`.
     //

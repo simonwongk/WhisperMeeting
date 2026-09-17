@@ -95,7 +95,19 @@ func noMarkersMeansNil() async throws {
 func sleepInterruptionIsExplained() async throws {
     // F253 records WHY the capture stopped and nothing ever said so. "Recovered after an
     // interruption" is true and unhelpful; the user knows they closed the lid and wants the app to
-    // know it too. No new field: the existing recovery message says which interruption it was.
+    // know it too.
+    //
+    // **F305 moved where it is said, and this assertion moved with it.** F274's original comment
+    // here read "No new field: the existing recovery message says which interruption it was", and
+    // asserted the sentence was in `errorMessage` — which `performTranscription` clears on start and
+    // on success. So the reason survived until the user transcribed the meeting, which is the action
+    // the recovery exists to enable. That is F273's defect for a second fact, decided one commit
+    // after F273 ruled it out.
+    //
+    // The fact now lives in `recoveryInterruption` and the sentence is generated from it, so this
+    // asserts something strictly stronger than before: that it reaches the user AND survives the
+    // clear. The original intent is unchanged — say which interruption it was — and only the field
+    // holding it has moved.
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("SidecarSleep-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -108,7 +120,17 @@ func sleepInterruptionIsExplained() async throws {
     await model.performStartupRecovery()
 
     let meeting = try #require(model.store.meeting(id: id))
-    #expect(meeting.errorMessage?.contains("went to sleep") == true)
+    #expect(
+        MeetingStore.recoveryCaveats(for: meeting).contains { $0.contains("went to sleep") },
+        "the recovery must say which interruption it was"
+    )
+    // And the stronger half: it is still said after the message that used to carry it is cleared.
+    var transcribed = meeting
+    transcribed.errorMessage = nil
+    #expect(
+        MeetingStore.recoveryCaveats(for: transcribed).contains { $0.contains("went to sleep") },
+        "transcribing a recovered meeting must not erase why it was recovered"
+    )
 }
 
 @Test("A recovery with no sidecar at all still works, and claims no cause")

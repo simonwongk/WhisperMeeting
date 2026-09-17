@@ -21,6 +21,12 @@ import Testing
 /// Every field populated, because `JSONEncoder` omits a nil optional and a nil field would look
 /// identical to a missing key. Anything added to `MeetingRecord` has to be added here too, and the
 /// test below is what says so.
+///
+/// It said so within the hour. F305 added `recoveryInterruption` and this fixture did not set it;
+/// the test named the field — *"these stored fields never reach disk: recoveryInterruption"* — while
+/// `theWireKeySetIsPinned`, whose fixture also did not set it, passed. That is the whole difference
+/// between deriving the list and restating it, demonstrated on a field added after both were
+/// written.
 private func fullyPopulatedRecord() -> MeetingRecord {
     MeetingRecord(
         id: UUID(),
@@ -55,6 +61,7 @@ private func fullyPopulatedRecord() -> MeetingRecord {
         recoveryWarning: "recovery",
         recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
         staleTranscriptWarning: "stale",
+        recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
         languageWarning: "language",
         transcriptionEngine: .qwenBalanced,
         source: MediaSource(

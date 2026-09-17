@@ -2018,21 +2018,29 @@ final class AppModel: ObservableObject {
                     createdAt: orphan.createdAt,
                     duration: duration,
                     recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
-                    // F274: name the interruption when the sidecar recorded one. "Recovered after
-                    // an interruption" is true and unhelpful — the user knows they closed the lid
-                    // and wants the app to know it too. No new field for it: the message that
-                    // already explains the recovery says which interruption it was.
-                    errorMessage: (recovered.wasRebuiltFromRawTracks
+                    // F274 named the interruption here and said why: "Recovered after an
+                    // interruption" is true and unhelpful — the user knows they closed the lid and
+                    // wants the app to know it too. Its conclusion was "no new field for it", and
+                    // F305 reverses that: `performTranscription` clears `errorMessage` on start and
+                    // on success, so the reason died while the fact of the recovery survived. F273
+                    // had ruled that out one commit earlier, for provenance, and the rule was not
+                    // carried to the next fact that came along.
+                    //
+                    // The sleep sentence is therefore NOT appended here any more — it is generated
+                    // from `recoveryInterruption` below, which also ends the duplication where the
+                    // same thing was said twice on one screen until a transcription cleared one copy.
+                    errorMessage: recovered.wasRebuiltFromRawTracks
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
-                        : "Recovered after an interruption. The original recording and source tracks were preserved.")
-                        + (session?.interruptedBySleepAt == nil
-                            ? ""
-                            : " The recording stopped because this Mac went to sleep."),
+                        : "Recovered after an interruption. The original recording and source tracks were preserved.",
                     markers: recoveredMarkers,
                     recoveryWarning: recoveryWarning,
                     // F273: the same fact structurally, because `performTranscription` clears
                     // `errorMessage` and used to take the provenance with it.
-                    recoverySource: recovered.source.rawValue
+                    recoverySource: recovered.source.rawValue,
+                    // F305: and the reason, for exactly the same reason.
+                    recoveryInterruption: session?.interruptedBySleepAt == nil
+                        ? nil
+                        : RecoveryInterruption.systemSleep.rawValue
                 ))
                 // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
                 messages.append("\(title) was added back to meeting history.")

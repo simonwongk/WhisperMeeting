@@ -96,6 +96,13 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// a transcript silently describing superseded audio reads as current because nothing
     /// contradicts it. Cleared the next time the meeting is transcribed.
     var staleTranscriptWarning: String?
+    /// Why this meeting had to be recovered, as `RecoveryInterruption`'s raw value (F305).
+    ///
+    /// A field rather than prose for the reason F273 established and F274 then did not apply: the
+    /// message that used to carry this is cleared by transcription, so the reason died while the
+    /// fact of the recovery survived. Stored as a `String` so an unknown value decodes and is
+    /// ignored (F250), and rendered as nothing when unrecognised.
+    var recoveryInterruption: String?
     /// A plain-language note when the transcript's dominant script disagrees with the language the
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
@@ -168,6 +175,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         recoveryWarning: String? = nil,
         recoverySource: String? = nil,
         staleTranscriptWarning: String? = nil,
+        recoveryInterruption: String? = nil,
         languageWarning: String? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         source: MediaSource? = nil,
@@ -195,6 +203,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.recoveryWarning = recoveryWarning
         self.recoverySource = recoverySource
         self.staleTranscriptWarning = staleTranscriptWarning
+        self.recoveryInterruption = recoveryInterruption
         self.languageWarning = languageWarning
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
         self.source = source
@@ -218,7 +227,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         // failed the same way. A hand-written `CodingKeys` encodes only what it lists, and nothing
         // warns about the rest — `MeetingRecordWireFormatTests` now enumerates the stored
         // properties with `Mirror` so the omission cannot recur.
-        case recoverySource, staleTranscriptWarning
+        case recoverySource, staleTranscriptWarning, recoveryInterruption
         case transcriptionEngineRawValue = "transcriptionEngine"
     }
 
@@ -617,6 +626,10 @@ final class MeetingStore: ObservableObject {
             meeting.recoveryWarning,
             meeting.staleTranscriptWarning,
             provenanceCaveat(for: meeting),
+            // F305: beside the provenance because they are about the same event — one says the
+            // recording was recovered, the other says what interrupted it. It used to be prose in
+            // `errorMessage`, which transcription clears.
+            interruptionCaveat(for: meeting),
         ].compactMap { $0 }
     }
 
@@ -637,9 +650,28 @@ final class MeetingStore: ObservableObject {
         switch source {
         case .rebuiltSourceTracks:
             return "This recording was rebuilt from its raw microphone and system tracks after an interruption, so the two channels are aligned to the start of the file rather than to each other."
-        case .existingCapture, .importedRecording:
+        case .existingCapture:
             return "This meeting was recovered after an interruption. The original recording and its source tracks were preserved."
+        // F305: an import has no source tracks, and the function that detects one says so —
+        // "An imported recording keeps a single `recording.<ext>` file and no raw source tracks"
+        // (`InterruptedRecordingRecovery.swift:146`). It was grouped with `.existingCapture` and so
+        // told every recovered import it had kept tracks that never existed. F303 widened the reach
+        // by giving the two `.failed` unverified imports this sentence too, where a claim that the
+        // recording was "preserved" reads as reassurance about a file macOS declined to verify — so
+        // this says what is actually true of an import and nothing more.
+        case .importedRecording:
+            return "This imported recording was recovered after an interruption. The file itself was preserved; it was never a WhisperMeet capture, so there are no separate source tracks."
         }
+    }
+
+    /// The interruption sentence, generated from `recoveryInterruption` (F305).
+    ///
+    /// Nil when absent or unrecognised: F250's leniency rule is about surviving a value a newer
+    /// build wrote, not about displaying it.
+    private nonisolated static func interruptionCaveat(for meeting: MeetingRecord) -> String? {
+        guard let raw = meeting.recoveryInterruption,
+              let interruption = RecoveryInterruption(rawValue: raw) else { return nil }
+        return interruption.caveat
     }
 
     func notesMarkdown(for meeting: MeetingRecord) -> String {

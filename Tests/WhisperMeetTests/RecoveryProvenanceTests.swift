@@ -285,3 +285,81 @@ func emptyImportCarriesProvenance() async throws {
     #expect(meeting.recoverySource == RecoveredRecording.Source.importedRecording.rawValue)
     #expect(!MeetingStore.recoveryCaveats(for: meeting).isEmpty)
 }
+
+// MARK: - F305: a false sentence, and a reason that still dies with the message
+
+@Test("An imported recovery is never told it kept source tracks it never had (F305)")
+func importedRecoverySaysNothingAboutSourceTracks() {
+    // `provenanceCaveat` grouped `.importedRecording` with `.existingCapture` and told both that
+    // "the original recording and its source tracks were preserved". An import has no source
+    // tracks — the function that detects one says so itself: "An imported recording keeps a single
+    // `recording.<ext>` file and no raw source tracks".
+    //
+    // F303 made this reach further by giving every recovered import the sentence, including the two
+    // `.failed` unverified ones, where "the original recording … preserved" reads as reassurance
+    // about a file macOS declined to verify.
+    let imported = MeetingRecord(
+        id: UUID(), title: "Unverified Import", createdAt: Date(), status: .failed,
+        recoverySource: RecoveredRecording.Source.importedRecording.rawValue
+    )
+    let caveats = MeetingStore.recoveryCaveats(for: imported)
+    #expect(!caveats.isEmpty, "an import still needs to say it was recovered")
+    // The CLAIM, not the phrase. My first version asserted the words "source tracks" were absent,
+    // and the corrected sentence contains them while denying them — "there are no separate source
+    // tracks". A substring test on a phrase that appears in both the true and the false version of
+    // a sentence cannot tell them apart.
+    #expect(
+        !caveats.contains { $0.contains("its source tracks were preserved") },
+        "an import has no source tracks, so nothing may claim they were kept: \(caveats)"
+    )
+    #expect(
+        caveats.contains { $0.contains("no separate source tracks") },
+        "and it should say so, rather than going quiet about it: \(caveats)"
+    )
+
+    // The capture case still claims it, because for a capture it is true.
+    let capture = MeetingRecord(
+        id: UUID(), title: "m", createdAt: Date(),
+        recoverySource: RecoveredRecording.Source.existingCapture.rawValue
+    )
+    #expect(
+        MeetingStore.recoveryCaveats(for: capture)
+            .contains { $0.contains("its source tracks were preserved") }
+    )
+}
+
+@Test("Why a recovery happened survives the message being cleared (F305, F274)")
+func sleepInterruptionSurvivesTranscription() {
+    // F274 appended "The recording stopped because this Mac went to sleep." to `errorMessage`, and
+    // said so deliberately: "No new field for it: the message that already explains the recovery
+    // says which interruption it was." But `performTranscription` clears `errorMessage` on start
+    // and on success — so transcribing a recovered meeting keeps THAT it was recovered and erases
+    // WHY. F273's defect, for a second fact, decided one commit after F273 ruled it out.
+    var meeting = MeetingRecord(
+        id: UUID(), title: "m", createdAt: Date(),
+        errorMessage: "Recovered after an interruption. The recording stopped because this Mac went to sleep.",
+        recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
+        recoveryInterruption: RecoveryInterruption.systemSleep.rawValue
+    )
+    #expect(MeetingStore.recoveryCaveats(for: meeting).contains { $0.contains("went to sleep") })
+
+    meeting.errorMessage = nil   // exactly what AppModel.swift:3515 and :3562 do
+    #expect(
+        MeetingStore.recoveryCaveats(for: meeting).contains { $0.contains("went to sleep") },
+        "the reason has to outlive the message, which is this whole family's rule"
+    )
+}
+
+@Test("An unrecognised interruption renders nothing rather than a raw identifier (F305)")
+func unknownInterruptionIsIgnored() {
+    // F250's rule, applied to the new field: a value a newer build writes must decode and be
+    // ignored, never shown. A raw identifier in front of a user is worse than silence.
+    let meeting = MeetingRecord(
+        id: UUID(), title: "m", createdAt: Date(),
+        recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
+        recoveryInterruption: "somethingAFutureBuildInvented"
+    )
+    let caveats = MeetingStore.recoveryCaveats(for: meeting)
+    #expect(!caveats.isEmpty, "the provenance sentence still renders")
+    #expect(!caveats.contains { $0.contains("somethingAFutureBuildInvented") })
+}
