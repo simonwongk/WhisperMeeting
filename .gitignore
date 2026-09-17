@@ -27,3 +27,7 @@ Scripts/bench/diarization/.cache/
 # (user decision 2026-09-14; the GitHub remote is public). Harness code and neutral fixtures are tracked.
 Scripts/bench/fidelity/corpus/
 Scripts/bench/fidelity/results/
+
+# F241: the long-form bench fixture is generated from the committed clips, never committed —
+# 16 MB of derived PCM, reproducible by `Scripts/bench/longform/make-longform-fixture.py`.
+Scripts/bench/longform/build/
