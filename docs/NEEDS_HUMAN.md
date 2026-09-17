@@ -43,6 +43,35 @@ Being wrong either way is harmless: too low and you get two meetings instead of 
 you get more silence. Nothing about the timeline breaks at any value. Say a number and I will change
 the default; leave it and 5 minutes stands.
 
+## F241 — Two decisions about the ASR benchmark
+
+**Status:** the long-form fixture is shipped and it reaches the batched meeting path. These two are
+the half I could not do.
+
+**What I need from you:** a yes/no on a download, and some real audio if you have it.
+
+**1. May I download the 4-bit Qwen weights (~1.2 GB)?** The benchmark's whole problem is that it
+cannot tell a good model from a bad one: when 4-bit weights were rejected, the bench had scored them
+*perfectly* — 0.0000 error on all ten clips, identical to the 8-bit weights it kept. Meanwhile on a
+real recording the 4-bit model turned "Apple Times" into "EPT" and "Hadas" into "Head Office".
+
+The new long-form fixture does score non-zero (3.09%), so it finally has a scale. But I cannot check
+whether it actually separates the two models, because only the 8-bit weights are on this Mac — the
+4-bit entry in the cache is a 4 KB stub. It is a normal Hugging Face download, but it is a network
+fetch for a benchmark, on a machine whose whole point is staying local, so I would rather ask.
+
+**2. Do you have a recording with names and product terms in it?** This matters more than the
+download. The fixture's errors turn out to be mostly *spacing* around English words inside Chinese
+sentences — real, but not the kind of mistake that made 4-bit unusable. The mistakes that mattered
+were proper nouns, and the synthetic bench clips do not contain any.
+
+Any meeting where people say company names, product names or colleagues' names would work, and it
+would not need to be shared — I would only need the audio on this Mac and a rough transcript to
+score against. Without it, the bench can tell that a model is *different*; it still cannot tell that
+one is *wrong about names*, which is the failure you would actually notice.
+
+---
+
 ## F257 — Confirm a menu-bar-only session now gets its notices
 
 **Status:** the code is shipped and tested; this needs the app in front of you.
