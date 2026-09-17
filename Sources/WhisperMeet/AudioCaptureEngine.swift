@@ -72,6 +72,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Stands in for the restart (F275) so the wiring is testable without a display to lose.
     private var injectedRestartCapture: (@Sendable (Int64) async throws -> Void)?
 
+    /// Where each padded gap sits in this recording's timeline, for the manifest (F282).
+    ///
+    /// Accumulated here rather than read back from the session sidecar because this is the layer
+    /// that does the padding and therefore the only one that knows the frame offset it went in at.
+    private var paddedGaps: [SourceTrackManifest.PaddedGap] = []
+
     /// Restarts attempted for the current recording, which `CaptureRestartPolicy` bounds (F275).
     private(set) var restartCount = 0
 
@@ -240,12 +246,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 outputURL: mixedURL
             )
         }
-        try SourceTrackManifest.write(
-            system: systemTrack,
-            microphone: microphoneTrack,
-            sampleRate: Self.targetSampleRate,
-            to: directory.appendingPathComponent("source-tracks.json")
-        )
+        try mapMixError {
+            try SourceTrackManifest.write(
+                system: systemTrack,
+                microphone: microphoneTrack,
+                sampleRate: Self.targetSampleRate,
+                // F282: a padded recording must not describe itself as a clean capture. The spans
+                // are written positionally, so a consumer can skip them rather than count inserted
+                // silence as recorded non-speech.
+                paddedGaps: paddedGaps,
+                to: directory.appendingPathComponent("source-tracks.json")
+            )
+        }
         // Capture the health rollup before `reset()` (deferred) nils the monitor.
         let artifact = RecordingArtifact(
             mixedRecordingURL: mixedURL,
@@ -427,8 +439,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             try? await stream.stopCapture()
             self.stream = nil
         }
+        // Recorded BEFORE the padding goes in, so `startSeconds` is where the gap begins rather
+        // than where it ends (F282). The system track's count is the reference; both tracks are
+        // padded by the same amount, which is what keeps them aligned.
+        let framesBeforePadding = systemWriter?.frameCount ?? 0
         try systemWriter?.appendSilence(frames: paddingFrames)
         try microphoneWriter?.appendSilence(frames: paddingFrames)
+        paddedGaps.append(
+            SourceTrackManifest.PaddedGap(
+                startSeconds: Double(framesBeforePadding) / Self.targetSampleRate,
+                durationSeconds: Double(paddingFrames) / Self.targetSampleRate
+            )
+        )
         // Count the attempt before it can fail: a restart that throws must still burn a retry, or a
         // display that is gone for good spins forever — the bound the policy exists to enforce.
         restartCount += 1
@@ -498,6 +520,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // times", so carrying the count into the next recording would make a Mac that lost one
         // capture refuse to retry the following one.
         restartCount = 0
+        paddedGaps = []
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
@@ -569,68 +592,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 }
 
-
-private struct SourceTrackManifest: Codable {
-    struct Track: Codable {
-        let file: String
-        let format: String
-        let sampleRate: Double
-        let channels: Int
-        let frameCount: Int64
-        let startOffsetSeconds: Double
-    }
-
-    let systemAudio: Track
-    let microphoneAudio: Track
-
-    static func write(
-        system: FloatTrack,
-        microphone: FloatTrack,
-        sampleRate: Double,
-        to outputURL: URL
-    ) throws {
-        let starts = [
-            system.firstPresentationTime,
-            microphone.firstPresentationTime
-        ].compactMap { $0 }
-        guard let earliestStart = starts.min() else {
-            throw AudioCaptureError.noAudioCaptured
-        }
-        let manifest = Self(
-            systemAudio: track(
-                system,
-                sampleRate: sampleRate,
-                earliestStart: earliestStart
-            ),
-            microphoneAudio: track(
-                microphone,
-                sampleRate: sampleRate,
-                earliestStart: earliestStart
-            )
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(manifest).write(to: outputURL, options: .atomic)
-    }
-
-    private static func track(
-        _ track: FloatTrack,
-        sampleRate: Double,
-        earliestStart: Double
-    ) -> Track {
-        Track(
-            file: track.url.lastPathComponent,
-            format: "float32-little-endian",
-            sampleRate: sampleRate,
-            channels: 1,
-            frameCount: track.frameCount,
-            startOffsetSeconds: max(
-                0,
-                (track.firstPresentationTime ?? earliestStart) - earliestStart
-            )
-        )
-    }
-}
 
 /// Converts captured `CMSampleBuffer`s to mono float32 and hands them to a `FloatTrackFile`.
 ///

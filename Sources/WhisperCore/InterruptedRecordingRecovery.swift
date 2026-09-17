@@ -445,52 +445,59 @@ public enum InterruptedRecordingRecovery {
               !FileManager.default.fileExists(atPath: recoveredManifest.path) else {
             return
         }
-        let manifest = RecoveredSourceManifest(
-            recoveryAlignment: alignment,
-            truncatedAtSeconds: truncatedAtSeconds,
-            systemAudio: .init(
-                file: systemFile,
-                format: "float32-little-endian",
-                sampleRate: sampleRate,
-                channels: 1,
-                frameCount: try frameCount(
-                    at: directory.appendingPathComponent(systemFile),
-                    sizeOf: sizeLookup
-                )
+        // F282: carry forward any gaps the capture padded. A capture that was padded and THEN
+        // interrupted never reached `stop()`, so `source-tracks.json` was never written and the
+        // padding survives only in the session sidecar — without this, the inserted silence is
+        // invisible in every manifest the folder has, and a consumer would count it as recorded
+        // non-speech.
+        let session = RecordingSessionSidecar.read(in: directory)
+        let paddedGaps = session?.paddedGaps ?? []
+        // Mapped once, and used for both the gap list and the label — passing the sidecar's own
+        // type to the label function is what caught this; they are different shapes on purpose.
+        let manifestGaps = paddedGaps.map { gap -> SourceTrackManifest.PaddedGap in
+            // The sidecar records the gap's duration and when capture resumed; the manifest wants
+            // where it BEGINS in the recording's own timeline. Derived as
+            // (resumedAt - startedAt) - duration, which is the only place both ends are known.
+            //
+            // Wall clock, not frames: the capture-path manifest gets the true frame offset from
+            // `AudioCaptureEngine`, but that offset died with the process here, so this is the best
+            // available answer rather than the same answer. It is approximate by however much
+            // capture lagged wall clock, which is why it is clamped at zero.
+            let resumedAfterStart = session
+                .map { gap.resumedAt.timeIntervalSince($0.startedAt) } ?? gap.seconds
+            return SourceTrackManifest.PaddedGap(
+                startSeconds: max(0, resumedAfterStart - gap.seconds),
+                durationSeconds: gap.seconds
+            )
+        }
+        let manifest = SourceTrackManifest.rebuilt(
+            sampleRate: sampleRate,
+            systemFile: systemFile,
+            systemFrameCount: try frameCount(
+                at: directory.appendingPathComponent(systemFile),
+                sizeOf: sizeLookup
             ),
-            microphoneAudio: .init(
-                file: microphoneFile,
-                format: "float32-little-endian",
-                sampleRate: sampleRate,
-                channels: 1,
-                frameCount: try frameCount(
-                    at: directory.appendingPathComponent(microphoneFile),
-                    sizeOf: sizeLookup
-                )
+            microphoneFile: microphoneFile,
+            microphoneFrameCount: try frameCount(
+                at: directory.appendingPathComponent(microphoneFile),
+                sizeOf: sizeLookup
+            ),
+            paddedGaps: manifestGaps,
+            truncatedAtSeconds: truncatedAtSeconds,
+            // A lookup into a closed set, NOT string concatenation. `"\(alignment)-with-padding"`
+            // reads fine for one dimension and becomes unparseable at two — every reader compares
+            // this field by equality, so a value assembled from parts is a value nobody can match.
+            // `recoveryAlignment` is a label naming one state; anything needing a history of
+            // transformations gets its own field (F282).
+            alignment: SourceTrackManifest.alignment(
+                forRebuildWith: alignment,
+                paddedGaps: manifestGaps
             )
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: recoveredManifest, options: .atomic)
     }
-}
-
-private struct RecoveredSourceManifest: Codable {
-    struct Track: Codable {
-        let file: String
-        let format: String
-        let sampleRate: Double
-        let channels: Int
-        let frameCount: Int64
-    }
-
-    let recoveryAlignment: String
-    /// Set only when the rebuild stopped early (F256), so the folder explains its own state without
-    /// the index. Optional: the already-finalized path writes this manifest too and has no
-    /// truncation concept.
-    let truncatedAtSeconds: TimeInterval?
-    let systemAudio: Track
-    let microphoneAudio: Track
 }
 
 private final class RawFloatReader {
