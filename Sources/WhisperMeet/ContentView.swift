@@ -1519,10 +1519,49 @@ struct SettingsView: View {
                     .fixedSize()
                     Button("Back up library…") { backUpLibrary() }
                         .buttonStyle(.bordered)
+                    // F191 slice E3. Beside the backup it restores from, because that is where a
+                    // user looks for it — and a restore flow nobody can reach is not a restore
+                    // flow, which is why this ships with the slices rather than after them.
+                    Button("Restore…") { restoreLibrary() }
+                        .buttonStyle(.bordered)
                 }
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("Restoring checks the backup first and shows you exactly what it would replace, add, and leave behind before anything is written. Your current library is copied aside and kept, so a restore can be undone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .confirmationDialog(
+                        "Restore your library from this backup?",
+                        isPresented: .init(
+                            get: { model.pendingLibraryRestore != nil },
+                            set: { if !$0 { model.cancelLibraryRestore() } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        if let pending = model.pendingLibraryRestore, pending.plan.isSafeToApply {
+                            Button("Restore Library", role: .destructive) {
+                                Task { await model.performLibraryRestore(confirmed: true) }
+                            }
+                        } else if let pending = model.pendingLibraryRestore,
+                                  pending.plan.requiresExplicitOverride {
+                            // Only the unverifiable case gets an override button. A backup known to
+                            // be DAMAGED offers none, because there is no reading of "the user
+                            // chose it" that makes copying corrupt bytes over good ones correct.
+                            Button("Restore Anyway", role: .destructive) {
+                                Task {
+                                    await model.performLibraryRestore(
+                                        confirmed: true, acceptingUnverifiedBackup: true
+                                    )
+                                }
+                            }
+                        }
+                        Button("Cancel", role: .cancel) { model.cancelLibraryRestore() }
+                    } message: {
+                        if let pending = model.pendingLibraryRestore {
+                            Text(AppModel.restoreConfirmationMessage(pending))
+                        }
+                    }
                 // F239: "Delete Meeting" removes the recording folder at once but leaves the
                 // meeting's text in the retained index generations. Destructive role and a
                 // confirmation, because this is the one command here that discards protection
@@ -1804,6 +1843,23 @@ struct SettingsView: View {
         panel.message = "Choose a folder to back up your WhisperMeet library into."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.backUpLibrary(to: url) }
+    }
+
+    /// Picks a backup generation and asks the model for a plan (F191 slice E3).
+    ///
+    /// The panel points at the generation directory rather than the backup root, because a
+    /// generation IS the unit that gets restored and choosing between them is the user's decision
+    /// — the app must not pick "the newest" on their behalf when the reason they are here may be
+    /// that the newest is the bad one.
+    private func restoreLibrary() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Check This Backup"
+        panel.message = "Choose one dated backup folder inside “\(BackupCoordinator.managedSubfolder)”. Nothing is written until you review what the restore would do."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await model.requestLibraryRestore(from: url) }
     }
 
     private func toggleKeyCapture() {

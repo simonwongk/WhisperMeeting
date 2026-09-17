@@ -160,3 +160,64 @@ func damagedGenerationIsExplained() async throws {
         == Data(indexSinceThen.utf8))
     #expect(model.alertMessage?.isEmpty == false)
 }
+
+// MARK: - The confirmation copy (F191 slice E3)
+
+@Test("The confirmation leads with what the backup does not contain")
+@MainActor
+func confirmationLeadsWithWhatIsMissing() async throws {
+    // The only item on the list the user cannot undo by restoring again, which is why E1 computes
+    // that set at all. Leading with the file counts would bury it.
+    let (root, model, generation) = try makeFixture("copy")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let newer = model.store.rootDirectory
+        .appendingPathComponent("Recordings/recorded-since", isDirectory: true)
+    try FileManager.default.createDirectory(at: newer, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: newer.appendingPathComponent("meeting.wav"))
+
+    await model.requestLibraryRestore(from: generation)
+    let pending = try #require(model.pendingLibraryRestore)
+    let message = AppModel.restoreConfirmationMessage(pending)
+
+    #expect(message.hasPrefix("1 file(s) in your library are not in this backup"))
+    #expect(message.contains("copied aside first and kept"))
+}
+
+@Test("A clean restore's confirmation does not invent a missing-files warning")
+@MainActor
+func cleanConfirmationOmitsTheWarning() async throws {
+    let (root, model, generation) = try makeFixture("clean")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    await model.requestLibraryRestore(from: generation)
+    let pending = try #require(model.pendingLibraryRestore)
+    let message = AppModel.restoreConfirmationMessage(pending)
+
+    #expect(!message.contains("not in this backup"))
+    #expect(message.contains("will be replaced"))
+}
+
+@Test("An unverifiable backup's confirmation says so, and a damaged one refuses")
+@MainActor
+func confirmationDistinguishesUnverifiableFromDamaged() async throws {
+    let (root, model, generation) = try makeFixture("states")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // Unverifiable: no manifest, because an older build wrote it.
+    try FileManager.default.removeItem(at: generation.appendingPathComponent(BackupManifest.fileName))
+    await model.requestLibraryRestore(from: generation)
+    var pending = try #require(model.pendingLibraryRestore)
+    #expect(AppModel.restoreConfirmationMessage(pending).contains("could not confirm it is intact"))
+    model.cancelLibraryRestore()
+
+    // Damaged: the manifest is there and the bytes disagree with it.
+    let (root2, model2, generation2) = try makeFixture("damaged-copy")
+    defer { try? FileManager.default.removeItem(at: root2) }
+    let target = generation2.appendingPathComponent("meetings.json")
+    var bytes = try Data(contentsOf: target)
+    bytes[0] = bytes[0] ^ 0xFF
+    try bytes.write(to: target)
+    await model2.requestLibraryRestore(from: generation2)
+    pending = try #require(model2.pendingLibraryRestore)
+    #expect(AppModel.restoreConfirmationMessage(pending).contains("cannot be restored"))
+}

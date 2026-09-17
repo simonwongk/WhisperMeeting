@@ -1579,6 +1579,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The restore confirmation's body (F191 slice E3).
+    ///
+    /// On the model rather than in the view, and static, for the reason
+    /// `rebuildConfirmationMessage` is: the view is `private` and unreachable from tests, and this
+    /// text makes four promises the user is deciding on. A promise nothing asserts is a promise
+    /// that drifts.
+    ///
+    /// It leads with what is NOT in the backup when there is anything, because that is the only
+    /// item on the list the user cannot undo by restoring again — E1 computes that set precisely so
+    /// this sentence can exist.
+    static func restoreConfirmationMessage(_ pending: PendingLibraryRestore) -> String {
+        let plan = pending.plan
+        var lines: [String] = []
+        if !plan.notInBackup.isEmpty {
+            lines.append("\(plan.notInBackup.count) file(s) in your library are not in this backup. They will be left on disk, but the restored index will not list them.")
+        }
+        lines.append("\(plan.wouldOverwrite.count) file(s) will be replaced and \(plan.wouldAdd.count) restored.")
+        lines.append("Your current library will be copied aside first and kept, so this can be undone.")
+        if plan.verification.isUnverifiable {
+            lines.append("This backup was made by an earlier version and carries no checksums, so WhisperMeet could not confirm it is intact.")
+        } else if !plan.verification.isIntact {
+            lines.append("This backup did not pass its own checks and cannot be restored: " + plan.verification.problems.prefix(3).joined(separator: " "))
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
     /// Dismisses a pending restore offer without restoring anything.
     func cancelLibraryRestore() {
         pendingLibraryRestore = nil
