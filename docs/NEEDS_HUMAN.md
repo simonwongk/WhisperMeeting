@@ -14,7 +14,7 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F244**, the *first* item only | **1 min** | One yes/no: may I name the script in the prompts? Measured, not suspected — if you dictate in Traditional Chinese the app is converting it to Simplified right now, and the guard accepts it. Cheapest item here and the only one shown to affect your own writing. |
+| 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
 | 2 | **F275** | ~15 min | Two lid-close recordings. This is the durability question you originally asked; the restart logic is tested, but no test can prove a real lid close behaves the way the tests assume. |
 | 3 | **F288** | ~2 min | One look at Settings → Library. The backup restore is built and tested; nobody has confirmed the screen renders, and an unreachable restore is not a restore. |
 | 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Same shape: the logic is tested, the surfacing is not. |
@@ -271,21 +271,35 @@ Not the real measurement — six neutral items, one sample each, no sensitive ar
 the scorecard prints *incomparable* and refuses to imply a difference. But three of them are worth
 your attention now, because they are not about politics at all:
 
-- **A Traditional-Chinese dictation line came back Simplified, and the app would paste it.** 個→个,
-  貨→货, 倫→伦, 辦→办. The refinement prompt says "Mandarin Chinese" and never names a script, and
-  the app's language check reports "Chinese" for both scripts, so it cannot see the conversion.
+- **A Traditional-Chinese dictation came back Simplified — and I have now stopped that, which
+  changes what I need from you.** 個→个, 貨→货, 倫→伦, 辦→办, on ordinary business text. The app's
+  language check reports "Chinese" for both scripts, so it could not see the conversion, and a test
+  over that exact pair confirmed the guard **accepted** it. Your text was being overwritten.
 
-  I did not leave that as an inference. `Tests/WhisperCoreTests/RefinementGuardVectorTests.swift`
-  runs the app's real output guard over that exact pair and records the verdict: **accepted**. So
-  if you dictate in Traditional Chinese, this is happening to you now — not "might be". Recorded on
-  F245, which owns the prompt.
+  **Fixed, and it needed no permission**, because the fix only ever falls back to what you actually
+  said: the guard now refuses an output that turns your Traditional input Simplified, exactly as it
+  already refused one that turned your Chinese into English. If you dictate in Traditional Chinese,
+  your words are safe as of today.
 
-  **This one no longer needs your corpus review.** Naming the script in the prompt, and adding a
-  Traditional/Simplified check to the guard, are justified by the measurement already taken on
-  neutral business text. If you want to green-light one thing from this entry, it is this — it is
-  the cheapest item on the list and the only one already demonstrated to affect your own writing.
-  The corpus is still needed for everything about politically sensitive material, which is a
-  separate question.
+  **But refusing is not the same as working.** A refused refinement means you get your raw dictation
+  back — no punctuation, no capitalisation, no filler removal. So the feature is now safe for you
+  and does nothing for you, and that is the trade I cannot settle alone:
+
+  **May I name the script in the refinement prompt?** Telling the model "reply in Traditional
+  Chinese" should stop it converting in the first place, so refinement would work for you again
+  rather than being rejected. The reason I am asking rather than doing it: the app has no way to
+  know which script you prefer, so naming one is a guess about you, and guessing "Traditional"
+  would be wrong for anyone who writes Simplified. The alternatives are a setting you pick once, or
+  detecting it from your own dictation — which the app can now do, since the character tables
+  landed with the guard.
+
+  A one-word answer is enough: **Traditional**, **Simplified**, **ask me in Settings**, or **leave
+  it as is**. Any of those unblocks it; "leave it as is" is a real answer and means refinement stays
+  effectively off for your Traditional dictation, which is safe.
+
+  None of this needs the corpus review below. That is still required for everything about
+  politically sensitive material, which is a separate question.
+
 - **Asked to fix one misspelling, the model also rewrote 陳經理 into 陳怡君** — a title into a
   person's name. That is not a recognition error, it changes who the transcript says was speaking,
   and the correction sheet arrives with every proposal pre-selected, so it lands on one click.
