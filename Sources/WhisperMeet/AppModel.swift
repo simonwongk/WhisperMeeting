@@ -1539,7 +1539,39 @@ final class AppModel: ObservableObject {
                     "Another copy of WhisperMeet is open, so interrupted recordings were left untouched. Your audio is safe where it is. Quit the other copy and reopen WhisperMeet to finish recovering them."
                 )
             }
-            for orphan in mayRebuild ? orphans : [] {
+            // F279: refuse any folder that is being written to right now, whatever the lease says.
+            //
+            // The lease answers "is another instance open", which is not the same question and
+            // misses the case F255 left open: an instance whose rival has since quit still
+            // believes `.heldElsewhere` for the rest of its life, nothing gates `startRecording`
+            // on the lease, and a third instance then holds `.held` and rebuilds its live folder.
+            // Growth between two samples answers the actual question directly.
+            //
+            // One sleep for the whole sweep rather than one per folder, and skipped entirely when
+            // nothing looks orphaned — which is the normal case, so this costs launches nothing.
+            // An ADDITIONAL refusal, never a replacement for the lease gate: if the probe is wrong
+            // in some case nobody has thought of, the failure is a deferred recovery rather than a
+            // re-run of F255.
+            var live: Set<URL> = []
+            let candidates = mayRebuild ? orphans : []
+            if !candidates.isEmpty {
+                let before = candidates.map {
+                    ($0.directory, RecordingFolderLiveness.sample(in: $0.directory))
+                }
+                try? await Task.sleep(for: .milliseconds(400))
+                for (directory, first) in before {
+                    let second = RecordingFolderLiveness.sample(in: directory)
+                    if RecordingFolderLiveness.isGrowing(from: first, to: second) {
+                        live.insert(directory)
+                    }
+                }
+                if !live.isEmpty {
+                    messages.append(
+                        "A recording is still being written on this Mac, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
+                    )
+                }
+            }
+            for orphan in candidates where !live.contains(orphan.directory) {
                 let recovered: RecoveredRecording?
                 do {
                     recovered = try await Task.detached(priority: .utility) {

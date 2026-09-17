@@ -132,3 +132,75 @@ func secondInstanceDoesNotNagOverACleanLibrary() async throws {
 
     #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true)
 }
+
+// MARK: - F279: the recorder that holds no lease at all
+
+/// Appends to a folder's track for as long as it is alive, the way a live capture does.
+private final class TrackWriter: @unchecked Sendable {
+    private let task: Task<Void, Never>
+    init(appendingTo url: URL) {
+        task = Task.detached {
+            while !Task.isCancelled {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(repeating: 0, count: 4_096))
+                    try? handle.close()
+                }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
+    }
+    func stop() { task.cancel() }
+}
+
+@Test("A folder still being written is left alone even when the lease says go ahead")
+@MainActor
+func liveFolderIsSkippedDespiteHoldingTheLease() async throws {
+    // F255's gate is WIDE OPEN here — this instance holds the lease, exactly as instance C does in
+    // F279's sequence after the original holder quit. The only thing standing between the sweep
+    // and a live recording is the growth probe.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("LiveProbe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeLiveFolder(in: root)
+    let writer = TrackWriter(appendingTo: folder.appendingPathComponent("system-audio.f32"))
+    defer { writer.stop() }
+
+    let suite = "WhisperMeet.LiveProbe.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+    try #require(model.store.mayRebuildInterruptedRecordings, "the lease gate must be open")
+
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.isEmpty, "a live recording must not be indexed as recovered")
+    #expect(!FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered.wav").path
+    ))
+    #expect(model.alertMessage?.contains("still being written") == true)
+}
+
+@Test("A folder nobody is writing is still rebuilt, seconds after the crash")
+@MainActor
+func deadFolderIsStillRebuiltImmediately() async throws {
+    // The counterpart, and the property a freshness window could not give: a probe that deferred
+    // every recovery would break the feature silently, and a crashed recording must come back on
+    // the very next launch however soon that is.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeadProbe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeLiveFolder(in: root)
+
+    let suite = "WhisperMeet.DeadProbe.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.count == 1)
+    #expect(FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered.wav").path
+    ))
+}
