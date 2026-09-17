@@ -114,6 +114,27 @@ If the library is open read-only, restoring still works — it is the one action
 because it reads the bytes off disk and verifies them rather than trusting anything in memory. **You
 will need to quit and reopen WhisperMeet afterwards** to get back to a writable library.
 
+### Rehearsing the restore before you need it
+
+The recovery path is the one part of this app that is only ever used on the worst day, by whoever is
+there. A procedure first performed under pressure on real data is not a procedure — it is an
+experiment. So there is a rehearsal:
+
+```bash
+Scripts/rehearse-recovery.sh          # build, print the steps, verify them, clean up
+Scripts/rehearse-recovery.sh --keep   # leave the library in place to practise in the app
+```
+
+It builds a synthetic library in a temp directory, damaged the way the 2026-08-14 incident damaged
+one: three retained generations, the newest of which is `[]`, with both the live index and its backup
+also written as `[]`. It uses **no user data** — the meetings in it are two invented records — and it
+writes only inside its own temp directory. It never reads or touches
+`~/Library/Application Support/WhisperMeet`.
+
+It then performs the by-hand restore below and checks that the meetings come back, so the rehearsal
+also tests that the documented steps still work. A runbook nobody executes is a runbook that has
+drifted; if this script fails, these instructions are wrong and that is the bug.
+
 ### Restoring a past generation by hand
 
 With WhisperMeet **quit**:
