@@ -177,6 +177,30 @@ final class AppModel: ObservableObject {
     /// Markers dropped during the current recording (offsets from its start). Persisted into the
     /// `MeetingRecord` on stop; discarded on cancel. See `docs/RECORDING_MARKERS.md`.
     @Published private(set) var pendingMarkers: [RecordingMarker] = []
+    /// The title being typed for the current recording (F298).
+    ///
+    /// On the model rather than in `ContentView`'s `@State` because a view-local value exists
+    /// nowhere but the view: F258 built a sidecar to survive a crash, ⌘Q or a shutdown, and every
+    /// caller wrote its `title` empty because the title had not reached the model yet. Often the
+    /// only thing distinguishing two meetings recorded the same afternoon.
+    ///
+    /// Not `private(set)`: the recording sheet's text field binds to it directly, which is the
+    /// point — there is no second copy to keep in step.
+    ///
+    /// Mirrored to the sidecar from `didSet`, not from a `$recordingTitle` sink. `@Published`
+    /// publishes in *willSet*, so a sink that asked `updateRecordingSession` to mirror the property
+    /// would write the value the user just replaced — and its first draft did, silently, because the
+    /// file it wrote was still well-formed. `didSet` runs after the assignment, needs no observer to
+    /// be wired up, and keeps the mirror in the one place that knows the file reflects the model.
+    @Published var recordingTitle: String = "" {
+        didSet {
+            // Per keystroke, but `updateRecordingSession` returns immediately when nothing is
+            // recording, so idle typing costs a guard. While recording it is one small whole-file
+            // write — the same cost a marker drop already pays, and markers are dropped by hand.
+            guard oldValue != recordingTitle else { return }
+            updateRecordingSession { _ in }
+        }
+    }
     @Published private(set) var activeMeetingID: UUID?
     @Published private(set) var transcription = TranscriptionQueue()
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
@@ -1849,7 +1873,15 @@ final class AppModel: ObservableObject {
                     )
                     continue
                 }
-                let title = "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                // F274: read back what F258 wrote. Hoisted above the title because F298 needs it
+                // here — the user's own title is the one field distinguishing two meetings recorded
+                // the same afternoon, and it was being overwritten by a synthesized name.
+                let session = RecordingSessionSidecar.read(in: orphan.directory)
+                let synthesizedTitle = "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                // Trimmed, because a whitespace-only title is not a title: it would render as a
+                // blank row, indistinguishable from a bug in the sidebar.
+                let userTitle = session?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let title = userTitle.isEmpty ? synthesizedTitle : userTitle
                 let duration = recovered.duration > 0
                     ? recovered.duration
                     : await Self.loadDuration(of: recovered.recordingURL)
@@ -1867,11 +1899,11 @@ final class AppModel: ObservableObject {
                     messages.append("\(failedTitle) needs attention. \(message)")
                     continue
                 }
-                // F274: read back what F258 wrote. The sidecar is the only place a marker
-                // offset survives a crash, ⌘Q or a shutdown, and until now nothing read it — so a
-                // recovered meeting came back with zero markers while its offsets sat on disk
-                // beside it. `interruptedBySleepAt` was write-only for the same reason: F253
-                // records WHY the capture stopped and nothing ever said so.
+                // The sidecar is the only place a marker offset survives a crash, ⌘Q or a
+                // shutdown, and until F274 nothing read it — so a recovered meeting came back with
+                // zero markers while its offsets sat on disk beside it. `interruptedBySleepAt` was
+                // write-only for the same reason: F253 records WHY the capture stopped and nothing
+                // ever said so.
                 //
                 // No health report is read, because there is none: `RecordingSession` has no such
                 // field, so F258 never wrote one. The ticket lists it; the code does not have it.
@@ -1879,7 +1911,7 @@ final class AppModel: ObservableObject {
                 // Absent or unreadable is a normal state, not a failure. `session.json` is written
                 // best-effort — a metadata write must never be able to fail a capture that is
                 // working — so recovery cannot depend on it and must not invent what it says.
-                let session = RecordingSessionSidecar.read(in: orphan.directory)
+                // (`session` itself is read above, where the title needs it.)
                 let recoveredMarkers = session?.markers.isEmpty == false ? session?.markers : nil
                 // F256. The rebuild reports where it stopped; say so on the meeting itself, not
                 // only in the startup alert the user dismisses once.
@@ -1890,7 +1922,12 @@ final class AppModel: ObservableObject {
                 // title, the red icon and the error text; transcription is still offered, as it is
                 // for `.recorded`, because the surviving audio may still be worth transcribing.
                 if recovered.isSeverelyTruncated {
-                    let failedTitle = "Partly Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                    // F298: keep the user's own title and the caveat, not one or the other. The
+                    // caveat is what they scan the list for; the title is how they find this
+                    // meeting among three from the same day.
+                    let failedTitle = userTitle.isEmpty
+                        ? "Partly Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                        : "\(userTitle) (partly recovered)"
                     store.upsert(MeetingRecord(
                         id: orphan.id,
                         title: failedTitle,
@@ -2626,6 +2663,11 @@ final class AppModel: ObservableObject {
             markers: []
         )
         session.markers = pendingMarkers
+        // F298: the title is a mirror of the model too, for the same reason `markers` is — the
+        // model holds the whole value and the file reflects it. Mirrored rather than merged so
+        // clearing the field clears it on disk; a user who deleted what they typed has said the
+        // meeting has no name, and recovery must not resurrect it.
+        session.title = recordingTitle
         change(&session)
         try? RecordingSessionSidecar.write(session, in: directory)
     }
@@ -2661,9 +2703,11 @@ final class AppModel: ObservableObject {
     /// metadata this exists to keep, which is still strictly better than the RAM-only behaviour it
     /// replaces. `RecordingSessionSidecar.read` tolerates everything this can leave behind.
     private func persistRecordingSession(id: UUID, startedAt: Date) {
-        // The title is deliberately absent: it lives in `ContentView`'s `@State` and never reaches
-        // the model until `stopRecording(title:)`, so there is nothing here to persist yet. Moving
-        // it is part of F257's lifecycle work; markers are the irreplaceable half and ship now.
+        // The title rides along now (F298): `updateRecordingSession` mirrors `recordingTitle` on
+        // every write, so this call persists it at start and `recordingTitle`'s `didSet` keeps it
+        // current as the user types. It used to live in `ContentView`'s `@State` and reach the
+        // model only as an argument to `stopRecording(title:)`, which meant the sidecar's `title`
+        // was written empty by every caller — a field that looked supported and was not.
         //
         // Through `updateRecordingSession` since F284. This is the caller a user triggers most
         // often — every marker rewrites the sidecar — so as a whole-file write it was the most

@@ -356,7 +356,10 @@ private struct MeetingRow: View {
 private struct RecordMeetingView: View {
     @ObservedObject var model: AppModel
     let onMeetingSaved: (UUID) -> Void
-    @State private var title = ""
+    // F298: the title lives on the model, not here. A `@State` copy existed nowhere but this
+    // view, so F258's sidecar had nothing to persist at start and a crash, ⌘Q or a shutdown took
+    // the title with it. Binding straight to the model means there is no second copy to keep in
+    // step — and no moment where the two disagree.
     @State private var showsImporter = false
     @State private var showsLinkSheet = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -367,7 +370,7 @@ private struct RecordMeetingView: View {
         VStack(spacing: 28) {
             VStack(spacing: 12) {
                 heroBadge
-                Text(recordingTitle)
+                Text(recordingHeadline)
                     .font(.largeTitle.bold())
                 Text(recordingSubtitle)
                     .multilineTextAlignment(.center)
@@ -387,7 +390,7 @@ private struct RecordMeetingView: View {
                 recordingHealthPanel
             } else if model.recordingState == .idle {
                 VStack(alignment: .leading, spacing: 16) {
-                    TextField("Meeting title (optional)", text: $title)
+                    TextField("Meeting title (optional)", text: $model.recordingTitle)
                         .textFieldStyle(.roundedBorder)
                     preflightPanel
                     importPanel
@@ -470,9 +473,9 @@ private struct RecordMeetingView: View {
             case let .success(urls):
                 guard !urls.isEmpty else { return }
                 Task {
-                    if let id = await model.importRecordings(from: urls, title: title) {
+                    if let id = await model.importRecordings(from: urls, title: model.recordingTitle) {
                         onMeetingSaved(id)
-                        title = ""
+                        model.recordingTitle = ""
                     }
                 }
             case let .failure(error):
@@ -488,7 +491,7 @@ private struct RecordMeetingView: View {
         .sheet(isPresented: $showsLinkSheet) {
             LinkImportSheet(model: model) { meetingID in
                 onMeetingSaved(meetingID)
-                title = ""
+                model.recordingTitle = ""
             }
         }
     }
@@ -870,7 +873,11 @@ private struct RecordMeetingView: View {
         }
     }
 
-    private var recordingTitle: String {
+    /// The headline above the record button. Renamed from `recordingTitle` when F298 put the
+    /// user's own title on the model under that name — one identifier meaning both "Recording" and
+    /// the name of the user's meeting, in one file, is how someone later writes one and gets the
+    /// other.
+    private var recordingHeadline: String {
         switch model.recordingState {
         case .idle: "Capture every word"
         case .starting: "Preparing audio…"
@@ -911,9 +918,9 @@ private struct RecordMeetingView: View {
             Task { await model.startRecording() }
         case .recording:
             Task {
-                if let id = await model.stopRecording(title: title) {
+                if let id = await model.stopRecording(title: model.recordingTitle) {
                     onMeetingSaved(id)
-                    title = ""
+                    model.recordingTitle = ""
                 }
             }
         case .starting, .stopping:
