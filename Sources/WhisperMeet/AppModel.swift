@@ -1922,6 +1922,41 @@ final class AppModel: ObservableObject {
                         messages.append("\(failedTitle) needs attention. \(message)")
                         continue
                     }
+                    // F311: a link import that died before any audio arrived. `importFromURL`
+                    // writes `source.json` BEFORE the download starts, deliberately, "so a crash
+                    // mid-download still leaves a recoverable link import" — but yt-dlp writes
+                    // `recording.<ext>.part` until it finishes and the candidate scan does not
+                    // match a `.part`. So the folder holds the sidecar and maybe a partial file:
+                    // no audio to recover, no candidate to index, and `removeIfEmpty` refuses
+                    // because it is not empty. It fell through to the message below, and since
+                    // nothing about the folder changed it said so again on every launch, forever.
+                    // Reproduced by `InterruptedLinkImportTests`, not only traced.
+                    //
+                    // Indexed once rather than deleted, which is a decision and mine — no user
+                    // input settled it. The sidecar exists so the URL outlives a crash and its
+                    // comment promises the folder is "recoverable as a link import rather than an
+                    // anonymous orphan folder"; the user has that URL nowhere else, so deleting it
+                    // after one message would break the promise to save a directory. An indexed
+                    // entry also ends the repetition on its own, because `orphanedRecordings()`
+                    // skips folders whose UUID is already in the index.
+                    //
+                    // Only for a link import. A capture folder that produced no audio has no
+                    // sidecar, nothing to retry and no URL worth keeping, so it keeps the message.
+                    if let mediaSource {
+                        let failedTitle = "Interrupted import from \(mediaSource.host)"
+                        let message = "This import stopped before any audio finished downloading, so there is nothing to play. Its link was kept — open the source to try again, or delete this entry."
+                        store.upsert(MeetingRecord(
+                            id: orphan.id,
+                            title: failedTitle,
+                            createdAt: orphan.createdAt,
+                            status: .failed,
+                            errorMessage: message,
+                            tags: provenanceTags,
+                            source: mediaSource
+                        ))
+                        messages.append("\(failedTitle) needs attention. \(message)")
+                        continue
+                    }
                     if (try? InterruptedRecordingRecovery.removeIfEmpty(
                         in: orphan.directory
                     )) == true {
