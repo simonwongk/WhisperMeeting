@@ -83,3 +83,72 @@ func summarizeResolvesTimestamps() async throws {
     #expect(items[0].timestamp == 12)
     #expect(items[0].quote?.contains("budget spreadsheet") == true)
 }
+
+// MARK: - F307: re-summarizing must not discard what the user typed
+
+@MainActor
+@Test("Re-summarizing keeps the user's ticks, owners and dates (F307)")
+func reSummarizingKeepsUserEdits() async throws {
+    // The call site, not the merge rule. `ActionItemMergeTests` pins the rule; this pins that
+    // `performSummarization` applies it — the defect was one line, `$0.summary = resolved`,
+    // replacing the whole struct.
+    let model = try makeModel()
+    let summarizer = StubSummarizer(MeetingSummary(
+        summary: "s", keyPoints: [],
+        actionItems: ["Send the Kestrel report", "Book the Fairhaven room"]
+    ))
+    model.makeSummarizer = { _, _ in summarizer }
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "t"))
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "", transcript: "t", language: nil, style: .balanced
+    )
+
+    // The user works the list: ticks one off, assigns the other.
+    model.updateActionItem(at: 0, for: id) { $0.done = true }
+    model.updateActionItem(at: 1, for: id) { $0.owner = "Priya"; $0.due = "Fri" }
+
+    // Then re-summarizes, which is what the style and template controls are for.
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "", transcript: "t", language: nil, style: .detailed
+    )
+
+    let items = try #require(model.store.meeting(id: id)?.summary?.actionItems)
+    #expect(items.count == 2)
+    #expect(items[0].done, "the tick was cleared by the re-summarization")
+    #expect(items[1].owner == "Priya", "the owner was cleared by the re-summarization")
+    #expect(items[1].due == "Fri")
+}
+
+@MainActor
+@Test("An item the user ticked survives the model no longer mentioning it (F307)")
+func aTickedItemOutlivesItsDisappearance() async throws {
+    // The second half of the rule, at the call site: the user's edit is the stronger signal, so a
+    // summary that drops a task they had already handled must not delete their record of it.
+    let model = try makeModel()
+    let first = StubSummarizer(MeetingSummary(
+        summary: "s", keyPoints: [], actionItems: ["Send the Kestrel report"]
+    ))
+    model.makeSummarizer = { _, _ in first }
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "t"))
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "", transcript: "t", language: nil, style: .balanced
+    )
+    model.updateActionItem(at: 0, for: id) { $0.done = true }
+
+    let second = StubSummarizer(MeetingSummary(
+        summary: "s", keyPoints: [], actionItems: ["Book the Fairhaven room"]
+    ))
+    model.makeSummarizer = { _, _ in second }
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "", transcript: "t", language: nil, style: .brief
+    )
+
+    let items = try #require(model.store.meeting(id: id)?.summary?.actionItems)
+    #expect(items.map(\.text).contains("Book the Fairhaven room"), "the new summary leads")
+    let kept = try #require(items.first { $0.text == "Send the Kestrel report" })
+    #expect(kept.done)
+}

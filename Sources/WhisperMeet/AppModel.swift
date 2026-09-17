@@ -3380,7 +3380,23 @@ final class AppModel: ObservableObject {
             let segments = store.meeting(id: id)?.segments ?? []
             var resolved = summary
             resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)
-            store.update(id: id) { $0.summary = resolved }
+            store.update(id: id) { meeting in
+                // F307: `$0.summary = resolved` replaced the whole struct, and `ActionItem` holds
+                // three fields the model never produces and the user does — `done`, `owner`, `due`,
+                // the last two documented "Optional, user-entered". So re-summarizing to try a
+                // different style or template, which is the reason those controls exist, cleared
+                // every tick and every owner. Nothing warned and nothing failed.
+                //
+                // The previous items are read HERE rather than before the await: this runs after a
+                // model call that takes seconds, and the user can tick something off while it does.
+                // Reading them earlier would merge against a stale list and lose exactly the edit
+                // they just made.
+                var merged = resolved
+                merged.actionItems = ActionItemMerge.carryingUserEdits(
+                    from: meeting.summary?.actionItems ?? [], onto: resolved.actionItems
+                )
+                meeting.summary = merged
+            }
         } catch is CancellationError {
             // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.
         } catch {
