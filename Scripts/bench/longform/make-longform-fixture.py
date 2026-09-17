@@ -42,6 +42,24 @@ TARGET_SECONDS = 8 * 60 + 30
 #: than the reference file's order, because a dict's order is not a promise.
 CLIP_ORDER = ["cs1", "cs2", "cs3", "en1", "en2", "en3", "en4", "zh1", "zh2", "zh3"]
 
+#: Per-language fixtures, because a mixed one cannot answer a Whisper question (F271).
+#:
+#: openai-whisper picks ONE language per file — the mixed fixture above was detected as Chinese and
+#: scored WER 0.98 with a 0.47 length ratio, i.e. it dropped over half the content. Both arms of a
+#: flag comparison then score ~1.0, which measures language-detection failure rather than the flag
+#: and is exactly the null instrument F241 objects to. Qwen handles the mixed one fine; Whisper
+#: needs monolingual input, which is why F271 asks for "at least one item **per language**".
+#:
+#: `cs` is deliberately absent: those clips are code-switched by design, so there is no single
+#: language for Whisper to be given, and a cs fixture would reproduce the same defect.
+LANGUAGE_SETS = {
+    "en": ["en1", "en2", "en3", "en4"],
+    "zh": ["zh1", "zh2", "zh3"],
+}
+#: Shorter than the mixed fixture: four 60 s chunks still exercises batching, eviction and a partial
+#: tail, and a Whisper run over this costs minutes per arm on CPU.
+LANGUAGE_TARGET_SECONDS = 3 * 60 + 30
+
 
 def read_clip(path):
     with wave.open(str(path), "rb") as handle:
@@ -107,7 +125,58 @@ def main(argv):
     print(f"wrote {audio} — {total_seconds:.1f}s, {passes} passes of {pass_seconds:.2f}s")
     print(f"      {int(total_seconds // 60) + 1} chunks at the runtime's 60 s chunk duration")
     print(f"      reference: {out_dir / 'longform.txt'}")
+
+    for language, names in LANGUAGE_SETS.items():
+        write_fixture(
+            out_dir=out_dir,
+            stem=f"longform-{language}",
+            names=names,
+            references=references,
+            rate=rate,
+            target_seconds=LANGUAGE_TARGET_SECONDS,
+            language=language,
+        )
     return 0
+
+
+def write_fixture(*, out_dir, stem, names, references, rate, target_seconds, language):
+    """One monolingual fixture, so a single-language engine can be measured on it."""
+    pass_frames, pass_text = b"", []
+    for name in names:
+        clip_rate, frames = read_clip(CLIPS / f"{name}.wav")
+        if clip_rate != rate:
+            raise SystemExit(f"{name}.wav is {clip_rate} Hz, expected {rate} Hz")
+        pass_frames += frames
+        pass_text.append(references[name]["text"])
+
+    pass_seconds = len(pass_frames) / 2 / rate
+    passes = int(target_seconds / pass_seconds) + 1
+    audio = out_dir / f"{stem}.wav"
+    with wave.open(str(audio), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        for _ in range(passes):
+            handle.writeframes(pass_frames)
+
+    total = passes * pass_seconds
+    (out_dir / f"{stem}.txt").write_text(
+        " ".join(" ".join(pass_text) for _ in range(passes)) + "\n", encoding="utf-8"
+    )
+    (out_dir / f"{stem}.json").write_text(
+        json.dumps({
+            "audio": audio.name,
+            "reference": f"{stem}.txt",
+            "language": language,
+            "sampleRate": rate,
+            "seconds": round(total, 2),
+            "passes": passes,
+            "clipOrder": names,
+            "chunksAt60s": int(total // 60) + (1 if total % 60 else 0),
+        }, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote {audio} — {total:.1f}s, {int(total // 60) + 1} chunks, language={language}")
 
 
 if __name__ == "__main__":
