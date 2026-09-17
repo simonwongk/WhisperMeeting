@@ -143,6 +143,22 @@ final class AppModel: ObservableObject {
         case starting
         case recording(startedAt: Date)
         case stopping
+
+        /// Whether a capture is running right now — the phase a restart may act on (F275).
+        var isLive: Bool {
+            if case .recording = self { return true }
+            return false
+        }
+
+        /// This phase as `WhisperCore` sees it, for the pure policies that cannot import `AppModel`.
+        var policyState: RecordingSleepPolicy.State {
+            switch self {
+            case .idle: .idle
+            case .starting: .starting
+            case .recording: .recording
+            case .stopping: .stopping
+            }
+        }
     }
 
     /// The lifecycle of a disposable "test recording" that verifies both channels before a real
@@ -302,7 +318,9 @@ final class AppModel: ObservableObject {
 
     let store: MeetingStore
     let recordingMeter = RecordingMeterViewModel()
-    private let recorder: AudioCaptureEngine
+    /// Internal rather than private so `CaptureRestartWiringTests` can kill the stream the way a
+    /// lost display does, without a display to lose (F275).
+    let recorder: AudioCaptureEngine
     private var preflightRecorder: AudioCaptureEngine?
     private var preflightDirectory: URL?
     private var preflightTask: Task<Void, Never>?
@@ -1863,6 +1881,7 @@ final class AppModel: ObservableObject {
         pendingMarkers = []
         let id = UUID()
         activeMeetingID = id
+        captureRestartNotice = nil
         let directory = store.recordingDirectoryURL(for: id)
         do {
             _ = try store.recordingDirectory(for: id)
@@ -1874,6 +1893,14 @@ final class AppModel: ObservableObject {
                         return
                     }
                     self.recordingHealth = snapshot
+                    // F275: this 1 Hz tick is the only trigger that catches the case with no power
+                    // event — a docked lid close, where the display-bound stream dies and the Mac
+                    // never sleeps. Before this the banner appeared here and nothing else happened.
+                    if self.recorder.hasStreamError {
+                        await self.handleCaptureInterruption(trigger: .streamFailed)
+                    } else {
+                        self.noteCaptureAlive()
+                    }
                 }
             } onLevels: { [weak self] snapshot in
                 Task { @MainActor [weak self] in
@@ -2049,6 +2076,10 @@ final class AppModel: ObservableObject {
 
     /// The `willSleep` subscription, held only for the lifetime of a capture (F253).
     private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var displayObserver: NSObjectProtocol?
+    /// When the Mac began sleeping, so a wake can measure the gap it has to pad (F275).
+    private var sleepBeganAt: Date?
 
     /// Subscribes to `NSWorkspace.willSleepNotification` for the duration of a recording (F253).
     ///
@@ -2068,15 +2099,56 @@ final class AppModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleSystemWillSleep() }
+            MainActor.assumeIsolated {
+                self?.sleepBeganAt = Date()
+                self?.handleSystemWillSleep()
+            }
+        }
+        // F275's other two triggers. Both can fire without the stream being dead, and the policy
+        // says so — a display change that left the capture alive, or a wake after a sleep the
+        // recording was already finalized through, is a no-op.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // The gap is the sleep itself, which only this handler knows: no audio existed for
+                // anyone during it, so it is exactly the span to pad.
+                let slept = self.sleepBeganAt.map { Date().timeIntervalSince($0) }
+                self.sleepBeganAt = nil
+                Task { await self.handleCaptureInterruption(trigger: .didWake, gap: slept) }
+            }
+        }
+        displayObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { await self.handleCaptureInterruption(trigger: .displayReconfigured) }
+            }
         }
     }
 
-    /// Drops the subscription once the recording is over, so an idle app is not woken by it.
+    /// Drops the subscriptions once the recording is over, so an idle app is not woken by them.
     private func stopObservingSystemSleep() {
-        guard let sleepObserver else { return }
-        NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
-        self.sleepObserver = nil
+        let center = NSWorkspace.shared.notificationCenter
+        if let sleepObserver { center.removeObserver(sleepObserver) }
+        if let wakeObserver { center.removeObserver(wakeObserver) }
+        if let displayObserver { NotificationCenter.default.removeObserver(displayObserver) }
+        sleepObserver = nil
+        wakeObserver = nil
+        displayObserver = nil
+        sleepBeganAt = nil
+        captureLastAliveAt = nil
+        // `captureRestartNotice` deliberately survives this. Its entire job is to explain a stop the
+        // user did not ask for, and this teardown runs *as part of* that stop — clearing it here
+        // meant the explanation was written and erased in the same breath, so the recording just
+        // ended for no stated reason. Caught by a red test. It is cleared when the next recording
+        // starts instead.
     }
 
     /// Reacts to the Mac being about to sleep during a capture (F253).
@@ -2093,13 +2165,8 @@ final class AppModel: ObservableObject {
     /// size checks, `finalizedRecording(in:)` returns nil, and startup recovery rebuilds from the
     /// raw tracks as it would have anyway — now with the note explaining why.
     func handleSystemWillSleep(now: Date = Date()) {
-        let phase: RecordingSleepPolicy.State = switch recordingState {
-        case .idle: .idle
-        case .starting: .starting
-        case .recording: .recording
-        case .stopping: .stopping
-        }
-        guard RecordingSleepPolicy.action(for: phase, on: .willSleep) == .finalize,
+        guard RecordingSleepPolicy.action(for: recordingState.policyState, on: .willSleep)
+                == .finalize,
               let id = activeMeetingID,
               case let .recording(startedAt) = recordingState else {
             return
@@ -2115,6 +2182,115 @@ final class AppModel: ObservableObject {
         // (`canCancelRecording`), so a cancel cannot race this finalize — the same guard F139 added.
         recordingState = .stopping
         Task { _ = await stopRecording(title: "") }
+    }
+
+    /// The last thing a restart did, for the banner. Nil when nothing has happened (F275).
+    @Published var captureRestartNotice: String?
+
+    /// When the capture was last seen alive, so a gap can be measured without a power event (F275).
+    private var captureLastAliveAt: Date?
+
+    /// Whether a restart is already in flight (F275).
+    ///
+    /// The 1 Hz health tick fires `.streamFailed` every second while the stream is dead, and the
+    /// display and wake notifications can land in the same window. `handleCaptureInterruption` is
+    /// async, so without this two calls both observe `hasStreamError == true` before either has
+    /// restarted, and the recording is padded twice for one gap — shifting the timeline by the gap
+    /// all over again, which is precisely the defect padding exists to prevent. Found by a red test.
+    private var isHandlingCaptureInterruption = false
+
+    /// Marks the capture as alive now, so a later failure can measure how long it was dead (F275).
+    func noteCaptureAlive(at now: Date = Date()) {
+        captureLastAliveAt = now
+    }
+
+    /// Reacts to something that may have killed the capture (F275).
+    ///
+    /// Internal so `CaptureRestartWiringTests` can drive it without a display to lose.
+    ///
+    /// **The case this exists for has no power event at all.** A lid close on a *docked* Mac kills
+    /// the display-bound `SCStream` and the machine never sleeps, so neither `willSleep` nor
+    /// `didWake` fires; the recording stays "running" while nothing is captured. That is what took
+    /// 63 minutes of the user's meeting. So the triggers are the display set changing, the stream
+    /// reporting its own death, and waking — and the decision is the same for all three, which is
+    /// why `CaptureRestartPolicy` takes the trigger for the record and not for the outcome.
+    func handleCaptureInterruption(
+        trigger: CaptureRestartPolicy.Trigger,
+        gap: TimeInterval? = nil,
+        now: Date = Date()
+    ) async {
+        guard !isHandlingCaptureInterruption else { return }
+        isHandlingCaptureInterruption = true
+        defer { isHandlingCaptureInterruption = false }
+        // Measured from when the capture was last known alive, unless the caller knows better (a
+        // wake knows the sleep duration; a test states it outright).
+        let measuredGap = gap ?? captureLastAliveAt.map { now.timeIntervalSince($0) } ?? 0
+        let action = CaptureRestartPolicy.action(
+            trigger: trigger,
+            state: recordingState.policyState,
+            streamIsAlive: !recorder.hasStreamError,
+            gap: measuredGap,
+            restartsSoFar: recorder.restartCount
+        )
+        switch action {
+        case .none:
+            if recordingState.isLive, !recorder.hasStreamError { captureLastAliveAt = now }
+            return
+        case let .restart(padding):
+            let frames = CaptureRestartPolicy.paddingFrames(
+                forGap: padding,
+                sampleRate: AudioCaptureEngine.captureSampleRate
+            )
+            do {
+                try await recorder.restartAfterFailure(paddingFrames: frames)
+                // Recorded only now, after the silence is actually on disk. Noting it first meant a
+                // failed restart left a claim in the sidecar that a gap had been padded when none
+                // was — and startup recovery would then describe an unpatched set of tracks as
+                // patched. Found by a red test.
+                notePaddedGap(seconds: padding, resumedAt: now)
+                captureLastAliveAt = now
+                captureRestartNotice = CaptureRestartPolicy.notice(for: action, trigger: trigger)
+            } catch {
+                // The restart itself failed — the display is likely gone for good. Save rather than
+                // leave the capture dead, which is the state this ticket exists to end. The retry
+                // was already counted, so a repeated failure reaches the bound and stops.
+                await finalizeAfterFailedRestart(trigger: trigger)
+            }
+        case .finalize:
+            await finalizeAfterFailedRestart(trigger: trigger)
+        }
+    }
+
+    /// Saves what was captured and tells the user why the recording ended (F275).
+    private func finalizeAfterFailedRestart(trigger: CaptureRestartPolicy.Trigger) async {
+        guard recordingState.isLive else { return }
+        captureRestartNotice = CaptureRestartPolicy.notice(for: .finalize, trigger: trigger)
+        // Synchronously, before the async stop, for the reason `handleSystemWillSleep` documents:
+        // a second trigger arriving mid-stop must see `.stopping` and no-op rather than race it.
+        recordingState = .stopping
+        // `""` for the same reason `handleSystemWillSleep` uses it: the title lives in
+        // `ContentView`'s `@State` and never reaches the model until `stopRecording(title:)` is
+        // called from the window. Moving it is F257's lifecycle work. The sidecar keeps the markers,
+        // which are the irreplaceable half.
+        _ = await stopRecording(title: "")
+    }
+
+    /// Records a padded gap in the sidecar, so recovery does not read a patched timeline as clean.
+    private func notePaddedGap(seconds: TimeInterval, resumedAt: Date) {
+        guard let id = activeMeetingID, case let .recording(startedAt) = recordingState else {
+            return
+        }
+        let directory = store.recordingDirectoryURL(for: id)
+        var session = RecordingSessionSidecar.read(in: directory) ?? RecordingSession(
+            id: id,
+            startedAt: startedAt,
+            title: "",
+            markers: pendingMarkers
+        )
+        session.paddedGaps.append(
+            RecordingSession.PaddedGap(seconds: seconds, resumedAt: resumedAt)
+        )
+        try? RecordingSessionSidecar.write(session, in: directory)
     }
 
     /// Records in the session sidecar that sleep interrupted this capture (F253).

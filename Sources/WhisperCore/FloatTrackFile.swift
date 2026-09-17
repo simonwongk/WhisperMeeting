@@ -93,13 +93,48 @@ public final class FloatTrackFile {
         frameCount += Int64(frames)
         bytesSinceSync += byteCount
         if FloatTrackFile.shouldSync(bytesSinceSync: bytesSinceSync, interval: syncIntervalBytes) {
+            // Once per call, not once per interval crossed. A write larger than the interval is
+            // already covered: `F_FULLFSYNC` flushes everything written to the descriptor so far,
+            // so a second call in the same breath would cost another few milliseconds and flush
+            // nothing new.
             sync(handle.fileDescriptor)
-            // Resetting is the whole of "periodic". Without it every later write flushes, turning a
-            // 10 ms cost per five seconds into 10 ms per audio buffer — which is the dropout F259
-            // feared, reached by accident rather than by decision.
-            bytesSinceSync = 0
+            // **Subtract, don't zero.** Zeroing discards up to a full interval of credit on every
+            // flush, so the cadence drifts later and later — invisible on the capture path, where a
+            // buffer is ~16 KB against a 960 KB interval, but not once `appendSilence` writes 32 KB
+            // chunks or a caller hands over a large block. Decrementing keeps the bound this rule
+            // exists to provide: at most `syncIntervalBytes` unflushed at any moment.
+            // Some of it is also the whole of "periodic" — without any decrement every later write
+            // would flush, turning 10 ms per five seconds into 10 ms per buffer, which is the
+            // dropout F259 feared reached by accident rather than by decision.
+            bytesSinceSync %= syncIntervalBytes
         }
     }
+
+    /// Writes `frames` of silence, in chunks, participating in the same flush cadence.
+    ///
+    /// This is how F275 pads a gap the capture could not record — a lid close, a sleep — so that
+    /// `sample offset == elapsed time` stays true and every timestamp after the gap still means what
+    /// it says. Without it, resuming into the same track butt-splices the gap away and shifts the
+    /// rest of the meeting invisibly, which is F151.
+    ///
+    /// Chunked rather than one allocation: the policy's cap is five minutes, i.e. 14.4 M frames, and
+    /// materialising that would be a 57 MB spike per track on the capture path.
+    public func appendSilence(frames: Int64) throws {
+        guard !isFinished, frames > 0 else { return }
+        let chunk = [Float](repeating: 0, count: min(Int(frames), FloatTrackFile.silenceChunkFrames))
+        var remaining = frames
+        while remaining > 0 {
+            let count = Int(min(remaining, Int64(chunk.count)))
+            try chunk.withUnsafeBufferPointer { buffer in
+                guard let base = buffer.baseAddress else { return }
+                try append(base, frameCount: count)
+            }
+            remaining -= Int64(count)
+        }
+    }
+
+    /// 8,192 frames — one 32 KB write, matching `FloatTrackMixer`'s read chunk.
+    private static let silenceChunkFrames = 8_192
 
     public func append(_ samples: [Float]) throws {
         try samples.withUnsafeBufferPointer { buffer in

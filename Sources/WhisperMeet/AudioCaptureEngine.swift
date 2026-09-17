@@ -41,6 +41,10 @@ enum AudioCaptureError: LocalizedError {
 
 final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private static let targetSampleRate = 48_000.0
+
+    /// The capture sample rate, for callers that must convert a duration to frames — F275's padding
+    /// has to use exactly the rate the tracks were written at or the gap is the wrong length.
+    static var captureSampleRate: Double { targetSampleRate }
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
         category: "RecordingStartup"
@@ -65,6 +69,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         @escaping @Sendable (RecordingHealthSnapshot) -> Void,
         @escaping @Sendable (RecordingMeterSnapshot) -> Void
     ) async throws -> Void)?
+    /// Stands in for the restart (F275) so the wiring is testable without a display to lose.
+    private var injectedRestartCapture: (@Sendable (Int64) async throws -> Void)?
+
+    /// Restarts attempted for the current recording, which `CaptureRestartPolicy` bounds (F275).
+    private(set) var restartCount = 0
 
     // Fast, throttled level stream that drives the live volume bar, separate from the 1 Hz health
     // snapshot used for warnings.
@@ -86,12 +95,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             @escaping @Sendable (RecordingHealthSnapshot) -> Void,
             @escaping @Sendable (RecordingMeterSnapshot) -> Void
         ) async throws -> Void,
+        restartingCapture: (@Sendable (Int64) async throws -> Void)? = nil,
         directory: URL
     ) {
         injectedStopCapture = stoppingCapture
         injectedFinishTracks = finishingTracks
         injectedPreserveTracks = preservingPartialTracks
         injectedStartCapture = startingCapture
+        injectedRestartCapture = restartingCapture
         sessionDirectory = directory
         super.init()
     }
@@ -131,46 +142,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
         do {
             let contentRequestBeganAt = ProcessInfo.processInfo.systemUptime
-            let content = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnly: true
-            )
+            let stream = try await makeStream()
             let contentReadyAt = ProcessInfo.processInfo.systemUptime
-            // F254: pin to the MAIN display rather than whichever happens to be first. The stream
-            // dies with the display it is filtered on, and in clamshell the built-in one is what
-            // goes away — so this is the difference between a docked Mac keeping its capture and
-            // losing it. It does not save an undocked lid close; nothing can, because the machine
-            // sleeps. See the ticket for the `pmset` chain.
-            guard let index = Self.preferredDisplayIndex(
-                displayIDs: content.displays.map(\.displayID),
-                mainDisplayID: CGMainDisplayID()
-            ) else {
-                throw AudioCaptureError.noDisplayAvailable
-            }
-            let display = content.displays[index]
-
-            let excludedApplications = content.applications.filter {
-                $0.bundleIdentifier == Bundle.main.bundleIdentifier
-            }
-            let filter = SCContentFilter(
-                display: display,
-                excludingApplications: excludedApplications,
-                exceptingWindows: []
-            )
-            let configuration = SCStreamConfiguration()
-            configuration.capturesAudio = true
-            configuration.captureMicrophone = true
-            configuration.excludesCurrentProcessAudio = true
-            configuration.sampleRate = Int(Self.targetSampleRate)
-            configuration.channelCount = 2
-            configuration.width = 2
-            configuration.height = 2
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-            configuration.queueDepth = 3
-
-            let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
-            try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: captureQueue)
             self.stream = stream
             sessionDirectory = directory
             streamError = nil
@@ -385,6 +358,91 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
     }
 
+    /// Builds a configured `SCStream` around the main display, pinned per F254.
+    ///
+    /// Extracted by F275 so `start` and `restartAfterFailure` build the capture the same way. The
+    /// pinning is the point: the stream dies with the display it is filtered on, and in clamshell
+    /// the built-in one is what goes away — so this is the difference between a docked Mac keeping
+    /// its capture and losing it. It does not save an undocked lid close; nothing can, because the
+    /// machine sleeps. See F254 for the `pmset` chain.
+    ///
+    /// Re-querying `SCShareableContent` on every build is what makes the restart work at all: after
+    /// a display disappears, the previous filter names a display that no longer exists.
+    private func makeStream() async throws -> SCStream {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        guard let index = Self.preferredDisplayIndex(
+            displayIDs: content.displays.map(\.displayID),
+            mainDisplayID: CGMainDisplayID()
+        ) else {
+            throw AudioCaptureError.noDisplayAvailable
+        }
+        let excludedApplications = content.applications.filter {
+            $0.bundleIdentifier == Bundle.main.bundleIdentifier
+        }
+        let filter = SCContentFilter(
+            display: content.displays[index],
+            excludingApplications: excludedApplications,
+            exceptingWindows: []
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.captureMicrophone = true
+        configuration.excludesCurrentProcessAudio = true
+        configuration.sampleRate = Int(Self.targetSampleRate)
+        configuration.channelCount = 2
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        configuration.queueDepth = 3
+
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
+        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: captureQueue)
+        return stream
+    }
+
+    /// Pads the gap with silence and brings the capture back up (F275).
+    ///
+    /// The padding goes in FIRST and into both tracks, because that is the whole difference between
+    /// this and a splice: without it the samples after the gap sit at the wrong offset and every
+    /// later timestamp is wrong by the gap's duration — wrong *invisibly*, since the file plays and
+    /// the numbers are self-consistent. That is F151, and reintroducing it deliberately would be
+    /// worse than losing the segment, because the user cannot detect it.
+    ///
+    /// Writing silence here is not the fabrication F256 refuses: nothing was captured while the
+    /// display was gone, so silence is the truth about that interval rather than an invention about
+    /// audio that existed.
+    func restartAfterFailure(paddingFrames: Int64) async throws {
+        if let injectedRestartCapture {
+            restartCount += 1
+            try await injectedRestartCapture(paddingFrames)
+            return
+        }
+        // Tear down whatever is left of the dead stream before building another. `stopCapture` on
+        // an already-dead stream throws, which is expected and not a failure of the restart.
+        if let stream {
+            try? await stream.stopCapture()
+            self.stream = nil
+        }
+        try systemWriter?.appendSilence(frames: paddingFrames)
+        try microphoneWriter?.appendSilence(frames: paddingFrames)
+        // Count the attempt before it can fail: a restart that throws must still burn a retry, or a
+        // display that is gone for good spins forever — the bound the policy exists to enforce.
+        restartCount += 1
+        let stream = try await makeStream()
+        self.stream = stream
+        try await stream.startCapture()
+        // Only now is the capture actually live again. Clearing earlier would tell the health
+        // monitor the stream is fine while it is still being built.
+        streamError = nil
+        Self.logger.info(
+            "Recording capture restarted after \(paddingFrames) padded frames (attempt \(self.restartCount))"
+        )
+    }
+
     /// Which display the content filter should be pinned to, as an index into `displayIDs` (F254).
     ///
     /// The filter is built around exactly ONE display, and this used to be `displays.first` —
@@ -436,6 +494,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         injectedStopCapture = nil
         injectedFinishTracks = nil
         injectedPreserveTracks = nil
+        // Per recording, not per app run (F275): the policy's bound is "this meeting may restart N
+        // times", so carrying the count into the next recording would make a Mac that lost one
+        // capture refuse to retry the following one.
+        restartCount = 0
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
@@ -687,6 +749,11 @@ private final class FloatTrackWriter {
             rms: sqrt(squaredSum / Float(sampleCount)),
             peak: peak
         )
+    }
+
+    /// Writes a gap the capture could not record as silence, keeping offsets honest (F275).
+    func appendSilence(frames: Int64) throws {
+        try track.appendSilence(frames: frames)
     }
 
     func finish() throws -> FloatTrack {

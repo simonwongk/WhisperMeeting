@@ -375,6 +375,13 @@ private struct RecordMeetingView: View {
                     .frame(maxWidth: 520)
             }
 
+            // Outside the state branch on purpose (F275). The health panel renders only while
+            // `.recording`, so putting this inside it would show the "resumed" notice and hide the
+            // "stopped and saved" one — the more important of the two, since that is the case where
+            // the recording ended without the user asking and they are owed the reason.
+            captureRestartBanner
+                .frame(maxWidth: 560)
+
             if case let .recording(startedAt) = model.recordingState {
                 liveRecordingPanel(startedAt: startedAt)
                 recordingHealthPanel
@@ -674,6 +681,30 @@ private struct RecordMeetingView: View {
         } else {
             ProgressView("Checking both audio channels…")
                 .frame(maxWidth: 560)
+        }
+    }
+
+    /// What a restart did, when one happened (F275).
+    ///
+    /// Shown rather than logged because "never restart silently" is an invariant, not copy polish:
+    /// the transcript's timestamps mean different things depending on whether the recording was
+    /// continuous, so a user who cannot tell a continuous recording from a patched one has no way
+    /// to read them.
+    @ViewBuilder
+    private var captureRestartBanner: some View {
+        if let notice = model.captureRestartNotice {
+            HStack(alignment: .firstTextBaseline, spacing: 11) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                Text(notice)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Recording interruption")
+            .accessibilityValue(notice)
         }
     }
 

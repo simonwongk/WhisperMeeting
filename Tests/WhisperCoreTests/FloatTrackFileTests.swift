@@ -201,3 +201,100 @@ func defaultCadenceMatchesTheMeasuredChoice() {
     #expect(FloatTrackFile.shouldSync(bytesSinceSync: interval, interval: interval))
     #expect(FloatTrackFile.shouldSync(bytesSinceSync: interval * 3, interval: interval))
 }
+
+// MARK: - Writing the gap a restart could not capture (F275)
+
+@Test("Silence padding writes exactly the frames it was asked for, as zeros (F275)")
+func silencePaddingWritesZeroFrames() throws {
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let track = try FloatTrackFile(url: url, syncIntervalBytes: interval, sync: { _ in })
+
+    try track.append([Float](repeating: 0.5, count: 4))
+    try track.appendSilence(frames: 10)
+    try track.append([Float](repeating: 0.5, count: 4))
+    try track.finish()
+
+    #expect(track.frameCount == 18)
+    let data = try Data(contentsOf: url)
+    let samples = data.withUnsafeBytes { raw in
+        (0..<18).map {
+            Float(bitPattern: raw.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self).littleEndian)
+        }
+    }
+    // The point of padding at all: the samples after the gap sit at their true elapsed offset, so
+    // every later timestamp still means what it says (F151 is what happens without this).
+    #expect(Array(samples[0..<4]) == [Float](repeating: 0.5, count: 4))
+    #expect(Array(samples[4..<14]) == [Float](repeating: 0, count: 10))
+    #expect(Array(samples[14..<18]) == [Float](repeating: 0.5, count: 4))
+}
+
+@Test("A large gap is padded without holding it all in memory (F275)")
+func largePaddingIsChunked() throws {
+    // Five minutes — the policy's cap — is 14.4 M frames per track. Allocating that as one array
+    // would be a 57 MB spike on the capture path; the write has to chunk.
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let track = try FloatTrackFile(url: url, syncIntervalBytes: interval, sync: { _ in })
+
+    let frames = CaptureRestartPolicy.paddingFrames(forGap: 5 * 60, sampleRate: 48_000)
+    #expect(frames == 14_400_000)
+    try track.appendSilence(frames: frames)
+    try track.finish()
+
+    #expect(track.frameCount == frames)
+    let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
+    #expect(size == Int(frames) * 4)
+}
+
+@Test("A zero or negative gap writes nothing (F275)")
+func nonPositivePaddingIsANoOp() throws {
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let track = try FloatTrackFile(url: url, syncIntervalBytes: interval, sync: { _ in })
+
+    try track.appendSilence(frames: 0)
+    try track.appendSilence(frames: -5)
+    try track.finish()
+
+    #expect(track.frameCount == 0)
+    #expect(try Data(contentsOf: url).isEmpty)
+}
+
+@Test("Padding is flushed on the same cadence as captured audio (F275)")
+func paddingParticipatesInTheSyncCadence() throws {
+    // Padding is real bytes on the same track, so it must not slip past the durability rule: a
+    // crash just after a long pad should lose no more than a captured span of the same size.
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let spy = SyncSpy()
+    let track = try FloatTrackFile(url: url, syncIntervalBytes: interval, sync: spy.sync)
+
+    try track.appendSilence(frames: Int64(framesPerInterval) * 3)
+
+    // Once, not three times. This test first asserted three, which was wrong about what a flush
+    // is: `F_FULLFSYNC` flushes everything written to the descriptor so far, so three calls in
+    // immediate succession would cost three round trips and make two of them no-ops.
+    #expect(spy.count == 1)
+}
+
+@Test("A write spanning several intervals does not lose its sync credit (F275)")
+func oversizedWriteKeepsTheCadenceHonest() throws {
+    // The bug the test above found. `bytesSinceSync = 0` after a flush discards up to a full
+    // interval of credit, so each oversized write pushes the next flush later than the rule
+    // promises — the bound "at most one interval unflushed" quietly stops holding. Invisible on the
+    // capture path (a buffer is ~16 KB against 960 KB) and very visible once padding writes in
+    // 32 KB chunks.
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let spy = SyncSpy()
+    let track = try FloatTrackFile(url: url, syncIntervalBytes: interval, sync: spy.sync)
+
+    // 1.5 intervals: flushes once, and half an interval of credit must survive.
+    try track.append([Float](repeating: 0.5, count: framesPerInterval + framesPerInterval / 2))
+    #expect(spy.count == 1)
+
+    // Half an interval more reaches the next boundary exactly. Zeroing would leave this short.
+    try track.append([Float](repeating: 0.5, count: framesPerInterval / 2))
+    #expect(spy.count == 2, "the carried remainder was discarded, so the cadence drifted")
+}

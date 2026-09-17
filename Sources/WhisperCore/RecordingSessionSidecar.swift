@@ -24,18 +24,60 @@ public struct RecordingSession: Codable, Sendable, Equatable {
     /// F188's lenient-decode rule exists to prevent, one file over.
     public var interruptedBySleepAt: Date?
 
+    /// A span this capture could not record, filled with silence so the timeline stayed honest.
+    public struct PaddedGap: Codable, Sendable, Equatable {
+        /// How long the capture was dead.
+        public let seconds: TimeInterval
+        /// When capture resumed.
+        public let resumedAt: Date
+
+        public init(seconds: TimeInterval, resumedAt: Date) {
+            self.seconds = seconds
+            self.resumedAt = resumedAt
+        }
+    }
+
+    /// Gaps padded with silence by a restart, oldest first (F275).
+    ///
+    /// Recorded because a padded resume is neither a clean capture nor a rebuild, and a consumer
+    /// reading the raw tracks cannot tell by looking: the silence is indistinguishable from a quiet
+    /// room. If the app dies after a restart, startup recovery rebuilds from those tracks, and this
+    /// is what stops it describing a patched timeline as `"captured-timeline"`.
+    ///
+    /// Defaulted rather than optional-with-a-nil-check, so a session written by a build without the
+    /// field decodes to an empty list instead of failing — the same lenient-decode rule F188 set and
+    /// `interruptedBySleepAt` follows above.
+    public var paddedGaps: [PaddedGap] = []
+
     public init(
         id: UUID,
         startedAt: Date,
         title: String,
         markers: [RecordingMarker],
-        interruptedBySleepAt: Date? = nil
+        interruptedBySleepAt: Date? = nil,
+        paddedGaps: [PaddedGap] = []
     ) {
         self.id = id
         self.startedAt = startedAt
         self.title = title
         self.markers = markers
         self.interruptedBySleepAt = interruptedBySleepAt
+        self.paddedGaps = paddedGaps
+    }
+
+    /// Decoded leniently: every field added after the first shipped build must tolerate its own
+    /// absence, or a recording started before an update loses its markers on the way back.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        markers = try container.decodeIfPresent([RecordingMarker].self, forKey: .markers) ?? []
+        interruptedBySleepAt = try container.decodeIfPresent(
+            Date.self,
+            forKey: .interruptedBySleepAt
+        )
+        paddedGaps = try container.decodeIfPresent([PaddedGap].self, forKey: .paddedGaps) ?? []
     }
 }
 
