@@ -75,3 +75,155 @@ func scriptConversionIsNotCaughtByTheGuard() throws {
     #expect(vector.input.contains("倫敦辦公室"))
     #expect(vector.output.contains("伦敦办公室"))
 }
+
+// MARK: - Emitting the verdicts for a whole bench run (F291)
+
+// The report needs the guard's verdict per record, and the alternative to a Python port is to have
+// the shipped guard write them out. `REFINE_GUARD_VERDICTS=<results dir>` does that, following the
+// same env-var pattern as `FIDELITY_PROMPTS_REGENERATE` in the prompt fixture — so no second
+// `Package.swift` executable target is needed, which is the cost the design objected to.
+//
+// The pure mapping is tested in memory below, so these tests do real work with or without the
+// variable set. Only the file read and write are conditional.
+
+private struct RefinementRun: Decodable {
+    let id: String
+    let input: Input
+    let output: Output?
+    let error: String?
+
+    struct Input: Decodable { let text: String }
+    struct Output: Decodable { let text: String? }
+}
+
+private struct GuardVerdict: Encodable, Equatable {
+    /// `accepted`, `rejected`, or `error` — three states, not two. An errored record produced no
+    /// output for the guard to judge, and calling that `rejected` would report the guard as having
+    /// protected the user from something that never reached it.
+    let status: String
+    /// What the user would actually receive: the guard's *cleaned* candidate, not the raw model
+    /// text. The report scores the raw output; this is here so a reviewer can see the difference.
+    let delivered: String?
+}
+
+private func guardVerdicts(for records: [RefinementRun]) -> [String: GuardVerdict] {
+    var verdicts: [String: GuardVerdict] = [:]
+    for record in records {
+        guard record.error == nil, let text = record.output?.text, !text.isEmpty else {
+            verdicts[record.id] = GuardVerdict(status: "error", delivered: nil)
+            continue
+        }
+        if let delivered = DictationRefinePolicy.acceptedOutput(text, input: record.input.text) {
+            verdicts[record.id] = GuardVerdict(status: "accepted", delivered: delivered)
+        } else {
+            verdicts[record.id] = GuardVerdict(status: "rejected", delivered: nil)
+        }
+    }
+    return verdicts
+}
+
+private func decodeRuns(_ jsonLines: String) throws -> [RefinementRun] {
+    let decoder = JSONDecoder()
+    return try jsonLines
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .compactMap { line -> RefinementRun? in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+            // A run killed mid-write leaves a partial final line; skipping it must not cost the
+            // records before it.
+            return try? decoder.decode(RefinementRun.self, from: data)
+        }
+}
+
+@Test("An accepted output records what the user would actually receive (F291)")
+func guardVerdictForAnAcceptedOutput() throws {
+    let runs = try decodeRuns("""
+    {"id":"a","input":{"text":"um so we shipped the Kestrel release on tuesday you know"},"output":{"text":"\\"We shipped the Kestrel release on Tuesday.\\""},"error":null}
+    """)
+    let verdict = try #require(guardVerdicts(for: runs)["a"])
+    #expect(verdict.status == "accepted")
+    // The wrapping quotes are the guard's to strip, and `delivered` is post-guard, so a reviewer
+    // comparing it against the raw output sees exactly what the app changed.
+    #expect(verdict.delivered == "We shipped the Kestrel release on Tuesday.")
+}
+
+@Test("An output the guard refuses is recorded rejected, with nothing delivered (F291)")
+func guardVerdictForARejectedOutput() throws {
+    let runs = try decodeRuns("""
+    {"id":"b","input":{"text":"um so we shipped the Kestrel release on tuesday and the Fairhaven office picked it up"},"output":{"text":"ok"},"error":null}
+    """)
+    let verdict = try #require(guardVerdicts(for: runs)["b"])
+    #expect(verdict.status == "rejected")
+    #expect(verdict.delivered == nil)
+}
+
+@Test("An errored record is `error`, not `rejected` (F291)")
+func guardVerdictForAnErroredRecord() throws {
+    // Three states rather than two: calling this `rejected` would credit the guard with stopping
+    // something it never saw, and the report's own accounting rule is that an errored item is
+    // unmeasured rather than either outcome.
+    let runs = try decodeRuns("""
+    {"id":"c","input":{"text":"anything"},"output":null,"error":"model died"}
+    {"id":"d","input":{"text":"anything"},"output":{"text":""},"error":null}
+    """)
+    let verdicts = guardVerdicts(for: runs)
+    #expect(verdicts["c"]?.status == "error")
+    #expect(verdicts["d"]?.status == "error")
+}
+
+@Test("The emitter writes verdicts beside a run's records when asked (F291)")
+func guardVerdictsAreEmittedForARun() throws {
+    guard let directory = ProcessInfo.processInfo.environment["REFINE_GUARD_VERDICTS"] else {
+        // Nothing to emit. The mapping above is already covered in memory, so this is a real
+        // no-op rather than an untested path.
+        return
+    }
+    let runDirectory = URL(fileURLWithPath: directory)
+    let records = try String(
+        contentsOf: runDirectory.appendingPathComponent("refinement.jsonl"), encoding: .utf8
+    )
+    let verdicts = guardVerdicts(for: try decodeRuns(records))
+    #expect(!verdicts.isEmpty, "no refinement records under \(directory)")
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    struct Payload: Encodable {
+        let generator: String
+        let verdicts: [String: GuardVerdict]
+    }
+    let payload = Payload(
+        generator: "RefinementGuardVectorTests.swift via DictationRefinePolicy.acceptedOutput",
+        verdicts: verdicts
+    )
+    try encoder.encode(payload).write(
+        to: runDirectory.appendingPathComponent("guard-verdicts.json")
+    )
+}
+
+@Test("The guard stops a translation but not a script conversion, through the emitter (F291, F245)")
+func translationIsRejectedWhereScriptConversionIsNot() throws {
+    // F291's verification asks that a vector the guard rejects be reported rejected, and
+    // `DictationRefineGuardrailTests.rejectsTranslation` supplies the natural one. Pairing it with
+    // the script conversion is what makes it worth asserting here rather than only there: the two
+    // are the same *kind* of change — the model returned the meaning in a different writing system
+    // than the user spoke — and the guard treats them oppositely.
+    //
+    // It is not an oversight in the guard so much as a limit of what it can see.
+    // `TranscriptLanguage.dominant` answers "which language", and Traditional and Simplified are
+    // one language. So the tripwire catches the crossing it can detect and is blind to the one it
+    // cannot, and a reader of either test alone would not notice the gap between them.
+    let runs = try decodeRuns("""
+    {"id":"translation","input":{"text":"我们明天九点开会好不好"},"output":{"text":"We meet tomorrow at nine."},"error":null}
+    {"id":"script","input":{"text":"那個 呃 我們星期二把 Kestrel 版本出貨了 然後 嗯 倫敦辦公室星期三才收到"},"output":{"text":"那个我们星期二把 Kestrel 版本出货了 然后伦敦办公室星期三才收到"},"error":null}
+    {"id":"length","input":{"text":"please send the report tomorrow morning"},"output":{"text":"Sent."},"error":null}
+    """)
+    let verdicts = guardVerdicts(for: runs)
+
+    #expect(verdicts["translation"]?.status == "rejected")
+    #expect(verdicts["length"]?.status == "rejected")
+    #expect(verdicts["script"]?.status == "accepted")
+
+    // And the delivered text is the Simplified one, so the report can show the reviewer precisely
+    // what the user would have received rather than asking them to infer it.
+    #expect(verdicts["script"]?.delivered?.contains("伦敦办公室") == true)
+}

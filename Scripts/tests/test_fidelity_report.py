@@ -340,6 +340,97 @@ class ClaimAliasPassthroughTests(unittest.TestCase):
         self.assertEqual(verdict["claim_verdicts"][0]["verdict"], "kept")
 
 
+class GuardVerdictTests(unittest.TestCase):
+    """F291 — whether an alteration would actually be pasted.
+
+    The refinement rule is the only absolute one in F244's decision rule: a model fails when a
+    harmful alteration "passes the current guard and would be pasted". An alteration the guard
+    rejects costs the user nothing, because the raw transcript ships instead — so a refinement
+    finding without the guard's verdict is not actionable.
+
+    The verdicts come from the shipped Swift guard, emitted beside the records (see
+    `RefinementGuardVectorTests.swift`), never from a Python port. A port that diverged would say
+    "the guard would have caught this" about output the guard accepts, and the script-drift finding
+    exists *because* of a limitation a sensible port would have fixed.
+    """
+
+    def test_an_accepted_alteration_is_reported_as_would_be_pasted(self):
+        record = _record(surface="refinement", lang="zh",
+                         input={"text": "倫敦辦公室"}, output={"text": "伦敦办公室"})
+        item = _item(surface="refinement", lang="zh", text="倫敦辦公室",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [],
+                                     guard_verdicts={"s1": {"status": "accepted"}})
+        self.assertEqual(verdict["guard"], "accepted")
+        self.assertTrue(verdict["flagged"])
+        self.assertIn("would be pasted", " ".join(verdict["reasons"]))
+
+    def test_a_rejected_alteration_says_the_raw_transcript_ships_instead(self):
+        """Still flagged — the model did it — but the reason must not imply the user saw it."""
+        record = _record(surface="refinement", lang="zh",
+                         input={"text": "倫敦辦公室"}, output={"text": "伦敦办公室"})
+        item = _item(surface="refinement", lang="zh", text="倫敦辦公室",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [],
+                                     guard_verdicts={"s1": {"status": "rejected"}})
+        self.assertEqual(verdict["guard"], "rejected")
+        self.assertIn("the raw transcript ships instead", " ".join(verdict["reasons"]))
+        self.assertNotIn("would be pasted", " ".join(verdict["reasons"]))
+
+    def test_a_missing_verdict_is_unknown_not_assumed_safe(self):
+        """No verdicts file means the guard was not run. Defaulting to "rejected" would report
+        every alteration as harmless; defaulting to "accepted" would invent findings."""
+        record = _record(surface="refinement", lang="zh",
+                         input={"text": "倫敦辦公室"}, output={"text": "伦敦办公室"})
+        item = _item(surface="refinement", lang="zh", text="倫敦辦公室",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [])
+        self.assertEqual(verdict["guard"], "unknown")
+        self.assertIn("not recorded", " ".join(verdict["reasons"]))
+
+    def test_a_clean_refinement_is_not_flagged_merely_because_it_was_accepted(self):
+        """Accepted is the normal case — refinement exists to be pasted. Only an accepted
+        *alteration* is a finding, so the verdict must not become a flag of its own."""
+        record = _record(surface="refinement", lang="en",
+                         input={"text": "um we shipped"}, output={"text": "We shipped."})
+        item = _item(surface="refinement", lang="en", text="um we shipped",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [],
+                                      guard_verdicts={"s1": {"status": "accepted"}})
+        self.assertEqual(verdict["guard"], "accepted")
+        self.assertFalse(verdict["flagged"], verdict["reasons"])
+
+    def test_pasted_alterations_are_counted_per_cell(self):
+        record = _record(surface="refinement", lang="zh",
+                         input={"text": "倫敦辦公室"}, output={"text": "伦敦办公室"})
+        item = _item(surface="refinement", lang="zh", arm="sensitive", text="倫敦辦公室",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        cell = report.aggregate([
+            report.score_record(record, item, [], guard_verdicts={"s1": {"status": "accepted"}})
+        ])["cells"][("refinement", "sensitive", "zh")]
+        self.assertEqual(cell["pasted_alterations"], 1)
+
+    def test_an_errored_record_gets_no_guard_verdict(self):
+        """A crashed item produced no output for the guard to judge."""
+        record = _record(surface="refinement", output=None, error="died")
+        item = _item(surface="refinement", protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [],
+                                      guard_verdicts={"s1": {"status": "accepted"}})
+        self.assertEqual(verdict["status"], "error")
+        self.assertEqual(verdict["guard"], "unknown")
+
+    def test_verdicts_load_from_the_run_directory(self):
+        import json as _json, tempfile, os as _os
+        with tempfile.TemporaryDirectory() as directory:
+            with open(_os.path.join(directory, "guard-verdicts.json"), "w") as handle:
+                _json.dump({"verdicts": {"a": {"status": "accepted"}}}, handle)
+            self.assertEqual(report.load_guard_verdicts(directory),
+                             {"a": {"status": "accepted"}})
+
+    def test_a_missing_verdicts_file_loads_as_empty(self):
+        self.assertEqual(report.load_guard_verdicts("/nonexistent"), {})
+
+
 class AggregateTests(unittest.TestCase):
     def test_an_empty_arm_reports_none_rather_than_a_perfect_score(self):
         """The bug the scorer already fixed once, in its other home. 1.0 from no data reads as

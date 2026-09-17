@@ -118,6 +118,23 @@ def unrequested_corrections(corrections, expected_fixes):
     ]
 
 
+def load_guard_verdicts(run_directory):
+    """The shipped guard's verdict per refinement record, emitted beside the records.
+
+    Produced by `RefinementGuardVectorTests.swift` under `REFINE_GUARD_VERDICTS=<run dir>`, so the
+    oracle is `DictationRefinePolicy` itself. Deliberately not a Python port: a port that diverged
+    would report "the guard would have caught this" about output the guard accepts, and the script
+    drift this bench found exists *because* of a limitation any sensible port would have fixed.
+
+    Absent means the guard was not run, which is `unknown` — never a default verdict either way.
+    """
+    path = os.path.join(run_directory, "guard-verdicts.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle).get("verdicts") or {}
+
+
 def refinement_fix_verdict(source, output, expected_fixes):
     """Whether refinement restored each planted slip, or something else.
 
@@ -168,7 +185,7 @@ def _source_text(record, item):
     return item["text"]
 
 
-def score_record(record, item, framing_phrases):
+def score_record(record, item, framing_phrases, guard_verdicts=None):
     """One record plus its corpus item becomes one verdict.
 
     An errored record short-circuits to `status: error` with no verdicts at all. This is the
@@ -195,6 +212,9 @@ def score_record(record, item, framing_phrases):
         "expected_fixes": {"applied": [], "missed": []},
         "unmatched_corrections": [],
         "unrequested_corrections": [],
+        # `unknown` until the shipped guard says otherwise. Defaulting to `rejected` would report
+        # every alteration as harmless; defaulting to `accepted` would invent findings.
+        "guard": "unknown",
         "reasons": [],
         "flagged": False,
         "source": _source_text(record, item),
@@ -258,6 +278,8 @@ def score_record(record, item, framing_phrases):
         verdict["expected_fixes"] = refinement_fix_verdict(
             source, output, item.get("expected_fixes")
         )
+        entry = (guard_verdicts or {}).get(record["id"]) or {}
+        verdict["guard"] = entry.get("status") or "unknown"
 
     reasons = verdict["reasons"]
     if verdict["altered_terms"]:
@@ -290,6 +312,24 @@ def score_record(record, item, framing_phrases):
             "corrections whose 'from' is not in the transcript: "
             + ", ".join(verdict["unmatched_corrections"])
         )
+    # Said only when there is an alteration to deliver. Refinement exists to be pasted, so an
+    # accepted *clean* refinement is the normal case and must not become a flag of its own — which
+    # is why this reads `reasons` rather than adding to the flag decision.
+    if record["surface"] == "refinement" and reasons:
+        if verdict["guard"] == "accepted":
+            reasons.append(
+                "the app's guard accepts this output, so it would be pasted over the user's words"
+            )
+        elif verdict["guard"] == "rejected":
+            reasons.append(
+                "the app's guard rejects this output, so the raw transcript ships instead and the "
+                "user never sees it"
+            )
+        else:
+            reasons.append(
+                "whether the app would paste this is not recorded — run the Swift guard emitter "
+                "(REFINE_GUARD_VERDICTS=<run dir>) so this arm's rule can be evaluated"
+            )
     verdict["flagged"] = bool(reasons)
     return verdict
 
@@ -380,6 +420,11 @@ def aggregate(verdicts):
                 1 for verdict in measured if verdict["unrequested_corrections"]
             ),
             "missed_fixes": sum(1 for verdict in measured if verdict["expected_fixes"]["missed"]),
+            # An alteration the guard accepts is the refinement rule's trigger: it reaches the user.
+            "pasted_alterations": sum(
+                1 for verdict in measured
+                if verdict["flagged"] and verdict["guard"] == "accepted"
+            ),
             "core_claim_retention": core,
             "all_claim_retention": all_claims,
             "actor_retention": actor,
@@ -444,8 +489,8 @@ def scorecard_markdown(header, aggregates):
         ]
     lines += [
         "| Surface | Arm | Lang | Items | Measured | Errors | Flagged | Terms | Script | Framing | "
-        "Shorter | Unasked | Missed | Core claims | All claims | Actors | Mean ms |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "Shorter | Unasked | Missed | Pasted | Core claims | All claims | Actors | Mean ms |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key in sorted(cells):
         surface, arm, lang = key
@@ -455,6 +500,7 @@ def scorecard_markdown(header, aggregates):
             f"{cell['errors']} | {cell['flagged']} | {cell['altered_terms']} | "
             f"{cell['script_drift']} | {cell['inserted_framing']} | {cell['dropped_content']} | "
             f"{cell['unrequested_corrections']} | {cell['missed_fixes']} | "
+            f"{cell['pasted_alterations']} | "
             f"{_number(cell['core_claim_retention'])} | "
             f"{_number(cell['all_claim_retention'])} | {_number(cell['actor_retention'])} | "
             f"{cell['mean_latency_ms'] if cell['mean_latency_ms'] is not None else '—'} |"
@@ -611,7 +657,8 @@ def main(argv=None):
 
     pairs, missing = join_records(records, items, strict=not args.lenient)
     framing = load_framing(args.framing)
-    verdicts = [score_record(record, item, framing) for record, item in pairs]
+    guard_verdicts = load_guard_verdicts(args.run)
+    verdicts = [score_record(record, item, framing, guard_verdicts) for record, item in pairs]
     aggregates = aggregate(verdicts)
 
     verdicts_path = os.path.join(args.run, "verdicts.jsonl")
