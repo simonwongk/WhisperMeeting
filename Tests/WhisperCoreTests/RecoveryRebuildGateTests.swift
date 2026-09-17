@@ -40,3 +40,68 @@ func unavailableLeaseFailsOpen() {
 func unmanagedLeaseMayRebuild() {
     #expect(InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(.unmanaged))
 }
+
+// MARK: - The premise the whole gate rests on
+
+@Test("A lease held by a process that was SIGKILLed reads as available, not heldElsewhere")
+func aDeadHoldersLeaseIsAvailable() throws {
+    // F255's gate refuses to rebuild on `.heldElsewhere`, and the ONLY reason that is safe is that
+    // a crashed instance stops holding its lease — otherwise a crash would block recovery of its
+    // own interrupted recording forever, which is the exact opposite of what this is for.
+    //
+    // `LibraryWriterLeaseHandle`'s doc comment asserts this ("the kernel also releases it on the
+    // last close — including after SIGKILL"), but nothing tested it, and the entire design rests on
+    // it being true of this platform rather than of POSIX in principle. Asserted here with a real
+    // process holding a real `flock`, then killed.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeadHolderLease-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // `.writer.lock` is the shared lock `LibraryWriterLock.acquire` takes (rung 1).
+    let lockPath = root.appendingPathComponent(".writer.lock").path
+    let holder = Process()
+    holder.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    holder.arguments = [
+        "python3", "-c",
+        """
+        import fcntl, sys
+        handle = open(sys.argv[1], 'a')
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        sys.stdout.write('locked\\n')
+        sys.stdout.flush()
+        sys.stdin.read()
+        """,
+        lockPath,
+    ]
+    let out = Pipe()
+    holder.standardOutput = out
+    holder.standardInput = Pipe()
+    try holder.run()
+    defer { if holder.isRunning { kill(holder.processIdentifier, SIGKILL) } }
+
+    // Handshake, so the assertion below cannot race the child taking the lock.
+    var banner = Data()
+    while !String(decoding: banner, as: UTF8.self).contains("locked") {
+        banner.append(out.fileHandleForReading.availableData)
+    }
+
+    let blocked = LibraryWriterLock.acquire(root: root)
+    #expect(blocked.lease == .heldElsewhere(realm: "shared"), "a live holder must block")
+    blocked.release()
+
+    kill(holder.processIdentifier, SIGKILL)
+
+    // Poll rather than `waitUntilExit()`, which wedges this suite on a cooperative thread (F169).
+    var acquired: StoreWriterLease = .unmanaged
+    for _ in 0..<200 {
+        let attempt = LibraryWriterLock.acquire(root: root)
+        acquired = attempt.lease
+        attempt.release()
+        if acquired == .held(realm: "shared") { break }
+        usleep(10_000)
+    }
+    #expect(acquired == .held(realm: "shared"), "a SIGKILLed holder must not keep the lease")
+    // And therefore the gate lets the relaunch after a crash rebuild, which is the whole point.
+    #expect(InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(acquired))
+}
