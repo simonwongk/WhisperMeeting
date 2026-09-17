@@ -43,6 +43,36 @@ Being wrong either way is harmless: too low and you get two meetings instead of 
 you get more silence. Nothing about the timeline breaks at any value. Say a number and I will change
 the default; leave it and 5 minutes stands.
 
+## F257 — Confirm a menu-bar-only session now gets its notices
+
+**Status:** the code is shipped and tested; this needs the app in front of you.
+
+**What I need from you:** one run, about two minutes.
+
+Everything about the app's lifecycle used to hang off the main window, so recording from the menu bar
+with the window closed meant no notice when something went wrong and no final save on quit. That is
+fixed, but no test can watch a windowless launch — the delegate firing without a window is AppKit's
+promise, not this code's.
+
+1. **Close the main window** (⌘W). The menu-bar icon stays; the app is still running.
+2. **Start a recording from the menu bar**, say a few words, then **Stop & Transcribe** from the same
+   menu.
+3. **Quit from the menu bar** while a transcript edit is still fresh — type in a transcript, then
+   quit within a second or two. Reopen and confirm the edit survived.
+4. If you can make a save fail (the simplest way: with WhisperMeet quit, `chmod 500` the library
+   folder, then launch and add a tag), confirm you get a **notification** saying changes could not be
+   saved rather than nothing at all. Put the permissions back with `chmod 700` afterwards.
+
+Expected: a notification for anything that would have been an alert, and no lost edit on quit. If a
+notification never appears, check that WhisperMeet is allowed to notify in System Settings →
+Notifications — the app asks the first time it needs to, which may be during this test.
+
+What is still window-only, deliberately: the live recording-health banner. Telling you about a
+degrading recording while you have no window open needs the menu itself to carry it, which is a
+design question rather than a fix. Say if you want that.
+
+---
+
 ## F239 — Should deleting a meeting also shred it from the saved index history?
 
 **Status:** the *Forget History* command is shipped (Settings → Meeting library). This is the
