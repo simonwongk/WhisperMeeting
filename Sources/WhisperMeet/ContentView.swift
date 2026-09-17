@@ -1335,6 +1335,10 @@ private struct RecordingChannelHealthRow: View {
 }
 
 struct SettingsView: View {
+    /// F239's confirmation. The command is irreversible and gives up the undo protection, so it
+    /// asks — and the dialog names what is lost rather than asking "are you sure".
+    @State private var confirmForgetHistory = false
+    @State private var forgetHistoryResult: String?
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1513,6 +1517,24 @@ struct SettingsView: View {
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // F239: "Delete Meeting" removes the recording folder at once but leaves the
+                // meeting's text in the retained index generations. Destructive role and a
+                // confirmation, because this is the one command here that discards protection
+                // rather than adding any.
+                HStack {
+                    Label("Forget saved index history", systemImage: "clock.badge.xmark")
+                    Spacer()
+                    Button("Forget History…", role: .destructive) { confirmForgetHistory = true }
+                        .buttonStyle(.bordered)
+                }
+                Text("Deleting a meeting removes its recording straight away, but its title, transcript and notes stay in the saved index history that lets WhisperMeet undo a bad save. This removes that history now instead of waiting for it to age out. Your meetings and recordings are not touched.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let forgotten = forgetHistoryResult {
+                    Text(forgotten)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section(header: Label("Transcription", systemImage: "captions.bubble")) {
@@ -1733,6 +1755,29 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .confirmationDialog(
+            "Forget the saved index history?",
+            isPresented: $confirmForgetHistory,
+            titleVisibility: .visible
+        ) {
+            Button("Forget History", role: .destructive) {
+                if let count = model.store.forgetIndexHistory() {
+                    // Reports what happened rather than claiming success. "Nothing to forget" is a
+                    // real and reassuring outcome, and conflating it with "removed 7" would be the
+                    // kind of small lie that makes a privacy command untrustworthy.
+                    forgetHistoryResult = count == 0
+                        ? "There was no saved history to remove."
+                        : "Removed \(count) saved \(count == 1 ? "generation" : "generations")."
+                } else {
+                    forgetHistoryResult = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // Names what is LOST, not just what is removed. This is the only command in Settings
+            // that gives up a protection, so the dialog has to say which one (F239/F190).
+            Text("This removes the saved copies of your meeting index that let WhisperMeet undo a bad save — including any deleted meeting's title, transcript and notes that are still in them. Your meetings, recordings and current index are not touched, but until the next save there will be nothing to roll back to.")
+        }
         .onDisappear { endKeyCapture() }
     }
 

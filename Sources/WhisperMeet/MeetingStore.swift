@@ -916,6 +916,30 @@ final class MeetingStore: ObservableObject {
         return "\(titles.count) meeting(s) could not have their recordings removed, so they were kept to avoid an inconsistent library: \(names)."
     }
 
+    /// Forgets the retained index history, so a deleted meeting's text leaves the disk (F239).
+    ///
+    /// `Delete Meeting` removes the recording folder at once but leaves the meeting's title,
+    /// transcript, notes and summary in every retained generation under `meetings.history/`. Those
+    /// age out on the retention policy's oldest anchor — about a week — except for the high-water
+    /// generation, which is pinned indefinitely, so on a library that is not growing the text stays
+    /// for good. This is the command that removes it.
+    ///
+    /// **It discards F190's undo protection**, which is why it is not automatic and why the caller
+    /// must say so. Returns how many generations were removed, so the UI can report what happened
+    /// rather than claim success; a failure sets `storageErrorMessage` and returns nil, because a
+    /// privacy command that reports erasure it did not achieve is worse than one that fails loudly.
+    @discardableResult
+    func forgetIndexHistory() -> Int? {
+        do {
+            let forgotten = try meetingFiles.forgetHistory()
+            storageErrorMessage = nil
+            return forgotten.count
+        } catch {
+            storageErrorMessage = "The saved history could not be removed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func addVocabulary(_ terms: [String]) {
         guard mutationIsAllowed() else { return }
         vocabulary = Self.storedTerms(vocabulary + terms)

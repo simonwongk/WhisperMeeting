@@ -244,6 +244,44 @@ public struct StoreHistory: Sendable {
             .count
     }
 
+    /// Removes **every** retained generation and conflict branch, and returns the names removed
+    /// (F239).
+    ///
+    /// **Why this exists.** F190's retained generations hold meeting titles, transcripts, notes and
+    /// summaries, so deleting a meeting removes its recording folder and leaves its *text* in every
+    /// generation that predates the deletion. "Delete Meeting" therefore reads as erasure and is
+    /// not. The bound was the retention policy's oldest age anchor — about a week — with one
+    /// unbounded exception: `pinHighWaterRecordCount` pins the largest generation indefinitely, so
+    /// on a library that is not growing the text stays forever. Before this the only remedy was the
+    /// one `docs/RECOVERY.md` documents: deleting the directory by hand.
+    ///
+    /// **`conflict-` branches go too, and that is a deliberate departure from `prune`.** `prune`
+    /// never touches them because they are a losing writer's work and exist nowhere else, so only
+    /// the user — having seen them — may remove them. This *is* the user asking, and a conflict
+    /// branch is a full copy of the index: leaving them would answer "forget my history" with
+    /// "most of it".
+    ///
+    /// **Not idempotent by accident but by nature**: forgetting an absent or already-empty history
+    /// returns an empty list rather than failing, because "there is nothing left to forget" is the
+    /// outcome the caller wanted.
+    ///
+    /// Throws if a file resists removal, so a caller cannot report erasure it did not achieve —
+    /// the one guarantee a privacy command has to keep. Names removed before the failure are lost
+    /// to the caller, which is why the error matters more than the list.
+    @discardableResult
+    public func forgetAll() throws -> [String] {
+        guard io.isDirectory(directoryURL) == true else { return [] }
+        let names = (try? io.contentsOfDirectory(directoryURL, .listHistory)) ?? []
+        // Everything this directory holds: content-addressed generations AND conflict branches.
+        // Filtered by the two shapes rather than removing whatever is present, so an unrelated file
+        // someone put here is not deleted by a command that promised to clear history.
+        let ours = names.filter { Self.parse($0) != nil || $0.hasPrefix("conflict-") }
+        for name in ours {
+            try io.remove(directoryURL.appendingPathComponent(name), .prune)
+        }
+        return ours
+    }
+
     /// Deletes what no rule keeps, and returns the names it removed.
     ///
     /// `recordCounts` and `writtenAt` are keyed by history name and come from the ledger, so a

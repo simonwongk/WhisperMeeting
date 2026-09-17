@@ -712,6 +712,22 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         history.retained(ledger: StoreLedger.read(at: ledgerURL, using: io))
     }
 
+    /// Forgets every retained generation and conflict branch (F239).
+    ///
+    /// The privacy counterpart to `restore`, and the trade is explicit: this **discards the undo
+    /// protection** F190 exists to provide. Retained generations hold meeting titles, transcripts,
+    /// notes and summaries, so deleting a meeting leaves its text in every generation that predates
+    /// the deletion — bounded by the retention policy's oldest age anchor, except for the
+    /// high-water generation, which is pinned indefinitely and so keeps that text for as long as the
+    /// library does not grow.
+    ///
+    /// A caller must therefore present this as losing the ability to undo a bad save, not as
+    /// housekeeping. Nothing here decides when to call it.
+    @discardableResult
+    public func forgetHistory() throws -> [String] {
+        try history.forgetAll()
+    }
+
     /// Brings a retained generation back as the current one (F190).
     ///
     /// **Append-only.** The chosen bytes are committed as a NEW generation through the ordinary
