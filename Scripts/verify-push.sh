@@ -119,6 +119,21 @@ for _ in $(seq 1 $MAX_POLLS); do
   print ""
   print "Run $run_id for $short: $run_conclusion in ${duration}s"
 
+  # `cancelled` is NOT a failure — it is the absence of a result, and reporting it as red sends
+  # someone hunting a break that never happened. Observed 2026-09-17: a run for 3d7c0d8 was
+  # cancelled at 62s because a second push superseded it seconds later (the workflow cancels
+  # in-progress runs for the same ref), and this script said "CI is NOT green".
+  #
+  # Exit 2, the same code as "gave up watching", because both mean *no verdict* rather than a bad
+  # one — and the message names the likely cause, since a newer push is by far the common one.
+  if [[ "$run_conclusion" == "cancelled" ]]; then
+    print -u2 ""
+    print -u2 "This run was CANCELLED, so it is not a result either way — not a failure."
+    print -u2 "The usual cause is a newer push to the same branch superseding it. Watch that one:"
+    print -u2 "  Scripts/verify-push.sh \$(git rev-parse HEAD)"
+    exit 2
+  fi
+
   if (( duration > 0 && duration < SUSPICIOUSLY_FAST_SECONDS )); then
     print -u2 ""
     print -u2 "WARNING: ${duration}s is below the ${SUSPICIOUSLY_FAST_SECONDS}s floor for a real run"
