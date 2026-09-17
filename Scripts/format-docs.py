@@ -23,6 +23,8 @@ HTML = re.compile(r"^\s*<")
 # "- ", "* ", "1. ", "1) ", optionally indented
 BULLET = re.compile(r"^(\s*)([-*+]|\d{1,3}[.)])(\s+)")
 QUOTE = re.compile(r"^(\s*>\s?)")
+# A bare `>` — a paragraph break INSIDE a quotation. It is a boundary, not a line to reflow (F163).
+QUOTE_ONLY = re.compile(r"^\s*>+\s*$")
 
 
 def tokenize(text):
@@ -90,7 +92,22 @@ def flush(buffer, out):
 
 
 def words_outside_code(lines):
-    """Word stream ignoring fenced code, used to prove content did not change."""
+    """Word stream ignoring fenced code, used to prove content did not change.
+
+    A blockquote's leading `>` is **markup, not a word** (F163). Counting it as content made the
+    check refuse the formatter's own output: rewrapping a quote changes how many LINES it has, so
+    two quoted lines joining into one went from two `>` tokens to one and read as a content drift.
+    Nine of the twenty-two tracked documents were refused for this single reason.
+
+    **Stripping the marker alone would weaken the guarantee**, so each word carries its quote depth
+    instead. Turning a quotation into ordinary prose — or the reverse — changes who is speaking,
+    which is content, and it is still caught. The invariant that makes the depth stable under
+    rewrapping is `flush`'s: it derives one `qprefix` from a block's first line and applies it to
+    every line it emits, and `format_text` starts a new block at a quote boundary. So a block is
+    entirely quoted or entirely not, and a word cannot change depth by being moved within one.
+    ``>`` is matched by `QUOTE`, which anchors at the line start, so `a > b` in a sentence is a word
+    and stays one.
+    """
     fence, kept = False, []
     for line in lines:
         if FENCE.match(line):
@@ -98,7 +115,15 @@ def words_outside_code(lines):
             kept.append(line.strip())
             continue
         if fence:
+            # Verbatim, including whitespace: inside a fence every byte is content.
             kept.append(line)
+            continue
+        quote = QUOTE.match(line)
+        if quote:
+            # Tagged rather than bare, so a word that leaves the quote is a drift. The same single
+            # level `flush` strips, so a nested `> >` leaves its inner marker in the body — where
+            # both passes see it identically.
+            kept.extend(("quoted", word) for word in line[quote.end():].split())
         else:
             kept.extend(line.split())
     return kept
@@ -121,6 +146,14 @@ def format_text(source):
         stripped = line.strip()
         verbatim = (
             not stripped
+            # A bare `>` ends the quoted paragraph the way a blank line ends an ordinary one
+            # (F163). Two reasons it must be a boundary rather than a line in the buffer. It
+            # carried the block's marker but not its trailing space, so `flush`'s literal-prefix
+            # strip left the `>` in the body and re-wrapped it as a WORD — the stream gained a
+            # token and the file was refused. And dropping it instead would merge two quoted
+            # paragraphs into one, which changes what the document says; a formatter that silently
+            # rewrites structure is worse than one that refuses to run.
+            or QUOTE_ONLY.match(line)
             or HEADING.match(line)
             or RULE.match(line)
             or TABLE.match(line)
