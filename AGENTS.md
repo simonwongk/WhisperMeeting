@@ -402,6 +402,15 @@ Recorded with the detail that makes it sharp: the comment claiming the warning w
 time the meeting is transcribed" was **one hour old**, written by the author of the code it
 described. Prose about behaviour has no test, and elapsed time is not required for it to go stale.
 
+**And expect it of the guards especially: a bound written to prevent an unbounded write can be the
+crash.** All three `Double`→`Int64` traps found on 2026-09-17 were inside guards — F151's gap cap,
+F275's padding conversion, and the mixer's front-padding. `Int64(Double)` **traps** on overflow in
+Swift rather than saturating, and `isFinite` does not cover it: `1e18` is finite and `1e18 × 48000`
+is far past `Int64.max`. In F151 the cap was applied *after* the conversion, so the bound never got
+the chance to act. Clamp or saturate in the `Double` domain, before converting — and check the next
+line too, since a saturated value then overflowed an `Int64` addition and moved the crash one line
+further from its cause.
+
 **Expect the first draft of a correctness fix to contain a new instance of the bug it fixes.** Named
 because it happened twice in one day, independently. F275's restart pads a gap with silence so the
 timeline stays honest — and its first green version let overlapping triggers pad one gap three times,
