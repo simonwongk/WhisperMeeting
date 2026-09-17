@@ -102,6 +102,56 @@ public enum InterruptedRecordingRecovery {
         return nil
     }
 
+    /// Mixes the two raw tracks into 16-bit PCM, stopping at the first unreadable chunk (F256).
+    ///
+    /// Reads and the write are injected so a genuine I/O error can be simulated — it cannot be
+    /// produced with a real file, and revoking permissions mid-read is flaky. The **write** is a
+    /// closure too, not just the reads: the loop streams each chunk out as it goes, and returning
+    /// the PCM instead would mean holding ~345 MB in memory for a 60-minute meeting.
+    ///
+    /// Truncation is **returned rather than rethrown**, so the caller can still finalize the
+    /// readable prefix; the underlying error travels with it for the user-facing message.
+    ///
+    /// A short read is NOT an error: the two `.f32` files are written independently from one capture
+    /// callback, so an abrupt stop leaves them ragged and the shorter one is zero-padded by
+    /// `RawFloatReader`. Only a throw truncates.
+    static func mixTracks(
+        totalFrames: Int64,
+        chunkSize: Int64,
+        readSystem: (Int) throws -> [Float],
+        readMicrophone: (Int) throws -> [Float],
+        write: ([Int16]) throws -> Void
+    ) rethrows -> (writtenFrames: Int64, truncation: (frame: Int64, error: any Error)?) {
+        var writtenFrames: Int64 = 0
+        while writtenFrames < totalFrames {
+            let count = Int(min(chunkSize, totalFrames - writtenFrames))
+            let systemSamples: [Float]
+            let microphoneSamples: [Float]
+            do {
+                systemSamples = try readSystem(count)
+                microphoneSamples = try readMicrophone(count)
+            } catch {
+                // One mixed stream, so it stops where EITHER track became unreadable. Keeping one
+                // channel past that point would silently change the mix from two channels to one
+                // partway through.
+                return (writtenFrames, (writtenFrames, error))
+            }
+            var pcm = [Int16](repeating: 0, count: count)
+            for index in pcm.indices {
+                let systemSample = systemSamples[index]
+                let microphoneSample = microphoneSamples[index]
+                let bothActive = abs(systemSample) > 0.01 && abs(microphoneSample) > 0.01
+                let mixed = bothActive
+                    ? (systemSample + microphoneSample) * 0.5
+                    : (systemSample + microphoneSample) * 0.95
+                pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
+            }
+            try write(pcm)
+            writtenFrames += Int64(count)
+        }
+        return (writtenFrames, nil)
+    }
+
     public static func recover(
         in directory: URL,
         sampleRate: Double = 48_000
