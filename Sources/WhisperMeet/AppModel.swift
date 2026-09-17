@@ -3702,10 +3702,19 @@ extension AppModel {
         do {
             let generations = try store.indexGenerations()
             guard !generations.isEmpty else {
+                // F252's dead end, and the message now names what the user actually still has.
+                //
+                // "Your recordings are untouched — see the documentation" is true and leaves them
+                // believing their transcripts are gone with the index. They are not: every
+                // meeting's transcript and summary is mirrored as `notes.md` beside its audio,
+                // which is the entire reason F198 exists. The app knew something reassuring and
+                // was not saying it — the same omission F281 is about, one screen over.
                 alertMessage = """
                     \(ReadOnlyLibraryNotice.lead) No earlier copy of the index was retained, so it \
-                    cannot be restored from inside WhisperMeet. Your recordings are untouched — see \
-                    Recovery in the documentation for the manual steps.
+                    cannot be restored from inside WhisperMeet. Nothing has been deleted: each \
+                    meeting's audio is still in its own folder inside the library, and its \
+                    transcript and summary are in a notes.md file beside that audio. See Recovery \
+                    in the documentation for the manual steps.
                     """
                 return
             }
