@@ -136,9 +136,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 onScreenWindowsOnly: true
             )
             let contentReadyAt = ProcessInfo.processInfo.systemUptime
-            guard let display = content.displays.first else {
+            // F254: pin to the MAIN display rather than whichever happens to be first. The stream
+            // dies with the display it is filtered on, and in clamshell the built-in one is what
+            // goes away — so this is the difference between a docked Mac keeping its capture and
+            // losing it. It does not save an undocked lid close; nothing can, because the machine
+            // sleeps. See the ticket for the `pmset` chain.
+            guard let index = Self.preferredDisplayIndex(
+                displayIDs: content.displays.map(\.displayID),
+                mainDisplayID: CGMainDisplayID()
+            ) else {
                 throw AudioCaptureError.noDisplayAvailable
             }
+            let display = content.displays[index]
 
             let excludedApplications = content.applications.filter {
                 $0.bundleIdentifier == Bundle.main.bundleIdentifier
@@ -326,10 +335,59 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         captureQueue.async { [weak self] in
             guard let self, self.stream === stream else { return }
-            self.streamError = error
-            self.endRecordingActivity()
+            self.handleStreamFailure(error)
         }
     }
+
+    /// Records a capture-stream failure. Internal so `StreamFailurePowerAssertionTests` can drive it
+    /// without an `SCStream` (F254).
+    ///
+    /// It deliberately does **not** end the recording activity, which is what it used to do. That
+    /// single line put the Mac to sleep five seconds after a lid close, twice, on the user's own
+    /// machine — confirmed from `pmset -g log`:
+    ///
+    ///     15:37:46  Display is turned off
+    ///     15:37:46  Released PreventUserIdleSystemSleep "Recording meeting audio" (held 01:03:01)
+    ///     15:37:51  Entering Sleep state due to 'Clamshell Sleep'
+    ///
+    /// The stream is bound to one display (`:139`), so closing the lid kills it; releasing the
+    /// assertion in response removed the only thing keeping the machine awake, before a single byte
+    /// had been finalized. The assertion is still released in `reset()`, which runs on stop and
+    /// cancel — once the recording has actually been dealt with.
+    ///
+    /// The cost of holding it: if the stream dies and the user never stops the recording, the Mac
+    /// will not idle-sleep. That is the right side to err on — a battery cost against losing the
+    /// rest of a meeting — and it goes away once something finalizes automatically on stream death
+    /// (F253). `RecordingHealthMonitor` already surfaces the dead stream within ~4 s.
+    func handleStreamFailure(_ error: Error) {
+        streamError = error
+    }
+
+    /// Whether the capture currently holds its `beginActivity` power assertion (F254).
+    var isHoldingRecordingActivity: Bool { recordingActivity != nil }
+
+    /// Which display the content filter should be pinned to, as an index into `displayIDs` (F254).
+    ///
+    /// The filter is built around exactly ONE display, and this used to be `displays.first` —
+    /// which is not documented to be the main display, so the display a capture depended on was
+    /// arbitrary. That matters because the display going away kills the stream: confirmed twice on
+    /// the user's machine, where a lid close took the capture with it. In clamshell the built-in
+    /// display is the one that disappears, so pinning to the main display is what gives a docked Mac
+    /// any chance of surviving a lid close.
+    ///
+    /// Falls back to the first display rather than nil when the main one is not in the list, because
+    /// an arbitrary display still records and `noDisplayAvailable` aborts the capture outright.
+    /// Pure and index-based so the rule is testable without an `SCDisplay`, which cannot be built.
+    static func preferredDisplayIndex(
+        displayIDs: [CGDirectDisplayID],
+        mainDisplayID: CGDirectDisplayID
+    ) -> Int? {
+        guard !displayIDs.isEmpty else { return nil }
+        return displayIDs.firstIndex(of: mainDisplayID) ?? 0
+    }
+
+    /// Whether a stream failure has been recorded — `stop()` uses this to preserve partial tracks.
+    var hasStreamError: Bool { streamError != nil }
 
     private func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -372,14 +430,23 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
     }
 
-    private func beginRecordingActivity() {
+    /// Internal rather than private so F254's tests can drive the assertion's lifetime directly;
+    /// an injected capture returns before `start()` reaches this, so there is no other way in.
+    ///
+    /// Note `.idleSystemSleepDisabled` does not cover what actually bit the user: it suppresses
+    /// *idle* sleep, not a lid close, and not display sleep — and the log shows the display turning
+    /// off is what killed the stream in the first place (F254).
+    func beginRecordingActivity() {
+        // Idempotent: a second begin would otherwise strand the first assertion with no handle to
+        // release it, and nothing would ever let the Mac sleep again.
+        guard recordingActivity == nil else { return }
         recordingActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled, .suddenTerminationDisabled],
             reason: "Recording meeting audio"
         )
     }
 
-    private func endRecordingActivity() {
+    func endRecordingActivity() {
         guard let recordingActivity else { return }
         ProcessInfo.processInfo.endActivity(recordingActivity)
         self.recordingActivity = nil
