@@ -2282,9 +2282,18 @@ private struct VocabularyView: View {
             store.addVocabulary(terms)
         }
         let added = Set(store.vocabulary).subtracting(before).count
+        // F196: this said "the prompt may already be at its 100-term limit", which stopped being
+        // true when F187 separated stored vocabulary from the prompt subset. Nothing about an import
+        // touches the prompt — `added == 0` means the terms were already there, the 5,000-term
+        // storage ceiling is full, or the library is read-only. Naming the prompt's limit sent a
+        // user to prune a list that was not the one refusing them.
         importMessage = added == 0
-            ? "No terms were added. The prompt may already be at its 100-term limit."
-            : "Added \(added) term\(added == 1 ? "" : "s") to the local prompt."
+            // A read-only library is deliberately not named here: `MeetingStore.mutationIsAllowed`
+            // already sets `storageErrorMessage` to `ReadOnlyLibraryNotice.mutationRefused` for
+            // that case, and saying it twice in two different wordings is how two explanations
+            // start to disagree.
+            ? "Nothing new was added. Those terms are already saved, or the list is at its 5,000-term limit."
+            : "Saved \(added) term\(added == 1 ? "" : "s")."
         manualTerms = ""
     }
 
@@ -2304,7 +2313,7 @@ private struct VocabularyView: View {
                 store.addVocabulary(result.terms)
             }
             let added = Set(store.vocabulary).subtracting(before).count
-            var message = "Added \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
+            var message = "Saved \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
             if !result.failed.isEmpty {
                 message += " \(result.failed.count) file\(result.failed.count == 1 ? "" : "s") could not be read and were skipped."
             }

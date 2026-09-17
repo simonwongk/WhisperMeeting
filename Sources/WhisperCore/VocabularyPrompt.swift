@@ -8,7 +8,6 @@ import Foundation
 public enum VocabularyPrompt {
     /// Keeps the prompt a light nudge rather than something long enough to dominate decoding.
     private static let maxTerms = 100
-    private static let maxCharacters = 1_000
 
     // MARK: - Token budget (F265)
 
@@ -83,19 +82,24 @@ public enum VocabularyPrompt {
 
     /// The prompt to pass as `--initial_prompt`, trimmed to fit Whisper's carried-prompt budget.
     ///
-    /// Accumulates whole terms while they fit (F265). Two deliberate choices: it preserves input
-    /// order and drops from the END, so trimming is predictable rather than arbitrary; and it never
-    /// truncates mid-term, which `prefix(maxCharacters)` could, because a fragment is noise the
-    /// decoder is being told to expect. `maxCharacters` remains a coarse outer bound — the token
-    /// budget binds first.
+    /// Accumulates whole terms while they fit (F265) and preserves input order, so trimming is
+    /// predictable rather than arbitrary.
     ///
-    /// "First" means *as given*, which is not the same as "as the user typed" on the meeting path:
-    /// `MeetingStore.promptSafeTerms` de-duplicates through a `Set` and sorts
-    /// `localizedCaseInsensitiveCompare`, so what arrives here is alphabetised and the terms dropped
-    /// are the alphabetically-last ones. That is arbitrary from the user's point of view — which
-    /// only started to matter once trimming became real, and is filed as **F272**.
+    /// **No character cap (F196).** This used to end with `.prefix(1_000)` on the joined string,
+    /// which can slice a term in half — and a fragment is noise the decoder is being told to expect,
+    /// which is worse than the term's absence. F265's token budget did not fix that, it merely put
+    /// it out of reach: 170 tokens is ~510 ASCII characters or ~85 CJK ones, both far under 1,000,
+    /// so the character cap could never bind. Two caps in series where one is dead is how the
+    /// character-versus-token confusion survived in the first place, and the dead one still carried
+    /// the hazard for the next caller. `VocabularyPromptBudgetTests` now pins that the prompt is
+    /// exactly `promptedTerms` joined, so re-adding a character slice fails a test.
+    ///
+    /// "Input order" is not "as the user typed" on the meeting path: `MeetingStore.promptSafeTerms`
+    /// de-duplicates through a `Set` and sorts `localizedCaseInsensitiveCompare`, so what arrives
+    /// here is alphabetised and the terms dropped are the alphabetically-last ones. That is
+    /// arbitrary from the user's point of view, and is **F272**.
     public static func build(_ raw: [String]) -> String {
-        String(promptedTerms(raw).joined(separator: ", ").prefix(maxCharacters))
+        promptedTerms(raw).joined(separator: ", ")
     }
 
     // MARK: - Making the limit visible (F272)

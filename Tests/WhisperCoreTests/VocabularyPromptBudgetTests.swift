@@ -216,3 +216,40 @@ func coverageNoticeForMandarin() {
     #expect(coverage.fitting < 30, "a 6-character CJK term costs ~13 estimated tokens")
     #expect(VocabularyPrompt.coverageNotice(for: terms)?.contains("\(coverage.fitting)") == true)
 }
+
+// MARK: - F196: the character cap could still cut a term in half
+
+@Test("A prompt never ends in a partial term, whatever the caps do (F196)")
+func buildNeverEmitsAPartialTerm() {
+    // `build` ended with `.prefix(1000)` on the *joined* string, which can slice mid-word — and a
+    // fragment is noise the decoder is being told to expect, which is worse than the term's absence.
+    //
+    // F265's token budget made this unreachable through the meeting path rather than fixed: 170
+    // tokens is ~510 ASCII characters or ~85 CJK ones, both well under 1,000, so the character cap
+    // no longer binds. Two caps in series where one is dead is how the character-versus-token
+    // confusion survived in the first place (F272's Gap), and the dead one still carried the hazard
+    // for the next caller.
+    let terms = (0..<400).map { "Term\($0)WithAModeratelyLongName" }
+    let prompt = VocabularyPrompt.build(terms)
+    let emitted = prompt.components(separatedBy: ", ").filter { !$0.isEmpty }
+
+    #expect(!emitted.isEmpty)
+    for term in emitted {
+        #expect(terms.contains(term), "emitted a fragment rather than a whole term: \(term)")
+    }
+    // And it is exactly the budgeted list, joined — no separate character truncation on top.
+    #expect(prompt == VocabularyPrompt.promptedTerms(terms).joined(separator: ", "))
+}
+
+@Test("A single term longer than the old character cap is dropped, not halved (F196)")
+func oneEnormousTermIsDroppedWhole() {
+    // The realistic shape: the Add box splits only on "," and newline, so a pasted 、-punctuated
+    // Chinese paragraph arrives as ONE term, and it can exceed every cap by itself.
+    let enormous = String(repeating: "验", count: 900)
+    let prompt = VocabularyPrompt.build([enormous, "Acme", "Kubernetes"])
+
+    #expect(!prompt.contains(enormous.prefix(10)), "kept part of an over-budget term")
+    // And it does not take the rest of the list with it — `promptedTerms` skips rather than stops.
+    #expect(prompt.contains("Acme"))
+    #expect(prompt.contains("Kubernetes"))
+}
