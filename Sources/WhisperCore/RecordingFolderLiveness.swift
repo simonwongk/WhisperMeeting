@@ -17,11 +17,19 @@ import Foundation
 /// to be long enough to survive a stream outage F275 restarts and short enough not to defer a
 /// fresh crash, and those pull opposite ways.
 ///
-/// **Known residual.** A capture whose stream has died but which F275 is about to restart is not
-/// growing during the outage, so a second instance sweeping in exactly that window sees a
-/// dead-looking folder. The window is bounded by F275's retry, F255's lease gate still covers the
-/// ordinary two-instance case — this is an additional refusal, never a replacement for it — and a
-/// freshness window fails worse in a more common case.
+/// **Known residual, and it is bigger than this comment first claimed (F283).** A capture inside an
+/// outage F275 intends to resume is not growing, so a second instance sweeping in that window sees
+/// a dead-looking folder. The original note said "bounded by F275's retry", which is true of the
+/// stream-failure trigger (~1 s) and **false of the sleep trigger**, where the gap is the sleep
+/// itself and the cap is `CaptureRestartPolicy.defaultMaximumPaddedGap` — five minutes. A Mac
+/// asleep for four minutes, a second instance launched on wake, and this probe rebuilds a live
+/// recording. The lease gate does not cover it: that instance is a first launch and takes the
+/// lease legitimately.
+///
+/// Closing it needs a positive assertion from the writer — no static signal distinguishes a
+/// mid-gap folder from a crashed one, which is F255's own observation and the reason this asks
+/// about change over time at all. F283 carries the design; do not widen this into a time window,
+/// which is the thing it was built to avoid.
 public enum RecordingFolderLiveness {
     private static let trackNames = ["system-audio.f32", "microphone-audio.f32"]
 
