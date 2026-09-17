@@ -163,6 +163,127 @@ func untranscribedRebuildSaysNothingAboutTheTranscript() throws {
     #expect(model.store.meeting(id: id)?.staleTranscriptWarning == nil)
 }
 
+// MARK: - F309: the notice must describe the direction the audio actually moved
+
+/// A transcribed meeting indexed at `indexedSeconds`, beside 2s of raw tracks. `keepIndexedAudio`
+/// decides whether the indexed `meeting-recovered.wav` is on disk — which is what decides whether
+/// the rebuild moves an earlier recording aside or has nothing to keep.
+@MainActor
+private func makeTranscribedMeeting(
+    in root: URL, indexedSeconds: Double, keepIndexedAudio: Bool
+) throws -> (AppModel, UUID, URL) {
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let samples = [Float](repeating: 0.3, count: 96_000)          // 2s of tracks
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        try samples.withUnsafeBytes { try Data($0).write(to: folder.appendingPathComponent(name)) }
+    }
+    if keepIndexedAudio {
+        try WAVWriter.wavData(
+            from: [Float](repeating: 0.1, count: Int(indexedSeconds * 48_000)), sampleRate: 48_000
+        ).write(to: folder.appendingPathComponent("meeting-recovered.wav"))
+    }
+    let model = makeModel(root: root, suite: "WhisperMeet.RebuildDirection.\(UUID().uuidString)")
+    model.store.upsert(MeetingRecord(
+        id: id,
+        title: "Roadmap review",
+        duration: indexedSeconds,
+        recordingPath: "Recordings/\(id.uuidString)/meeting-recovered.wav",
+        status: .completed,
+        transcriptText: "0:00 We moved the launch."
+    ))
+    return (model, id, folder)
+}
+
+@Test("A longer rebuild keeps the sentence it has always had (F309)")
+@MainActor
+func longerRebuildKeepsItsSentence() throws {
+    // Pinned whole rather than by a fragment: F309 changes the shorter direction only, and a
+    // fragment would let the longer sentence drift while this still passed.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildLonger-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id, _) = try makeTranscribedMeeting(in: root, indexedSeconds: 1, keepIndexedAudio: true)
+
+    model.requestSourceRebuild(id: id)
+    model.performSourceRebuild(confirmed: true)
+
+    #expect(model.store.meeting(id: id)?.staleTranscriptWarning
+        == "This transcript was made from an earlier, 0:01 version of the audio, which has since been rebuilt to 0:02. Its text and timestamps do not cover the whole recording — transcribe again to replace it.")
+}
+
+@Test("A shorter rebuild does not call the transcript short, or advise replacing it (F309)")
+@MainActor
+func shorterRebuildDoesNotAdviseRetranscribing() throws {
+    // The transcript covers MORE than the recording now does. Re-transcribing would replace the
+    // more complete artefact with a less complete one, so the app must not recommend it — F281's
+    // rule is that saying so is the alternative to blanking, and here the saying was wrong.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildShorter-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id, folder) = try makeTranscribedMeeting(in: root, indexedSeconds: 3, keepIndexedAudio: true)
+
+    model.requestSourceRebuild(id: id)
+    model.performSourceRebuild(confirmed: true)
+
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(abs(meeting.duration - 2.0) < 0.01)
+    let notice = try #require(meeting.staleTranscriptWarning)
+    #expect(notice.contains("0:03") && notice.contains("0:02"))
+    #expect(notice.contains("covers more than the recording does"))
+    #expect(!notice.contains("do not cover the whole recording"))
+    #expect(!notice.contains("transcribe again to replace it"))
+    #expect(notice.contains("Transcribing again would replace this transcript with a shorter one."))
+    // The claim that the earlier audio is kept is checked against the disk, not taken on trust.
+    #expect(notice.contains("The earlier audio is kept in this meeting's folder."))
+    #expect(FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered-superseded-1.wav").path
+    ))
+}
+
+@Test("A shorter rebuild with no earlier audio on disk says the transcript is the only record (F309)")
+@MainActor
+func shorterRebuildWithoutEarlierAudioSaysSo() throws {
+    // The ticket's proposed wording said the previous audio "is kept in the folder". That is true
+    // only when there was a file to move aside. When the indexed audio was already gone, nothing
+    // on disk covers the transcript's tail, and claiming otherwise would be a new false sentence.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildShorterGone-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id, folder) = try makeTranscribedMeeting(in: root, indexedSeconds: 3, keepIndexedAudio: false)
+
+    model.requestSourceRebuild(id: id)
+    model.performSourceRebuild(confirmed: true)
+
+    let notice = try #require(model.store.meeting(id: id)?.staleTranscriptWarning)
+    #expect(!notice.contains("is kept in this meeting's folder"))
+    #expect(notice.contains("The earlier audio is no longer in this meeting's folder, so this transcript is the only record of what was said after 0:02."))
+    #expect(notice.contains("Transcribing again would replace it with a shorter one."))
+    #expect(!notice.contains("transcribe again to replace it"))
+    #expect(!FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered-superseded-1.wav").path
+    ))
+}
+
+@Test("A rebuild that reproduces the same duration declares nothing (F309)")
+@MainActor
+func sameLengthRebuildDeclaresNothing() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildSame-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id, _) = try makeTranscribedMeeting(in: root, indexedSeconds: 2, keepIndexedAudio: true)
+
+    model.requestSourceRebuild(id: id)
+    model.performSourceRebuild(confirmed: true)
+
+    #expect(model.store.meeting(id: id)?.staleTranscriptWarning == nil)
+}
+
 @Test("Without confirmation nothing happens at all")
 @MainActor
 func unconfirmedRebuildIsANoOp() throws {

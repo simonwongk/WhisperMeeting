@@ -3920,14 +3920,18 @@ extension AppModel {
                 // A second rebuild is still a rebuild: re-declare it, so a meeting whose first
                 // recovery predates F273 gains the provenance rather than staying silent (F273).
                 meeting.recoverySource = rebuilt.source.rawValue
-                // F281's rule in a new case. The transcript covers the old, shorter audio and its
-                // timestamps point into a file that has been superseded; it is kept because
-                // blanking it is forbidden and would be the greater harm, so the meeting says so
-                // instead. Only when there IS a transcript and the audio actually moved — a
-                // rebuild that reproduces the same thing has nothing to declare.
+                // F281's rule in a new case. The transcript describes audio that has been
+                // superseded; it is kept because blanking it is forbidden and would be the greater
+                // harm, so the meeting says so instead. Only when there IS a transcript — and
+                // `staleTranscriptNotice` answers nil when the audio did not actually move, since
+                // a rebuild that reproduces the same thing has nothing to declare.
                 if !meeting.transcriptText.isEmpty,
-                   abs(rebuilt.duration - previousDuration) > 0.05 {
-                    meeting.staleTranscriptWarning = "This transcript was made from an earlier, \(TranscriptFormatter.clock(previousDuration)) version of the audio, which has since been rebuilt to \(TranscriptFormatter.clock(rebuilt.duration)). Its text and timestamps do not cover the whole recording — transcribe again to replace it."
+                   let notice = Self.staleTranscriptNotice(
+                       previous: previousDuration,
+                       rebuilt: rebuilt.duration,
+                       previousAudioKept: request.offer.wouldSupersedeRecording
+                   ) {
+                    meeting.staleTranscriptWarning = notice
                 }
             }
             pendingSourceRebuild = nil
@@ -3943,6 +3947,35 @@ extension AppModel {
             // recording back, so trying again is safe.
             alertMessage = "The recording could not be rebuilt, and nothing was changed. The original microphone and system tracks are still in this meeting's folder. \(error.localizedDescription)"
         }
+    }
+
+    /// What a rebuilt meeting says about the transcript it already had, or nil when the audio did
+    /// not move (F267, F309).
+    ///
+    /// **The direction decides the advice.** A longer rebuild leaves the transcript covering only
+    /// a prefix, and transcribing again is the repair. A shorter one is the opposite case: the
+    /// transcript covers more than the recording now does, so it is the more complete artefact and
+    /// transcribing again would destroy the better of the two. Until F309 one sentence served both
+    /// — `abs()` admitted either direction and the wording admitted one — so the shorter case was
+    /// told the reverse of the truth and advised to do the destructive thing.
+    ///
+    /// `previousAudioKept` is `Offer.wouldSupersedeRecording`: whether there was an earlier
+    /// recording on disk for the rebuild to move aside. When there was not, nothing in the folder
+    /// covers the transcript's tail, and saying the earlier audio "is kept" would be a new false
+    /// sentence in the place an old one was just removed.
+    static func staleTranscriptNotice(
+        previous: TimeInterval, rebuilt: TimeInterval, previousAudioKept: Bool
+    ) -> String? {
+        guard abs(rebuilt - previous) > 0.05 else { return nil }
+        let was = TranscriptFormatter.clock(previous)
+        let now = TranscriptFormatter.clock(rebuilt)
+        if rebuilt > previous {
+            return "This transcript was made from an earlier, \(was) version of the audio, which has since been rebuilt to \(now). Its text and timestamps do not cover the whole recording — transcribe again to replace it."
+        }
+        let lead = "This transcript was made from an earlier, \(was) version of the audio. The recording has since been rebuilt from its source tracks and is now \(now), so the transcript covers more than the recording does. "
+        return previousAudioKept
+            ? lead + "The earlier audio is kept in this meeting's folder. Transcribing again would replace this transcript with a shorter one."
+            : lead + "The earlier audio is no longer in this meeting's folder, so this transcript is the only record of what was said after \(now). Transcribing again would replace it with a shorter one."
     }
 
     /// The rebuild confirmation's body (F267).
