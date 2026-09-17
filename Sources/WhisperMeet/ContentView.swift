@@ -845,6 +845,10 @@ private struct RecordMeetingView: View {
             "System audio is clipping and may sound distorted."
         case .lowStorage:
             "Storage is running low. Stop soon to protect the recording."
+        case .approachingLengthLimit:
+            // Says what happens and what to do, and does not mention the format. A user cannot act
+            // on "the WAV data-size field is a UInt32"; they can act on "stop and start another".
+            "This recording is nearly 12 hours long. Stop and start a new one soon — past that length, some apps will only read the first part of the file."
         }
     }
 

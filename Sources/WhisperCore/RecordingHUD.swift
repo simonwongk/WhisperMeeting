@@ -47,7 +47,11 @@ public enum RecordingHUD {
     static func rank(_ warning: RecordingHealthWarning) -> Int {
         switch warning {
         case .microphoneCaptureStopped, .systemAudioCaptureStopped: return 0
-        case .lowStorage: return 1
+        // Ranked with low storage (F150): both mean "this recording is about to stop being fully
+        // usable and only you can prevent it", and both are fixed the same way — stop and start a
+        // new one. Above clipping, which degrades quality; below a dead channel, which is losing
+        // audio right now.
+        case .lowStorage, .approachingLengthLimit: return 1
         case .systemAudioNotDetected: return 2
         case .microphoneClipping, .systemAudioClipping: return 3
         }
@@ -58,6 +62,10 @@ public enum RecordingHUD {
         case .microphoneCaptureStopped: return "Microphone capture stopped"
         case .systemAudioCaptureStopped: return "System audio capture stopped"
         case .lowStorage: return "Low storage — recording may stop soon"
+        // States the consequence, not the cause: "the WAV length field overflows" means nothing to
+        // anyone, and the action is the same either way.
+        case .approachingLengthLimit:
+            return "Very long recording — stop soon so the whole file stays readable"
         case .systemAudioNotDetected: return "No system audio detected"
         case .microphoneClipping: return "Microphone is clipping"
         case .systemAudioClipping: return "System audio is clipping"

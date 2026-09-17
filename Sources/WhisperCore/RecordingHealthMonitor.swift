@@ -61,6 +61,8 @@ public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codab
     case microphoneClipping
     case systemAudioClipping
     case lowStorage
+    /// The recording is long enough that the WAV length field is about to run out (F150).
+    case approachingLengthLimit
 }
 
 public struct RecordingHealthSnapshot: Sendable, Equatable {
@@ -166,6 +168,32 @@ public final class RecordingHealthMonitor {
     private let staleAfter: TimeInterval
     private let systemDetectionGracePeriod: TimeInterval
     private let clippingHoldPeriod: TimeInterval
+    /// Seconds of 48 kHz mono 16-bit audio a WAV's `UInt32` `data` size can describe (F150).
+    ///
+    /// **Derived, not written down.** 96,000 bytes per second against `UInt32.max` is ~44,739 s,
+    /// about 12 h 25 m. Deriving it means a future sample-rate or bit-depth change moves the
+    /// warning with it, instead of leaving a constant that quietly describes a format the app no
+    /// longer writes — the F196/F208 failure applied to a number rather than a sentence.
+    ///
+    /// Past this point the samples are still written, but a strict reader (ffmpeg among them)
+    /// honours the declared size and ignores everything beyond ~4 GB. So the recording looks
+    /// truncated when exported or re-transcribed while being complete on disk, which is the worst
+    /// shape of all: no error, no missing file, just silently less audio than there is.
+    public static let wavLengthLimitSeconds = Double(UInt32.max) / (48_000.0 * 2)
+
+    /// How far ahead of the limit to warn. Long enough to be actionable: a user told at ~11 h 55 m
+    /// can stop and start a second recording, which is what segmenting would have done for them.
+    public static let lengthLimitWarningLeadSeconds: Double = 30 * 60
+
+    /// Whether a recording of `elapsedSeconds` is close enough to the limit to say so.
+    ///
+    /// Still true *past* the limit rather than resetting: a recording that has already overrun is
+    /// the case the user most needs told about, and a guard that only fired inside a window would
+    /// go quiet exactly when the damage started.
+    public static func approachingLengthLimit(elapsedSeconds: Double) -> Bool {
+        elapsedSeconds >= wavLengthLimitSeconds - lengthLimitWarningLeadSeconds
+    }
+
     private let lowStorageThresholdBytes: Int64
     private var microphone = ChannelState()
     private var systemAudio = ChannelState()
@@ -229,6 +257,11 @@ public final class RecordingHealthMonitor {
         }
         if recentlyClipped(systemAudio, at: time) {
             warnings.append(.systemAudioClipping)
+        }
+        // F150: measured from the monitor's own start, which is the recording's start — the same
+        // clock every other warning here uses.
+        if Self.approachingLengthLimit(elapsedSeconds: time - startedAt) {
+            warnings.append(.approachingLengthLimit)
         }
         if let availableStorageBytes,
            availableStorageBytes < lowStorageThresholdBytes {
