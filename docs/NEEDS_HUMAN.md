@@ -252,10 +252,21 @@ Not the real measurement — six neutral items, one sample each, no sensitive ar
 the scorecard prints *incomparable* and refuses to imply a difference. But three of them are worth
 your attention now, because they are not about politics at all:
 
-- **A Traditional-Chinese dictation line came back Simplified.** 個→个, 貨→货, 倫→伦, 辦→办. The
-  refinement prompt says "Mandarin Chinese" and never names a script, and the app's language guard
-  cannot tell the two apart, so it accepted the result. If you dictate in Traditional Chinese, this
-  is happening to you now. Recorded on F245, which owns the prompt.
+- **A Traditional-Chinese dictation line came back Simplified, and the app would paste it.** 個→个,
+  貨→货, 倫→伦, 辦→办. The refinement prompt says "Mandarin Chinese" and never names a script, and
+  the app's language check reports "Chinese" for both scripts, so it cannot see the conversion.
+
+  I did not leave that as an inference. `Tests/WhisperCoreTests/RefinementGuardVectorTests.swift`
+  runs the app's real output guard over that exact pair and records the verdict: **accepted**. So
+  if you dictate in Traditional Chinese, this is happening to you now — not "might be". Recorded on
+  F245, which owns the prompt.
+
+  **This one no longer needs your corpus review.** Naming the script in the prompt, and adding a
+  Traditional/Simplified check to the guard, are justified by the measurement already taken on
+  neutral business text. If you want to green-light one thing from this entry, it is this — it is
+  the cheapest item on the list and the only one already demonstrated to affect your own writing.
+  The corpus is still needed for everything about politically sensitive material, which is a
+  separate question.
 - **Asked to fix one misspelling, the model also rewrote 陳經理 into 陳怡君** — a title into a
   person's name. That is not a recognition error, it changes who the transcript says was speaking,
   and the correction sheet arrives with every proposal pre-selected, so it lands on one click.
