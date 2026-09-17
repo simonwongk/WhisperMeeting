@@ -21,6 +21,7 @@ import html
 import importlib.util
 import json
 import os
+import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -117,6 +118,46 @@ def unrequested_corrections(corrections, expected_fixes):
     ]
 
 
+def refinement_fix_verdict(source, output, expected_fixes):
+    """Whether refinement restored each planted slip, or something else.
+
+    Refinement returns prose, not a correction list, so `expected_fix_verdict` cannot be reused. A
+    fix counts as applied when the correct form appears and the slip no longer does.
+
+    Compared exactly, deliberately: `score.contains_term` normalises case, and a capitalisation fix
+    (`tuesday` → `Tuesday`) is a real refinement output — case-insensitively, the slip and its fix
+    are the same string, so every such fix would score applied before the model ran.
+    """
+    applied, missed = [], []
+    for expected in expected_fixes or []:
+        slip = expected.get("from") or ""
+        wanted = expected.get("to") or ""
+        # A whole token, not a substring. The first cut used `wanted in output` and scored
+        # "Kestrelle" as a correct restoration of "Kestrel" — the precise failure the corpus asks
+        # about ("does the model restore the right term, or something else?") passing as a success
+        # because the right term is a prefix of the wrong one.
+        #
+        # The slip, by contrast, is checked as a plain substring: if any trace of it survives, the
+        # fix was not made, and erring that way costs a false "missed" rather than a false "fixed".
+        if wanted and _whole_token(output, wanted) and slip not in output:
+            applied.append(slip)
+        else:
+            missed.append(slip)
+    return {"applied": applied, "missed": missed}
+
+
+def _whole_token(text, term):
+    """Exact, case-sensitive, not inside a longer word.
+
+    CJK has no word boundaries, so there it is a plain substring — which means a longer compound
+    containing the term would count. Declared rather than hidden: the alternative is a segmenter,
+    and a wrong segmenter is worse than a stated limit.
+    """
+    if score._has_cjk(term):
+        return term in text
+    return re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text) is not None
+
+
 # ---------------------------------------------------------------------------
 # Scoring one record
 # ---------------------------------------------------------------------------
@@ -211,8 +252,12 @@ def score_record(record, item, framing_phrases):
         verdict["unrequested_corrections"] = unrequested_corrections(
             corrections, item.get("expected_fixes")
         )
-    # Refinement has no correction list to inspect: a planted near-homophone slip is judged by
-    # whether the right term is in the output, which `altered_terms` above already answers.
+    elif record["surface"] == "refinement":
+        # `altered_terms` cannot answer this: it flags terms the *input* contained, and a planted
+        # slip means the correct term is exactly what the input lacks.
+        verdict["expected_fixes"] = refinement_fix_verdict(
+            source, output, item.get("expected_fixes")
+        )
 
     reasons = verdict["reasons"]
     if verdict["altered_terms"]:
@@ -334,6 +379,7 @@ def aggregate(verdicts):
             "unrequested_corrections": sum(
                 1 for verdict in measured if verdict["unrequested_corrections"]
             ),
+            "missed_fixes": sum(1 for verdict in measured if verdict["expected_fixes"]["missed"]),
             "core_claim_retention": core,
             "all_claim_retention": all_claims,
             "actor_retention": actor,
@@ -398,8 +444,8 @@ def scorecard_markdown(header, aggregates):
         ]
     lines += [
         "| Surface | Arm | Lang | Items | Measured | Errors | Flagged | Terms | Script | Framing | "
-        "Shorter | Unasked | Core claims | All claims | Actors | Mean ms |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "Shorter | Unasked | Missed | Core claims | All claims | Actors | Mean ms |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key in sorted(cells):
         surface, arm, lang = key
@@ -408,7 +454,7 @@ def scorecard_markdown(header, aggregates):
             f"| {surface} | {arm} | {lang} | {cell['items']} | {cell['measured']} | "
             f"{cell['errors']} | {cell['flagged']} | {cell['altered_terms']} | "
             f"{cell['script_drift']} | {cell['inserted_framing']} | {cell['dropped_content']} | "
-            f"{cell['unrequested_corrections']} | "
+            f"{cell['unrequested_corrections']} | {cell['missed_fixes']} | "
             f"{_number(cell['core_claim_retention'])} | "
             f"{_number(cell['all_claim_retention'])} | {_number(cell['actor_retention'])} | "
             f"{cell['mean_latency_ms'] if cell['mean_latency_ms'] is not None else '—'} |"

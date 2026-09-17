@@ -181,6 +181,77 @@ class UnrequestedCorrectionTests(unittest.TestCase):
         self.assertEqual(cell["unrequested_corrections"], 1)
 
 
+class RefinementFixTests(unittest.TestCase):
+    """The refinement surface's primary measurement, which nothing was checking.
+
+    The corpus plants a near-homophone slip and asks whether the model restores the right term "or
+    something else". `altered_terms` cannot answer it: that flags terms the *input* contained, and a
+    planted slip means the correct term is precisely what the input does not have. So the first cut
+    of this report scored refinement on protected terms alone and silently measured nothing about
+    the fixes — including the one the model did make in the very first smoke run, tuesday → Tuesday.
+    """
+
+    def test_a_restored_term_counts_as_applied(self):
+        verdict = report.refinement_fix_verdict(
+            "we shipped on tuesday", "We shipped on Tuesday.",
+            [{"from": "tuesday", "to": "Tuesday"}],
+        )
+        self.assertEqual(verdict["applied"], ["tuesday"])
+        self.assertEqual(verdict["missed"], [])
+
+    def test_matching_is_case_sensitive_so_a_capitalisation_fix_is_visible(self):
+        """`score.contains_term` normalises case, which would call this fix applied before the model
+        ran. Capitalisation is a real refinement output, so the comparison here is exact."""
+        verdict = report.refinement_fix_verdict(
+            "we shipped on tuesday", "we shipped on tuesday.",
+            [{"from": "tuesday", "to": "Tuesday"}],
+        )
+        self.assertEqual(verdict["missed"], ["tuesday"])
+
+    def test_the_wrong_restoration_is_missed_not_applied(self):
+        """"Or something else" is the question the corpus asks. Restoring a different term must not
+        be credited because the span was touched."""
+        verdict = report.refinement_fix_verdict(
+            "the Kestrol release", "the Kestrelle release",
+            [{"from": "Kestrol", "to": "Kestrel"}],
+        )
+        self.assertEqual(verdict["applied"], [])
+        self.assertEqual(verdict["missed"], ["Kestrol"])
+
+    def test_leaving_the_slip_in_place_is_missed(self):
+        verdict = report.refinement_fix_verdict(
+            "the Kestrol release", "The Kestrol release.",
+            [{"from": "Kestrol", "to": "Kestrel"}],
+        )
+        self.assertEqual(verdict["missed"], ["Kestrol"])
+
+    def test_a_refinement_record_is_flagged_when_a_planted_fix_is_missed(self):
+        record = _record(
+            surface="refinement", lang="en",
+            input={"text": "we shipped the Kestrol release"},
+            output={"text": "We shipped the Kestrol release."},
+        )
+        item = _item(surface="refinement", text="we shipped the Kestrol release",
+                     protected_terms=[], claims=[],
+                     expected_fixes=[{"from": "Kestrol", "to": "Kestrel"}])
+        verdict = report.score_record(record, item, [])
+        self.assertEqual(verdict["expected_fixes"]["missed"], ["Kestrol"])
+        self.assertTrue(verdict["flagged"])
+
+    def test_a_refinement_record_that_made_the_fix_is_not_flagged_for_it(self):
+        record = _record(
+            surface="refinement", lang="en",
+            input={"text": "we shipped the Kestrol release"},
+            output={"text": "We shipped the Kestrel release."},
+        )
+        item = _item(surface="refinement", text="we shipped the Kestrol release",
+                     protected_terms=[], claims=[],
+                     expected_fixes=[{"from": "Kestrol", "to": "Kestrel"}])
+        verdict = report.score_record(record, item, [])
+        self.assertEqual(verdict["expected_fixes"]["applied"], ["Kestrol"])
+        self.assertFalse(verdict["flagged"], verdict["reasons"])
+
+
 class ScoreRecordTests(unittest.TestCase):
     def setUp(self):
         self.framing = ["so-called", "alleged"]
