@@ -1882,6 +1882,20 @@ final class AppModel: ObservableObject {
                     )
                     continue
                 }
+                // F308: read back what `importFromURL` wrote. The sidecar goes into the folder
+                // before the download starts, "so a crash mid-download still leaves a recoverable
+                // link import" — and until now nothing read it, so that crash recovered the audio
+                // and lost the link. The same shape as F274's `session.json`.
+                //
+                // Read ONCE, above every branch, and passed to all four upserts — including the
+                // two capture-only ones, where a capture folder has no `source.json` and this is
+                // nil. F303 exists because a field was set on one branch and not its sibling; a
+                // value every branch receives cannot be forgotten by one of them.
+                //
+                // Nil for absent, unreadable or corrupt: it can add provenance to a recovery and
+                // can never fail one.
+                let mediaSource = MediaSource.read(in: orphan.directory)
+                let provenanceTags = Self.provenanceTags(for: mediaSource)
                 guard let recovered else {
                     if let imported = InterruptedRecordingRecovery.importedRecordingCandidate(
                         in: orphan.directory
@@ -1895,13 +1909,15 @@ final class AppModel: ObservableObject {
                             recordingPath: store.relativeRecordingPath(for: imported),
                             status: .failed,
                             errorMessage: message,
+                            tags: provenanceTags,
                             // F303: stated literally because there is no `RecoveredRecording` here
                             // — this branch is the `guard let recovered else`, reached precisely
                             // via `importedRecordingCandidate`, so the source is known from how we
                             // got here. That asymmetry with the branch below is why F273 missed
                             // both: the sibling had `recovered.source` to hand and this one did
                             // not, so the omission reads as a scope limit rather than a decision.
-                            recoverySource: RecoveredRecording.Source.importedRecording.rawValue
+                            recoverySource: RecoveredRecording.Source.importedRecording.rawValue,
+                            source: mediaSource
                         ))
                         messages.append("\(failedTitle) needs attention. \(message)")
                         continue
@@ -1938,6 +1954,7 @@ final class AppModel: ObservableObject {
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: .failed,
                         errorMessage: message,
+                        tags: provenanceTags,
                         // F303: without this the meeting renders no recording caveat at all —
                         // `recoveryCaveats(for:)` is built from `recoveryWarning`,
                         // `staleTranscriptWarning` and `recoverySource`, and this upsert set none
@@ -1946,7 +1963,8 @@ final class AppModel: ObservableObject {
                         // success. That is F273's defect exactly, in the branch F273 skipped, and
                         // transcription is deliberately still offered here (see the comment below
                         // on the severely-truncated sibling).
-                        recoverySource: recovered.source.rawValue
+                        recoverySource: recovered.source.rawValue,
+                        source: mediaSource
                     ))
                     messages.append("\(failedTitle) needs attention. \(message)")
                     continue
@@ -1992,8 +2010,10 @@ final class AppModel: ObservableObject {
                         // own notes about where something happened, and a meeting whose audio is
                         // mostly gone is the one where they matter most.
                         markers: recoveredMarkers,
+                        tags: provenanceTags,
                         recoveryWarning: recoveryWarning,
-                        recoverySource: recovered.source.rawValue
+                        recoverySource: recovered.source.rawValue,
+                        source: mediaSource
                     ))
                     messages.append("\(failedTitle) needs attention. \(Self.severelyTruncatedRecoveryMessage)")
                     // The clock time belongs in the worse case too. Without this the startup alert
@@ -2022,6 +2042,7 @@ final class AppModel: ObservableObject {
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
                         : "Recovered after an interruption. The original recording and source tracks were preserved.",
                     markers: recoveredMarkers,
+                    tags: provenanceTags,
                     recoveryWarning: recoveryWarning,
                     // F273: the same fact structurally, because `performTranscription` clears
                     // `errorMessage` and used to take the provenance with it.
@@ -2029,7 +2050,8 @@ final class AppModel: ObservableObject {
                     // F305: and the reason, for exactly the same reason.
                     recoveryInterruption: session?.interruptedBySleepAt == nil
                         ? nil
-                        : RecoveryInterruption.systemSleep.rawValue
+                        : RecoveryInterruption.systemSleep.rawValue,
+                    source: mediaSource
                 ))
                 // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
                 messages.append("\(title) was added back to meeting history.")
@@ -3106,6 +3128,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The tag a link import carries so it can be found among ordinary meetings, or nil when there
+    /// is no source or it suggests nothing usable.
+    ///
+    /// One function because there are two places a link import becomes a meeting — the import
+    /// itself and the startup recovery of one that was interrupted (F308) — and a recovered import
+    /// that is tagged differently from a completed one is the kind of drift nobody files.
+    ///
+    /// The provenance tag is the FIRST tag, never appended to others: `normalized` stops at 12
+    /// tags, and the sidebar renders only the first 4, so an appended marker can be silently
+    /// dropped or invisible.
+    static func provenanceTags(for source: MediaSource?) -> [String]? {
+        guard let source else { return nil }
+        let tags = MeetingTags.normalized([source.suggestedTag])
+        return tags.isEmpty ? nil : tags
+    }
+
     /// The single place an imported recording becomes a real meeting: measure the written file's
     /// duration (never a probe's metadata — `MeetingIntegrityChecker` cross-checks the WAV header
     /// against the indexed duration), upsert the record, then start transcription if the engine is
@@ -3127,16 +3165,13 @@ final class AppModel: ObservableObject {
         referenceSegments: [TranscriptSegment]? = nil
     ) async -> UUID {
         let duration = await Self.loadDuration(of: fileURL)
-        // The provenance tag is PREPENDED, never appended: `normalized` stops at 12 tags, and the
-        // sidebar renders only the first 4, so an appended marker can be silently dropped or invisible.
-        let tags = source.map { MeetingTags.normalized([$0.suggestedTag]) }
         store.upsert(MeetingRecord(
             id: id,
             title: title,
             duration: duration,
             recordingPath: store.relativeRecordingPath(for: fileURL),
             status: .recorded,
-            tags: (tags?.isEmpty ?? true) ? nil : tags,
+            tags: Self.provenanceTags(for: source),
             source: source,
             referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments
         ))

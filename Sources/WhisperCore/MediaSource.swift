@@ -43,6 +43,21 @@ public struct MediaSource: Codable, Sendable, Equatable {
     /// than an anonymous orphan folder (F183). Mirrors `source-tracks.json`.
     public static let sidecarFilename = "source.json"
 
+    /// Reads the sidecar back, or nil when it is absent, unreadable or not a `MediaSource` (F308).
+    ///
+    /// Until F308 the sidecar had a writer and no reader, so the crash it was written for recovered
+    /// the audio and lost the link. Nil rather than a throw, as `RecordingSessionSidecar.read` is:
+    /// the writer is `try?` — a provenance write must never fail a download that is working — so
+    /// its absence is a normal state and a recovery must not be failed by it.
+    ///
+    /// A default `JSONDecoder`, because `importFromURL` writes with a default `JSONEncoder`. The
+    /// pair is pinned by a test that writes the way the import does.
+    public static func read(in directory: URL) -> MediaSource? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(sidecarFilename))
+        else { return nil }
+        return try? JSONDecoder().decode(MediaSource.self, from: data)
+    }
+
     /// The tag auto-applied to a link import, already within `MeetingTags.maxLength` (F183): "YouTube"
     /// for a YouTube source, otherwise the host.
     public var suggestedTag: String {

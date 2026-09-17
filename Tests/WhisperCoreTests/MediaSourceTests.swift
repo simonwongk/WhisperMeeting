@@ -31,3 +31,45 @@ func unknownKindDecodes() throws {
     let web = MediaSource(kind: MediaSource.webKind, pageURL: "x", host: longHost, fetchedAt: Date(timeIntervalSince1970: 0))
     #expect(web.suggestedTag.count <= MeetingTags.maxLength)
 }
+
+// MARK: - F308: the sidecar was written and never read
+
+@Test("The sidecar reads back exactly what the import path wrote (F308)")
+func sidecarReadsBackWhatTheImportWrote() throws {
+    // Written the way `importFromURL` writes it — a default `JSONEncoder`, straight to
+    // `sidecarFilename` — rather than through a helper of this test's own, so a change to the
+    // writer's date strategy that the reader does not follow fails here.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MediaSourceSidecar-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = MediaSource(
+        kind: MediaSource.youTubeKind,
+        pageURL: "https://www.youtube.com/watch?v=kestrel42",
+        host: "youtube.com",
+        videoID: "kestrel42",
+        uploader: "Fairhaven Talks",
+        uploadDate: Date(timeIntervalSince1970: 1_750_000_000),
+        fetchedAt: Date(timeIntervalSince1970: 1_758_000_000)
+    )
+    try JSONEncoder().encode(source)
+        .write(to: directory.appendingPathComponent(MediaSource.sidecarFilename))
+
+    #expect(MediaSource.read(in: directory) == source)
+}
+
+@Test("A missing or corrupt sidecar reads as nil, never as a failure (F308)")
+func unreadableSidecarIsNil() throws {
+    // The rule `RecordingSessionSidecar.read` already follows: the sidecar is written best-effort
+    // (`try?`), so recovery cannot depend on it and must not be failed by it.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MediaSourceSidecarBad-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    #expect(MediaSource.read(in: directory) == nil)
+
+    try Data("{ \"kind\": \"youtube\", \"pageURL\": ".utf8)
+        .write(to: directory.appendingPathComponent(MediaSource.sidecarFilename))
+    #expect(MediaSource.read(in: directory) == nil)
+}
