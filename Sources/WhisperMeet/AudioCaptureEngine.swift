@@ -255,6 +255,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 // are written positionally, so a consumer can skip them rather than count inserted
                 // silence as recorded non-speech.
                 paddedGaps: paddedGaps,
+                // F151's separate accounting: many small gaps from dropped buffers, rather than one
+                // announced outage. Per track, because the two streams drop independently.
+                droppedFrames: (
+                    system: systemWriter?.droppedFrames ?? 0,
+                    microphone: microphoneWriter?.droppedFrames ?? 0
+                ),
                 to: directory.appendingPathComponent("source-tracks.json")
             )
         }
@@ -605,6 +611,9 @@ private final class FloatTrackWriter {
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private(set) var firstPresentationTime: Double?
+    /// Frames of silence written to fill spans the stream skipped (F151). Reported so a recording
+    /// can say it has gaps rather than quietly containing them.
+    private(set) var droppedFrames: Int64 = 0
     var frameCount: Int64 { track.frameCount }
 
     init(outputURL: URL, targetSampleRate: Double) throws {
@@ -692,6 +701,27 @@ private final class FloatTrackWriter {
 
         if firstPresentationTime == nil {
             firstPresentationTime = sampleBuffer.presentationTimeStamp.seconds
+        }
+        // F151: pad a span the stream skipped, BEFORE writing this buffer, so its samples land at
+        // their true offset. Without this, dropped or stalled buffers pack the rest of the track
+        // earlier than it happened — shortening the recording, invalidating every timestamp after
+        // the gap, and desyncing the two channels, which drop independently.
+        //
+        // The same invariant F275 restores after a restart (`sample offset == elapsed time`), for a
+        // cause that has to be detected rather than announced. Returns 0 on every buffer of a
+        // healthy capture, which is the case that has to stay free.
+        if let firstPresentationTime {
+            let padding = CaptureGapPolicy.paddingFrames(
+                presentationOffset: sampleBuffer.presentationTimeStamp.seconds - firstPresentationTime,
+                writtenFrames: track.frameCount,
+                // The writer's OWN output rate, not the engine's constant: this compares against
+                // `track.frameCount`, which counts frames at the rate this writer converts to.
+                sampleRate: targetFormat.sampleRate
+            )
+            if padding > 0 {
+                try track.appendSilence(frames: padding)
+                droppedFrames += padding
+            }
         }
         // The write and its periodic device flush (F276) belong to `FloatTrackFile`; the pointer is
         // passed straight through rather than copied into an array, because this runs on the

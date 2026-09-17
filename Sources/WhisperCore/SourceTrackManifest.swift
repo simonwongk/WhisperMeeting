@@ -15,6 +15,32 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         public let channels: Int
         public let frameCount: Int64
         public let startOffsetSeconds: Double
+
+        /// Frames of this track that are inserted silence, filling spans the stream skipped (F151).
+        ///
+        /// Nil rather than 0 for a clean track, for the reason `paddedGaps` is omitted when empty: a
+        /// field present on every recording stops being a signal. The microphone and system streams
+        /// drop independently, so one channel carrying this and the other not is the normal shape
+        /// rather than an inconsistency.
+        public let droppedFrameCount: Int64?
+
+        public init(
+            file: String,
+            format: String,
+            sampleRate: Double,
+            channels: Int,
+            frameCount: Int64,
+            startOffsetSeconds: Double,
+            droppedFrameCount: Int64? = nil
+        ) {
+            self.file = file
+            self.format = format
+            self.sampleRate = sampleRate
+            self.channels = channels
+            self.frameCount = frameCount
+            self.startOffsetSeconds = startOffsetSeconds
+            self.droppedFrameCount = droppedFrameCount
+        }
     }
 
     /// A span of the recording that is inserted silence rather than captured audio (F282).
@@ -204,6 +230,7 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         microphone: FloatTrack,
         sampleRate: Double,
         paddedGaps: [PaddedGap] = [],
+        droppedFrames: (system: Int64, microphone: Int64) = (0, 0),
         to outputURL: URL
     ) throws {
         let starts = [system.firstPresentationTime, microphone.firstPresentationTime]
@@ -214,8 +241,18 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         let manifest = Self(
             recoveryAlignment: paddedGaps.isEmpty ? capturedAlignment : paddedAlignment,
             paddedGaps: paddedGaps,
-            systemAudio: track(system, sampleRate: sampleRate, earliestStart: earliestStart),
-            microphoneAudio: track(microphone, sampleRate: sampleRate, earliestStart: earliestStart)
+            systemAudio: track(
+                system,
+                sampleRate: sampleRate,
+                earliestStart: earliestStart,
+                droppedFrames: droppedFrames.system
+            ),
+            microphoneAudio: track(
+                microphone,
+                sampleRate: sampleRate,
+                earliestStart: earliestStart,
+                droppedFrames: droppedFrames.microphone
+            )
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -225,7 +262,8 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
     private static func track(
         _ track: FloatTrack,
         sampleRate: Double,
-        earliestStart: Double
+        earliestStart: Double,
+        droppedFrames: Int64 = 0
     ) -> Track {
         Track(
             file: track.url.lastPathComponent,
@@ -236,7 +274,8 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
             startOffsetSeconds: max(
                 0,
                 (track.firstPresentationTime ?? earliestStart) - earliestStart
-            )
+            ),
+            droppedFrameCount: droppedFrames > 0 ? droppedFrames : nil
         )
     }
 }

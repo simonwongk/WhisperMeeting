@@ -218,3 +218,59 @@ func rebuildWithoutPaddingIsUnchanged() throws {
     #expect(manifest.paddedGaps.isEmpty)
     #expect(manifest.recoveryAlignment == "zero-aligned-after-interruption")
 }
+
+// MARK: - F151: a track that had buffers dropped says how many frames are silence
+
+@Test("A track records the frames it padded for dropped buffers (F151)")
+func trackRecordsDroppedFrames() throws {
+    let url = temporaryManifestURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try SourceTrackManifest.write(
+        system: plainTracks.system,
+        microphone: plainTracks.microphone,
+        sampleRate: 48_000,
+        paddedGaps: [],
+        droppedFrames: (system: 9_600, microphone: 0),
+        to: url
+    )
+
+    let object = try decodeManifest(at: url)
+    let system = try #require(object["systemAudio"] as? [String: Any])
+    let microphone = try #require(object["microphoneAudio"] as? [String: Any])
+    #expect(system["droppedFrameCount"] as? Int == 9_600)
+    // Absent rather than 0 for the healthy track, for the reason F282's `paddedGaps` is omitted
+    // when empty: a field on every recording stops being a signal. The two channels drop
+    // independently, so one of them carrying this and the other not is the normal shape.
+    #expect(microphone["droppedFrameCount"] == nil)
+}
+
+@Test("An uninterrupted capture records no dropped frames at all (F151)")
+func uninterruptedCaptureHasNoDroppedFrames() throws {
+    let url = temporaryManifestURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try SourceTrackManifest.write(
+        system: plainTracks.system,
+        microphone: plainTracks.microphone,
+        sampleRate: 48_000,
+        to: url
+    )
+
+    let object = try decodeManifest(at: url)
+    let system = try #require(object["systemAudio"] as? [String: Any])
+    #expect(system["droppedFrameCount"] == nil)
+}
+
+@Test("A manifest written before F151 decodes with no dropped frames (F151)")
+func olderManifestsHaveNoDroppedFrames() throws {
+    let json = #"""
+    {"recoveryAlignment":"captured-timeline",
+     "systemAudio":{"file":"system-audio.f32","format":"float32-little-endian",
+      "sampleRate":48000,"channels":1,"frameCount":100,"startOffsetSeconds":0},
+     "microphoneAudio":{"file":"microphone-audio.f32","format":"float32-little-endian",
+      "sampleRate":48000,"channels":1,"frameCount":100,"startOffsetSeconds":0}}
+    """#
+    let decoded = try JSONDecoder().decode(SourceTrackManifest.self, from: Data(json.utf8))
+    #expect(decoded.systemAudio.droppedFrameCount == nil)
+}
