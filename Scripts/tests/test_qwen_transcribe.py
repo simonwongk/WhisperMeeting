@@ -560,5 +560,44 @@ class GreedyDecodeRepetitionGuardTests(unittest.TestCase):
         self.assertEqual(step.widths[-1], 1)
 
 
+class BatchedRoutingTests(unittest.TestCase):
+    """F268 — the F260 repetition guard lives in the batched decoder, so a recording that skips
+    the batched path is unguarded.
+
+    Before this, `transcribe_batched` returned None for `len(chunks) <= 1`, sending every recording
+    of 60 s or less (ASR_CHUNK_SECONDS) to mlx-audio's own sequential `generate`, where nothing stops
+    a runaway cycle. Batching one chunk produces the same transcript — `segments_for` emits one
+    {text,start,end} entry per chunk either way — it simply also gets the guard.
+    """
+
+    def test_a_single_chunk_is_decoded_on_the_guarded_path(self):
+        # The whole ticket: this was False, which is what made short recordings unguarded.
+        self.assertTrue(qwen.batched_decoding_supported(1))
+
+    def test_several_chunks_are_still_batched(self):
+        self.assertTrue(qwen.batched_decoding_supported(2))
+        self.assertTrue(qwen.batched_decoding_supported(37))
+
+    def test_no_chunks_declines_so_the_library_handles_the_empty_case(self):
+        # Nothing to decode: leave it to `generate` rather than driving an empty batch.
+        self.assertFalse(qwen.batched_decoding_supported(0))
+
+    def test_the_threshold_is_one_chunk(self):
+        self.assertEqual(qwen.ASR_MIN_BATCHED_CHUNKS, 1)
+
+    def test_the_sequential_fallback_still_exists_for_a_batched_failure(self):
+        """F268 must not remove the safety net — only the chunk-count shortcut to it."""
+        calls = []
+
+        def generate(audio, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(text="fallback", segments=[])
+
+        asr = SimpleNamespace(generate=generate)  # no batched-path internals at all
+        result = qwen.transcribe(asr, [0.0] * 32000, "auto", chunk_duration=60.0, batch_size=4)
+        self.assertEqual(result.text, "fallback")
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

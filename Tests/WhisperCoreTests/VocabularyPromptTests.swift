@@ -16,21 +16,39 @@ func vocabularyPromptDropsEmptiesAndWhitespace() {
     #expect(VocabularyPrompt.build(["  Acme  ", "", "   ", "Q3"]) == "Acme, Q3")
 }
 
-@Test("The prompt caps at 100 terms")
+@Test("The prompt caps at 100 terms, and at the token budget before that (F265)")
 func vocabularyPromptCapsAtHundredTerms() {
+    // Rewritten by F265. This asserted exactly 100 terms ending at "term100", which is 790
+    // characters and — measured with the installed runtime's own tokenizer — **299 real tokens**
+    // against Whisper's 223-token carried-prompt limit. So the behaviour it pinned was the bug:
+    // a prompt that size is evicted wholesale by `transcribe.py:290`, and the user's vocabulary
+    // silently stopped biasing anything. The term cap is still real; the token budget binds first.
     let terms = (1...150).map { "term\($0)" }
     let prompt = VocabularyPrompt.build(terms)
     let joinedTerms = prompt.components(separatedBy: ", ")
-    #expect(joinedTerms.count == 100)
-    #expect(joinedTerms.first == "term1")
-    #expect(joinedTerms.last == "term100")
+
+    #expect(joinedTerms.count <= 100, "the term cap is still an upper bound")
+    #expect(joinedTerms.count < 100, "…but 100 of these do not fit the token budget")
+    #expect(joinedTerms.first == "term1", "terms are dropped from the end, not the start")
+    #expect(VocabularyPrompt.estimatedTokenCount(of: joinedTerms)
+            <= VocabularyPrompt.promptTokenBudget)
 }
 
-@Test("The prompt truncates at 1000 characters even under the term cap")
+@Test("The prompt is bounded by tokens and never cut mid-term (F265)")
 func vocabularyPromptTruncatesAtThousandCharacters() {
-    let terms = (1...100).map { _ in String(repeating: "x", count: 20) }
+    // Rewritten by F265. This asserted `prompt.count == 1_000`, i.e. that the prompt was chopped at
+    // a character boundary — which could leave a fragment of a term in the prompt, and which let a
+    // wildly over-budget prompt through. Bound by tokens now, on whole terms only.
+    let term = String(repeating: "x", count: 20)
+    let terms = (1...100).map { _ in term }
     let prompt = VocabularyPrompt.build(terms)
-    #expect(prompt.count == 1_000)
+
+    #expect(prompt.count < 1_000)
+    #expect(VocabularyPrompt.estimatedTokenCount(of: prompt.components(separatedBy: ", "))
+            <= VocabularyPrompt.promptTokenBudget)
+    for piece in prompt.components(separatedBy: ", ") {
+        #expect(piece == term, "a term was cut in half: \(piece)")
+    }
 }
 
 @Test("terms() trims, drops empties, and caps at 100")

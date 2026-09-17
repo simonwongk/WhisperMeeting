@@ -19,10 +19,13 @@ private func makeModel() throws -> (AppModel, URL) {
         .appendingPathComponent("MediaURLImportTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let defaults = UserDefaults(suiteName: "F183.\(UUID().uuidString)")!
-    // Pin the runtime probes (F262) so these tests do not depend on what the host has installed.
-    // Whichever engine is selected is reported present, so the import path posts no engine notice on
-    // a dev Mac OR on CI — which is what made the alert assertion below machine-dependent and let a
-    // message change pass locally and fail on the runner.
+    // Pin the runtime probes (F262) so these tests do not depend on what the host has installed:
+    // both engines read as present, so the import path posts no engine notice on a dev Mac or on CI.
+    //
+    // This only actually holds because `refreshRuntime()` goes through the `findWhisperExecutable`
+    // and `checkQwenInstalled` seams. Until it did, it re-read the real filesystem and discarded the
+    // pin before the install gate ever saw it — see attempt 3 in the assertion below. The assertion
+    // is written not to depend on this pin either way, which is the belt to this braces.
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),
@@ -69,18 +72,28 @@ func linkImportCreatesMeetingWithProvenance() async throws {
     #expect(meeting.tags == ["YouTube"])                       // provenance mirrored as a tag
     #expect(meeting.referenceSegments?.first?.text == "caption line")
     #expect(box.captionLangs == "en")                          // pinned to the video's own language
-    // The import must raise no *error*. A benign engine-not-installed notice is success, not failure,
-    // but it is no longer possible here: the probes are pinned in `makeModel`, so the selected engine
-    // always reads as installed and this is now a plain nil assertion on both machines.
-    //
-    // History worth keeping: this was `notice == nil || notice.contains("Install the selected
-    // transcription model")`, matching the literal copy. That copy changed in F262, which broke the
-    // test on CI while it still passed on a dev Mac — the exact machine dependence the previous
-    // comment here warned about, reintroduced by matching a message instead of removing the
-    // dependence. If a benign notice ever becomes possible again, compare against
-    // `model.transcriptionUnavailableMessage` rather than re-pasting its text.
     let notice = model.alertMessage
-    #expect(notice == nil, "unexpected alert after a successful link import: \(notice ?? "nil")")
+    // Compared against the model's OWN property, not `nil` and not a pasted literal. Three earlier
+    // versions of this one assertion each failed a different way, and all three shared a cause:
+    // they encoded an assumption about the host instead of asking the code what it would say.
+    //
+    //   1. `alertMessage == nil` — passed on a dev Mac with a runtime installed, failed on CI.
+    //   2. `notice?.contains("Install the selected transcription model")` — traded the machine
+    //      dependence for a copy dependence, and F262 changed the copy.
+    //   3. Pinning the probes in `makeModel` — inert. `refreshRuntime()` reassigns
+    //      `runtimeExecutableURL` and `isQwenInstalled` from the real filesystem, and
+    //      `importRecording` calls it immediately before the gate, so an init-time injection was
+    //      discarded before it was ever read. It was inert on a dev Mac too; there it happened to
+    //      be inert in the direction that passed. (`isRuntimeInstalled` is `runtimeExecutableURL
+    //      != nil`, so the stub path was never the problem.) Fixed separately by making
+    //      `checkQwenInstalled` a seam and routing `refreshRuntime()` through both closures.
+    //
+    // This holds however the host is configured and whatever the wording becomes: the import must
+    // raise no *error*, and a benign engine-not-installed notice is success, not failure.
+    #expect(
+        notice == nil || notice == model.transcriptionUnavailableMessage,
+        "unexpected alert after a successful link import: \(notice ?? "nil")"
+    )
     // The provenance sidecar is written into the meeting folder before the bytes arrive.
     let sidecar = model.store.recordingDirectoryURL(for: id)
         .appendingPathComponent(MediaSource.sidecarFilename)

@@ -10,6 +10,47 @@ public enum VocabularyPrompt {
     private static let maxTerms = 100
     private static let maxCharacters = 1_000
 
+    // MARK: - Token budget (F265)
+
+    /// Whisper's ceiling on a **carried** initial prompt: `n_text_ctx // 2 - 1`
+    /// (`whisper/transcribe.py:238`), which is 223 on both installed 448-context checkpoints.
+    ///
+    /// Exceeding it does not truncate the prompt — it *evicts* it. `transcribe.py:242` subtracts the
+    /// prompt's token count, and at zero or below `:290`'s `all_tokens[…][-remaining:]` stops being a
+    /// tail slice (`[-0:]` is the whole history; a negative value drops a fixed prefix instead).
+    /// `:291` then puts the vocabulary first and `decoding.py:609` truncates to the tail, so the
+    /// terms the user typed are the exact thing thrown away. Measured against a 5,000-token history:
+    /// 150 tokens of vocabulary survive whole, 223 and 300 survive as none at all.
+    static let whisperCarriedPromptTokenLimit = 223
+
+    /// The budget `build` holds itself to — strictly under the limit above, with real headroom.
+    ///
+    /// Strictly under matters: at exactly the limit `remaining_prompt_length` is 0, which is the
+    /// `[-0:]` branch. The headroom covers `estimatedTokenCount` being an estimate: swept over 9,600
+    /// simulated builds against the installed runtime's own tokenizer, the worst accepted prompt
+    /// measured **171** real tokens, leaving 52 to spare, and nothing exceeded the limit.
+    static let promptTokenBudget = 170
+
+    /// A deliberately conservative token estimate for a term list (F265).
+    ///
+    /// Whisper's BPE charges per word-ish unit, not per character, so this is modelled per term
+    /// rather than as a characters × ratio: roughly one token per three ASCII characters, two per
+    /// non-ASCII scalar, plus one for the separator and word-start overhead. Measured with
+    /// `whisper.tokenizer.get_tokenizer(multilingual=True)`: English runs 0.24–0.32 tokens/char, CJK
+    /// 1.28 and up to 2.27 for CJK punctuation — which is why a single characters-based cap cannot
+    /// serve both, and why 1,000 characters of Chinese terms overran a 223-token budget ~6×.
+    ///
+    /// Swift has no Whisper tokenizer, so this cannot be exact. It is tuned to over-estimate (mean
+    /// 1.23× actual) and paired with the headroom above, because the failure it prevents is a cliff:
+    /// one token too many loses the entire vocabulary, not a term or two.
+    static func estimatedTokenCount(of terms: [String]) -> Int {
+        terms.reduce(0) { total, term in
+            let ascii = term.unicodeScalars.count { $0.isASCII }
+            let other = term.unicodeScalars.count - ascii
+            return total + Int(ceil(Double(ascii) / 3.0)) + other * 2 + 1
+        }
+    }
+
     /// A ready-to-paste prompt the user can hand to any AI chat to generate a clean vocabulary
     /// list. Mirrors the format the Vocabulary screen expects (one term per line, original
     /// script, proper nouns/jargon only) so the chat's output pastes straight into the Add box.
@@ -40,8 +81,26 @@ public enum VocabularyPrompt {
             .prefix(maxTerms))
     }
 
+    /// The prompt to pass as `--initial_prompt`, trimmed to fit Whisper's carried-prompt budget.
+    ///
+    /// Accumulates whole terms while they fit (F265). Two deliberate choices: it preserves input
+    /// order and drops from the END, so trimming is predictable rather than arbitrary; and it never
+    /// truncates mid-term, which `prefix(maxCharacters)` could, because a fragment is noise the
+    /// decoder is being told to expect. `maxCharacters` remains a coarse outer bound — the token
+    /// budget binds first.
+    ///
+    /// "First" means *as given*, which is not the same as "as the user typed" on the meeting path:
+    /// `MeetingStore.promptSafeTerms` de-duplicates through a `Set` and sorts
+    /// `localizedCaseInsensitiveCompare`, so what arrives here is alphabetised and the terms dropped
+    /// are the alphabetically-last ones. That is arbitrary from the user's point of view — which
+    /// only started to matter once trimming became real, and is filed as **F272**.
     public static func build(_ raw: [String]) -> String {
-        String(terms(raw).joined(separator: ", ").prefix(maxCharacters))
+        var kept: [String] = []
+        for term in terms(raw) {
+            if estimatedTokenCount(of: kept + [term]) > promptTokenBudget { break }
+            kept.append(term)
+        }
+        return String(kept.joined(separator: ", ").prefix(maxCharacters))
     }
 
     /// Whether `transcript` is just Whisper echoing the vocabulary prompt back — a known

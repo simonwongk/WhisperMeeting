@@ -32,6 +32,13 @@ ASR_EOS_TOKEN_IDS = (151645, 151643)
 ASR_MAX_CYCLE_LEN = 8
 ASR_MAX_CYCLE_REPS = 16
 ASR_CYCLE_CHECK_STRIDE = 4
+# F268: the cycle guard above only runs on the batched path, so the batched path has to be the one
+# every recording takes. This used to be 2 — a recording of one chunk (<= ASR_CHUNK_SECONDS) went to
+# mlx-audio's own sequential `generate`, where nothing stops a runaway cycle. Batching a single chunk
+# yields the same transcript, because `segments_for` emits one {text,start,end} entry per chunk
+# either way; it simply also gets the guard. Zero chunks still declines, so an empty recording stays
+# the library's problem rather than driving an empty batch.
+ASR_MIN_BATCHED_CHUNKS = 1
 # F240: set to "0" to restore mlx-audio's stock materialized attention mask. The fast path is a
 # monkey-patch on a pinned library, so a field regression should be a restart, not a rebuild.
 FAST_ATTENTION_ENV = "WHISPERMEET_QWEN_FAST_ATTENTION"
@@ -279,6 +286,15 @@ def plan_batches(chunk_count: int, batch_size: int) -> list[list[int]]:
     return batches
 
 
+def batched_decoding_supported(chunk_count):
+    """Whether `transcribe_batched` handles a recording split into `chunk_count` chunks (F268).
+
+    Pure so the routing decision is testable: the batched path itself needs mlx, mlx_lm and
+    mlx_audio internals, so there is no harness that can exercise it end to end.
+    """
+    return chunk_count >= ASR_MIN_BATCHED_CHUNKS
+
+
 def degenerate_cycle_length(
     tokens,
     max_cycle_len=ASR_MAX_CYCLE_LEN,
@@ -443,7 +459,7 @@ def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
     chunks = split_audio_into_chunks(
         audio, sr=SAMPLE_RATE, chunk_duration=chunk_duration, min_chunk_duration=0.1
     )
-    if len(chunks) <= 1:
+    if not batched_decoding_supported(len(chunks)):
         return None
     # F243: skip chunks that hold no signal at all. Each would otherwise pay a full mel extraction,
     # a full audio-encoder pass and a full prefill — all compute-bound — to produce nothing. Their

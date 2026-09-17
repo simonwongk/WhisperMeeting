@@ -341,12 +341,16 @@ final class AppModel: ObservableObject {
         store: MeetingStore,
         recorder: AudioCaptureEngine,
         defaults: UserDefaults,
-        whisperExecutable: @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() },
-        qwenInstalled: @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
+        whisperExecutable: @escaping @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() },
+        qwenInstalled: @escaping @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
     ) {
         self.store = store
         self.recorder = recorder
         self.defaults = defaults
+        // Adopt the injected probes as the seams, so `refreshRuntime()` keeps using them instead of
+        // re-reading the real filesystem and discarding whatever was pinned here (F262).
+        self.findWhisperExecutable = whisperExecutable
+        self.checkQwenInstalled = qwenInstalled
         let storedEngine = MeetingTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.modelKey) ?? ""
         )
@@ -486,7 +490,7 @@ final class AppModel: ObservableObject {
 
     func refreshRuntime() {
         runtimeExecutableURL = findWhisperExecutable()
-        isQwenInstalled = QwenASRRuntime.isInstalled()
+        isQwenInstalled = checkQwenInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
         isDiarizationInstalled = isDiarizationModelInstalled()
     }
@@ -599,6 +603,14 @@ final class AppModel: ObservableObject {
     /// engine and re-probes the filesystem itself, which left every "refuse while transcribing" guard
     /// unreachable from a test (F219). Defaults to the real probe, so behaviour is unchanged.
     var findWhisperExecutable: @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() }
+    /// The Qwen install probe, as a seam for the same reason `findWhisperExecutable` is one (F262).
+    ///
+    /// `refreshRuntime()` must go through both seams, not just this one's Whisper sibling. Until it
+    /// did, an install state injected at construction was silently discarded by the first
+    /// `refreshRuntime()` — which `stopRecording` and `importRecording` each call immediately before
+    /// their install gate. That made a pinned test state useless and was invisible on a machine with
+    /// the runtimes present; CI caught it.
+    var checkQwenInstalled: @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
 
     /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
     /// second-opinion (F88) and per-segment re-run (F92) flows are testable with a stub engine; when nil,

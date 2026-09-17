@@ -7,7 +7,7 @@ Privacy & Security → Accessibility) so it can click and type. Written 2026-09-
 ---
 
 You are verifying a feature in **WhisperMeet**, a native macOS app, already installed at
-`/Applications/WhisperMeet.app`. The repository is `/Users/simonwang/Documents/Whisper`.
+`/Applications/WhisperMeet.app`. The repository is this WhisperMeet checkout (`git rev-parse --show-toplevel`).
 
 The feature is **speaker analysis**: a post-meeting, entirely local pass that labels parts of a
 finished transcript with anonymous labels like "Speaker 1". It has been built and unit-tested, and
@@ -110,7 +110,7 @@ With labels showing and a speaker renamed to something unmistakable:
 Fixtures for these exist — generate them first, they are synthetic speech and belong to no one:
 
 ```bash
-cd /Users/simonwang/Documents/Whisper
+cd "$(git rev-parse --show-toplevel)"
 ./Scripts/bench/diarization/make-ui-fixtures.sh audio /tmp/wm-fixtures
 ```
 

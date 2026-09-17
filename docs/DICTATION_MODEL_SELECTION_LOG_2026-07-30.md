@@ -1,5 +1,12 @@
 # Quick Dictation model-selection work log — 2026-07-30
 
+> **On the absolute paths below (F269).** The pasted command output in this document contains
+> `/Users/simonwang/...` paths. Those are left exactly as they were recorded, deliberately: this file
+> is verbatim evidence, and silently editing recorded output to tidy it is a worse trade than the
+> hygiene it buys in a repository whose culture is evidence over assertion. They reference the
+> repository, a bench clip and a build directory — not any meeting, recording or transcript. Links in
+> the *prose* docs were made repo-relative instead; see F269.
+
 > **Follow-up correction.** This cycle verified Qwen against the real model but never got Whisper
 > Turbo's warm helper to start, and did not notice. A pre-existing defect (`verbose=False` printing
 > `Detected language: X` onto the helper's JSON stdout) made the warm-up handshake fail, so the

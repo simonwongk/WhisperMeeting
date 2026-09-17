@@ -192,7 +192,35 @@ public struct LocalWhisperClient: Sendable {
         )
     }
 
-    private func commandArguments(
+    /// Every flag the installed `whisper` CLI accepts, as a guard on what we may pass (F264).
+    ///
+    /// The runtime is installed **unpinned** (`Scripts/setup-local-whisper.sh:109`,
+    /// `pip install --upgrade openai-whisper`), so upstream can rename or drop a flag under us. That
+    /// failure is not graceful: argparse exits 2, which becomes `LocalWhisperError.processFailed` and
+    /// no transcript at all. `WhisperCLIFlagAllowlistTests` holds `commandArguments` to this list so
+    /// a drift breaks a test rather than a meeting.
+    ///
+    /// Derived from the installed runtime's own argparse setup (openai-whisper 20250625,
+    /// `whisper/transcribe.py`), not from memory — the command to re-derive it is in that test file.
+    /// When upstream genuinely changes, re-run it and update this list in the same commit.
+    ///
+    /// Deliberately absent: `--repetition_penalty`, `--no_repeat_ngram_size`, `--vad_filter`,
+    /// `--condition_on_prev_tokens`, `--chunk_length`, `--batch_size`. Those are
+    /// faster-whisper / HuggingFace names, and reaching for one is the mistake this list catches.
+    static let supportedCLIFlags: Set<String> = [
+        "--append_punctuations", "--beam_size", "--best_of", "--carry_initial_prompt",
+        "--clip_timestamps", "--compression_ratio_threshold", "--condition_on_previous_text",
+        "--device", "--fp16", "--hallucination_silence_threshold", "--highlight_words",
+        "--initial_prompt", "--language", "--length_penalty", "--logprob_threshold",
+        "--max_line_count", "--max_line_width", "--max_words_per_line", "--model", "--model_dir",
+        "--no_speech_threshold", "--output_dir", "--output_format", "--patience",
+        "--prepend_punctuations", "--suppress_tokens", "--task", "--temperature",
+        "--temperature_increment_on_fallback", "--threads", "--verbose", "--word_timestamps"
+    ]
+
+    /// Internal rather than private so `WhisperCLIFlagAllowlistTests` can check what we actually
+    /// pass (F264). It was private and entirely untested.
+    func commandArguments(
         recordingAt fileURL: URL,
         outputDirectory: URL,
         options: LocalTranscriptionOptions
