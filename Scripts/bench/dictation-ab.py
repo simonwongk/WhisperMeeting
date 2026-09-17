@@ -93,13 +93,30 @@ def run_engine(key, spec, references, verbose):
         detail = (ready or "<no output>").strip() + "\n" + process.stderr.read()[-800:]
         hint = ""
         if ready.strip() and not ready.lstrip().startswith("{"):
-            # This is the F24 signature: chatter on the JSON wire. Most likely the INSTALLED
-            # helper predates the fix, because the app only syncs the selected engine's helper
-            # from its bundle (F25). Selecting that engine in Settings re-syncs it.
-            hint = ("\nThe helper wrote a non-JSON line on its protocol stream. The installed copy "
-                    f"at\n  {spec['script']}\nmay predate a shipped fix — the app syncs only the "
-                    "SELECTED engine's helper (see F25).\nSelect this engine in Settings, or copy "
-                    "the bundled helper over it, then re-run.")
+            # This is the F24 signature: chatter on the JSON wire, meaning the INSTALLED helper
+            # predates a shipped fix.
+            #
+            # The advice here used to say the app syncs only the selected engine's helper and to
+            # switch engines in Settings. That stopped being true at F25 (F208):
+            # `DictationController.ensureHelperInstalled` syncs EVERY dictation engine's helper from
+            # `DictationTranscriptionEngine.allCases`, plus the refine helper, plus the Qwen meeting
+            # helper since F207 — and it runs on enable, on an engine change, on a self-test and
+            # when accessibility is granted. So switching engines was never the thing that fixed
+            # this; opening the app at all is.
+            #
+            # Which makes a stale installed copy mean something more specific: either the app has
+            # not been launched since the fix was built, or its own sync failed. The bundle is the
+            # source of truth either way, so copying it over is the direct repair and the log says
+            # whether the app tried.
+            hint = ("\nThe helper wrote a non-JSON line on its protocol stream, so the installed "
+                    f"copy at\n  {spec['script']}\npredates a shipped fix.\n\nThe app syncs all "
+                    "dictation helpers from its bundle whenever dictation is enabled, the engine "
+                    "changes,\na self-test runs, or accessibility is granted (F25/F207) — so this "
+                    "means it has not been\nlaunched since the fix was built, or its sync failed. "
+                    "Either open the current build once, or\ncopy the bundled helper over the "
+                    "installed one, then re-run. To see whether the app tried:\n"
+                    "  log show --last 1h --predicate 'subsystem == \"com.whispermeet.app\"' "
+                    "| grep -i helper")
         raise SystemExit(f"{key}: helper never reported ready.\n{detail}{hint}")
 
     rows = []
