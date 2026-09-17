@@ -66,6 +66,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Carried from `TranscriptionResult.alignmentWarning` so the detail view can explain why a
     /// meeting has no seekable timestamps instead of dropping them silently (F30).
     var alignmentWarning: String?
+    /// A plain-language note when a rebuild from raw tracks stopped early because a source track
+    /// became unreadable partway through (F256). Optional so indexes written before this field still
+    /// decode; `nil` means the audio is whole. Its presence must mean exactly one thing — this
+    /// recording is short by an unknown amount — so nothing else may borrow it for another notice.
+    ///
+    /// Separate from `errorMessage`, which every recovered meeting already carries: that string
+    /// explains the recovery, this one contradicts it.
+    var recoveryWarning: String?
     /// A plain-language note when the transcript's dominant script disagrees with the language the
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
@@ -104,6 +112,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         tags: [String]? = nil,
         healthReport: RecordingHealthReport? = nil,
         alignmentWarning: String? = nil,
+        recoveryWarning: String? = nil,
         languageWarning: String? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         source: MediaSource? = nil,
@@ -128,6 +137,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.tags = tags
         self.healthReport = healthReport
         self.alignmentWarning = alignmentWarning
+        self.recoveryWarning = recoveryWarning
         self.languageWarning = languageWarning
         self.transcriptionEngine = transcriptionEngine
         self.source = source

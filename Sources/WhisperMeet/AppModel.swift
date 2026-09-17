@@ -1553,6 +1553,33 @@ final class AppModel: ObservableObject {
                     messages.append("\(failedTitle) needs attention. \(message)")
                     continue
                 }
+                // F256. The rebuild reports where it stopped; say so on the meeting itself, not
+                // only in the startup alert the user dismisses once. Names the folder's raw tracks
+                // because they are the only remaining route to the missing audio — nothing re-runs
+                // recovery on a folder once it is indexed (F267).
+                let recoveryWarning = recovered.truncatedAtSeconds.map {
+                    "The rebuilt audio stops at \(TranscriptFormatter.clock($0)) because a source track could not be read past that point. The original microphone and system tracks are still in this meeting's folder and have not been changed."
+                }
+                // Below a tenth of what the tracks promised, "technically recovered" would
+                // masquerade as recovered — a two-second stub titled like an ordinary meeting. It
+                // lands as `.failed` naming the raw tracks instead, which is also what keeps
+                // transcription from being offered on audio that is mostly gone.
+                if recovered.isSeverelyTruncated {
+                    let failedTitle = "Partly Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+                    let message = "Only \(TranscriptFormatter.clock(duration)) of this recording could be rebuilt before a source track became unreadable. The original microphone and system tracks are still in this meeting's folder and have not been changed."
+                    store.upsert(MeetingRecord(
+                        id: orphan.id,
+                        title: failedTitle,
+                        createdAt: orphan.createdAt,
+                        duration: duration,
+                        recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                        status: .failed,
+                        errorMessage: message,
+                        recoveryWarning: recoveryWarning
+                    ))
+                    messages.append("\(failedTitle) needs attention. \(message)")
+                    continue
+                }
                 store.upsert(MeetingRecord(
                     id: orphan.id,
                     title: title,
@@ -1561,10 +1588,14 @@ final class AppModel: ObservableObject {
                     recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                     errorMessage: recovered.wasRebuiltFromRawTracks
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
-                        : "Recovered after an interruption. The original recording and source tracks were preserved."
+                        : "Recovered after an interruption. The original recording and source tracks were preserved.",
+                    recoveryWarning: recoveryWarning
                 ))
                 // `title` already begins with "Recovered Meeting", so do not prefix it again (F187).
                 messages.append("\(title) was added back to meeting history.")
+                if let recoveryWarning {
+                    messages.append(recoveryWarning)
+                }
             }
         } catch {
             messages.append(
