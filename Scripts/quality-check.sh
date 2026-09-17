@@ -24,6 +24,15 @@ fi
 print "[1/5] Checking the candidate diff for whitespace errors"
 if [[ -n "${DIFF_BASE:-}" ]] && git cat-file -e "${DIFF_BASE}^{commit}" 2>/dev/null; then
   git diff --check "${DIFF_BASE}...HEAD"
+  # AND the working tree, which the range above cannot see.
+  #
+  # `DIFF_BASE...HEAD` is committed history only. CI sets DIFF_BASE and has nothing uncommitted, so
+  # that range is exactly right there. Run locally BEFORE committing — which is the whole point of
+  # a pre-commit gate — it checks the previous commit's diff and silently ignores the change you
+  # are about to make. Observed 2026-09-17: a trailing blank line passed a local gate with
+  # DIFF_BASE set and failed CI at this very step, 14 seconds in. Every other step reads the
+  # working tree, so step 1 was the only one looking at the wrong thing.
+  git diff HEAD --check
 else
   untracked_files="$(git ls-files --others --exclude-standard)"
   if [[ -n "$untracked_files" ]]; then

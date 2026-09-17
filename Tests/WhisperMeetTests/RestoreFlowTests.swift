@@ -160,4 +160,3 @@ func damagedGenerationIsExplained() async throws {
         == Data(indexSinceThen.utf8))
     #expect(model.alertMessage?.isEmpty == false)
 }
-
