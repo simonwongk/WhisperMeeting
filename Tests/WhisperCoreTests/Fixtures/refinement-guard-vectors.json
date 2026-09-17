@@ -1,5 +1,5 @@
 {
-  "_source": "Scripts/bench/fidelity/results/smoke/installed-qwen3-8b-4bit/refinement.jsonl, 2026-09-17, installed Qwen3-8B-4bit, greedy",
+  "_source": "Scripts/bench/fidelity/results/smoke/installed-qwen3-8b-4bit/refinement.jsonl, 2026-09-17, installed Qwen3-8B-4bit, greedy; zh vector's expected flipped to rejected on 2026-09-17 when F245's script check landed",
   "vectors": [
     {
       "expected": "accepted",
@@ -10,11 +10,11 @@
       "output": "We shipped the Kestrel release on Tuesday and the Fairhaven office picked it up Wednesday."
     },
     {
-      "expected": "accepted",
+      "expected": "rejected",
       "id": "smoke-refine-zh-1",
       "input": "那個 呃 我們星期二把 Kestrel 版本出貨了 然後 嗯 倫敦辦公室星期三才收到",
       "lang": "zh",
-      "note": "Traditional in, Simplified out — 個→个, 貨→货, 倫→伦, 辦→办. Recorded as ACCEPTED because that is what the guard does, not because it is desirable: TranscriptLanguage.dominant reports .chinese for both scripts, so the script check cannot see the conversion. This vector is the evidence for F245.",
+      "note": "Traditional in, Simplified out — 個→个, 貨→货, 倫→伦, 辦→办. Recorded as ACCEPTED when this fixture was written, which was the F245 finding: the app pasted it over the user's words. Now REJECTED — ScriptDrift.isSimplifyingConversion catches the crossing TranscriptLanguage.dominant cannot see, and the raw transcript ships instead. The flip is the fixture doing its job: it said 'expected records what the guard DOES', so a deliberate edit is what a behaviour change costs.",
       "output": "那个我们星期二把 Kestrel 版本出货了 然后伦敦办公室星期三才收到"
     }
   ]

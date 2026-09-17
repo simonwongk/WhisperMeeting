@@ -73,6 +73,16 @@ public enum DictationRefinePolicy {
         if let inputScript = TranscriptLanguage.dominant(of: cleanedInput) {
             guard TranscriptLanguage.dominant(of: candidate) == inputScript else { return nil }
         }
+        // F245: the same tripwire, for the crossing the one above cannot see. `dominant` answers
+        // "which language", and Traditional and Simplified are one language — so a Traditional
+        // dictation returned as Simplified passed every check here and was pasted over the user's
+        // words. Measured by F244's harness on neutral content; the guard accepted it.
+        //
+        // Rejecting costs nothing, which is this whole function's ethos: the raw transcript ships,
+        // which is exactly what happens today whenever refinement is off or slow.
+        guard !ScriptDrift.isSimplifyingConversion(source: cleanedInput, output: candidate) else {
+            return nil
+        }
         return candidate
     }
 

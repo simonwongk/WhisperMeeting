@@ -54,22 +54,28 @@ func refinementGuardVerdictsMatchTheFixture() throws {
     }
 }
 
-@Test("A Traditional-to-Simplified rewrite passes the guard and would be pasted (F245)")
-func scriptConversionIsNotCaughtByTheGuard() throws {
-    // The finding, asserted rather than described. This is real output from the installed model on
-    // neutral business content, and the guard accepts it — so a user dictating in Traditional
-    // Chinese has their text replaced with Simplified, silently, today.
+@Test("A Traditional-to-Simplified rewrite is refused, and the old tripwire still cannot see it (F245)")
+func scriptConversionIsRefusedByTheNewCheck() throws {
+    // This test used to assert the opposite, and was named for it: the guard *accepted* this real
+    // output from the installed model, so a user dictating in Traditional Chinese had their words
+    // replaced with Simplified. It is inverted here because F245's check landed — which is what
+    // the old assertion's comment asked for ("if this now rejects, F245's guard has landed").
     //
-    // Two checks are needed, not one. That the guard accepts it is the user-visible fact; that
-    // `dominant` reports the same script for both is *why*, and asserting only the first would
-    // leave the next reader to guess whether the cause was the length bound instead.
+    // The two `dominant` assertions are kept deliberately, now that they no longer explain a
+    // defect. They pin the *cause*: the language tripwire still reports the same script for both
+    // sides, so it is not what refuses this — `ScriptDrift` is. Deleting them would leave a future
+    // reader to assume the language check had been fixed, and reach for the wrong lever when it
+    // next misses something.
     let vector = try #require(try GuardVectors.load().vectors.first { $0.lang == "zh" })
 
-    let accepted = DictationRefinePolicy.acceptedOutput(vector.output, input: vector.input)
-    #expect(accepted != nil, "if this now rejects, F245's guard has landed — update the fixture")
+    #expect(
+        DictationRefinePolicy.acceptedOutput(vector.output, input: vector.input) == nil,
+        "the raw Traditional transcript must ship instead"
+    )
 
     #expect(TranscriptLanguage.dominant(of: vector.input) == .chinese)
     #expect(TranscriptLanguage.dominant(of: vector.output) == .chinese)
+    #expect(ScriptDrift.isSimplifyingConversion(source: vector.input, output: vector.output))
 
     // And the conversion is real, not an artefact of how the fixture was written.
     #expect(vector.input.contains("倫敦辦公室"))
@@ -200,18 +206,20 @@ func guardVerdictsAreEmittedForARun() throws {
     )
 }
 
-@Test("The guard stops a translation but not a script conversion, through the emitter (F291, F245)")
-func translationIsRejectedWhereScriptConversionIsNot() throws {
+@Test("The guard stops a translation AND a script conversion, through the emitter (F291, F245)")
+func bothWritingSystemCrossingsAreRejected() throws {
     // F291's verification asks that a vector the guard rejects be reported rejected, and
     // `DictationRefineGuardrailTests.rejectsTranslation` supplies the natural one. Pairing it with
     // the script conversion is what makes it worth asserting here rather than only there: the two
     // are the same *kind* of change — the model returned the meaning in a different writing system
     // than the user spoke — and the guard treats them oppositely.
     //
-    // It is not an oversight in the guard so much as a limit of what it can see.
+    // It was not an oversight in the guard so much as a limit of what it could see.
     // `TranscriptLanguage.dominant` answers "which language", and Traditional and Simplified are
-    // one language. So the tripwire catches the crossing it can detect and is blind to the one it
-    // cannot, and a reader of either test alone would not notice the gap between them.
+    // one language — so the tripwire caught the crossing it could detect and was blind to the one
+    // it could not, and a reader of either test alone would not have noticed the gap between them.
+    // `ScriptDrift` closes it (F245); this test is kept because the pairing is what made the gap
+    // visible in the first place, and it is now what keeps both halves honest together.
     let runs = try decodeRuns("""
     {"id":"translation","input":{"text":"我们明天九点开会好不好"},"output":{"text":"We meet tomorrow at nine."},"error":null}
     {"id":"script","input":{"text":"那個 呃 我們星期二把 Kestrel 版本出貨了 然後 嗯 倫敦辦公室星期三才收到"},"output":{"text":"那个我们星期二把 Kestrel 版本出货了 然后伦敦办公室星期三才收到"},"error":null}
@@ -221,9 +229,7 @@ func translationIsRejectedWhereScriptConversionIsNot() throws {
 
     #expect(verdicts["translation"]?.status == "rejected")
     #expect(verdicts["length"]?.status == "rejected")
-    #expect(verdicts["script"]?.status == "accepted")
-
-    // And the delivered text is the Simplified one, so the report can show the reviewer precisely
-    // what the user would have received rather than asking them to infer it.
-    #expect(verdicts["script"]?.delivered?.contains("伦敦办公室") == true)
+    // Was `accepted`, and that asymmetry was the finding. Both crossings are refused now.
+    #expect(verdicts["script"]?.status == "rejected")
+    #expect(verdicts["script"]?.delivered == nil, "a rejected output delivers nothing")
 }
