@@ -328,6 +328,21 @@ Scripts/verify-push.sh        # pushes nothing; watches the run for the current 
 
 or at minimum `gh run list --limit 1`.
 
+**Never pipe a progress stream through `tail`, `head`, or a bare `grep` when you are waiting on its
+verdict.** Observed 2026-09-16, twice in one day in two sessions with two different scripts.
+`verify-push.sh` was invoked through `tail -20`, which shows nothing until the stream ends; it then
+polled for 45 minutes printing `no run for <sha> yet…` into a void, and the silence was read as work
+in progress. It was watching a SHA that was not on the remote at all — because **`verify-push.sh`
+pushes nothing**, which its own header states in as many words: *"This pushes NOTHING. Run it after
+your own push."* `Scripts/quality-check.sh` filtered through `grep` lost its final
+`Quality check passed` line the same day and cost a second full gate run. Let a progress stream
+print, or `tee` it to a file and read the file afterwards — filtering it live removes exactly the
+lines that distinguish "working" from "stuck on a false premise".
+
+**Assert nothing about what a script does without reading it.** All three of the day's stated-then-
+retracted claims had this shape: a plausible number, a plausible count, a plausible tool behaviour.
+The header of the script you are about to run is cheaper than the retraction.
+
 **The duration heuristic — the cheapest signal there is.** A full run takes minutes (3m22s was the
 last known-good baseline). **A run that finishes in under a minute tested nothing** — it died before
 the Swift suite. Check the duration before you read the conclusion, because a fast failure and a
