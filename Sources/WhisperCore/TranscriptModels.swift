@@ -242,20 +242,52 @@ public enum TranscriptFormatter {
         ) != nil
     }
 
+    /// Whole seconds, clamped in Double space BEFORE the conversion (F287).
+    ///
+    /// `Int(Double)` traps rather than saturating, so `max(0, Int(seconds))` — which is what these
+    /// two formatters did — never gets to clamp anything: the conversion crashes first. `isFinite`
+    /// is not the guard either, because 1e30 is perfectly finite and still far past `Int.max`.
+    ///
+    /// This is reachable from a *decodable* index, which is what makes it worse than the cases F250
+    /// and F187 handle. `MeetingRecord.duration` is a plain `Double`, so a corrupt or hand-edited
+    /// `meetings.json` carrying `1e30` decodes cleanly, reports `.complete` health, and then takes
+    /// the app down while it draws the sidebar. Lenient decoding cannot help: the value decoded
+    /// fine. Same shape as the three F287 siblings in the capture path, where a 30-second cap was
+    /// applied after the conversion it was meant to bound.
+    ///
+    /// A clamped value is deliberately still formatted as a duration rather than as an error. The
+    /// index said something impossible and nothing here can know what was meant; showing an
+    /// implausibly long time is honest about that, and showing a small one would not be.
+    private static func wholeSeconds(_ seconds: Double) -> Int {
+        // 1e15 seconds is ~31 million years — beyond any real recording, and far enough inside
+        // `Int.max` that the arithmetic below cannot overflow either. Picking the cap in Double
+        // space is the whole point: `Double(Int.max)` is not exactly representable, so comparing
+        // against it is its own trap waiting to happen.
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return Int(min(seconds.rounded(), 1e15))
+    }
+
     public static func timestamp(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds))
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        let total = wholeSeconds(seconds)
+        // `%02ld` for the same reason as `clock` below: the minute field here is unbounded, because
+        // this format has no hours component at all.
+        return String(format: "%02ld:%02d", total / 60, total % 60)
     }
 
     /// A duration as `M:SS`, or `H:MM:SS` once it reaches an hour.
     public static func clock(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded()))
+        let total = wholeSeconds(seconds)
         let secs = total % 60
         let minutes = (total / 60) % 60
         let hours = total / 3600
+        // `%ld`, not `%d`: `String(format:)` reads `%d` as 32-bit off the varargs list, so an hour
+        // count past `Int32.max` wraps to a negative number. Found by the clamp test above, which
+        // printed "-1395096463:46:40" for a clamped value — the trap was fixed and the formatting
+        // was still wrong, one layer down. `%ld` matches `Int`'s width on every platform this ships
+        // to. Minutes and seconds stay `%02d` because they are always 0-59.
         return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-            : String(format: "%d:%02d", minutes, secs)
+            ? String(format: "%ld:%02d:%02d", hours, minutes, secs)
+            : String(format: "%ld:%02d", minutes, secs)
     }
 
     /// Removes a leading `MM:SS`/`H:MM:SS` timestamp from each line, for a clean plain-text export.
