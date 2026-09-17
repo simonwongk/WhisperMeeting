@@ -131,3 +131,64 @@ private func appendLittleEndian<T: FixedWidthInteger>(_ value: T, to data: inout
     var littleEndian = value.littleEndian
     withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
 }
+
+// MARK: - F259: the ragged-track branch the existing tests never reach
+
+/// Writes little-endian Float32 samples, the format `FloatTrackWriter` produces.
+private func writeF32(_ samples: [Float], to url: URL) throws {
+    var data = Data(capacity: samples.count * 4)
+    for sample in samples {
+        var value = sample.bitPattern.littleEndian
+        withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
+    }
+    try data.write(to: url)
+}
+
+@Test("A rebuild zero-fills the shorter track instead of truncating the longer one (F259)")
+func rebuildHandlesRaggedTracks() throws {
+    // The gap this closes: `recoversInterruptedRawTracks` above writes two tracks of EQUAL length
+    // (2 frames each), so `recover`'s `max(systemFrames, microphoneFrames)` and `RawFloatReader`'s
+    // zero-pad have never been exercised — and ragged lengths are exactly what an abrupt stop
+    // produces, because the two `.f32` files are written independently from one callback.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F259-ragged-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // System ran 400 frames, microphone stopped at 100 — a mid-capture channel death.
+    try writeF32([Float](repeating: 0.5, count: 400),
+                 to: directory.appendingPathComponent("system-audio.f32"))
+    try writeF32([Float](repeating: 0.25, count: 100),
+                 to: directory.appendingPathComponent("microphone-audio.f32"))
+
+    let rebuilt = try InterruptedRecordingRecovery.recover(in: directory, sampleRate: 48_000)
+    let recovered = try #require(rebuilt)
+    #expect(recovered.wasRebuiltFromRawTracks)
+
+    // The rebuild must be as long as the LONGER track. Truncating to the shorter one would silently
+    // discard 300 frames of system audio that were captured and are sitting on disk.
+    let wav = try Data(contentsOf: recovered.recordingURL)
+    let declared = wav.withUnsafeBytes { $0.load(fromByteOffset: 40, as: UInt32.self).littleEndian }
+    #expect(Int(declared) == 400 * 2, "expected 400 frames of 16-bit PCM, got \(declared / 2)")
+    #expect(recovered.duration == 400.0 / 48_000)
+}
+
+@Test("A rebuild with only one surviving track still produces audio (F259)")
+func rebuildHandlesASingleTrack() throws {
+    // `RawFloatReader(url: systemFrames > 0 ? systemURL : nil)` tolerates one track being absent
+    // entirely — the shape when a channel never delivered a single buffer. Also untested until now.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F259-single-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try writeF32([Float](repeating: 0.5, count: 240),
+                 to: directory.appendingPathComponent("system-audio.f32"))
+    try writeF32([], to: directory.appendingPathComponent("microphone-audio.f32"))
+
+    let rebuilt = try InterruptedRecordingRecovery.recover(in: directory, sampleRate: 48_000)
+    let recovered = try #require(rebuilt)
+    let wav = try Data(contentsOf: recovered.recordingURL)
+    let declared = wav.withUnsafeBytes { $0.load(fromByteOffset: 40, as: UInt32.self).littleEndian }
+    #expect(Int(declared) == 240 * 2)
+}
