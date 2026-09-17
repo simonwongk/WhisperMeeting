@@ -317,7 +317,15 @@ fast success look identical in a status column and neither is a result.
 | Cause | Why local cannot see it | Example |
 |---|---|---|
 | Your toolchain is **newer** than the runner's | You never compile with the runner's Swift | F270: manifest at tools 6.2, `macos-15` ships 6.1.0 — every run died before a single test |
-| Your machine **has runtimes installed** that the runner does not | The code takes a different branch on a bare machine | F262: an alert assertion passed here and failed on CI for four straight attempts |
+| Your machine **has runtimes installed** that the runner does not | The code takes a different branch on a bare machine | F262: one alert assertion took four attempts to get right |
+
+The F262 case is worth reading in full at
+`Tests/WhisperMeetTests/MediaURLImportTests.swift`, where all four attempts are recorded. Note
+attempt 3 in particular: pinning the runtime probes did **not** pass locally and fail on CI — it was
+inert in *both* places, and locally it happened to be inert in the direction that passed, because
+`refreshRuntime()` reassigns the probes from the real filesystem after construction. The lesson is
+therefore "the seam never existed", not "the runner is different", and the two mislead in different
+directions.
 
 **Do not raise `swift-tools-version` in `Package.swift`** without checking what Swift the runner in
 `.github/workflows/quality.yml` actually has. Your local toolchain is always newer and will not
@@ -352,6 +360,11 @@ the stash — all three have bitten.
 - **Re-read `docs/TICKETS.md` immediately before writing it.** The board is not safe to cache:
   reading "Next free ID", doing an hour of work, then filing produced seven duplicate IDs. Run
   `python3 Scripts/generate-tickets-dashboard.py --check` before handing off.
+- **The memory directory is shared too**, one level up from the index: every session working this
+  repo writes the same `~/.claude-work/projects/<repo>/memory/`. Two sessions wrote it on
+  2026-09-16 and only avoided clobbering each other by happening to touch different files. Read a
+  memory file before rewriting it, append rather than replace when the existing text is someone
+  else's, and keep `MEMORY.md` to one added line per memory.
 - **Prefer a worktree** for anything longer than a few edits.
 
 ## Build commands
