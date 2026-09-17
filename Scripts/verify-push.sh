@@ -16,10 +16,25 @@ set -euo pipefail
 # NOTE: `status` is a read-only builtin variable in zsh — these are `run_status`/`run_conclusion`
 # deliberately. Naming them `status` fails at runtime, not at parse time.
 
-# A full run builds twice and runs the whole Swift suite; the last known-good baseline was 3m22s.
-# Anything far below that died before the Swift suite and is not a result either way — this is the
-# cheapest signal available and it is why the script reports duration, not just conclusion.
-readonly SUSPICIOUSLY_FAST_SECONDS=60
+# A full run builds twice and runs the whole Swift suite. Anything far below that died before the
+# Swift suite and is not a result either way — this is the cheapest signal available and it is why
+# the script reports duration, not just conclusion.
+#
+# The threshold is a BAND, not a magic number, and the band is what to check against — a constant
+# that nobody re-derives silently stops meaning anything, which is what happened to the old 60s. It
+# was set from a 3m22s baseline; the suite has since roughly doubled. Observed on this runner,
+# 2026-09-17:
+#
+#   real runs, whole suite executed:   5m17s   5m53s   6m01s   6m52s   7m29s   (361s green)
+#   died before the suite:             1m42s   (a type error; the test target did not build)
+#
+# 180s sits in the empty band between those clusters rather than near either edge. Note what the
+# 1m42s case means: the runner compiles the WHOLE test target before running anything, so a single
+# inference difference anywhere under `Tests/` is a total build failure, not one red test — and the
+# old 60s threshold would not have flagged its duration at all.
+#
+# When the suite grows again, re-derive this from `gh run list --limit 20` rather than nudging it.
+readonly SUSPICIOUSLY_FAST_SECONDS=180
 readonly POLL_SECONDS=20
 readonly MAX_POLLS=90   # 30 minutes; the workflow's own timeout is 40
 
@@ -106,9 +121,13 @@ for _ in $(seq 1 $MAX_POLLS); do
 
   if (( duration > 0 && duration < SUSPICIOUSLY_FAST_SECONDS )); then
     print -u2 ""
-    print -u2 "WARNING: ${duration}s is far below a real run. The gate almost certainly died before"
-    print -u2 "the Swift suite, so this result — pass OR fail — tested nothing. Read the log:"
+    print -u2 "WARNING: ${duration}s is below the ${SUSPICIOUSLY_FAST_SECONDS}s floor for a real run"
+    print -u2 "on this runner (observed range 5-8 min). The gate almost certainly died before the"
+    print -u2 "Swift suite — most likely the test target did not build, which fails everything at"
+    print -u2 "once — so this result, pass OR fail, tested nothing. Read the log:"
     print -u2 "  gh run view $run_id --log-failed"
+    print -u2 "Read it whole. Do not pipe it through grep: the line you need is often a warning"
+    print -u2 "away from the line you searched for."
   fi
 
   if [[ "$run_conclusion" == "success" ]]; then
