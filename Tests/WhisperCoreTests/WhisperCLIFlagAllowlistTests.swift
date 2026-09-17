@@ -4,11 +4,16 @@ import Testing
 
 // F264 (part) — nothing constrained which flags we hand the Whisper CLI.
 //
-// `Scripts/setup-local-whisper.sh:109` installs openai-whisper **unpinned**
-// (`pip install --upgrade openai-whisper`), so a future upstream release can rename or remove a flag
-// under us. The failure mode is not a warning: argparse exits 2, which surfaces as
-// `LocalWhisperError.processFailed` and **no transcript at all**. This pins the flag surface so that
-// breaks in CI, where it is free, instead of in the field, where it costs a meeting.
+// What these tests are for, stated honestly: they catch **us** passing a flag openai-whisper has
+// never had. They do NOT catch upstream removing one. The allowlist is a hardcoded literal and the
+// subset check compares `commandArguments` against that same literal, so nothing here reads the
+// installed CLI — if a future `pip install --upgrade openai-whisper` drops
+// `--carry_initial_prompt`, these tests stay green and the meeting still dies with argparse exit 2.
+// Catching that would mean shelling out to the runtime, which the rest of WhisperCore avoids
+// because its tests must pass with no model installed.
+//
+// That still earns its place: the flag surface is 32 names, the tempting wrong ones look plausible,
+// and the failure is total (`LocalWhisperError.processFailed`, no transcript) rather than degraded.
 //
 // The allowlist is not invented. It is the 32 flags parsed out of the installed runtime's own
 // `whisper/transcribe.py` argparse setup (openai-whisper 20250625):

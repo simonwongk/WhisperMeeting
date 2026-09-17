@@ -585,18 +585,13 @@ class BatchedRoutingTests(unittest.TestCase):
     def test_the_threshold_is_one_chunk(self):
         self.assertEqual(qwen.ASR_MIN_BATCHED_CHUNKS, 1)
 
-    def test_the_sequential_fallback_still_exists_for_a_batched_failure(self):
-        """F268 must not remove the safety net — only the chunk-count shortcut to it."""
-        calls = []
-
-        def generate(audio, **kwargs):
-            calls.append(kwargs)
-            return SimpleNamespace(text="fallback", segments=[])
-
-        asr = SimpleNamespace(generate=generate)  # no batched-path internals at all
-        result = qwen.transcribe(asr, [0.0] * 32000, "auto", chunk_duration=60.0, batch_size=4)
-        self.assertEqual(result.text, "fallback")
-        self.assertEqual(len(calls), 1)
+    # Deliberately no fallback test here: `TranscribeFallbackTests` (above) already covers it with
+    # the same stub, arguments and assertion, and F268 does not change that path. A duplicate was
+    # written and removed — it added no coverage, and it only reached `asr.generate` because
+    # `import mlx.core` raises in this environment, not because of any routing decision. On a host
+    # where mlx imports, `[0.0] * 32000` is one chunk that `silent_chunk_indices` marks silent
+    # (peak 0), so `transcribe_batched` would return a non-None empty transcript and the assertion
+    # would fail for a reason unrelated to what it claimed to test.
 
 
 if __name__ == "__main__":

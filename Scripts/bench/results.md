@@ -16,9 +16,14 @@ Dictation shape. For meetings these numbers are invalid, and for a different rea
   encoder-dominated and **understate decode cost** — which is exactly where a CPU fp32 path is
   worst. Do not extrapolate a realtime factor for a meeting from them.
 - **Qwen row**: does not go through `Scripts/qwen_transcribe.py` at all. `benchmark.py:59-70` starts
-  a resident daemon (`bench/qwen_server.py`). And because `transcribe_batched` returns `None` for a
-  single chunk (`qwen_transcribe.py:225-237`), a 3 s clip never exercises the batched 60 s × 4
-  meeting path or the forced aligner. The production meeting path is untested by this file.
+  a resident daemon (`bench/qwen_server.py`), so a 3 s clip never exercises the forced aligner and
+  the production meeting path is untested by this file.
+
+  The reason changed with **F268**: `transcribe_batched` no longer returns `None` for a single chunk
+  (it declines only zero chunks, so the F260 cycle guard covers every recording length), so a short
+  clip now *does* take the batched route. What still makes these rows unable to speak for meetings is
+  the clip length and the warm daemon: 2.2–3.2 s never fills a 60 s chunk, so the 60 s × 4 batching
+  and its padding behaviour are still never exercised, and no row includes model load. See **F241**.
 
 The repo has no long-form ASR measurement. Until one exists, treat a meeting-speed claim sourced
 from this table as unsupported.

@@ -95,12 +95,28 @@ public enum VocabularyPrompt {
     /// are the alphabetically-last ones. That is arbitrary from the user's point of view — which
     /// only started to matter once trimming became real, and is filed as **F272**.
     public static func build(_ raw: [String]) -> String {
+        String(promptedTerms(raw).joined(separator: ", ").prefix(maxCharacters))
+    }
+
+    /// Exactly the terms that reach `--initial_prompt` — what `build` keeps after budgeting (F265).
+    ///
+    /// Separate from `build` because two callers need the *list*, not the joined string: `build`
+    /// itself, and `isPromptEcho`, which may only judge a transcript against terms the model was
+    /// actually given. Whisper cannot regurgitate a term it never saw, so matching against a
+    /// trimmed-out term can only delete real speech.
+    static func promptedTerms(_ raw: [String]) -> [String] {
         var kept: [String] = []
         for term in terms(raw) {
-            if estimatedTokenCount(of: kept + [term]) > promptTokenBudget { break }
+            // `continue`, not `break`: one term that does not fit must not discard the terms after
+            // it. A single pasted CJK line can exceed the whole budget by itself (the Add box splits
+            // only on "," and newline, so 、/，-punctuated text arrives as one term), and because
+            // the store sorts alphabetically such a term can land first — with `break` that returned
+            // an empty prompt and reinstated the whole-vocabulary loss this ticket exists to fix.
+            // `MeetingStore.promptSafeTerms` skips for the same reason.
+            if estimatedTokenCount(of: kept + [term]) > promptTokenBudget { continue }
             kept.append(term)
         }
-        return String(kept.joined(separator: ", ").prefix(maxCharacters))
+        return kept
     }
 
     /// Whether `transcript` is just Whisper echoing the vocabulary prompt back — a known
@@ -114,7 +130,10 @@ public enum VocabularyPrompt {
     public static func isPromptEcho(_ transcript: String, terms rawTerms: [String]) -> Bool {
         let cleaned = normalizedForEcho(transcript)
         guard !cleaned.isEmpty else { return false }
-        let normalized = terms(rawTerms).map(normalizedForEcho).filter { !$0.isEmpty }
+        // `promptedTerms`, not `terms`: only what actually reached `--initial_prompt` can be echoed
+        // back. Judging against a budget-trimmed term cannot catch an echo — the model never saw it
+        // — and can only delete real speech, because the caller sets the transcript to "" (F265).
+        let normalized = promptedTerms(rawTerms).map(normalizedForEcho).filter { !$0.isEmpty }
         guard normalized.count >= 2 else { return false }
         for start in normalized.indices {
             var joined = ""

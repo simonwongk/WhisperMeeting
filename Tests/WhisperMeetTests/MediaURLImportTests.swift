@@ -90,10 +90,14 @@ func linkImportCreatesMeetingWithProvenance() async throws {
     //
     // This holds however the host is configured and whatever the wording becomes: the import must
     // raise no *error*, and a benign engine-not-installed notice is success, not failure.
-    #expect(
-        notice == nil || notice == model.transcriptionUnavailableMessage,
-        "unexpected alert after a successful link import: \(notice ?? "nil")"
-    )
+    // Split into two assertions, because the single relaxed one could not fail for the regression
+    // its own history documents: if the F262 seam regressed and the host had neither runtime, the
+    // posted notice AND `transcriptionUnavailableMessage` would be the same non-nil string and this
+    // would stay green. So assert the pin held first, then that no alert was raised — both
+    // host-independent, and the pair still bites.
+    #expect(model.transcriptionUnavailableMessage == nil,
+            "the makeModel probe pin did not hold — refreshRuntime is ignoring the seams again")
+    #expect(notice == nil, "unexpected alert after a successful link import: \(notice ?? "nil")")
     // The provenance sidecar is written into the meeting folder before the bytes arrive.
     let sidecar = model.store.recordingDirectoryURL(for: id)
         .appendingPathComponent(MediaSource.sidecarFilename)

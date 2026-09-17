@@ -100,3 +100,64 @@ func builtPromptAlwaysFits() {
         }
     }
 }
+
+@Test("One oversized term does not discard the terms after it (F265)")
+func oversizedTermSkipsRatherThanStops() {
+    // Found by self-review. `build` used `break`, so the FIRST term that did not fit ended the loop
+    // and every later term was lost even with most of the budget unspent. The store sorts
+    // alphabetically, so an unlucky single term could land first and return an empty prompt —
+    // reinstating the exact whole-vocabulary loss F265 exists to prevent.
+    //
+    // Reachable, not theoretical: the Add box splits only on "," and newline
+    // (`ContentView.swift:2239`), so a Chinese line punctuated with 、 or ，becomes ONE term. At two
+    // estimated tokens per non-ASCII scalar, 86 characters is ~173 tokens — over the 170 budget by
+    // itself. `MeetingStore.promptSafeTerms:885` already uses `continue` for this reason.
+    let oversized = String(repeating: "關", count: 100)   // ~201 estimated tokens on its own
+    #expect(VocabularyPrompt.estimatedTokenCount(of: [oversized])
+            > VocabularyPrompt.promptTokenBudget, "the fixture must actually be over budget")
+
+    let prompt = VocabularyPrompt.build([oversized, "Acme", "Kubernetes", "Grafana"])
+    let kept = prompt.components(separatedBy: ", ")
+
+    #expect(!prompt.isEmpty, "an oversized first term must not empty the whole prompt")
+    #expect(kept == ["Acme", "Kubernetes", "Grafana"])
+    #expect(!prompt.contains("關"), "the oversized term itself is skipped, never truncated")
+}
+
+@Test("A term that cannot ever fit is skipped, and the rest still build (F265)")
+func unfittableTermIsSkippedMidList() {
+    let oversized = String(repeating: "績", count: 100)
+    let prompt = VocabularyPrompt.build(["Acme", oversized, "Grafana"])
+    #expect(prompt == "Acme, Grafana")
+}
+
+@Test("The echo guard judges only against terms that actually reached the prompt (F265)")
+func echoGuardUsesPromptedTermsOnly() {
+    // Found by self-review. `isPromptEcho` normalised `terms(raw)` — capped at 100 but NOT budgeted —
+    // while `build` now puts far fewer into `--initial_prompt`. Whisper cannot regurgitate a term it
+    // was never given, so matching against a trimmed-out term can only ever delete real speech: the
+    // guard sets `cleaned = ""` on a noisy clip (`DictationController.swift:733-736`), so the user's
+    // dictation vanishes silently. The gap existed before the budget but was nearly empty; the
+    // budget widened it to roughly 44 terms.
+    let terms = (1...100).map { "term\($0)" }
+    let prompted = VocabularyPrompt.promptedTerms(terms)
+    #expect(prompted.count < terms.count, "the fixture needs terms that were trimmed out")
+
+    let trimmed = terms.filter { !prompted.contains($0) }
+    #expect(trimmed.count >= 2)
+
+    // Two adjacent terms the model was never prompted with, on a clip that scored as silence.
+    let dictated = trimmed.suffix(2).joined(separator: " ")
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(dictated, terms: terms, noSpeechProb: 0.95),
+            "real speech was discarded as an echo of terms that were never in the prompt")
+}
+
+@Test("A genuine echo of prompted terms is still dropped on a silent clip (F265 keeps F187's guard)")
+func echoGuardStillCatchesRealEchoes() {
+    let terms = (1...100).map { "term\($0)" }
+    let prompted = VocabularyPrompt.promptedTerms(terms)
+    let echoed = prompted.prefix(3).joined(separator: " ")
+    #expect(VocabularyPrompt.shouldDropAsPromptEcho(echoed, terms: terms, noSpeechProb: 0.95))
+    // …and never on a clip that scored as real speech.
+    #expect(!VocabularyPrompt.shouldDropAsPromptEcho(echoed, terms: terms, noSpeechProb: 0.1))
+}

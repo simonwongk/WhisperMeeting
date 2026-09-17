@@ -194,11 +194,19 @@ public struct LocalWhisperClient: Sendable {
 
     /// Every flag the installed `whisper` CLI accepts, as a guard on what we may pass (F264).
     ///
-    /// The runtime is installed **unpinned** (`Scripts/setup-local-whisper.sh:109`,
-    /// `pip install --upgrade openai-whisper`), so upstream can rename or drop a flag under us. That
-    /// failure is not graceful: argparse exits 2, which becomes `LocalWhisperError.processFailed` and
-    /// no transcript at all. `WhisperCLIFlagAllowlistTests` holds `commandArguments` to this list so
-    /// a drift breaks a test rather than a meeting.
+    /// **What this catches, and what it does not.** It catches *us* passing a flag openai-whisper has
+    /// never had — most usefully a faster-whisper / HuggingFace name reached for while fixing a
+    /// repetition loop. It does **not** detect upstream drift, and an earlier version of this comment
+    /// claimed it did: the list is a hardcoded literal and the test checks `commandArguments` against
+    /// that same literal, so nothing reads the installed CLI. If a future
+    /// `pip install --upgrade openai-whisper` removes `--carry_initial_prompt`, both this list and
+    /// `commandArguments` stay unchanged, the test stays green, and the meeting still dies with
+    /// argparse exit 2 → `LocalWhisperError.processFailed` and no transcript.
+    ///
+    /// Detecting that needs the suite to shell out to the installed runtime, which the rest of
+    /// WhisperCore deliberately avoids — its tests must pass with no model installed. The residual
+    /// risk is real and is why the runtime being unpinned (`Scripts/setup-local-whisper.sh:109`) is
+    /// worth revisiting; the mitigation here is a snapshot to re-derive against, not a tripwire.
     ///
     /// Derived from the installed runtime's own argparse setup (openai-whisper 20250625,
     /// `whisper/transcribe.py`), not from memory — the command to re-derive it is in that test file.

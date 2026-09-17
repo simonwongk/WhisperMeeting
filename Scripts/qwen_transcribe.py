@@ -448,8 +448,11 @@ def _decode_batch(asr, np, mx, KVCache, batch_audio, language):
 
 
 def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
-    """Batched transcription (F213); returns None when the audio is a single chunk so the caller
-    keeps the library's own path for short recordings."""
+    """Batched transcription (F213); returns None only when there is nothing to decode.
+
+    It used to decline a single chunk, sending short recordings to the library's own path. F268
+    removed that: the F260 repetition guard lives in this path, so every recording has to take it.
+    """
     import mlx.core as mx
     import numpy as np
     from mlx_audio.stt.models.qwen3_asr.qwen3_asr import split_audio_into_chunks
@@ -497,9 +500,14 @@ def transcribe_batched(asr, audio, language, chunk_duration, batch_size):
 
 
 def transcribe(asr, audio, language, chunk_duration=ASR_CHUNK_SECONDS, batch_size=ASR_BATCH_SIZE):
-    """Batched when the recording spans several chunks; the library's sequential `generate`
-    otherwise, and on any failure of the batched path (a library-internal drift shows up as an
-    exception here, and the sequential transcript is always available)."""
+    """Batched for any recording with at least one chunk; the library's sequential `generate` only
+    when there is nothing to decode, or on any failure of the batched path (a library-internal drift
+    shows up as an exception here, and the sequential transcript is always available).
+
+    Since F268 the sequential path is a failure fallback rather than a routing choice — it no longer
+    handles short recordings, because those need the F260 cycle guard too. F268's own gap: this
+    fallback is still unguarded, so a batched failure decodes without it.
+    """
     try:
         result = transcribe_batched(asr, audio, language, chunk_duration, batch_size)
         if result is not None:
@@ -517,7 +525,9 @@ def transcribe(asr, audio, language, chunk_duration=ASR_CHUNK_SECONDS, batch_siz
         min_chunk_duration=0.1,
         # verbose=True streams mlx-audio's "Processing chunks" tqdm bar to stderr so the app can show a
         # determinate progress bar for long meetings (F101). It only affects the progress display, not
-        # the transcription output; the bar is suppressed for single-chunk (short) runs.
+        # the transcription output. NOTE: this is the library's own bar on the fallback path only.
+        # The batched path always emits a `total=len(chunks)` bar, including for a single chunk since
+        # F268, so the progress parser sees one for every recording length on the normal route.
         verbose=True,
     )
 
