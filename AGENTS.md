@@ -371,6 +371,17 @@ the stash — all three have bitten.
 - **Re-read `docs/TICKETS.md` immediately before writing it.** The board is not safe to cache:
   reading "Next free ID", doing an hour of work, then filing produced seven duplicate IDs. Run
   `python3 Scripts/generate-tickets-dashboard.py --check` before handing off.
+- **A peer mid-TDD makes the shared tree uncompilable, correctly.** Between writing a failing test
+  and writing the implementation there is a window where the test file references a symbol that
+  does not exist yet. A gate run that starts in that window fails with errors in *their* file, and
+  the red state is a correct artifact, not a mistake — so there is nobody to blame and nothing to
+  revert. Both sides have a job. **If you are doing TDD and another session is live, do it in a
+  worktree**: your red state is private there, and only the green commit reaches the shared tree.
+  **If a gate fails on you, read whose file the errors are in before diagnosing your own change** —
+  "has no member" errors in a file you did not write are almost always someone's red step, and
+  waiting or re-running against a detached worktree at a known commit resolves it. Observed
+  2026-09-16: a peer's gate failed with ~20 errors from a test file whose implementation landed in
+  the same commit seconds later.
 - **The memory directory is shared too**, one level up from the index: every session working this
   repo writes the same `~/.claude-work/projects/<repo>/memory/`. Two sessions wrote it on
   2026-09-16 and only avoided clobbering each other by happening to touch different files. Read a
