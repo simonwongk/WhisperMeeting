@@ -136,3 +136,53 @@ func failedRebuildRestoresThePreviousRecording() throws {
     }
     #expect(try Data(contentsOf: directory.appendingPathComponent("meeting-recovered.wav")) == previous)
 }
+
+@Test("The manifest names the file the old audio moved to")
+func manifestRecordsTheSupersededRecording() throws {
+    // Otherwise "never delete audio" is honoured by a file nothing refers to, which is an orphan
+    // — the shape of defect F255 was about. The rebuild path would not mention it on its own:
+    // `writeRecoveryManifestIfNeeded` writes only when no manifest exists, and a folder reaching
+    // F267 has been recovered already.
+    let directory = try makeFolder("manifest")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try writeTrack(96_000, named: "system-audio.f32", in: directory)
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
+        .write(to: directory.appendingPathComponent("meeting-recovered.wav"))
+    // The manifest a previous recovery left behind.
+    _ = try InterruptedRecordingRecovery.recover(in: directory)
+
+    let offerA = try #require(SourceRebuild.offer(in: directory, currentDuration: 0.1))
+    _ = try SourceRebuild.rebuild(offerA)
+    let offerB = try #require(SourceRebuild.offer(in: directory, currentDuration: 2.0))
+    _ = try SourceRebuild.rebuild(offerB)
+
+    let manifestURL = ["source-tracks.json", "source-tracks.recovered.json"]
+        .map(directory.appendingPathComponent)
+        .first { FileManager.default.fileExists(atPath: $0.path) }
+    let data = try Data(contentsOf: try #require(manifestURL))
+    let manifest = try JSONDecoder().decode(SourceTrackManifest.self, from: data)
+
+    // Oldest first, and the rebuild count falls out of the list rather than needing its own field.
+    #expect(manifest.supersededRecordings == [
+        "meeting-recovered-superseded-1.wav",
+        "meeting-recovered-superseded-2.wav",
+    ])
+    // Every file it names is actually there.
+    for name in manifest.supersededRecordings {
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path))
+    }
+}
+
+@Test("A folder rebuilt once keeps the key out of its manifest entirely")
+func unrebuiltManifestOmitsTheKey() throws {
+    let directory = try makeFolder("nokey")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try writeTrack(48_000, named: "system-audio.f32", in: directory)
+    _ = try InterruptedRecordingRecovery.recover(in: directory)
+
+    let json = try String(
+        contentsOf: directory.appendingPathComponent("source-tracks.recovered.json"),
+        encoding: .utf8
+    )
+    #expect(!json.contains("supersededRecordings"))
+}

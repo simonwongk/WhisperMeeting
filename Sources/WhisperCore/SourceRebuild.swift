@@ -131,11 +131,22 @@ public enum SourceRebuild {
             movedAside = destination
         }
         do {
-            return try InterruptedRecordingRecovery.rebuildFromSourceTracks(
+            let rebuilt = try InterruptedRecordingRecovery.rebuildFromSourceTracks(
                 in: offer.directory,
                 sampleRate: sampleRate,
                 openTrack: openTrack
             )
+            // Record where the old audio went, in the manifest that describes this folder.
+            //
+            // Necessary rather than tidy: `writeRecoveryManifestIfNeeded` only writes when no
+            // manifest exists, and a folder reaching F267 has been recovered already, so nothing
+            // on the rebuild path would mention the file we just moved aside. A preserved
+            // recording that nothing refers to is an orphan — the shape of defect F255 was about
+            // — so "never delete audio" would be honoured in a way that loses it anyway.
+            if let movedAside {
+                try? noteSupersededRecording(movedAside.lastPathComponent, in: offer.directory)
+            }
+            return rebuilt
         } catch {
             // `rebuildFromSourceTracks` removes its own header-less stub on the way out (F256), so
             // the original name is free to move back into.
@@ -143,6 +154,34 @@ public enum SourceRebuild {
                 try? fileManager.moveItem(at: movedAside, to: existing)
             }
             throw error
+        }
+    }
+
+    /// Appends one filename to whichever manifest the folder has, leaving everything else alone.
+    ///
+    /// Best-effort on purpose, and the caller uses `try?`: the audio is already rebuilt and the
+    /// moved-aside file is already safe by this point. Failing the whole rebuild because a
+    /// descriptive file could not be updated would be the F280 lesson applied backwards — there,
+    /// the finalized-recording path swallows a stat error precisely because unwritten metadata
+    /// beats losing a meeting.
+    private static func noteSupersededRecording(_ name: String, in directory: URL) throws {
+        for manifestName in ["source-tracks.json", "source-tracks.recovered.json"] {
+            let url = directory.appendingPathComponent(manifestName)
+            guard let data = try? Data(contentsOf: url),
+                  let existing = try? JSONDecoder().decode(SourceTrackManifest.self, from: data)
+            else { continue }
+            let updated = SourceTrackManifest(
+                recoveryAlignment: existing.recoveryAlignment,
+                paddedGaps: existing.paddedGaps,
+                supersededRecordings: existing.supersededRecordings + [name],
+                truncatedAtSeconds: existing.truncatedAtSeconds,
+                systemAudio: existing.systemAudio,
+                microphoneAudio: existing.microphoneAudio
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(updated).write(to: url, options: .atomic)
+            return
         }
     }
 

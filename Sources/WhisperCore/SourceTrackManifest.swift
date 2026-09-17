@@ -53,6 +53,19 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
     /// Inserted-silence spans, oldest first. Empty for an ordinary capture.
     public let paddedGaps: [PaddedGap]
 
+    /// Recordings this folder used to be described by, oldest first, after a rebuild moved them
+    /// aside (F267). Empty for every folder rebuilt at most once.
+    ///
+    /// The point is references, not history. F267 keeps the previous audio rather than overwriting
+    /// it — "never delete audio" has to cover a fixed filename — and a preserved file that nothing
+    /// refers to is an orphan, which is the shape of defect F255 was about. The count of rebuilds
+    /// falls out of this; a `rebuildCount` would not tell a reader which file holds the earlier
+    /// audio, and that is the part they need.
+    ///
+    /// Filenames rather than paths: everything here is in the folder this manifest describes, and
+    /// `recoveryAlignment` stays a label per its own contract.
+    public let supersededRecordings: [String]
+
     /// Set only when a rebuild stopped early (F256), so the folder explains its own state without
     /// the index. Nil on a clean capture, which has no truncation concept.
     public let truncatedAtSeconds: TimeInterval?
@@ -71,12 +84,14 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
     public init(
         recoveryAlignment: String = SourceTrackManifest.capturedAlignment,
         paddedGaps: [PaddedGap] = [],
+        supersededRecordings: [String] = [],
         truncatedAtSeconds: TimeInterval? = nil,
         systemAudio: Track,
         microphoneAudio: Track
     ) {
         self.recoveryAlignment = recoveryAlignment
         self.paddedGaps = paddedGaps
+        self.supersededRecordings = supersededRecordings
         self.truncatedAtSeconds = truncatedAtSeconds
         self.systemAudio = systemAudio
         self.microphoneAudio = microphoneAudio
@@ -112,6 +127,10 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         recoveryAlignment = try container.decodeIfPresent(String.self, forKey: .recoveryAlignment)
             ?? SourceTrackManifest.capturedAlignment
         paddedGaps = try container.decodeIfPresent([PaddedGap].self, forKey: .paddedGaps) ?? []
+        supersededRecordings = try container.decodeIfPresent(
+            [String].self,
+            forKey: .supersededRecordings
+        ) ?? []
         truncatedAtSeconds = try container.decodeIfPresent(
             TimeInterval.self,
             forKey: .truncatedAtSeconds
@@ -128,11 +147,17 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         // safe either way — but a field present on every recording stops being a signal, and the
         // absence of this one is the ordinary case.
         if !paddedGaps.isEmpty { try container.encode(paddedGaps, forKey: .paddedGaps) }
+        // Same rule as `paddedGaps`: omitted when empty, because the ordinary folder has never
+        // been rebuilt and a key present everywhere stops being a signal.
+        if !supersededRecordings.isEmpty {
+            try container.encode(supersededRecordings, forKey: .supersededRecordings)
+        }
         try container.encodeIfPresent(truncatedAtSeconds, forKey: .truncatedAtSeconds)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case recoveryAlignment, paddedGaps, truncatedAtSeconds, systemAudio, microphoneAudio
+        case recoveryAlignment, paddedGaps, supersededRecordings, truncatedAtSeconds
+        case systemAudio, microphoneAudio
     }
 
     /// Builds a manifest for a rebuilt recording, where there are no presentation timestamps and
