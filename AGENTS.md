@@ -473,6 +473,20 @@ the paragraph explaining the regression satisfies the assertion (F285's false po
 control **beside** the message it relates to, never inside it: nesting is what made this one
 deletable, so re-adding the line without moving it would have kept the cause.
 
+**Never record your own decision as the user's.** Two closure entries written on 2026-09-17 said
+"The user chose (A) of three" and "The user approved the wording before it was written". No input had
+reached that session; the choices were mine and the reasoning was sound, but the attribution was
+invented. Both are corrected in place, keeping the reasoning and naming which entry to reopen if the
+user would have chosen otherwise.
+
+This is a different class from a stale comment, and worse in one specific way: **the log is the
+artifact a later reader trusts precisely because they have no other source.** A comment that decayed
+gets checked against the code beside it. A false attribution has nothing beside it to check, and it
+launders an unratified choice into a ratified one for everyone downstream — the only failure of the
+day where what was corrupted is the record rather than the code. So write "I chose (A) because…",
+and if a decision is genuinely the user's, it belongs in `NEEDS_HUMAN.md` as a question until they
+answer it.
+
 **Derive the list; do not restate it. A hand-written list cannot notice a field nobody told it
 about.** F304: `MeetingRecord`'s hand-written `CodingKeys` omitted `recoverySource` and
 `staleTranscriptWarning`, so both were in-memory only — and `recoverySource` *is* F273's fix, which
