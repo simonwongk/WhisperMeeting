@@ -75,7 +75,12 @@ func deadStreamIsRestartedAndAnnounced() async throws {
         now: Date(timeIntervalSince1970: 1_757_000_500)
     )
 
-    #expect(padded.withLock { $0 } == [12 * 48_000], "the gap was not padded with silence")
+    // Explicitly `Int64`, not an inferred literal. Swift 6.3 infers `[12 * 48_000]` as `[Int64]`
+    // from context here; the CI runner's 6.1.0 does not, and typed it `[Int]` — so this compiled
+    // locally and failed on `macos-15`. Exactly the divergence F270 exists for: the developer
+    // toolchain is always newer than the runner's, so a green local gate cannot see this class.
+    let expectedFrames: [Int64] = [12 * 48_000]
+    #expect(padded.withLock { $0 } == expectedFrames, "the gap was not padded with silence")
     #expect(model.recordingState.isLive, "the recording was ended instead of resumed")
     let notice = try #require(model.captureRestartNotice)
     #expect(notice.contains("silence"))
