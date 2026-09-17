@@ -49,8 +49,9 @@ func genuineRepetitionIsNotADegenerateRun() {
 
 @Test("A run that real speech interrupted is still reported (F261)")
 func runFollowedByRealSpeechIsStillReported() {
-    // The exhibit ends "…No, No, My boyfriend." — trailing real words must not hide the run.
-    let text = String(repeating: "No, ", count: 4_034) + "My boyfriend."
+    // The observed loop ended with a short real sentence after it; trailing words must not hide the
+    // run. Synthetic stand-in — no user transcript content belongs in a fixture (AGENTS.md).
+    let text = String(repeating: "No, ", count: 4_034) + "Va bene allora."
     #expect(TranscriptQuality.degenerateRun(in: text)?.repeats == 4_034)
 }
 
