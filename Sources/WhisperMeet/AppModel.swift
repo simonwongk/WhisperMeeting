@@ -1555,19 +1555,42 @@ final class AppModel: ObservableObject {
             var live: Set<URL> = []
             let candidates = mayRebuild ? orphans : []
             if !candidates.isEmpty {
-                let before = candidates.map {
+                // F283: a capture inside an outage it intends to resume is NOT growing, because
+                // nothing is capturing — that is what the gap is. Growth alone therefore reads a
+                // sleeping recording as dead, and F255's lease gate does not cover it either: the
+                // instance sweeping here is a first launch after wake and holds the lease
+                // legitimately, while the recorder holds a valid one and is about to resume. Both
+                // guards miss it, which is why this one is not optional.
+                //
+                // Asked BEFORE the growth probe and short-circuiting it: a folder the writer has
+                // declared mid-outage needs no sampling, and skipping the sleep is the common
+                // case's reward.
+                let now = Date()
+                for candidate in candidates {
+                    if RecordingSessionSidecar.read(in: candidate.directory)?
+                        .isMidOutage(now: now) == true {
+                        live.insert(candidate.directory)
+                    }
+                }
+                let sampled = candidates.filter { !live.contains($0.directory) }
+                let before = sampled.map {
                     ($0.directory, RecordingFolderLiveness.sample(in: $0.directory))
                 }
-                try? await Task.sleep(for: .milliseconds(400))
-                for (directory, first) in before {
-                    let second = RecordingFolderLiveness.sample(in: directory)
-                    if RecordingFolderLiveness.isGrowing(from: first, to: second) {
-                        live.insert(directory)
+                if !before.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    for (directory, first) in before {
+                        let second = RecordingFolderLiveness.sample(in: directory)
+                        if RecordingFolderLiveness.isGrowing(from: first, to: second) {
+                            live.insert(directory)
+                        }
                     }
                 }
                 if !live.isEmpty {
                     messages.append(
-                        "A recording is still being written on this Mac, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
+                        // "in progress" rather than "being written": after F283 this covers a
+                        // capture that is paused inside an outage as well as one actively
+                        // appending, and a sleeping capture is not being written to.
+                        "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
                     )
                 }
             }

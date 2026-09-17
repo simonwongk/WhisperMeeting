@@ -178,7 +178,7 @@ func liveFolderIsSkippedDespiteHoldingTheLease() async throws {
     #expect(!FileManager.default.fileExists(
         atPath: folder.appendingPathComponent("meeting-recovered.wav").path
     ))
-    #expect(model.alertMessage?.contains("still being written") == true)
+    #expect(model.alertMessage?.contains("still in progress") == true)
 }
 
 @Test("A folder nobody is writing is still rebuilt, seconds after the crash")
@@ -203,4 +203,109 @@ func deadFolderIsStillRebuiltImmediately() async throws {
     #expect(FileManager.default.fileExists(
         atPath: folder.appendingPathComponent("meeting-recovered.wav").path
     ))
+}
+
+// MARK: - F283: the capture that is asleep, not dead
+
+/// The on-disk state of a recording the Mac has just slept through: raw tracks that stopped
+/// growing, and a sidecar saying an outage began and is expected to end.
+private func makeMidOutageFolder(in root: URL, outageBeganAt: Date) throws -> URL {
+    let id = UUID()
+    let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
+    try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+    let folder = recordings.appendingPathComponent(id.uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let partial = [Float](repeating: 0.25, count: 48_000)
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        try partial.withUnsafeBytes { try Data($0).write(to: folder.appendingPathComponent(name)) }
+    }
+    var session = RecordingSession(id: id, startedAt: outageBeganAt.addingTimeInterval(-60), title: "", markers: [])
+    session.outageBeganAt = outageBeganAt
+    session.interruptedBySleepAt = outageBeganAt
+    try RecordingSessionSidecar.write(session, in: folder)
+    return folder
+}
+
+@Test("A capture the Mac slept through is not rebuilt, though nothing is growing")
+@MainActor
+func midOutageFolderIsNotRebuilt() async throws {
+    // F283, and both of F279's guards miss it. The tracks are static because nothing is
+    // capturing — that is what the gap IS — so the growth probe reads the folder as dead. And the
+    // lease gate does not apply: this is a FIRST launch after wake, so it takes the lease
+    // legitimately while the recorder holds a valid one and is about to resume.
+    //
+    // Four minutes is under `defaultMaximumPaddedGap`, so F275 will resume rather than finalize.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MidOutage-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeMidOutageFolder(in: root, outageBeganAt: Date().addingTimeInterval(-240))
+
+    let suite = "WhisperMeet.MidOutage.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+    try #require(model.store.mayRebuildInterruptedRecordings, "the lease gate must be open")
+
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.isEmpty, "a sleeping capture must not be indexed as recovered")
+    #expect(!FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered.wav").path
+    ))
+    // The raw tracks the live instance is about to append to are untouched.
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path))
+    }
+    // Reported, not silent — and worded for a capture that is paused rather than appending.
+    #expect(model.alertMessage?.contains("still in progress") == true)
+}
+
+@Test("An outage older than the pad cap is rebuilt, so a crash mid-outage is recoverable")
+@MainActor
+func expiredOutageIsStillRebuilt() async throws {
+    // The bound, and it is the half that keeps this from being a new way to lose a recording. Past
+    // `defaultMaximumPaddedGap` the restart policy finalizes rather than resuming, so a folder
+    // whose outage began longer ago than that is definitively not coming back — and an app that
+    // died mid-outage would otherwise leave the flag set forever, which is the defer-forever
+    // outcome F279 rejects and worse than the bug F283 closes.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ExpiredOutage-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeMidOutageFolder(in: root, outageBeganAt: Date().addingTimeInterval(-3_600))
+
+    let suite = "WhisperMeet.ExpiredOutage.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.count == 1)
+    #expect(FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered.wav").path
+    ))
+}
+
+@Test("A sidecar with no outage recorded does not protect a dead folder")
+@MainActor
+func sidecarWithoutAnOutageDoesNotDefer() async throws {
+    // A crashed recording has a sidecar too — F258 writes one while capturing — so the sidecar's
+    // mere existence must not defer recovery. Only a recorded, unexpired outage does.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("NoOutage-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeLiveFolder(in: root)
+    try RecordingSessionSidecar.write(
+        RecordingSession(id: UUID(), startedAt: Date(), title: "Crashed", markers: []),
+        in: folder
+    )
+
+    let suite = "WhisperMeet.NoOutage.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.count == 1)
 }
