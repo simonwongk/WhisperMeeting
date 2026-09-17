@@ -1503,6 +1503,87 @@ final class AppModel: ObservableObject {
     /// Newest N backup generations to keep at the destination (Settings-controlled, F90).
     @Published var backupRetention = 5
 
+    /// One reviewed restore awaiting the user's answer (F191 slice E3). Nil when none is pending.
+    @Published var pendingLibraryRestore: PendingLibraryRestore?
+
+    /// A restore offer: the plan, and the generation it came from.
+    struct PendingLibraryRestore: Equatable {
+        let generation: URL
+        let plan: BackupRestorePlan
+    }
+
+    /// Offers a restore for review. Restores nothing itself (F191 slice E3, in F193's shape).
+    ///
+    /// The guards are stricter than `backUpLibrary`'s and for a concrete reason: a backup only
+    /// READS the library, while this overwrites it — so running during a capture would replace the
+    /// index of a meeting being recorded right now.
+    ///
+    /// The plan is built with the deep check. It costs minutes on a library of recordings, and this
+    /// is the one place that is the right trade: the user is about to overwrite everything they
+    /// have, and the cheap check cannot see same-size corruption. A fast answer that might be wrong
+    /// is worth less here than a slow one that is not.
+    func requestLibraryRestore(from generation: URL) async {
+        guard libraryAcceptsChanges("Restoring the library") else { return }
+        guard !isRecordingActive, !isImporting else {
+            alertMessage = "Finish recording or importing before restoring the library."
+            return
+        }
+        let library = store.rootDirectory
+        do {
+            let plan = try await Task.detached(priority: .userInitiated) {
+                try BackupRestorePlan.make(from: generation, into: library, deep: true)
+            }.value
+            pendingLibraryRestore = PendingLibraryRestore(generation: generation, plan: plan)
+        } catch {
+            alertMessage = "That backup could not be read, so nothing was changed. \(error.localizedDescription)"
+        }
+    }
+
+    /// Applies the reviewed restore. Does nothing at all unless `confirmed` is true.
+    ///
+    /// The unconfirmed call is the seam the confirmation hangs on, as in
+    /// `recoverLibrary(from:confirmed:)` and `performSourceRebuild(confirmed:)`, and it leaves the
+    /// offer standing because the user has not answered yet.
+    ///
+    /// Only a plan this model produced can be applied — F193's structural guarantee, so a caller
+    /// cannot restore something the user never saw described.
+    func performLibraryRestore(confirmed: Bool, acceptingUnverifiedBackup: Bool = false) async {
+        guard confirmed, let pending = pendingLibraryRestore else { return }
+        let library = store.rootDirectory
+        do {
+            let outcome = try await Task.detached(priority: .userInitiated) {
+                try BackupRestore.apply(
+                    pending.plan,
+                    from: pending.generation,
+                    into: library,
+                    acceptingUnverifiedBackup: acceptingUnverifiedBackup
+                )
+            }.value
+            pendingLibraryRestore = nil
+            // The files on disk changed underneath this object, with no write algorithm to notice.
+            store.reloadAfterLibraryRestore()
+            var message = "Your library was restored from the backup."
+            if let snapshot = outcome.preRestoreSnapshot {
+                // Named, because the user may want it back and because a restore that silently
+                // disposed of their previous library would not be reversible.
+                message += " Your previous library was kept at \(snapshot.lastPathComponent) inside the library folder."
+            }
+            if !pending.plan.notInBackup.isEmpty {
+                message += " \(pending.plan.notInBackup.count) file(s) recorded since that backup were left in place but are not listed in the restored index."
+            }
+            alertMessage = message
+        } catch {
+            // The offer stays, as F193 leaves `pendingLibraryRecovery` populated: the failure may be
+            // specific to this attempt, and `BackupRestore` has already rolled the library back.
+            alertMessage = "The library could not be restored, and nothing was changed. \(error.localizedDescription)"
+        }
+    }
+
+    /// Dismisses a pending restore offer without restoring anything.
+    func cancelLibraryRestore() {
+        pendingLibraryRestore = nil
+    }
+
     /// Copy the meeting library to a chosen backup folder as a new verified snapshot. Read-only on the
     /// source; surfaces success or the failure reason through `alertMessage` (F90). Refuses while a
     /// recording or import is active so it never snapshots changing files, and runs the copy/hash work

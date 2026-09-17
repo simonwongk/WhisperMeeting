@@ -1186,6 +1186,26 @@ final class MeetingStore: ObservableObject {
         loadReplacementRules()
     }
 
+    /// Re-reads every index from disk after a whole-library restore (F191 slice E3).
+    ///
+    /// `restoreIndexGeneration` above restores ONE index through the write algorithm and then
+    /// revalidates. A backup restore replaces all three indexes and the recordings underneath them
+    /// by copying files directly, so there is no write algorithm involved and nothing has told this
+    /// object that what it holds in memory is now stale.
+    ///
+    /// Goes through `revalidateHealth` for the reason F193 documents: without it a restore brings
+    /// the records back and leaves every mutator refusing, because `health` only ever worsened, and
+    /// the user's next edit vanishes silently. Re-evaluating also means a restore that landed a
+    /// still-broken index degrades right back rather than reporting success.
+    ///
+    /// Same constraint as `revalidateHealth` itself: only recovery may call this. Nothing on a save
+    /// path should reconsider health.
+    func reloadAfterLibraryRestore() {
+        revalidateHealth()
+        writeConflict = nil
+        unsavedChanges = false
+    }
+
     /// Re-reads the library after a lost race, so the next save can succeed.
     ///
     /// A conflict is a transient race, not a damaged library: nothing was made read-only, and the
