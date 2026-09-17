@@ -1,0 +1,21 @@
+{
+  "_source": "Scripts/bench/fidelity/results/smoke/installed-qwen3-8b-4bit/refinement.jsonl, 2026-09-17, installed Qwen3-8B-4bit, greedy",
+  "vectors": [
+    {
+      "expected": "accepted",
+      "id": "smoke-refine-en-1",
+      "input": "um so we shipped the Kestrel release on tuesday and uh the Fairhaven office picked it up wednesday you know",
+      "lang": "en",
+      "note": "Fillers removed, capitalisation fixed, wording and order kept. What refinement is for; the guard should let it through.",
+      "output": "We shipped the Kestrel release on Tuesday and the Fairhaven office picked it up Wednesday."
+    },
+    {
+      "expected": "accepted",
+      "id": "smoke-refine-zh-1",
+      "input": "那個 呃 我們星期二把 Kestrel 版本出貨了 然後 嗯 倫敦辦公室星期三才收到",
+      "lang": "zh",
+      "note": "Traditional in, Simplified out — 個→个, 貨→货, 倫→伦, 辦→办. Recorded as ACCEPTED because that is what the guard does, not because it is desirable: TranscriptLanguage.dominant reports .chinese for both scripts, so the script check cannot see the conversion. This vector is the evidence for F245.",
+      "output": "那个我们星期二把 Kestrel 版本出货了 然后伦敦办公室星期三才收到"
+    }
+  ]
+}
