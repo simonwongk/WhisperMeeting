@@ -12,6 +12,7 @@ struct BackupSummary: Sendable, Equatable {
 }
 
 enum BackupCoordinatorError: LocalizedError {
+    case anotherBackupIsRunning
     case insufficientSpace(needed: Int64, available: Int64)
     case verificationFailed(String)
     case destinationOverlapsSource
@@ -22,6 +23,8 @@ enum BackupCoordinatorError: LocalizedError {
             return "Not enough free space at the backup location: need about \(needed / 1_000_000) MB, \(available / 1_000_000) MB available."
         case let .verificationFailed(path):
             return "A backed-up file failed verification: \(path). The backup was not completed."
+        case .anotherBackupIsRunning:
+            return "Another backup to this destination is already running. Nothing was changed; try again when it finishes."
         case .destinationOverlapsSource:
             return "Choose a backup folder outside your meeting library — the backup location can't be the library or a folder inside it."
         }
@@ -39,6 +42,10 @@ enum BackupCoordinator {
     /// Managed subfolder (inside the user's chosen destination) that holds all backup generations. Only
     /// this subtree is ever scanned or pruned — never the chosen folder's other contents (F137).
     static let managedSubfolder = "WhisperMeet Backups"
+    /// Prefix for a generation being built. Never a valid generation id, so
+    /// `numericDirectories` cannot mistake one for a backup (F191 slice C).
+    static let stagingPrefix = ".staging-"
+
     /// Marker file written into a generation once it is fully copied+verified. A generation without it is
     /// an interrupted/partial run and is never counted or pruned as a real backup (F137).
     static let completionMarker = ".backup-complete"
@@ -84,6 +91,19 @@ enum BackupCoordinator {
         let backupRoot = destination.appendingPathComponent(managedSubfolder, isDirectory: true)
         try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
 
+        // Exclusive for the whole run (F191 slice C). Without it, two backups into one destination
+        // destroyed each other's work: a run at the same second-granularity stamp removed the
+        // generation directory before writing it, deleting a COMPLETED backup to make room, and the
+        // partial-cleanup pass at the end removed every unmarked directory — which is precisely
+        // what a concurrently running backup's generation looks like.
+        //
+        // Refuses rather than failing open. The recovery lease does the opposite, and the
+        // difference is which way the fallback is destructive: refusing recovery would brick a
+        // library permanently, while refusing a backup costs one retry.
+        let lock = BackupLock.acquire(backupRoot: backupRoot)
+        guard lock.isHeld else { throw BackupCoordinatorError.anotherBackupIsRunning }
+        defer { lock.release() }
+
         let sourceFiles = try descriptors(of: source, includingTopLevel: backedUpEntries)
 
         // Only COMPLETE generations are valid prior snapshots to hardlink from.
@@ -101,10 +121,23 @@ enum BackupCoordinator {
             throw BackupCoordinatorError.insufficientSpace(needed: bytesToCopy, available: available ?? 0)
         }
 
-        let generationDir = backupRoot.appendingPathComponent(String(now), isDirectory: true)
-        // A leftover dir at this exact stamp (e.g. a prior partial) is replaced, not merged.
-        try? fileManager.removeItem(at: generationDir)
+        // Staged under a unique name, published by rename (F191 slice C).
+        //
+        // The generation directory used to be created at its final name and cleared first with
+        // `try? removeItem`, so a second run at the same stamp deleted the first's COMPLETE
+        // generation — the backup the user was relying on — to make room for its own partial one.
+        // Now nothing exists at the final name until every file is copied, verified and marked, so
+        // a run that dies leaves a staging directory and never a half-built generation.
+        let publishedDir = backupRoot.appendingPathComponent(String(now), isDirectory: true)
+        let generationDir = backupRoot
+            .appendingPathComponent("\(stagingPrefix)\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: generationDir, withIntermediateDirectories: true)
+        // Any throw between here and publication leaves staging bytes, never a generation. The
+        // cleanup pass below removes them, and it is safe to do so only because the lock is held:
+        // any OTHER staging directory is definitionally abandoned, since the holder is the only
+        // process that could own one.
+        var published = false
+        defer { if !published { try? fileManager.removeItem(at: generationDir) } }
 
         var copied = 0
         var skipped = 0
@@ -129,18 +162,55 @@ enum BackupCoordinator {
             }
         }
 
-        // Mark complete only after every file copied and verified.
+        // Mark complete only after every file copied and verified, and while still staged — so the
+        // marker and the bytes become visible at the final name in one rename.
         try Data().write(to: generationDir.appendingPathComponent(completionMarker))
 
-        // Prune old COMPLETE generations (the marker excludes partials), then clean up any leftover
-        // partial (unmarked) generation directories so they never masquerade as backups.
+        // Publish. A pre-existing generation at this stamp is replaced only now, after the
+        // replacement is known-good: `replaceItemAt` swaps it atomically, so a same-stamp rerun can
+        // never leave the user with neither.
+        if fileManager.fileExists(atPath: publishedDir.path) {
+            _ = try fileManager.replaceItemAt(publishedDir, withItemAt: generationDir)
+        } else {
+            try fileManager.moveItem(at: generationDir, to: publishedDir)
+        }
+        published = true
+
+        // Prune old COMPLETE generations (the marker excludes partials), then clear abandoned
+        // staging directories. Safe under the lock: no other run can own one.
         let allComplete = completeGenerations(in: backupRoot, fileManager: fileManager)
         let toDrop = BackupRetention.prune(generations: allComplete, policy: .keepLatest(retain))
+        // Only what was ACTUALLY removed is reported. This was `try?` with every intended id
+        // returned regardless, so a removal that failed — a read-only parent, a file held open —
+        // came back in `prunedGenerations` anyway: a return value asserting a disk state it had not
+        // reached, which is the same defect as a comment that outlives its code.
+        var prunedIDs: [String] = []
         for generation in toDrop {
-            try? fileManager.removeItem(at: backupRoot.appendingPathComponent(generation.id, isDirectory: true))
+            let url = backupRoot.appendingPathComponent(generation.id, isDirectory: true)
+            do {
+                try fileManager.removeItem(at: url)
+                prunedIDs.append(generation.id)
+            } catch {
+                // Not fatal: the backup itself succeeded, and retention is a tidiness policy. The
+                // summary simply does not claim it.
+                continue
+            }
         }
-        for partial in partialGenerations(in: backupRoot, fileManager: fileManager) {
-            try? fileManager.removeItem(at: backupRoot.appendingPathComponent(partial, isDirectory: true))
+        // Both kinds of leftover, and keeping this sweep is the point rather than an accident.
+        //
+        // My first version of this change dropped the unmarked-numeric sweep entirely, on the
+        // grounds that staged publication means this run never creates one. An existing F137 test
+        // caught it: a build from before staged publication could have died mid-run and left a
+        // partial at the final name, and nothing would ever clear it. The old sweep was correct in
+        // INTENT and unsafe only because it ran without a lock — a concurrent run's in-flight
+        // generation is also unmarked. So it is secured, not removed: under the lock, no other run
+        // can own either kind, and this run's own generation is already published by now.
+        let leftovers = stagingDirectories(in: backupRoot, fileManager: fileManager)
+            + partialGenerations(in: backupRoot, fileManager: fileManager).map {
+                backupRoot.appendingPathComponent($0, isDirectory: true)
+            }
+        for leftover in leftovers {
+            try? fileManager.removeItem(at: leftover)
         }
 
         return BackupSummary(
@@ -148,7 +218,7 @@ enum BackupCoordinator {
             copied: copied,
             skipped: skipped,
             verified: true,
-            prunedGenerations: toDrop.map(\.id)
+            prunedGenerations: prunedIDs
         )
     }
 
@@ -221,6 +291,17 @@ enum BackupCoordinator {
         numericDirectories(in: backupRoot, fileManager: fileManager).compactMap { (name, url) in
             fileManager.fileExists(atPath: url.appendingPathComponent(completionMarker).path) ? nil : name
         }
+    }
+
+    /// Directories left behind by a run that did not reach publication. Under the backup lock,
+    /// every one of these is abandoned by definition — the lock holder is the only process that
+    /// could own one — which is what makes removing them safe rather than a race against a
+    /// concurrent run. That race is exactly what the old unmarked-directory sweep was.
+    private static func stagingDirectories(in backupRoot: URL, fileManager: FileManager) -> [URL] {
+        let names = (try? fileManager.contentsOfDirectory(atPath: backupRoot.path)) ?? []
+        return names
+            .filter { $0.hasPrefix(stagingPrefix) }
+            .map { backupRoot.appendingPathComponent($0, isDirectory: true) }
     }
 
     private static func numericDirectories(in backupRoot: URL, fileManager: FileManager) -> [(String, URL)] {
