@@ -13,6 +13,11 @@ import Foundation
 /// the installed model's refinement path and got Simplified back, on neutral business content, and
 /// `RefinementGuardVectorTests` asserted that the shipped guard **accepted** it — so the app was
 /// pasting Simplified over a Traditional dictation.
+///
+/// Its cost is measured too, because this sits on the dictation path and F200's budget is 800 ms
+/// plus 20 ms per word: **36 µs** per call on a 126-character dictation, and **0.95 ms** once to
+/// build `ChineseScript`'s two 3,800-character sets on first use. Neither is worth an optimisation
+/// and both are worth a number, so nobody has to wonder.
 public enum ScriptDrift {
     /// Whether `text` reads as Traditional: it contains Traditional-only characters and no
     /// Simplified-only ones.

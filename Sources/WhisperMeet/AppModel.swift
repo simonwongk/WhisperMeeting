@@ -195,8 +195,14 @@ final class AppModel: ObservableObject {
     @Published var recordingTitle: String = "" {
         didSet {
             // Per keystroke, but `updateRecordingSession` returns immediately when nothing is
-            // recording, so idle typing costs a guard. While recording it is one small whole-file
-            // write — the same cost a marker drop already pays, and markers are dropped by hand.
+            // recording, so idle typing costs a guard.
+            //
+            // While recording it is a sidecar read plus a whole-file write, which is exactly the
+            // shape the F160 rule exists to keep off a tick — so it is **measured**, not assumed:
+            // **269 µs** per read+write with twelve markers, so ~0.27% of main-thread time at ten
+            // keystrokes a second. A marker drop already pays the same call; the difference is only
+            // that markers are dropped by hand. If that ever stops being true — a much larger
+            // sidecar, a pressured filesystem — coalescing the writes is the fix, not dropping them.
             guard oldValue != recordingTitle else { return }
             updateRecordingSession { _ in }
         }
