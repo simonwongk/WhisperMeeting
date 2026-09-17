@@ -19,6 +19,19 @@ struct DictationView: View {
                     Text("Quick Dictation").font(.largeTitle.bold())
                     Text("Hold \(DictationKeyName.display(for: dictation.hotkey.keyCode)) anywhere, speak, release — the transcript is pasted into the focused field (or copied). 100% local.")
                         .foregroundStyle(.secondary)
+                    // F195: BEFORE the hotkey instruction is acted on, not under the History
+                    // heading below. The read-only banner used to live there, so a user held the
+                    // key, spoke, and learned afterwards that nothing had been kept. Placed right
+                    // beneath the sentence telling them to hold the key, because that is the
+                    // instruction it qualifies.
+                    if let warning = log.preDictationWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bannerSurface(.orange)
+                            .accessibilityElement(children: .combine)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -98,6 +111,22 @@ struct DictationView: View {
                             .bannerSurface(.orange)
                             .accessibilityElement(children: .combine)
                             .padding(.bottom, 8)
+                    }
+                    // A separate line, because it means something different (F195): the history was
+                    // readable and a WRITE failed, which may succeed next time. Sharing one channel
+                    // with the load notice is what let a successful save erase a read-only warning.
+                    if let message = log.saveErrorMessage {
+                        Label(
+                            "The last dictation could not be saved to this history: \(message)",
+                            systemImage: "exclamationmark.arrow.circlepath"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .bannerSurface(.orange)
+                        .accessibilityElement(children: .combine)
+                        .padding(.bottom, 8)
                     }
                     if log.log.entries.isEmpty {
                         // A read-only log will never gain entries, so do not promise that it will —
