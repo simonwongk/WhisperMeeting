@@ -2383,9 +2383,9 @@ private struct TranscriptDetailView: View {
                         Label(warning, systemImage: "waveform.badge.exclamationmark")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                            .padding(12)
+                            .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .bannerSurface(.orange)
                             .accessibilityElement(children: .combine)
                     }
                     tagsEditor

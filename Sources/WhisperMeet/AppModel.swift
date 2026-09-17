@@ -514,8 +514,9 @@ final class AppModel: ObservableObject {
         return false
     }
 
-    /// Rebuilds one interrupted recording folder from its raw tracks. Injectable so startup
-    /// recovery's per-orphan resilience is testable; defaults to the real rebuild (F47).
+    /// Rebuilds one interrupted recording folder from its raw tracks. Injectable so both callers
+    /// are testable — startup recovery's per-orphan resilience (F47) and the failed-stop path that
+    /// rebuilds this instance's own folder (F256) — and defaults to the real rebuild.
     var recoverInterruptedRecording: @Sendable (URL) throws -> RecoveredRecording? = {
         try InterruptedRecordingRecovery.recover(in: $0)
     }
@@ -1441,6 +1442,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The one place that turns a rebuild's truncation into words (F256).
+    ///
+    /// Both `InterruptedRecordingRecovery.recover` call sites need it, and they disagreed: the
+    /// startup sweep reported the truncation and `stopRecording`'s error path did not, so the same
+    /// bad block produced a "Partly Recovered Meeting" on one route and an ordinary four-second
+    /// meeting under the user's own title on the other. The throwing-read half of F256 was global;
+    /// this half was not.
+    static func recoveryWarning(for recovered: RecoveredRecording) -> String? {
+        recovered.truncatedAtSeconds.map {
+            "The rebuilt audio stops at \(TranscriptFormatter.clock($0)) because a source track could not be read past that point. Anything recorded after that is missing from this file."
+        }
+    }
+
+    /// Shown instead of the ordinary recovery notice when almost nothing survived (F256). Names the
+    /// raw tracks because they are the only remaining route to the missing audio — nothing re-runs
+    /// recovery on a folder once it is indexed (F267).
+    static let severelyTruncatedRecoveryMessage = "Most of this recording could not be rebuilt because a source track became unreadable. The original microphone and system tracks are still in this meeting's folder and have not been changed."
+
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
@@ -1489,12 +1508,18 @@ final class AppModel: ObservableObject {
             // and since nothing gates `startRecording` on the lease, that instance may well not hold
             // it. Gating the function instead of the loop would break exactly that case.
             let mayRebuild = store.mayRebuildInterruptedRecordings
-            if !mayRebuild {
+            // Asked even when the gate is shut, so the notice below is about folders that actually
+            // exist. `orphanedRecordings()` is a pure read-and-report — that is the stated reason
+            // the gate is not inside it — so calling it while refusing to act on it is safe.
+            // Without this, opening a second copy over a perfectly clean library told the user to
+            // quit and relaunch to finish recovering nothing, on every launch.
+            let orphans = try store.orphanedRecordings()
+            if !mayRebuild, !orphans.isEmpty {
                 messages.append(
                     "Another copy of WhisperMeet is open, so interrupted recordings were left untouched. Your audio is safe where it is. Quit the other copy and reopen WhisperMeet to finish recovering them."
                 )
             }
-            for orphan in try mayRebuild ? store.orphanedRecordings() : [] {
+            for orphan in mayRebuild ? orphans : [] {
                 let recovered: RecoveredRecording?
                 do {
                     recovered = try await Task.detached(priority: .utility) {
@@ -1554,19 +1579,15 @@ final class AppModel: ObservableObject {
                     continue
                 }
                 // F256. The rebuild reports where it stopped; say so on the meeting itself, not
-                // only in the startup alert the user dismisses once. Names the folder's raw tracks
-                // because they are the only remaining route to the missing audio — nothing re-runs
-                // recovery on a folder once it is indexed (F267).
-                let recoveryWarning = recovered.truncatedAtSeconds.map {
-                    "The rebuilt audio stops at \(TranscriptFormatter.clock($0)) because a source track could not be read past that point. Anything recorded after that is missing from this file."
-                }
+                // only in the startup alert the user dismisses once.
+                let recoveryWarning = Self.recoveryWarning(for: recovered)
                 // Below a tenth of what the tracks promised, "technically recovered" would
                 // masquerade as recovered — a two-second stub titled like an ordinary meeting. It
-                // lands as `.failed` naming the raw tracks instead, which is also what keeps
-                // transcription from being offered on audio that is mostly gone.
+                // lands as `.failed` naming the raw tracks instead. What `.failed` buys is the
+                // title, the red icon and the error text; transcription is still offered, as it is
+                // for `.recorded`, because the surviving audio may still be worth transcribing.
                 if recovered.isSeverelyTruncated {
                     let failedTitle = "Partly Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
-                    let message = "Most of this recording could not be rebuilt because a source track became unreadable. The original microphone and system tracks are still in this meeting's folder and have not been changed."
                     store.upsert(MeetingRecord(
                         id: orphan.id,
                         title: failedTitle,
@@ -1574,10 +1595,13 @@ final class AppModel: ObservableObject {
                         duration: duration,
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: .failed,
-                        errorMessage: message,
+                        errorMessage: Self.severelyTruncatedRecoveryMessage,
                         recoveryWarning: recoveryWarning
                     ))
-                    messages.append("\(failedTitle) needs attention. \(message)")
+                    messages.append("\(failedTitle) needs attention. \(Self.severelyTruncatedRecoveryMessage)")
+                    // The clock time belongs in the worse case too. Without this the startup alert
+                    // named where the audio stops only for the MILD truncation.
+                    if let recoveryWarning { messages.append(recoveryWarning) }
                     continue
                 }
                 store.upsert(MeetingRecord(
@@ -1924,23 +1948,44 @@ final class AppModel: ObservableObject {
             recordingMeter.reset()
             refreshRecordingPreflight()
             do {
+                // Through the same seam the orphan sweep uses. It was calling the type directly,
+                // which is why this branch — the one that runs when the user's own stop fails —
+                // had no way to be tested at all.
+                let recover = recoverInterruptedRecording
                 let recovered = try await Task.detached(priority: .userInitiated) {
-                    try InterruptedRecordingRecovery.recover(in: directory)
+                    try recover(directory)
                 }.value
                 if let recovered {
-                    let fallbackTitle = "Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+                    // F256 applies here too. This is the second, deliberately ungated `recover`
+                    // call site — this instance rebuilding its OWN folder after its own
+                    // finalization failed — and a bad block truncates it exactly the same way. The
+                    // user's typed title is kept either way: they chose it and will recognise the
+                    // meeting by it; only an untitled severe truncation gets the synthesized name.
+                    let severe = recovered.isSeverelyTruncated
+                    let fallbackTitle = severe
+                        ? "Partly Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+                        : "Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
                     let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                     let recoveredMarkers = pendingMarkers.isEmpty ? nil : pendingMarkers
                     pendingMarkers = []
+                    let recoveryWarning = Self.recoveryWarning(for: recovered)
                     store.upsert(MeetingRecord(
                         id: id,
                         title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
                         duration: recovered.duration,
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
-                        errorMessage: "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again.",
-                        markers: recoveredMarkers
+                        status: severe ? .failed : .recorded,
+                        errorMessage: severe
+                            ? Self.severelyTruncatedRecoveryMessage
+                            : "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again.",
+                        markers: recoveredMarkers,
+                        recoveryWarning: recoveryWarning
                     ))
-                    alertMessage = "The meeting could not finish normally, but its recording was recovered and added to history. \(recordingError.localizedDescription)"
+                    var alert = severe
+                        ? "The meeting could not finish normally, and most of its audio could not be rebuilt. \(Self.severelyTruncatedRecoveryMessage)"
+                        : "The meeting could not finish normally, but its recording was recovered and added to history."
+                    if let recoveryWarning { alert += " \(recoveryWarning)" }
+                    alertMessage = alert + " \(recordingError.localizedDescription)"
                     return id
                 }
             } catch {

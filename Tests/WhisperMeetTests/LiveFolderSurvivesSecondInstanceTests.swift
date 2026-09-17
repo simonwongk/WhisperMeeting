@@ -103,3 +103,32 @@ func finishedRecordingIsPreferredOverARebuild() async throws {
         atPath: folder.appendingPathComponent("meeting-recovered.wav").path
     ))
 }
+
+@Test("A second instance over a clean library says nothing about interrupted recordings")
+@MainActor
+func secondInstanceDoesNotNagOverACleanLibrary() async throws {
+    // The gate's notice tells the user to quit the other copy and relaunch "to finish recovering
+    // them". It was appended on the strength of the lease alone, so a second copy opened over a
+    // library with nothing to recover said it anyway — on every launch, about nothing.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("LiveFolderCleanNag-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // Recordings/ exists and is empty: no interrupted folders anywhere.
+    try FileManager.default.createDirectory(
+        at: root.appendingPathComponent("Recordings", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+
+    let suite = "WhisperMeet.LiveFolderCleanNag.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+    let instanceA = LibraryWriterLock.acquire(root: root)
+    let b = makeModel(root: root, suite: suite)
+    try #require(b.store.writerLease == .heldElsewhere(realm: "shared"))
+    try #require(try b.store.orphanedRecordings().isEmpty)
+    await b.performStartupRecovery()
+    withExtendedLifetime(instanceA) {}
+
+    #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true)
+}

@@ -108,7 +108,7 @@ func finalChunkIsSizedToTheRemainder() throws {
 
 // MARK: - The truncation floor
 
-@Test("A rebuild that can read nothing throws instead of indexing an empty meeting")
+@Test("A rebuild whose first chunk is unreadable throws instead of indexing an empty meeting")
 func zeroReadableFramesThrows() throws {
     // The floor, and the Critical a reviewer found in the design before any of this was written.
     //
@@ -119,17 +119,52 @@ func zeroReadableFramesThrows() throws {
     // UUID would enter `indexedIDs`, and `orphanedRecordings()` would exclude the folder
     // permanently — stranding intact `.f32` tracks with no route back. Strictly worse than the bug
     // this ticket fixes.
+    //
+    // This goes through the injected opener, and the reason is worth stating because the obvious
+    // version of this test does not work: `chmod 0o000` on the track, and equally pointing the
+    // name at a directory, both throw from `FileHandle(forReadingFrom:)` — BEFORE the mix — so the
+    // floor is never consulted and the test passes while covering nothing. Production reaches the
+    // floor by a route a test cannot manufacture: a bad block in the first chunk of a file that
+    // opens perfectly well.
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("RecoveryFloor-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer {
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: directory.path
-        )
-        try? FileManager.default.removeItem(at: directory)
-    }
+    defer { try? FileManager.default.removeItem(at: directory) }
 
     // `frameCount` reads the file SIZE, so `totalFrames` is non-zero while every read fails.
+    let path = directory.appendingPathComponent("system-audio.f32")
+    try Data(repeating: 0, count: 4_000).write(to: path)
+
+    #expect(throws: ReadFailure.self) {
+        _ = try InterruptedRecordingRecovery.recover(
+            in: directory,
+            sampleRate: 48_000,
+            openTrack: { _ in { _ in throw ReadFailure() } }
+        )
+    }
+    // Nothing was left behind pretending to be a recording: the 44-byte stub whose header was
+    // never written is removed, so the folder still looks like the interrupted capture it is and
+    // the next launch retries.
+    #expect(
+        !FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("meeting-recovered.wav").path
+        )
+    )
+    // And the raw track the user still needs is untouched.
+    #expect(FileManager.default.fileExists(atPath: path.path))
+}
+
+@Test("A rebuild whose track cannot even be opened throws and leaves the folder alone")
+func unopenableTrackThrows() throws {
+    // The neighbouring failure, through the real opener. This is what `chmod 0o000` actually
+    // exercises — `FileHandle(forReadingFrom:)` failing with EACCES — which is a different branch
+    // from the floor above and worth holding on its own: the stub must be cleaned up here too,
+    // and that cleanup runs from a `defer` armed before the reader is ever constructed.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RecoveryUnopenable-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
     let path = directory.appendingPathComponent("system-audio.f32")
     try Data(repeating: 0, count: 4_000).write(to: path)
     try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path.path)
@@ -140,14 +175,50 @@ func zeroReadableFramesThrows() throws {
     #expect(throws: (any Error).self) {
         _ = try InterruptedRecordingRecovery.recover(in: directory)
     }
-    // Nothing was left behind pretending to be a recording.
     #expect(
         !FileManager.default.fileExists(
             atPath: directory.appendingPathComponent("meeting-recovered.wav").path
         )
     )
-    // And the raw track the user still needs is untouched.
     #expect(FileManager.default.fileExists(atPath: path.path))
+}
+
+@Test("A rebuild that keeps only its first chunks is truncated, not failed")
+func partialReadIsKeptNotDiscarded() throws {
+    // The floor's counterpart at the other end: once ANY frames are readable the recovery
+    // succeeds, short, and says where it stops. The floor must not swallow a partial rebuild.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RecoveryPartial-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // Four seconds of declared audio at 48 kHz; the reader dies after the first 8,192-frame chunk.
+    try Data(repeating: 0, count: 192_000 * 4)
+        .write(to: directory.appendingPathComponent("system-audio.f32"))
+
+    var chunk = 0
+    let recovered = try #require(try InterruptedRecordingRecovery.recover(
+        in: directory,
+        sampleRate: 48_000,
+        openTrack: { url in
+            guard url != nil else { return { [Float](repeating: 0, count: $0) } }
+            return { count in
+                chunk += 1
+                if chunk > 1 { throw ReadFailure() }
+                return [Float](repeating: 0.5, count: count)
+            }
+        }
+    ))
+    #expect(recovered.source == .rebuiltSourceTracks)
+    #expect(recovered.truncatedAtSeconds == 8_192.0 / 48_000)
+    #expect(recovered.expectedDurationSeconds == 4.0)
+    #expect(abs(recovered.duration - 8_192.0 / 48_000) < 0.0001)
+    // 0.17s of an expected 4s is under a tenth: the meeting is not presented as an ordinary one.
+    #expect(recovered.isSeverelyTruncated)
+    // The WAV on disk declares the truncated length, not the length the tracks promised.
+    let wav = try Data(contentsOf: recovered.recordingURL)
+    let declared = wav.withUnsafeBytes { $0.load(fromByteOffset: 40, as: UInt32.self).littleEndian }
+    #expect(Int(declared) == 8_192 * 2)
 }
 
 @Test("A readable rebuild reports no truncation and keeps its full duration")

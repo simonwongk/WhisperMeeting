@@ -131,6 +131,21 @@ and must not be written up as covered. If it proves to bite, the cheapest precis
 ticket originally proposed (skip only folders whose `.f32` mtime is fresh); gating `startRecording`
 on the lease would prevent the state arising at all.
 
+**Second residual gap (2026-09-16, found in implementation review).** The sequence above stops at
+step 4. It continues, and the continuation is F255 verbatim rather than a delay:
+
+5. A quits. The lock file is free, but `writerLease` is sampled once in `MeetingStore.init` and
+   never refreshed, so B still believes `.heldElsewhere` for the rest of its life.
+6. B starts recording. Nothing gates `startRecording` on the lease.
+7. Instance C launches → acquires `.held` → the gate **opens** → C's orphan sweep rebuilds B's
+   **live** folder, indexes the partial, and the `meeting.wav` B writes on stop is stranded.
+
+The premise "a live second instance never holds the lease" protects the case where the recorder
+holds `.held`. It does not cover the case where the recorder holds *neither* lease because its
+sample is stale. Filed separately rather than patched here: re-sampling the lease is not obviously
+safe (a cached `.heldElsewhere` that became stale the other way would make B refuse to record, which
+is worse than this), and gating `startRecording` needs its own design.
+
 ---
 
 ## F256: a swallowed read error becomes silence
@@ -188,9 +203,16 @@ Four changes:
 4. **The meeting remembers it.** A new optional `recoveryWarning: String?` on `MeetingRecord`,
    naming the truncation and the true duration. It stays `nil` for every recovery that read cleanly
    and for every meeting that was never recovered — its presence means "this audio is short by an
-   unknown amount", and nothing else may start using it for unrelated notices. **Rendered at
-   `ContentView.swift:2887-2899`**, the existing site for `alignmentWarning` and `languageWarning`,
-   which is the same shape. Without a named surface this would close `partial`, not `fixed`.
+   unknown amount", and nothing else may start using it for unrelated notices. Without a named
+   surface this would close `partial`, not `fixed`.
+
+   **Correction (2026-09-16, during implementation).** This section originally specified
+   `ContentView.swift:2887-2899`, beside `alignmentWarning` and `languageWarning`. That site is
+   inside `transcriptSection`, which `body` renders only for `meeting.status == .completed` — and a
+   truncated recovery is `.recorded` while a severely truncated one is `.failed`, so the banner
+   would have been invisible in **both** of the cases it exists for. It ships beside the
+   capture-health advisory in `body` instead, which is the same kind of statement and renders at
+   every status.
 
 ### The truncation floor — "truncate" and "fail" are one policy, not two
 
@@ -247,9 +269,13 @@ static func mixTracks(
 ```
 
 The header rewrite (`output.seek(toOffset: 0)`) stays in `recover`, which owns the file handle. The
-truncation is **returned rather than rethrown** so `recover` can still finalize the readable prefix —
-and the underlying error travels with it, because `recoveryWarning` quotes its
-`localizedDescription`.
+truncation is **returned rather than rethrown** so `recover` can still finalize the readable prefix.
+
+**Correction (2026-09-16, during implementation).** This said the underlying error travels with the
+truncation "because `recoveryWarning` quotes its `localizedDescription`". It does not, and should
+not: a raw `NSCocoaErrorDomain` string helps nobody. The error travels only so `recover` can rethrow
+it when NOTHING was readable (the floor); the user-facing warning is built from the frame offset
+alone.
 
 A test then supplies a `readSystem` that throws at chunk 3 and asserts the output is exactly two
 chunks long with the true duration. Same seam-extraction the F188/F193/F243 review pushed for on

@@ -81,10 +81,25 @@ func aDeadHoldersLeaseIsAvailable() throws {
     defer { if holder.isRunning { kill(holder.processIdentifier, SIGKILL) } }
 
     // Handshake, so the assertion below cannot race the child taking the lock.
+    //
+    // Bounded, and both bounds matter. `Process.run()` on `/usr/bin/env` succeeds whenever `env`
+    // exists — it says nothing about `python3`, which Apple has been steadily unbundling and which
+    // a runner without Command Line Tools does not have. An unbounded loop over `availableData`
+    // would then spin at 100% CPU forever on an already-EOF pipe, and this suite already has a
+    // scar from a wedged child presenting as a silent hang (F169). Empty data is EOF; the deadline
+    // catches a child that opens the pipe and then stalls.
     var banner = Data()
+    let deadline = Date().addingTimeInterval(10)
     while !String(decoding: banner, as: UTF8.self).contains("locked") {
-        banner.append(out.fileHandleForReading.availableData)
+        let chunk = out.fileHandleForReading.availableData
+        if chunk.isEmpty { break }          // the child exited without taking the lock
+        if Date() >= deadline { break }
+        banner.append(chunk)
     }
+    try #require(
+        String(decoding: banner, as: UTF8.self).contains("locked"),
+        "the holder child never reported taking the lock — is python3 present?"
+    )
 
     let blocked = LibraryWriterLock.acquire(root: root)
     #expect(blocked.lease == .heldElsewhere(realm: "shared"), "a live holder must block")

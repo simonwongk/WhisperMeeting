@@ -53,7 +53,7 @@
 - Consumes: `StoreWriterLease` from `Sources/WhisperCore/LibraryWriterLease.swift` — cases `.held(realm: String)`, `.heldElsewhere(realm: String)`, `.unavailable(reason: String)`, `.unmanaged`.
 - Produces: `InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(_ lease: StoreWriterLease) -> Bool`, used by Task 2.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `Tests/WhisperCoreTests/RecoveryRebuildGateTests.swift`:
 
@@ -99,7 +99,7 @@ func unmanagedLeaseMayRebuild() {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 ```bash
 FW=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
@@ -111,7 +111,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: build failure — `type 'InterruptedRecordingRecovery' has no member 'mayRebuildInterruptedRecordings'`.
 
-- [ ] **Step 3: Implement it**
+- [x] **Step 3: Implement it**
 
 In `Sources/WhisperCore/InterruptedRecordingRecovery.swift`, immediately after the two `private static let` filename constants at the top of the enum:
 
@@ -146,11 +146,11 @@ In `Sources/WhisperCore/InterruptedRecordingRecovery.swift`, immediately after t
     }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Same command as Step 2. Expected: `✔ Test run with 4 tests`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperCore/InterruptedRecordingRecovery.swift \
@@ -172,7 +172,7 @@ git commit -m "feat(recovery): a pure predicate for who may rebuild an interrupt
 
 **Do NOT gate `AppModel.swift:1820`.** `InterruptedRecordingRecovery.recover` has a second call site inside `stopRecording`'s error path. That is this instance recovering *its own* folder after its own finalization failed, and since nothing gates `startRecording` on the lease, that instance may be holding `.heldElsewhere`. Gating it would stop a non-lease-holding instance recovering the recording it just made. Gate the loop, not the function.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `Tests/WhisperMeetTests/OrphanRebuildLeaseGateTests.swift`:
 
@@ -252,7 +252,7 @@ func aLaterFinishedRecordingIsStillUsable() throws {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -262,7 +262,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: `liveFolderIsNotRebuiltByASecondInstance` fails — without the gate nothing yet consults the lease, and the predicate call is the only thing asserting it. (If `LibraryWriterLock.acquire` is not visible, add `@testable import WhisperCore`, which the file already has.)
 
-- [ ] **Step 3: Wire the gate**
+- [x] **Step 3: Wire the gate**
 
 In `Sources/WhisperMeet/AppModel.swift`, inside `performStartupRecovery`, replace:
 
@@ -300,11 +300,11 @@ with:
             for orphan in try mayRebuild ? store.orphanedRecordings() : [] {
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Same command as Step 2. Expected: `✔ Test run with 2 tests`.
 
-- [ ] **Step 5: Run the whole suite, then commit**
+- [x] **Step 5: Run the whole suite, then commit**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -334,7 +334,7 @@ git commit -m "fix(recovery): never rebuild a folder another live instance owns 
   ```
   **Three** closures, not two: the loop writes each chunk as it goes, so a two-closure version would have to return all the PCM — 345 MB for a 60-minute meeting, where the current code streams.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `Tests/WhisperCoreTests/RecoveryTruncationTests.swift`:
 
@@ -427,7 +427,7 @@ func firstChunkFailureWritesNothing() throws {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -437,7 +437,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: build failure — no member `mixTracks`.
 
-- [ ] **Step 3: Implement `mixTracks`**
+- [x] **Step 3: Implement `mixTracks`**
 
 Add to `InterruptedRecordingRecovery`, above `recover(in:sampleRate:)`:
 
@@ -487,11 +487,11 @@ Add to `InterruptedRecordingRecovery`, above `recover(in:sampleRate:)`:
     }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Same command as Step 2. Expected: `✔ Test run with 4 tests`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperCore/InterruptedRecordingRecovery.swift \
@@ -513,7 +513,7 @@ git commit -m "refactor(recovery): extract the mix loop so an I/O error can be t
 
 `RecoveredRecording` has no explicit `init`, so the new property **must** carry `= nil` or all four construction sites break, including `Tests/WhisperMeetTests/StartupRecoveryResilienceTests.swift`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `Tests/WhisperCoreTests/RecoveryTruncationTests.swift`:
 
@@ -546,7 +546,7 @@ func zeroReadableFramesThrows() throws {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -556,7 +556,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: FAIL — `recover` currently returns a `RecoveredRecording` with duration 0 rather than throwing.
 
-- [ ] **Step 3: Make the read throwing, add the field, add the floor**
+- [x] **Step 3: Make the read throwing, add the field, add the floor**
 
 **3a.** In `RawFloatReader`, change `read` to throw. A short read still zero-pads — that is correct for the shorter track and must not change; only a genuine error propagates:
 
@@ -666,7 +666,7 @@ then leave the header rewrite as it is, and return:
         )
 ```
 
-- [ ] **Step 4: Run the new test, then the whole suite**
+- [x] **Step 4: Run the new test, then the whole suite**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -677,7 +677,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: the new test passes; the full suite still passes. If `StartupRecoveryResilienceTests` fails to build, the `= nil` default in 3b is missing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperCore/InterruptedRecordingRecovery.swift \
@@ -698,7 +698,7 @@ git commit -m "fix(recovery): truncate at a read error, and refuse to index an e
 - Consumes: `RecoveredRecording.truncatedAtSeconds` from Task 4.
 - Produces: `MeetingRecord.recoveryWarning: String?`, rendered by Task 6.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `Tests/WhisperMeetTests/RecoveryWarningPersistenceTests.swift`:
 
@@ -763,7 +763,7 @@ func cleanRecoveryHasNoWarning() throws {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 ```bash
 swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
@@ -773,7 +773,7 @@ swift test --disable-sandbox --no-parallel -Xswiftc -F -Xswiftc "$FW" \
 
 Expected: build failure — `MeetingRecord` has no `recoveryWarning`.
 
-- [ ] **Step 3: Add the field and set it**
+- [x] **Step 3: Add the field and set it**
 
 **3a.** In `Sources/WhisperMeet/MeetingStore.swift`, in `MeetingRecord` beside `alignmentWarning`:
 
@@ -830,11 +830,11 @@ with `self.recoveryWarning = recoveryWarning` in the body.
                 ))
 ```
 
-- [ ] **Step 4: Run the new tests, then the whole suite**
+- [x] **Step 4: Run the new tests, then the whole suite**
 
 Same filter as Step 2, then the full run. Expected: 3 new tests pass, suite green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/WhisperMeet/MeetingStore.swift Sources/WhisperMeet/AppModel.swift \
@@ -847,14 +847,14 @@ git commit -m "feat(recovery): a truncated rebuild says so on the meeting itself
 ### Task 6: Render the warning (F256)
 
 **Files:**
-- Modify: `Sources/WhisperMeet/ContentView.swift:2887-2899` — the meeting detail, beside `alignmentWarning`
+- Modify: `Sources/WhisperMeet/ContentView.swift` — the meeting detail. **Corrected during implementation:** NOT beside `alignmentWarning` at `:2887-2899`, which is inside `transcriptSection` and renders only for `.completed`; beside the capture-health advisory in `body`, which renders at every status.
 
 **Interfaces:**
 - Consumes: `MeetingRecord.recoveryWarning` from Task 5.
 
 Without a render site this closes `partial`, not `fixed` — AGENTS.md's definition of done needs a user-triggerable path.
 
-- [ ] **Step 1: Add the banner**
+- [x] **Step 1: Add the banner**
 
 Immediately after the `if let warning = meeting.alignmentWarning { ... }` block:
 
@@ -873,7 +873,7 @@ Immediately after the `if let warning = meeting.alignmentWarning { ... }` block:
             }
 ```
 
-- [ ] **Step 2: Build with warnings as errors**
+- [x] **Step 2: Build with warnings as errors**
 
 ```bash
 swift build -c release -Xswiftc -warnings-as-errors
@@ -881,7 +881,7 @@ swift build -c release -Xswiftc -warnings-as-errors
 
 Expected: `Build complete!`. (`swift build -c release` does not compile tests, so test-only warnings will not appear here — CI's `swift test` is what surfaces those.)
 
-- [ ] **Step 3: Run the full gate**
+- [x] **Step 3: Run the full gate**
 
 ```bash
 git add -A Sources Tests
@@ -890,13 +890,13 @@ Scripts/quality-check.sh
 
 Expected: `Quality check passed`, with the test count five higher than the pre-plan baseline of 904 plus the tests added in Tasks 1-5.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git commit -m "feat(recovery): show the truncation warning on the meeting (F256)"
 ```
 
-- [ ] **Step 5: Close the tickets and check the board**
+- [x] **Step 5: Close the tickets and check the board**
 
 Move F255 and F256 from `docs/TICKETS.md` to `docs/TICKET_LOG.md` with the evidence, then:
 
@@ -907,7 +907,7 @@ python3 Scripts/generate-tickets-dashboard.py --check
 
 Record in F256's closure that **F267** (nothing can re-run recovery on an indexed folder) is the reason the floor exists, and that the one-tenth boundary is a judgement, not a measurement.
 
-- [ ] **Step 6: After pushing, confirm CI**
+- [x] **Step 6: After pushing, confirm CI**
 
 ```bash
 gh run list --limit 1

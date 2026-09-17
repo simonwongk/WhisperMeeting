@@ -131,3 +131,102 @@ func cleanRecoveryCarriesNoWarning() async throws {
     #expect(meeting.recoveryWarning == nil)
     #expect(meeting.errorMessage?.contains("Recovered from source audio") == true)
 }
+
+// MARK: - The other `recover` call site
+
+@Test("A failed stop whose rebuild was truncated says so, like the startup sweep does")
+@MainActor
+func failedStopReportsTruncation() async throws {
+    // The second, deliberately ungated call site: this instance rebuilding its OWN folder after
+    // its own finalization failed. The throwing-read half of F256 was global, but this branch
+    // reported nothing — the same bad block produced a "Partly Recovered Meeting" through the
+    // startup sweep and an ordinary four-second meeting under the user's own title here.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FailedStopTruncation-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    struct StopFailure: Error {}
+    let suite = "WhisperMeet.FailedStopTruncation.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root),
+        recorder: AudioCaptureEngine(
+            stoppingCapture: { throw StopFailure() },
+            finishingTracks: {},
+            preservingPartialTracks: {},
+            startingCapture: { _, _, _ in },
+            directory: root
+        ),
+        defaults: UserDefaults(suiteName: suite)!,
+        whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") },
+        qwenInstalled: { true }
+    )
+    // 4 seconds of an expected 20 minutes.
+    model.recoverInterruptedRecording = { directory in
+        RecoveredRecording(
+            recordingURL: directory.appendingPathComponent("meeting-recovered.wav"),
+            duration: 4,
+            source: .rebuiltSourceTracks,
+            truncatedAtSeconds: 4,
+            expectedDurationSeconds: 1_200
+        )
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    _ = await model.stopRecording(title: "Pricing sync")
+
+    let meeting = try #require(model.store.meeting(id: id))
+    // The user's own title is kept — they chose it and will recognise the meeting by it — and the
+    // status, the error and the warning carry the bad news instead.
+    #expect(meeting.title == "Pricing sync")
+    #expect(meeting.status == .failed)
+    #expect(meeting.recoveryWarning?.contains("0:04") == true)
+    #expect(meeting.errorMessage == AppModel.severelyTruncatedRecoveryMessage)
+    #expect(model.alertMessage?.contains("0:04") == true)
+}
+
+@Test("A failed stop whose rebuild read cleanly is still an ordinary recovery")
+@MainActor
+func failedStopWithoutTruncationIsUnchanged() async throws {
+    // The counterpart, so the branch above cannot turn every failed stop into a failure.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FailedStopClean-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    struct StopFailure: Error {}
+    let suite = "WhisperMeet.FailedStopClean.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root),
+        recorder: AudioCaptureEngine(
+            stoppingCapture: { throw StopFailure() },
+            finishingTracks: {},
+            preservingPartialTracks: {},
+            startingCapture: { _, _, _ in },
+            directory: root
+        ),
+        defaults: UserDefaults(suiteName: suite)!,
+        whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") },
+        qwenInstalled: { true }
+    )
+    model.recoverInterruptedRecording = { directory in
+        RecoveredRecording(
+            recordingURL: directory.appendingPathComponent("meeting-recovered.wav"),
+            duration: 1_200,
+            source: .rebuiltSourceTracks,
+            expectedDurationSeconds: 1_200
+        )
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    _ = await model.stopRecording(title: "")
+
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.status == .recorded)
+    #expect(meeting.recoveryWarning == nil)
+    #expect(meeting.errorMessage?.contains("recovered after a finishing error") == true)
+}

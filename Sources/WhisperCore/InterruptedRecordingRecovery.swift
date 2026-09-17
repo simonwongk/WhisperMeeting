@@ -146,7 +146,9 @@ public enum InterruptedRecordingRecovery {
     /// the PCM instead would mean holding ~345 MB in memory for a 60-minute meeting.
     ///
     /// Truncation is **returned rather than rethrown**, so the caller can still finalize the
-    /// readable prefix; the underlying error travels with it for the user-facing message.
+    /// readable prefix. The underlying error travels with it only so `recover` can rethrow it when
+    /// NOTHING was readable; the user-facing warning is built from the frame offset alone, because
+    /// a raw `NSCocoaErrorDomain` string helps nobody.
     ///
     /// A short read is NOT an error: the two `.f32` files are written independently from one capture
     /// callback, so an abrupt stop leaves them ragged and the shorter one is zero-padded by
@@ -188,9 +190,35 @@ public enum InterruptedRecordingRecovery {
         return (writtenFrames, nil)
     }
 
+    /// Opens one raw track for chunked reading, or reports that it has no frames to read.
+    typealias TrackOpener = (URL?) throws -> (Int) throws -> [Float]
+
+    /// Reads a real `.f32` track from disk. The only opener the app ever uses.
+    static let fileTrackOpener: TrackOpener = { url in
+        let reader = try RawFloatReader(url: url)
+        return { try reader.read(frameCount: $0) }
+    }
+
     public static func recover(
         in directory: URL,
         sampleRate: Double = 48_000
+    ) throws -> RecoveredRecording? {
+        try recover(in: directory, sampleRate: sampleRate, openTrack: fileTrackOpener)
+    }
+
+    /// The seam, internal and used by exactly one test file.
+    ///
+    /// It exists because the zero-readable-frames floor below cannot be reached with any real file:
+    /// every way of making a file unreadable that is available to a test — `chmod 0o000`, pointing
+    /// the name at a directory — fails at `FileHandle(forReadingFrom:)`, so the throw arrives
+    /// BEFORE the mix and the floor is never consulted. Production reaches it by a different route
+    /// (a bad block in the first chunk of a file that opens fine), which is a route a test cannot
+    /// manufacture. Injecting the opener is the smallest thing that makes the branch testable
+    /// without changing what the app does: `recover(in:sampleRate:)` above passes the real one.
+    static func recover(
+        in directory: URL,
+        sampleRate: Double,
+        openTrack: TrackOpener
     ) throws -> RecoveredRecording? {
         let fileManager = FileManager.default
         if let finished = finalizedRecording(in: directory) {
@@ -228,13 +256,13 @@ public enum InterruptedRecordingRecovery {
         defer { try? output.close() }
         try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
 
-        let systemReader = try RawFloatReader(url: systemFrames > 0 ? systemURL : nil)
-        let microphoneReader = try RawFloatReader(url: microphoneFrames > 0 ? microphoneURL : nil)
+        let readSystem = try openTrack(systemFrames > 0 ? systemURL : nil)
+        let readMicrophone = try openTrack(microphoneFrames > 0 ? microphoneURL : nil)
         let mix = try mixTracks(
             totalFrames: totalFrames,
             chunkSize: 8_192,
-            readSystem: { try systemReader.read(frameCount: $0) },
-            readMicrophone: { try microphoneReader.read(frameCount: $0) },
+            readSystem: readSystem,
+            readMicrophone: readMicrophone,
             write: { pcm in
                 try pcm.withUnsafeBytes { try ThrowingFileHandleIO.write(Data($0), to: output) }
             }
