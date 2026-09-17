@@ -153,6 +153,16 @@ A ticket may only be closed `fixed` when all of these hold:
 - **CI observed, not assumed.** A change that reaches `origin` is done only when a run of
   `.github/workflows/quality.yml` is **observed green on that commit**. A green local
   `Scripts/quality-check.sh` is not evidence — see **Pushing and CI** below for why it cannot be.
+- **A peer agreeing with your conclusion is not evidence for its premise.** Concurrence feels like
+  corroboration and is not. Before accepting or endorsing a conclusion — yours or anyone's — name
+  the **one number or fact it rests on** and ask who measured it. Endorsing without doing that is
+  worse than silent assent, because strengthening the reasoning *around* an unmeasured figure makes
+  a conclusion look examined from two directions when it was only ever examined from one. Both of
+  2026-09-16's expensive mistakes have this shape and neither was a reasoning error: the manifest
+  was left at tools 6.2 because nobody ran the runner's Swift, and an `fsync` was declined on a cost
+  of "tens to hundreds of milliseconds" that nobody had run — measured afterwards at a p99 of
+  10.55 ms, which reversed the decision. In both cases two sessions agreed, which is precisely what
+  made the unmeasured number feel settled.
 - **Re-read your own prose against the final diff, not against your plan.** Comments, doc comments
   and log entries are written mid-change and go stale inside the same commit. Before committing,
   check every factual claim you wrote — counts, symbol names, error cases, "this test guarantees
