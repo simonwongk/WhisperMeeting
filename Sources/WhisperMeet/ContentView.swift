@@ -1525,6 +1525,40 @@ struct SettingsView: View {
                     Button("Restore…") { restoreLibrary() }
                         .buttonStyle(.bordered)
                 }
+                // F193: the recovery action, where library-level operations now live.
+                //
+                // The ticket suggested hanging this off `libraryReadOnlyFootnote`, which was
+                // written before this section had any library actions — that footnote is inside a
+                // per-meeting "Improve" menu, which is the wrong surface for a library-wide repair
+                // and invisible until you open a meeting. It goes beside Back up and Restore, and
+                // appears only when the library actually is read-only, so it is not a button
+                // inviting people to "recover" a healthy library.
+                if let readOnly = model.libraryReadOnlyFootnote {
+                    Divider()
+                    Text(readOnly)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Recover Library…") { model.requestLibraryRecovery() }
+                        .buttonStyle(.borderedProminent)
+                        .confirmationDialog(
+                            "Restore an earlier copy of the meeting index?",
+                            isPresented: .init(
+                                get: { model.pendingLibraryRecovery != nil },
+                                set: { if !$0 { model.cancelLibraryRecovery() } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            ForEach(model.pendingLibraryRecovery ?? [], id: \.name) { generation in
+                                Button(AppModel.generationLabel(generation)) {
+                                    model.recoverLibrary(from: generation, confirmed: true)
+                                }
+                                .disabled(!generation.bytesMatchName)
+                            }
+                            Button("Cancel", role: .cancel) { model.cancelLibraryRecovery() }
+                        } message: {
+                            Text("Your recordings are never changed by this. Each option is a copy of the index saved earlier; the meetings it did not know about will be missing until you restore a newer one.")
+                        }
+                }
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

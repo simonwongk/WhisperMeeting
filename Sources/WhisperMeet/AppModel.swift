@@ -1579,6 +1579,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// One retained index generation, described for the user to choose between (F193).
+    ///
+    /// On the model and static for the same reason the two restore messages are: the view that
+    /// shows it is `private` and unreachable from tests, and a user picking which copy of their
+    /// library to go back to is choosing from these strings alone.
+    ///
+    /// Record count and date are what distinguish them — a fingerprint is not a decision aid. An
+    /// entry whose bytes no longer match its own name is labelled rather than hidden, because
+    /// `restoreIndexGeneration` will refuse it and a silently-absent option looks like a bug.
+    /// `nonisolated` because it is pure text over a `Sendable` value and touches no model state —
+    /// so a test can assert the strings without driving the main actor.
+    nonisolated static func generationLabel(_ generation: RetainedGeneration) -> String {
+        var parts: [String] = []
+        if let count = generation.recordCount {
+            parts.append(count == 1 ? "1 meeting" : "\(count) meetings")
+        }
+        if let epoch = generation.wroteAtEpochSeconds {
+            parts.append(Date(timeIntervalSince1970: TimeInterval(epoch))
+                .formatted(date: .abbreviated, time: .shortened))
+        }
+        if !generation.bytesMatchName { parts.append("damaged — cannot be used") }
+        return parts.isEmpty ? generation.name : parts.joined(separator: " · ")
+    }
+
     /// The restore confirmation's body (F191 slice E3).
     ///
     /// On the model rather than in the view, and static, for the reason

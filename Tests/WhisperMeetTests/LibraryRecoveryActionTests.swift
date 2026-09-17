@@ -132,3 +132,56 @@ func revalidationDoesNotWhitewashAStillBrokenLibrary() throws {
     #expect(reopened.isDegraded, "a readable index must not re-open a library whose vocabulary is unreadable")
     #expect(reopened.health != .complete)
 }
+
+// MARK: - F193's surface: the strings a user chooses a generation from
+
+@Test("A generation is described by what distinguishes it, not by its fingerprint")
+func generationLabelIsADecisionAid() {
+    // A user picking which copy of their library to go back to is choosing from this string alone.
+    // A fingerprint is not a decision aid; a record count and a date are.
+    let label = AppModel.generationLabel(RetainedGeneration(
+        name: "g-000000007-abc123.json",
+        sequence: 7,
+        fingerprint: "abc123",
+        byteCount: 4_096,
+        wroteAtEpochSeconds: 1_757_000_000,
+        recordCount: 17,
+        bytesMatchName: true
+    ))
+    #expect(label.contains("17 meetings"))
+    #expect(!label.contains("abc123"))
+    #expect(label.contains("·"))
+}
+
+@Test("A single-meeting generation is not described as '1 meetings'")
+func generationLabelSingularises() {
+    let label = AppModel.generationLabel(RetainedGeneration(
+        name: "g-000000001-x.json", sequence: 1, fingerprint: "x", byteCount: 10,
+        wroteAtEpochSeconds: nil, recordCount: 1, bytesMatchName: true
+    ))
+    #expect(label.contains("1 meeting"))
+    #expect(!label.contains("1 meetings"))
+}
+
+@Test("A damaged generation is labelled rather than hidden")
+func damagedGenerationIsLabelled() {
+    // `restoreIndexGeneration` refuses an entry whose bytes no longer fingerprint to its own name.
+    // Omitting it from the list would make a real option look like a missing one, which reads as a
+    // bug; saying so lets the user see why the copy they remember cannot be used.
+    let label = AppModel.generationLabel(RetainedGeneration(
+        name: "g-000000003-y.json", sequence: 3, fingerprint: "y", byteCount: 10,
+        wroteAtEpochSeconds: 1_757_000_000, recordCount: 4, bytesMatchName: false
+    ))
+    #expect(label.contains("cannot be used"))
+}
+
+@Test("A generation with no metadata still gets a name to choose by")
+func generationLabelFallsBackToTheName() {
+    // An entry written before the record count and timestamp existed. An empty row would be
+    // unpickable.
+    let label = AppModel.generationLabel(RetainedGeneration(
+        name: "g-000000002-z.json", sequence: 2, fingerprint: "z", byteCount: 10,
+        wroteAtEpochSeconds: nil, recordCount: nil, bytesMatchName: true
+    ))
+    #expect(label == "g-000000002-z.json")
+}
