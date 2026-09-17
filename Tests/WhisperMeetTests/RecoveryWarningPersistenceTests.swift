@@ -64,3 +64,70 @@ func cleanRecoveryHasNoWarning() throws {
     store.upsert(MeetingRecord(id: id, title: "Fine", status: .completed))
     #expect(store.meeting(id: id)?.recoveryWarning == nil)
 }
+
+// MARK: - F281: the warning reaches the notes.md mirror
+
+@Test("A truncated meeting's notes.md says the audio is short")
+@MainActor
+func recoveryWarningReachesTheSidecar() throws {
+    // `notes.md` exists so the text survives an index loss (F198), which makes it the copy most
+    // likely to be read with no app around it to supply context. A transcript that stops early
+    // with no explanation reads as complete.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("SidecarCaveats-\(UUID().uuidString)", isDirectory: true)
+    let folder = root.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = MeetingStore(rootDirectory: root)
+    let record = MeetingRecord(
+        title: "Pricing sync",
+        duration: 750,
+        recordingPath: "Recordings/\(folder.lastPathComponent)/meeting-recovered.wav",
+        status: .completed,
+        transcriptText: "We agreed on the tiering.",
+        alignmentWarning: "Timestamp alignment was unavailable.",
+        recoveryWarning: "The rebuilt audio stops at 12:30 because a source track could not be read past that point.",
+        languageWarning: "This transcript looks like Chinese, but English was selected."
+    )
+    store.upsert(record)
+    store.flushPendingNotesSidecars()
+
+    let notes = try String(contentsOf: folder.appendingPathComponent("notes.md"), encoding: .utf8)
+    #expect(notes.contains("## About this recording"))
+    #expect(notes.contains("stops at 12:30"))
+    // All three, not just the one this ticket was filed about — they have the same shape and the
+    // same argument, and shipping one alone is the inconsistency F281 named.
+    #expect(notes.contains("Timestamp alignment was unavailable."))
+    #expect(notes.contains("English was selected"))
+    // Severity order: only the recovery warning says content is missing.
+    let caveat = try #require(notes.range(of: "stops at 12:30"))
+    let alignment = try #require(notes.range(of: "Timestamp alignment"))
+    let transcript = try #require(notes.range(of: "## Transcript"))
+    #expect(caveat.lowerBound < alignment.lowerBound)
+    #expect(alignment.lowerBound < transcript.lowerBound)
+}
+
+@Test("A clean meeting's notes.md has no caveats section")
+@MainActor
+func cleanMeetingSidecarHasNoCaveats() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("SidecarClean-\(UUID().uuidString)", isDirectory: true)
+    let folder = root.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = MeetingStore(rootDirectory: root)
+    store.upsert(MeetingRecord(
+        title: "Clean",
+        duration: 600,
+        recordingPath: "Recordings/\(folder.lastPathComponent)/meeting.wav",
+        status: .completed,
+        transcriptText: "All good."
+    ))
+    store.flushPendingNotesSidecars()
+
+    let notes = try String(contentsOf: folder.appendingPathComponent("notes.md"), encoding: .utf8)
+    #expect(!notes.contains("About this recording"))
+    #expect(notes.contains("All good."))
+}

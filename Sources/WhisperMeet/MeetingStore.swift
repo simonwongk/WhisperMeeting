@@ -546,8 +546,25 @@ final class MeetingStore: ObservableObject {
             transcriptText: meeting.transcriptText,
             notes: meeting.notes,
             markers: meeting.orderedMarkers,
-            segments: meeting.segments
+            segments: meeting.segments,
+            caveats: meetingCaveats(for: meeting)
         )
+    }
+
+    /// The facts about a meeting's RECORDING that its notes document has to carry (F281).
+    ///
+    /// All three are optional plain-language strings the app already shows on screen, and they have
+    /// the same argument for being here: each one tells the reader that something about the text
+    /// below is not what they would assume. `notes.md` exists so the text survives an index loss
+    /// (F198), which makes it the copy most likely to be read with no app around it to add context.
+    ///
+    /// Order is by how much of the transcript each one undermines. `recoveryWarning` is first
+    /// because it is the only one of the three that says content is MISSING — the other two say the
+    /// text is complete but a property of it is off. Doing only the first would have been the
+    /// inconsistency this ticket was filed about.
+    private nonisolated static func meetingCaveats(for meeting: MeetingRecord) -> [String] {
+        [meeting.recoveryWarning, meeting.alignmentWarning, meeting.languageWarning]
+            .compactMap { $0 }
     }
 
     func notesMarkdown(for meeting: MeetingRecord) -> String {

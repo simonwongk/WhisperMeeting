@@ -125,3 +125,74 @@ func exportsConfidenceSection() {
     )
     #expect(!unscoredMd.contains("## Confidence"))
 }
+
+// MARK: - F281: caveats about the recording itself
+
+@Test("A recovery warning appears above everything it qualifies")
+func caveatsPrecedeTheContentTheyQualify() {
+    // The placement IS the feature. A caveat under the transcript is a footnote; the point is that
+    // the reader must know the audio is incomplete before they trust the text, not after.
+    let markdown = MeetingNotesExporter.markdown(
+        title: "Pricing sync",
+        dateText: "Sep 17, 2026 at 9:00 AM",
+        durationSeconds: 750,
+        languageCode: "en",
+        summary: nil,
+        transcriptText: "We agreed on the tiering.",
+        caveats: ["The rebuilt audio stops at 12:30 because a source track could not be read past that point."]
+    )
+    let caveats = try! #require(markdown.range(of: "## About this recording"))
+    let transcript = try! #require(markdown.range(of: "## Transcript"))
+    #expect(caveats.lowerBound < transcript.lowerBound)
+    #expect(markdown.contains("- The rebuilt audio stops at 12:30"))
+}
+
+@Test("A meeting with nothing to caveat gets no section and no empty heading")
+func noCaveatsMeansNoSection() {
+    // The counterpart that keeps the section meaningful: an empty "About this recording" under
+    // every clean meeting would train the reader to skip it.
+    let markdown = MeetingNotesExporter.markdown(
+        title: "Clean",
+        dateText: "Sep 17, 2026 at 9:00 AM",
+        durationSeconds: 600,
+        languageCode: "en",
+        summary: nil,
+        transcriptText: "All good."
+    )
+    #expect(!markdown.contains("About this recording"))
+}
+
+@Test("Several caveats share one section, in the order given")
+func caveatsShareOneSection() {
+    let markdown = MeetingNotesExporter.markdown(
+        title: "Messy",
+        dateText: "Sep 17, 2026 at 9:00 AM",
+        durationSeconds: 60,
+        languageCode: "en",
+        summary: nil,
+        transcriptText: "Text.",
+        caveats: ["Audio is short.", "Timestamps were unavailable.", "Language looks wrong."]
+    )
+    #expect(markdown.components(separatedBy: "## About this recording").count == 2)
+    let short = try! #require(markdown.range(of: "- Audio is short."))
+    let stamps = try! #require(markdown.range(of: "- Timestamps were unavailable."))
+    let language = try! #require(markdown.range(of: "- Language looks wrong."))
+    #expect(short.lowerBound < stamps.lowerBound)
+    #expect(stamps.lowerBound < language.lowerBound)
+}
+
+@Test("A blank caveat is dropped rather than rendered as an empty bullet")
+func blankCaveatsAreDropped() {
+    let markdown = MeetingNotesExporter.markdown(
+        title: "Edge",
+        dateText: "Sep 17, 2026 at 9:00 AM",
+        durationSeconds: 60,
+        languageCode: "en",
+        summary: nil,
+        transcriptText: "Text.",
+        caveats: ["  ", "", "Real one."]
+    )
+    #expect(markdown.contains("- Real one."))
+    #expect(!markdown.contains("- \n"))
+    #expect(markdown.components(separatedBy: "\n- ").count == 2)
+}

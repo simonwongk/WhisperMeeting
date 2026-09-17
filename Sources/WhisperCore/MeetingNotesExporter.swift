@@ -13,7 +13,8 @@ public enum MeetingNotesExporter {
         transcriptText: String,
         notes: String? = nil,
         markers: [RecordingMarker] = [],
-        segments: [TranscriptSegment] = []
+        segments: [TranscriptSegment] = [],
+        caveats: [String] = []
     ) -> String {
         var lines = ["# \(title)", ""]
 
@@ -23,6 +24,29 @@ public enum MeetingNotesExporter {
         if let languageCode, !languageCode.isEmpty { meta.append(languageCode.uppercased()) }
         if !meta.isEmpty {
             lines.append("_\(meta.joined(separator: " · "))_")
+            lines.append("")
+        }
+
+        // Things that are true of the RECORDING rather than of the text, above everything they
+        // qualify (F281). Placement is the feature: a caveat under the transcript is a footnote,
+        // and the reader has to know the audio is incomplete before they trust the text.
+        //
+        // This is the F56 rule applied in the other direction. Confidence below is omitted rather
+        // than fabricated, because stating a score that is not true would be a false claim; a
+        // transcript that stops early with no explanation is the same false claim by omission —
+        // the document reads as complete because nothing says it is not. Which is exactly the
+        // document most likely to be read alone, since notes.md exists so the text survives an
+        // index loss (F198).
+        //
+        // Deliberately not typed per-field: the caller decides which facts qualify and in what
+        // order, so this stays a pure formatter with no opinion about `MeetingRecord`.
+        let realCaveats = caveats
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !realCaveats.isEmpty {
+            lines.append("## About this recording")
+            lines.append("")
+            lines.append(contentsOf: realCaveats.map { "- \($0)" })
             lines.append("")
         }
 
