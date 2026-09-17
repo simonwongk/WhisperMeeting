@@ -44,8 +44,22 @@ public enum CaptureGapPolicy {
         writtenFrames: Int64,
         sampleRate: Double
     ) -> Int64 {
-        guard sampleRate > 0, presentationOffset.isFinite else { return 0 }
-        let expected = Int64((presentationOffset * sampleRate).rounded())
+        // `presentationOffset > 0` rather than `isFinite`, which is not enough: NaN fails every
+        // comparison and so returns here, and a negative offset is the early-buffer case below.
+        guard sampleRate > 0, presentationOffset > 0, presentationOffset.isFinite else { return 0 }
+        // **Clamped in the Double domain, before any Int64 conversion.** `Int64(Double)` TRAPS on
+        // overflow in Swift rather than saturating, and this runs on the `sampleHandlerQueue` for
+        // every buffer — so a wild-but-finite timestamp (1e18 is finite; 1e18 × 48000 is far past
+        // `Int64.max`) crashed the app mid-recording, losing the meeting to a guard meant to
+        // protect it. Observed as `Fatal error: Double value cannot be converted to Int64`, by a
+        // test written during self-review of this very function.
+        //
+        // Clamping to "what is already written, plus the cap" makes the conversion unconditionally
+        // safe and yields exactly the capped gap the cap below would have produced anyway. Same
+        // class as `WAVWriter`'s `&*` (F278): past the representable range the answer is wrong
+        // either way, and clamping cannot lose a recording while trapping can.
+        let ceilingSeconds = (Double(writtenFrames) + Double(maximumGapFrames)) / sampleRate
+        let expected = Int64((min(presentationOffset, ceilingSeconds) * sampleRate).rounded())
         let gap = expected - writtenFrames
         // A buffer arriving EARLY — overlapping timestamps from a clock correction or a
         // re-delivery — cannot be fixed by truncating, because those samples are already written.

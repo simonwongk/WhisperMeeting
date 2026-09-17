@@ -93,3 +93,28 @@ func invalidSampleRateIsSafe() {
         presentationOffset: 5, writtenFrames: 0, sampleRate: 0
     ) == 0)
 }
+
+@Test("An absurd but finite timestamp does not trap the capture queue (F151)")
+func absurdFiniteTimestampDoesNotTrap() {
+    // `Int64(Double)` TRAPS on overflow in Swift rather than saturating, and this runs on the
+    // `sampleHandlerQueue` for every buffer — so a wild-but-finite presentation timestamp would
+    // crash the app mid-recording, losing the meeting to a guard meant to protect it. `isFinite`
+    // does not cover this: 1e18 is perfectly finite and 1e18 × 48000 is far past `Int64.max`.
+    //
+    // Same class as `WAVWriter`'s `&*` (F278): past the representable range the answer is wrong
+    // either way, and wrapping or clamping cannot lose a recording while trapping can.
+    let absurd = CaptureGapPolicy.paddingFrames(
+        presentationOffset: 1e18, writtenFrames: 0, sampleRate: 48_000
+    )
+    #expect(absurd == Int64(CaptureGapPolicy.maximumGapFrames))
+
+    #expect(CaptureGapPolicy.paddingFrames(
+        presentationOffset: -1e18, writtenFrames: 0, sampleRate: 48_000
+    ) == 0)
+    #expect(CaptureGapPolicy.paddingFrames(
+        presentationOffset: .infinity, writtenFrames: 0, sampleRate: 48_000
+    ) == 0)
+    #expect(CaptureGapPolicy.paddingFrames(
+        presentationOffset: .nan, writtenFrames: 0, sampleRate: 48_000
+    ) == 0)
+}
