@@ -255,12 +255,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
 
         let mixedURL = directory.appendingPathComponent("meeting.wav")
-        let duration = try FloatTrackMixer.mix(
-            system: systemTrack,
-            microphone: microphoneTrack,
-            sampleRate: Self.targetSampleRate,
-            outputURL: mixedURL
-        )
+        // `FloatTrackMixer` lives in `WhisperCore` since F278 and throws its own error, so the
+        // mapping is explicit here rather than implicit in a shared enum. It keeps the message the
+        // user actually sees ("No microphone or system audio was captured.") attached to the layer
+        // that owns the wording, instead of leaking a core-level case into a UI alert.
+        let duration = try mapMixError {
+            try FloatTrackMixer.mix(
+                system: systemTrack,
+                microphone: microphoneTrack,
+                sampleRate: Self.targetSampleRate,
+                outputURL: mixedURL
+            )
+        }
         try SourceTrackManifest.write(
             system: systemTrack,
             microphone: microphoneTrack,
@@ -366,19 +372,17 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Whether the capture currently holds its `beginActivity` power assertion (F254).
     var isHoldingRecordingActivity: Bool { recordingActivity != nil }
 
-    /// How much audio may accumulate unsynced before the raw tracks are flushed to the device (F276).
+    /// Runs a `FloatTrackMixer` call, translating its error into this layer's (F278).
     ///
-    /// ~5 s of 48 kHz mono float32, i.e. 960 KB per track. F259 declined this fix on the belief that
-    /// `F_FULLFSYNC` costs "tens to hundreds of milliseconds" and would stall the
-    /// `sampleHandlerQueue` into dropping buffers. **Measured on this machine, that was wrong:**
-    /// median 3.32 ms and p99 7.42 ms idle, median 3.45 ms and p99 10.55 ms with a concurrent 3 GB
-    /// write. Ten milliseconds once every five seconds is affordable on the capture queue; the
-    /// decline was an assumption, and the assumption did not survive measuring.
-    static let trackSyncIntervalBytes = 48_000 * 4 * 5
-
-    /// Whether enough has accumulated since the last sync to warrant another (F276).
-    static func shouldSyncTrack(bytesSinceSync: Int) -> Bool {
-        bytesSinceSync >= trackSyncIntervalBytes
+    /// The mixer moved to `WhisperCore` and cannot depend on `AudioCaptureError`, which carries the
+    /// user-facing wording. One case, translated in one place, rather than a core module reaching up
+    /// for a UI string.
+    private func mapMixError<T>(_ work: () throws -> T) throws -> T {
+        do {
+            return try work()
+        } catch FloatTrackMixError.noAudioCaptured {
+            throw AudioCaptureError.noAudioCaptured
+        }
     }
 
     /// Which display the content filter should be pinned to, as an index into `displayIDs` (F254).
@@ -503,11 +507,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 }
 
-private struct FloatTrack {
-    let url: URL
-    let firstPresentationTime: Double?
-    let frameCount: Int64
-}
 
 private struct SourceTrackManifest: Codable {
     struct Track: Codable {
@@ -571,20 +570,21 @@ private struct SourceTrackManifest: Codable {
     }
 }
 
+/// Converts captured `CMSampleBuffer`s to mono float32 and hands them to a `FloatTrackFile`.
+///
+/// The split is F278's: everything AVFoundation-shaped stays here, where it needs a live capture to
+/// exercise, and the file — the writes, the flush cadence, the frame count — sits in
+/// `FloatTrackFile`, where `FloatTrackFileTests` can observe the durability behaviour F276 shipped
+/// without being able to test.
 private final class FloatTrackWriter {
-    private let outputURL: URL
     private let targetFormat: AVAudioFormat
-    private let handle: FileHandle
+    private let track: FloatTrackFile
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private(set) var firstPresentationTime: Double?
-    private(set) var frameCount: Int64 = 0
-    private var isFinished = false
-    /// Bytes written since the last device-level flush (F276).
-    private var bytesSinceSync = 0
+    var frameCount: Int64 { track.frameCount }
 
     init(outputURL: URL, targetSampleRate: Double) throws {
-        self.outputURL = outputURL
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: targetSampleRate,
@@ -594,12 +594,11 @@ private final class FloatTrackWriter {
             throw AudioCaptureError.conversionFailed("Unsupported output audio format")
         }
         targetFormat = format
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        handle = try FileHandle(forWritingTo: outputURL)
+        track = try FloatTrackFile(url: outputURL)
     }
 
     func append(_ sampleBuffer: CMSampleBuffer) throws -> RecordingAudioLevel? {
-        guard !isFinished,
+        guard !track.isFinished,
               let description = sampleBuffer.formatDescription else {
             return nil
         }
@@ -671,21 +670,10 @@ private final class FloatTrackWriter {
         if firstPresentationTime == nil {
             firstPresentationTime = sampleBuffer.presentationTimeStamp.seconds
         }
-        let byteCount = Int(outputBuffer.frameLength) * MemoryLayout<Float>.size
-        try ThrowingFileHandleIO.write(
-            Data(bytes: samples, count: byteCount),
-            to: handle
-        )
-        frameCount += Int64(outputBuffer.frameLength)
-        // F276: flush to the device every ~5 s of audio, so a kernel panic or a hard power cut
-        // loses at most that much of the tail rather than whatever the page cache had not
-        // checkpointed. Measured at p99 10.55 ms under a concurrent 3 GB write — affordable here,
-        // which is the opposite of what F259 assumed when it declined this.
-        bytesSinceSync += byteCount
-        if AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: bytesSinceSync) {
-            syncToDevice()
-            bytesSinceSync = 0
-        }
+        // The write and its periodic device flush (F276) belong to `FloatTrackFile`; the pointer is
+        // passed straight through rather than copied into an array, because this runs on the
+        // `sampleHandlerQueue` for every buffer.
+        try track.append(samples, frameCount: Int(outputBuffer.frameLength))
         let sampleCount = Int(outputBuffer.frameLength)
         guard sampleCount > 0 else { return .silent }
         var squaredSum: Float = 0
@@ -702,153 +690,23 @@ private final class FloatTrackWriter {
     }
 
     func finish() throws -> FloatTrack {
-        if !isFinished {
-            // F276: one final flush before the mixer reads these tracks back and before the WAV is
-            // written. The WAV header is written LAST, so a truncated `meeting.wav` falls back to
-            // these `.f32` files — which makes their durability exactly what that fallback rests on.
-            syncToDevice()
-            try handle.close()
-            isFinished = true
-        }
+        // `FloatTrackFile.finish` is idempotent, which this path needs: `preservePartialTracks()`
+        // finalizes both tracks on the abort routes (`:201`, `:228`, `:235`, `:250`) and the normal
+        // stop finalizes them again at `:243`. It flushes the tail before anyone reads it back.
+        try track.finish()
         return FloatTrack(
-            url: outputURL,
+            url: track.url,
             firstPresentationTime: firstPresentationTime,
-            frameCount: frameCount
+            frameCount: track.frameCount
         )
-    }
-
-    /// Flushes this track to the device (F276).
-    ///
-    /// `F_FULLFSYNC` rather than `fsync`, because plain `fsync` does not flush the drive's own write
-    /// cache — measured at 0.01 ms here, which is the tell that it is not doing the durable thing.
-    /// Failures are ignored on purpose: a sync that does not happen leaves exactly the exposure that
-    /// existed before this change, and must never fail a capture that is otherwise working.
-    private func syncToDevice() {
-        _ = fcntl(handle.fileDescriptor, F_FULLFSYNC)
     }
 
     func cancel() {
-        try? handle.close()
-        try? FileManager.default.removeItem(at: outputURL)
-        isFinished = true
+        track.cancel()
     }
 }
 
-private enum FloatTrackMixer {
-    static func mix(
-        system: FloatTrack,
-        microphone: FloatTrack,
-        sampleRate: Double,
-        outputURL: URL
-    ) throws -> TimeInterval {
-        let starts = [system.firstPresentationTime, microphone.firstPresentationTime].compactMap { $0 }
-        guard let earliestStart = starts.min() else {
-            throw AudioCaptureError.noAudioCaptured
-        }
-        let systemPadding = paddingFrames(
-            firstPresentationTime: system.firstPresentationTime,
-            earliestStart: earliestStart,
-            sampleRate: sampleRate
-        )
-        let microphonePadding = paddingFrames(
-            firstPresentationTime: microphone.firstPresentationTime,
-            earliestStart: earliestStart,
-            sampleRate: sampleRate
-        )
-        let totalFrames = max(
-            systemPadding + system.frameCount,
-            microphonePadding + microphone.frameCount
-        )
 
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        let output = try FileHandle(forWritingTo: outputURL)
-        defer { try? output.close() }
-        try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
-
-        let systemReader = try PaddedFloatReader(url: system.url, paddingFrames: systemPadding)
-        let microphoneReader = try PaddedFloatReader(url: microphone.url, paddingFrames: microphonePadding)
-        let chunkSize = 8_192
-        var writtenFrames: Int64 = 0
-
-        while writtenFrames < totalFrames {
-            let count = min(Int64(chunkSize), totalFrames - writtenFrames)
-            let systemSamples = systemReader.read(frameCount: Int(count))
-            let microphoneSamples = microphoneReader.read(frameCount: Int(count))
-            var pcm = [Int16](repeating: 0, count: Int(count))
-            for index in pcm.indices {
-                let systemSample = systemSamples[index]
-                let microphoneSample = microphoneSamples[index]
-                let bothActive = abs(systemSample) > 0.01 && abs(microphoneSample) > 0.01
-                let mixed = bothActive
-                    ? (systemSample + microphoneSample) * 0.5
-                    : (systemSample + microphoneSample) * 0.95
-                pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
-            }
-            try pcm.withUnsafeBytes {
-                try ThrowingFileHandleIO.write(Data($0), to: output)
-            }
-            writtenFrames += count
-        }
-
-        let dataByteCount = UInt32(clamping: writtenFrames * 2)
-        try output.seek(toOffset: 0)
-        try ThrowingFileHandleIO.write(
-            WAVWriter.header(
-                sampleRate: UInt32(sampleRate),
-                dataByteCount: dataByteCount
-            ),
-            to: output
-        )
-        return Double(writtenFrames) / sampleRate
-    }
-
-    private static func paddingFrames(
-        firstPresentationTime: Double?,
-        earliestStart: Double,
-        sampleRate: Double
-    ) -> Int64 {
-        guard let firstPresentationTime else { return 0 }
-        return max(0, Int64((firstPresentationTime - earliestStart) * sampleRate))
-    }
-
-}
-
-private final class PaddedFloatReader {
-    private let handle: FileHandle
-    private var paddingFrames: Int64
-
-    init(url: URL, paddingFrames: Int64) throws {
-        handle = try FileHandle(forReadingFrom: url)
-        self.paddingFrames = paddingFrames
-    }
-
-    deinit {
-        try? handle.close()
-    }
-
-    func read(frameCount: Int) -> [Float] {
-        var result = [Float](repeating: 0, count: frameCount)
-        var destinationIndex = 0
-        if paddingFrames > 0 {
-            let silenceCount = min(Int64(frameCount), paddingFrames)
-            paddingFrames -= silenceCount
-            destinationIndex += Int(silenceCount)
-        }
-        guard destinationIndex < frameCount else { return result }
-
-        let requestedBytes = (frameCount - destinationIndex) * MemoryLayout<Float>.size
-        guard let data = try? handle.read(upToCount: requestedBytes), !data.isEmpty else {
-            return result
-        }
-        data.withUnsafeBytes { bytes in
-            let source = bytes.bindMemory(to: Float.self)
-            for index in 0..<source.count {
-                result[destinationIndex + index] = source[index]
-            }
-        }
-        return result
-    }
-}
 
 private extension DispatchQueue {
     func flush() async {

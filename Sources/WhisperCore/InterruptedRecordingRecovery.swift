@@ -145,13 +145,13 @@ public enum InterruptedRecordingRecovery {
             let microphoneSamples = microphoneReader.read(frameCount: count)
             var pcm = [Int16](repeating: 0, count: count)
             for index in pcm.indices {
-                let systemSample = systemSamples[index]
-                let microphoneSample = microphoneSamples[index]
-                let bothActive = abs(systemSample) > 0.01 && abs(microphoneSample) > 0.01
-                let mixed = bothActive
-                    ? (systemSample + microphoneSample) * 0.5
-                    : (systemSample + microphoneSample) * 0.95
-                pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
+                // `FloatTrackMixer.mixedSample`, not a second copy of the gain rule (F278). A
+                // rebuild has to sound like the capture it is standing in for, and this is the path
+                // where a divergence would go unnoticed — there is no original left to compare to.
+                pcm[index] = FloatTrackMixer.mixedSample(
+                    system: systemSamples[index],
+                    microphone: microphoneSamples[index]
+                )
             }
             try pcm.withUnsafeBytes {
                 try ThrowingFileHandleIO.write(Data($0), to: output)
@@ -162,7 +162,11 @@ public enum InterruptedRecordingRecovery {
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
         try ThrowingFileHandleIO.write(
-            wavHeader(
+            // `WAVWriter.header`, not a local copy (F278). The header the rebuild writes must be
+            // byte-identical to the one a normal capture writes, and F150's overflow fix has to land
+            // in one place — this path runs *after* an interruption, so it is the last one that
+            // should diverge.
+            WAVWriter.header(
                 sampleRate: UInt32(sampleRate),
                 dataByteCount: dataByteCount
             ),
@@ -289,24 +293,6 @@ public enum InterruptedRecordingRecovery {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: recoveredManifest, options: .atomic)
     }
-
-    private static func wavHeader(sampleRate: UInt32, dataByteCount: UInt32) -> Data {
-        var data = Data()
-        data.appendASCII("RIFF")
-        data.appendLittleEndian(36 &+ dataByteCount)
-        data.appendASCII("WAVE")
-        data.appendASCII("fmt ")
-        data.appendLittleEndian(UInt32(16))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(sampleRate)
-        data.appendLittleEndian(sampleRate * 2)
-        data.appendLittleEndian(UInt16(2))
-        data.appendLittleEndian(UInt16(16))
-        data.appendASCII("data")
-        data.appendLittleEndian(dataByteCount)
-        return data
-    }
 }
 
 private struct RecoveredSourceManifest: Codable {
@@ -348,16 +334,5 @@ private final class RawFloatReader {
             }
         }
         return result
-    }
-}
-
-private extension Data {
-    mutating func appendASCII(_ value: String) {
-        append(contentsOf: value.utf8)
-    }
-
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var value = value.littleEndian
-        Swift.withUnsafeBytes(of: &value) { append(contentsOf: $0) }
     }
 }

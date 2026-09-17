@@ -114,19 +114,3 @@ func unknownMainDisplayFallsBack() {
 func noDisplaysYieldsNil() {
     #expect(AudioCaptureEngine.preferredDisplayIndex(displayIDs: [], mainDisplayID: 1) == nil)
 }
-
-// MARK: - F276: syncing the raw tracks, once the cost was actually measured
-
-@Test("The sync cadence is about five seconds of audio (F276)")
-func trackSyncCadence() {
-    // Measured on this machine rather than assumed — which is the point, because the assumption was
-    // wrong. `F_FULLFSYNC` after ~960 KB (5 s of 48 kHz float32): median 3.32 ms, p99 7.42 ms idle;
-    // median 3.45 ms, p99 10.55 ms with a concurrent 3 GB write. F259 declined this fix on the
-    // belief that it cost "tens to hundreds of milliseconds" and would stall the
-    // `sampleHandlerQueue` into dropping audio buffers. At ~10 ms every five seconds it does not.
-    #expect(AudioCaptureEngine.trackSyncIntervalBytes == 48_000 * 4 * 5)
-    #expect(!AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: 0))
-    #expect(!AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: AudioCaptureEngine.trackSyncIntervalBytes - 1))
-    #expect(AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: AudioCaptureEngine.trackSyncIntervalBytes))
-    #expect(AudioCaptureEngine.shouldSyncTrack(bytesSinceSync: AudioCaptureEngine.trackSyncIntervalBytes * 3))
-}
