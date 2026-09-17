@@ -621,6 +621,15 @@ final class AppModel: ObservableObject {
         await AppModel.spawnQwenInstallRecovery(runtimeDirectory: runtimeDirectory)
     }
 
+    /// The same for the local-summarizer runtime (F167). `setup-local-summarizer.sh` already
+    /// reclaims orphaned `.Summarizer-backup-*` / `.Summarizer-install-*` artifacts, but only when
+    /// the user next opens the installer — so after a crash mid-install the previous model could sit
+    /// in a hidden backup with `Summarizer/` gone, reporting "not installed", indefinitely. Qwen
+    /// (F33) and speaker analysis (F219) both got a launch reclaim; this completes the set.
+    var runSummarizerInstallRecovery: @Sendable (URL) async -> Int32 = { runtimeDirectory in
+        await AppModel.spawnSummarizerInstallRecovery(runtimeDirectory: runtimeDirectory)
+    }
+
     /// Builds the summarizer for the selected engine. Injectable so the engine-selection + style
     /// wiring is testable without a network call or a local model; defaults to the real engines —
     /// the keyless on-device `LocalSummarizer` for `.local`, `ClaudeSummarizer` for `.claude`
@@ -1560,6 +1569,9 @@ final class AppModel: ObservableObject {
         // dir with `Diarization/` gone, which reports as "not installed" until it is reclaimed. It
         // must therefore also run BEFORE the probe below, or this launch shows the wrong state.
         await reclaimInterruptedDiarizationInstall()
+        // And the summarizer (F167), for the same reason and before the same probe: an install
+        // interrupted mid-swap reports as "not installed" until it is reclaimed.
+        await reclaimInterruptedSummarizerInstall()
         refreshRuntime()
         refreshRecordingPreflight()
         var messages = store.startupRecoveryMessages
@@ -3906,6 +3918,73 @@ extension AppModel {
             process.arguments = [scriptURL.path, runtimeDirectory.path]
             var environment = ProcessInfo.processInfo.environment
             environment["QWEN_INSTALL_RECOVERY_ONLY"] = "1"
+            process.environment = environment
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus
+            } catch {
+                return -1
+            }
+        }.value
+    }
+}
+
+// MARK: - Interrupted local-summarizer install reclaim (F167 — completes the F33/F219 set)
+
+extension AppModel {
+    /// Reclaim an interrupted local-summarizer install on launch, only when orphaned artifacts
+    /// actually exist — so a clean launch, or a Mac that never installed the summarizer, spawns
+    /// nothing. Returns whether the reclaim ran.
+    ///
+    /// The installer's own reclaim is unchanged and already tested; this wires it to launch, which
+    /// is the whole of F167. Before it, a force-quit mid-install left the previous model in a
+    /// `.Summarizer-backup-*` directory and the feature reporting "not installed" until the user
+    /// happened to open the installer again — which someone whose summaries had stopped working has
+    /// no particular reason to do.
+    @discardableResult
+    func reclaimInterruptedSummarizerInstall(
+        runtimeDirectory: URL = SummarizerRuntime.managedDirectory()
+    ) async -> Bool {
+        let parent = runtimeDirectory.deletingLastPathComponent()
+        guard Self.hasOrphanedSummarizerInstallArtifacts(in: parent) else { return false }
+        _ = await runSummarizerInstallRecovery(runtimeDirectory)
+        return true
+    }
+
+    /// True when the runtime parent holds installer-owned orphan artifacts.
+    ///
+    /// Only the installer's hidden `.Summarizer-backup-*` / `.Summarizer-install-*` names match, so
+    /// this never fires on a clean runtime — the live `Summarizer/` carries neither prefix. An
+    /// unlistable parent reports false: a Mac that never installed the summarizer has no parent
+    /// directory at all, and that is the common case rather than an error.
+    nonisolated static func hasOrphanedSummarizerInstallArtifacts(in parent: URL) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
+            return false
+        }
+        return entries.contains {
+            $0.hasPrefix(".Summarizer-backup-") || $0.hasPrefix(".Summarizer-install-")
+        }
+    }
+
+    /// Spawns the bundled `setup-local-summarizer.sh` in recovery-only mode and returns its exit
+    /// status. Runs off the main actor; returns a non-zero sentinel if the script is missing or the
+    /// process cannot start.
+    nonisolated static func spawnSummarizerInstallRecovery(runtimeDirectory: URL) async -> Int32 {
+        guard let scriptURL = Bundle.main.url(
+            forResource: "setup-local-summarizer",
+            withExtension: "sh"
+        ) else {
+            return -1
+        }
+        return await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            var environment = ProcessInfo.processInfo.environment
+            environment["SUMMARIZER_INSTALL_RECOVERY_ONLY"] = "1"
             process.environment = environment
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice

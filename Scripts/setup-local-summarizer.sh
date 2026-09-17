@@ -106,6 +106,16 @@ for abandoned_staging in "$runtime_parent"/.Summarizer-install-*(N); do
   rm -rf "$abandoned_staging"
 done
 
+# Recovery-only mode: reclaim and stop (F167), mirroring `QWEN_INSTALL_RECOVERY_ONLY` in
+# `setup-qwen-asr.sh`. The launch reclaim needs the block above and none of what follows — no
+# Homebrew, no 8 GB storage check, no download — because a Mac recovering an interrupted install
+# already has the model, and requiring the install preconditions would make the reclaim fail on
+# exactly the machines that need it. Placed after the reclaim and before the first precondition so
+# that stays true as either side grows.
+if [[ "${SUMMARIZER_INSTALL_RECOVERY_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
+
 available_kib="$(df -Pk "$runtime_parent" | awk 'NR == 2 { print $4 }')"
 if [[ -z "$available_kib" || "$available_kib" -lt 8388608 ]]; then
   print -u2 "Local summaries need at least 8 GB of available storage to install safely."
