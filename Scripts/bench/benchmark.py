@@ -30,6 +30,17 @@ import mlx_whisper
 import jiwer
 from opencc import OpenCC
 
+# F293 — the meeting-path engine lives in its own stdlib-only module so it can be covered by a gated
+# test; everything in this file is unreachable from `Scripts/quality-check.sh`, whose python3 has
+# none of the four imports above.
+import importlib.util as _importlib_util
+
+_engine_spec = _importlib_util.spec_from_file_location(
+    "qwen_meeting_engine", Path(__file__).resolve().parent / "qwen_meeting_engine.py"
+)
+qwen_meeting_engine = _importlib_util.module_from_spec(_engine_spec)
+_engine_spec.loader.exec_module(qwen_meeting_engine)
+
 T2S = OpenCC("t2s")
 BENCH = Path(__file__).resolve().parent
 CLIPS = Path(sys.argv[1]) if len(sys.argv) > 1 else BENCH / "clips"
@@ -138,6 +149,8 @@ def main() -> int:
     requested = {
         item.strip()
         for item in os.environ.get(
+            # `qwen-meeting` is opt-in: one model load per clip makes it far slower than the
+            # daemon row, and it needs QWEN_ALIGNER and QWEN_TRANSCRIBE as well (F293).
             "BENCH_ENGINES", "pytorch,mlx,sensevoice,qwen"
         ).split(",")
         if item.strip()
@@ -198,6 +211,23 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"[Qwen skipped: {e!r}]\n")
 
+        # F293 — the same weights through the script a MEETING actually runs. The row above drives
+        # `qwen_server.py`, the dictation daemon; `qwen_transcribe.py` chunks and batches
+        # differently, so until this row existed every Qwen number here described a path no meeting
+        # takes. One process per clip, as the app does, so the model load is inside the timing — the
+        # label says `cold` for that reason, and its seconds are not comparable with the daemon's.
+        qwen_aligner = os.environ.get("QWEN_ALIGNER")
+        qwen_script = os.environ.get("QWEN_TRANSCRIBE")
+        if ("qwen-meeting" in requested and qwen_python and qwen_model
+                and qwen_aligner and qwen_script):
+            engines.append((
+                "qwen3-asr-1.7b-8bit-meeting-cold",
+                qwen_meeting_engine.make_qwen_meeting(
+                    qwen_python, qwen_script, qwen_model, qwen_aligner,
+                    work_dir=str(BENCH / "work"),
+                ),
+            ))
+
         # Warm each engine (first call loads the model; timing discarded).
         for name, fn in engines:
             try:
@@ -234,9 +264,46 @@ def main() -> int:
             xs = [r["sec"] for r in rows if r["sec"] >= 0]
             return sum(xs) / len(xs) if xs else float("nan")
 
+        # The scope caveat is EMITTED here, not hand-written into results.md.
+        #
+        # It used to live in the file, and this function rewrites results.md from scratch on every
+        # run — so the first run after it was written silently deleted it, and the deletion was
+        # about to be committed as part of F293. Prose that explains a table has to be produced by
+        # whatever produces the table, or it survives exactly until someone runs the benchmark.
+        scope = [
+            "## Scope — this is a DICTATION benchmark, not a meeting benchmark\n",
+            "Read before quoting any number here. All ten clips are short (about 2–3 s), which is "
+            "the Quick\nDictation shape. For meetings these numbers are invalid, and for a "
+            "different reason per engine:\n",
+            "- **Every row is warm, except the `-meeting-cold` row.** The warm-up call's timing is "
+            "discarded, so\n  no other row includes model load. A real meeting pays that load once "
+            "(measured elsewhere at\n  2–11 s). The meeting row spawns a process per clip and so "
+            "*does* include it — which is why its\n  seconds are not comparable with the others, "
+            "and why `cold` is in its name.",
+            "- **Whisper rows** (`pytorch-turbo`, `mlx-turbo-*`): Whisper pads every input to a 30 s "
+            "mel window,\n  so a 3 s clip pays one full encoder pass and roughly ten tokens of "
+            "decode. Long-form audio pays\n  that same encoder per window but far more decode per "
+            "window. These rows are therefore\n  encoder-dominated and **understate decode cost** "
+            "— exactly where a CPU fp32 path is worst. Do\n  not extrapolate a realtime factor for "
+            "a meeting from them.",
+            "- **`qwen3-asr-1.7b-8bit`**: the resident dictation daemon (`bench/qwen_server.py`), "
+            "not the script a\n  meeting runs. A 3 s clip never fills a 60 s chunk, so the 60 s × 4 "
+            "batching and its padding are\n  never exercised here, and the row is warm.",
+            "- **`qwen3-asr-1.7b-8bit-meeting-cold`** (F293): the same weights through "
+            "`Scripts/qwen_transcribe.py`,\n  the script a meeting actually runs — added because "
+            "until it existed every Qwen number in this\n  file described a path no meeting takes. "
+            "On these clips it is byte-identical to the daemon row,\n  which says the clips cannot "
+            "discriminate the two paths rather than that the paths agree in\n  general: 2–3 s is "
+            "still one chunk. What it did surface is a wrong language label on the\n  "
+            "code-switched clips (**F296**).",
+            "\nThere is still no long-form ASR measurement in this table. Until one exists, treat a "
+            "meeting-speed\nclaim sourced from it as unsupported — see **F241** for the long-form "
+            "fixture and its scorer.\n",
+        ]
         L = ["# Local ASR benchmark (M3 Pro, 18 GB; synthetic clips)\n",
              "Warm release→text latency (model resident) + accuracy. Lower is better everywhere.",
              "CER normalized 繁→簡 (OpenCC) with punctuation/spaces stripped.\n",
+             *scope,
              "## Summary\n",
              "| engine | avg sec | EN WER | 中文 CER | code-switch CER |",
              "|---|---|---|---|---|"]

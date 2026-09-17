@@ -458,5 +458,97 @@
       "val": 0.0,
       "hyp": "请提醒我下午三点跟客户开会。"
     }
+  ],
+  "qwen3-asr-1.7b-8bit-meeting-cold": [
+    {
+      "clip": "cs1",
+      "lang": "cs",
+      "sec": 2.25,
+      "det": "en",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "我们的 deadline 是这个星期五。"
+    },
+    {
+      "clip": "cs2",
+      "lang": "cs",
+      "sec": 2.187,
+      "det": "en",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我 schedule 一个 meeting，明天下午。"
+    },
+    {
+      "clip": "cs3",
+      "lang": "cs",
+      "sec": 1.934,
+      "det": "en",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个 bug 已经 fix 了，可以 merge 了。"
+    },
+    {
+      "clip": "en1",
+      "lang": "en",
+      "sec": 1.891,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Can you send me the quarterly report by Friday afternoon?"
+    },
+    {
+      "clip": "en2",
+      "lang": "en",
+      "sec": 1.828,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Let's schedule the design review for next Tuesday at ten."
+    },
+    {
+      "clip": "en3",
+      "lang": "en",
+      "sec": 1.888,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "The build is failing on the release step. Please take a look."
+    },
+    {
+      "clip": "en4",
+      "lang": "en",
+      "sec": 1.887,
+      "det": "en",
+      "metric": "WER",
+      "val": 0.0,
+      "hyp": "Remind me to follow up with the vendor about the invoice."
+    },
+    {
+      "clip": "zh1",
+      "lang": "zh",
+      "sec": 1.849,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "帮我把今天的会议纪要发给团队。"
+    },
+    {
+      "clip": "zh2",
+      "lang": "zh",
+      "sec": 1.799,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "这个季度的销售数据看起来很不错。"
+    },
+    {
+      "clip": "zh3",
+      "lang": "zh",
+      "sec": 1.853,
+      "det": "zh",
+      "metric": "CER",
+      "val": 0.0,
+      "hyp": "请提醒我下午三点跟客户开会。"
+    }
   ]
 }

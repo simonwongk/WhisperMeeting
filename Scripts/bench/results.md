@@ -8,25 +8,27 @@ CER normalized 繁→簡 (OpenCC) with punctuation/spaces stripped.
 Read before quoting any number here. All ten clips are short (about 2–3 s), which is the Quick
 Dictation shape. For meetings these numbers are invalid, and for a different reason per engine:
 
-- **Every row is warm.** `benchmark.py:201-206` calls each engine once and discards the timing, so
-  no row includes model load. A real meeting pays that load once (measured elsewhere at 2–11 s).
+- **Every row is warm, except the `-meeting-cold` row.** The warm-up call's timing is discarded, so
+  no other row includes model load. A real meeting pays that load once (measured elsewhere at
+  2–11 s). The meeting row spawns a process per clip and so *does* include it — which is why its
+  seconds are not comparable with the others, and why `cold` is in its name.
 - **Whisper rows** (`pytorch-turbo`, `mlx-turbo-*`): Whisper pads every input to a 30 s mel window,
   so a 3 s clip pays one full encoder pass and roughly ten tokens of decode. Long-form audio pays
   that same encoder per window but far more decode per window. These rows are therefore
-  encoder-dominated and **understate decode cost** — which is exactly where a CPU fp32 path is
-  worst. Do not extrapolate a realtime factor for a meeting from them.
-- **Qwen row**: does not go through `Scripts/qwen_transcribe.py` at all. `benchmark.py:59-70` starts
-  a resident daemon (`bench/qwen_server.py`), so a 3 s clip never exercises the forced aligner and
-  the production meeting path is untested by this file.
+  encoder-dominated and **understate decode cost** — exactly where a CPU fp32 path is worst. Do
+  not extrapolate a realtime factor for a meeting from them.
+- **`qwen3-asr-1.7b-8bit`**: the resident dictation daemon (`bench/qwen_server.py`), not the script a
+  meeting runs. A 3 s clip never fills a 60 s chunk, so the 60 s × 4 batching and its padding are
+  never exercised here, and the row is warm.
+- **`qwen3-asr-1.7b-8bit-meeting-cold`** (F293): the same weights through `Scripts/qwen_transcribe.py`,
+  the script a meeting actually runs — added because until it existed every Qwen number in this
+  file described a path no meeting takes. On these clips it is byte-identical to the daemon row,
+  which says the clips cannot discriminate the two paths rather than that the paths agree in
+  general: 2–3 s is still one chunk. What it did surface is a wrong language label on the
+  code-switched clips (**F296**).
 
-  The reason changed with **F268**: `transcribe_batched` no longer returns `None` for a single chunk
-  (it declines only zero chunks, so the F260 cycle guard covers every recording length), so a short
-  clip now *does* take the batched route. What still makes these rows unable to speak for meetings is
-  the clip length and the warm daemon: 2.2–3.2 s never fills a 60 s chunk, so the 60 s × 4 batching
-  and its padding behaviour are still never exercised, and no row includes model load. See **F241**.
-
-The repo has no long-form ASR measurement. Until one exists, treat a meeting-speed claim sourced
-from this table as unsupported.
+There is still no long-form ASR measurement in this table. Until one exists, treat a meeting-speed
+claim sourced from it as unsupported — see **F241** for the long-form fixture and its scorer.
 
 ## Summary
 
@@ -37,6 +39,7 @@ from this table as unsupported.
 | sensevoice-small-q8 | 0.19 | 0.023 | 0.026 | 0.018 |
 | qwen3-asr-1.7b-8bit | 0.38 | 0.000 | 0.000 | 0.000 |
 | qwen3-asr-1.7b-8bit-auto | 0.38 | 0.000 | 0.000 | 0.000 |
+| qwen3-asr-1.7b-8bit-meeting-cold | 1.94 | 0.000 | 0.000 | 0.000 |
 
 ## pytorch-turbo (fp32/CPU baseline) — per clip
 
@@ -112,3 +115,18 @@ from this table as unsupported.
 | zh1 | zh | 0.355 | auto | CER | 0.0 | 帮我把今天的会议纪要发给团队。 |
 | zh2 | zh | 0.323 | auto | CER | 0.0 | 这个季度的销售数据看起来很不错。 |
 | zh3 | zh | 0.345 | auto | CER | 0.0 | 请提醒我下午三点跟客户开会。 |
+
+## qwen3-asr-1.7b-8bit-meeting-cold — per clip
+
+| clip | lang | sec | detected | metric | value | transcript |
+|---|---|---|---|---|---|---|
+| cs1 | cs | 2.25 | en | CER | 0.0 | 我们的 deadline 是这个星期五。 |
+| cs2 | cs | 2.187 | en | CER | 0.0 | 帮我 schedule 一个 meeting，明天下午。 |
+| cs3 | cs | 1.934 | en | CER | 0.0 | 这个 bug 已经 fix 了，可以 merge 了。 |
+| en1 | en | 1.891 | en | WER | 0.0 | Can you send me the quarterly report by Friday afternoon? |
+| en2 | en | 1.828 | en | WER | 0.0 | Let's schedule the design review for next Tuesday at ten. |
+| en3 | en | 1.888 | en | WER | 0.0 | The build is failing on the release step. Please take a look. |
+| en4 | en | 1.887 | en | WER | 0.0 | Remind me to follow up with the vendor about the invoice. |
+| zh1 | zh | 1.849 | zh | CER | 0.0 | 帮我把今天的会议纪要发给团队。 |
+| zh2 | zh | 1.799 | zh | CER | 0.0 | 这个季度的销售数据看起来很不错。 |
+| zh3 | zh | 1.853 | zh | CER | 0.0 | 请提醒我下午三点跟客户开会。 |
