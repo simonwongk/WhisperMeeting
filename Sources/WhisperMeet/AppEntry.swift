@@ -27,19 +27,17 @@ enum WhisperMeetLauncher {
 struct WhisperMeetApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var dictation = DictationController()
+    /// App-level, not window-level (F257). The two `onReceive` modifiers that used to carry the
+    /// F138 flush, and the `.task` that ran startup recovery, were both on `ContentView` inside the
+    /// `WindowGroup` — so with the window closed, quitting from the menu bar lost the last
+    /// debounced edit and a launch without a window never recovered anything.
+    @StateObject private var lifecycle = AppLifecycle()
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var lifecycleDelegate
 
     var body: some Scene {
         WindowGroup {
             ContentView(model: model, dictation: dictation)
                 .frame(minWidth: 900, minHeight: 620)
-                // Flush any pending debounced transcript/notes edit on quit or when the app resigns
-                // active, so the last edit isn't lost within the debounce window (F138).
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    model.flushPendingWrites()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
-                    model.flushPendingWrites()
-                }
                 .task {
                     dictation.configure(isMicrophoneBusy: { [weak model] in
                         model?.isMicrophoneBusy ?? false
@@ -67,7 +65,21 @@ struct WhisperMeetApp: App {
                     model.configureIdleDictationRecognitionWarmUp { [weak dictation] in
                         dictation?.warmRecognitionEngineIfNeeded()
                     }
-                    await model.performStartupRecovery()
+                    // F257: the window still wires the two controllers together, because that is
+                    // view work and both objects outlive it. What it no longer does is own the
+                    // lifecycle — `AppLifecycle` runs startup recovery once per launch from
+                    // `applicationDidFinishLaunching`, so it happens whether or not this ever runs.
+                    lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
+                    lifecycle.onStartupRecovery = { [weak model] in
+                        await model?.performStartupRecovery()
+                    }
+                    AppLifecycleDelegate.lifecycle = lifecycle
+                    lifecycle.begin()
+                    // Covers the ordering where the window's task runs AFTER launch (the ordinary
+                    // case, since the delegate fires before any scene appears): the delegate's own
+                    // call found no handler, and `runStartupRecoveryOnce` is idempotent, so exactly
+                    // one of these two does the work.
+                    await lifecycle.runStartupRecoveryOnce()
                 }
         }
         .defaultSize(width: 1_100, height: 760)

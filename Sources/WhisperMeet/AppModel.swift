@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import CoreGraphics
+import Combine
 import Foundation
 import UserNotifications
 import WhisperCore
@@ -211,7 +212,71 @@ final class AppModel: ObservableObject {
     @Published var summarizationEngine: SummarizationEngine {
         didSet { defaults.set(summarizationEngine.rawValue, forKey: Self.summarizationEngineKey) }
     }
+    /// The single in-window alert surface. **Set through `report(_:)`, not directly** (F257).
+    ///
+    /// The `.alert` host lives in `ContentView` inside the `WindowGroup`, so with the window closed
+    /// — a normal state while recording from the menu bar — assigning this shows nobody anything.
+    /// Every existing assignment stays valid for the windowed case; `report` adds the other one.
     @Published var alertMessage: String?
+
+    /// Holds the `storageErrorMessage` subscription for the app's lifetime (F257).
+    private var storageErrorObserver: AnyCancellable?
+
+    /// Tells the user something, wherever they can be reached (F257).
+    ///
+    /// With a window, this is the alert it always was. Without one, it also posts a notification —
+    /// because the messages that arrive in this channel are the recovery and storage failures
+    /// `PRODUCT_SPEC.md` promises to "surface in plain language", and a promise kept only while a
+    /// window happens to be open is not kept.
+    ///
+    /// `alertMessage` is set either way, so a user who opens the window afterwards still sees it.
+    /// The notification is an addition, never a replacement — dropping the alert when windowless
+    /// would trade one silent path for another.
+    func report(_ message: String) {
+        alertMessage = message
+        postWindowlessAlert(message)
+    }
+
+    /// Mirrors the store's write failures into the windowless channel (F257).
+    ///
+    /// `storageErrorMessage` lives on `MeetingStore` and is rendered by the same `.alert` host, so
+    /// it was invisible in exactly the same state — and it is the "changes could not be saved"
+    /// message, which is the one a user most needs while recording from the menu bar.
+    ///
+    /// Observed here rather than posted by the store: the store is a data layer and has no business
+    /// knowing about `NSApp` or Notification Centre. It reports; this decides how to reach someone.
+    /// Combine rather than a callback because `storageErrorMessage` is `private(set)` and set from a
+    /// dozen places, so a callback would need threading through every one of them.
+    func observeStorageErrors() {
+        guard storageErrorObserver == nil else { return }
+        storageErrorObserver = store.$storageErrorMessage
+            .compactMap { $0 }
+            .removeDuplicates()
+            .sink { [weak self] message in
+                MainActor.assumeIsolated { self?.postWindowlessAlert(message) }
+            }
+    }
+
+    /// Posts `message` as a notification when there is no window to show it in (F257).
+    private func postWindowlessAlert(_ message: String) {
+        // `NSApp` is nil in a headless test process, the same reason
+        // `postTranscriptionNotification` binds rather than force-unwraps. A test asserting `report`
+        // cannot and should not post to the user's Notification Centre.
+        guard let app = NSApp else { return }
+        let hasVisibleWindow = app.windows.contains { $0.isVisible && $0.canBecomeMain }
+        guard WindowlessAlert.shouldPost(hasVisibleWindow: hasVisibleWindow, message: message) else {
+            return
+        }
+        let content = WindowlessAlert.content(for: message)
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let notification = UNMutableNotificationContent()
+        notification.title = content.title
+        notification.body = content.body
+        center.add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: notification, trigger: nil)
+        )
+    }
     /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
     @Published var showsShortcutsSheet = false
 
@@ -1483,6 +1548,9 @@ final class AppModel: ObservableObject {
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
+        // F257: idempotent, and started here because this is the one method that runs once per
+        // launch regardless of window state now that `AppLifecycle` owns the call.
+        observeStorageErrors()
         // Self-heal an interrupted Qwen install *before* refreshing runtime state, so a runtime that a
         // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
         // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
@@ -1502,7 +1570,10 @@ final class AppModel: ObservableObject {
             messages.append(
                 "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched and the unreadable index was copied aside. Nothing will be changed until you choose how to recover."
             )
-            alertMessage = messages.joined(separator: "\n\n")
+            // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
+            // launch with no window — a login item, or a window closed before this ran — showed it
+            // to nobody. It is the notice that tells a user their recording came back.
+            report(messages.joined(separator: "\n\n"))
             return
         }
 
@@ -1706,7 +1777,10 @@ final class AppModel: ObservableObject {
         // flags missing/truncated/inconsistent audio without ever touching it (F83 wires the F66 core).
         messages.append(contentsOf: Self.integrityMessages(verifyLibraryIntegrity()))
         if !messages.isEmpty {
-            alertMessage = messages.joined(separator: "\n\n")
+            // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
+            // launch with no window — a login item, or a window closed before this ran — showed it
+            // to nobody. It is the notice that tells a user their recording came back.
+            report(messages.joined(separator: "\n\n"))
         }
     }
 
