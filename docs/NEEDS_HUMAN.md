@@ -43,6 +43,49 @@ Being wrong either way is harmless: too low and you get two meetings instead of 
 you get more silence. Nothing about the timeline breaks at any value. Say a number and I will change
 the default; leave it and 5 minutes stands.
 
+## F230 — Watch the speaker-analysis screens once, with VoiceOver on
+
+**Status:** the fixtures exist and the code-side claims are tested. What is left cannot be observed
+by a test.
+
+**What I need from you:** twenty minutes with the app, VoiceOver on for part of it.
+
+The three blockers F229 hit are gone — `Scripts/bench/diarization/make-ui-fixtures.sh` generates
+what was missing:
+
+```bash
+Scripts/bench/diarization/make-ui-fixtures.sh audio ~/Desktop/ui-fixtures
+Scripts/bench/diarization/make-ui-fixtures.sh models off   # then `on` to put it back
+```
+
+`ui-single-voice.wav` produces exactly one cluster, so the single-voice state is reachable.
+`ui-long-cancel.wav` is three hours that analyse in 59 s, which is a wide enough window to press
+Cancel — the 46-minute real meeting finished in ~15 s, which is what defeated the last attempt.
+Both are synthetic speech and belong to nobody; delete the meetings afterwards.
+
+What to look at:
+
+1. **Cancel mid-run**, using the long fixture. Afterwards there should be no `diarization.json` in
+   the meeting's folder.
+2. **The single-voice copy**, using the single-voice fixture. It should not say "one voice" in a way
+   that implies the others were identified — that distinction is deliberate.
+3. **The model-absent copy**: `models off`, open the speaker-analysis screen, read the installer
+   text, then `models on`.
+4. **Import a fixture and leave it untranscribed** to reach the no-transcript state.
+5. **VoiceOver on** (⌘F5): a transcript row for an anonymous speaker should *say* "inferred". The
+   text is asserted by tests; that VoiceOver actually speaks it is not.
+6. **Keyboard only** (Tab / arrows): every control on those screens reachable without the mouse.
+7. **Dynamic Type large** and **Reduce Motion on**: nothing clipped, nothing that only animates.
+
+Snapshot `meetings.json` before and after if you want to be careful — nothing here should change it
+beyond the meetings you import and delete.
+
+The reason this is yours: VoiceOver's spoken output, keyboard focus order and type scaling are
+things only a person can confirm, and the accessibility claims are the ones that most deserve
+confirming rather than asserting.
+
+---
+
 ## F241 — Two decisions about the ASR benchmark
 
 **Status:** the long-form fixture is shipped and it reaches the batched meeting path. These two are
