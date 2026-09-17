@@ -291,7 +291,7 @@ func degradedLibraryRefusesTranscription() throws {
 
     // Real state `beginTranscription` sets on success — the queue it enqueues into and then pumps.
     #expect(!model.transcription.contains(meeting.id))
-    #expect(model.activeTranscriptionID == nil)
+    #expect(model.transcription.activeID == nil)
     #expect(store.meeting(id: meeting.id)?.transcriptText == meeting.transcriptText)
     let message = try #require(model.alertMessage)
     #expect(message.contains("read-only"))
@@ -312,7 +312,7 @@ func degradedLibraryRefusesTranscribeAll() throws {
     #expect(model.beginTranscriptionForAllReady() == 0)
 
     #expect(!model.transcription.contains(meeting.id))
-    #expect(model.activeTranscriptionID == nil)
+    #expect(model.transcription.activeID == nil)
     let message = try #require(model.alertMessage)
     #expect(message.contains("read-only"))
     #expect(message.contains("recovery"))

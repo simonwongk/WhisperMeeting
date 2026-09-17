@@ -634,7 +634,6 @@ final class AppModel: ObservableObject {
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
     }
 
-    var activeTranscriptionID: UUID? { transcription.activeID }
 
     var hasActiveTranscription: Bool {
         transcription.activeID != nil
@@ -1019,16 +1018,6 @@ final class AppModel: ObservableObject {
     /// imported or downloaded file keeps its own name, which is what makes this a reliable test for
     /// "recorded natively in WhisperMeet".
     private static let nativeRecordingFileNames: Set<String> = ["meeting.wav", "meeting-recovered.wav"]
-
-    /// Whether a meeting is eligible for speaker analysis at all. v1 is deliberately narrow — a
-    /// completed, natively recorded meeting with timestamps to reconcile against. Imports and link
-    /// audio wait for their own source-quality and recovery gate (the PRD's eligibility rule), and a
-    /// transcript with no timings (the Qwen alignment-failure shape) has nothing to label.
-    ///
-    /// Exposed so the menu entry can be disabled with the same rule the request enforces.
-    func supportsSpeakerAnalysis(_ meeting: MeetingRecord) -> Bool {
-        meeting.status == .completed && isNativeRecording(meeting) && hasUsableTimings(meeting)
-    }
 
     /// Why the "Analyze Speaker Turns…" entry cannot run for this meeting right now, or nil when it
     /// can. The menu disables itself on this and prints `SpeakerAnalysisCopy.footnote(for:)` beneath
@@ -3302,12 +3291,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Deletes a meeting, first removing it from the transcription queue (dropping a pending job or
-    /// cancelling an active one) so no ghost remains to run against a deleted recording.
-    func deleteMeeting(id: UUID) {
-        cancelTranscription(id: id)
-        store.delete(id: id)
-    }
 
     /// Deletes a whole selection. Cancels each meeting's transcription first, exactly as
     /// `deleteMeeting(id:)` does, then removes them in a single index write.
