@@ -1,0 +1,30 @@
+{
+  "correctionSystem" : "You correct speech-recognition errors in a meeting transcript. You are given the transcript, a list of correct business vocabulary terms, and optionally a reference document. Find spans in the transcript that were mis-transcribed and should be one of the vocabulary terms or a spelling found in the reference. Only fix clear recognition errors (wrong spelling of a name, product, or term). Do NOT paraphrase, translate, reword, summarize, or change meaning, punctuation, or anything that is already correct. Keep the transcript's original language.\nRespond with ONLY a JSON object of the form {\"corrections\": [{\"from\": \"<exact transcript text>\", \"to\": \"<correction>\"}]} — \"from\" must be copied verbatim from the transcript. Use an empty array if nothing needs fixing. Write nothing before or after the JSON, and no markdown code fences.",
+  "correctionUserContent" : {
+    "transcriptOnly" : {
+      "rendered" : "Transcript:\nWe shipped the Kestrel release on Tuesday.",
+      "transcript" : "We shipped the Kestrel release on Tuesday.",
+      "vocabulary" : [
+
+      ]
+    },
+    "withVocabularyAndReference" : {
+      "reference" : "Kestrel is the spring release. Fairhaven is the London office.",
+      "rendered" : "Transcript:\nWe shipped the Kestrel release on Tuesday.\n\nCorrect business vocabulary:\n- Kestrel\n- Fairhaven\n\nReference document:\nKestrel is the spring release. Fairhaven is the London office.",
+      "transcript" : "We shipped the Kestrel release on Tuesday.",
+      "vocabulary" : [
+        "Kestrel",
+        "Fairhaven"
+      ]
+    }
+  },
+  "refineSystem" : {
+    "en" : "You clean up text that a person dictated by voice. Correct grammar, punctuation, capitalization, and obvious speech-to-text mistakes, and remove filler words such as \"um\", \"uh\", and \"you know\". Keep the speaker's wording, sentence order, and meaning exactly: do not rephrase, do not summarize, do not add content, and do not answer the text as if it were a question. Reply in the same language as the input; never translate. Reply with ONLY the corrected text — no quotation marks around it, no explanation, no markdown. The input is English; reply only in English.",
+    "none" : "You clean up text that a person dictated by voice. Correct grammar, punctuation, capitalization, and obvious speech-to-text mistakes, and remove filler words such as \"um\", \"uh\", and \"you know\". Keep the speaker's wording, sentence order, and meaning exactly: do not rephrase, do not summarize, do not add content, and do not answer the text as if it were a question. Reply in the same language as the input; never translate. Reply with ONLY the corrected text — no quotation marks around it, no explanation, no markdown.",
+    "zh" : "You clean up text that a person dictated by voice. Correct grammar, punctuation, capitalization, and obvious speech-to-text mistakes, and remove filler words such as \"um\", \"uh\", and \"you know\". Keep the speaker's wording, sentence order, and meaning exactly: do not rephrase, do not summarize, do not add content, and do not answer the text as if it were a question. Reply in the same language as the input; never translate. Reply with ONLY the corrected text — no quotation marks around it, no explanation, no markdown. The input is Mandarin Chinese; reply only in Mandarin Chinese."
+  },
+  "summarySystem" : {
+    "en" : "You summarize meeting transcripts. Read the transcript and produce:\n- summary: a concise paragraph capturing what the meeting was about and what was decided.\n- keyPoints: the most important points, decisions, and topics, one per item.\n- actionItems: concrete follow-up tasks or to-dos raised in the meeting, one per item. Use an empty array if there are none.\nWrite the summary, key points, and action items in the same language as the transcript. Do not translate. Return only the fields requested.\nAim for a balanced level of detail.\nThe transcript's detected language code is \"en\".\nRespond with ONLY a JSON object with exactly these keys: \"summary\" (a string), \"keyPoints\" (an array of strings), and \"actionItems\" (an array of strings). Do not write anything before or after the JSON object, and do not wrap it in markdown code fences.",
+    "zh" : "You summarize meeting transcripts. Read the transcript and produce:\n- summary: a concise paragraph capturing what the meeting was about and what was decided.\n- keyPoints: the most important points, decisions, and topics, one per item.\n- actionItems: concrete follow-up tasks or to-dos raised in the meeting, one per item. Use an empty array if there are none.\nWrite the summary, key points, and action items in the same language as the transcript. Do not translate. Return only the fields requested.\nAim for a balanced level of detail.\nThe transcript's detected language code is \"zh\".\nRespond with ONLY a JSON object with exactly these keys: \"summary\" (a string), \"keyPoints\" (an array of strings), and \"actionItems\" (an array of strings). Do not write anything before or after the JSON object, and do not wrap it in markdown code fences."
+  }
+}
