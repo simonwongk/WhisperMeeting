@@ -11,7 +11,43 @@ public struct RecoveredRecording: Sendable, Equatable {
     public let duration: TimeInterval
     public let source: Source
 
+    /// Where the rebuild stopped, when a raw track became unreadable partway through (F256).
+    /// `nil` for every recovery that read cleanly — its presence means the audio is short.
+    public let truncatedAtSeconds: TimeInterval?
+
+    /// What the raw tracks promised, from their file size. Carried so a caller can judge how much
+    /// of the meeting survived: `duration` and `truncatedAtSeconds` are EQUAL after a truncation
+    /// (both derive from `writtenFrames`), so the ratio cannot be computed without this.
+    public let expectedDurationSeconds: TimeInterval?
+
+    public init(
+        recordingURL: URL,
+        duration: TimeInterval,
+        source: Source,
+        truncatedAtSeconds: TimeInterval? = nil,
+        expectedDurationSeconds: TimeInterval? = nil
+    ) {
+        self.recordingURL = recordingURL
+        self.duration = duration
+        self.source = source
+        self.truncatedAtSeconds = truncatedAtSeconds
+        self.expectedDurationSeconds = expectedDurationSeconds
+    }
+
     public var wasRebuiltFromRawTracks: Bool { source == .rebuiltSourceTracks }
+
+    /// A rebuild that kept less than a tenth of what the tracks promised (F256).
+    ///
+    /// Such a meeting is upserted `.failed` naming the raw tracks rather than presented as an
+    /// ordinary recovery, so "technically recovered" cannot masquerade as recovered. The boundary
+    /// is a judgement, not a measurement — it exists because there is no in-app way to re-run
+    /// recovery on a folder once it is indexed (F267), so a misleadingly tiny meeting is final.
+    public var isSeverelyTruncated: Bool {
+        guard let expected = expectedDurationSeconds, expected > 0, truncatedAtSeconds != nil else {
+            return false
+        }
+        return duration < expected / 10
+    }
 }
 
 public enum InterruptedRecordingRecovery {
@@ -138,13 +174,13 @@ public enum InterruptedRecordingRecovery {
             }
             var pcm = [Int16](repeating: 0, count: count)
             for index in pcm.indices {
-                let systemSample = systemSamples[index]
-                let microphoneSample = microphoneSamples[index]
-                let bothActive = abs(systemSample) > 0.01 && abs(microphoneSample) > 0.01
-                let mixed = bothActive
-                    ? (systemSample + microphoneSample) * 0.5
-                    : (systemSample + microphoneSample) * 0.95
-                pcm[index] = Int16(max(-1, min(1, mixed)) * Float(Int16.max))
+                // `FloatTrackMixer.mixedSample`, not a second copy of the gain rule (F278). A
+                // rebuild has to sound like the capture it is standing in for, and this is the path
+                // where a divergence would go unnoticed — there is no original left to compare to.
+                pcm[index] = FloatTrackMixer.mixedSample(
+                    system: systemSamples[index],
+                    microphone: microphoneSamples[index]
+                )
             }
             try write(pcm)
             writtenFrames += Int64(count)
@@ -181,32 +217,39 @@ public enum InterruptedRecordingRecovery {
             try fileManager.removeItem(at: outputURL)
         }
         fileManager.createFile(atPath: outputURL.path, contents: nil)
+        // Anything that throws from here on leaves a 44-byte stub whose header was never written.
+        // `wavDuration` refuses it, so it is not mistaken for a finalized recording, but it is also
+        // not a recording — remove it so the folder still looks like the interrupted capture it is
+        // and the next launch retries the rebuild. Declared before the close defer so it runs after
+        // it (defers are LIFO).
+        var rebuildSucceeded = false
+        defer { if !rebuildSucceeded { try? fileManager.removeItem(at: outputURL) } }
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
         try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
 
         let systemReader = try RawFloatReader(url: systemFrames > 0 ? systemURL : nil)
         let microphoneReader = try RawFloatReader(url: microphoneFrames > 0 ? microphoneURL : nil)
-        let chunkSize: Int64 = 8_192
-        var writtenFrames: Int64 = 0
-        while writtenFrames < totalFrames {
-            let count = Int(min(chunkSize, totalFrames - writtenFrames))
-            let systemSamples = systemReader.read(frameCount: count)
-            let microphoneSamples = microphoneReader.read(frameCount: count)
-            var pcm = [Int16](repeating: 0, count: count)
-            for index in pcm.indices {
-                // `FloatTrackMixer.mixedSample`, not a second copy of the gain rule (F278). A
-                // rebuild has to sound like the capture it is standing in for, and this is the path
-                // where a divergence would go unnoticed — there is no original left to compare to.
-                pcm[index] = FloatTrackMixer.mixedSample(
-                    system: systemSamples[index],
-                    microphone: microphoneSamples[index]
-                )
+        let mix = try mixTracks(
+            totalFrames: totalFrames,
+            chunkSize: 8_192,
+            readSystem: { try systemReader.read(frameCount: $0) },
+            readMicrophone: { try microphoneReader.read(frameCount: $0) },
+            write: { pcm in
+                try pcm.withUnsafeBytes { try ThrowingFileHandleIO.write(Data($0), to: output) }
             }
-            try pcm.withUnsafeBytes {
-                try ThrowingFileHandleIO.write(Data($0), to: output)
-            }
-            writtenFrames += Int64(count)
+        )
+        let writtenFrames = mix.writtenFrames
+
+        // The floor (F256). Nothing readable means nothing to recover, and indexing a duration-0
+        // meeting would be strictly worse than failing: `wavDuration` refuses a 44-byte WAV, so the
+        // file would not even be recognised as finalized, yet the meeting's UUID would enter
+        // `indexedIDs` and `orphanedRecordings()` would exclude the folder permanently — stranding
+        // intact `.f32` tracks with no route back, since nothing re-runs recovery on an indexed
+        // folder (F267). Throwing hands this to the caller's per-orphan catch, which leaves the
+        // folder untouched and reports it.
+        if writtenFrames == 0, let truncation = mix.truncation {
+            throw truncation.error
         }
 
         let dataByteCount = UInt32(clamping: writtenFrames * 2)
@@ -225,12 +268,16 @@ public enum InterruptedRecordingRecovery {
         try writeRecoveryManifestIfNeeded(
             in: directory,
             sampleRate: sampleRate,
-            alignment: "zero-aligned-after-interruption"
+            alignment: "zero-aligned-after-interruption",
+            truncatedAtSeconds: mix.truncation.map { Double($0.frame) / sampleRate }
         )
+        rebuildSucceeded = true
         return RecoveredRecording(
             recordingURL: outputURL,
             duration: Double(writtenFrames) / sampleRate,
-            source: .rebuiltSourceTracks
+            source: .rebuiltSourceTracks,
+            truncatedAtSeconds: mix.truncation.map { Double($0.frame) / sampleRate },
+            expectedDurationSeconds: Double(totalFrames) / sampleRate
         )
     }
 
@@ -314,7 +361,8 @@ public enum InterruptedRecordingRecovery {
     private static func writeRecoveryManifestIfNeeded(
         in directory: URL,
         sampleRate: Double,
-        alignment: String
+        alignment: String,
+        truncatedAtSeconds: TimeInterval? = nil
     ) throws {
         let capturedManifest = directory.appendingPathComponent("source-tracks.json")
         let recoveredManifest = directory.appendingPathComponent("source-tracks.recovered.json")
@@ -324,6 +372,7 @@ public enum InterruptedRecordingRecovery {
         }
         let manifest = RecoveredSourceManifest(
             recoveryAlignment: alignment,
+            truncatedAtSeconds: truncatedAtSeconds,
             systemAudio: .init(
                 file: systemFile,
                 format: "float32-little-endian",
@@ -355,6 +404,10 @@ private struct RecoveredSourceManifest: Codable {
     }
 
     let recoveryAlignment: String
+    /// Set only when the rebuild stopped early (F256), so the folder explains its own state without
+    /// the index. Optional: the already-finalized path writes this manifest too and has no
+    /// truncation concept.
+    let truncatedAtSeconds: TimeInterval?
     let systemAudio: Track
     let microphoneAudio: Track
 }
@@ -370,10 +423,17 @@ private final class RawFloatReader {
         try? handle?.close()
     }
 
-    func read(frameCount: Int) -> [Float] {
+    /// A short read zero-pads; a genuine I/O error throws (F256).
+    ///
+    /// These were the same value before: `try?` collapsed an unreadable block and end-of-file into
+    /// zero-filled samples, so a bad block became silence that the caller wrote out and reported as
+    /// a successful recovery. The EOF path must keep zero-padding — the two `.f32` files are written
+    /// independently from one capture callback, so an abrupt stop leaves them ragged and the shorter
+    /// one is padded to the longer. Only the error case is new.
+    func read(frameCount: Int) throws -> [Float] {
         var result = [Float](repeating: 0, count: frameCount)
-        guard let handle,
-              let data = try? handle.read(upToCount: frameCount * MemoryLayout<Float>.size),
+        guard let handle else { return result }
+        guard let data = try handle.read(upToCount: frameCount * MemoryLayout<Float>.size),
               !data.isEmpty else {
             return result
         }

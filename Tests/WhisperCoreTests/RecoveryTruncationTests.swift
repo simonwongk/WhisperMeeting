@@ -105,3 +105,71 @@ func finalChunkIsSizedToTheRemainder() throws {
     #expect(result.writtenFrames == 250)
     #expect(result.truncation == nil)
 }
+
+// MARK: - The truncation floor
+
+@Test("A rebuild that can read nothing throws instead of indexing an empty meeting")
+func zeroReadableFramesThrows() throws {
+    // The floor, and the Critical a reviewer found in the design before any of this was written.
+    //
+    // Without it: `writtenFrames == 0` gives `dataByteCount == 0`, so a 44-byte WAV that
+    // `wavDuration` refuses — yet `recover` still returned a `RecoveredRecording`, and `AppModel`'s
+    // `duration <= 0` rescue is gated on `.importedRecording` so it never fired. A duration-0
+    // meeting would be indexed over an empty WAV carrying the ORDINARY "recovered" message, its
+    // UUID would enter `indexedIDs`, and `orphanedRecordings()` would exclude the folder
+    // permanently — stranding intact `.f32` tracks with no route back. Strictly worse than the bug
+    // this ticket fixes.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RecoveryFloor-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: directory.path
+        )
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    // `frameCount` reads the file SIZE, so `totalFrames` is non-zero while every read fails.
+    let path = directory.appendingPathComponent("system-audio.f32")
+    try Data(repeating: 0, count: 4_000).write(to: path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path.path)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path)
+    }
+
+    #expect(throws: (any Error).self) {
+        _ = try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    // Nothing was left behind pretending to be a recording.
+    #expect(
+        !FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("meeting-recovered.wav").path
+        )
+    )
+    // And the raw track the user still needs is untouched.
+    #expect(FileManager.default.fileExists(atPath: path.path))
+}
+
+@Test("A readable rebuild reports no truncation and keeps its full duration")
+func readableRebuildIsNotTruncated() throws {
+    // The counterpart: the floor must not make an ordinary rebuild look damaged.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RecoveryWhole-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // One second of 48 kHz float32 in each track, equal length.
+    let samples = [Float](repeating: 0.2, count: 48_000)
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        try samples.withUnsafeBytes {
+            try Data($0).write(to: directory.appendingPathComponent(name))
+        }
+    }
+
+    let recovered = try #require(try InterruptedRecordingRecovery.recover(in: directory))
+    #expect(recovered.source == .rebuiltSourceTracks)
+    #expect(recovered.truncatedAtSeconds == nil)
+    #expect(recovered.expectedDurationSeconds == 1.0)
+    #expect(!recovered.isSeverelyTruncated)
+    #expect(abs(recovered.duration - 1.0) < 0.001)
+}
