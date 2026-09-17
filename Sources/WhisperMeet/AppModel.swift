@@ -1474,7 +1474,27 @@ final class AppModel: ObservableObject {
 
         do {
             let recover = recoverInterruptedRecording
-            for orphan in try store.orphanedRecordings() {
+            // F255: refuse to rebuild while another live instance owns the library. A running
+            // capture's folder holds only growing `.f32` tracks and no finalized WAV — `meeting.wav`
+            // is written by `AudioCaptureEngine.stop()` — so it is structurally identical to an
+            // interrupted one. Without this, a second instance rebuilds the LIVE folder, indexes the
+            // partial result, and the complete `meeting.wav` that arrives afterwards has nothing
+            // pointing at it: the user's real recording is stranded on disk.
+            //
+            // Evaluated ONCE. The lease is loop-invariant, and testing it per folder would append
+            // the same paragraph N times to `messages`, which are joined with a blank line.
+            //
+            // Only this loop is gated. `recover` is also reached from `stopRecording`'s error path,
+            // where this instance is recovering its OWN folder after its own finalization failed —
+            // and since nothing gates `startRecording` on the lease, that instance may well not hold
+            // it. Gating the function instead of the loop would break exactly that case.
+            let mayRebuild = store.mayRebuildInterruptedRecordings
+            if !mayRebuild {
+                messages.append(
+                    "Another copy of WhisperMeet is open, so interrupted recordings were left untouched. Your audio is safe where it is. Quit the other copy and reopen WhisperMeet to finish recovering them."
+                )
+            }
+            for orphan in try mayRebuild ? store.orphanedRecordings() : [] {
                 let recovered: RecoveredRecording?
                 do {
                     recovered = try await Task.detached(priority: .utility) {

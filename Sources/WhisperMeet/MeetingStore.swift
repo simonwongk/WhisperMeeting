@@ -507,6 +507,22 @@ final class MeetingStore: ObservableObject {
         )
     }
 
+    /// Whether this instance may rebuild an interrupted recording folder (F255).
+    ///
+    /// Deliberately NOT folded into `orphanedRecordings()` below. That function is a
+    /// read-and-report — a folder holding raw tracks and no finalized WAV genuinely is unindexed,
+    /// whoever is running — and making it return `[]` on a lease it does not own would make it lie
+    /// about the filesystem. The refusal belongs to whoever is about to *write*, so
+    /// `AppModel.performStartupRecovery` consults this before its rebuild loop and reports why it
+    /// skipped.
+    ///
+    /// Lives here rather than in `AppModel` because the lease is this type's state and the question
+    /// is about the library, not about the app's lifecycle. `InterruptedRecordingRecovery` owns the
+    /// policy; this is the one line that connects it to `writerLease`.
+    var mayRebuildInterruptedRecordings: Bool {
+        InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(writerLease)
+    }
+
     func orphanedRecordings() throws -> [OrphanedRecording] {
         // An index that did not fully load is indistinguishable from "no meetings", which is exactly
         // how every recording folder came to look orphaned on 2026-08-14 (F187).
