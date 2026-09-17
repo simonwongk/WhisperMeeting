@@ -343,6 +343,40 @@ lines that distinguish "working" from "stuck on a false premise".
 retracted claims had this shape: a plausible number, a plausible count, a plausible tool behaviour.
 The header of the script you are about to run is cheaper than the retraction.
 
+**The rule is not "don't filter logs" — it is don't filter the output you are using to decide.**
+Filtering to *read* is fine and often necessary; filtering to *judge* is what fails. Sharpened after
+the rule above was written and then broken three more times the same session by the agent who wrote
+it: `verify-push.sh | tail -25` again, immediately afterwards, producing another empty file; and a
+`gh run view --log-failed | grep -aE "error:|…"` that returned nothing but unrelated `warning:` lines
+while the actual diagnostic — a type error two lines away — was dropped by the filter. The other
+session's `| head` over three exit codes reported 0 for all three, including the two that were 1 and
+2, because a pipeline reports its last stage's status. Four instances, two sessions, three tools.
+
+**A rule you have just stated is not yet a habit, and the invocation you reach for by reflex is the
+one that broke.** That is why this is a rule about the command you type rather than about being
+careful.
+
+**Expect the first draft of a correctness fix to contain a new instance of the bug it fixes.** Named
+because it happened twice in one day, independently. F275's restart pads a gap with silence so the
+timeline stays honest — and its first green version let overlapping triggers pad one gap three times,
+shifting the timeline exactly as the unpadded splice would have. The `verify-push.sh` reachability
+check, added to stop a false *wait*, first used `git ls-remote origin` — which lists ref tips, so it
+reported a pushed commit as absent the moment anything landed on top, a false *refusal* in its place.
+Both were caught by self-review after the author had called the work done, which is the only reason
+either is a paragraph here instead of a field report.
+
+**Local-invisible failure classes on this repo**, i.e. things no local gate can see, because the
+developer toolchain is always newer than `macos-15`'s and the developer's Mac has runtimes the runner
+does not:
+
+- `swift-tools-version:` newer than the runner's Swift (F270's original two-day red).
+- **A bare array literal whose element type depends on inference.**
+  `#expect(someInt64Array == [12 * 48_000])` compiles under 6.3, which infers `[Int64]` from the
+  comparison, and fails under 6.1.0, which types it `[Int]`. A *scalar* literal adopts the contextual
+  type in both — it is specifically the array literal's element type that is the weaker inference, so
+  the same file's other `Int64` comparisons were fine. Annotate the type instead of casting inline.
+- Anything depending on an installed model, venv, or Python package.
+
 **The duration heuristic — the cheapest signal there is.** A full run takes minutes (3m22s was the
 last known-good baseline). **A run that finishes in under a minute tested nothing** — it died before
 the Swift suite. Check the duration before you read the conclusion, because a fast failure and a

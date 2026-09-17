@@ -199,11 +199,39 @@ public enum InterruptedRecordingRecovery {
         return { try reader.read(frameCount: $0) }
     }
 
+    /// A track's size in bytes: nil when the file is **absent**, a throw when it is present but
+    /// unstattable (F280).
+    ///
+    /// The two are not the same thing and collapsing them is the bug. Absent is legitimate — a
+    /// microphone-only or system-only recording is ordinary, and `RawFloatReader(url: nil)` exists
+    /// for exactly that. Present-but-unstattable means the rebuild cannot know how long the track
+    /// is, and answering 0 turned that into a channel of pure silence with **no truncation
+    /// reported**, because no read ever failed. Same conflation F256 fixed one level down.
+    typealias SizeLookup = (URL) throws -> Int64?
+
+    /// Stats a real file. The only lookup the app ever uses.
+    static let fileSizeLookup: SizeLookup = { url in
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        // Deliberately `try`, not `try?`: the existence check above has already separated out the
+        // legitimate case, so anything failing here is a racing unlink, a disappearing volume, or
+        // EMFILE — none of which mean "this track has no audio".
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return size.int64Value
+    }
+
     public static func recover(
         in directory: URL,
         sampleRate: Double = 48_000
     ) throws -> RecoveredRecording? {
-        try recover(in: directory, sampleRate: sampleRate, openTrack: fileTrackOpener)
+        try recover(
+            in: directory,
+            sampleRate: sampleRate,
+            openTrack: fileTrackOpener,
+            sizeOf: fileSizeLookup
+        )
     }
 
     /// The seam, internal and used by exactly one test file.
@@ -218,16 +246,28 @@ public enum InterruptedRecordingRecovery {
     static func recover(
         in directory: URL,
         sampleRate: Double,
-        openTrack: TrackOpener
+        openTrack: TrackOpener,
+        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
     ) throws -> RecoveredRecording? {
         let fileManager = FileManager.default
         if let finished = finalizedRecording(in: directory) {
             // Only a capture gets a manifest: an import has no source tracks to describe.
             if finished.source == .existingCapture {
-                try writeRecoveryManifestIfNeeded(
+                // Swallowed on purpose (F280), and this is the one place it is right to. The
+                // recording here is already COMPLETE on disk — `finalizedRecording` verified its
+                // WAV header. The manifest is descriptive metadata about the raw tracks beside it,
+                // and `writeRecoveryManifestIfNeeded` already treats its own absence as a normal
+                // state (it skips when one exists). So a stat failure leaves the manifest unwritten
+                // rather than written false, and the finished recording is still returned. Throwing
+                // would lose a whole meeting to a failure to describe its sidecar files.
+                //
+                // The rebuild path below does the opposite and throws, because there the frame count
+                // decides what gets mixed — a wrong answer silently produces a silent channel.
+                try? writeRecoveryManifestIfNeeded(
                     in: directory,
                     sampleRate: sampleRate,
-                    alignment: "captured-timeline"
+                    alignment: "captured-timeline",
+                    sizeOf: sizeLookup
                 )
             }
             return finished
@@ -235,8 +275,11 @@ public enum InterruptedRecordingRecovery {
 
         let systemURL = directory.appendingPathComponent(systemFile)
         let microphoneURL = directory.appendingPathComponent(microphoneFile)
-        let systemFrames = frameCount(at: systemURL)
-        let microphoneFrames = frameCount(at: microphoneURL)
+        // Throwing here, before the output file is created, is deliberate: nothing has been
+        // written yet, so the folder still looks like the interrupted capture it is and the next
+        // launch retries the rebuild. That is the same contract F256's truncation path keeps.
+        let systemFrames = try frameCount(at: systemURL, sizeOf: sizeLookup)
+        let microphoneFrames = try frameCount(at: microphoneURL, sizeOf: sizeLookup)
         let totalFrames = max(systemFrames, microphoneFrames)
         guard totalFrames > 0 else { return nil }
 
@@ -293,11 +336,16 @@ public enum InterruptedRecordingRecovery {
             ),
             to: output
         )
+        // The rebuild path: the tracks were already stat'd successfully above to decide what to
+        // mix, so the same lookup cannot newly fail here — and if it somehow does, this manifest
+        // describes a file this call just built, so a false frame count would be the worst of the
+        // three outcomes.
         try writeRecoveryManifestIfNeeded(
             in: directory,
             sampleRate: sampleRate,
             alignment: "zero-aligned-after-interruption",
-            truncatedAtSeconds: mix.truncation.map { Double($0.frame) / sampleRate }
+            truncatedAtSeconds: mix.truncation.map { Double($0.frame) / sampleRate },
+            sizeOf: sizeLookup
         )
         rebuildSucceeded = true
         return RecoveredRecording(
@@ -340,12 +388,10 @@ public enum InterruptedRecordingRecovery {
         }
     }
 
-    private static func frameCount(at url: URL) -> Int64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? NSNumber else {
-            return 0
-        }
-        return size.int64Value / Int64(MemoryLayout<Float>.size)
+    /// Frames in a raw `.f32` track: 0 when absent, a throw when present but unstattable (F280).
+    private static func frameCount(at url: URL, sizeOf sizeLookup: SizeLookup) throws -> Int64 {
+        guard let size = try sizeLookup(url) else { return 0 }
+        return size / Int64(MemoryLayout<Float>.size)
     }
 
     private static func wavDuration(at url: URL) -> TimeInterval? {
@@ -390,7 +436,8 @@ public enum InterruptedRecordingRecovery {
         in directory: URL,
         sampleRate: Double,
         alignment: String,
-        truncatedAtSeconds: TimeInterval? = nil
+        truncatedAtSeconds: TimeInterval? = nil,
+        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
     ) throws {
         let capturedManifest = directory.appendingPathComponent("source-tracks.json")
         let recoveredManifest = directory.appendingPathComponent("source-tracks.recovered.json")
@@ -406,14 +453,20 @@ public enum InterruptedRecordingRecovery {
                 format: "float32-little-endian",
                 sampleRate: sampleRate,
                 channels: 1,
-                frameCount: frameCount(at: directory.appendingPathComponent(systemFile))
+                frameCount: try frameCount(
+                    at: directory.appendingPathComponent(systemFile),
+                    sizeOf: sizeLookup
+                )
             ),
             microphoneAudio: .init(
                 file: microphoneFile,
                 format: "float32-little-endian",
                 sampleRate: sampleRate,
                 channels: 1,
-                frameCount: frameCount(at: directory.appendingPathComponent(microphoneFile))
+                frameCount: try frameCount(
+                    at: directory.appendingPathComponent(microphoneFile),
+                    sizeOf: sizeLookup
+                )
             )
         )
         let encoder = JSONEncoder()
