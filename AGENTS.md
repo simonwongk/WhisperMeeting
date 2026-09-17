@@ -153,6 +153,17 @@ A ticket may only be closed `fixed` when all of these hold:
 - **CI observed, not assumed.** A change that reaches `origin` is done only when a run of
   `.github/workflows/quality.yml` is **observed green on that commit**. A green local
   `Scripts/quality-check.sh` is not evidence — see **Pushing and CI** below for why it cannot be.
+- **Re-read your own prose against the final diff, not against your plan.** Comments, doc comments
+  and log entries are written mid-change and go stale inside the same commit. Before committing,
+  check every factual claim you wrote — counts, symbol names, error cases, "this test guarantees
+  X" — against the code as it actually ended up. Two shapes: prose that was true when written and
+  got falsified by the same change, and prose written from a plausible model of the code rather
+  than from the code. The first needs a re-read; the second needs the claim checked against the
+  symbol before it is written. On 2026-09-16 five such claims were committed or nearly committed in
+  one day, by both sessions working the repo, and none was carelessness — each was written from
+  what its author intended at a moment when that was still true. This bites **before** the commit:
+  a closed `TICKET_LOG.md` entry is append-only evidence of what was known at closure, and is
+  corrected by the sanctioned cross-reference exception, never by editing history.
 - **Actionable gaps.** Every sentence in the log entry's **Gaps** section that describes work a
   person could still do carries a ticket ID. The words "follow-up", "future", "not implemented",
   "app wiring", or "is a follow-up" with no `F<n>` beside them are a rule violation. A Gap that is a
