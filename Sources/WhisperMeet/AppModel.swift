@@ -239,6 +239,8 @@ final class AppModel: ObservableObject {
     /// the offer and the act are two separate calls. Deliberately the same shape as
     /// `pendingLongMediaConfirmation` above, so this model has one confirmation idiom, not two.
     @Published var pendingLibraryRecovery: [RetainedGeneration]?
+    /// The reviewed rebuild offer awaiting the user's answer (F267). Nil when none is pending.
+    @Published var pendingSourceRebuild: SourceRebuildRequest?
     /// Whether the user has opted into the link-import feature. Off by default: every other
     /// boundary-crossing capability in this app is opt-in (Qwen, Claude summaries), so the network
     /// path is explicit rather than ambient.
@@ -3372,6 +3374,122 @@ extension AppModel {
     /// `ReadOnlyLibraryNotice` tells the user to "resolve recovery" in four places; until F193 there
     /// was nothing in the app that could. Reads and reports only: listing generations is safe while
     /// degraded because it touches nothing.
+    /// One meeting's pending "rebuild from source audio" offer, with the title so the confirmation
+    /// can name what it is about to change (F267).
+    struct SourceRebuildRequest: Equatable {
+        let meetingID: UUID
+        let meetingTitle: String
+        let offer: SourceRebuild.Offer
+    }
+
+    /// Whether the meeting-detail view should show the rebuild action at all. A pure read.
+    func canRebuildFromSourceTracks(id: UUID) -> Bool {
+        sourceRebuildOffer(for: id) != nil
+    }
+
+    private func sourceRebuildOffer(for id: UUID) -> SourceRebuild.Offer? {
+        guard let meeting = store.meeting(id: id), !meeting.recordingPath.isEmpty else { return nil }
+        let directory = store.recordingURL(for: meeting).deletingLastPathComponent()
+        return SourceRebuild.offer(in: directory, currentDuration: meeting.duration)
+    }
+
+    /// Offers a rebuild for review. Never rebuilds anything itself (F267, in F193's shape).
+    func requestSourceRebuild(id: UUID) {
+        guard !store.isDegraded else {
+            // The F187 read-only promise covers this too: a library we could not fully read is not
+            // one to start rewriting recordings in.
+            alertMessage = ReadOnlyLibraryNotice.lead
+            return
+        }
+        guard let meeting = store.meeting(id: id) else { return }
+        guard let offer = sourceRebuildOffer(for: id) else {
+            // Explained rather than silently absent — the user asked for something, and the two
+            // reasons are different enough to be worth distinguishing.
+            let directory = store.recordingURL(for: meeting).deletingLastPathComponent()
+            alertMessage = FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("meeting.wav").path
+            )
+                ? "This meeting's recording finished normally, so there is nothing to rebuild. Replacing it with a rebuild of the raw tracks would leave the finished recording on disk with nothing pointing at it."
+                : "The original microphone and system tracks for this meeting are no longer in its folder, so it cannot be rebuilt. The recording you have is unchanged."
+            return
+        }
+        pendingSourceRebuild = SourceRebuildRequest(
+            meetingID: id,
+            meetingTitle: meeting.title,
+            offer: offer
+        )
+    }
+
+    /// Performs the reviewed rebuild. Does nothing at all unless `confirmed` is true (F267).
+    ///
+    /// The unconfirmed call is the seam the confirmation dialog hangs on, exactly as
+    /// `recoverLibrary(from:confirmed:)` and `importFromURL(_:confirmedLongDuration:)` do — and it
+    /// leaves the offer standing, because the user has not answered yet.
+    ///
+    /// What changes is the audio's own facts: duration, and the truncation notice, which the new
+    /// rebuild either reproduces or clears. **Nothing the user wrote is touched** — F148 #1, and
+    /// the reason this action is safe enough to offer at all.
+    func performSourceRebuild(confirmed: Bool) {
+        guard confirmed, let request = pendingSourceRebuild else { return }
+        do {
+            guard let rebuilt = try SourceRebuild.rebuild(request.offer) else {
+                alertMessage = "The source tracks for this meeting held no audio to rebuild. Nothing was changed."
+                pendingSourceRebuild = nil
+                return
+            }
+            let previousDuration = store.meeting(id: request.meetingID)?.duration ?? 0
+            store.update(id: request.meetingID) { meeting in
+                meeting.duration = rebuilt.duration
+                meeting.recoveryWarning = Self.recoveryWarning(for: rebuilt)
+                // F281's rule in a new case. The transcript covers the old, shorter audio and its
+                // timestamps point into a file that has been superseded; it is kept because
+                // blanking it is forbidden and would be the greater harm, so the meeting says so
+                // instead. Only when there IS a transcript and the audio actually moved — a
+                // rebuild that reproduces the same thing has nothing to declare.
+                if !meeting.transcriptText.isEmpty,
+                   abs(rebuilt.duration - previousDuration) > 0.05 {
+                    meeting.staleTranscriptWarning = "This transcript was made from an earlier, \(TranscriptFormatter.clock(previousDuration)) version of the audio, which has since been rebuilt to \(TranscriptFormatter.clock(rebuilt.duration)). Its text and timestamps do not cover the whole recording — transcribe again to replace it."
+                }
+            }
+            pendingSourceRebuild = nil
+            var message = "The recording was rebuilt from its source tracks."
+            if request.offer.wouldSupersedeRecording {
+                message += " The previous version is kept in this meeting's folder."
+            }
+            if let warning = Self.recoveryWarning(for: rebuilt) { message += " \(warning)" }
+            alertMessage = message
+        } catch {
+            // The offer stays up, as F193 leaves `pendingLibraryRecovery` populated: the failure
+            // may be specific to this attempt, and `SourceRebuild` has already put the previous
+            // recording back, so trying again is safe.
+            alertMessage = "The recording could not be rebuilt, and nothing was changed. The original microphone and system tracks are still in this meeting's folder. \(error.localizedDescription)"
+        }
+    }
+
+    /// The rebuild confirmation's body (F267).
+    ///
+    /// Here rather than in the view, and static, because the view that shows it is `private` and
+    /// so unreachable from tests. This copy makes three promises the user is relying on — what
+    /// changes, what is kept, and what it costs — and a promise nothing asserts is a promise that
+    /// drifts. `severelyTruncatedRecoveryMessage` sits here for the same reason.
+    static func rebuildConfirmationMessage(_ request: AppModel.SourceRebuildRequest) -> String {
+        let current = TranscriptFormatter.clock(request.offer.currentDurationSeconds)
+        let available = TranscriptFormatter.clock(request.offer.expectedDurationSeconds)
+        var text = "\(request.meetingTitle) currently has \(current) of audio. "
+            + "Its source tracks hold up to \(available). "
+        if request.offer.wouldSupersedeRecording {
+            text += "The current audio is kept in this meeting's folder rather than replaced, so "
+                + "the folder will grow by about one more copy of the recording. "
+        }
+        text += "Your title, transcript, notes, tags and summary are not changed."
+        return text
+    }
+
+    /// Dismisses a pending rebuild offer without rebuilding anything.
+    func cancelSourceRebuild() {
+        pendingSourceRebuild = nil
+    }
+
     func requestLibraryRecovery() {
         guard store.isDegraded else {
             // Rolling an older index over a healthy library is data loss dressed as a repair, so it

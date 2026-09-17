@@ -74,6 +74,15 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// Separate from `errorMessage`, which every recovered meeting already carries: that string
     /// explains the recovery, this one contradicts it.
     var recoveryWarning: String?
+    /// A plain-language note when the meeting's audio was rebuilt after its transcript was made
+    /// (F267), so the text describes a file that no longer exists and its timestamps point into a
+    /// different one. Optional so older indexes decode.
+    ///
+    /// The transcript is deliberately KEPT rather than cleared — F148 #1 forbids a rebuild blanking
+    /// the user's text, and losing it would be the greater harm anyway. Saying so is the F281 rule:
+    /// a transcript silently describing superseded audio reads as current because nothing
+    /// contradicts it. Cleared the next time the meeting is transcribed.
+    var staleTranscriptWarning: String?
     /// A plain-language note when the transcript's dominant script disagrees with the language the
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
@@ -144,6 +153,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         healthReport: RecordingHealthReport? = nil,
         alignmentWarning: String? = nil,
         recoveryWarning: String? = nil,
+        staleTranscriptWarning: String? = nil,
         languageWarning: String? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         source: MediaSource? = nil,
@@ -169,6 +179,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.healthReport = healthReport
         self.alignmentWarning = alignmentWarning
         self.recoveryWarning = recoveryWarning
+        self.staleTranscriptWarning = staleTranscriptWarning
         self.languageWarning = languageWarning
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
         self.source = source
@@ -563,8 +574,12 @@ final class MeetingStore: ObservableObject {
     /// text is complete but a property of it is off. Doing only the first would have been the
     /// inconsistency this ticket was filed about.
     private nonisolated static func meetingCaveats(for meeting: MeetingRecord) -> [String] {
-        [meeting.recoveryWarning, meeting.alignmentWarning, meeting.languageWarning]
-            .compactMap { $0 }
+        [
+            meeting.recoveryWarning,
+            meeting.staleTranscriptWarning,
+            meeting.alignmentWarning,
+            meeting.languageWarning,
+        ].compactMap { $0 }
     }
 
     func notesMarkdown(for meeting: MeetingRecord) -> String {

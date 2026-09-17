@@ -2377,6 +2377,24 @@ private struct TranscriptDetailView: View {
                     store.editNotes(id: meetingID, text: newValue)
                 }
         }
+        .confirmationDialog(
+            "Rebuild this meeting's audio?",
+            isPresented: .init(
+                get: { model.pendingSourceRebuild?.meetingID == meetingID },
+                set: { if !$0 { model.cancelSourceRebuild() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Rebuild Audio") { model.performSourceRebuild(confirmed: true) }
+            Button("Cancel", role: .cancel) { model.cancelSourceRebuild() }
+        } message: {
+            if let request = model.pendingSourceRebuild {
+                // States what changes, what is kept, and the cost, rather than only asking. The
+                // disk growth is disclosed instead of solved: a silent cap that discarded the
+                // user's audio would be a worse defect in a smaller font (F267).
+                Text(AppModel.rebuildConfirmationMessage(request))
+            }
+        }
         .onAppear {
             if notesLoadedFor != meetingID {
                 notesDraft = store.meeting(id: meetingID)?.notes ?? ""
@@ -2427,6 +2445,27 @@ private struct TranscriptDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .bannerSurface(.orange)
                             .accessibilityElement(children: .combine)
+                    }
+                    // F267: the transcript describes audio that has since been replaced. Beside the
+                    // recovery warning because it is the same kind of statement, and rendered at
+                    // every status for the same reason - a `.recorded` meeting has one too.
+                    if let warning = meeting.staleTranscriptWarning {
+                        Label(warning, systemImage: "clock.badge.questionmark")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bannerSurface(.orange)
+                            .accessibilityElement(children: .combine)
+                    }
+                    // F267: recovery used to be one-shot, so an imperfect rebuild was final even
+                    // with the intact source tracks sitting beside it. Offered only where it is
+                    // safe - never over a `meeting.wav` that finished normally.
+                    if model.canRebuildFromSourceTracks(id: meetingID) {
+                        Button("Rebuild Audio from Source Tracks...") {
+                            model.requestSourceRebuild(id: meetingID)
+                        }
+                        .help("Mixes this meeting's original microphone and system tracks again. The current audio is kept.")
                     }
                     tagsEditor
                     notesSection
