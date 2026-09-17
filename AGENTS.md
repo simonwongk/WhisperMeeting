@@ -379,6 +379,29 @@ carries a bound — and the bound is *derived* from the contract that makes resu
 resuming) rather than chosen as a timeout. A defer needs an expiry, and the expiry should come from
 the mechanism it is waiting for.
 
+**Asserting a consequence without requiring its precondition turns a timeout into confusing
+failures about something else.** A test that waits for a state and then asserts *regardless of
+whether the wait succeeded* reports an exhausted budget as a claim about production. On 2026-09-17 a
+5-second poll on a transcription queue exceeded its budget on the runner and failed as two
+assertions about a meeting's `status` and `staleTranscriptWarning` — so main read as broken by the
+unrelated commit that happened to be on top. Either require the precondition (`#require` the wait
+succeeded, and fail on *that*) or remove it: the better fix there was to call the synchronous
+function that owns the behaviour instead of driving the queue at all, which took the test from 21.7 s
+and host-dependent to 0.1 s and deterministic.
+
+A poll loop is fine when the polled value **is** the assertion's subject — waiting for a killed
+holder's lease to become available, say. It is a trap when it is a precondition for a different
+claim.
+
+**A fact nothing else owns cannot be erased by a path that owns a message.** Provenance kept as a
+sentence inside an `errorMessage` was destroyed by every path entitled to rewrite that message; as
+its own field, with the sentence generated from it, nothing can. The same ticket found the mirror
+image — a stale-transcript warning that *should* have been cleared and never was — which is the
+tell: when one path owns both a fact and a message, it will get one of the two directions wrong.
+Recorded with the detail that makes it sharp: the comment claiming the warning was "cleared the next
+time the meeting is transcribed" was **one hour old**, written by the author of the code it
+described. Prose about behaviour has no test, and elapsed time is not required for it to go stale.
+
 **Expect the first draft of a correctness fix to contain a new instance of the bug it fixes.** Named
 because it happened twice in one day, independently. F275's restart pads a gap with silence so the
 timeline stays honest — and its first green version let overlapping triggers pad one gap three times,
@@ -399,6 +422,18 @@ does not:
   type in both — it is specifically the array literal's element type that is the weaker inference, so
   the same file's other `Int64` comparisons were fine. Annotate the type instead of casting inline.
 - Anything depending on an installed model, venv, or Python package.
+- **A queued run being displaced.** `cancel-in-progress: false` stops a *running* gate being
+  cancelled; it does nothing for a *queued* one, and GitHub keeps at most one pending run per
+  concurrency group. So pushes arriving faster than the gate completes silently displace each
+  other's results. Three commits reached main on 2026-09-17 with **no gate at all** — the tell is
+  `gh run view <id> --json jobs --jq '.jobs | length'` returning **0**, which distinguishes "queued
+  then displaced" from "interrupted mid-test". A `cancelled` conclusion with a plausible duration
+  looks exactly like a flaky run; the duration was time spent waiting. Fixed by F286 (one
+  concurrency group per commit on main), and the fix was *proved* by two pushes 5m32s apart both
+  reporting `jobs=1`.
+- **A fixed time budget in a test.** `for _ in 0..<200 { sleep(25ms) }` makes "slow" a property of
+  the host, and the runner is slower than any developer Mac. This one is not a toolchain gap — it is
+  avoidable by not using a clock.
 
 **The duration heuristic — the cheapest signal there is.** A full run takes minutes (3m22s was the
 last known-good baseline). **A run that finishes in under a minute tested nothing** — it died before
