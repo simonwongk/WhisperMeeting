@@ -231,6 +231,44 @@ class ScoreRecordTests(unittest.TestCase):
         self.assertIn("model died", " ".join(verdict["reasons"]))
 
 
+class ClaimAliasPassthroughTests(unittest.TestCase):
+    """F290's fix is only worth having if the report actually forwards the corpus's aliases."""
+
+    def test_declared_claim_aliases_reach_the_scorer(self):
+        item = _item(
+            lang="zh", text="林志豪關掉了每晚備份", protected_terms=[],
+            claims=[{"actor": "林志豪", "action": "關掉", "target": "每晚備份",
+                     "weight": "core", "action_aliases": ["關閉"], "target_aliases": ["備份"]}],
+        )
+        record = _record(lang="zh", input={"transcript": "林志豪關掉了每晚備份"},
+                         output={"summary": "林志豪因關閉備份導致快照遺失",
+                                 "keyPoints": [], "actionItems": []})
+        verdict = report.score_record(record, item, [])
+        self.assertEqual(verdict["claim_verdicts"][0]["verdict"], "kept")
+
+    def test_without_them_the_same_pairing_is_not_credited(self):
+        """States the dependency rather than leaving it implied: drop the pass-through and this
+        goes back to reporting an omission that did not happen."""
+        item = _item(
+            lang="zh", text="林志豪關掉了每晚備份", protected_terms=[],
+            claims=[{"actor": "林志豪", "action": "關掉", "target": "每晚備份", "weight": "core"}],
+        )
+        record = _record(lang="zh", input={"transcript": "林志豪關掉了每晚備份"},
+                         output={"summary": "林志豪因關閉備份導致快照遺失",
+                                 "keyPoints": [], "actionItems": []})
+        verdict = report.score_record(record, item, [])
+        self.assertNotEqual(verdict["claim_verdicts"][0]["verdict"], "kept")
+
+    def test_an_actor_alias_is_forwarded_too(self):
+        item = _item(claims=[{"actor": "Priya Raman", "action": "approved",
+                              "target": "the release", "weight": "core",
+                              "actor_aliases": ["Priya"]}])
+        record = _record(output={"summary": "Priya approved the release.",
+                                 "keyPoints": [], "actionItems": []})
+        verdict = report.score_record(record, item, [])
+        self.assertEqual(verdict["claim_verdicts"][0]["verdict"], "kept")
+
+
 class AggregateTests(unittest.TestCase):
     def test_an_empty_arm_reports_none_rather_than_a_perfect_score(self):
         """The bug the scorer already fixed once, in its other home. 1.0 from no data reads as

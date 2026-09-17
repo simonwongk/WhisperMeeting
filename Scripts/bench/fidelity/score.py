@@ -193,7 +193,8 @@ def dropped_content(source, output):
 ADJACENCY_CHARACTERS = 24
 
 
-def claim_verdict(summary, actor, action, target):
+def claim_verdict(summary, actor, action, target,
+                  actor_aliases=None, action_aliases=None, target_aliases=None):
     """`kept`, `actor_dropped`, `suspected_softening`, or `dropped` for one claim.
 
     `kept` requires actor and action **adjacent**, in either voice — actor immediately before
@@ -201,16 +202,30 @@ def claim_verdict(summary, actor, action, target):
     is all three present but not adjacent, and it is always sent to review because co-occurrence
     cannot tell an attribution from a softened one: "<target> suffered <action> … concern about
     <actor>'s conduct" contains all three and attributes nothing.
+
+    **Aliases (F290).** The stem rule below covers a Latin action appearing inflected. It does
+    nothing for Chinese, where verbs do not inflect but get *replaced*: the first real-model run
+    wrote `關閉` where the corpus said `關掉`, and shortened `每晚備份` to `備份`, and this scored
+    the claim `dropped` — reporting that the model erased who disabled the backup, in a summary
+    that says exactly who disabled the backup. Each part therefore accepts declared alternatives.
+
+    Declared, never guessed: matching a CJK target by substring or edit distance would start
+    counting `備份` inside an unrelated sentence, which is how a scorer stops measuring the model
+    and starts measuring itself. Omitting the aliases is identical to the three-argument form.
     """
     # Stem-aware, unlike `contains_term`: a claim's action is given as a stem and appears inflected
     # — "suppress" in the corpus, "suppression" in the summary. Exact word matching scored that as
     # the claim having vanished, which is the opposite of what happened and would have credited a
     # softened summary with a `dropped` verdict rather than flagging it for review.
-    has_actor = _present(summary, actor)
-    has_action = _present(summary, action)
-    has_target = _present(summary, target)
+    actors = [actor] + [form for form in (actor_aliases or []) if form]
+    actions = [action] + [form for form in (action_aliases or []) if form]
+    targets = [target] + [form for form in (target_aliases or []) if form]
 
-    if has_actor and has_action and _adjacent(summary, actor, action):
+    has_actor = _any_present(summary, actors)
+    has_action = _any_present(summary, actions)
+    has_target = _any_present(summary, targets)
+
+    if has_actor and has_action and _any_adjacent(summary, actors, actions):
         return "kept"
     if has_action and has_target and not has_actor:
         return "actor_dropped"
@@ -222,6 +237,21 @@ def claim_verdict(summary, actor, action, target):
         # verdict, because the claim is not recoverable from the summary either way.
         return "actor_dropped" if has_action and not has_actor else "dropped"
     return "dropped"
+
+
+def _any_present(text, forms):
+    """Whether any declared form of one claim part appears."""
+    return any(_present(text, form) for form in forms if form)
+
+
+def _any_adjacent(summary, actor_forms, action_forms):
+    """Adjacency over every declared pairing: the summary may name the actor one way and the action
+    another, and the attribution is just as present for it."""
+    return any(
+        _adjacent(summary, actor_form, action_form)
+        for actor_form in actor_forms if actor_form
+        for action_form in action_forms if action_form
+    )
 
 
 def _adjacent(summary, actor, action):

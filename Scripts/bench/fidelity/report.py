@@ -190,8 +190,14 @@ def score_record(record, item, framing_phrases):
             "action": claim.get("action"),
             "target": claim.get("target"),
             "weight": claim.get("weight") or "core",
+            # F290: the corpus declares synonyms per claim, because a Chinese action is replaced
+            # rather than inflected and an undeclared synonym reads as an omission that did not
+            # happen — while hiding the one that did.
             "verdict": score.claim_verdict(
-                output, claim.get("actor"), claim.get("action"), claim.get("target")
+                output, claim.get("actor"), claim.get("action"), claim.get("target"),
+                actor_aliases=claim.get("actor_aliases"),
+                action_aliases=claim.get("action_aliases"),
+                target_aliases=claim.get("target_aliases"),
             ),
         })
 
