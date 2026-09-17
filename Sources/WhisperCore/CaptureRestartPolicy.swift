@@ -112,7 +112,26 @@ public enum CaptureRestartPolicy {
     /// of the meeting.
     public static func paddingFrames(forGap gap: TimeInterval, sampleRate: Double) -> Int64 {
         guard gap > 0, sampleRate > 0 else { return 0 }
-        return Int64((gap * sampleRate).rounded())
+        return saturatingFrames(gap * sampleRate)
+    }
+
+    /// `Double` → `Int64`, saturating instead of trapping.
+    ///
+    /// `Int64(Double)` **traps** on overflow in Swift rather than saturating, and `isFinite` does
+    /// not protect against it — 1e18 is finite and 1e18 × 48000 is far past `Int64.max`. Today's
+    /// only caller bounds the gap to `defaultMaximumPaddedGap` first, so the live path cannot reach
+    /// it, but these are `public` and a conversion that crashes on a plausible argument is a defect
+    /// whatever its current callers happen to do. Found by self-review after the identical trap in
+    /// `CaptureGapPolicy` was observed crashing a test with signal 5.
+    ///
+    /// Saturating rather than clamping to the policy's cap, because this converts and does not
+    /// decide: `action(…)` owns the cap, and a caller deliberately asking about a longer span
+    /// should get the largest representable answer rather than a crash. NaN yields 0, since it
+    /// fails the comparison below.
+    public static func saturatingFrames(_ value: Double) -> Int64 {
+        guard value > 0 else { return 0 }
+        guard value < Double(Int64.max) else { return .max }
+        return Int64(value.rounded())
     }
 
     /// Bytes the padding costs on disk, across both raw float32 tracks.
@@ -120,7 +139,13 @@ public enum CaptureRestartPolicy {
     /// Exists so the cap can be reasoned about in the unit that actually constrains it. The cap is
     /// about disk, and a threshold in minutes hides that.
     public static func paddingByteCount(forGap gap: TimeInterval, sampleRate: Double) -> Int64 {
-        paddingFrames(forGap: gap, sampleRate: sampleRate) * Int64(MemoryLayout<Float>.size) * 2
+        // `multipliedReportingOverflow`, because `*` traps too: a saturated frame count times 8
+        // overflows `Int64`, so the guard above would have moved the crash one line down.
+        let frames = paddingFrames(forGap: gap, sampleRate: sampleRate)
+        let (bytes, overflowed) = frames.multipliedReportingOverflow(
+            by: Int64(MemoryLayout<Float>.size) * 2
+        )
+        return overflowed ? .max : bytes
     }
 
     /// What to tell the user, or nil when nothing happened.

@@ -175,3 +175,28 @@ func paddedResumeHasItsOwnAlignment() {
     #expect(CaptureRestartPolicy.paddedAlignment != "captured-timeline")
     #expect(CaptureRestartPolicy.paddedAlignment != "zero-aligned-after-interruption")
 }
+
+@Test("An absurd gap saturates rather than trapping (F151's lesson, applied here)")
+func paddingFramesSaturates() {
+    // The identical defect F151's self-review found one function over: `Int64(Double)` TRAPS on
+    // overflow in Swift, and 1e18 is finite. Today's only caller bounds `gap` to
+    // `defaultMaximumPaddedGap` before reaching here, so the live path cannot hit it — but this is
+    // `public`, and a conversion that crashes on a plausible argument is a defect whatever its
+    // current callers happen to do.
+    //
+    // Saturating rather than clamping to the policy cap: this function converts, it does not
+    // decide. `action(…)` owns the cap, and a caller deliberately asking about a longer span should
+    // get the largest representable answer instead of a crash.
+    #expect(CaptureRestartPolicy.paddingFrames(forGap: 1e18, sampleRate: 48_000) == Int64.max)
+    #expect(CaptureRestartPolicy.paddingFrames(forGap: .infinity, sampleRate: 48_000) == Int64.max)
+    #expect(CaptureRestartPolicy.paddingFrames(forGap: .nan, sampleRate: 48_000) == 0)
+    // And the ordinary values are unchanged.
+    #expect(CaptureRestartPolicy.paddingFrames(forGap: 1, sampleRate: 48_000) == 48_000)
+}
+
+@Test("The disk figure saturates too, rather than overflowing the multiply (F151's lesson)")
+func paddingByteCountSaturates() {
+    // `frames * 4 * 2` overflows `Int64` for a saturated frame count, and `*` traps in Swift.
+    #expect(CaptureRestartPolicy.paddingByteCount(forGap: 1e18, sampleRate: 48_000) == Int64.max)
+    #expect(CaptureRestartPolicy.paddingByteCount(forGap: 1, sampleRate: 48_000) == 48_000 * 4 * 2)
+}

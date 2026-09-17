@@ -133,8 +133,31 @@ public enum FloatTrackMixer {
         sampleRate: Double
     ) -> Int64 {
         guard let firstPresentationTime else { return 0 }
-        return max(0, Int64((firstPresentationTime - earliestStart) * sampleRate))
+        // `Int64(Double)` TRAPS on overflow in Swift, and this runs during `stop()` — so a
+        // presentation timestamp the capture recorded badly would lose the entire meeting at the
+        // moment it is being saved, which is worse than any wrong duration. The mixer takes
+        // whatever timestamps it is given, and F151 established those are not to be trusted to be
+        // sane.
+        //
+        // Pre-existing: F278 moved this function here from `AudioCaptureEngine` without looking at
+        // it. Found on the third pass of one self-review, after `CaptureGapPolicy` and
+        // `CaptureRestartPolicy`.
+        let frames = CaptureRestartPolicy.saturatingFrames(
+            (firstPresentationTime - earliestStart) * sampleRate
+        )
+        // **A timestamp implying absurd padding carries no usable alignment, so it is treated as
+        // absent** — which is already a case this function handles, returning 0. Saturating alone
+        // was not enough: `Int64.max` padding then overflowed `systemPadding + frameCount` on the
+        // next line and trapped there instead, one line further from the cause.
+        //
+        // The bound is 24 hours, chosen to be unambiguously nonsense rather than to be a policy: a
+        // WAV's `UInt32` data size runs out at ~12.4 h (F150), so any real recording is well under
+        // it and nothing legitimate is being discarded.
+        return frames > maximumPaddingFrames ? 0 : frames
     }
+
+    /// Padding beyond which a presentation timestamp is nonsense rather than an offset.
+    static let maximumPaddingFrames = Int64(48_000) * 60 * 60 * 24
 }
 
 /// Reads a raw float32 track, presenting `paddingFrames` of leading silence first.

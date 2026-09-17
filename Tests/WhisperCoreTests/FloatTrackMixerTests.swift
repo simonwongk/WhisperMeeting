@@ -291,3 +291,32 @@ func recoveryAndCaptureMixesAgree() throws {
     #expect(captured.count == 2_000)
     #expect(recovered == captured, "the two mixing paths disagree")
 }
+
+@Test("An absurd presentation timestamp does not trap the mix (F151's lesson, third instance)")
+func absurdPresentationTimeDoesNotTrapTheMix() throws {
+    // `paddingFrames` did `Int64((firstPresentationTime - earliestStart) * sampleRate)`, and
+    // `Int64(Double)` TRAPS on overflow. This is pre-existing code — F278 moved it here from
+    // `AudioCaptureEngine` without looking at it — and it is the highest-consequence instance of
+    // the three found today, because it runs during `stop()`. A trap here loses the entire meeting
+    // at the moment it is being saved, which is worse than any wrong duration.
+    //
+    // A `CMTime` that decodes to something absurd is the realistic source: the mixer takes
+    // whatever the capture recorded, and F151 has already established that presentation timestamps
+    // are not to be trusted to be sane.
+    let fixture = try MixFixture()
+    defer { fixture.cleanUp() }
+    try fixture.write([Float](repeating: 0.3, count: 8), to: fixture.system)
+    try fixture.write([Float](repeating: 0.3, count: 8), to: fixture.microphone)
+
+    let duration = try FloatTrackMixer.mix(
+        system: FloatTrack(url: fixture.system, firstPresentationTime: 0, frameCount: 8),
+        microphone: FloatTrack(url: fixture.microphone, firstPresentationTime: 1e18, frameCount: 8),
+        sampleRate: 48_000,
+        outputURL: fixture.output
+    )
+
+    // What it produces past the representable range is not the point — not crashing is. The
+    // recording's own audio is still written, which is the guarantee that matters at stop time.
+    #expect(duration > 0)
+    #expect(FileManager.default.fileExists(atPath: fixture.output.path))
+}
