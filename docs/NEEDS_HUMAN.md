@@ -178,3 +178,96 @@ automatic is the only option that does not depend on memory.
 F243 was decided by the user on 2026-09-16 and moved to `TICKETS.md`: a silence gate may drop a
 chunk only when it is COMPLETELY silent. The broader near-silent gate the estimate was based on
 was not authorised.
+
+---
+
+## F288 — Confirm the restore screen renders and reads well
+
+**Status:** the whole backup-restore mechanism is shipped and tested — plan, verification, apply,
+rollback, folder rebuild. This is the one part no test in this repo can reach.
+
+**What I need from you:** one look at Settings → Library, a couple of minutes.
+
+The `WhisperMeet` target has no UI test harness (F174's standing reason), so every string, the plan,
+the apply and the rollback are unit-tested and *that the button exists on screen* is not. Three
+things to check by eye:
+
+1. **"Restore…" appears** beside "Back up library…", and the caption beneath the backup description
+   reads sensibly next to it.
+2. **Choosing a dated folder** inside `WhisperMeet Backups` brings up the confirmation, and its text
+   is readable. It should lead with how many files are in your library but *not* in that backup,
+   then the replace/restore counts, then that your current library is copied aside and kept.
+3. **Choosing something that is not a backup generation** — the `WhisperMeet Backups` folder itself,
+   or any unrelated folder — gives a sensible refusal rather than an odd-looking empty plan.
+
+**It is safe to try, and that is asserted rather than promised.** Requesting a restore writes
+nothing: a test compares both the library and the backup byte-for-byte before and after a plan is
+built, including under the slow deep check. Open the confirmation and cancel it as often as you
+like. To exercise it on synthetic data instead of your own library,
+`Scripts/rehearse-recovery.sh` builds a damaged library in a temp directory and touches nothing of
+yours.
+
+If you would rather not, F191 stays `partial` with the mechanism tested and the screen unconfirmed.
+Nothing else depends on it.
+
+---
+
+## F244 — The fidelity benchmark is built and waiting on two things only you can give
+
+**What I need:** your terminology review, and a yes or no on two downloads. Roughly 30 minutes of
+reading; the runs afterwards are unattended.
+
+Everything else is done. `run_fidelity.py` drives the app's own helper scripts over a corpus,
+`report.py` turns the records into a scorecard and a review page that lists only the flagged items,
+and a Swift test keeps the bench's copy of your prompts byte-equal to the ones the app sends. A
+`--smoke` run against the Qwen already installed on this Mac takes 39 seconds and passes.
+
+### 1. The corpus terminology (`Scripts/bench/fidelity/corpus/APPENDIX.md`, local-only)
+
+The eight topics and the protected-term list. I drafted them; you know whether the terms are the
+right ones, whether the aliases are the forms that actually appear in your work, and whether a topic
+is missing. Nothing can be measured until this is right, because the protected terms *are* the
+measurement — and they also seed F245's guard list, so a term missing here is a term the app will
+never learn to protect.
+
+One request while you are in there: the claims now take `action_aliases` and `target_aliases`, which
+say what counts as the same claim said differently. These must be written **before** any model runs.
+Written afterwards they become a per-item choice about which paraphrases to forgive, and since the
+sensitive-versus-control difference decides whether we replace the model, that choice could
+manufacture the difference it claims to measure.
+
+### 2. May I download two models?
+
+Gemma 4 E4B and Breeze2, into `~/Library/Caches/WhisperMeet-Bench/` — not the checkout, which is
+under `~/Documents` and may be iCloud-synced. Pinned revisions behind a SHA-256 gate, the same way
+the app's own installer works. Without them the benchmark can say whether Qwen has a problem but not
+whether switching would fix it, which is the question F246 has to answer.
+
+This is separate from the two 4-bit ASR weights in the F241 entry above; answering one does not
+answer the other.
+
+### What the smoke run already found, on six deliberately mundane items
+
+Not the real measurement — six neutral items, one sample each, no sensitive arm and no control, so
+the scorecard prints *incomparable* and refuses to imply a difference. But three of them are worth
+your attention now, because they are not about politics at all:
+
+- **A Traditional-Chinese dictation line came back Simplified.** 個→个, 貨→货, 倫→伦, 辦→办. The
+  refinement prompt says "Mandarin Chinese" and never names a script, and the app's language guard
+  cannot tell the two apart, so it accepted the result. If you dictate in Traditional Chinese, this
+  is happening to you now. Recorded on F245, which owns the prompt.
+- **Asked to fix one misspelling, the model also rewrote 陳經理 into 陳怡君** — a title into a
+  person's name. That is not a recognition error, it changes who the transcript says was speaking,
+  and the correction sheet arrives with every proposal pre-selected, so it lands on one click.
+- **An English summary dropped the approver's name entirely** and attached the person responsible
+  for the problem to the fix rather than the act. Ordinary business text.
+
+Each is one observation, so none is a rate. They tell you the harness can see this class of thing,
+and that the class is not hypothetical.
+
+### If you would rather not
+
+The harness keeps working on the neutral corpus, so nothing rots. F244 simply stays blocked, and
+F245 and F246 stay blocked behind it — meaning the app keeps shipping the current prompts and the
+current guards, and the script drift above stays unfixed. That is the cost of leaving it, stated so
+it is a choice rather than a default.
