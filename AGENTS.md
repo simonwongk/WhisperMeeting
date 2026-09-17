@@ -150,6 +150,9 @@ A ticket may only be closed `fixed` when all of these hold:
   entry's **Commits** field is therefore **optional** — record a SHA there only when it usefully
   pinpoints something. A commit can never contain its own SHA, so requiring one would force a second
   bookkeeping push per close for no traceability gain; do not.
+- **CI observed, not assumed.** A change that reaches `origin` is done only when a run of
+  `.github/workflows/quality.yml` is **observed green on that commit**. A green local
+  `Scripts/quality-check.sh` is not evidence — see **Pushing and CI** below for why it cannot be.
 - **Actionable gaps.** Every sentence in the log entry's **Gaps** section that describes work a
   person could still do carries a ticket ID. The words "follow-up", "future", "not implemented",
   "app wiring", or "is a follow-up" with no `F<n>` beside them are a rule violation. A Gap that is a
@@ -288,6 +291,68 @@ record the citation in `docs/TICKET_LOG.md`.
 | `docs/PRODUCT_SPEC.md` | The non-negotiable product requirements. |
 | `docs/ROADMAP.md` | Aspirational feature backlog (not commitments). |
 | `docs/CHANGELOG.md` | Narrative record of shipped cycles. |
+
+## Pushing and CI
+
+**A green local gate proves the code works *in your environment*. That is not the same claim as
+"the code works", and on 2026-09-15 the difference cost two days of unnoticed red CI across five
+pushes.** These rules exist because that happened, and because a local gate cannot in principle
+detect either cause.
+
+**After every push, without exception:**
+
+```bash
+Scripts/verify-push.sh        # pushes nothing; watches the run for the current HEAD
+```
+
+or at minimum `gh run list --limit 1`.
+
+**The duration heuristic — the cheapest signal there is.** A full run takes minutes (3m22s was the
+last known-good baseline). **A run that finishes in under a minute tested nothing** — it died before
+the Swift suite. Check the duration before you read the conclusion, because a fast failure and a
+fast success look identical in a status column and neither is a result.
+
+**The two ways a local gate lies, both observed here:**
+
+| Cause | Why local cannot see it | Example |
+|---|---|---|
+| Your toolchain is **newer** than the runner's | You never compile with the runner's Swift | F270: manifest at tools 6.2, `macos-15` ships 6.1.0 — every run died before a single test |
+| Your machine **has runtimes installed** that the runner does not | The code takes a different branch on a bare machine | F262: an alert assertion passed here and failed on CI for four straight attempts |
+
+**Do not raise `swift-tools-version` in `Package.swift`** without checking what Swift the runner in
+`.github/workflows/quality.yml` actually has. Your local toolchain is always newer and will not
+catch it.
+
+**Never assert on host-dependent state in a test.** If an assertion's outcome depends on what is
+installed, it will pass for whoever wrote it and fail somewhere else. Ask the code what it would
+say — compare against the property the production path actually uses — rather than encoding a
+literal or a `nil` that assumes a machine. Matching a message string only trades a machine
+dependence for a copy dependence; the next wording change re-breaks it.
+
+**A passing test is not evidence the feature works if the test encodes the same wrong assumption as
+the code.** F265's vocabulary tests asserted a 1000-*character* cap while the real limit is 223
+*tokens*; 100 ASCII terms measure 299 tokens, so the tests pinned a prompt that was being discarded
+in full. Assert the unit the system actually enforces.
+
+## Working alongside another agent session
+
+More than one session may be live in this checkout. They share the working tree, the git index, and
+the stash — all three have bitten.
+
+- **Announce the files you are holding** before you start, and name the *region* when it is one
+  function in a large file. Ask; do not assume a file is free because it looks idle.
+- **Never `git add -A`.** The index is shared, so it sweeps up the other session's staged work and
+  carries it out under your ticket ID and your message. Stage explicit paths, and check
+  `git status` before committing.
+- **Never bare `git stash` / `git stash pop`** — the stash stack is shared. Use
+  `git stash push -u -m "<unique-tag>"` and `git stash apply <sha>`.
+- **`error: input file … was modified during the build`** means the other session is editing a file
+  you are compiling. Stop; do not retry in the shared tree. Verify in a throwaway worktree
+  (`git worktree add`) with only your own change applied.
+- **Re-read `docs/TICKETS.md` immediately before writing it.** The board is not safe to cache:
+  reading "Next free ID", doing an hour of work, then filing produced seven duplicate IDs. Run
+  `python3 Scripts/generate-tickets-dashboard.py --check` before handing off.
+- **Prefer a worktree** for anything longer than a few edits.
 
 ## Build commands
 
