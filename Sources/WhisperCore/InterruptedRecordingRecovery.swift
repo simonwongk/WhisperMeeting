@@ -249,7 +249,6 @@ public enum InterruptedRecordingRecovery {
         openTrack: TrackOpener,
         sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
     ) throws -> RecoveredRecording? {
-        let fileManager = FileManager.default
         if let finished = finalizedRecording(in: directory) {
             // Only a capture gets a manifest: an import has no source tracks to describe.
             if finished.source == .existingCapture {
@@ -273,6 +272,31 @@ public enum InterruptedRecordingRecovery {
             return finished
         }
 
+        return try rebuildFromSourceTracks(
+            in: directory,
+            sampleRate: sampleRate,
+            openTrack: openTrack,
+            sizeOf: sizeLookup
+        )
+    }
+
+    /// Rebuilds from the raw `.f32` tracks, WITHOUT the "already finalized?" short-circuit above.
+    ///
+    /// `recover` is the two halves together and stays the only caller on the startup and
+    /// failed-stop paths. This half is separate because F267 needs exactly it: re-running recovery
+    /// on a folder that by definition already holds a finalized rebuild, which is the case
+    /// `recover` is built to skip. Splitting it changes nothing about either existing caller.
+    ///
+    /// It does NOT decide whether re-running is allowed — `SourceRebuild` owns that, including the
+    /// refusal to overwrite a folder holding a real `meeting.wav`. Calling this directly on such a
+    /// folder would strand the finished capture, which is F255.
+    static func rebuildFromSourceTracks(
+        in directory: URL,
+        sampleRate: Double = 48_000,
+        openTrack: TrackOpener = fileTrackOpener,
+        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
+    ) throws -> RecoveredRecording? {
+        let fileManager = FileManager.default
         let systemURL = directory.appendingPathComponent(systemFile)
         let microphoneURL = directory.appendingPathComponent(microphoneFile)
         // Throwing here, before the output file is created, is deliberate: nothing has been
@@ -389,6 +413,20 @@ public enum InterruptedRecordingRecovery {
     }
 
     /// Frames in a raw `.f32` track: 0 when absent, a throw when present but unstattable (F280).
+    /// How many frames a rebuild of this folder would produce: the longer of the two tracks, which
+    /// is what `rebuildFromSourceTracks` mixes to. Zero when neither track has any.
+    ///
+    /// Exposed for `SourceRebuild`'s precondition (F267), which has to answer "is there anything to
+    /// rebuild from" without rebuilding. It takes its own lookup because that question tolerates a
+    /// stat failure — a track it cannot describe is one it should not offer — where the rebuild
+    /// itself must throw (F280).
+    static func sourceTrackFrames(in directory: URL, sizeOf sizeLookup: (URL) -> Int64?) -> Int64 {
+        let system = sizeLookup(directory.appendingPathComponent(systemFile))
+        let microphone = sizeLookup(directory.appendingPathComponent(microphoneFile))
+        let bytesPerFrame = Int64(MemoryLayout<Float>.size)
+        return max((system ?? 0) / bytesPerFrame, (microphone ?? 0) / bytesPerFrame)
+    }
+
     private static func frameCount(at url: URL, sizeOf sizeLookup: SizeLookup) throws -> Int64 {
         guard let size = try sizeLookup(url) else { return 0 }
         return size / Int64(MemoryLayout<Float>.size)
