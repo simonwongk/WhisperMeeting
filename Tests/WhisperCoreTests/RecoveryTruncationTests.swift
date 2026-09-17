@@ -18,6 +18,15 @@ import Testing
 
 private struct ReadFailure: Error {}
 
+// Two calls below warn "no calls to throwing functions occur within 'try' expression", because
+// `mixTracks` is `rethrows` and those two pass non-throwing closures. The `try` is deliberately
+// LEFT IN PLACE. Removing it is safe only if Swift 6.1 — the CI runner's compiler, older than the
+// one here — agrees that the call cannot throw. `rethrows` inference is stable across both as far
+// as anyone can tell, but "as far as anyone can tell" is exactly what put a red commit on main on
+// 2026-09-17: an array literal that 6.3 types `[Int64]` and 6.1 types `[Int]`. A warning here
+// costs a line of CI log; guessing wrong costs a red main. If you want these gone, verify against
+// 6.1 first, and note that a warning-free build is not worth a push to find out.
+
 @Test("A clean mix writes every frame and reports no truncation")
 func cleanMixWritesEverything() throws {
     var written: [Int16] = []

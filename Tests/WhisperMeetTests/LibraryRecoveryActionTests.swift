@@ -111,7 +111,10 @@ func recoveryPreservesAudio() throws {
 @Test("A library that is still broken after a restore stays read-only")
 @MainActor
 func revalidationDoesNotWhitewashAStillBrokenLibrary() throws {
-    let (store, root, _) = try makeRecoverableStore()
+    // `_` for the store: this test reopens the library below rather than using the first handle,
+    // and an unused binding is a warning CI prints on every run. Noise in that log is not free —
+    // it is what a `grep` for `error:` scrolls past.
+    let (_, root, _) = try makeRecoverableStore()
     defer { try? FileManager.default.removeItem(at: root) }
 
     // Break a DIFFERENT store in the same library. `vocabulary.json` and its backup are unreadable,
