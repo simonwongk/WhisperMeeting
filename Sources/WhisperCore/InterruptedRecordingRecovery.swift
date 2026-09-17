@@ -121,13 +121,26 @@ public enum InterruptedRecordingRecovery {
     /// checks it — a complete WAV header for the captures, non-empty bytes for the import — so a WAV
     /// truncated mid-mix (its header is written LAST) does not read as finalized.
     public static func finalizedRecording(in directory: URL) -> RecoveredRecording? {
-        for name in ["meeting.wav", "meeting-recovered.wav"] {
+        // The two names carry different provenance, and collapsing them was an understatement in
+        // my own F273 work (found by an F191 slice E4 test written for something else).
+        //
+        // `meeting.wav` is written only by `AudioCaptureEngine.stop()`: a clean capture, channels
+        // aligned by presentation timestamp. `meeting-recovered.wav` is what a previous rebuild
+        // left behind, so its channels are zero-aligned — which is exactly the caveat F273's
+        // provenance sentence exists to state. Reporting both as `.existingCapture` meant a
+        // meeting re-indexed from a folder that already held a rebuild got the weaker sentence
+        // ("the original recording was preserved") and never the alignment one, while its audio
+        // was in fact a rebuild.
+        for (name, source) in [
+            ("meeting.wav", RecoveredRecording.Source.existingCapture),
+            ("meeting-recovered.wav", RecoveredRecording.Source.rebuiltSourceTracks),
+        ] {
             let url = directory.appendingPathComponent(name)
             if let duration = wavDuration(at: url) {
                 return RecoveredRecording(
                     recordingURL: url,
                     duration: duration,
-                    source: .existingCapture
+                    source: source
                 )
             }
         }
