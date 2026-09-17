@@ -6,10 +6,30 @@ on:
     branches: [main]
 
 concurrency:
-  group: quality-${{ github.ref }}
-  # Fast-cancel superseded runs on feature branches/PRs, but let every push to
-  # main run to completion — otherwise the next push cancels it and main never
-  # gets a finished gate result (F115).
+  # One group PER COMMIT on main, one group per ref everywhere else.
+  #
+  # `cancel-in-progress: false` (below) does what it says: it never cancels a
+  # RUNNING gate. It does nothing for a QUEUED one — GitHub keeps at most one
+  # pending run per concurrency group, so when pushes arrive faster than the
+  # gate completes, each new push displaces the one waiting behind the current
+  # run. That run is cancelled having never started a job, so the commit gets
+  # no gate result at all: not a pass, not a failure, nothing.
+  #
+  # Measured 2026-09-17, three commits on main in twenty minutes: runs
+  # 35192025675, 35192106611 and 35192959923 were all cancelled with
+  # `jobs == 0`, while 35192241757 — the one nothing arrived behind — ran and
+  # passed. Two sessions pushing is enough to produce this continuously, and it
+  # degrades "observed green" silently, which is the one failure mode the whole
+  # F270 discipline exists to prevent.
+  #
+  # Per-commit groups on main mean a main run is never queued behind a sibling
+  # and so can never be displaced. It costs concurrent runner time when pushes
+  # are close together; a gate result for every commit is what that buys, and
+  # the alternative is not a cheaper gate but an absent one. PRs and branches
+  # keep one group per ref, where fast-cancelling a superseded run is right.
+  group: quality-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'ref' }}
+  # Still false for main: a run that has started must finish, because a
+  # half-finished gate that reports nothing is what F115 was about.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
