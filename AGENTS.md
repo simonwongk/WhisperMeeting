@@ -457,6 +457,37 @@ reported a pushed commit as absent the moment anything landed on top, a false *r
 Both were caught by self-review after the author had called the work done, which is the only reason
 either is a paragraph here instead of a field report.
 
+**A test suite that drives a mechanism directly cannot see whether anything calls it — and that is
+the correct way to test a mechanism, so the blindness is structural, not weak testing.** F306:
+`requestSourceRebuild` had six callers, its own definition and five tests. F273's commit had deleted
+the "Rebuild Audio" button while consolidating three banners into one list, so F267's entire rebuild
+was unreachable — and because `staleTranscriptWarning` is set only on that path, F267's notice could
+never appear and F304's fix making that field persist had nothing to persist. Three tickets' worth of
+mechanism behind a control that no longer existed, with every test passing. The same day, F289 and
+F310 were the same shape.
+
+So the reachability rule is not satisfied by a passing suite. When the entry point is a view this
+target cannot render (F174's standing reason), assert against `ContentView`'s **source** that it
+references the action and its gate — crude, and it would have caught this. Strip comments first, or
+the paragraph explaining the regression satisfies the assertion (F285's false positive). And put a
+control **beside** the message it relates to, never inside it: nesting is what made this one
+deletable, so re-adding the line without moving it would have kept the cause.
+
+**Derive the list; do not restate it. A hand-written list cannot notice a field nobody told it
+about.** F304: `MeetingRecord`'s hand-written `CodingKeys` omitted `recoverySource` and
+`staleTranscriptWarning`, so both were in-memory only — and `recoverySource` *is* F273's fix, which
+therefore survived transcription and not a reload. F250's `theWireKeySetIsPinned` was written for
+exactly this failure and says so in its own comment; it passed throughout, because it enumerates the
+expected keys by hand, a field it had never heard of is nil in its fixture, a nil optional is
+omitted, and the literal set matched. Its neighbouring comment claimed "every field that CAN be
+non-nil is set" — true when written, false the moment a field was added.
+
+The replacement enumerates the stored properties with `Mirror` and demands each reach the wire. It
+proved itself within the hour: the next new field was named by it while the literal test passed
+again. Keep both — the derived one cannot check on-disk *names*, since renaming a key and its
+property together satisfies it — and prefer two checks with different blind spots over replacing one
+with another. Two derivations agreeing is evidence; one restating itself is not.
+
 **Local-invisible failure classes on this repo**, i.e. things no local gate can see, because the
 developer toolchain is always newer than `macos-15`'s and the developer's Mac has runtimes the runner
 does not:
