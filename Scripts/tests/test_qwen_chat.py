@@ -78,5 +78,56 @@ class ConversationTests(unittest.TestCase):
         )
 
 
+class DeprecationNoiseTests(unittest.TestCase):
+    """F248 — the MLX deprecation warning must not land inside the model's answer.
+
+    Running `Scripts/qwen-chat` showed `Qwen> mx.metal.device_info is deprecated...` followed by
+    the real reply, because `mlx_lm/generate.py:243` calls that deprecated function during
+    generation — after the `Qwen> ` prompt has been written.
+
+    Two measured facts shape the fix, and both contradict the ticket's own description:
+
+    1. **It is on fd 2, not stdout.** The ticket proposes routing "library warnings away from
+       stdout"; the message never went there. It interleaves in the terminal because both streams
+       are the same terminal.
+    2. **It is native, not a Python warning.** It escapes `contextlib.redirect_stderr` AND
+       `warnings.catch_warnings` — printed from C++ straight to the file descriptor — so
+       `warnings.filterwarnings`, the obvious fix, cannot suppress it at all.
+
+    And the fact that makes a clean fix possible: it fires **once per process**, not per call. So it
+    can be MOVED rather than suppressed — triggered during load where it reads as startup noise,
+    with the redirect scoped to that one deliberate call so nothing real is ever hidden.
+    """
+
+    def _source(self):
+        with open(_SCRIPT, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_warning_is_warmed_before_the_banner(self):
+        source = self._source()
+        self.assertLess(
+            source.index("warm_device_info()"),
+            source.index("Local Qwen chat \u2014 offline"),
+        )
+
+    def test_warming_suppresses_only_its_own_call(self):
+        """The redirect must not span generation. Silencing fd 2 while the model runs would hide a
+        real OOM or Metal failure, which is far worse than a cosmetic line."""
+        source = self._source()
+        body = source[source.index("def warm_device_info"):]
+        body = body[:body.index("\ndef ", 1)]
+        self.assertIn("dup2", body, "expected an fd-level redirect — the warning is native")
+        self.assertIn("device_info", body)
+        # Restored in a `finally`, so an exception inside cannot leave the process with stderr
+        # pointing at /dev/null for the rest of the session.
+        self.assertIn("finally", body)
+
+    def test_warming_never_fails_the_launcher(self):
+        """It exists to tidy one cosmetic line. If anything about it breaks — a future MLX without
+        `metal`, a machine with no Metal at all — the chat must still start. Under system python3
+        there is no mlx, so this test IS that case."""
+        qwen_chat.warm_device_info()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

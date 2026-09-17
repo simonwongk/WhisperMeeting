@@ -62,6 +62,44 @@ def apply_chat_template(tokenizer, history: list[dict[str, str]]):
         return tokenizer.apply_chat_template(history, add_generation_prompt=True)
 
 
+def warm_device_info() -> None:
+    """Trigger MLX's one-shot `mx.metal.device_info` deprecation notice now, quietly (F248).
+
+    `mlx_lm/generate.py:243` reads `mx.metal.device_info()["max_recommended_working_set_size"]`
+    during generation, and MLX's deprecation notice for it fires the first time — which is *after*
+    `Qwen> ` has been written, so the user's first reply read
+    `Qwen> mx.metal.device_info is deprecated...` followed by the answer.
+
+    **Measured, and both facts contradict the obvious fix.** The notice is on **fd 2**, not stdout,
+    so routing stdout changes nothing; and it is emitted from native code straight to the descriptor
+    — it escapes `contextlib.redirect_stderr` *and* `warnings.catch_warnings` — so
+    `warnings.filterwarnings` cannot suppress it either. Only an OS-level redirect can.
+    `python3 Scripts/tests/test_qwen_chat.py` records the measurements.
+
+    So this **moves** the notice rather than suppressing the category. It fires once per process, so
+    calling the function here retires it before the banner; and because the redirect wraps exactly
+    one deliberate call, generation keeps its stderr. Silencing fd 2 while the model runs would hide
+    a real out-of-memory or Metal failure, which is a far worse outcome than a cosmetic line.
+    """
+    try:
+        import mlx.core as mx
+
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        saved = os.dup(2)
+        try:
+            os.dup2(devnull, 2)
+            mx.metal.device_info()
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+            os.close(devnull)
+    except Exception:
+        # This exists to tidy one cosmetic line, so it must never be the reason the chat will not
+        # start: a future MLX without `metal`, a machine with no Metal, or a changed signature all
+        # land here and the notice simply appears where it used to.
+        return
+
+
 def generate_reply(model, tokenizer, history, *, max_tokens: int) -> str:
     """Generate and display one reply.  Nothing is written beyond the terminal."""
     from mlx_lm import stream_generate
@@ -129,6 +167,9 @@ def main() -> int:
     from mlx_lm import load
 
     model, tokenizer = load(os.path.join(runtime, "model"))
+    # Before the banner, so MLX's one-shot deprecation notice cannot land inside the first reply
+    # (F248).
+    warm_device_info()
     print("Local Qwen chat — offline; conversations are not saved. Type /exit to leave.")
     history = []
     while True:
