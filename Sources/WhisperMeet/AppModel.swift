@@ -355,7 +355,7 @@ final class AppModel: ObservableObject {
     ///
     /// `nonisolated` because it reads nothing but the filesystem, and the speaker-analysis reclaim
     /// resolves its script off the main actor (F219). Main-actor callers are unaffected.
-    private nonisolated static func developmentScriptURL(_ name: String) -> URL? {
+    nonisolated static func developmentScriptURL(_ name: String) -> URL? {
         let candidate = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // WhisperMeet/
             .deletingLastPathComponent()   // Sources/
@@ -3987,38 +3987,14 @@ extension AppModel {
     /// `.Qwen3ASR-backup-*` / `.Qwen3ASR-install-*` names match, so this never fires on a clean runtime
     /// (the live `Qwen3ASR/`, `venv/`, and helper carry none of these prefixes).
     nonisolated static func hasOrphanedQwenInstallArtifacts(in parent: URL) -> Bool {
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
-            return false
-        }
-        return entries.contains {
-            $0.hasPrefix(".Qwen3ASR-backup-") || $0.hasPrefix(".Qwen3ASR-install-")
-        }
+        hasOrphanedInstallArtifacts(in: parent, for: .qwen)
     }
 
     /// Spawns the bundled `setup-qwen-asr.sh` in recovery-only mode over the runtime directory and
     /// returns its exit status. Runs off the main actor. Returns a non-zero sentinel if the bundled
     /// script is missing or the process cannot start.
     nonisolated static func spawnQwenInstallRecovery(runtimeDirectory: URL) async -> Int32 {
-        guard let scriptURL = Bundle.main.url(forResource: "setup-qwen-asr", withExtension: "sh") else {
-            return -1
-        }
-        return await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            var environment = ProcessInfo.processInfo.environment
-            environment["QWEN_INSTALL_RECOVERY_ONLY"] = "1"
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus
-            } catch {
-                return -1
-            }
-        }.value
+        await spawnInstallRecovery(runtimeDirectory: runtimeDirectory, for: .qwen)
     }
 }
 
@@ -4051,41 +4027,14 @@ extension AppModel {
     /// unlistable parent reports false: a Mac that never installed the summarizer has no parent
     /// directory at all, and that is the common case rather than an error.
     nonisolated static func hasOrphanedSummarizerInstallArtifacts(in parent: URL) -> Bool {
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
-            return false
-        }
-        return entries.contains {
-            $0.hasPrefix(".Summarizer-backup-") || $0.hasPrefix(".Summarizer-install-")
-        }
+        hasOrphanedInstallArtifacts(in: parent, for: .summarizer)
     }
 
     /// Spawns the bundled `setup-local-summarizer.sh` in recovery-only mode and returns its exit
     /// status. Runs off the main actor; returns a non-zero sentinel if the script is missing or the
     /// process cannot start.
     nonisolated static func spawnSummarizerInstallRecovery(runtimeDirectory: URL) async -> Int32 {
-        guard let scriptURL = Bundle.main.url(
-            forResource: "setup-local-summarizer",
-            withExtension: "sh"
-        ) else {
-            return -1
-        }
-        return await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            var environment = ProcessInfo.processInfo.environment
-            environment["SUMMARIZER_INSTALL_RECOVERY_ONLY"] = "1"
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus
-            } catch {
-                return -1
-            }
-        }.value
+        await spawnInstallRecovery(runtimeDirectory: runtimeDirectory, for: .summarizer)
     }
 }
 
@@ -4118,40 +4067,13 @@ extension AppModel {
     /// clean runtime (the live `Diarization/` and its sibling runtimes carry none of these prefixes),
     /// nor on the `.Diarization-install.lock` file, whose staleness `shlock` already settles.
     nonisolated static func hasOrphanedDiarizationInstallArtifacts(in parent: URL) -> Bool {
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else {
-            return false
-        }
-        return entries.contains {
-            $0.hasPrefix(".Diarization-backup-") || $0.hasPrefix(".Diarization-install-")
-        }
+        hasOrphanedInstallArtifacts(in: parent, for: .diarization)
     }
 
     /// Spawns the bundled `setup-speaker-diarization.sh` in recovery-only mode over the runtime
     /// directory and returns its exit status. Runs off the main actor. Returns a non-zero sentinel if
     /// the bundled script is missing or the process cannot start.
     nonisolated static func spawnDiarizationInstallRecovery(runtimeDirectory: URL) async -> Int32 {
-        guard let scriptURL = Bundle.main.url(
-            forResource: "setup-speaker-diarization",
-            withExtension: "sh"
-        ) ?? developmentScriptURL("setup-speaker-diarization.sh") else {
-            return -1
-        }
-        return await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            var environment = ProcessInfo.processInfo.environment
-            environment["DIARIZATION_INSTALL_RECOVERY_ONLY"] = "1"
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus
-            } catch {
-                return -1
-            }
-        }.value
+        await spawnInstallRecovery(runtimeDirectory: runtimeDirectory, for: .diarization)
     }
 }
