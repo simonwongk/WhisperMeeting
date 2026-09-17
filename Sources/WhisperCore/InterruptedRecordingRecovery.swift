@@ -18,6 +18,37 @@ public enum InterruptedRecordingRecovery {
     private static let systemFile = "system-audio.f32"
     private static let microphoneFile = "microphone-audio.f32"
 
+    /// Whether this instance may rebuild an interrupted recording folder (F255).
+    ///
+    /// Refuses exactly one state. While a capture is running its folder is structurally identical
+    /// to an interrupted one — `meeting.wav` is written only by `AudioCaptureEngine.stop()` — so a
+    /// second instance would rebuild a LIVE folder and strand the recording still being made: the
+    /// partial rebuild gets indexed, and the complete `meeting.wav` that arrives afterwards has
+    /// nothing pointing at it.
+    ///
+    /// What the lease discriminates, stated precisely: *another instance is open* versus *no other
+    /// instance is open*. Not "recording" versus "died recording". That is enough here, because the
+    /// defect requires a live second instance, and a crashed first instance had its lease released
+    /// by the kernel — so the relaunch after a crash does hold it and does rebuild. No heartbeat is
+    /// needed.
+    ///
+    /// `.unavailable` fails open on purpose: refusing would permanently disable recovery on a
+    /// volume without `flock`, which is worse than the defect. This keeps the lease advisory in
+    /// F190's Invariant L sense — the gate defers recovery, it never bricks a library.
+    ///
+    /// **Invariant this makes safety-critical: never call `LibraryWriterLock.acquire` outside
+    /// `shared(for:)`.** Two `flock` acquisitions on one file contend within a single process, and
+    /// only `MeetingStore` acquires today, via the memoizing `shared(for:)`, which is why the app
+    /// never reports `.heldElsewhere` against itself. A future second acquirer — wiring
+    /// `DictationLogStore`, or a session marker for F258 — would not merely mislabel a UI string;
+    /// it would disable recovery of the user's own crashed recordings.
+    public static func mayRebuildInterruptedRecordings(_ lease: StoreWriterLease) -> Bool {
+        switch lease {
+        case .heldElsewhere: return false
+        case .held, .unavailable, .unmanaged: return true
+        }
+    }
+
     /// Removes a recording directory only when it contains no entries at all.
     @discardableResult
     public static func removeIfEmpty(in directory: URL) throws -> Bool {
