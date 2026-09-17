@@ -29,11 +29,39 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 2
 fi
 
-sha="${1:-$(git rev-parse HEAD)}"
+# Resolve to the FULL 40-character SHA before anything else. The poll below compares
+# `.headSha == "$sha"` as an exact string against what the API returns, which is always full — so an
+# abbreviated argument matches nothing, forever. Observed 2026-09-17: `verify-push.sh f2e5494`
+# polled for ten minutes reporting "no run for f2e5494 yet…" while run 35180593825 for that very
+# commit had already completed green. The no-argument form was never affected, because
+# `git rev-parse HEAD` is full — which is exactly why the documented `<sha>` form could stay broken.
+if ! sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)"; then
+  print -u2 "verify-push.sh: '${1:-HEAD}' is not a commit in this repository."
+  exit 2
+fi
 short="${sha:0:7}"
 
-if ! git merge-base --is-ancestor "$sha" "@{upstream}" 2>/dev/null; then
-  print -u2 "warning: $short is not on the upstream branch yet — push first, or CI has nothing to run."
+# REFUSE, rather than warn and poll anyway. Two code paths used to reach the same dead end: a commit
+# that was never pushed, and a commit whose branch has no upstream configured. Both mean there is
+# nothing to watch, and both sat above a thirty-minute poll that printed one reassuring line every
+# twenty seconds. That is how a missing push read as work in progress for 45 minutes on 2026-09-16.
+#
+# Reachability from any `origin/*`, not `@{upstream}`: the latter is unset on a branch pushed with
+# an explicit refspec (`git push origin my-branch:main`) and reports a freshly pushed commit as
+# missing. Not `git ls-remote` either — that lists ref TIPS, so every commit but the newest looks
+# absent. Fetch first, because a stale remote-tracking ref is the same false negative.
+git fetch -q origin 2>/dev/null || true
+on_remote=""
+for ref in $(git for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null); do
+  if git merge-base --is-ancestor "$sha" "$ref" 2>/dev/null; then
+    on_remote=1
+    break
+  fi
+done
+if [[ -z "$on_remote" ]]; then
+  print -u2 "verify-push.sh: $short is not on origin, so CI has nothing to run for it."
+  print -u2 "  Push first, then run this. This script pushes NOTHING."
+  exit 1
 fi
 
 print "Watching CI for $short (poll ${POLL_SECONDS}s, give up after $((MAX_POLLS * POLL_SECONDS / 60))m)…"
