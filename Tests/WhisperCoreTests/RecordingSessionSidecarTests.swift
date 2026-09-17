@@ -139,3 +139,43 @@ func sidecarFilenameIsDistinct() {
     #expect(!reserved.contains(RecordingSessionSidecar.filename))
     #expect(RecordingSessionSidecar.filename.hasSuffix(".json"))
 }
+
+// MARK: - F253: recording that a power event interrupted the capture
+
+@Test("A sleep interruption round-trips in the sidecar (F253)")
+func sidecarRecordsASleepInterruption() throws {
+    let directory = try tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // The finalize on `willSleep` is best-effort — macOS allows a few seconds, and mixing a
+    // 63-minute capture means reading ~1.4 GB, which will not fit. So the *fast* thing is the
+    // guarantee: note that sleep interrupted this capture, in a few hundred atomic bytes, so
+    // recovery can say what happened instead of showing a generic notice.
+    let at = Date(timeIntervalSince1970: 1_757_000_500)
+    var session = RecordingSession(
+        id: UUID(), startedAt: Date(timeIntervalSince1970: 1_757_000_000),
+        title: "", markers: []
+    )
+    session.interruptedBySleepAt = at
+    try RecordingSessionSidecar.write(session, in: directory)
+
+    #expect(RecordingSessionSidecar.read(in: directory)?.interruptedBySleepAt == at)
+}
+
+@Test("A sidecar written before F253 still decodes (F253)")
+func preF253SidecarStillDecodes() throws {
+    let directory = try tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // The field must be Optional, not required: a recording started under the previous build and
+    // interrupted after an update would otherwise fail to decode and lose its markers — the exact
+    // failure F188's lenient-decode rule exists to prevent, one file over.
+    let json = """
+    {"id":"\(UUID().uuidString)","startedAt":"2026-09-16T14:34:44Z","title":"Old","markers":[]}
+    """
+    try Data(json.utf8).write(to: directory.appendingPathComponent(RecordingSessionSidecar.filename))
+
+    let read = try #require(RecordingSessionSidecar.read(in: directory))
+    #expect(read.title == "Old")
+    #expect(read.interruptedBySleepAt == nil)
+}

@@ -1816,6 +1816,8 @@ final class AppModel: ObservableObject {
             // capture. Everything the user enters during a recording used to exist only in RAM, so
             // any end the app did not control returned the audio and lost the meeting.
             persistRecordingSession(id: id, startedAt: startedAt)
+            // F253: watch for sleep only while a capture is actually live.
+            observeSystemSleep()
             refreshRecordingPreflight()
         } catch {
             recordingState = .idle
@@ -1830,6 +1832,9 @@ final class AppModel: ObservableObject {
 
     func stopRecording(title: String) async -> UUID? {
         guard let id = activeMeetingID else { return nil }
+        // F253: the capture is ending, so stop watching for sleep. Dropped here rather than in each
+        // exit branch, because every path out of this function ends the recording.
+        stopObservingSystemSleep()
         recordingState = .stopping
         let directory = store.recordingDirectoryURL(for: id)
         do {
@@ -1917,6 +1922,7 @@ final class AppModel: ObservableObject {
         // A cancel that arrives during finalization (`.stopping`) or when idle must be a no-op so it
         // can't race/corrupt a simultaneous Stop (F139).
         guard canCancelRecording else { return }
+        stopObservingSystemSleep()   // F253
         await recorder.cancel()
         recordingState = .idle
         activeMeetingID = nil
@@ -1943,6 +1949,88 @@ final class AppModel: ObservableObject {
         if let id = activeMeetingID {
             persistRecordingSession(id: id, startedAt: startedAt)
         }
+    }
+
+    /// The `willSleep` subscription, held only for the lifetime of a capture (F253).
+    private var sleepObserver: NSObjectProtocol?
+
+    /// Subscribes to `NSWorkspace.willSleepNotification` for the duration of a recording (F253).
+    ///
+    /// On `AppModel` rather than a view, deliberately: every other lifecycle hook in this app hangs
+    /// off `ContentView` inside the `WindowGroup` (F257), which means a menu-bar-only session gets
+    /// none of them. `AppModel` is the app's own `@StateObject`, so a recording started from the
+    /// menu bar with no window open is still covered. That also makes F253 independent of F257
+    /// rather than blocked behind it.
+    ///
+    /// `queue: .main` with `assumeIsolated` rather than a `Task`: the handler has to run *inside*
+    /// the notification, because the few seconds macOS grants are the entire budget. Hopping to a
+    /// Task would return immediately and let the machine suspend before the note was written.
+    private func observeSystemSleep() {
+        guard sleepObserver == nil else { return }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleSystemWillSleep() }
+        }
+    }
+
+    /// Drops the subscription once the recording is over, so an idle app is not woken by it.
+    private func stopObservingSystemSleep() {
+        guard let sleepObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
+        self.sleepObserver = nil
+    }
+
+    /// Reacts to the Mac being about to sleep during a capture (F253).
+    ///
+    /// Internal so `SleepInterruptionWiringTests` can drive it without a real power event.
+    ///
+    /// Two steps, in this order, because only the first is guaranteed. macOS posts `willSleep` and
+    /// waits a few seconds; finalizing a 63-minute recording means mixing ~1.4 GB, which will not
+    /// fit in that window. So the sidecar note — a few hundred atomic bytes — lands first and always,
+    /// and the stop is attempted after it as best-effort.
+    ///
+    /// If the stop is cut off mid-mix it degrades safely rather than corrupting: `FloatTrackMixer`
+    /// writes the WAV header **last**, so a truncated `meeting.wav` fails `wavDuration`'s magic and
+    /// size checks, `finalizedRecording(in:)` returns nil, and startup recovery rebuilds from the
+    /// raw tracks as it would have anyway — now with the note explaining why.
+    func handleSystemWillSleep(now: Date = Date()) {
+        let phase: RecordingSleepPolicy.State = switch recordingState {
+        case .idle: .idle
+        case .starting: .starting
+        case .recording: .recording
+        case .stopping: .stopping
+        }
+        guard RecordingSleepPolicy.action(for: phase, on: .willSleep) == .finalize,
+              let id = activeMeetingID,
+              case let .recording(startedAt) = recordingState else {
+            return
+        }
+        noteSleepInterruption(id: id, startedAt: startedAt, at: now)
+        // Move the state machine SYNCHRONOUSLY before handing off to the async stop. Without this
+        // the policy's `.stopping` no-op never fires: macOS can post `willSleep` more than once
+        // around a failed sleep attempt, and `stopRecording` is async, so a second notification
+        // arrived while the phase was still `.recording` and re-noted a later moment over the one
+        // the Mac actually slept at. Caught by a red test rather than in the field.
+        //
+        // `.stopping` is also the correct phase to be in: it is what makes Cancel refuse
+        // (`canCancelRecording`), so a cancel cannot race this finalize — the same guard F139 added.
+        recordingState = .stopping
+        Task { _ = await stopRecording(title: "") }
+    }
+
+    /// Records in the session sidecar that sleep interrupted this capture (F253).
+    private func noteSleepInterruption(id: UUID, startedAt: Date, at now: Date) {
+        var session = RecordingSession(
+            id: id,
+            startedAt: startedAt,
+            title: "",
+            markers: pendingMarkers
+        )
+        session.interruptedBySleepAt = now
+        try? RecordingSessionSidecar.write(session, in: store.recordingDirectoryURL(for: id))
     }
 
     /// Writes the live recording's session sidecar (F258).

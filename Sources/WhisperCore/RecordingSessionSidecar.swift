@@ -12,11 +12,30 @@ public struct RecordingSession: Codable, Sendable, Equatable {
     public var title: String
     public var markers: [RecordingMarker]
 
-    public init(id: UUID, startedAt: Date, title: String, markers: [RecordingMarker]) {
+    /// When a system sleep interrupted this capture, or nil (F253).
+    ///
+    /// Finalizing on `willSleep` is best-effort: macOS allows a few seconds, and mixing a
+    /// 63-minute capture means reading ~1.4 GB, which will not fit in that window. So this is the
+    /// part that *is* guaranteed — a few hundred atomic bytes — and it lets recovery say "your Mac
+    /// went to sleep" instead of showing a generic interruption notice.
+    ///
+    /// **Optional, deliberately.** A recording started under a build without this field and
+    /// interrupted after an update must still decode, or it would lose its markers — the failure
+    /// F188's lenient-decode rule exists to prevent, one file over.
+    public var interruptedBySleepAt: Date?
+
+    public init(
+        id: UUID,
+        startedAt: Date,
+        title: String,
+        markers: [RecordingMarker],
+        interruptedBySleepAt: Date? = nil
+    ) {
         self.id = id
         self.startedAt = startedAt
         self.title = title
         self.markers = markers
+        self.interruptedBySleepAt = interruptedBySleepAt
     }
 }
 
