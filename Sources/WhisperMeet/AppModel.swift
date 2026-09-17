@@ -1843,6 +1843,20 @@ final class AppModel: ObservableObject {
                     messages.append("\(failedTitle) needs attention. \(message)")
                     continue
                 }
+                // F274: read back what F258 wrote. The sidecar is the only place a marker
+                // offset survives a crash, ⌘Q or a shutdown, and until now nothing read it — so a
+                // recovered meeting came back with zero markers while its offsets sat on disk
+                // beside it. `interruptedBySleepAt` was write-only for the same reason: F253
+                // records WHY the capture stopped and nothing ever said so.
+                //
+                // No health report is read, because there is none: `RecordingSession` has no such
+                // field, so F258 never wrote one. The ticket lists it; the code does not have it.
+                //
+                // Absent or unreadable is a normal state, not a failure. `session.json` is written
+                // best-effort — a metadata write must never be able to fail a capture that is
+                // working — so recovery cannot depend on it and must not invent what it says.
+                let session = RecordingSessionSidecar.read(in: orphan.directory)
+                let recoveredMarkers = session?.markers.isEmpty == false ? session?.markers : nil
                 // F256. The rebuild reports where it stopped; say so on the meeting itself, not
                 // only in the startup alert the user dismisses once.
                 let recoveryWarning = Self.recoveryWarning(for: recovered)
@@ -1861,6 +1875,10 @@ final class AppModel: ObservableObject {
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: .failed,
                         errorMessage: Self.severelyTruncatedRecoveryMessage,
+                        // Markers travel even here — arguably especially here. They are the user's
+                        // own notes about where something happened, and a meeting whose audio is
+                        // mostly gone is the one where they matter most.
+                        markers: recoveredMarkers,
                         recoveryWarning: recoveryWarning,
                         recoverySource: recovered.source.rawValue
                     ))
@@ -1876,9 +1894,17 @@ final class AppModel: ObservableObject {
                     createdAt: orphan.createdAt,
                     duration: duration,
                     recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
-                    errorMessage: recovered.wasRebuiltFromRawTracks
+                    // F274: name the interruption when the sidecar recorded one. "Recovered after
+                    // an interruption" is true and unhelpful — the user knows they closed the lid
+                    // and wants the app to know it too. No new field for it: the message that
+                    // already explains the recovery says which interruption it was.
+                    errorMessage: (recovered.wasRebuiltFromRawTracks
                         ? "Recovered from source audio after an interruption. The raw microphone and system tracks were preserved; their exact start alignment was unavailable."
-                        : "Recovered after an interruption. The original recording and source tracks were preserved.",
+                        : "Recovered after an interruption. The original recording and source tracks were preserved.")
+                        + (session?.interruptedBySleepAt == nil
+                            ? ""
+                            : " The recording stopped because this Mac went to sleep."),
+                    markers: recoveredMarkers,
                     recoveryWarning: recoveryWarning,
                     // F273: the same fact structurally, because `performTranscription` clears
                     // `errorMessage` and used to take the provenance with it.
