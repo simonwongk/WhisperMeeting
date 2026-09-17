@@ -1810,7 +1810,12 @@ final class AppModel: ObservableObject {
                     self.recordingMeter.update(snapshot)
                 }
             }
-            recordingState = .recording(startedAt: Date())
+            let startedAt = Date()
+            recordingState = .recording(startedAt: startedAt)
+            // F258: put the session's metadata on disk alongside the audio, from the first moment of
+            // capture. Everything the user enters during a recording used to exist only in RAM, so
+            // any end the app did not control returned the audio and lost the meeting.
+            persistRecordingSession(id: id, startedAt: startedAt)
             refreshRecordingPreflight()
         } catch {
             recordingState = .idle
@@ -1932,6 +1937,33 @@ final class AppModel: ObservableObject {
             RecordingMarker(offset: offset, label: label),
             into: pendingMarkers
         )
+        // F258: persist on every drop rather than at stop. A marker's offset is the one piece of
+        // recording metadata that cannot be reconstructed afterwards — a title can be retyped in
+        // seconds, a flagged moment in ninety minutes of audio cannot be found again.
+        if let id = activeMeetingID {
+            persistRecordingSession(id: id, startedAt: startedAt)
+        }
+    }
+
+    /// Writes the live recording's session sidecar (F258).
+    ///
+    /// Best-effort by design: a metadata write must never be able to interrupt or fail a capture
+    /// that is working. It is also not surfaced — an alert mid-recording over a marker file would
+    /// cost the user more than the markers are worth — so the failure mode is silently losing the
+    /// metadata this exists to keep, which is still strictly better than the RAM-only behaviour it
+    /// replaces. `RecordingSessionSidecar.read` tolerates everything this can leave behind.
+    private func persistRecordingSession(id: UUID, startedAt: Date) {
+        let directory = store.recordingDirectoryURL(for: id)
+        // The title is deliberately absent: it lives in `ContentView`'s `@State` and never reaches
+        // the model until `stopRecording(title:)`, so there is nothing here to persist yet. Moving
+        // it is part of F257's lifecycle work; markers are the irreplaceable half and ship now.
+        let session = RecordingSession(
+            id: id,
+            startedAt: startedAt,
+            title: "",
+            markers: pendingMarkers
+        )
+        try? RecordingSessionSidecar.write(session, in: directory)
     }
 
     /// Adds a marker to an already-saved meeting (e.g. from playback at the current time).
