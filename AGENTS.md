@@ -356,6 +356,29 @@ session's `| head` over three exit codes reported 0 for all three, including the
 one that broke.** That is why this is a rule about the command you type rather than about being
 careful.
 
+**When the clever mechanism is wrong, the fallback must be a deferred action and never a
+destructive one.** Named because it silently decided four separate things on 2026-09-17 and nobody
+had stated it:
+
+- F275's restart **finalizes** when its retries are spent rather than leaving the capture dead —
+  bounding the retries had to mean "save what we have", not "give up".
+- F256's rebuild **throws** on an unreadable chunk rather than indexing a truncated recording.
+- F255's writer lease **fails open** on `.unavailable`, so an unreadable lease defers a rebuild
+  instead of authorising one.
+- F279 keeps the lease gate as an *additional* refusal beside its growth probe rather than
+  replacing it, so a probe that is wrong somewhere nobody has thought of defers a recovery instead
+  of re-running F255.
+
+The test is: if this mechanism's premise is false, does the failure lose something? A deferred
+recovery can be retried by the next launch; a destroyed recording cannot.
+
+**And its corollary, which is easy to miss: deferring forever is itself destructive.** F283's
+mid-outage flag would have deferred a recovery permanently for an app that died mid-outage, so it
+carries a bound — and the bound is *derived* from the contract that makes resumption possible
+(`CaptureRestartPolicy.defaultMaximumPaddedGap`, past which the policy finalizes rather than
+resuming) rather than chosen as a timeout. A defer needs an expiry, and the expiry should come from
+the mechanism it is waiting for.
+
 **Expect the first draft of a correctness fix to contain a new instance of the bug it fixes.** Named
 because it happened twice in one day, independently. F275's restart pads a gap with silence so the
 timeline stays honest — and its first green version let overlapping triggers pad one gap three times,
