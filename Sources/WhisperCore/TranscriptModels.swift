@@ -263,8 +263,19 @@ public enum TranscriptFormatter {
         // `Int.max` that the arithmetic below cannot overflow either. Picking the cap in Double
         // space is the whole point: `Double(Int.max)` is not exactly representable, so comparing
         // against it is its own trap waiting to happen.
-        guard seconds.isFinite, seconds > 0 else { return 0 }
-        return Int(min(seconds.rounded(), 1e15))
+        // The conversion goes through `Int(saturating:)` (F287's shared helper) rather than a
+        // second local implementation of the same clamp — one of a matched pair being fixed alone
+        // is the F278/F282 failure, and this file had the pair's other half.
+        //
+        // The 1e15 cap stays on top of it, and is this formatter's own concern rather than the
+        // conversion's: `Int.max` seconds would print an hour field of 2.5 quintillion, and the
+        // cap also guarantees the `/ 3600` arithmetic below has headroom. ~31 million years is
+        // already unmistakably absurd to a reader.
+        // Both bounds explicit. Delegating the conversion dropped the negative floor the old
+        // `guard seconds > 0` provided — `Int(saturating:)` saturates at the type's bounds, which
+        // is its job, and says nothing about what a *duration* may be. Caught by the assertion that
+        // a clamped value still reads as a duration, which printed "0:-5".
+        return max(0, min(Int(saturating: seconds), 1_000_000_000_000_000))
     }
 
     public static func timestamp(_ seconds: Double) -> String {
