@@ -78,9 +78,40 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
     var languageWarning: String?
-    /// The engine that produced this meeting's transcript, recorded so a "second opinion" can run the
-    /// genuine other engine regardless of current Settings (F142). Optional for backward compatibility.
-    var transcriptionEngine: MeetingTranscriptionEngine?
+    /// The engine that produced this meeting's transcript, as its raw persisted string (F250).
+    ///
+    /// **Stored as a string, not as the enum, and that is the whole fix.** It was
+    /// `MeetingTranscriptionEngine?` — a raw-value enum with no lenient decode — so an index written
+    /// by a build with an engine this one lacks failed with `DecodingError.dataCorrupted`. The
+    /// persisted root is a single `[MeetingRecord]` array, so that one value failed the decode of
+    /// *every* meeting: the whole library unreadable. It made adding any engine a one-way door, and
+    /// F240 recorded it as a blocker while considering a whisper.cpp engine.
+    ///
+    /// Leniency at the enum could not fix it. `Decodable` cannot yield `nil` from a type's own
+    /// initialiser, and `decodeIfPresent` returns nil only for an absent or null key, never for a
+    /// value that throws — so enum-level leniency would have to invent a case, and decoding an
+    /// unrecognised engine as `.whisperLarge` would claim a meeting was transcribed by a model that
+    /// never touched it. This field is a provenance record; a wrong answer is worse than no answer.
+    /// Holding the string moves the decision out of `Decodable` entirely: the string always
+    /// round-trips, and `transcriptionEngine` below answers nil for what this build cannot name,
+    /// which is the truth rather than a guess.
+    ///
+    /// Read and written through `transcriptionEngine`. The on-disk key is unchanged, which is why
+    /// `CodingKeys` below is hand-written.
+    private(set) var transcriptionEngineRawValue: String?
+
+    /// The engine that produced this meeting's transcript, when this build recognises it.
+    ///
+    /// Recorded so a "second opinion" can run the genuine other engine regardless of current
+    /// Settings (F142). Nil means either "no engine recorded" (an old index) or "an engine this
+    /// build does not know" (a newer one) — deliberately not distinguished here, because every
+    /// caller wants the same answer for both: fall back to the current selection rather than
+    /// assert something about a model that may never have run. `transcriptionEngineRawValue` keeps
+    /// the distinction for anything that needs it.
+    var transcriptionEngine: MeetingTranscriptionEngine? {
+        get { transcriptionEngineRawValue.flatMap(MeetingTranscriptionEngine.init(rawValue:)) }
+        set { transcriptionEngineRawValue = newValue?.rawValue }
+    }
     /// Where this meeting's audio came from when it was fetched from a link rather than recorded or
     /// imported from a local file (F183). Optional so meeting indexes written before this feature still
     /// decode — a non-optional field here would make every pre-existing meeting fail to decode, and the
@@ -139,9 +170,22 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.alignmentWarning = alignmentWarning
         self.recoveryWarning = recoveryWarning
         self.languageWarning = languageWarning
-        self.transcriptionEngine = transcriptionEngine
+        self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
         self.source = source
         self.referenceSegments = referenceSegments
+    }
+
+    /// Hand-written so `transcriptionEngineRawValue` persists under its original on-disk name
+    /// (F250). Everything else keeps the name synthesis gave it — renaming any of these would make
+    /// every existing index lose that field on the next save, with nothing failing to announce it.
+    /// `theWireKeySetIsPinned` asserts the full set, because a case missing from this enum is
+    /// exactly that silent loss.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, createdAt, duration, recordingPath, status, transcriptText
+        case languageCode, confidence, segments, errorMessage, summary, transcriptNormalized
+        case markers, pinned, notes, tags, healthReport, alignmentWarning, recoveryWarning
+        case languageWarning, source, referenceSegments
+        case transcriptionEngineRawValue = "transcriptionEngine"
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.

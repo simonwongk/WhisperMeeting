@@ -178,21 +178,28 @@ struct PersistedSchemaCompatibilityTests {
 
     // MARK: MeetingTranscriptionEngine
 
-    @Test("KNOWN GAP (F250): an unknown transcription engine still throws")
-    func unknownTranscriptionEngineStillThrows() throws {
-        // This is a characterization test, not an endorsement. It pins the one exposure from the
-        // postmortem's list of three that F188 did NOT close, so the gap is visible in the suite
-        // instead of living only in a ticket. When F250 lands, this test must be replaced by one
-        // asserting the new behaviour — its failure is the reminder.
+    @Test("The engine enum itself still throws on an unknown value, by design (F250)")
+    func unknownTranscriptionEngineStillThrowsAtTheEnum() throws {
+        // This WAS a characterization test pinning F250 as a known gap, with a note that its
+        // failure would be the reminder to replace it. F250 has landed, so here is the replacement
+        // — and the assertion is unchanged, which is the interesting part.
         //
-        // Why it was not fixed alongside the two health types: `Decodable` cannot yield `nil` from a
-        // type's own initialiser, and `decodeIfPresent` returns `nil` only for an absent or null
-        // key, never for a value that throws. So enum-level leniency would have to invent a case,
-        // and every candidate falsifies provenance — decoding an unrecognised engine as
-        // `.whisperLarge` would claim a meeting was transcribed by a model that never touched it,
-        // which is worse than failing. The honest fix is to persist the raw string and derive the
-        // enum on read, which round-trips losslessly (F188's stated preference) but changes a
-        // persisted field's type. That is F250.
+        // The enum is still a strict `RawRepresentable` decoder and still throws, because leniency
+        // at this level is impossible without lying: `Decodable` cannot yield `nil` from a type's
+        // own initialiser, and `decodeIfPresent` returns nil only for an absent or null key, never
+        // for a value that throws. Any lenient decoder here would have to invent a case, and
+        // decoding an unrecognised engine as `.whisperLarge` would claim a meeting was transcribed
+        // by a model that never touched it.
+        //
+        // So F250 did not make this type lenient — it stopped the persisted index from depending on
+        // that. `MeetingRecord` now holds the raw string and derives the enum on read, which
+        // round-trips losslessly (F188's stated preference) and answers nil for an engine this build
+        // cannot name. `MeetingRecordEngineCompatibilityTests` asserts that behaviour; this test
+        // stays to record that the strictness below is a deliberate choice and not the gap.
+        //
+        // It is therefore load-bearing in one direction: if someone ever adds a lenient
+        // `init(from:)` to `MeetingTranscriptionEngine`, this test fails and that is correct — the
+        // provenance lie would be back.
         struct Holder: Decodable { var engine: MeetingTranscriptionEngine? }
         #expect(throws: DecodingError.self) {
             _ = try decode(Holder.self, #"{"engine":"whisper-cpp-large-v3"}"#)
