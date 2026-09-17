@@ -20,6 +20,13 @@ enum WhisperMeetLauncher {
         if let models = DiarizationInstallSmokeTest.modelsParentDirectory(in: CommandLine.arguments) {
             DiarizationInstallSmokeTest.runAndExit(modelsParentDirectory: models)
         }
+        // F214: the one other headless branch, and read-only — it prints counts from a dictation
+        // log it is pointed at and exits, before any scene, window or permission prompt exists.
+        if let log = DictationRefineReportCommand.logURL(in: CommandLine.arguments) {
+            DictationRefineReportCommand.runAndExit(
+                logURL: log, since: DictationRefineReportCommand.since(in: CommandLine.arguments)
+            )
+        }
         WhisperMeetApp.main()
     }
 }
