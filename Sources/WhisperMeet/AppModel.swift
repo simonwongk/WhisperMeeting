@@ -2275,6 +2275,10 @@ final class AppModel: ObservableObject {
                 forGap: padding,
                 sampleRate: AudioCaptureEngine.captureSampleRate
             )
+            // F283: the outage began `padding` seconds ago, not now — a rival reading this while
+            // the restart is in flight should see when the audio actually stopped, since that is
+            // what its own growth probe is measuring against.
+            updateRecordingSession { $0.outageBeganAt = now.addingTimeInterval(-padding) }
             do {
                 try await recorder.restartAfterFailure(paddingFrames: frames)
                 // Recorded only now, after the silence is actually on disk. Noting it first meant a
@@ -2282,6 +2286,10 @@ final class AppModel: ObservableObject {
                 // was — and startup recovery would then describe an unpatched set of tracks as
                 // patched. Found by a red test.
                 notePaddedGap(seconds: padding, resumedAt: now)
+                // Capture is live again, so the folder will grow and needs no protection. Cleared
+                // rather than left to age out: the flag describes now, and `paddedGaps` is the
+                // durable record of what happened.
+                updateRecordingSession { $0.outageBeganAt = nil }
                 captureLastAliveAt = now
                 captureRestartNotice = CaptureRestartPolicy.notice(for: action, trigger: trigger)
             } catch {
@@ -2309,34 +2317,69 @@ final class AppModel: ObservableObject {
         _ = await stopRecording(title: "")
     }
 
-    /// Records a padded gap in the sidecar, so recovery does not read a patched timeline as clean.
-    private func notePaddedGap(seconds: TimeInterval, resumedAt: Date) {
-        guard let id = activeMeetingID, case let .recording(startedAt) = recordingState else {
-            return
+    /// Reads the live recording's sidecar, applies `change`, and writes it back (F284).
+    ///
+    /// **The one writer.** There were three, and each built a fresh `RecordingSession` and called
+    /// the whole-file `write` without reading, so they erased each other's fields: a sleep note
+    /// dropped the padded gaps, a padded gap dropped the sleep note, and adding a marker dropped
+    /// both. Found by whisper-62 while checking whether the sidecar could carry F283's outage
+    /// signal, rather than assuming it could.
+    ///
+    /// The lost sleep marker was not the worst of it. Startup recovery reads `paddedGaps` to choose
+    /// a rebuild's alignment, so a dropped gap made a patched timeline describe itself as clean —
+    /// **F282's defect reachable again**, through a lost field rather than through the label logic
+    /// that ticket fixed. A recording that slept, resumed, then slept again did it.
+    ///
+    /// `markers` is refreshed from `pendingMarkers` on every write rather than merged, because the
+    /// model holds the whole list and the file is a mirror of it; the fields that are NOT derivable
+    /// from the model — the sleep note, the padded gaps — are what reading first preserves.
+    private func updateRecordingSession(_ change: (inout RecordingSession) -> Void) {
+        guard let id = activeMeetingID else { return }
+        let startedAt: Date
+        switch recordingState {
+        case let .recording(at): startedAt = at
+        // A stop in progress still has a sidecar worth updating: `handleSystemWillSleep` moves the
+        // state to `.stopping` synchronously and then notes the interruption, and F275's finalize
+        // does the same. Refusing here would drop exactly the notes those paths exist to write.
+        case .stopping, .starting, .idle:
+            guard let existing = RecordingSessionSidecar.read(
+                in: store.recordingDirectoryURL(for: id)
+            ) else { return }
+            startedAt = existing.startedAt
         }
         let directory = store.recordingDirectoryURL(for: id)
         var session = RecordingSessionSidecar.read(in: directory) ?? RecordingSession(
             id: id,
             startedAt: startedAt,
             title: "",
-            markers: pendingMarkers
+            markers: []
         )
-        session.paddedGaps.append(
-            RecordingSession.PaddedGap(seconds: seconds, resumedAt: resumedAt)
-        )
+        session.markers = pendingMarkers
+        change(&session)
         try? RecordingSessionSidecar.write(session, in: directory)
+    }
+
+    /// Records a padded gap in the sidecar, so recovery does not read a patched timeline as clean.
+    private func notePaddedGap(seconds: TimeInterval, resumedAt: Date) {
+        updateRecordingSession {
+            $0.paddedGaps.append(
+                RecordingSession.PaddedGap(seconds: seconds, resumedAt: resumedAt)
+            )
+        }
     }
 
     /// Records in the session sidecar that sleep interrupted this capture (F253).
     private func noteSleepInterruption(id: UUID, startedAt: Date, at now: Date) {
-        var session = RecordingSession(
-            id: id,
-            startedAt: startedAt,
-            title: "",
-            markers: pendingMarkers
-        )
-        session.interruptedBySleepAt = now
-        try? RecordingSessionSidecar.write(session, in: store.recordingDirectoryURL(for: id))
+        // Through `updateRecordingSession` since F284: this used to build a fresh session and write
+        // the whole file, which erased any padded gaps F275 had recorded.
+        updateRecordingSession {
+            $0.interruptedBySleepAt = now
+            // F283: written HERE, before the machine suspends, so the fact that this capture is
+            // about to stop growing is on disk before it stops growing. A second instance launching
+            // on wake then reads it whenever it happens to look, instead of the answer depending on
+            // whether `didWake` beats that launch.
+            $0.outageBeganAt = now
+        }
     }
 
     /// Writes the live recording's session sidecar (F258).
@@ -2347,17 +2390,14 @@ final class AppModel: ObservableObject {
     /// metadata this exists to keep, which is still strictly better than the RAM-only behaviour it
     /// replaces. `RecordingSessionSidecar.read` tolerates everything this can leave behind.
     private func persistRecordingSession(id: UUID, startedAt: Date) {
-        let directory = store.recordingDirectoryURL(for: id)
         // The title is deliberately absent: it lives in `ContentView`'s `@State` and never reaches
         // the model until `stopRecording(title:)`, so there is nothing here to persist yet. Moving
         // it is part of F257's lifecycle work; markers are the irreplaceable half and ship now.
-        let session = RecordingSession(
-            id: id,
-            startedAt: startedAt,
-            title: "",
-            markers: pendingMarkers
-        )
-        try? RecordingSessionSidecar.write(session, in: directory)
+        //
+        // Through `updateRecordingSession` since F284. This is the caller a user triggers most
+        // often — every marker rewrites the sidecar — so as a whole-file write it was the most
+        // likely of the three to erase a padded gap or a sleep note.
+        updateRecordingSession { _ in }
     }
 
     /// Adds a marker to an already-saved meeting (e.g. from playback at the current time).

@@ -266,3 +266,86 @@ func failedRestartRecordsNoPaddedGap() async throws {
     // And it must not leave the capture dead — a failed restart falls through to saving.
     #expect(!model.recordingState.isLive)
 }
+
+// MARK: - F284: three writers, each clobbering the others' fields
+
+@MainActor
+@Test("A sleep after a padded gap does not erase the gap (F284)")
+func sleepDoesNotEraseAPaddedGap() async throws {
+    // Found by whisper-62 while checking whether the sidecar could carry F283's signal, rather than
+    // assuming it could. `noteSleepInterruption` and `persistRecordingSession` each construct a
+    // FRESH `RecordingSession` and call the whole-file `write` without reading, so they erase
+    // whatever the other writers put there.
+    //
+    // The lost sleep marker is not the worst of it. Startup recovery reads `paddedGaps` to choose a
+    // rebuild's alignment, so a dropped gap makes a patched timeline describe itself as clean —
+    // F282's defect reachable again, through a lost field rather than through the label logic that
+    // ticket fixed. A recording that sleeps, resumes, then sleeps again does it today.
+    let (model, root, defaults, suite) = try makeRestartModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    let directory = model.store.recordingDirectoryURL(for: id)
+    model.addLiveMarker(label: "pricing")
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+
+    await model.handleCaptureInterruption(trigger: .didWake, gap: 20, now: Date())
+    #expect(RecordingSessionSidecar.read(in: directory)?.paddedGaps.count == 1)
+
+    // Now sleep. Under the bug this rewrote the file from scratch.
+    model.handleSystemWillSleep(now: Date(timeIntervalSince1970: 1_757_100_000))
+
+    let session = try #require(RecordingSessionSidecar.read(in: directory))
+    #expect(session.paddedGaps.count == 1, "the sleep note erased the padded gap")
+    #expect(session.interruptedBySleepAt != nil, "the sleep was not noted")
+    #expect(session.markers.count == 1, "the marker was lost too")
+}
+
+@MainActor
+@Test("Two padded gaps both survive (F284)")
+func twoPaddedGapsBothSurvive() async throws {
+    let (model, root, defaults, suite) = try makeRestartModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    let directory = model.store.recordingDirectoryURL(for: id)
+
+    for gap in [11.0, 23.0] {
+        model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+        await model.handleCaptureInterruption(trigger: .streamFailed, gap: gap, now: Date())
+    }
+
+    let session = try #require(RecordingSessionSidecar.read(in: directory))
+    #expect(session.paddedGaps.map(\.seconds) == [11, 23])
+}
+
+@MainActor
+@Test("A marker dropped after a padded gap does not erase it (F284)")
+func aMarkerDoesNotEraseAPaddedGap() async throws {
+    // `persistRecordingSession` is the third caller and the one a user triggers most often.
+    let (model, root, defaults, suite) = try makeRestartModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    let directory = model.store.recordingDirectoryURL(for: id)
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+    await model.handleCaptureInterruption(trigger: .streamFailed, gap: 7, now: Date())
+
+    model.addLiveMarker(label: "after the gap")
+
+    let session = try #require(RecordingSessionSidecar.read(in: directory))
+    #expect(session.paddedGaps.count == 1, "adding a marker erased the padded gap")
+    #expect(session.markers.count == 1)
+}

@@ -49,13 +49,31 @@ public struct RecordingSession: Codable, Sendable, Equatable {
     /// `interruptedBySleepAt` follows above.
     public var paddedGaps: [PaddedGap] = []
 
+    /// When this capture's audio stopped arriving and a resume is expected, or nil (F283).
+    ///
+    /// **Why a second instance needs this.** F279 decides a folder is dead by sampling the raw
+    /// tracks twice and seeing no growth — correct for a crashed capture, and wrong for one of
+    /// F275's outages. A Mac asleep for four minutes is not capturing, so its tracks do not grow,
+    /// and F275 resumes it on wake; a rival instance launching in that window would rebuild a live
+    /// recording, which is F255 again.
+    ///
+    /// Written at `willSleep`, **before** the gap begins, so the fact is on disk whenever the second
+    /// instance happens to look. That removes the question of whether `didWake` arrives before or
+    /// after a rival's launch rather than answering it by measurement — whisper-62's point, and a
+    /// better one than the measurement would have been.
+    ///
+    /// Cleared when capture resumes, so the flag describes now rather than history. `paddedGaps`
+    /// is the durable record of what happened; this is the live state.
+    public var outageBeganAt: Date?
+
     public init(
         id: UUID,
         startedAt: Date,
         title: String,
         markers: [RecordingMarker],
         interruptedBySleepAt: Date? = nil,
-        paddedGaps: [PaddedGap] = []
+        paddedGaps: [PaddedGap] = [],
+        outageBeganAt: Date? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -63,6 +81,26 @@ public struct RecordingSession: Codable, Sendable, Equatable {
         self.markers = markers
         self.interruptedBySleepAt = interruptedBySleepAt
         self.paddedGaps = paddedGaps
+        self.outageBeganAt = outageBeganAt
+    }
+
+    /// Whether this capture is inside an outage it is expected to come back from (F283).
+    ///
+    /// Bounded by `CaptureRestartPolicy.defaultMaximumPaddedGap`, and the bound is not a time window
+    /// in disguise: past that cap the policy **finalizes** rather than resuming, so a folder whose
+    /// outage began longer ago than that is definitively not going to be resumed. Without the bound,
+    /// an app that died mid-outage would leave the flag set forever and its recording would never be
+    /// recovered — the defer-forever outcome F279 rejects, and strictly worse than the bug this
+    /// closes.
+    ///
+    /// A negative elapsed time — `outageBeganAt` in the future, which an NTP correction across a
+    /// sleep produces — is treated as no information rather than as unbounded protection. Same
+    /// answer F275 gives a negative gap, and for the same reason: the clock is the thing that is
+    /// wrong, so it cannot be the thing that grants an exemption.
+    public func isMidOutage(now: Date) -> Bool {
+        guard let outageBeganAt else { return false }
+        let elapsed = now.timeIntervalSince(outageBeganAt)
+        return elapsed >= 0 && elapsed < CaptureRestartPolicy.defaultMaximumPaddedGap
     }
 
     /// Decoded leniently: every field added after the first shipped build must tolerate its own
@@ -78,6 +116,7 @@ public struct RecordingSession: Codable, Sendable, Equatable {
             forKey: .interruptedBySleepAt
         )
         paddedGaps = try container.decodeIfPresent([PaddedGap].self, forKey: .paddedGaps) ?? []
+        outageBeganAt = try container.decodeIfPresent(Date.self, forKey: .outageBeganAt)
     }
 }
 

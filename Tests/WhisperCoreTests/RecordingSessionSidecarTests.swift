@@ -179,3 +179,91 @@ func preF253SidecarStillDecodes() throws {
     #expect(read.title == "Old")
     #expect(read.interruptedBySleepAt == nil)
 }
+
+// MARK: - F283: a capture that is mid-outage is not a dead capture
+
+@Test("A session mid-outage reads as live, so a rival does not rebuild it (F283)")
+func midOutageSessionReadsAsLive() {
+    // F279 decides a folder is dead by sampling the raw tracks twice and seeing no growth. That is
+    // correct for a crashed capture and wrong for one of F275's outages: a Mac asleep for four
+    // minutes is not capturing, so its tracks do not grow, and F275 will resume it on wake. A rival
+    // instance launching in that window would rebuild a live recording — F255 again.
+    //
+    // So the writer records the fact. `outageBeganAt` is set when the outage starts and cleared
+    // when capture resumes, and it is written at `willSleep` — BEFORE the gap — so the fact is on
+    // disk whenever the second instance happens to look. That removes the question of whether
+    // `didWake` arrives before or after a rival's launch, rather than answering it by measurement.
+    var session = RecordingSession(
+        id: UUID(),
+        startedAt: Date(timeIntervalSince1970: 1_757_000_000),
+        title: "",
+        markers: []
+    )
+    let began = Date(timeIntervalSince1970: 1_757_000_100)
+    session.outageBeganAt = began
+
+    #expect(session.isMidOutage(now: began.addingTimeInterval(1)))
+    #expect(session.isMidOutage(now: began.addingTimeInterval(60)))
+}
+
+@Test("An outage older than the pad cap stops protecting the folder (F283)")
+func staleOutageStopsProtecting() {
+    // whisper-62's bound, and it is not a window in disguise: past
+    // `CaptureRestartPolicy.defaultMaximumPaddedGap` the policy FINALIZES rather than resuming, so
+    // a folder whose outage began longer ago than that is definitively not going to be resumed.
+    // Without the bound, an app that died mid-outage would leave the flag set forever and its
+    // recording would never be recovered — the defer-forever outcome F279 rejects, and strictly
+    // worse than the bug being fixed.
+    var session = RecordingSession(
+        id: UUID(),
+        startedAt: Date(timeIntervalSince1970: 1_757_000_000),
+        title: "",
+        markers: []
+    )
+    let began = Date(timeIntervalSince1970: 1_757_000_100)
+    session.outageBeganAt = began
+    let cap = CaptureRestartPolicy.defaultMaximumPaddedGap
+
+    #expect(session.isMidOutage(now: began.addingTimeInterval(cap - 1)))
+    #expect(!session.isMidOutage(now: began.addingTimeInterval(cap)))
+    #expect(!session.isMidOutage(now: began.addingTimeInterval(cap + 3_600)))
+}
+
+@Test("A session with no outage recorded is not protected (F283)")
+func noOutageMeansNoProtection() {
+    let session = RecordingSession(
+        id: UUID(),
+        startedAt: Date(timeIntervalSince1970: 1_757_000_000),
+        title: "",
+        markers: []
+    )
+    #expect(session.outageBeganAt == nil)
+    #expect(!session.isMidOutage(now: Date()))
+}
+
+@Test("A clock that moved backwards does not protect indefinitely (F283)")
+func backwardsClockIsNotProtection() {
+    // `outageBeganAt` in the future makes `now - began` negative, which is inside any cap. An NTP
+    // correction across a sleep is the realistic cause, and the honest answer is the same as
+    // F275's for a negative gap: treat it as no information rather than as unbounded protection.
+    var session = RecordingSession(
+        id: UUID(),
+        startedAt: Date(timeIntervalSince1970: 1_757_000_000),
+        title: "",
+        markers: []
+    )
+    session.outageBeganAt = Date(timeIntervalSince1970: 1_757_999_999)
+    #expect(!session.isMidOutage(now: Date(timeIntervalSince1970: 1_757_000_100)))
+}
+
+@Test("A session written before F283 decodes with no outage (F283)")
+func olderSessionsDecodeWithoutTheField() throws {
+    let json = #"""
+    {"id":"7A1B0000-0000-4000-8000-000000000001","startedAt":761000000,
+     "title":"Budget","markers":[]}
+    """#
+    let session = try JSONDecoder().decode(RecordingSession.self, from: Data(json.utf8))
+    #expect(session.outageBeganAt == nil)
+    #expect(!session.isMidOutage(now: Date()))
+    #expect(session.title == "Budget")
+}
