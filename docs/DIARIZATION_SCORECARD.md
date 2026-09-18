@@ -405,5 +405,29 @@ installer, and nothing above the seam moved.
    count for overlap detection is a product decision about which error is worse, and it is F232's,
    not a change to make silently. Nothing here was adopted: the probe downloaded into a scratch
    directory and the installed runtime is untouched.
+   **Measured on real meetings, 2026-09-18 (F232 — decided: stay on pyannote community-1).**
+   `Scripts/bench/diarization/runtime-probe` runs both runtimes on the same file and prints counts
+   and timings only. Two real recordings from the library, 35.3 and 36.3 minutes:
+
+   | | meeting A (35.3 min) | meeting B (36.3 min) |
+   |---|---|---|
+   | pyannote: clusters / turns / wall | 4 / 203 / 6 s | 4 / 336 / 7 s |
+   | Sortformer: slots used / turns / wall | 4 / 437 / 17 s | 4 / 734 / 17 s |
+   | Simultaneous speech Sortformer reports | 25.5 s (1.2 % of the file) | 41.0 s (1.9 %) |
+   | Overlap intervals: <0.5 s / 0.5–2 s / ≥2 s | 48 / 15 / **0** (longest 1.8 s) | 67 / 28 / **0** (longest 1.6 s) |
+   | Best one-to-one agreement on who is speaking, frames where both name one speaker | **39.1 %** | **56.6 %** |
+   | Speech only pyannote hears / only Sortformer hears | 211 s / 74 s | 399 s / 113 s |
+
+   The synthetic fixture's 8-second overlap does not occur in these meetings: no interval reaches
+   2 s, and about three quarters are under half a second — backchannels, not two people talking
+   over a sentence. A veto fed by them would withhold a name for a whole segment because of an
+   "mm-hm". Meanwhile the two runtimes disagree about *who* is speaking on roughly half the frames,
+   and Sortformer fills all four of its slots on both files, so neither its identities nor its cap
+   are safe to adopt on 35-minute audio — with no ground truth, the disagreement does not say which
+   is right, only that swapping is not a like-for-like change. Using Sortformer as an overlap
+   detector beside pyannote would cost 242 MB and ~2.5× the analysis time to suppress ≤1.8 s events.
+   The shipped disclosure ("when two people talk at the same time only one of them is labelled")
+   stays the answer. Revisit if FluidAudio ships an overlap-aware clustering diarizer, or a real
+   meeting shows sustained overlap.
 4. **Floor-configuration and long-recording runs.** 615.5 MiB at 35 minutes is comfortable; nothing
    here measured 90 minutes or an 8 GB machine, and the system gate names both.

@@ -34,14 +34,11 @@ One letter rather than four, because this file is already over its cap and the a
 
 **What I need from you:** four things, in the order I would take them.
 
-1. **F232 — one decision, no work.** Should speaker analysis move to FluidAudio's Sortformer
-   diarizer? It detects simultaneous speech (the current runtime cannot, so two people talking at
-   once get one name with full confidence), but it is capped at **four speakers**, costs a 242 MB
-   download, and has been measured on one 21-second synthetic clip. The honest sentence about the
-   limitation already ships on both surfaces. The measurement that would settle it is Sortformer on
-   a real multi-speaker meeting of yours — which needs the 242 MB download and one of your
-   recordings. **Answer:** "measure it" (and which meeting), "stay" (close the ticket as wontfix
-   with the copy as the mitigation), or "later".
+1. **F232 — answered by measurement, 2026-09-18; nothing needed.** Under your delegation I
+   measured Sortformer on two of your real ~35-minute meetings (counts and timings only). No
+   overlap reached 2 s, three quarters were under half a second, and the two runtimes disagreed on
+   who was speaking for about half the frames. Decision: **stay** on the current runtime; the
+   shipped sentence is the mitigation. Numbers are in `docs/DIARIZATION_SCORECARD.md`.
 
 2. **F201 — fifteen minutes with a microphone.** Dictation refinement has never been exercised
    with real speech in the installed app: Settings → refinement on, hold the hotkey, one short
