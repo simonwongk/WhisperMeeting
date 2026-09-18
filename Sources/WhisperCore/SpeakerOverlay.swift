@@ -36,6 +36,12 @@ public enum SpeakerOverlay {
     public static let minimumCoverage = 0.80
     /// …and must beat the runner-up by at least this many percentage points.
     public static let minimumMargin = 0.20
+    /// Rows shorter than this are never named (F317). Derived, not chosen: on 18 annotated AMI
+    /// meetings a name on a solo row under one second was right 37 % of the time, against 84 % from
+    /// one to three seconds and 99.8 % beyond (`docs/DIARIZATION_SCORECARD.md`). A sub-second row
+    /// is usually an interjection inside someone else's turn, and the runtime hands the whole
+    /// stretch to the person holding the floor.
+    public static let minimumLabelledDuration: TimeInterval = 1.0
 
     /// Assigns a label to each segment, returned in the caller's own segment order. Never fills a
     /// visual gap by choosing the most common speaker: an ambiguous interval reports its ambiguity.
@@ -231,6 +237,8 @@ public enum SpeakerOverlay {
         guard !coverageByCluster.isEmpty else {
             return uncertainSeconds > 0 ? .uncertain : .unlabeled
         }
+        // A hair under the floor from floating-point subtraction is still the floor.
+        guard segmentDuration >= minimumLabelledDuration - 1e-9 else { return .uncertain }
         // Ties break toward the lower cluster id so the result is deterministic across runs: with
         // equal coverage the tuple comparison falls through to the ids, and the *swapped* operands
         // make the lower id sort first.

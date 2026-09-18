@@ -431,3 +431,64 @@ installer, and nothing above the seam moved.
    meeting shows sustained overlap.
 4. **Floor-configuration and long-recording runs.** 615.5 MiB at 35 minutes is comfortable; nothing
    here measured 90 minutes or an 8 GB machine, and the system gate names both.
+
+## The clustering threshold, derived on annotated meetings (F225, 2026-09-18)
+
+**Corpus.** AMI Meeting Corpus, headset-mix (`ihm`) **validation** split: 18 meetings, 9.6 hours,
+four speakers each, word-aligned reference turns. CC BY 4.0, fetched from the
+`diarizers-community/ami` mirror on Hugging Face at revision `8cdaae2e` (3 parquet files, 1.03 GB,
+kept in `~/Library/Caches/WhisperMeet-Bench/ami` — never in the checkout). Real meetings with real
+ground truth, which is what F217's synthetic corpus explicitly is not.
+
+**Method.** `runtime-probe`'s `sweep` runs segmentation and embeddings once per meeting
+(`OfflineDiarizerManager.prepare`, 3–9 s each) and re-clusters at each threshold with the app's own
+configuration. `sweep_score.py` scores with the F217 scorer (golden vectors pass). DER is
+micro-averaged; the strict column scores overlap with no collar, the lenient one skips overlap with
+a 250 ms collar.
+
+| threshold | DER strict | DER lenient | miss / FA / confusion (strict) | meetings with exactly 4 clusters |
+|---|---|---|---|---|
+| 0.30 | 24.7 | 7.0 | 17.3 / 3.0 / 4.4 | 16 |
+| 0.40 | 25.2 | 7.7 | 17.2 / 3.0 / 5.0 | 14 |
+| 0.50 | 25.2 | 7.7 | 17.2 / 3.0 / 5.0 | 15 |
+| 0.55 | 24.6 | 6.9 | 17.2 / 3.0 / 4.4 | 17 |
+| **0.60 (shipped)** | **24.6** | **6.9** | 17.2 / 3.0 / 4.4 | 17 |
+| 0.65 | 24.6 | 6.9 | 17.2 / 3.0 / 4.4 | 17 |
+| 0.70 | 28.2 | 11.4 | 17.1 / 3.0 / 8.0 | 14 |
+| 0.80 | 34.3 | 19.3 | 17.1 / 3.0 / 14.2 | 9 |
+| 0.90 | 44.9 | 33.7 | 16.7 / 3.1 / 25.1 | 6 |
+| 1.00 | 66.3 | 62.5 | 16.3 / 3.1 / 46.9 | 1 |
+
+**Decision: 0.60 stays, and is now derived rather than inherited.** 0.55–0.65 is a flat optimum and
+0.60 is its middle. The failure the ticket feared — erring high merges two people into one cluster,
+which the overlay cannot see — begins at 0.70 (confusion 4.4 → 8.0) and is steep after it, so the
+shipped value has a 0.05 margin on the dangerous side and 0.25 of harmless room on the other. The
+17 points of miss are overlapped speech the runtime cannot represent (F232), not clustering, and do
+not move with the threshold.
+
+### What the labels are worth, by row length (F317)
+
+The same run, scored the way a reader meets it: one label per reference turn under the overlay
+rule, at 0.60.
+
+| reference turn | rows | named | named correctly |
+|---|---|---|---|
+| nobody else talking, under 1 s | 854 | 34.5 % | **37.3 %** |
+| nobody else talking, 1–3 s | 647 | 85.2 % | 83.5 % |
+| nobody else talking, 3 s or more | 645 | 95.8 % | **99.8 %** |
+| someone else also talking, under 1 s | 2,435 | 88.8 % | **6.5 %** |
+| someone else also talking, 1–3 s | 1,752 | 77.0 % | 31.8 % |
+| someone else also talking, 3 s or more | 2,331 | 77.6 % | 88.7 % |
+
+A sub-second row is usually an interjection inside someone else's turn, and the runtime gives the
+whole stretch to whoever holds the floor — so the name shown is the *other* person's, 93 % of the
+time. Even with nobody else talking it is right barely one time in three. `SpeakerOverlay` therefore
+no longer names a row shorter than one second (`minimumLabelledDuration`); it reads "Unclear which
+voice". On these reference turns that moves displayed precision from 49.5 % to 71.9 % and coverage
+from 78.3 % to 50.0 %; in the app the rows are ASR segments, of which 20.7 % are under a second in
+this user's library (8,831 rows across 21 meetings, counted without reading them).
+
+**Limits.** Every AMI meeting has exactly four speakers, so the sweep cannot say how 0.60 behaves
+with two or seven. Headset-mix audio is cleaner than a laptop microphone plus system audio. The
+1–3 s overlapped bucket (31.8 %) is as bad as it looks and is not addressed: the overlay cannot see
+overlap (F232), and abstaining on every row under three seconds would silence most of a transcript.

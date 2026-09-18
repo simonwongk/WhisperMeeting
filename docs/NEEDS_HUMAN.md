@@ -48,12 +48,11 @@ One letter rather than four, because this file is already over its cap and the a
    your Mac, so it works; what nobody has watched is the *pill* and the *paste*. **Answer:** do the
    run and tell me what looked wrong, or "skip" and it stays open.
 
-3. **F225 — audio with ground truth, or permission to fetch some.** Re-deriving the clustering
-   threshold needs a few minutes of real multi-speaker audio annotated with who spoke when. If you
-   have a recording you are willing to annotate (or want me to draft the annotation for you to
-   correct), say which. If not, the alternative is a public annotated corpus, which is a download I
-   will not start on my own. **Answer:** a meeting, "download VoxConverse" (or another), or
-   "later".
+3. **F225 — answered by measurement, 2026-09-18; nothing needed.** Under your delegation I
+   downloaded a public annotated meeting corpus (AMI validation, CC BY 4.0, 1.03 GB, bench cache)
+   and swept the threshold over 18 real meetings. The shipped 0.60 is the middle of the flat
+   optimum, so it stays. The run also showed names on rows under one second are usually wrong, so
+   those rows now read "Unclear which voice" (F317).
 
 4. **F181 — a scope decision before any code.** Shortcuts / Finder Quick Action import. The
    note on the ticket is right that a validation core with no App Intent calling it is dead code,

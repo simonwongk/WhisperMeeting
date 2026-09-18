@@ -28,6 +28,10 @@ evidence.
 - `generate_corpus.py` — synthesises the audio. Generated `.wav` and `.truth.json` are gitignored;
   only the manifest and `manifest.lock.json` hashes are committed, so nothing is redistributed.
 - `score_diarization.py` — DER/JER with NIST `md-eval` accounting and pyannote.metrics conventions.
+- `runtime-probe/` — a separate Swift package (built on demand, never part of the app): `probe`
+  runs the shipped runtime and Sortformer on one file (F232); `sweep` computes embeddings once per
+  file and re-clusters at each threshold (F225).
+- `sweep_score.py` — scores a `sweep` output directory against RTTM ground truth, per threshold.
 - `score_corpus.py` — runs the scorer over a directory of runtime output and prints the per-stratum
   table, including displayed-label precision after the product's own overlay rule.
 

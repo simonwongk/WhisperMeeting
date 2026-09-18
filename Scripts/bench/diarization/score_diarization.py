@@ -426,14 +426,16 @@ def micro_average(per_file, condition):
 
 MINIMUM_COVERAGE = 0.80
 MINIMUM_MARGIN = 0.20
+# Rows shorter than this are never named (F317) — SpeakerOverlay.minimumLabelledDuration.
+MINIMUM_LABELLED_DURATION = 1.0
 
 
 def overlay_label(segment, hyp_turns, uncertain_below=None, confidences=None):
     """Mirror of WhisperCore's SpeakerOverlay rule, for scoring what the UI would show.
 
     Kept deliberately in lockstep with Sources/WhisperCore/SpeakerOverlay.swift: a cluster is named
-    only when it covers >= 80% of the segment AND beats the runner-up by >= 20 points AND no overlap
-    turn intersects. Any drift between the two is a bug in one of them, so the scorecard's
+    only when the segment is at least a second long AND it covers >= 80% of it AND beats the
+    runner-up by >= 20 points AND no overlap turn intersects. Any drift between the two is a bug in one of them, so the scorecard's
     "displayed" numbers would stop describing the product.
     """
     seg_start, seg_end = segment
@@ -456,6 +458,8 @@ def overlay_label(segment, hyp_turns, uncertain_below=None, confidences=None):
     if overlap_seconds > 0:
         return "OVERLAP"
     if not coverage:
+        return None
+    if duration < MINIMUM_LABELLED_DURATION - 1e-9:
         return None
     ranked = sorted(coverage.items(), key=lambda kv: (-kv[1], kv[0]))
     best_share = ranked[0][1] / duration

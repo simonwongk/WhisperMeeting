@@ -265,3 +265,17 @@ func overlayLegendIsOrderedByTheNumberItDisplays() {
     ]
     #expect(SpeakerOverlay.clusterIDs(in: rows) == [0, 1, 2, 3])
 }
+
+@Test("A row shorter than a second is never named, however cleanly one cluster covers it (F317)")
+func overlayAbstainsOnVeryShortRows() {
+    // Measured on 18 annotated AMI meetings (F225): with nobody else talking, a name on a row under
+    // one second was right 37 % of the time; from one to three seconds 84 %; beyond that 99.8 %.
+    // A label that is wrong more often than right is worse than none.
+    let rows = SpeakerOverlay.rows(
+        segments: [seg(10, 10.9), seg(20, 21.0)],
+        turns: [turn(0, 30, 1)],
+        recordingDuration: 30
+    )
+    #expect(rows.map(\.label) == [.uncertain, .speaker(clusterID: 1)])
+    #expect(SpeakerOverlay.minimumLabelledDuration == 1.0)
+}
