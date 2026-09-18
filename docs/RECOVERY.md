@@ -19,6 +19,10 @@ A normally completed recording contains:
 - `microphone-audio.f32` — the original microphone track.
 - `source-tracks.json` — timing and format information for the source tracks.
 
+A recording longer than about 12 hours 25 minutes holds more audio than a classic WAV header can
+describe, so its `meeting.wav` is written as **RF64** — the broadcast 64-bit form of WAV, which
+macOS audio tools and ffmpeg both read. Every shorter recording is an ordinary WAV, as before.
+
 A folder from an interrupted recording may also hold a 0-byte `capture.lock`. Like `.writer.lock`
 below, it is not a stale lock: the recording app holds it in an open file descriptor for as long as
 it is capturing, and the kernel releases it when that process dies. It is how a second copy of

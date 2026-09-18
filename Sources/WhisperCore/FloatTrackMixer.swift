@@ -64,7 +64,8 @@ public enum FloatTrackMixer {
         system: FloatTrack,
         microphone: FloatTrack,
         sampleRate: Double,
-        outputURL: URL
+        outputURL: URL,
+        classicDataLimit: UInt64 = WAVWriter.classicDataLimit
     ) throws -> TimeInterval {
         let starts = [system.firstPresentationTime, microphone.firstPresentationTime].compactMap { $0 }
         guard let earliestStart = starts.min() else {
@@ -88,11 +89,15 @@ public enum FloatTrackMixer {
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
-        // The header goes in LAST, over these 44 reserved zero bytes. That ordering is what makes a
+        // The header goes in LAST, over these reserved zero bytes (44, or 80 when the mix is long
+        // enough to need RF64 — known now, because `totalFrames` is: F302). That ordering is what makes a
         // truncated `meeting.wav` detectable: a file cut short keeps a zeroed header, which fails
         // `wavDuration`, so recovery falls back to the `.f32` tracks rather than trusting a short
         // file whose header claims it is complete.
-        try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
+        let headerLength = WAVWriter.headerLength(
+            dataByteCount: UInt64(max(0, totalFrames)) * 2, classicDataLimit: classicDataLimit
+        )
+        try ThrowingFileHandleIO.write(Data(repeating: 0, count: headerLength), to: output)
 
         let systemReader = try PaddedFloatReader(url: system.url, paddingFrames: systemPadding)
         let microphoneReader = try PaddedFloatReader(
@@ -118,12 +123,15 @@ public enum FloatTrackMixer {
             writtenFrames += count
         }
 
-        let dataByteCount = UInt32(clamping: writtenFrames * 2)
         try output.seek(toOffset: 0)
         try ThrowingFileHandleIO.write(
             // `sampleRate` is a `Double` parameter, so an absurd caller traps here — during
             // `stop()`, which is the most expensive moment available.
-            WAVWriter.header(sampleRate: UInt32(saturating: sampleRate), dataByteCount: dataByteCount),
+            WAVWriter.header(
+                sampleRate: UInt32(saturating: sampleRate),
+                dataByteCount64: UInt64(max(0, writtenFrames)) * 2,
+                classicDataLimit: classicDataLimit
+            ),
             to: output
         )
         return Double(writtenFrames) / sampleRate

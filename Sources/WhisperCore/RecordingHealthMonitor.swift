@@ -258,11 +258,10 @@ public final class RecordingHealthMonitor {
         if recentlyClipped(systemAudio, at: time) {
             warnings.append(.systemAudioClipping)
         }
-        // F150: measured from the monitor's own start, which is the recording's start — the same
-        // clock every other warning here uses.
-        if Self.approachingLengthLimit(elapsedSeconds: time - startedAt) {
-            warnings.append(.approachingLengthLimit)
-        }
+        // F302 retired F150's `.approachingLengthLimit` here: a recording past the classic WAV limit
+        // is now written as RF64 and stays readable, so "stop soon so the whole file stays
+        // readable" would be asking the user to act on something that is no longer true. The case
+        // and its copy remain because saved health reports from older recordings still decode it.
         if let availableStorageBytes,
            availableStorageBytes < lowStorageThresholdBytes {
             warnings.append(.lowStorage)

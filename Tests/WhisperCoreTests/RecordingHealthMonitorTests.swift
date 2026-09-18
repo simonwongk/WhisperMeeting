@@ -173,15 +173,12 @@ func lengthLimitIsDerived() {
     #expect(RecordingHealthMonitor.wavLengthLimitSeconds < 45_000)
 }
 
-@Test("The warning reaches a snapshot, so the banner can show it (F150)")
-func lengthWarningReachesTheSnapshot() {
+@Test("A very long recording is no longer warned about: RF64 keeps it readable (F302, was F150)")
+func lengthWarningIsRetired() {
     let monitor = RecordingHealthMonitor(startedAt: 0)
-    let early = monitor.snapshot(at: 60, availableStorageBytes: 500_000_000_000)
-    #expect(!early.warnings.contains(.approachingLengthLimit))
-
     let late = monitor.snapshot(
-        at: RecordingHealthMonitor.wavLengthLimitSeconds - 60,
+        at: RecordingHealthMonitor.wavLengthLimitSeconds + 3_600,
         availableStorageBytes: 500_000_000_000
     )
-    #expect(late.warnings.contains(.approachingLengthLimit))
+    #expect(!late.warnings.contains(.approachingLengthLimit))
 }

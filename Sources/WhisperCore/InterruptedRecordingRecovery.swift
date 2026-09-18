@@ -360,7 +360,9 @@ public enum InterruptedRecordingRecovery {
         defer { if !rebuildSucceeded { try? fileManager.removeItem(at: outputURL) } }
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
-        try ThrowingFileHandleIO.write(Data(repeating: 0, count: 44), to: output)
+        // 44 bytes, or 80 when the rebuild is long enough to need RF64 (F302) — matching the mixer.
+        let headerLength = WAVWriter.headerLength(dataByteCount: UInt64(max(0, totalFrames)) * 2)
+        try ThrowingFileHandleIO.write(Data(repeating: 0, count: headerLength), to: output)
 
         let readSystem = try openTrack(systemFrames > 0 ? systemURL : nil)
         let readMicrophone = try openTrack(microphoneFrames > 0 ? microphoneURL : nil)
@@ -386,7 +388,7 @@ public enum InterruptedRecordingRecovery {
             throw truncation.error
         }
 
-        let dataByteCount = UInt32(clamping: writtenFrames * 2)
+        let dataByteCount = UInt64(max(0, writtenFrames)) * 2
         try output.seek(toOffset: 0)
         try ThrowingFileHandleIO.write(
             // `WAVWriter.header`, not a local copy (F278). The header the rebuild writes must be
@@ -397,7 +399,7 @@ public enum InterruptedRecordingRecovery {
                 // Saturating, matching `FloatTrackMixer`'s identical line. Leaving one of a
                 // matched pair fixed is the F278/F282 duplication failure, so both move together.
                 sampleRate: UInt32(saturating: sampleRate),
-                dataByteCount: dataByteCount
+                dataByteCount64: dataByteCount
             ),
             to: output
         )
@@ -473,7 +475,24 @@ public enum InterruptedRecordingRecovery {
         return size / Int64(MemoryLayout<Float>.size)
     }
 
+    /// The duration of a finalized recording at `url`, or nil when it is not one. Test seam.
+    static func finalizedDuration(at url: URL) -> TimeInterval? { wavDuration(at: url) }
+
     private static func wavDuration(at url: URL) -> TimeInterval? {
+        // An RF64 recording (F302) carries its length in `ds64`, which the shared header reader
+        // understands. The same rule applies as below: a file shorter than it declares is not a
+        // finished recording.
+        if let magic = try? FileHandle(forReadingFrom: url).read(upToCount: 4),
+           String(data: magic, encoding: .ascii) == "RF64" {
+            guard let header = WAVInspection.header(at: url),
+                  let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+            else { return nil }
+            let frameBytes = UInt64(header.channels) * UInt64(header.bitsPerSample) / 8
+            let bytesPerSecond = UInt64(header.sampleRate) * frameBytes
+            guard bytesPerSecond > 0, header.declaredDataBytes > 0,
+                  UInt64(header.dataOffset) + header.declaredDataBytes <= size else { return nil }
+            return Double(header.declaredDataBytes) / Double(bytesPerSecond)
+        }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let fileSize = (attributes[.size] as? NSNumber)?.uint64Value else {
             return nil

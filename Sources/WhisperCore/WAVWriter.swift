@@ -29,6 +29,47 @@ public enum WAVWriter {
         return data
     }
 
+    /// The most PCM a classic header can describe: the RIFF size field holds `36 + data` (F302).
+    public static let classicDataLimit = UInt64(UInt32.max) - 36
+
+    /// 44 for a classic header, 80 for RF64. A streaming writer reserves this many bytes before
+    /// the audio and writes the header over them last, so it must know which it will need first.
+    public static func headerLength(
+        dataByteCount: UInt64, classicDataLimit: UInt64 = WAVWriter.classicDataLimit
+    ) -> Int {
+        dataByteCount > classicDataLimit ? 80 : 44
+    }
+
+    /// The header for `dataByteCount64` bytes of 16-bit mono PCM: the classic one whenever it can
+    /// describe them, RF64 (EBU Tech 3306) when it cannot (F302).
+    ///
+    /// RF64 is RIFF/WAVE with the two 32-bit size fields set to `0xFFFFFFFF` and the real sizes
+    /// carried as 64-bit values in a `ds64` chunk placed first. Core Audio and ffmpeg both read
+    /// it. It is written only past the limit so that every ordinary recording stays byte-identical
+    /// to what every earlier version wrote. `classicDataLimit` is a parameter so a test can cross
+    /// the boundary without writing 4 GiB.
+    public static func header(
+        sampleRate: UInt32, dataByteCount64: UInt64, classicDataLimit: UInt64 = WAVWriter.classicDataLimit
+    ) -> Data {
+        guard dataByteCount64 > classicDataLimit else {
+            return header(sampleRate: sampleRate, dataByteCount: UInt32(clamping: dataByteCount64))
+        }
+        var data = Data()
+        func ascii(_ value: String) { data.append(contentsOf: value.utf8) }
+        func le<T: FixedWidthInteger>(_ value: T) {
+            var v = value.littleEndian
+            withUnsafeBytes(of: &v) { data.append(contentsOf: $0) }
+        }
+        ascii("RF64"); le(UInt32.max); ascii("WAVE")
+        // riffSize (everything after the first 8 bytes), dataSize, sampleCount, table length.
+        ascii("ds64"); le(UInt32(28)); le(72 &+ dataByteCount64); le(dataByteCount64)
+        le(dataByteCount64 / 2); le(UInt32(0))
+        ascii("fmt "); le(UInt32(16)); le(UInt16(1)); le(UInt16(1))
+        le(sampleRate); le(sampleRate &* 2); le(UInt16(2)); le(UInt16(16))
+        ascii("data"); le(UInt32.max)
+        return data
+    }
+
     /// Little-endian Int16 samples, clamped to [-1, 1].
     public static func pcm16Data(from samples: [Float]) -> Data {
         var data = Data(capacity: samples.count * 2)

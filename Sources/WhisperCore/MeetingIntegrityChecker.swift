@@ -14,7 +14,8 @@ public enum WAVInspection {
         public let channels: UInt32
         public let sampleRate: UInt32
         public let bitsPerSample: UInt32
-        public let declaredDataBytes: UInt32
+        /// 64-bit because an RF64 recording declares more than a `UInt32` can (F302).
+        public let declaredDataBytes: UInt64
         /// Byte offset of the first audio sample — 44 for a canonical header, more when a writer
         /// inserted chunks before `data`. What "the file is long enough" has to be measured from.
         public let dataOffset: UInt32
@@ -29,13 +30,15 @@ public enum WAVInspection {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: maximumHeaderScanBytes), data.count >= 44,
-              fourCC(data, 0) == "RIFF", fourCC(data, 8) == "WAVE" else {
+              fourCC(data, 0) == "RIFF" || fourCC(data, 0) == "RF64", fourCC(data, 8) == "WAVE" else {
             return nil
         }
 
         var channels: UInt16?
         var sampleRate: UInt32?
         var bitsPerSample: UInt16?
+        // RF64 (F302): the real data size is a 64-bit field in `ds64`; the `data` chunk says 0xFFFFFFFF.
+        var rf64DataBytes: UInt64?
         var index = 12
         while index + 8 <= data.count {
             let identifier = fourCC(data, index)
@@ -45,13 +48,15 @@ public enum WAVInspection {
                 channels = le16(data, body + 2)
                 sampleRate = le32(data, body + 4)
                 bitsPerSample = le16(data, body + 14)
+            } else if identifier == "ds64", size >= 16, body + 16 <= data.count {
+                rf64DataBytes = (0..<8).reduce(UInt64(0)) { $0 | UInt64(data[data.startIndex + body + 8 + $1]) << (8 * UInt64($1)) }
             } else if identifier == "data" {
                 guard let channels, let sampleRate, let bitsPerSample else { return nil }
                 return Header(
                     channels: UInt32(channels),
                     sampleRate: sampleRate,
                     bitsPerSample: UInt32(bitsPerSample),
-                    declaredDataBytes: size,
+                    declaredDataBytes: size == UInt32.max ? (rf64DataBytes ?? UInt64(size)) : UInt64(size),
                     dataOffset: UInt32(body)
                 )
             }
@@ -135,7 +140,7 @@ public enum MeetingIntegrityChecker {
                 if let header = WAVInspection.header(at: descriptor.recordingURL) {
                     // From where the audio actually starts, not from a presumed 44 (F224): a file
                     // with a filler chunk is longer than its data chunk by more than the header.
-                    let requiredBytes = Int64(header.dataOffset) + Int64(header.declaredDataBytes)
+                    let requiredBytes = Int64(header.dataOffset) + Int64(clamping: header.declaredDataBytes)
                     if requiredBytes > actualBytes {
                         findings.append(.wavTruncated(declaredBytes: requiredBytes, actualBytes: actualBytes))
                     }
