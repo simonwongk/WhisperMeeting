@@ -28,6 +28,41 @@
     <string>WhisperMeet records your microphone so meeting participants can be transcribed.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>WhisperMeet captures system audio so remote meeting participants can be transcribed.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Audio or video recording</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.movie</string>
+            </array>
+        </dict>
+    </array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Transcribe with WhisperMeet</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>transcribeFiles</string>
+            <key>NSPortName</key>
+            <string>WhisperMeet</string>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.movie</string>
+            </array>
+        </dict>
+    </array>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

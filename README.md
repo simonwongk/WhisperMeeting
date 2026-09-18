@@ -199,6 +199,11 @@ Beyond the core record → transcribe flow:
   for a short answer built only from the top results. It is shown only if every sentence cites a
   passage on screen, it adds none of your vocabulary terms the passages lack, and it keeps their
   Chinese script; otherwise you keep the passages, which are what was said.
+- **Start from Finder or Shortcuts** — WhisperMeet opens audio and video files: right-click a
+  recording → *Open With → WhisperMeet*, drop it on the Dock icon, use Shortcuts' *Open File* action
+  with WhisperMeet, or choose *Services → Transcribe with WhisperMeet* in Finder. The file goes
+  through the same local import as the in-app importer. It never becomes the default app for your
+  audio files.
 - **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
   **Add from a Link…** button appears on the record screen. Paste a link to a single video and
   WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any

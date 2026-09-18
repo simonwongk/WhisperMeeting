@@ -54,13 +54,11 @@ One letter rather than four, because this file is already over its cap and the a
    optimum, so it stays. The run also showed names on rows under one second are usually wrong, so
    those rows now read "Unclear which voice" (F317).
 
-4. **F181 — a scope decision before any code.** Shortcuts / Finder Quick Action import. The
-   note on the ticket is right that a validation core with no App Intent calling it is dead code,
-   so this is all-or-nothing. Before "all": App Intents need the intents metadata that Xcode's
-   build step produces, and this app is built by `swift build` + `Scripts/build-app.sh`, which does
-   not run that step — so Shortcuts would not discover the action from the current pipeline. The
-   real work is a build-system change first. **Answer:** "yes, change the build" and I will
-   scope it as sub-tickets, or "later".
+4. **F181 — done without the build change, 2026-09-18; nothing needed.** App Intents cannot be
+   built here (the metadata tool is Xcode-only), so I shipped the entry points that need no such
+   step: *Open With → WhisperMeet*, Dock drops, Shortcuts' *Open File*, and a Finder service,
+   *Transcribe with WhisperMeet*. All three were run for real against a scratch library. The
+   watched folder is F318.
 
 None of these rots. Everything else on that list is closed with evidence in `TICKET_LOG.md`.
 

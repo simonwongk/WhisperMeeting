@@ -3319,6 +3319,29 @@ final class AppModel: ObservableObject {
 
     /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
     /// the UI can navigate to it. Only a single-file import adopts the typed title.
+    /// Imports files handed over from outside the app (F181), and says so when it cannot.
+    ///
+    /// `importRecording` returns nil without a word when a recording or another import is running —
+    /// fine for a button that is disabled in that state, wrong for a file the user just sent from
+    /// Finder, who would see nothing happen. Reported through `report`, so it reaches them with no
+    /// window open too.
+    func importExternalFiles(_ urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else {
+            report("Finish the current recording or import before importing \(urls.count == 1 ? urls[0].lastPathComponent : "these files").")
+            return
+        }
+        NSApp?.activate(ignoringOtherApps: true)
+        if let id = await importRecordings(from: urls, title: "") {
+            pendingNavigation = MeetingNavigationRequest(meetingID: id, seek: nil)
+        }
+    }
+
+    #if DEBUG
+    /// Test seam: the recording state is otherwise only reachable through a real capture.
+    func setRecordingStateForTesting(_ state: RecordingState) { recordingState = state }
+    #endif
+
     func importRecordings(from urls: [URL], title: String) async -> UUID? {
         // Guarded here as well as in `importRecording`, so a multi-file drop yields one message
         // instead of the same refusal repeated once per file (F187).

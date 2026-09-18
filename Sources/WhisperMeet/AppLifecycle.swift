@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WhisperCore
 
 /// The app's lifecycle work, owned by the process rather than by a window (F257).
 ///
@@ -27,6 +28,38 @@ public final class AppLifecycle: ObservableObject {
 
     /// Whether startup recovery has already run in this process.
     public private(set) var didRunStartupRecovery = false
+
+    // MARK: - Files handed over from outside (F181)
+
+    /// Import these files. Set by the `App`; files that arrive before it is set, or before startup
+    /// recovery has finished, wait in `pendingFiles`.
+    public var onOpenFiles: (([URL]) async -> Void)? {
+        didSet { Task { await deliverPendingFiles() } }
+    }
+
+    private var pendingFiles: [URL] = []
+    private var didFinishStartupRecovery = false
+    private var isDelivering = false
+
+    /// Accepts files from Finder "Open With", the Dock, Shortcuts' "Open File" or the Finder
+    /// service. Anything the importer cannot read is dropped here, before it can raise an error
+    /// about a PDF the user never meant to transcribe.
+    public func open(_ urls: [URL]) {
+        pendingFiles.append(contentsOf: ExternalFileIntake.sort(urls).importable)
+        Task { await deliverPendingFiles() }
+    }
+
+    /// Hands waiting files to the importer once it is safe to: a launch *caused by* opening a file
+    /// delivers the file before anything else has run, and importing ahead of startup recovery
+    /// could index a new meeting while recovery is still deciding what the library holds.
+    public func deliverPendingFiles() async {
+        guard didFinishStartupRecovery, !isDelivering, !pendingFiles.isEmpty, let onOpenFiles else { return }
+        isDelivering = true
+        defer { isDelivering = false }
+        let batch = pendingFiles
+        pendingFiles.removeAll()
+        await onOpenFiles(batch)
+    }
 
     private var observers: [NSObjectProtocol] = []
 
@@ -74,6 +107,8 @@ public final class AppLifecycle: ObservableObject {
         guard !didRunStartupRecovery else { return }
         didRunStartupRecovery = true
         await onStartupRecovery?()
+        didFinishStartupRecovery = true
+        await deliverPendingFiles()
     }
 }
 
@@ -93,5 +128,33 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
             lifecycle.begin()
             Task { await lifecycle.runStartupRecoveryOnce() }
         }
+        // F181: publishes "Transcribe with WhisperMeet" (declared under NSServices in Info.plist).
+        NSApp.servicesProvider = self
+    }
+
+    /// Finder "Open With", a drop on the Dock icon, and Shortcuts' "Open File" all arrive here (F181).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        MainActor.assumeIsolated { Self.pendingOrLive(urls) }
+    }
+
+    /// The Finder service's message, `transcribeFiles` in Info.plist (F181).
+    @objc func transcribeFiles(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        MainActor.assumeIsolated { Self.pendingOrLive(urls) }
+    }
+
+    /// A launch caused by opening a file calls the delegate before the `App` has published its
+    /// lifecycle, so those files are parked here and picked up when it does.
+    @MainActor private static var filesBeforeLifecycle: [URL] = []
+
+    @MainActor private static func pendingOrLive(_ urls: [URL]) {
+        if let lifecycle { lifecycle.open(urls) } else { filesBeforeLifecycle.append(contentsOf: urls) }
+    }
+
+    /// Called by the `App` right after it sets `lifecycle`.
+    @MainActor static func flushFilesOpenedBeforeLaunchFinished() {
+        guard let lifecycle, !filesBeforeLifecycle.isEmpty else { return }
+        lifecycle.open(filesBeforeLifecycle)
+        filesBeforeLifecycle.removeAll()
     }
 }

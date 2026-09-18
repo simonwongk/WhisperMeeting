@@ -80,7 +80,12 @@ struct WhisperMeetApp: App {
                     lifecycle.onStartupRecovery = { [weak model] in
                         await model?.performStartupRecovery()
                     }
+                    // F181: files from Finder, the Dock, Shortcuts or the Finder service.
+                    lifecycle.onOpenFiles = { [weak model] urls in
+                        await model?.importExternalFiles(urls)
+                    }
                     AppLifecycleDelegate.lifecycle = lifecycle
+                    AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
                     lifecycle.begin()
                     // Covers the ordering where the window's task runs AFTER launch (the ordinary
                     // case, since the delegate fires before any scene appears): the delegate's own
