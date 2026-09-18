@@ -46,6 +46,8 @@ chmod +x "$app_dir/Contents/Resources/update-yt-dlp.sh"
 cp "Scripts/summarize_local.py" "$app_dir/Contents/Resources/summarize_local.py"
 cp "Scripts/correct_local.py" "$app_dir/Contents/Resources/correct_local.py"
 cp "Scripts/refine_server.py" "$app_dir/Contents/Resources/refine_server.py"
+cp "Scripts/embed_local.py" "$app_dir/Contents/Resources/embed_local.py"
+cp "Scripts/setup-ask-embeddings.sh" "$app_dir/Contents/Resources/setup-ask-embeddings.sh"
 cp "Scripts/setup-speaker-diarization.sh" "$app_dir/Contents/Resources/setup-speaker-diarization.sh"
 chmod +x "$app_dir/Contents/Resources/setup-speaker-diarization.sh"
 # The notices are a build product, not documentation: the diarization installer reads this file from

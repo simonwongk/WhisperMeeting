@@ -35,6 +35,10 @@ Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mi
 meeting's transcript, summary and action items, regenerated automatically as they change. It is
 write-only insurance — the app never reads it back — and safe to read or copy with any editor.
 
+A folder may also hold `ask-embeddings.json` and `ask-embeddings.f32`: the search-by-meaning index
+for that meeting's transcript (numbers, not text). Like `notes.md` it is derived — delete it and the
+meeting is searched by keyword until the index is rebuilt on the next question.
+
 The meeting list, business vocabulary, replacement rules, and dictation log each have a primary and
 a previous-readable copy:
 

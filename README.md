@@ -195,6 +195,11 @@ Beyond the core record → transcribe flow:
   by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
   quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search
   (BM25) over the transcripts — nothing is uploaded, and it works in English and Mandarin.
+  With the local summary model installed you can also add **search by meaning** (one 490 MB
+  download, `intfloat/multilingual-e5-small`, MIT): a question worded differently from what was
+  said — "how much runway do we have" against "the cash lasts until October" — still finds the
+  passage. It runs on this Mac, keeps a small index beside each recording, and is merged with the
+  keyword results rather than replacing them.
   With the local summary model installed, **Write an Answer from These Passages** asks that model
   for a short answer built only from the top results. It is shown only if every sentence cites a
   passage on screen, it adds none of your vocabulary terms the passages lack, and it keeps their

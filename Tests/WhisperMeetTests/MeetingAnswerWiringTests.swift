@@ -80,7 +80,10 @@ func askViewOffersTheAnswer() throws {
     let source = try String(contentsOf: url, encoding: .utf8)
     #expect(source.contains("model.writeMeetingAnswer(question: question, passages: passages)"))
     #expect(source.contains("answerSection\n            List(results)"))
-    #expect(source.components(separatedBy: "answerOutcome = nil").count >= 3)
+    // Both ways the results can change go through `runSearch`, which clears the answer (F316 folded
+    // the scope-change path into it, so the clear lives in one place).
+    #expect(source.contains("answerOutcome = nil\n        // Keyword results appear at once"))
+    #expect(source.contains("guard hasSearched else { return }\n        runSearch()"))
 }
 
 /// The real installed model, on invented passages. Off unless asked for: it loads a 4 GB model.

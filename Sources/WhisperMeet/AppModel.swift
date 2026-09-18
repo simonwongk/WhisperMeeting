@@ -634,6 +634,7 @@ final class AppModel: ObservableObject {
         runtimeExecutableURL = whisperURL
         isQwenInstalled = qwenIsInstalled
         isSummarizerInstalled = isSummarizerModelInstalled()
+        isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
         isDiarizationInstalled = isDiarizationModelInstalled()
         hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
         refreshRecordingPreflight()
@@ -745,6 +746,7 @@ final class AppModel: ObservableObject {
         runtimeExecutableURL = findWhisperExecutable()
         isQwenInstalled = checkQwenInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
+        isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
         isDiarizationInstalled = isDiarizationModelInstalled()
     }
 
@@ -3699,6 +3701,10 @@ final class AppModel: ObservableObject {
     /// transcript-only — the tested `MeetingScopeResolver` + `MeetingRetrieval` do the work; this thin
     /// adapter just gathers the in-scope meetings from the store and hands their segments across.
     func askMeetings(query: String, scope: MeetingScope, limit: Int = 10) -> [CitedResult] {
+        MeetingRetrieval.rank(query: query, in: searchableMeetings(in: scope), limit: limit)
+    }
+
+    private func searchableMeetings(in scope: MeetingScope) -> [SearchableMeeting] {
         let inScope = store.meetings.filter { meeting in
             MeetingScopeResolver.inScope(
                 tags: meeting.tags ?? [],
@@ -3715,7 +3721,109 @@ final class AppModel: ObservableObject {
                 }
             )
         }
-        return MeetingRetrieval.rank(query: query, in: searchable, limit: limit)
+        return searchable
+    }
+
+    // MARK: - Ask Meetings: search by meaning (F316)
+
+    @Published private(set) var isAskEmbeddingInstalled = false
+    @Published private(set) var isInstallingAskEmbeddings = false
+    @Published private(set) var askEmbeddingInstallMessage: String?
+    @Published private(set) var isIndexingForAsk = false
+
+    /// Runs the embedder. Injectable so the search around it is tested without a model.
+    var askEmbedder: @Sendable (_ texts: [String], _ kind: LocalEmbedder.Kind) async throws -> (dimension: Int, vectors: [Float]) = { texts, kind in
+        guard let script = Bundle.main.url(forResource: "embed_local", withExtension: "py")
+            ?? AppModel.developmentScriptURL("embed_local.py") else { throw LocalEmbedderError.notInstalled }
+        return try await LocalEmbedder(helperScriptURL: script).embed(texts, kind: kind)
+    }
+    var isAskEmbeddingModelInstalled: @Sendable () -> Bool = { AskEmbeddingRuntime.isInstalled() }
+
+    /// Downloads the search model (announced in the UI with its size) into the local-model runtime.
+    func installAskEmbeddingModel() {
+        guard !isInstallingAskEmbeddings else { return }
+        guard let script = Bundle.main.url(forResource: "setup-ask-embeddings", withExtension: "sh")
+            ?? Self.developmentScriptURL("setup-ask-embeddings.sh") else {
+            alertMessage = "The search-model installer is missing from this build."
+            return
+        }
+        isInstallingAskEmbeddings = true
+        askEmbeddingInstallMessage = nil
+        Task {
+            let outcome = try? await ProcessGroupRunner().run(
+                executableURL: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: [script.path, LocalWhisperRuntime.managedDirectory().path],
+                environment: MediaDownloadClient.makeEnvironment(),
+                stallTimeout: 600
+            )
+            isInstallingAskEmbeddings = false
+            isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
+            if !isAskEmbeddingInstalled {
+                askEmbeddingInstallMessage = "The search model could not be installed. \(String((outcome?.output ?? "").suffix(200)))"
+            }
+        }
+    }
+
+    /// Keyword search fused with search by meaning (F316). Falls back to exactly `askMeetings` when
+    /// the model is absent or anything about it fails: meaning is an addition, never a dependency.
+    func askMeetingsByMeaning(query: String, scope: MeetingScope, limit: Int = 10) async -> [CitedResult] {
+        let lexical = askMeetings(query: query, scope: scope, limit: max(limit, 20))
+        guard isAskEmbeddingInstalled,
+              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Array(lexical.prefix(limit))
+        }
+        let searchable = searchableMeetings(in: scope).filter { !$0.segments.isEmpty }
+        do {
+            let indexed = try await askIndexes(for: searchable)
+            let question = try await askEmbedder([query], .query)
+            let semantic = SemanticRanker.rank(query: question.vectors, in: indexed, limit: max(limit, 20))
+            return RankFusion.fuse(lexical: lexical, semantic: semantic, limit: limit)
+        } catch {
+            return Array(lexical.prefix(limit))
+        }
+    }
+
+    /// Each meeting's index: read from beside its recording when it matches the transcript, built
+    /// (all missing meetings in one model run) and saved otherwise.
+    private func askIndexes(
+        for meetings: [SearchableMeeting]
+    ) async throws -> [(meeting: SearchableMeeting, index: SegmentEmbeddings)] {
+        var ready: [UUID: SegmentEmbeddings] = [:]
+        var missing: [SearchableMeeting] = []
+        for meeting in meetings {
+            let directory = store.recordingDirectoryURL(for: meeting.id)
+            if let index = SegmentEmbeddings.read(
+                from: directory, modelID: AskEmbeddingRuntime.modelID, texts: meeting.segments.map(\.text)
+            ) {
+                ready[meeting.id] = index
+            } else {
+                missing.append(meeting)
+            }
+        }
+        if !missing.isEmpty {
+            isIndexingForAsk = true
+            defer { isIndexingForAsk = false }
+            let texts = missing.flatMap { $0.segments.map(\.text) }
+            let embedded = try await askEmbedder(texts, .passage)
+            var offset = 0
+            for meeting in missing {
+                let length = meeting.segments.count * embedded.dimension
+                let index = SegmentEmbeddings(
+                    modelID: AskEmbeddingRuntime.modelID,
+                    fingerprint: SegmentEmbeddings.fingerprint(of: meeting.segments.map(\.text)),
+                    dimension: embedded.dimension,
+                    vectors: Array(embedded.vectors[offset..<(offset + length)])
+                )
+                offset += length
+                ready[meeting.id] = index
+                // A read-only library still searches by meaning; it just does not keep the index.
+                let directory = store.recordingDirectoryURL(for: meeting.id)
+                if !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) {
+                    try? index.write(to: directory)
+                }
+            }
+        }
+        return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
     }
 
     // MARK: - Ask Meetings: a written answer (F182)

@@ -2125,6 +2125,7 @@ private struct AskMeetingsView: View {
     /// The written answer for the results on screen (F182). Cleared whenever the results change.
     @State private var answerOutcome: MeetingAnswerPolicy.Outcome?
     @State private var answerTask: Task<Void, Never>?
+    @State private var searchTask: Task<Void, Never>?
 
     private var libraryTags: [String] {
         MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
@@ -2184,6 +2185,7 @@ private struct AskMeetingsView: View {
                 }
             }
 
+            meaningSearchRow
             resultsSection
         }
         .padding(32)
@@ -2256,6 +2258,34 @@ private struct AskMeetingsView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(.separator.opacity(0.55), lineWidth: 1)
             )
+        }
+    }
+
+    /// F316: search by meaning is an optional download on top of the local summary model.
+    @ViewBuilder
+    private var meaningSearchRow: some View {
+        if model.isSummarizerInstalled {
+            HStack(spacing: 8) {
+                if model.isAskEmbeddingInstalled {
+                    Label(model.isIndexingForAsk ? "Preparing your meetings for search by meaning…" : "Also searching by meaning, on this Mac",
+                          systemImage: "sparkle.magnifyingglass")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if model.isIndexingForAsk { ProgressView().controlSize(.mini) }
+                } else if model.isInstallingAskEmbeddings {
+                    ProgressView().controlSize(.small)
+                    Text("Downloading the search model…").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Keyword search only — it misses a question worded differently from what was said.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Add Search by Meaning (490 MB)") { model.installAskEmbeddingModel() }
+                        .controlSize(.small)
+                        .help("Downloads intfloat/multilingual-e5-small (MIT) from Hugging Face once. Searching then runs on this Mac; nothing about your meetings is uploaded.")
+                }
+                Spacer()
+            }
+            if let message = model.askEmbeddingInstallMessage {
+                Text(message).font(.caption).foregroundStyle(.orange)
+            }
         }
     }
 
@@ -2337,15 +2367,22 @@ private struct AskMeetingsView: View {
         hasSearched = true
         answerTask?.cancel()
         answerOutcome = nil
+        // Keyword results appear at once; with the search model installed, the fused list replaces
+        // them a moment later (F316). A newer search supersedes an older one still embedding.
         results = model.askMeetings(query: query, scope: scope)
+        searchTask?.cancel()
+        guard model.isAskEmbeddingInstalled else { return }
+        let asked = query, askedScope = scope
+        searchTask = Task {
+            let fused = await model.askMeetingsByMeaning(query: asked, scope: askedScope)
+            if !Task.isCancelled, asked == query { results = fused }
+        }
     }
 
     /// Re-run only when a search is already showing, so toggling scope before the first query is quiet.
     private func runSearchIfActive() {
         guard hasSearched else { return }
-        answerTask?.cancel()
-        answerOutcome = nil
-        results = model.askMeetings(query: query, scope: scope)
+        runSearch()
     }
 }
 
