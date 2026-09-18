@@ -185,6 +185,18 @@ def _source_text(record, item):
     return item["text"]
 
 
+def is_alteration(verdict):
+    """Whether the model changed the user's text in a way the refinement rule counts: a protected
+    term altered, the script converted, framing inserted, or content dropped. A missed planted fix
+    is the absence of a change and is reported in its own column."""
+    return bool(
+        verdict.get("altered_terms")
+        or verdict.get("script_drift")
+        or verdict.get("inserted_framing")
+        or verdict.get("dropped_content")
+    )
+
+
 def score_record(record, item, framing_phrases, guard_verdicts=None):
     """One record plus its corpus item becomes one verdict.
 
@@ -421,9 +433,13 @@ def aggregate(verdicts):
             ),
             "missed_fixes": sum(1 for verdict in measured if verdict["expected_fixes"]["missed"]),
             # An alteration the guard accepts is the refinement rule's trigger: it reaches the user.
+            # An ALTERATION — a term changed, the script converted, framing inserted, content
+            # dropped — not any flag: a missed planted fix leaves the user's own words in place,
+            # and counting it here made the first guarded run read as 17 pasted harms that were
+            # 16 missed fixes and one filler-only drop.
             "pasted_alterations": sum(
                 1 for verdict in measured
-                if verdict["flagged"] and verdict["guard"] == "accepted"
+                if verdict["guard"] == "accepted" and is_alteration(verdict)
             ),
             "core_claim_retention": core,
             "all_claim_retention": all_claims,
