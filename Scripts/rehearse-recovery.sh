@@ -84,9 +84,10 @@ print "The replaced index is still at meetings.json.before-restore, so the resto
 print ""
 
 if (( keep )); then
-  print "Kept for practice in the app. To use it, quit WhisperMeet and point it at:"
-  print "  $root"
-  print "Remove it when you are done:  rm -rf $root"
+  print "Kept for practice in the app. Quit WhisperMeet, then launch it against this library only:"
+  print "  WHISPERMEET_LIBRARY=\"$root\" /Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet"
+  print "Your real library is not opened by that process (F312). Remove it when you are done:"
+  print "  rm -rf $root"
 else
   rm -rf "$root"
   print "Removed the rehearsal directory. Re-run with --keep to practise in the app."

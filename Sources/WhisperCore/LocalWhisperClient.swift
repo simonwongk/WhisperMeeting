@@ -27,13 +27,14 @@ public enum LocalWhisperError: LocalizedError, Sendable, Equatable {
 }
 
 public struct LocalWhisperRuntime: Sendable {
-    public static func managedDirectory(applicationSupport: URL? = nil) -> URL {
-        let support = applicationSupport ?? FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return support
-            .appendingPathComponent("WhisperMeet", isDirectory: true)
+    /// `applicationSupport` is the injected seam tests and installers use and wins outright; the
+    /// process-wide `WHISPERMEET_LIBRARY` override applies only when nothing narrower was given
+    /// (F312).
+    public static func managedDirectory(
+        applicationSupport: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        libraryRoot(applicationSupport: applicationSupport, environment: environment)
             .appendingPathComponent("Runtime", isDirectory: true)
     }
 
@@ -42,14 +43,19 @@ public struct LocalWhisperRuntime: Sendable {
             .appendingPathComponent("venv/bin/whisper")
     }
 
-    public static func modelDirectory(applicationSupport: URL? = nil) -> URL {
-        let support = applicationSupport ?? FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return support
-            .appendingPathComponent("WhisperMeet", isDirectory: true)
+    public static func modelDirectory(
+        applicationSupport: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        libraryRoot(applicationSupport: applicationSupport, environment: environment)
             .appendingPathComponent("Models", isDirectory: true)
+    }
+
+    private static func libraryRoot(applicationSupport: URL?, environment: [String: String]) -> URL {
+        if let applicationSupport {
+            return applicationSupport.appendingPathComponent("WhisperMeet", isDirectory: true)
+        }
+        return WhisperMeetLibrary.root(environment: environment)
     }
 
     public static func findExecutable(applicationSupport: URL? = nil) -> URL? {

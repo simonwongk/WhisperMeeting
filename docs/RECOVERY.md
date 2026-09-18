@@ -156,6 +156,18 @@ It then performs the by-hand restore below and checks that the meetings come bac
 also tests that the documented steps still work. A runbook nobody executes is a runbook that has
 drifted; if this script fails, these instructions are wrong and that is the bug.
 
+To practise the in-app restore on the kept library, launch WhisperMeet against it and nothing else:
+
+```bash
+WHISPERMEET_LIBRARY="/path/printed/by/the/script" /Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet
+```
+
+`WHISPERMEET_LIBRARY` moves the whole library for that process — index, dictation log, `Runtime/`
+and `Models/` — so it opens the rehearsal and never your real meetings. It must be an absolute
+path; quit the ordinary copy of WhisperMeet first, or the two will each see the other as "another
+copy of WhisperMeet is open". Setting `HOME` does **not** do this: macOS resolves Application Support
+from the account, not from `HOME`.
+
 ### Restoring a past generation by hand
 
 With WhisperMeet **quit**:

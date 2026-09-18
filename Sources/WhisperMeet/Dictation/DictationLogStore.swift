@@ -64,9 +64,7 @@ import WhisperCore
     private var token: GenerationToken?
 
     init(directory: URL? = nil) {
-        let dir = directory ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("WhisperMeet", isDirectory: true)
+        let dir = directory ?? WhisperMeetLibrary.root()   // F312
         store = BackupJSONStore(
             primaryURL: dir.appendingPathComponent("dictation-log.json"),
             backupURL: dir.appendingPathComponent("dictation-log.backup.json"),

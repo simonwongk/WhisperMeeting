@@ -420,12 +420,8 @@ final class MeetingStore: ObservableObject {
     private var leaseHandle: LibraryWriterLeaseHandle?
 
     init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = 0.5) {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        self.rootDirectory = rootDirectory
-            ?? appSupport.appendingPathComponent("WhisperMeet", isDirectory: true)
+        // F312: one decision for the whole library, and one variable that can move it.
+        self.rootDirectory = rootDirectory ?? WhisperMeetLibrary.root()
         self.transcriptWriteDebounce = transcriptWriteDebounce
         meetingFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
