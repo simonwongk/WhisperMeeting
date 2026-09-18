@@ -8,7 +8,7 @@ nothing here is the only record of anything. Conventions are in
 
 ## Where to start
 
-Eight entries, which is over the cap of five — my fault, I escalated F244 when it was already at
+Seven entries, which is over the cap of five — my fault, I escalated F244 when it was already at
 six. Rather than drop one of your unanswered questions to get under the line, here they are in the
 order I would answer them. Every one is optional and nothing rots if you ignore all of them.
 
@@ -16,7 +16,6 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 |---|---|---|---|
 | 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
 | 2 | **F275** | ~15 min | Two lid-close recordings. This is the durability question you originally asked; the restart logic is tested, but no test can prove a real lid close behaves the way the tests assume. |
-| 3 | **F288** | ~2 min | One look at Settings → Library. The backup restore is built and tested; nobody has confirmed the screen renders, and an unreachable restore is not a restore. |
 | 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Worth doing *with* row 2 — a recording that ends because the capture died now goes through the notification channel too, so one lid close exercises both. |
 | 5 | **F239** | one decision | Should deleting a meeting also shred it from the index history? My recommendation is in the entry (opt-in). Pure preference — there is no wrong answer. |
 | 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
@@ -262,34 +261,13 @@ was not authorised.
 
 ---
 
-## F288 — Confirm the restore screen renders and reads well
+## F288 — Confirm the restore screen renders and reads well — **done without you, 2026-09-17**
 
-**Status:** the whole backup-restore mechanism is shipped and tested — plan, verification, apply,
-rollback, folder rebuild. This is the one part no test in this repo can reach.
-
-**What I need from you:** one look at Settings → Library, a couple of minutes.
-
-The `WhisperMeet` target has no UI test harness (F174's standing reason), so every string, the plan,
-the apply and the rollback are unit-tested and *that the button exists on screen* is not. Three
-things to check by eye:
-
-1. **"Restore…" appears** beside "Back up library…", and the caption beneath the backup description
-   reads sensibly next to it.
-2. **Choosing a dated folder** inside `WhisperMeet Backups` brings up the confirmation, and its text
-   is readable. It should lead with how many files are in your library but *not* in that backup,
-   then the replace/restore counts, then that your current library is copied aside and kept.
-3. **Choosing something that is not a backup generation** — the `WhisperMeet Backups` folder itself,
-   or any unrelated folder — gives a sensible refusal rather than an odd-looking empty plan.
-
-**It is safe to try, and that is asserted rather than promised.** Requesting a restore writes
-nothing: a test compares both the library and the backup byte-for-byte before and after a plan is
-built, including under the slow deep check. Open the confirmation and cancel it as often as you
-like. To exercise it on synthetic data instead of your own library,
-`Scripts/rehearse-recovery.sh` builds a damaged library in a temp directory and touches nothing of
-yours.
-
-If you would rather not, F191 stays `partial` with the mechanism tested and the screen unconfirmed.
-Nothing else depends on it.
+F312 made it possible to run a scratch copy of the app on a throwaway library, so the three checks
+in this letter were done on screen by whisper-37. Two passed; the third — choosing the
+`WhisperMeet Backups` folder itself — was *not* refused and offered "Restore Anyway" on a plan that
+would have copied the wrong folder into the library. Fixed in `2c3af46` and re-checked. Nothing is
+needed from you; the record is `F288` in `TICKET_LOG.md`.
 
 ---
 
