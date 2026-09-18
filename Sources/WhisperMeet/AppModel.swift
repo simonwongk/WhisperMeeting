@@ -396,6 +396,76 @@ final class AppModel: ObservableObject {
     }
     static let linkImportEnabledKey = "linkImportEnabled"
 
+    // MARK: - Watched folder (F318)
+
+    /// Off by default. When on, new finished recordings dropped into `watchedFolderPath` are
+    /// imported like any other file. It never records, and never touches what was already there.
+    @Published var watchedFolderEnabled: Bool {
+        didSet {
+            defaults.set(watchedFolderEnabled, forKey: Self.watchedFolderEnabledKey)
+            restartWatchedFolder()
+        }
+    }
+    @Published var watchedFolderPath: String? {
+        didSet {
+            defaults.set(watchedFolderPath, forKey: Self.watchedFolderPathKey)
+            restartWatchedFolder()
+        }
+    }
+    static let watchedFolderEnabledKey = "watchedFolderEnabled"
+    static let watchedFolderPathKey = "watchedFolderPath"
+    static let watchedFolderLastLookKey = "watchedFolderLastLook"
+
+    /// When this folder was last looked at, or nil if it never was.
+    ///
+    /// Stored as `[folder: date]` so the date can only ever be read for the folder it was written
+    /// for. The first version cleared a bare date in `watchedFolderPath`'s `didSet` — which also
+    /// fires when `init` loads the saved path, because `@Published` assignments in `init` go through
+    /// the setter. So every launch forgot the last look, and a recording dropped while the app was
+    /// closed was filed under "already there". Found on a real relaunch, not by the unit tests.
+    static func watchedFolderLastLook(for path: String, in defaults: UserDefaults) -> Date? {
+        (defaults.dictionary(forKey: watchedFolderLastLookKey) as? [String: Date])?[path]
+    }
+
+    private let watchedFolderMonitor = WatchedFolderMonitor()
+    /// Finished files waiting for the app to be free. A file that arrives mid-recording is kept and
+    /// imported afterwards — the inbox hands each file over once, so dropping it here would lose it.
+    private(set) var pendingWatchedFiles: [URL] = []
+
+    /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
+    /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
+    func restartWatchedFolder() {
+        guard didPerformStartupRecovery, watchedFolderEnabled, let path = watchedFolderPath, !path.isEmpty else {
+            watchedFolderMonitor.stop()
+            return
+        }
+        let lastLook = Self.watchedFolderLastLook(for: path, in: defaults)
+        watchedFolderMonitor.start(folder: URL(fileURLWithPath: path, isDirectory: true), lastLook: lastLook) { [weak self] now, ready in
+            self?.watchedFolderLooked(at: now, ready: ready)
+        }
+    }
+
+    func watchedFolderLooked(at safeLastLook: Date, ready: [URL]) {
+        pendingWatchedFiles.append(contentsOf: ready)
+        // The saved date only moves while nothing is waiting: a file held back by a recording
+        // lives in memory, so quitting now must leave it "new" for the next launch.
+        if pendingWatchedFiles.isEmpty, let path = watchedFolderPath {
+            defaults.set([path: safeLastLook], forKey: Self.watchedFolderLastLookKey)
+        }
+        guard !pendingWatchedFiles.isEmpty, recordingState == .idle, !isImporting, !isPreflightTestActive,
+              !isInstallingRecognitionRuntime else { return }
+        let batch = pendingWatchedFiles
+        pendingWatchedFiles.removeAll()
+        let names = batch.map(\.lastPathComponent).joined(separator: ", ")
+        // Said before the import starts, window or no window: the user did not press anything.
+        // `NSApp` is nil in a headless test process, where `UNUserNotificationCenter.current()`
+        // aborts — the same guard `postWindowlessAlert` uses.
+        if NSApp != nil {
+            Self.deliverNotification(title: "WhisperMeet", body: "Importing from your watched folder: \(names)")
+        }
+        Task { _ = await importRecordings(from: batch, title: "") }
+    }
+
     /// Above this, a link download asks for explicit confirmation before starting.
     static let longMediaDurationThreshold: TimeInterval = 2 * 3_600
 
@@ -558,6 +628,8 @@ final class AppModel: ObservableObject {
         ) ?? .local
         // Off unless the user has explicitly turned it on (F183).
         linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
+        watchedFolderEnabled = defaults.bool(forKey: Self.watchedFolderEnabledKey)
+        watchedFolderPath = defaults.string(forKey: Self.watchedFolderPathKey)
         // Reuse the probes already run above rather than hitting the filesystem twice.
         runtimeExecutableURL = whisperURL
         isQwenInstalled = qwenIsInstalled
@@ -1774,6 +1846,8 @@ final class AppModel: ObservableObject {
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
+        // F318: the watched folder starts only once everything below has settled the library.
+        defer { restartWatchedFolder() }
         // F257: idempotent, and started here because this is the one method that runs once per
         // launch regardless of window state now that `AppLifecycle` owns the call.
         observeStorageErrors()

@@ -204,6 +204,11 @@ Beyond the core record → transcribe flow:
   with WhisperMeet, or choose *Services → Transcribe with WhisperMeet* in Finder. The file goes
   through the same local import as the in-app importer. It never becomes the default app for your
   audio files.
+- **Watched folder (opt-in, off by default)** — in Settings, choose a folder and WhisperMeet imports
+  each new recording you add to it once the file has finished copying, with a notification first.
+  Files already in the folder are left alone, originals are never moved or deleted, a file that
+  arrives during a recording waits until it ends, and one dropped while the app was closed is picked
+  up at the next launch. It never records on its own.
 - **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
   **Add from a Link…** button appears on the record screen. Paste a link to a single video and
   WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any

@@ -14,7 +14,7 @@ public enum ExternalFileIntake {
         return (importable, rejected)
     }
 
-    static func isImportable(_ url: URL) -> Bool {
+    public static func isImportable(_ url: URL) -> Bool {
         guard url.isFileURL, !url.pathExtension.isEmpty,
               let type = UTType(filenameExtension: url.pathExtension) else { return false }
         return type.conforms(to: .audio) || type.conforms(to: .movie) || type.conforms(to: .audiovisualContent)

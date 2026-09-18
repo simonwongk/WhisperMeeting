@@ -1836,6 +1836,26 @@ struct SettingsView: View {
                 }
             }
 
+            // F318 — a watched folder is opt-in: nothing is imported that the user did not put there
+            // after turning this on.
+            Section("Watched Folder") {
+                Toggle("Import new recordings from a folder", isOn: $model.watchedFolderEnabled)
+                Text("Off by default. When on, a recording you add to the folder is imported and transcribed on this Mac once it has finished copying, and a notification says so first. Files already in the folder are left alone, the originals are never moved or deleted, and WhisperMeet never records on its own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.watchedFolderEnabled {
+                    HStack {
+                        Text(model.watchedFolderPath.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "No folder chosen")
+                            .foregroundStyle(model.watchedFolderPath == nil ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Choose Folder…") { chooseWatchedFolder() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+            }
+
             // F183 — link import is opt-in, like every other capability here that crosses a boundary.
             Section("Import from a Link") {
                 Toggle("Allow importing audio from a link", isOn: $model.linkImportEnabled)
@@ -1910,6 +1930,17 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? Data(model.diagnosticsJSON().utf8).write(to: url)
+    }
+
+    private func chooseWatchedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Watch This Folder"
+        panel.message = "Recordings you add to this folder from now on will be imported."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.watchedFolderPath = url.path
     }
 
     private func backUpLibrary() {
