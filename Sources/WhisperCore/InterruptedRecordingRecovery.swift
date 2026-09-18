@@ -91,6 +91,26 @@ public enum InterruptedRecordingRecovery {
         }
     }
 
+    /// Whether ONE folder may be rebuilt, given what its capture lock says and what the lease says
+    /// (F297). The per-folder answer, layered on the per-library one above rather than replacing it:
+    ///
+    /// - a live writer is refused whatever the lease says — a refusal F255's gate could not make,
+    ///   since it never asked about the folder;
+    /// - a lock the writer provably no longer holds vouches for the folder, so it is rebuilt even
+    ///   under a rival lease — the case F255 recorded as its accepted trade-off;
+    /// - no lock file, or no working `flock`, is no evidence either way, and the F255 rule decides
+    ///   exactly as before. This is what keeps F279's ordering: an unforeseen probe failure degrades
+    ///   to a deferred recovery, never to a rebuild of a live folder.
+    public static func mayRebuild(
+        folder probe: RecordingCaptureLock.Probe, lease: StoreWriterLease
+    ) -> Bool {
+        switch probe {
+        case .heldByLiveWriter: return false
+        case .released: return true
+        case .noLockFile, .unavailable: return mayRebuildInterruptedRecordings(lease)
+        }
+    }
+
     /// Removes a recording directory only when it contains no entries at all.
     @discardableResult
     public static func removeIfEmpty(in directory: URL) throws -> Bool {

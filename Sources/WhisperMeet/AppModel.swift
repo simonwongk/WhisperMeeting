@@ -468,6 +468,12 @@ final class AppModel: ObservableObject {
     private var transcriptionSettings = TranscriptionSelectionStore()
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
     private var didPerformStartupRecovery = false
+    /// The live capture's claim on its own folder (F297): an exclusive `flock` on `capture.lock`,
+    /// held from the moment the folder exists until the recording is indexed or discarded. A
+    /// second instance's startup sweep asks the kernel whether this is held, and that — not the
+    /// library-wide lease — is how it tells a recording in progress from one that crashed.
+    /// Advisory: nil when the lock could not be taken, and recording proceeds regardless.
+    private var captureLock: RecordingCaptureLock.Handle?
     private var isDictationActive: () -> Bool = { false }
     /// AppEntry wires this to `DictationController.releaseIdleModelsForMeetingTranscription`.
     /// Kept as a headless seam so tests can prove the release completes before an engine starts.
@@ -1801,14 +1807,44 @@ final class AppModel: ObservableObject {
             // where this instance is recovering its OWN folder after its own finalization failed —
             // and since nothing gates `startRecording` on the lease, that instance may well not hold
             // it. Gating the function instead of the loop would break exactly that case.
-            let mayRebuild = store.mayRebuildInterruptedRecordings
+            let lease = store.writerLease
             // Asked even when the gate is shut, so the notice below is about folders that actually
             // exist. `orphanedRecordings()` is a pure read-and-report — that is the stated reason
             // the gate is not inside it — so calling it while refusing to act on it is safe.
             // Without this, opening a second copy over a perfectly clean library told the user to
             // quit and relaunch to finish recovering nothing, on every launch.
             let orphans = try store.orphanedRecordings()
-            if !mayRebuild, !orphans.isEmpty {
+            // F297: the lease answers "is another copy open"; the folder's own capture lock answers
+            // "is THIS folder's writer alive", and the kernel answers it — a crashed writer's lock
+            // is free, a live one's is held. So a recording that crashed in one instance is
+            // rebuilt even while another copy is open, which F255 had recorded as its accepted
+            // trade-off; a folder whose writer is alive is refused even when the lease says go,
+            // which F255 could not do; and a folder with no lock file (a build before this one)
+            // is decided by the lease exactly as before. `mayRebuild(folder:lease:)` is that rule.
+            //
+            // A free lock is TAKEN here and held through the rebuild below, so a third instance
+            // probing the same folder meanwhile sees a live holder rather than joining in.
+            var live: Set<URL> = []
+            var probeLocks: [URL: RecordingCaptureLock.Handle] = [:]
+            var candidates: [OrphanedRecording] = []
+            var deferredForLease = 0
+            for orphan in orphans {
+                let probe = RecordingCaptureLock.probe(in: orphan.directory)
+                if case .released(let handle) = probe { probeLocks[orphan.directory] = handle }
+                if case .heldByLiveWriter = probe {
+                    // Kept among the candidates so the "still in progress" notice below covers it,
+                    // and in `live` so the loop never touches it.
+                    live.insert(orphan.directory)
+                    candidates.append(orphan)
+                } else if InterruptedRecordingRecovery.mayRebuild(folder: probe, lease: lease) {
+                    candidates.append(orphan)
+                } else {
+                    deferredForLease += 1
+                }
+            }
+            if deferredForLease > 0 {
+                // Only about folders the lease actually deferred. Before F297 this named the other
+                // copy for every orphan, including the user's own crashed recording.
                 messages.append(
                     "Another copy of WhisperMeet is open, so interrupted recordings were left untouched. Your audio is safe where it is. Quit the other copy and reopen WhisperMeet to finish recovering them."
                 )
@@ -1825,9 +1861,8 @@ final class AppModel: ObservableObject {
             // nothing looks orphaned — which is the normal case, so this costs launches nothing.
             // An ADDITIONAL refusal, never a replacement for the lease gate: if the probe is wrong
             // in some case nobody has thought of, the failure is a deferred recovery rather than a
-            // re-run of F255.
-            var live: Set<URL> = []
-            let candidates = mayRebuild ? orphans : []
+            // re-run of F255. (F297's capture lock is the same kind of thing — it adds a refusal,
+            // and vouches only for a folder it has positive evidence about — so the two stack.)
             if !candidates.isEmpty {
                 // F283: a capture inside an outage it intends to resume is NOT growing, because
                 // nothing is capturing — that is what the gap is. Growth alone therefore reads a
@@ -2094,6 +2129,16 @@ final class AppModel: ObservableObject {
                     messages.append(recoveryWarning)
                 }
             }
+            // F297: let go of every lock the probe took. The file goes too for a folder that is
+            // now indexed — it no longer looks crashed, because it no longer is. A folder still
+            // orphaned after the sweep keeps its file: it is the evidence that lets the NEXT
+            // launch rebuild it under a rival lease, and a 0-byte file costs nothing to keep.
+            for (directory, handle) in probeLocks {
+                let indexed = orphans.contains { orphan in
+                    orphan.directory == directory && store.meeting(id: orphan.id) != nil
+                }
+                handle.release(removingFile: indexed)
+            }
         } catch {
             messages.append(
                 "WhisperMeet could not finish scanning interrupted recordings. Existing recording folders were not changed. \(error.localizedDescription)"
@@ -2343,6 +2388,9 @@ final class AppModel: ObservableObject {
         let directory = store.recordingDirectoryURL(for: id)
         do {
             _ = try store.recordingDirectory(for: id)
+            // F297: claim the folder before a single sample is written to it, so there is no
+            // window in which it exists, looks interrupted, and nobody vouches for it.
+            captureLock = RecordingCaptureLock.acquire(in: directory)
             try await recorder.start(in: directory) { [weak self] snapshot in
                 Task { @MainActor [weak self] in
                     guard let self,
@@ -2385,6 +2433,8 @@ final class AppModel: ObservableObject {
             recordingHealth = nil
             recordingMeter.reset()
             refreshRecordingPreflight()
+            // The lock file first, or `removeIfEmpty` would find the folder non-empty (F297).
+            releaseCaptureLock(removingFile: true)
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
             alertMessage = error.localizedDescription
         }
@@ -2416,6 +2466,8 @@ final class AppModel: ObservableObject {
             recordingHealth = nil
             recordingMeter.reset()
             refreshRecordingPreflight()
+            // Indexed, so the folder no longer needs vouching for (F297).
+            releaseCaptureLock(removingFile: true)
 
             refreshRuntime()
             if isSelectedEngineInstalled {
@@ -2432,6 +2484,11 @@ final class AppModel: ObservableObject {
             recordingHealth = nil
             recordingMeter.reset()
             refreshRecordingPreflight()
+            // F297: the lock is released on every exit below. The FILE is kept unless this
+            // instance indexes the folder itself: a folder left for a later launch keeps the
+            // evidence that its writer is gone, which is what lets that launch rebuild it even
+            // while another copy of the app is open.
+            defer { releaseCaptureLock(removingFile: store.meeting(id: id) != nil) }
             do {
                 // Through the same seam the orphan sweep uses. It was calling the type directly,
                 // which is why this branch — the one that runs when the user's own stop fails —
@@ -2488,6 +2545,12 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Lets go of the live capture's folder lock (F297). Idempotent; a nil lock is a no-op.
+    private func releaseCaptureLock(removingFile: Bool) {
+        captureLock?.release(removingFile: removingFile)
+        captureLock = nil
+    }
+
     /// Presents the discard-recording confirmation. Owned by the model so both the in-window button and
     /// the ⌘ Cancel command route through the SAME confirmation, and never prompt when nothing is being
     /// recorded (F139).
@@ -2510,6 +2573,9 @@ final class AppModel: ObservableObject {
         // can't race/corrupt a simultaneous Stop (F139).
         guard canCancelRecording else { return }
         stopObservingSystemSleep()   // F253
+        // Before the engine removes the folder, so nothing is held on a directory being deleted
+        // (F297).
+        releaseCaptureLock(removingFile: true)
         await recorder.cancel()
         recordingState = .idle
         activeMeetingID = nil

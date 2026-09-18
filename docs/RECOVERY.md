@@ -19,6 +19,14 @@ A normally completed recording contains:
 - `microphone-audio.f32` — the original microphone track.
 - `source-tracks.json` — timing and format information for the source tracks.
 
+A folder from an interrupted recording may also hold a 0-byte `capture.lock`. Like `.writer.lock`
+below, it is not a stale lock: the recording app holds it in an open file descriptor for as long as
+it is capturing, and the kernel releases it when that process dies. It is how a second copy of
+WhisperMeet tells a recording that is still in progress (lock held: left alone) from one that
+crashed (lock free: rebuilt, even while the other copy is open). It is removed once the meeting is
+indexed, and is safe to delete by hand — the folder is then treated as it was before the file
+existed, which is to say left alone while another copy of the app is open.
+
 Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mirroring that
 meeting's transcript, summary and action items, regenerated automatically as they change. It is
 write-only insurance — the app never reads it back — and safe to read or copy with any editor.
