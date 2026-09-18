@@ -213,15 +213,15 @@ Recovery protects against errors and interruptions. It does not override an expl
 
 Copy the recording folder first if either action should remain reversible.
 
-**A deleted meeting's text is not erased immediately (F190).** Deleting a meeting removes its
-recording folder straight away, but the *index* generations kept under `meetings.history/` still
-contain that meeting's title, transcript, notes and summary until they age out. The window is
-bounded — the newest few saves plus an hourly, daily and weekly position — so the longest a deleted
-meeting's text normally survives is about a week. One exception has no time bound: the generation
-holding the most meetings is pinned indefinitely, because it is the last line of defence against a
-library-wiping bug, so if that happens to be a generation from before your deletion, the text stays
-until a larger generation replaces it.
+**A deleted meeting's text is erased from the saved history a week later (F295).** Deleting a
+meeting removes its recording folder straight away. Its title, transcript, notes and summary stay in
+the backup copy and the index generations under `meetings.history/` for one week — the same window
+the recovery list covers — so a mistaken or runaway delete can still be undone by restoring an
+earlier generation. After that week (checked at each launch and after each delete) every generation
+that held the meeting is re-recorded without it under a new name, and the backup copy is rotated;
+generations that never held it are not touched, so the ability to undo a bad save is kept for every
+other meeting. The queue of pending deletions is `meetings.pending-shred.json`.
 
-The audio is gone at once either way. To remove the text too, quit WhisperMeet and delete
-`meetings.history/`; the library opens normally without it. A built-in command for this is tracked
-as **F239**.
+If the shred cannot complete (a permission error on the history directory, say), the meeting is still
+deleted and the app says so; *Forget History* in Settings → Meeting library removes the whole saved
+history at once, and quitting WhisperMeet and deleting `meetings.history/` by hand does the same.

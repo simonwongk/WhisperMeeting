@@ -100,6 +100,15 @@ private struct RefinementRun: Decodable {
 
     struct Input: Decodable { let text: String }
     struct Output: Decodable { let text: String? }
+    /// The corpus item's protected terms, written by `run_fidelity.py` beside each record (F245).
+    /// Optional so a run recorded before the field existed still decodes; it is then judged
+    /// without the term guard, which is what the app did at the time.
+    let protectedTerms: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, input, output, error
+        case protectedTerms = "protected_terms"
+    }
 }
 
 private struct GuardVerdict: Encodable, Equatable {
@@ -119,7 +128,9 @@ private func guardVerdicts(for records: [RefinementRun]) -> [String: GuardVerdic
             verdicts[record.id] = GuardVerdict(status: "error", delivered: nil)
             continue
         }
-        if let delivered = DictationRefinePolicy.acceptedOutput(text, input: record.input.text) {
+        if let delivered = DictationRefinePolicy.acceptedOutput(
+            text, input: record.input.text, protectedTerms: record.protectedTerms ?? []
+        ) {
             verdicts[record.id] = GuardVerdict(status: "accepted", delivered: delivered)
         } else {
             verdicts[record.id] = GuardVerdict(status: "rejected", delivered: nil)
@@ -175,6 +186,19 @@ func guardVerdictForAnErroredRecord() throws {
     let verdicts = guardVerdicts(for: runs)
     #expect(verdicts["c"]?.status == "error")
     #expect(verdicts["d"]?.status == "error")
+}
+
+@Test("The emitter applies the protected-term guard to a record that carries terms (F245)")
+func emitterAppliesTheTermGuardToARecord() throws {
+    // F245: the record's protected terms are the corpus item's; a rename of one is rejected by
+    // the same guard the app runs, so the bench's "Pasted" column can see the new refusal.
+    let runs = try decodeRuns("""
+    {"id":"t","input":{"text":"um the Kestrel release ships tuesday"},"output":{"text":"The Kestral release ships Tuesday."},"error":null,"protected_terms":["Kestrel"]}
+    {"id":"u","input":{"text":"um the Kestrel release ships tuesday"},"output":{"text":"The Kestral release ships Tuesday."},"error":null}
+    """)
+    let verdicts = guardVerdicts(for: runs)
+    #expect(verdicts["t"]?.status == "rejected")
+    #expect(verdicts["u"]?.status == "accepted", "without a term list the guard behaves as before")
 }
 
 @Test("The emitter writes verdicts beside a run's records when asked (F291)")

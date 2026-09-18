@@ -930,6 +930,9 @@ final class MeetingStore: ObservableObject {
                 return
             }
             storageErrorMessage = "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
+            // Removed from the list is still deleted, and its text goes with it (F295). The message
+            // above is kept: `shredFromHistory` only speaks on its own failure.
+            shredFromHistory([id])
             return
         }
         // Persist the removal BEFORE destroying the audio it references. The old order deleted the
@@ -962,6 +965,86 @@ final class MeetingStore: ObservableObject {
             return
         }
         storageErrorMessage = nil
+        shredFromHistory([id])
+        processPendingShreds()
+    }
+
+    /// Delete means delete, after a grace window (F295).
+    ///
+    /// A deleted meeting's text used to stay in the retained index generations until they aged
+    /// out — indefinitely in the high-water generation — which is a privacy expectation the app
+    /// broke quietly. It is now scrubbed from every generation and from the backup copy, but not
+    /// at once: a deletion is queued, and `processPendingShreds` rewrites the history once the
+    /// deletion is older than `shredGracePeriod`. That window is the retention policy's own oldest
+    /// anchor, a week, so the undo protection F190 exists for — the 2026-08-14 wipe, or a
+    /// select-all-and-delete — is intact for exactly as long as the recovery list would have offered
+    /// it, and after that the text is gone rather than pinned forever. *Forget History* remains the
+    /// immediate option. Decided 2026-09-17 under the user's delegation; the immediate variant was
+    /// tried first and `restoringAGenerationBringsTheLibraryBack` showed what it gave up.
+    static let shredGracePeriod: TimeInterval = 604_800
+
+    private var pendingShredURL: URL {
+        rootDirectory.appendingPathComponent("meetings.pending-shred.json")
+    }
+
+    /// Deleted ids awaiting their shred, keyed by the epoch second of the deletion.
+    private(set) var pendingShreds: [UUID: Int] {
+        get {
+            guard let data = try? Data(contentsOf: pendingShredURL),
+                  let raw = try? JSONDecoder().decode([String: Int].self, from: data)
+            else { return [:] }
+            return Dictionary(uniqueKeysWithValues: raw.compactMap { key, value in
+                UUID(uuidString: key).map { ($0, value) }
+            })
+        }
+        set {
+            let raw = Dictionary(uniqueKeysWithValues: newValue.map { ($0.key.uuidString, $0.value) })
+            if raw.isEmpty {
+                try? FileManager.default.removeItem(at: pendingShredURL)
+            } else if let data = try? JSONEncoder().encode(raw) {
+                try? data.write(to: pendingShredURL, options: .atomic)
+            }
+        }
+    }
+
+    /// Queues the ids for their shred. Never undoes the deletion, and never fails it: the queue file
+    /// is best-effort, and a deletion whose queue write is lost is a deletion whose text ages out as
+    /// it did before F295, which is the state we are improving on, not a regression from it.
+    private func shredFromHistory(_ ids: [UUID], now: Int = Int(Date().timeIntervalSince1970)) {
+        var pending = pendingShreds
+        for id in ids { pending[id] = now }
+        pendingShreds = pending
+    }
+
+    /// Shreds every queued deletion older than the grace window from the retained history and the
+    /// backup copy. Idempotent; called at launch by `performStartupRecovery` and after each delete.
+    /// Returns the ids shredded.
+    @discardableResult
+    func processPendingShreds(now: Int = Int(Date().timeIntervalSince1970)) -> [UUID] {
+        guard !isDegraded else { return [] }   // F187: no rewrite of a library we could not read
+        let pending = pendingShreds
+        let due = pending.filter { now - $0.value >= Int(Self.shredGracePeriod) }.map(\.key)
+        guard !due.isEmpty else { return [] }
+        let gone = Set(due)
+        do {
+            let rewritten = try meetingFiles.rewriteHistory { records in
+                let kept = records.filter { !gone.contains($0.id) }
+                return kept.count == records.count ? nil : kept
+            }
+            if !rewritten.isEmpty {
+                // `rewriteHistory` ended with an ordinary save of the live value to rotate the
+                // backup; adopt its generation so the next save's compare-and-swap sees it.
+                if let current = try? meetingFiles.load() { meetingsToken = current.token }
+                persistCommitCount += 1
+            }
+            var remaining = pending
+            for id in due { remaining.removeValue(forKey: id) }
+            pendingShreds = remaining
+            return due
+        } catch {
+            storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes all of it."
+            return []
+        }
     }
 
     /// Deletes several meetings in one pass: one read-only check, one index write. Looping
@@ -1005,12 +1088,16 @@ final class MeetingStore: ObservableObject {
         }
         let removing = Set(removed)
         meetings.removeAll { removing.contains($0.id) }
-        persistMeetings()
+        let persisted = persistMeetings()
         // After `persistMeetings()`, which clears `storageErrorMessage` on a successful write.
         if !keptTitles.isEmpty {
             storageErrorMessage = Self.batchDeleteFailureMessage(keptTitles)
         } else if escapedLibrary {
             storageErrorMessage = "One or more meetings had a recording path outside the library, so no files were deleted from disk for them; they were removed from the list."
+        }
+        if persisted, !removed.isEmpty {
+            shredFromHistory(removed)
+            processPendingShreds()
         }
         return removed
     }

@@ -1650,7 +1650,7 @@ struct SettingsView: View {
                     Button("Forget History…", role: .destructive) { confirmForgetHistory = true }
                         .buttonStyle(.bordered)
                 }
-                Text("Deleting a meeting removes its recording straight away, but its title, transcript and notes stay in the saved index history that lets WhisperMeet undo a bad save. This removes that history now instead of waiting for it to age out. Your meetings and recordings are not touched.")
+                Text("Deleting a meeting removes its recording at once; its title, transcript and notes are removed from the saved index history a week later, so a mistaken delete can still be undone in between. This removes that whole history now — every past copy of the index — without waiting. Your meetings and recordings are not touched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let forgotten = forgetHistoryResult {

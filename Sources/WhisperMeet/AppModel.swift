@@ -1794,6 +1794,8 @@ final class AppModel: ObservableObject {
         // text survives even an index loss (F198). Idempotent: an up-to-date library writes nothing.
         // Awaited, but the sweep itself runs detached off the main actor — see the store.
         await store.backfillNotesSidecars()
+        // F295: deletions older than the grace window lose their text from the saved history.
+        store.processPendingShreds()
 
         do {
             let recover = recoverInterruptedRecording

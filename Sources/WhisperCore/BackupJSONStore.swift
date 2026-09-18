@@ -728,6 +728,95 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         try history.forgetAll()
     }
 
+    /// The verified bytes of a retained generation (F295's tests read them back; `restore` uses
+    /// the same path). Refuses a file whose bytes no longer match its name.
+    public func data(of generation: RetainedGeneration) throws -> Data {
+        try history.data(of: generation)
+    }
+
+    /// Re-records every retained generation and conflict branch whose value `transform` changes
+    /// (F295): delete means delete, per meeting.
+    ///
+    /// `transform` returns nil for a generation to leave alone and the replacement value
+    /// otherwise. A changed generation is written under a NEW content-addressed name with the
+    /// SAME sequence — the name is the fingerprint, so editing in place would make every file a
+    /// liar — through a temp name and a rename, and the old file is removed only after the new one
+    /// is in place. The ledger's records follow (fingerprint, byte count, record count, name), so
+    /// the recovery list keeps its counts and dates. A generation that cannot be read or whose
+    /// bytes do not match its name is left for the user, as F236 leaves it in the list.
+    ///
+    /// The backup copy is the previous generation and holds the same text, so when anything was
+    /// rewritten the live value is saved once more: that rotates the post-deletion primary into
+    /// the backup through the ordinary algorithm, never by writing the backup directly.
+    ///
+    /// **What this costs**, stated because F239 refused to decide it silently: for the deleted
+    /// record only, the undo protection is gone — restoring an older generation no longer brings
+    /// it back. For every other record every generation is intact, which is the difference between
+    /// this and `forgetHistory`.
+    @discardableResult
+    public func rewriteHistory(_ transform: (Value) -> Value?) throws -> [String] {
+        let directory = history.directoryURL
+        guard io.isDirectory(directory) == true else { return [] }
+        let names = (try? io.contentsOfDirectory(directory, .listHistory)) ?? []
+        var ledger = StoreLedger.read(at: ledgerURL, using: io)
+        var rewritten: [String] = []
+        for name in names {
+            let oldFingerprint: String
+            let renamed: (String) -> String
+            if let parsed = StoreHistory.parse(name) {
+                oldFingerprint = parsed.fingerprint
+                let sequence = parsed.sequence
+                renamed = { StoreHistory.name(generation: sequence, fingerprint: $0) }
+            } else if let parsed = Self.conflictBranchName(name) {
+                oldFingerprint = parsed.fingerprint
+                // `conflict-<sequence>-<writer>-<fingerprint>.json`: only the fingerprint moves.
+                let stem = String(name.dropLast(5 + oldFingerprint.count))
+                renamed = { stem + $0 + ".json" }
+            } else {
+                continue
+            }
+            let url = directory.appendingPathComponent(name)
+            guard let bytes = try? io.read(url, .readHistoryEntry),
+                  io.fingerprint(bytes) == oldFingerprint,
+                  let value = try? decoder.decode(Value.self, from: bytes),
+                  let replacement = transform(value)
+            else { continue }
+            let newData = try encoder.encode(replacement)
+            let newFingerprint = io.fingerprint(newData)
+            let newName = renamed(newFingerprint)
+            // `.shred-` never parses as a generation, so a process death here leaves something
+            // inert rather than something the recovery list would offer (the `heal` rule).
+            let temporary = directory.appendingPathComponent("\(newName).shred-\(UUID().uuidString)")
+            try io.writeAtomically(newData, temporary, .stage)
+            try io.rename(temporary, directory.appendingPathComponent(newName), .retain)
+            if newName != name { try io.remove(url, .prune) }
+            if var updated = ledger {
+                func follow(_ record: inout StoreLedger.Record) {
+                    guard record.fingerprint == oldFingerprint else { return }
+                    record.fingerprint = newFingerprint
+                    record.byteCount = newData.count
+                    record.recordCount = recordCount?(replacement)
+                    if record.historyName == name { record.historyName = newName }
+                }
+                follow(&updated.current)
+                if updated.previous != nil { follow(&updated.previous!) }
+                for index in updated.history.indices { follow(&updated.history[index]) }
+                ledger = updated
+            }
+            rewritten.append(name)
+        }
+        guard !rewritten.isEmpty else { return [] }
+        if let ledger {
+            // Advisory metadata: a failure to update it costs the counts in the recovery list,
+            // never the rewrite itself, which is already on disk.
+            _ = try? StoreLedger.write(ledger, to: ledgerURL, using: io)
+        }
+        if let current = try? load() {
+            try save(current.value, expecting: current.token)
+        }
+        return rewritten
+    }
+
     /// Brings a retained generation back as the current one (F190).
     ///
     /// **Append-only.** The chosen bytes are committed as a NEW generation through the ordinary

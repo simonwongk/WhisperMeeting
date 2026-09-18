@@ -303,6 +303,10 @@ def run_surface(items, surface, prompts, invoke, sink, already=frozenset(), cloc
             "lang": item["lang"],
             "topic": item["topic"],
             "pair_id": item["pair_id"],
+            # The item's protected terms ride along so the Swift guard emitter can apply the app's
+            # term guard (F245) to this record without the corpus: in the app the list is the
+            # user's vocabulary; here it is what the corpus says must survive.
+            "protected_terms": [entry["term"] for entry in item.get("protected_terms") or []],
             "input": request,
             "output": output,
             "latency_ms": elapsed_ms,
