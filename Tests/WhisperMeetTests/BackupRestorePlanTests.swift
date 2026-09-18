@@ -146,3 +146,50 @@ func emptyLibraryIsAllAdditions() throws {
     #expect(plan.notInBackup.isEmpty)
     #expect(plan.isSafeToApply)
 }
+
+// MARK: - F288: a folder that is not a backup generation is refused, not planned
+
+@Test("The backups container itself is refused rather than read as a legacy backup (F288)")
+func containerFolderIsNotAGeneration() throws {
+    // Seen on screen: choosing "WhisperMeet Backups" — the folder the dated generations live in —
+    // produced a plan that would copy the nested generation folder INTO the library, list every
+    // real file as "not in this backup", and offer Restore Anyway under the legacy-backup wording.
+    // A folder with no manifest and no index at its root is not an older backup; it is not a
+    // backup, and the only honest answer is a refusal that says so.
+    let (root, library, generation) = try makeFixture("container")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let container = generation.deletingLastPathComponent()
+
+    #expect(throws: BackupRestorePlan.NotABackupGeneration.self) {
+        try BackupRestorePlan.make(from: container, into: library, deep: false)
+    }
+}
+
+@Test("An unrelated folder is refused with a reason a person can act on (F288)")
+func unrelatedFolderIsRefused() throws {
+    let (root, library, _) = try makeFixture("unrelated")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let unrelated = root.appendingPathComponent("Holiday Photos", isDirectory: true)
+    try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+    try Data("jpeg".utf8).write(to: unrelated.appendingPathComponent("IMG_0001.jpg"))
+
+    do {
+        _ = try BackupRestorePlan.make(from: unrelated, into: library, deep: false)
+        Issue.record("an unrelated folder was planned as a restore")
+    } catch let refusal as BackupRestorePlan.NotABackupGeneration {
+        #expect(refusal.localizedDescription.contains("dated folder inside"))
+        #expect(refusal.localizedDescription.contains("Holiday Photos"))
+    }
+}
+
+@Test("A legacy generation with an index but no manifest is still restorable (F288)")
+func legacyGenerationWithIndexIsStillPlanned() throws {
+    // The refusal must not catch the case it exists beside: a pre-manifest backup that IS a
+    // backup. That one stays unverifiable-but-restorable, as before.
+    let (root, library, generation) = try makeFixture("legacy-still")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.removeItem(at: generation.appendingPathComponent(BackupManifest.fileName))
+
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: false)
+    #expect(plan.requiresExplicitOverride)
+}

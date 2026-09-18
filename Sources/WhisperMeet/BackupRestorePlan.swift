@@ -54,9 +54,30 @@ struct BackupRestorePlan: Equatable, Sendable {
     /// re-hash that takes minutes on a library of recordings. A caller showing a sheet uses the
     /// cheap one and offers the deep one; the result records which was done, because presenting an
     /// unchecked generation as verified is the failure this whole slice exists to prevent.
+    /// The chosen folder is not a backup generation at all (F288).
+    ///
+    /// Distinct from "unverifiable": that is a generation with no manifest, which is an *older*
+    /// backup and stays restorable by explicit override. This is a folder with no manifest **and**
+    /// no index at its root — the `WhisperMeet Backups` container, a holiday-photos folder — and
+    /// planning it produced, on screen, an offer to copy whatever it held into the library while
+    /// listing every real file as "not in this backup".
+    struct NotABackupGeneration: LocalizedError, Equatable {
+        let path: String
+        var errorDescription: String? {
+            "\"\(path)\" is not a backup generation. Choose one dated folder inside \"\(BackupCoordinator.managedSubfolder)\" — the one holding meetings.json."
+        }
+    }
+
     static func make(from generation: URL, into library: URL, deep: Bool) throws -> BackupRestorePlan {
-        let verification = try BackupManifest.verify(in: generation, deep: deep)
         let manifest = BackupManifest.read(in: generation)
+        // Asked before verification, because verification's answer for a folder with no manifest
+        // is "unverifiable", which reads as an older backup — and this is not one.
+        if manifest == nil, !FileManager.default.fileExists(
+            atPath: generation.appendingPathComponent("meetings.json").path
+        ) {
+            throw NotABackupGeneration(path: generation.lastPathComponent)
+        }
+        let verification = try BackupManifest.verify(in: generation, deep: deep)
 
         // The backup's file set. From the manifest when there is one — it is the authoritative
         // list, and using it means a file the manifest omits is not silently restored — and from
