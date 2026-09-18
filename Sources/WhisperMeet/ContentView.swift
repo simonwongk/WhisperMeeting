@@ -2091,6 +2091,9 @@ private struct AskMeetingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var results: [CitedResult] = []
     @State private var hasSearched = false
+    /// The written answer for the results on screen (F182). Cleared whenever the results change.
+    @State private var answerOutcome: MeetingAnswerPolicy.Outcome?
+    @State private var answerTask: Task<Void, Never>?
 
     private var libraryTags: [String] {
         MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
@@ -2205,6 +2208,7 @@ private struct AskMeetingsView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            answerSection
             List(results) { result in
                 Button {
                     model.pendingNavigation = AppModel.MeetingNavigationRequest(
@@ -2221,6 +2225,54 @@ private struct AskMeetingsView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(.separator.opacity(0.55), lineWidth: 1)
             )
+        }
+    }
+
+    /// F182: an optional written answer above the passages. Opt-in per question — the model only
+    /// runs when asked — and what it writes is shown only if `MeetingAnswerPolicy` accepts it.
+    @ViewBuilder
+    private var answerSection: some View {
+        if model.isSummarizerInstalled {
+            VStack(alignment: .leading, spacing: 6) {
+                if model.isAnsweringMeetingsQuestion {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Writing an answer on this Mac…").foregroundStyle(.secondary)
+                        Button("Cancel") { answerTask?.cancel() }.buttonStyle(.link)
+                    }
+                } else if let answerOutcome {
+                    switch answerOutcome {
+                    case let .answer(answer):
+                        Text(answer.text).textSelection(.enabled)
+                        Text("Written by the on-device model from passages \(answer.citedPassages.map { String($0 + 1) }.joined(separator: ", ")) below. It can be wrong — the passages are what was said.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    case .notFound:
+                        Text("The model found no answer in these passages. They are still the closest matches.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    case .refused:
+                        Text("The model did not give an answer it could tie to these passages, so none is shown. The passages below are what was said.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Write an Answer from These Passages") { writeAnswer() }
+                        .disabled(!model.canWriteMeetingAnswer)
+                        .help("Uses the local summary model on this Mac. Nothing is uploaded.")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func writeAnswer() {
+        let question = query
+        let passages = results
+        answerTask = Task {
+            let outcome = await model.writeMeetingAnswer(question: question, passages: passages)
+            // The user may have searched again while the model ran; an answer to the old question
+            // above the new passages would be worse than none.
+            if passages == results { answerOutcome = outcome }
         }
     }
 
@@ -2252,12 +2304,16 @@ private struct AskMeetingsView: View {
 
     private func runSearch() {
         hasSearched = true
+        answerTask?.cancel()
+        answerOutcome = nil
         results = model.askMeetings(query: query, scope: scope)
     }
 
     /// Re-run only when a search is already showing, so toggling scope before the first query is quiet.
     private func runSearchIfActive() {
         guard hasSearched else { return }
+        answerTask?.cancel()
+        answerOutcome = nil
         results = model.askMeetings(query: query, scope: scope)
     }
 }

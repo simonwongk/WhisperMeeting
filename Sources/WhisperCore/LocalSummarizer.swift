@@ -184,6 +184,53 @@ public struct LocalSummarizer: MeetingSummarizer {
         return summary
     }
 
+    /// The raw answer text for an Ask Meetings question, grounded on `passages` (F182).
+    ///
+    /// Reuses the summary helper unchanged: it takes a system prompt and a user message and returns
+    /// a JSON object, so the answer travels in its `summary` field. The caller decides whether the
+    /// text may be shown — `MeetingAnswerPolicy.evaluate` — this only runs the model.
+    public func answerText(question: String, passages: [CitedResult]) async throws -> String {
+        guard !passages.isEmpty else { throw SummarizerError.emptyTranscript }
+        guard runtimeIsComplete else { throw SummarizerError.modelNotInstalled }
+        try Task.checkCancellation()
+
+        let workingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-Answer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workingDirectory) }
+
+        let inputURL = workingDirectory.appendingPathComponent("request.json")
+        let outputURL = workingDirectory.appendingPathComponent("answer.json")
+        let requestBody: [String: String] = [
+            "systemPrompt": MeetingAnswerPrompt.system + "\n" + Self.answerFormatInstruction,
+            "transcript": MeetingAnswerPrompt.grounding(question: question, passages: passages),
+        ]
+        try JSONSerialization.data(withJSONObject: requestBody).write(to: inputURL)
+        let log = try await run(arguments: [
+            helperScriptURL.path,
+            "--model", modelDirectory.path,
+            "--input", inputURL.path,
+            "--output", outputURL.path,
+            "--max-tokens", "400",
+        ])
+        try Task.checkCancellation()
+        guard FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw SummarizerError.helperFailed(
+                log.isEmpty ? "The local model produced no output." : String(log.suffix(2_000))
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(LocalSummaryOutput.self, from: Data(contentsOf: outputURL)) else {
+            throw SummarizerError.unreadableResponse
+        }
+        return payload.summary
+    }
+
+    static let answerFormatInstruction = """
+    Respond with ONLY a JSON object with exactly these keys: "summary" (a string holding your \
+    answer, citations included), "keyPoints" (an empty array), and "actionItems" (an empty array). \
+    Do not write anything before or after the JSON object, and do not wrap it in markdown code fences.
+    """
+
     /// The local prompt reuses `ClaudeSummarizer.systemPrompt` verbatim — the single source of truth
     /// for the output fields and the do-not-translate clause — then appends an explicit JSON-format
     /// directive, because a local model has no enforced structured-output schema like Claude's.

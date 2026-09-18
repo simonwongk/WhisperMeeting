@@ -195,6 +195,10 @@ Beyond the core record → transcribe flow:
   by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
   quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search
   (BM25) over the transcripts — nothing is uploaded, and it works in English and Mandarin.
+  With the local summary model installed, **Write an Answer from These Passages** asks that model
+  for a short answer built only from the top results. It is shown only if every sentence cites a
+  passage on screen, it adds none of your vocabulary terms the passages lack, and it keeps their
+  Chinese script; otherwise you keep the passages, which are what was said.
 - **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
   **Add from a Link…** button appears on the record screen. Paste a link to a single video and
   WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any

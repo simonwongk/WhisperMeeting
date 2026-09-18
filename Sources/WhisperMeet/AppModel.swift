@@ -3608,6 +3608,48 @@ final class AppModel: ObservableObject {
         return MeetingRetrieval.rank(query: query, in: searchable, limit: limit)
     }
 
+    // MARK: - Ask Meetings: a written answer (F182)
+
+    /// How many of the top passages ground an answer. Five keeps the prompt small enough to answer
+    /// in a few seconds and is as many citations as three sentences can carry.
+    static let answerPassageLimit = 5
+
+    /// Runs the on-device model. Injectable so the decision around it is tested without a model.
+    var meetingAnswerRunner: @Sendable (_ question: String, _ passages: [CitedResult]) async throws -> String = {
+        try await LocalSummarizer().answerText(question: $0, passages: $1)
+    }
+
+    @Published private(set) var isAnsweringMeetingsQuestion = false
+
+    /// Whether Ask Meetings can offer a written answer right now: the local model is installed and
+    /// nothing else that loads a model is running (one 5 GB model in memory at a time).
+    var canWriteMeetingAnswer: Bool {
+        isSummarizerInstalled && !isAnsweringMeetingsQuestion && !isSummarizing
+            && !isProposingCorrections && !hasActiveTranscription && !isRunningAuxiliaryEngine
+    }
+
+    /// Writes an answer from the top passages, or says why there is none (F182).
+    ///
+    /// Read-only: nothing is saved, so a read-only library can still ask. A thrown error and a
+    /// refusal both leave the user exactly where they were — looking at the passages.
+    func writeMeetingAnswer(question: String, passages: [CitedResult]) async -> MeetingAnswerPolicy.Outcome? {
+        guard canWriteMeetingAnswer, !passages.isEmpty else { return nil }
+        isAnsweringMeetingsQuestion = true
+        defer { isAnsweringMeetingsQuestion = false }
+        let grounding = Array(passages.prefix(Self.answerPassageLimit))
+        do {
+            let raw = try await meetingAnswerRunner(question, grounding)
+            return MeetingAnswerPolicy.evaluate(
+                raw, question: question, passages: grounding, protectedTerms: store.vocabulary
+            )
+        } catch is CancellationError {
+            return nil
+        } catch {
+            alertMessage = "The on-device model could not write an answer: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped
     /// text from the corrected segments. Skipped when the transcript was hand-edited (segment-derived
     /// text no longer matches what's shown). The recording is never opened (F82).
