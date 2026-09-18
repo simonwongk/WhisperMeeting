@@ -3609,7 +3609,10 @@ private struct TagChipsEditor: View {
                 if !atCapacity {
                     TextField(tags.isEmpty ? "Add a tag (Return commits)" : "Add…", text: $draft)
                         .textFieldStyle(.plain)
-                        .frame(width: 150)
+                        // Wide enough for the longer placeholder: at 150 it rendered as
+                        // "Add a tag (Return commi", clipped mid-word, on the first look at this
+                        // editor on screen (F174, 2026-09-17).
+                        .frame(width: tags.isEmpty ? 210 : 150)
                         .focused($inputFocused)
                         .onSubmit { commit(draft) }
                         // Comma commits mid-typing, so "budget, hiring" becomes chips as it is
