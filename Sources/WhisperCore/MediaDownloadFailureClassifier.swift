@@ -50,6 +50,16 @@ public enum MediaDownloadFailureClassifier {
                 explanation: "The downloader is out of date — this site changed how it serves audio. Update the downloader in Settings, then try again."
             )
         }
+        // F184: a 403 on the media itself, after the page and the player API loaded, is a stale
+        // extractor far more often than a connection problem — measured 2026-09-18, where
+        // 2026.07.04 was refused on a video 2026.08.19 downloaded. It can also be transient (the
+        // 2026-08-08 run saw two that passed on retry), so the explanation offers both, in order.
+        if contains(["unable to download video data: http error 403"]) {
+            return .init(
+                kind: .updateDownloader,
+                explanation: "The site refused to send the audio (HTTP 403). That usually means the downloader is out of date: Update the downloader in Settings, then try again. If it is already current, simply try again — this refusal is sometimes temporary."
+            )
+        }
         // The bot check is currently the most common real yt-dlp failure, and it is NOT fixed by
         // updating or retrying — it needs a signed-in session this app deliberately doesn't support.
         // Checked before the age rule because both mention "sign in to confirm".

@@ -30,3 +30,20 @@ func unknownIsGeneric() {
     #expect(MediaDownloadFailureClassifier.classify(stderr: "ERROR: something entirely new happened").kind == .generic)
     #expect(!MediaDownloadFailureClassifier.classify(stderr: "ERROR: something entirely new").explanation.isEmpty)
 }
+
+@Test("A 403 on the media itself points at the downloader, not the user's connection (F184)")
+func forbiddenMediaPointsAtTheDownloader() {
+    // Real stderr, 2026-09-18: yt-dlp 2026.07.04 on a video that 2026.08.19 downloads fine. The
+    // probe succeeded and the page loaded, so "check your connection" sent the user the wrong way.
+    let stderr = """
+    [youtube] aqz-KE-bpKQ: Downloading android vr player API JSON
+    [info] aqz-KE-bpKQ: Downloading 1 format(s): 258
+    ERROR: unable to download video data: HTTP Error 403: Forbidden
+    """
+    let info = MediaDownloadFailureClassifier.classify(stderr: stderr)
+    #expect(info.kind == .updateDownloader)
+    #expect(info.explanation.contains("Update the downloader"))
+    #expect(info.explanation.contains("try again"), "a transient 403 does succeed on retry, so say so")
+    // A 5xx or a timeout is still the network.
+    #expect(MediaDownloadFailureClassifier.classify(stderr: "ERROR: unable to download video data: HTTP Error 503").kind == .network)
+}

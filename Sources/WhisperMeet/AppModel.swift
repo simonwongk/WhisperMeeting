@@ -419,7 +419,7 @@ final class AppModel: ObservableObject {
             let runner = ProcessGroupRunner()
             let outcome = try? await runner.run(
                 executableURL: URL(fileURLWithPath: "/bin/zsh"),
-                arguments: [script.path],
+                arguments: Self.downloaderUpdateArguments(script: script),
                 environment: MediaDownloadClient.makeEnvironment(),
                 stallTimeout: 600
             )
@@ -430,6 +430,15 @@ final class AppModel: ObservableObject {
                 downloaderUpdateMessage = "The downloader could not be updated. \(String((outcome?.output ?? "").suffix(200)))"
             }
         }
+    }
+
+    /// The updater is told which runtime to update (F184). Its own default is the real Application
+    /// Support runtime, so under `WHISPERMEET_LIBRARY` an argument-less run updated one install
+    /// while this copy of the app kept using the other.
+    nonisolated static func downloaderUpdateArguments(
+        script: URL, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String] {
+        [script.path, LocalWhisperRuntime.managedDirectory(environment: environment).path]
     }
 
     /// Locates a bundled script when running from a built `.app`, falling back to the checkout while
@@ -3167,6 +3176,10 @@ final class AppModel: ObservableObject {
         let probe: MediaProbe
         do {
             probe = try await probeMediaURL(parsed.url)
+        } catch is CancellationError {
+            // F184: Stop while the link is still being looked up is not a failure, exactly as it
+            // is not one during the download below.
+            return nil
         } catch {
             alertMessage = error.localizedDescription
             return nil
