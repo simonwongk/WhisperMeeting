@@ -146,7 +146,18 @@ struct ContentView: View {
             .navigationTitle("WhisperMeet")
             .navigationSplitViewColumnWidth(min: 245, ideal: 290)
         } detail: {
+            // F313: the standing sign that the library is read-only, on a surface that is not
+            // modal. F194 put that job on the storage alert and made dismissing it restore the
+            // message, which made the alert impossible to close. This shows for as long as the
+            // library is degraded and never asks to be dismissed. An overlay, because the two
+            // layout-affecting placements were tried on screen and both failed: `.safeAreaInset`
+            // and a `VStack` each pushed the banner to y = -716 (the accessibility tree still
+            // listed it, off the top of the window) and blanked the sidebar list. An overlay draws
+            // on top of the column and cannot move anything underneath it.
             detail
+                .overlay(alignment: .top) {
+                    ReadOnlyLibraryBanner(model: model)
+                }
         }
         // Attached to the split view, not the sidebar list: on the list, even .toolbar placement
         // renders inside the sidebar and scrolls beneath the window controls (observed live,
@@ -1540,11 +1551,37 @@ struct SettingsView: View {
                 // and invisible until you open a meeting. It goes beside Back up and Restore, and
                 // appears only when the library actually is read-only, so it is not a button
                 // inviting people to "recover" a healthy library.
-                if let readOnly = model.libraryReadOnlyFootnote {
+                if model.libraryReadOnlyFootnote != nil {
                     Divider()
-                    Text(readOnly)
+                    // F313: this section's own sentence, not the Improve menu's — that one talks
+                    // about suggestions and transcripts, which is not what a Library section is
+                    // about. The F289 dialog hangs here rather than on the button below, because
+                    // the button already carries the restore dialog and SwiftUI honours one
+                    // presentation modifier of a kind per view: with both on the button, neither
+                    // appeared on screen.
+                    Text(ReadOnlyLibraryNotice.librarySectionNotice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        // F289: the other route out of a read-only library, offered by the
+                        // Recover Library button when there is no earlier copy to restore. F191
+                        // slice E4 was tested and reachable from nothing until this dialog existed.
+                        .confirmationDialog(
+                            "Rebuild the meeting index from the recording folders?",
+                            isPresented: .init(
+                                get: { model.pendingFolderRebuild != nil },
+                                set: { if !$0 { model.cancelFolderRebuild() } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Rebuild Index") {
+                                model.rebuildLibraryFromFolders(confirmed: true)
+                            }
+                            Button("Cancel", role: .cancel) { model.cancelFolderRebuild() }
+                        } message: {
+                            if let proposal = model.pendingFolderRebuild {
+                                Text(AppModel.folderRebuildMessage(proposal))
+                            }
+                        }
                     Button("Recover Library…") { model.requestLibraryRecovery() }
                         .buttonStyle(.borderedProminent)
                         .confirmationDialog(
@@ -1564,26 +1601,6 @@ struct SettingsView: View {
                             Button("Cancel", role: .cancel) { model.cancelLibraryRecovery() }
                         } message: {
                             Text("Your recordings are never changed by this. Each option is a copy of the index saved earlier; the meetings it did not know about will be missing until you restore a newer one.")
-                        }
-                        // F289: the other route out of a read-only library, offered by the same
-                        // button when there is no earlier copy to restore. F191 slice E4 was
-                        // tested and reachable from nothing until this dialog existed.
-                        .confirmationDialog(
-                            "Rebuild the meeting index from the recording folders?",
-                            isPresented: .init(
-                                get: { model.pendingFolderRebuild != nil },
-                                set: { if !$0 { model.cancelFolderRebuild() } }
-                            ),
-                            titleVisibility: .visible
-                        ) {
-                            Button("Rebuild Index") {
-                                model.rebuildLibraryFromFolders(confirmed: true)
-                            }
-                            Button("Cancel", role: .cancel) { model.cancelFolderRebuild() }
-                        } message: {
-                            if let proposal = model.pendingFolderRebuild {
-                                Text(AppModel.folderRebuildMessage(proposal))
-                            }
                         }
                 }
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
@@ -4856,6 +4873,33 @@ private struct AudioPlayerView: NSViewRepresentable {
         let currentURL = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url
         if currentURL != url {
             nsView.player = AVPlayer(url: url)
+        }
+    }
+}
+
+
+/// The persistent read-only notice (F313). Rendered above the detail column while the library is
+/// degraded, and nothing else: no dismiss control, because the state it describes is only resolved
+/// by a recovery, and a notice the user can hide is the F194 problem again.
+struct ReadOnlyLibraryBanner: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if model.libraryReadOnlyFootnote != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(.secondary)
+                Text(ReadOnlyLibraryNotice.banner)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+            .accessibilityElement(children: .combine)
         }
     }
 }

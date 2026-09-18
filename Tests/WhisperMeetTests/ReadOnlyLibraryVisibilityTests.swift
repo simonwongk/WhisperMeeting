@@ -33,25 +33,65 @@ private func makeModel(degraded: Bool) throws -> (AppModel, URL) {
     return (model, root)
 }
 
-@Test("Dismissing the banner on a read-only library keeps the explanation (F194)")
+@Test("Dismissing the read-only alert dismisses it, or nothing behind it is reachable (F313)")
 @MainActor
-func dismissingTheStorageBannerWhileDegradedKeepsTheReason() throws {
+func dismissingTheStorageAlertWhileDegradedClearsIt() throws {
+    // F194 pinned the opposite here — "the read-only explanation was dismissed" — believing the
+    // message was a banner. It is the window's one modal `.alert`, presented whenever
+    // `storageErrorMessage` is non-nil, so restoring the message on dismiss reopened the alert the
+    // instant it closed: three OK presses and a Return on a real screen, the same alert every time,
+    // and Recover Library (F193), the restore list and the folder rebuild (F289) all behind it.
+    // The standing explanation now lives on a non-modal surface — see the test below.
     let (model, root) = try makeModel(degraded: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let store = model.store
     #expect(store.isDegraded)
 
-    // Reach the banner the way a user does: attempt something, have it refused.
     store.update(id: UUID()) { $0.title = "x" }
     #expect(store.storageErrorMessage != nil)
 
     store.clearStorageError()
 
-    #expect(
-        store.storageErrorMessage != nil,
-        "the read-only explanation was dismissed, leaving no sign the library cannot be written"
-    )
-    #expect(store.storageErrorMessage?.contains(ReadOnlyLibraryNotice.lead) == true)
+    #expect(store.storageErrorMessage == nil, "dismissing must dismiss, whatever the library's health")
+    // And the library is still read-only — dismissing the message changed nothing about that.
+    #expect(store.isDegraded)
+    #expect(model.libraryReadOnlyFootnote != nil)
+}
+
+@Test("An empty flush on a read-only library raises nothing (F313)")
+@MainActor
+func emptyFlushWhileDegradedIsSilent() throws {
+    // `AppLifecycle` flushes on every `willResignActive`. With nothing pending that is a no-op,
+    // and a no-op must not set the message the window renders as a modal alert — or the alert
+    // returns every time the user switches to another app, which is how it looked on screen.
+    let (model, root) = try makeModel(degraded: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = model.store
+    #expect(store.isDegraded)
+    #expect(store.storageErrorMessage == nil || store.storageErrorMessage?.isEmpty == false)
+    store.clearStorageError()
+
+    store.flushPendingEdits()
+    model.flushPendingWrites()
+
+    #expect(store.storageErrorMessage == nil, "a flush with nothing to flush raised the read-only alert")
+}
+
+@Test("The read-only explanation stands on a surface that is not the alert (F313)")
+func readOnlyNoticeIsRenderedOutsideTheAlert() throws {
+    // F194's actual goal, kept: a single dismissal must not leave a read-only library with nothing
+    // on screen saying so. Asserted against `ContentView`'s source with comments stripped
+    // (F306's method), because there is no view harness and the model tests above cannot tell a
+    // modal from a banner — which is precisely how F194 shipped a modal loop with green tests.
+    let url = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
+        .joined(separator: "\n")
+    #expect(source.contains("ReadOnlyLibraryBanner(model: model)"))
+    #expect(source.contains("struct ReadOnlyLibraryBanner"))
 }
 
 @Test("Dismissing the banner on a healthy library still clears it (F194)")

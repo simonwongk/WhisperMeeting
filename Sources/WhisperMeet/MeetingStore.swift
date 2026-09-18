@@ -279,6 +279,16 @@ enum ReadOnlyLibraryNotice {
     static let menuFootnote =
         "\(lead) Suggestions could not be applied to a transcript, so these are unavailable until recovery is resolved."
 
+    /// The Settings → Library section's read-only sentence (F313): what is true of the library,
+    /// beside the controls that resolve it, with nothing about menus or transcripts.
+    static let librarySectionNotice =
+        "\(lead) Your recordings are untouched. Recover Library restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept."
+
+    /// The standing notice above the detail column while degraded (F313). Names the way out,
+    /// because the read-only state is only ever resolved by taking it.
+    static let banner =
+        "\(lead) Your recordings are untouched. To recover, open Settings → Library → Recover Library…"
+
     /// For the library check, which reads the index it is reporting on (F194). Reporting "no audio
     /// problems were found" for a library that failed to decode is a clean bill of health for an
     /// index nobody managed to read.
@@ -801,6 +811,12 @@ final class MeetingStore: ObservableObject {
     /// Flush a pending debounced edit now — call on focus loss, meeting change, or view disappearance
     /// so no edit is lost (F40/F133). No-op when nothing is pending.
     func flushPendingEdits() {
+        // A flush with nothing to flush is not a mutation and must not be refused as one (F313).
+        // `AppLifecycle` calls this on every `willResignActive` — every app switch — and the
+        // refusal below sets `storageErrorMessage`, which the window shows as a modal alert. On a
+        // read-only library that raised the read-only alert each time the user looked at another
+        // app, including the Finder they were sent to for the manual recovery steps.
+        guard pendingIndexFlush != nil || !pendingSidecarIDs.isEmpty else { return }
         // Reaches `persistMeetings()` directly, so it carries the same refusal as every other mutator
         // even though only the already-guarded edit paths can schedule a flush today (F187).
         guard mutationIsAllowed() else { return }
@@ -1066,8 +1082,14 @@ final class MeetingStore: ObservableObject {
     /// the library cannot be written, and an unguarded dismissal hid that until the next refused
     /// mutation set it again — leaving the user in a read-only library with nothing on screen
     /// saying so.
+    /// Unconditional, and that is F313's fix. F194 made this restore the read-only explanation
+    /// while degraded so that "dismissing the banner" would not hide it — but the only thing that
+    /// renders `storageErrorMessage` is the window's modal `.alert`, presented whenever this is
+    /// non-nil, so the alert reopened the instant it closed and every recovery control sat behind
+    /// it. The standing explanation is `AppModel.libraryReadOnlyFootnote`, rendered by a banner
+    /// that is not modal, the Settings library section and the Improve menu.
     func clearStorageError() {
-        storageErrorMessage = isDegraded ? ReadOnlyLibraryNotice.mutationRefused : nil
+        storageErrorMessage = nil
     }
 
     private static func normalizeTerm(_ value: String) -> String {
