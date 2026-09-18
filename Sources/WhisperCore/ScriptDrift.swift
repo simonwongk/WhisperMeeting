@@ -18,7 +18,37 @@ import Foundation
 /// plus 20 ms per word: **36 µs** per call on a 126-character dictation, and **0.95 ms** once to
 /// build `ChineseScript`'s two 3,800-character sets on first use. Neither is worth an optimisation
 /// and both are worth a number, so nobody has to wonder.
+/// Which Chinese script a text is written in, when it says so unambiguously (F244).
+///
+/// Raw values are the BCP 47 script subtags, which is how the bench's prompt fixture keys the
+/// prompt arms — `refineSystem["zh-Hant"]` is the prompt the app sends for a Traditional
+/// dictation.
+public enum ChineseScriptForm: String, Sendable, Equatable {
+    case traditional = "zh-Hant"
+    case simplified = "zh-Hans"
+}
+
 public enum ScriptDrift {
+    /// Whether `text` reads as Simplified: Simplified-only characters and no Traditional-only ones.
+    /// `looksTraditional`'s mirror, with the same conservatism about mixed text.
+    public static func looksSimplified(_ text: String) -> Bool {
+        var sawSimplified = false
+        for character in text {
+            if ChineseScript.traditionalOnly.contains(character) { return false }
+            if ChineseScript.simplifiedOnly.contains(character) { sawSimplified = true }
+        }
+        return sawSimplified
+    }
+
+    /// The script `text` is written in, or nil when it does not say — shared characters only, or a
+    /// mix of both. Nil is the honest answer for both: the prompt then names no script, which is
+    /// what it did before F244, rather than guessing which one the person meant.
+    public static func form(of text: String) -> ChineseScriptForm? {
+        if looksTraditional(text) { return .traditional }
+        if looksSimplified(text) { return .simplified }
+        return nil
+    }
+
     /// Whether `text` reads as Traditional: it contains Traditional-only characters and no
     /// Simplified-only ones.
     ///

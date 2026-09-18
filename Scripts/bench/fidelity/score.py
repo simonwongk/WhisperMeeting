@@ -68,6 +68,46 @@ def _load_simplified_characters(path=_SIMPLIFIED_TABLE):
 SIMPLIFIED_CHARACTERS = _load_simplified_characters()
 
 
+def _load_traditional_characters(path=_SIMPLIFIED_TABLE):
+    """The Traditional-only set, by the rule `Scripts/generate-chinese-script.py` uses for the app:
+    every Traditional form of a non-shared mapping, minus anything also Simplified-only."""
+    traditional = set()
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#") or "\t" not in line:
+                continue
+            key, rest = line.split("\t", 1)
+            alternatives = rest.split()
+            if key in alternatives:
+                continue
+            for form in alternatives:
+                traditional.update(form)
+    return traditional - SIMPLIFIED_CHARACTERS
+
+
+TRADITIONAL_CHARACTERS = _load_traditional_characters()
+
+
+def script_form(text):
+    """`"zh-Hant"`, `"zh-Hans"`, or `None` — the app's `ScriptDrift.form(of:)`, so the bench sends a
+    Traditional item the prompt the app would send it (F244).
+
+    Conservative like the app: shared characters only, or a mix of both scripts, answer `None`, and
+    the prompt then names no script rather than guessing."""
+    saw_traditional = saw_simplified = False
+    for character in text:
+        if character in TRADITIONAL_CHARACTERS:
+            saw_traditional = True
+        elif character in SIMPLIFIED_CHARACTERS:
+            saw_simplified = True
+    if saw_traditional and not saw_simplified:
+        return "zh-Hant"
+    if saw_simplified and not saw_traditional:
+        return "zh-Hans"
+    return None
+
+
 def _is_cjk(character):
     return "一" <= character <= "鿿" or "㐀" <= character <= "䶿"
 

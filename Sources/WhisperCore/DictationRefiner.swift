@@ -113,9 +113,14 @@ public actor DictationRefiner: DictationTextRefining {
         inFlight = true
         inFlightGeneration &+= 1
         let generation = inFlightGeneration
+        // F244: the script comes from the text, never from a preference. A dictation that reads as
+        // Chinese by its script is Chinese even before language detection has settled.
+        let script = ScriptDrift.form(of: text)
         let request = RefineRequest(
             text: text,
-            systemPrompt: DictationRefinePrompt.system(languageCode: languageCode),
+            systemPrompt: DictationRefinePrompt.system(
+                languageCode: languageCode ?? (script == nil ? nil : "zh"), script: script
+            ),
             maxTokens: DictationRefinePolicy.maxOutputTokens
         )
         let engine = self.engine

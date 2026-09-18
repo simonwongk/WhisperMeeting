@@ -177,3 +177,50 @@ func failedWarmUpReportsNotReady() async {
     let ready = await refiner.warmUp()
     #expect(ready == false)
 }
+
+// MARK: - F244: the refiner names the dictation's script
+
+private final class RecordingRefineEngine: DictationRefineEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [RefineRequest] = []
+    var requests: [RefineRequest] { lock.withLock { _requests } }
+    func warmUp() async throws {}
+    func refine(_ request: RefineRequest) async throws -> String {
+        lock.withLock { _requests.append(request) }
+        return request.text
+    }
+    func shutdown() {}
+    func evict() async {}
+}
+
+@Test("A Traditional dictation is sent with the Traditional-script prompt (F244)")
+func refinerNamesTheScriptItWasGiven() async {
+    // The F244 harness saw a Traditional dictation come back Simplified; the guard now refuses
+    // that, which makes refinement safe and useless for a Traditional writer. Naming the script
+    // in the prompt is what lets it work again — read from the text, so nobody's preference is
+    // guessed.
+    let engine = RecordingRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
+    _ = await refiner.attempt(text: "我們星期二把版本出貨了 倫敦辦公室星期三才收到", languageCode: "zh")
+    let sent = engine.requests.first?.systemPrompt ?? ""
+    #expect(sent == DictationRefinePrompt.system(languageCode: "zh", script: .traditional), Comment(rawValue: sent))
+}
+
+@Test("A Chinese dictation before language detection settles still gets its script named (F244)")
+func refinerNamesTheScriptWithoutALanguageCode() async {
+    // `languageCode` is nil when the refiner runs before detection settles. The text itself says
+    // it is Traditional Chinese, which is a stronger signal than none.
+    let engine = RecordingRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
+    _ = await refiner.attempt(text: "我們星期二把版本出貨了 倫敦辦公室星期三才收到", languageCode: nil)
+    let sent = engine.requests.first?.systemPrompt ?? ""
+    #expect(sent == DictationRefinePrompt.system(languageCode: "zh", script: .traditional), Comment(rawValue: sent))
+}
+
+@Test("An English dictation's prompt is unchanged by script detection (F244)")
+func refinerLeavesEnglishAlone() async {
+    let engine = RecordingRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
+    _ = await refiner.attempt(text: "we shipped the release on tuesday", languageCode: "en")
+    #expect(engine.requests.first?.systemPrompt == DictationRefinePrompt.system(languageCode: "en"))
+}

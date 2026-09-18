@@ -40,6 +40,13 @@ SURFACES = ("refinement", "correction", "summary")
 REQUIRED_FIELDS = ("id", "surface", "arm", "lang", "topic", "pair_id", "text")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# The scorer's character table decides which prompt arm a Chinese item gets (F244), the way
+# report.py loads it: by path, because this directory is not a package.
+import importlib.util  # noqa: E402
+_score_spec = importlib.util.spec_from_file_location("fidelity_score", os.path.join(_HERE, "score.py"))
+score = importlib.util.module_from_spec(_score_spec)
+_score_spec.loader.exec_module(score)
+
 DEFAULT_PROMPTS = os.path.join(_HERE, "prompts.json")
 DEFAULT_CORPUS = os.path.join(_HERE, "corpus", "items.jsonl")
 SMOKE_CORPUS = os.path.join(_HERE, "smoke", "items.jsonl")
@@ -110,9 +117,17 @@ def _arm(prompts, group, key, label):
     return arms[key]
 
 
-def refine_system_prompt(prompts, language):
-    """`None` is a real case: refinement can run before language detection settles."""
-    return _arm(prompts, "refineSystem", language or "none", "refinement")
+def refine_system_prompt(prompts, language, text=None):
+    """`None` is a real case: refinement can run before language detection settles.
+
+    For Chinese the app reads the script from the dictation itself and names it (F244), so the
+    bench does the same with the scorer's own table: a Traditional item is measured against the
+    `zh-Hant` arm, a Simplified one against `zh-Hans`, and a mixed or script-neutral one against
+    the bare `zh` prompt — exactly the prompt `DictationRefiner` would send for that text."""
+    key = language or "none"
+    if language == "zh" and text:
+        key = score.script_form(text) or "zh"
+    return _arm(prompts, "refineSystem", key, "refinement")
 
 
 def summary_system_prompt(prompts, language):
@@ -232,7 +247,7 @@ def build_request(item, surface, prompts):
     """
     if surface == "refinement":
         return {
-            "systemPrompt": refine_system_prompt(prompts, item.get("lang")),
+            "systemPrompt": refine_system_prompt(prompts, item.get("lang"), item["text"]),
             "text": item["text"],
             "maxTokens": int(item.get("max_tokens") or 256),
         }

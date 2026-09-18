@@ -76,6 +76,22 @@ class PromptAssemblyTests(unittest.TestCase):
         self.assertNotEqual(zh, en)
         self.assertIn("Mandarin", zh)
 
+    def test_a_chinese_item_gets_the_arm_for_its_script(self):
+        """F244: the app names the dictation's script in the prompt, read from the text. The bench
+        must send the same prompt, or it measures one the app never sends."""
+        traditional = runner.refine_system_prompt(self.prompts, "zh", "我們星期二把版本出貨了")
+        simplified = runner.refine_system_prompt(self.prompts, "zh", "我们星期二把版本出货了")
+        neutral = runner.refine_system_prompt(self.prompts, "zh", "今天很好，明天再看")
+        self.assertEqual(traditional, self.prompts["refineSystem"]["zh-Hant"])
+        self.assertEqual(simplified, self.prompts["refineSystem"]["zh-Hans"])
+        self.assertEqual(neutral, self.prompts["refineSystem"]["zh"])
+        self.assertIn("Traditional", traditional)
+        # English text never gets a script arm, whatever it contains.
+        self.assertEqual(
+            runner.refine_system_prompt(self.prompts, "en", "plain text"),
+            self.prompts["refineSystem"]["en"],
+        )
+
     def test_a_language_with_no_arm_raises_rather_than_falling_back(self):
         """Silently using the English prompt for a Japanese item would file the result under a
         prompt that was never sent. Better to stop: the corpus is fixed and knowable."""
@@ -267,7 +283,8 @@ class RunSurfaceTests(unittest.TestCase):
         )
         self.assertEqual(seen[0]["text"], "今天 呃 我們出貨了")
         self.assertNotIn("transcript", seen[0])
-        self.assertEqual(seen[0]["systemPrompt"], self.prompts["refineSystem"]["zh"])
+        # 我們 is Traditional, so the app names the script (F244) and the bench must too.
+        self.assertEqual(seen[0]["systemPrompt"], self.prompts["refineSystem"]["zh-Hant"])
 
     def test_a_correction_request_sends_the_assembled_user_turn_as_transcript(self):
         """`LocalTranscriptCorrector` puts the assembled turn in the `transcript` field. The bench

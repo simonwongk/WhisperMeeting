@@ -74,6 +74,10 @@ private struct FidelityPrompts: Codable, Equatable {
         return FidelityPrompts(
             refineSystem: [
                 "zh": DictationRefinePrompt.system(languageCode: "zh"),
+                // F244: the arms the app sends once the dictation's script is read from its text.
+                // `run_fidelity.py` picks them the same way, with the scorer's own character table.
+                "zh-Hant": DictationRefinePrompt.system(languageCode: "zh", script: .traditional),
+                "zh-Hans": DictationRefinePrompt.system(languageCode: "zh", script: .simplified),
                 "en": DictationRefinePrompt.system(languageCode: "en"),
                 "none": DictationRefinePrompt.system(languageCode: nil),
             ],
