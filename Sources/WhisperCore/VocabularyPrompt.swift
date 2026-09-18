@@ -126,15 +126,16 @@ public enum VocabularyPrompt {
     ///
     /// Reports the real numbers rather than "some terms were dropped", because the latter is not
     /// actionable — a user needs to know how far over they are to decide what to remove. Says
-    /// nothing about *which* terms are kept, because that is currently collation order and therefore
-    /// arbitrary; F272's remaining scope is whether the user should be able to prioritise.
+    /// which terms are kept is the user's to steer: starred terms lead the list (F300), the rest
+    /// follow in collation order.
     public static func coverageNotice(for raw: [String]) -> String? {
         let coverage = coverage(of: raw)
         guard coverage.isTruncated else { return nil }
         return """
         \(coverage.fitting) of your \(coverage.total) terms fit the model's prompt budget. \
         The rest are stored and searchable but are not sent to the recognizer — \
-        the limit is the model's, and non-Latin scripts use it up faster.
+        the limit is the model's, and non-Latin scripts use it up faster. \
+        Star the terms that matter most and they are sent first.
         """
     }
 

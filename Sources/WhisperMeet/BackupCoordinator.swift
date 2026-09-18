@@ -80,7 +80,7 @@ enum BackupCoordinator {
     ///   `StoreQuarantine` precisely so they sit beside the library they came from.
     static let backedUpEntries: [String] = ["Recordings"] + indexStems.flatMap {
         ["\($0).json", "\($0).backup.json", "\($0).ledger.json"]
-    }
+    } + ["vocabulary.priority.json"] // F300: which terms are starred; absent until one is.
 
     /// Back up `source` into `destination/<managedSubfolder>/<now>/`, retaining the newest `retain`
     /// complete generations.

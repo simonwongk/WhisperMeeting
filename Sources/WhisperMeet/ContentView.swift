@@ -2405,6 +2405,18 @@ private struct VocabularyView: View {
                 List {
                     ForEach(store.vocabulary, id: \.self) { term in
                         HStack {
+                            // F300: a star sends the term to the recognizer first, so when the
+                            // list is over the prompt budget it is another term that is trimmed.
+                            let starred = store.prioritizedVocabulary.contains(term)
+                            Button {
+                                store.setVocabularyPriority(term, prioritized: !starred)
+                            } label: {
+                                Image(systemName: starred ? "star.fill" : "star")
+                            }
+                            .buttonStyle(LinkPressStyle())
+                            .foregroundStyle(starred ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
+                            .accessibilityLabel(starred ? "Stop sending \(term) first" : "Send \(term) to the recognizer first")
+                            .help("Starred terms are sent to the recognizer first when the list is over its limit.")
                             Text(term)
                             Spacer()
                             Button {

@@ -369,10 +369,12 @@ final class MeetingStore: ObservableObject {
     /// ways in are `addVocabulary`/`removeVocabulary`, which carry the read-only guard; a settable
     /// property would let a caller replace the list without ever passing `mutationIsAllowed()`.
     @Published private(set) var vocabulary: [String] = []
+    /// The terms the user starred to be sent to the recognizer first (F300).
+    @Published private(set) var prioritizedVocabulary: Set<String> = []
 
     /// The subset handed to an engine's `initial_prompt`, capped to the prompt budget at the point of
     /// use rather than in storage.
-    var promptVocabulary: [String] { Self.promptSafeTerms(vocabulary) }
+    var promptVocabulary: [String] { Self.promptSafeTerms(vocabulary, first: prioritizedVocabulary) }
 
     /// Exact `heard → preferred` replacement rules (F179), persisted like vocabulary. Reviewed before
     /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
@@ -473,6 +475,7 @@ final class MeetingStore: ObservableObject {
         writerLease = handle.lease
         loadMeetings()
         loadVocabulary()
+        loadVocabularyPriority()
         loadReplacementRules()
     }
 
@@ -1141,6 +1144,48 @@ final class MeetingStore: ObservableObject {
         guard mutationIsAllowed() else { return }
         vocabulary.removeAll { $0 == term }
         persistVocabulary()
+        if prioritizedVocabulary.contains(term) {
+            prioritizedVocabulary.remove(term)
+            persistVocabularyPriority()
+        }
+    }
+
+    // MARK: - Which terms are sent first (F300)
+
+    private var vocabularyPriorityURL: URL {
+        rootDirectory.appendingPathComponent("vocabulary.priority.json")
+    }
+
+    /// Stars or unstars `term`. A starred term goes to the recognizer before the rest, so when the
+    /// list exceeds the prompt budget it is something else that gets trimmed.
+    ///
+    /// Kept beside `vocabulary.json` rather than in it: that file is a bare `[String]` every shipped
+    /// build reads, and a star is advisory — lose the side file and the prompt is simply in
+    /// collation order again, which is what it was before this existed.
+    func setVocabularyPriority(_ term: String, prioritized: Bool) {
+        guard mutationIsAllowed() else { return }
+        if prioritized {
+            guard vocabulary.contains(term) else { return }
+            prioritizedVocabulary.insert(term)
+        } else {
+            prioritizedVocabulary.remove(term)
+        }
+        persistVocabularyPriority()
+    }
+
+    private func persistVocabularyPriority() {
+        if prioritizedVocabulary.isEmpty {
+            try? FileManager.default.removeItem(at: vocabularyPriorityURL)
+        } else if let data = try? JSONEncoder().encode(prioritizedVocabulary.sorted()) {
+            try? data.write(to: vocabularyPriorityURL, options: .atomic)
+        }
+    }
+
+    private func loadVocabularyPriority() {
+        guard let data = try? Data(contentsOf: vocabularyPriorityURL),
+              let stored = try? JSONDecoder().decode([String].self, from: data) else { return }
+        // A star for a term that is no longer in the list is dropped rather than resurrected.
+        prioritizedVocabulary = Set(stored).intersection(vocabulary)
     }
 
     /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
@@ -1198,9 +1243,12 @@ final class MeetingStore: ObservableObject {
 
     /// The prompt budget: at most 100 terms AND at most 1,000 characters once joined. Applied only when
     /// a prompt is built (`promptVocabulary`) — never to what is stored (F187).
-    private static func promptSafeTerms(_ values: [String]) -> [String] {
-        let candidates = Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
+    private static func promptSafeTerms(_ values: [String], first: Set<String> = []) -> [String] {
+        let sorted = Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        // F300: starred terms lead, each group still in collation order, so both budgets below
+        // (and `VocabularyPrompt`'s token budget after them) trim the unstarred tail first.
+        let candidates = sorted.filter(first.contains) + sorted.filter { !first.contains($0) }
         var result: [String] = []
         var characterCount = 0
         for term in candidates where result.count < 100 {
@@ -1352,6 +1400,7 @@ final class MeetingStore: ObservableObject {
         startupRecoveryMessages = []
         loadMeetings()
         loadVocabulary()
+        loadVocabularyPriority()
         loadReplacementRules()
     }
 
