@@ -8,7 +8,7 @@ nothing here is the only record of anything. Conventions are in
 
 ## Where to start
 
-Seven entries, which is over the cap of five — my fault, I escalated F244 when it was already at
+Eight entries, which is over the cap of five — my fault, I escalated F244 when it was already at
 six. Rather than drop one of your unanswered questions to get under the line, here they are in the
 order I would answer them. Every one is optional and nothing rots if you ignore all of them.
 
@@ -22,6 +22,52 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 | 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
 | 7 | **F230** | ~20 min | VoiceOver on the speaker screens. Real work, and the least urgent — it gates polish, not correctness. |
 | — | **F244**, the rest | ~30 min | The corpus terminology review. Unblocks the whole content-fidelity benchmark, so it is the highest-*value* item and also the largest; separated from row 1 so the one-minute answer isn't stuck behind it. |
+| — | **F201 · F225 · F232 · F181** | 1 min to answer | Four short answers for the rest of tonight's list — a product call (F232), a mic run (F201), audio or a download permission (F225), a build-system yes/no (F181). None rots. |
+
+---
+
+## F201 · F225 · F232 · F181 — Four tickets from tonight's list that only you can move
+
+**Status:** every ticket from the list you gave me that an agent could finish is finished (F214,
+F297, F289, F312, F313, and half of F174 and F184). These four are the remainder, and each is
+stopped by something that is yours: a microphone, your audio, a product call, or a permission.
+One letter rather than four, because this file is already over its cap and the answers are short.
+
+**What I need from you:** four things, in the order I would take them.
+
+1. **F232 — one decision, no work.** Should speaker analysis move to FluidAudio's Sortformer
+   diarizer? It detects simultaneous speech (the current runtime cannot, so two people talking at
+   once get one name with full confidence), but it is capped at **four speakers**, costs a 242 MB
+   download, and has been measured on one 21-second synthetic clip. The honest sentence about the
+   limitation already ships on both surfaces. The measurement that would settle it is Sortformer on
+   a real multi-speaker meeting of yours — which needs the 242 MB download and one of your
+   recordings. **Answer:** "measure it" (and which meeting), "stay" (close the ticket as wontfix
+   with the copy as the mitigation), or "later".
+
+2. **F201 — fifteen minutes with a microphone.** Dictation refinement has never been exercised
+   with real speech in the installed app: Settings → refinement on, hold the hotkey, one short
+   English dictation, one Mandarin, one over 60 words (must skip refinement), two back-to-back
+   (busy-skip), and one after five idle minutes (raw fallback is acceptable). Confirm the history
+   records raw + outcome. Tonight's F214 numbers say the F212 build refines 75 % of attempts on
+   your Mac, so it works; what nobody has watched is the *pill* and the *paste*. **Answer:** do the
+   run and tell me what looked wrong, or "skip" and it stays open.
+
+3. **F225 — audio with ground truth, or permission to fetch some.** Re-deriving the clustering
+   threshold needs a few minutes of real multi-speaker audio annotated with who spoke when. If you
+   have a recording you are willing to annotate (or want me to draft the annotation for you to
+   correct), say which. If not, the alternative is a public annotated corpus, which is a download I
+   will not start on my own. **Answer:** a meeting, "download VoxConverse" (or another), or
+   "later".
+
+4. **F181 — a scope decision before any code.** Shortcuts / Finder Quick Action import. The
+   note on the ticket is right that a validation core with no App Intent calling it is dead code,
+   so this is all-or-nothing. Before "all": App Intents need the intents metadata that Xcode's
+   build step produces, and this app is built by `swift build` + `Scripts/build-app.sh`, which does
+   not run that step — so Shortcuts would not discover the action from the current pipeline. The
+   real work is a build-system change first. **Answer:** "yes, change the build" and I will
+   scope it as sub-tickets, or "later".
+
+None of these rots. Everything else on that list is closed with evidence in `TICKET_LOG.md`.
 
 ---
 
