@@ -49,7 +49,13 @@ public enum WAVInspection {
                 sampleRate = le32(data, body + 4)
                 bitsPerSample = le16(data, body + 14)
             } else if identifier == "ds64", size >= 16, body + 16 <= data.count {
-                rf64DataBytes = (0..<8).reduce(UInt64(0)) { $0 | UInt64(data[data.startIndex + body + 8 + $1]) << (8 * UInt64($1)) }
+                // A loop, not a one-line reduce: CI's compiler gave up type-checking the reduce.
+                var declared: UInt64 = 0
+                for offset in 0..<8 {
+                    let byte: UInt8 = data[data.startIndex + body + 8 + offset]
+                    declared |= UInt64(byte) << UInt64(8 * offset)
+                }
+                rf64DataBytes = declared
             } else if identifier == "data" {
                 guard let channels, let sampleRate, let bitsPerSample else { return nil }
                 return Header(

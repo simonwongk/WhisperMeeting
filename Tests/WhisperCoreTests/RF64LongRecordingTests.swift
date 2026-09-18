@@ -25,7 +25,10 @@ func longRecordingsGetAnRF64Header() throws {
     #expect(header.count == 80)
     #expect(String(data: header[0..<4], encoding: .ascii) == "RF64")
     #expect(String(data: header[12..<16], encoding: .ascii) == "ds64")
-    let declared = header[28..<36].enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * UInt64($1.offset)) }
+    var declared: UInt64 = 0
+    for (offset, byte) in header[28..<36].enumerated() {
+        declared |= UInt64(byte) << UInt64(8 * offset)
+    }
     #expect(declared == bytes)
 }
 
