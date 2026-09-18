@@ -5,6 +5,8 @@ import Foundation
 public struct MenuBarRecordingPresentation: Sendable, Equatable {
     public let symbol: String
     public let statusTitle: String
+    /// The recording's worst live health problem, or nil when healthy or not recording (F294).
+    public let healthLine: String?
     public let startTitle: String
     public let startEnabled: Bool
     public let stopTitle: String
@@ -20,7 +22,8 @@ public enum MenuBarRecording {
         isStopping: Bool,
         elapsedSeconds: TimeInterval,
         isMicrophoneBusy: Bool,
-        hasActiveTranscription: Bool
+        hasActiveTranscription: Bool,
+        health: RecordingHealthSnapshot? = nil
     ) -> MenuBarRecordingPresentation {
         let recording = isRecording && !isStopping
         let statusTitle: String
@@ -33,9 +36,18 @@ public enum MenuBarRecording {
         } else {
             statusTitle = "Not recording"
         }
+        // F294: the health banner was window-only, so a menu-bar recording could lose a channel
+        // unseen. Only a live recording's health counts — a snapshot outliving its recording is stale.
+        let liveHealth = recording ? health : nil
+        let atRisk = liveHealth?.overallStatus == .atRisk
+        let healthLine = liveHealth.flatMap { RecordingHUD.topWarning(from: $0.warnings) }
+            .map { atRisk ? "⚠︎ \($0)" : $0 }
         return MenuBarRecordingPresentation(
-            symbol: recording ? "record.circle.fill" : (isStopping ? "stop.circle" : "record.circle"),
+            symbol: atRisk
+                ? "exclamationmark.triangle.fill"
+                : recording ? "record.circle.fill" : (isStopping ? "stop.circle" : "record.circle"),
             statusTitle: statusTitle,
+            healthLine: healthLine,
             startTitle: "Start Recording",
             startEnabled: !isRecording && !isStopping && !isMicrophoneBusy && !hasActiveTranscription,
             stopTitle: "Stop & Transcribe",
@@ -44,5 +56,31 @@ public enum MenuBarRecording {
             cancelEnabled: recording,
             cancelNeedsConfirmation: true // Cancel is the only destructive path — always confirm
         )
+    }
+}
+
+/// Decides when a recording's health is worth interrupting someone for (F294).
+///
+/// The health tick is 1 Hz, so posting whenever a snapshot is at risk would post sixty notifications
+/// a minute. Each at-risk problem is announced once per recording — including when it clears and
+/// returns, because a flapping stream would otherwise do the same thing more slowly. Cautions
+/// (clipping, quiet system audio) are never announced: they degrade a recording, they do not lose it.
+public struct RecordingRiskAnnouncer: Sendable {
+    private var announced: Set<RecordingHealthWarning> = []
+
+    public init() {}
+
+    /// The message to deliver for `snapshot`, or nil when there is nothing new to say.
+    public mutating func announcement(for snapshot: RecordingHealthSnapshot) -> String? {
+        let fresh = snapshot.warnings.filter { warning in
+            RecordingHealthSnapshot(
+                microphoneLevel: snapshot.microphoneLevel, systemAudioLevel: snapshot.systemAudioLevel,
+                availableStorageBytes: nil, warnings: [warning]
+            ).overallStatus == .atRisk && !announced.contains(warning)
+        }
+        guard let worst = fresh.min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else { return nil }
+        // Only the one announced is marked, so a second problem hidden behind it still gets its turn.
+        announced.insert(worst)
+        return "Recording needs attention: \(RecordingHUD.message(worst))."
     }
 }

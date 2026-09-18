@@ -230,6 +230,8 @@ final class AppModel: ObservableObject {
     var isProposingCorrections: Bool { proposingCorrectionsID != nil }
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
+    /// Which at-risk problems this recording has already announced (F294). Reset per recording.
+    private var riskAnnouncer = RecordingRiskAnnouncer()
     @Published private(set) var isImporting = false
     @Published var selectedEngine: MeetingTranscriptionEngine {
         didSet { defaults.set(selectedEngine.rawValue, forKey: Self.modelKey) }
@@ -293,7 +295,12 @@ final class AppModel: ObservableObject {
         // `postTranscriptionNotification` binds rather than force-unwraps. A test asserting `report`
         // cannot and should not post to the user's Notification Centre.
         guard let app = NSApp else { return }
-        let hasVisibleWindow = app.windows.contains { $0.isVisible && $0.canBecomeMain }
+        let hasVisibleWindow = app.windows.contains {
+            WindowlessAlert.isReadable(
+                isVisible: $0.isVisible, canBecomeMain: $0.canBecomeMain,
+                isMiniaturized: $0.isMiniaturized, isOnActiveSpace: $0.isOnActiveSpace
+            )
+        }
         guard WindowlessAlert.shouldPost(hasVisibleWindow: hasVisibleWindow, message: message) else {
             return
         }
@@ -2386,6 +2393,7 @@ final class AppModel: ObservableObject {
         }
         recordingState = .starting
         recordingHealth = nil
+        riskAnnouncer = RecordingRiskAnnouncer()
         recordingMeter.reset()
         pendingMarkers = []
         let id = UUID()
@@ -2405,6 +2413,10 @@ final class AppModel: ObservableObject {
                         return
                     }
                     self.recordingHealth = snapshot
+                    // F294: the banner is in the window; with no window, say it once where they are.
+                    if let announcement = self.riskAnnouncer.announcement(for: snapshot) {
+                        self.postWindowlessAlert(announcement)
+                    }
                     // F275: this 1 Hz tick is the only trigger that catches the case with no power
                     // event — a docked lid close, where the display-bound stream dies and the Mac
                     // never sleeps. Before this the banner appeared here and nothing else happened.

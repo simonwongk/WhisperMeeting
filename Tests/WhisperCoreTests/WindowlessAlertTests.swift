@@ -61,3 +61,13 @@ func newlinesAreFlattened() {
     #expect(!content.body.contains("\n"))
     #expect(content.body == "The library is readable. Nothing was written.")
 }
+
+@Test("A minimised window, or one on another Space, is not a window the user can read (F294)")
+func unreadableWindowsCountAsNoWindow() {
+    #expect(WindowlessAlert.isReadable(isVisible: true, canBecomeMain: true, isMiniaturized: false, isOnActiveSpace: true))
+    #expect(!WindowlessAlert.isReadable(isVisible: true, canBecomeMain: true, isMiniaturized: true, isOnActiveSpace: true))
+    #expect(!WindowlessAlert.isReadable(isVisible: true, canBecomeMain: true, isMiniaturized: false, isOnActiveSpace: false))
+    #expect(!WindowlessAlert.isReadable(isVisible: false, canBecomeMain: true, isMiniaturized: false, isOnActiveSpace: true))
+    // A panel or the menu-bar extra's own window cannot host the alert.
+    #expect(!WindowlessAlert.isReadable(isVisible: true, canBecomeMain: false, isMiniaturized: false, isOnActiveSpace: true))
+}

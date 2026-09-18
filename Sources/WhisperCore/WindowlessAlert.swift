@@ -17,6 +17,19 @@ public enum WindowlessAlert {
     /// readable. `storageErrorMessage` can carry a whole `NSError` description.
     public static let maximumBodyCharacters = 240
 
+    /// Whether a window with these properties is one the user can actually read an alert in (F294).
+    ///
+    /// F257 asked only "visible and main-capable", which was never checked against the two states
+    /// a meeting produces: a minimised window, and a window left on another Space while the user is
+    /// in a full-screen call. AppKit reports a minimised window as not visible, but a window on
+    /// another Space **is** visible by its own account — so that user got no notification and an
+    /// alert they could not see. Both now count as "no window".
+    public static func isReadable(
+        isVisible: Bool, canBecomeMain: Bool, isMiniaturized: Bool, isOnActiveSpace: Bool
+    ) -> Bool {
+        isVisible && canBecomeMain && !isMiniaturized && isOnActiveSpace
+    }
+
     /// Whether to post a notification for `message`.
     ///
     /// Only with no window: with one, the `.alert` host already renders it, and posting as well

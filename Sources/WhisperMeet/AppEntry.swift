@@ -107,11 +107,16 @@ struct WhisperMeetApp: App {
     }
 
     private var menuBarSymbol: String {
+        // F294: a recording losing audio outranks dictation state — it is the one thing in the menu
+        // bar that cannot wait, and with no window open the icon is all the user can see.
+        if model.isRecordingActive, model.recordingHealth?.overallStatus == .atRisk {
+            return "exclamationmark.triangle.fill"
+        }
         switch dictation.status {
-        case .listening: "mic.fill"
-        case .transcribing, .delivering: "waveform"
-        case .error: "mic.slash"
-        default: "mic"
+        case .listening: return "mic.fill"
+        case .transcribing, .delivering: return "waveform"
+        case .error: return "mic.slash"
+        default: return "mic"
         }
     }
 }
@@ -136,9 +141,13 @@ private struct RecordingMenu: View {
             isStopping: model.recordingState == .stopping,
             elapsedSeconds: elapsedSeconds(),
             isMicrophoneBusy: model.isMicrophoneBusy,
-            hasActiveTranscription: model.hasActiveTranscription
+            hasActiveTranscription: model.hasActiveTranscription,
+            health: model.recordingHealth
         )
         Text(presentation.statusTitle)
+        if let healthLine = presentation.healthLine {
+            Text(healthLine)
+        }
         Button(presentation.startTitle) { Task { await model.startRecording() } }
             .disabled(!presentation.startEnabled)
         Button(presentation.stopTitle) { Task { _ = await model.stopRecording(title: "") } }
