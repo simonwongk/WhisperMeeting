@@ -224,3 +224,21 @@ func refinerLeavesEnglishAlone() async {
     _ = await refiner.attempt(text: "we shipped the release on tuesday", languageCode: "en")
     #expect(engine.requests.first?.systemPrompt == DictationRefinePrompt.system(languageCode: "en"))
 }
+
+// MARK: - F245: the refiner applies the protected-term guard
+
+@Test("A model reply that renames a vocabulary term is delivered raw as rejected (F245)")
+func refinerRefusesATermRename() async {
+    let refiner = DictationRefiner(engine: FakeRefineEngine(.reply("We shipped the Kestral release.")), sleep: neverSleep)
+    let attempt = await refiner.attempt(
+        text: "um we shipped the Kestrel release", languageCode: "en", protectedTerms: ["Kestrel"]
+    )
+    #expect(attempt == RefineAttempt(text: "um we shipped the Kestrel release", outcome: .rawRejected))
+}
+
+@Test("The two-argument attempt is the three-argument one with no terms (F245)")
+func refinerWithoutTermsIsUnchanged() async {
+    let refiner = DictationRefiner(engine: FakeRefineEngine(.reply("We shipped the Kestral release.")), sleep: neverSleep)
+    let attempt = await refiner.attempt(text: "um we shipped the Kestrel release", languageCode: "en")
+    #expect(attempt.outcome == .refined)
+}

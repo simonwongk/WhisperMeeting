@@ -101,3 +101,25 @@ public enum GlossaryCorrector {
         return dp[b.count]
     }
 }
+
+/// Which proposals a review sheet should arrive with already ticked (F245).
+///
+/// Every proposal used to arrive pre-selected, so a model's rewrite of a term the user had taught
+/// the app landed on one click — the F244 probe watched 陳經理 (a title) become 陳怡君 (a name)
+/// that way. A proposal whose span overlaps a vocabulary term is now unticked and marked; the
+/// user can still apply it, deliberately.
+public enum GlossaryReviewDefaults {
+    /// Indices of `proposals` to pre-select: everything except a proposal that touches a term.
+    public static func preselected(
+        _ proposals: [GlossaryCorrection], protectedTerms: [String]
+    ) -> Set<Int> {
+        Set(proposals.indices.filter { !touchesProtectedTerm(proposals[$0], protectedTerms) })
+    }
+
+    /// Whether applying `proposal` would rewrite a protected term.
+    public static func touchesProtectedTerm(
+        _ proposal: GlossaryCorrection, _ protectedTerms: [String]
+    ) -> Bool {
+        ProtectedTerms.touches(proposal.from, terms: protectedTerms)
+    }
+}

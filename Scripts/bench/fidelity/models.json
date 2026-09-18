@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "F244 candidate models, pinned. Revisions were read from the Hugging Face API on 2026-09-17 and",
+    "the SHA-256 of model.safetensors is filled in by models.py after the first verified download, so",
+    "a later fetch that does not match refuses rather than silently benchmarking different weights.",
+    "The baseline (qwen3-8b) is the app's installed Summarizer runtime and is never downloaded here.",
+    "Gemma 4's license is Google's Gemma Terms of Use, not Apache-2.0 as the 2026-09-14 survey said;",
+    "corrected here from the model card on download day."
+  ],
+  "cache": "~/Library/Caches/WhisperMeet-Bench",
+  "models": {
+    "gemma-4-e4b": {
+      "repo": "mlx-community/gemma-4-e4b-it-4bit",
+      "revision": "475b9088d29754a3379866cf5aeb6b41acd313c2",
+      "approx_gb": 5.15,
+      "license": "Gemma Terms of Use",
+      "weights_sha256": "932b8271fc3fe65adcc78b96c10c6268bbfb13e8f67d1358727c0d6ee97e1eff"
+    },
+    "breeze2-8b": {
+      "repo": "MXLouis/Llama-Breeze2-8B-Instruct-text-only-mlx-4Bit",
+      "revision": "06cc0f63953dace38f57936fb204ba5cb574f899",
+      "approx_gb": 4.52,
+      "license": "Llama 3.2 Community License (community text-only extraction; check the chat template)",
+      "weights_sha256": "aa894c085675fec1ca49980cdf0d7bc24541e0ba281505bc8e0e71b81ad0cf23"
+    }
+  }
+}

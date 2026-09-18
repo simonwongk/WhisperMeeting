@@ -2723,7 +2723,7 @@ private struct TranscriptDetailView: View {
                 get: { glossaryProposals != nil },
                 set: { if !$0 { glossaryProposals = nil } }
             )) {
-                GlossarySuggestionSheet(proposals: glossaryProposals ?? []) { accepted in
+                GlossarySuggestionSheet(proposals: glossaryProposals ?? [], protectedTerms: store.vocabulary) { accepted in
                     model.applyGlossaryCorrections(accepted, to: meetingID)
                 }
             }
@@ -2850,7 +2850,7 @@ private struct TranscriptDetailView: View {
                     .controlSize(.small)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
-                summaryBody(summary)
+                summaryBody(summary, transcript: meeting.transcriptText)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if model.summarizationEngine == .local, !model.isSummarizerInstalled, SummarizerRuntime.isSupportedOnCurrentMac {
                 Text("Install the local summarization model in Settings to turn this transcript into a summary, key points, and action items — privately, on this Mac.")
@@ -2868,10 +2868,26 @@ private struct TranscriptDetailView: View {
     }
 
     @ViewBuilder
-    private func summaryBody(_ summary: MeetingSummary) -> some View {
+    private func summaryBody(_ summary: MeetingSummary, transcript: String) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(summary.summary)
                 .textSelection(.enabled)
+            // F245: a summary omits by design and a dropped claim leaves no trace. This is the
+            // cheapest honest signal — the user's own vocabulary terms the transcript mentions
+            // and the summary does not — computed here so it follows the vocabulary.
+            let unmentioned = SummaryCoverage.unmentioned(
+                in: summary, transcript: transcript, terms: store.vocabulary
+            )
+            if !unmentioned.isEmpty {
+                Label {
+                    Text("Not mentioned in this summary: \(unmentioned.joined(separator: ", "))")
+                } icon: {
+                    Image(systemName: "text.badge.minus")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            }
             if !summary.keyPoints.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -3871,14 +3887,23 @@ private struct ActionItemCard: View {
 /// until the user confirms — corrections only take effect after explicit review (F82/F65).
 private struct GlossarySuggestionSheet: View {
     let proposals: [GlossaryCorrection]
+    /// The user's vocabulary (F245): a proposal that would rewrite one of these arrives unticked
+    /// and marked, because a model's rename of a term the user taught the app must not land on
+    /// one click. `GlossaryReviewDefaults` is the rule; this view only renders it.
+    let protectedTerms: [String]
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int>
 
-    init(proposals: [GlossaryCorrection], onApply: @escaping ([GlossaryCorrection]) -> Void) {
+    init(
+        proposals: [GlossaryCorrection],
+        protectedTerms: [String] = [],
+        onApply: @escaping ([GlossaryCorrection]) -> Void
+    ) {
         self.proposals = proposals
+        self.protectedTerms = protectedTerms
         self.onApply = onApply
-        _selected = State(initialValue: Set(proposals.indices))
+        _selected = State(initialValue: GlossaryReviewDefaults.preselected(proposals, protectedTerms: protectedTerms))
     }
 
     var body: some View {
@@ -3899,10 +3924,17 @@ private struct GlossarySuggestionSheet: View {
                             if isOn { selected.insert(index) } else { selected.remove(index) }
                         }
                     )) {
-                        HStack(spacing: 6) {
-                            Text(proposal.from).foregroundStyle(.secondary)
-                            Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                            Text(proposal.to).fontWeight(.medium)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(proposal.from).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                                Text(proposal.to).fontWeight(.medium)
+                            }
+                            if GlossaryReviewDefaults.touchesProtectedTerm(proposal, protectedTerms) {
+                                Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
                 }

@@ -351,9 +351,12 @@ def warn_on_contention(out=sys.stderr):
 # Real invocation against the installed runtime
 # ---------------------------------------------------------------------------
 
-def _runtime_paths():
-    python = os.path.join(RUNTIME, "venv", "bin", "python3")
-    model = os.path.join(RUNTIME, "model")
+def _runtime_paths(python=None, model=None):
+    """The app's installed runtime by default; a candidate model and the bench venv when given
+    (F244 candidates, fetched by `models.py`). The helper SCRIPTS are always the app's own — the
+    point is to measure what the app's prompts and post-processing do with different weights."""
+    python = python or os.path.join(RUNTIME, "venv", "bin", "python3")
+    model = model or os.path.join(RUNTIME, "model")
     missing = [path for path in (python, model) if not os.path.exists(path)]
     if missing:
         raise SystemExit(
@@ -440,7 +443,12 @@ def parse_args(argv=None):
     parser.add_argument("--prompts", default=DEFAULT_PROMPTS)
     parser.add_argument("--results", default=DEFAULT_RESULTS)
     parser.add_argument("--model-name", default="installed-qwen3-8b-4bit",
-                        help="label for the results directory; the weights come from the app")
+                        help="label for the results directory; the weights come from the app unless --model-dir is given")
+    parser.add_argument("--model-dir", default=None,
+                        help="a candidate model directory (see models.py); the app's helper scripts run over it")
+    parser.add_argument("--python", default=None,
+                        help="the interpreter to run the helpers with; default: the app's runtime venv. "
+                             "Candidates need the bench venv (models.py venv)")
     parser.add_argument("--surfaces", default=",".join(SURFACES))
     parser.add_argument("--limit", type=int, default=None, help="items per surface")
     parser.add_argument("--smoke", action="store_true",
@@ -471,6 +479,8 @@ def main(argv=None):
             raise SystemExit(f"unknown surface '{name}'; known: {', '.join(SURFACES)}")
 
     header = run_header(corpus_path, args.prompts, args.model_name)
+    if args.model_dir:
+        header["model_dir"] = os.path.abspath(args.model_dir)
     plan = {name: items_for_surface(items, name, limit) for name in surfaces}
     print(f"corpus {header['corpus']} ({header['corpus_sha256'][:12]}…), "
           f"prompts {header['prompts_sha256'][:12]}…")
@@ -482,7 +492,7 @@ def main(argv=None):
         return 0
 
     warn_on_contention()
-    python, model = _runtime_paths()
+    python, model = _runtime_paths(args.python, args.model_dir)
     run_id = args.run_id or ("smoke" if args.smoke else "run")
     out_dir = os.path.join(args.results, run_id, args.model_name)
     os.makedirs(out_dir, exist_ok=True)

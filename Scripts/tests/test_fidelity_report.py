@@ -567,3 +567,20 @@ class JoinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolveCorpusTests(unittest.TestCase):
+    def test_the_corpus_is_chosen_by_digest_when_both_share_a_name(self):
+        """Both corpora are `items.jsonl`; directory order picked the smoke one for a full run."""
+        import hashlib, tempfile
+        with tempfile.TemporaryDirectory() as root:
+            for folder, body in (("smoke", b"smoke\n"), ("corpus", b"real\n")):
+                os.makedirs(os.path.join(root, folder))
+                with open(os.path.join(root, folder, "items.jsonl"), "wb") as handle:
+                    handle.write(body)
+            real_digest = hashlib.sha256(b"real\n").hexdigest()
+            chosen = report.resolve_corpus({"corpus": "items.jsonl", "corpus_sha256": real_digest}, here=root)
+            self.assertEqual(chosen, os.path.join(root, "corpus", "items.jsonl"))
+            smoke_digest = hashlib.sha256(b"smoke\n").hexdigest()
+            chosen = report.resolve_corpus({"corpus": "items.jsonl", "corpus_sha256": smoke_digest}, here=root)
+            self.assertEqual(chosen, os.path.join(root, "smoke", "items.jsonl"))

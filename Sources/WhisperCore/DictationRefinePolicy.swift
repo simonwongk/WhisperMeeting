@@ -56,6 +56,17 @@ public enum DictationRefinePolicy {
     /// delivered. Mirrors the F165 verbatim-guard ethos: a rejection costs nothing (raw is what
     /// ships today); an accepted hallucination costs trust. So every check biases toward raw.
     public static func acceptedOutput(_ output: String, input: String) -> String? {
+        acceptedOutput(output, input: input, protectedTerms: [])
+    }
+
+    /// As above, and additionally refuses an output that lost a protected term the input contained
+    /// (F245). The terms are the user's Business Vocabulary; the rule is `ProtectedTerms`, which is
+    /// the F244 scorer's rule, so the bench's `term_altered` and this refusal are one event. The
+    /// cost is the usual one — the raw transcript ships — which is the right side to err on for a
+    /// word the user went to the trouble of teaching the app.
+    public static func acceptedOutput(
+        _ output: String, input: String, protectedTerms: [String]
+    ) -> String? {
         var candidate = output.trimmingCharacters(in: .whitespacesAndNewlines)
         candidate = strippingCodeFence(candidate)
         candidate = strippingWrappingQuotes(candidate)
@@ -83,6 +94,8 @@ public enum DictationRefinePolicy {
         guard !ScriptDrift.isSimplifyingConversion(source: cleanedInput, output: candidate) else {
             return nil
         }
+        guard ProtectedTerms.missing(from: candidate, comparedTo: cleanedInput, terms: protectedTerms).isEmpty
+        else { return nil }
         return candidate
     }
 

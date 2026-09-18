@@ -739,8 +739,13 @@ final class DictationController: ObservableObject {
                 var refinement: String?
                 if refineOn, !cleaned.isEmpty {
                     await MainActor.run { if self.enabled { self.overlay.show(.refining) } }
+                    // F245: the whole vocabulary, not the prompt-capped slice and not gated on
+                    // the engine's prompt support — this is a guard on the model's output, not a
+                    // hint to the recognizer, and a term the user taught the app must survive
+                    // whichever engine heard it.
                     let attempt = await refiner.attempt(
-                        text: cleaned, languageCode: result.languageCode)
+                        text: cleaned, languageCode: result.languageCode,
+                        protectedTerms: vocabularyProvider())
                     refinement = attempt.outcome.rawValue
                     if attempt.outcome == .refined {
                         rawText = cleaned

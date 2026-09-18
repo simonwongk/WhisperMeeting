@@ -601,6 +601,36 @@ def load_framing(path=DEFAULT_FRAMING):
         return json.load(handle).get("phrases") or []
 
 
+def resolve_corpus(header, here=None):
+    """The corpus file a run's header names, chosen by DIGEST when both the smoke and the real corpus
+    carry that name — which they do: both are `items.jsonl`. Picking by directory order scored the
+    first full run against the smoke corpus and refused, correctly, but for the wrong reason."""
+    here = here or _HERE
+    name = header.get("corpus")
+    if not name:
+        return None
+    candidates = [
+        os.path.join(here, "smoke", name),
+        os.path.join(here, "corpus", name),
+    ]
+    existing = [path for path in candidates if os.path.exists(path)]
+    wanted = header.get("corpus_sha256")
+    if wanted:
+        for path in existing:
+            if _digest(path) == wanted:
+                return path
+    return existing[0] if existing else None
+
+
+def _digest(path):
+    import hashlib
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run", required=True, help="a results/<run>/<model> directory")
@@ -619,13 +649,7 @@ def main(argv=None):
 
     corpus_path = args.corpus
     if not corpus_path:
-        for candidate in (
-            os.path.join(_HERE, "smoke", header.get("corpus") or ""),
-            os.path.join(_HERE, "corpus", header.get("corpus") or ""),
-        ):
-            if header.get("corpus") and os.path.exists(candidate):
-                corpus_path = candidate
-                break
+        corpus_path = resolve_corpus(header)
     if not corpus_path or not os.path.exists(corpus_path):
         raise SystemExit(
             f"cannot find the corpus for this run (header says {header.get('corpus')!r}); "

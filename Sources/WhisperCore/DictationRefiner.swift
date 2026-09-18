@@ -45,6 +45,9 @@ public protocol DictationTextRefining: Sendable {
     /// optional warm-up must not make the controller spend a dictation's latency budget trying it.
     func warmUp() async -> Bool
     func attempt(text: String, languageCode: String?) async -> RefineAttempt
+    /// As above, refusing an output that loses one of `protectedTerms` (F245). Defaulted in the
+    /// extension below so a fake that implements only the two-argument form still conforms.
+    func attempt(text: String, languageCode: String?, protectedTerms: [String]) async -> RefineAttempt
     func shutdown()
     /// Temporarily frees a resident model and waits until it is gone.
     func evict() async
@@ -53,6 +56,10 @@ public protocol DictationTextRefining: Sendable {
 public extension DictationTextRefining {
     func evict() async {
         shutdown()
+    }
+
+    func attempt(text: String, languageCode: String?, protectedTerms: [String]) async -> RefineAttempt {
+        await attempt(text: text, languageCode: languageCode)
     }
 }
 
@@ -106,6 +113,12 @@ public actor DictationRefiner: DictationTextRefining {
     }
 
     public func attempt(text: String, languageCode: String?) async -> RefineAttempt {
+        await attempt(text: text, languageCode: languageCode, protectedTerms: [])
+    }
+
+    public func attempt(
+        text: String, languageCode: String?, protectedTerms: [String]
+    ) async -> RefineAttempt {
         guard !inFlight, !isEvicting else { return RefineAttempt(text: text, outcome: .rawBusy) }
         guard case let .attempt(budget) = DictationRefinePolicy.decision(for: text) else {
             return RefineAttempt(text: text, outcome: .skipped)
@@ -154,7 +167,9 @@ public actor DictationRefiner: DictationTextRefining {
 
         switch raced {
         case let .finished(.success(output)):
-            if let accepted = DictationRefinePolicy.acceptedOutput(output, input: text) {
+            if let accepted = DictationRefinePolicy.acceptedOutput(
+                output, input: text, protectedTerms: protectedTerms
+            ) {
                 return RefineAttempt(text: accepted, outcome: .refined)
             }
             return RefineAttempt(text: text, outcome: .rawRejected)
