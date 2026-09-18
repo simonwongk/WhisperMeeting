@@ -375,6 +375,10 @@ final class AppModel: ObservableObject {
     /// the offer and the act are two separate calls. Deliberately the same shape as
     /// `pendingLongMediaConfirmation` above, so this model has one confirmation idiom, not two.
     @Published var pendingLibraryRecovery: [RetainedGeneration]?
+    /// A folder rebuild awaiting the user's review (F289). Offered by `requestLibraryRecovery` when
+    /// a read-only library has no retained generation to restore — F252's dead end — and applied
+    /// only by `rebuildLibraryFromFolders(confirmed: true)`.
+    @Published var pendingFolderRebuild: FolderRebuild.Proposal?
     /// The reviewed rebuild offer awaiting the user's answer (F267). Nil when none is pending.
     @Published var pendingSourceRebuild: SourceRebuildRequest?
     /// Whether the user has opted into the link-import feature. Off by default: every other
@@ -4151,6 +4155,17 @@ extension AppModel {
         do {
             let generations = try store.indexGenerations()
             guard !generations.isEmpty else {
+                // F289: with no earlier copy to restore, offer the rebuild from the recording
+                // folders themselves — F191 slice E4, which was tested and reachable from nothing.
+                // Here rather than a button of its own, because the two routes are alternatives
+                // chosen by what is on disk, and this is the branch where the other one is not.
+                // The proposal is shown before anything is written; a proposal of nothing falls
+                // through to the message below, so an empty recovery is never offered as one.
+                let proposal = try FolderRebuild.propose(in: store.rootDirectory)
+                if proposal.isWorthApplying {
+                    pendingFolderRebuild = proposal
+                    return
+                }
                 // F252's dead end, and the message now names what the user actually still has.
                 //
                 // "Your recordings are untouched — see the documentation" is true and leaves them
@@ -4226,6 +4241,63 @@ extension AppModel {
     /// Dismisses a pending recovery offer without restoring anything.
     func cancelLibraryRecovery() {
         pendingLibraryRecovery = nil
+    }
+
+    /// Applies the reviewed folder rebuild. Does nothing at all unless `confirmed` is true (F289).
+    ///
+    /// F193's shape exactly, for F193's reasons: the unconfirmed call is the seam the confirmation
+    /// hangs on, and only a proposal this model produced and showed can be applied, so a caller
+    /// cannot rebuild what the user never reviewed. Audio is never touched — this writes an index,
+    /// through the append-only path, and the damaged one stays on disk.
+    func rebuildLibraryFromFolders(confirmed: Bool) {
+        guard confirmed, let proposal = pendingFolderRebuild else { return }
+        do {
+            try store.installRebuiltIndex(proposal.meetings)
+            pendingFolderRebuild = nil
+            if !store.isDegraded {
+                // As `recoverLibrary` does: resume the work startup skipped while read-only.
+                didPerformStartupRecovery = false
+                Task { await performStartupRecovery() }
+            } else {
+                // The index came back but another persisted store is still damaged. Never report
+                // success in that case — the F187 honesty rule.
+                alertMessage = """
+                    The meeting index was rebuilt from the recording folders, but WhisperMeet still \
+                    could not fully read its library, so it stays in read-only mode. Your recordings \
+                    are untouched.
+                    """
+            }
+        } catch {
+            // The offer stays up, as F193 leaves `pendingLibraryRecovery` populated: the failure
+            // may be specific to this attempt, and nothing was changed.
+            alertMessage = """
+                The meeting index could not be rebuilt. Nothing was changed and your recordings are \
+                untouched. \(error.localizedDescription)
+                """
+        }
+    }
+
+    /// Dismisses a pending folder rebuild without writing anything.
+    func cancelFolderRebuild() {
+        pendingFolderRebuild = nil
+    }
+
+    /// The rebuild confirmation's body (F289). Static and here, as `rebuildConfirmationMessage` is,
+    /// because the view is private and a promise nothing asserts is a promise that drifts. It
+    /// leads with what the rebuild cannot bring back — F193's constraint — so the user commits
+    /// knowing it rather than discovering it afterwards.
+    static func folderRebuildMessage(_ proposal: FolderRebuild.Proposal) -> String {
+        var text = "No earlier copy of the index was kept, but \(proposal.meetings.count) meeting"
+            + (proposal.meetings.count == 1 ? "" : "s")
+            + " can be rebuilt from the recording folders. "
+        if proposal.deferredToRecovery > 0 {
+            text += "\(proposal.deferredToRecovery) interrupted recording"
+                + (proposal.deferredToRecovery == 1 ? " is" : "s are")
+                + " left for the usual recovery afterwards. "
+        }
+        text += "Your recordings are never changed by this, and the damaged index is kept so the rebuild can be undone.\n\n"
+        text += proposal.cannotRestore.joined(separator: "\n")
+        return text
     }
 
     func verifyLibraryIntegrity() -> [LibraryIntegrityResult] {

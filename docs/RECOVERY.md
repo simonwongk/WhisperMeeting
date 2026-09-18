@@ -122,6 +122,19 @@ If the library is open read-only, restoring still works — it is the one action
 because it reads the bytes off disk and verifies them rather than trusting anything in memory. **You
 will need to quit and reopen WhisperMeet afterwards** to get back to a writable library.
 
+### Rebuilding the index from the recording folders
+
+If the library is read-only and **no** past generation is retained, *Recover Library…* offers to
+rebuild the index from the recording folders themselves instead. It shows what it would produce
+before anything is written: one meeting per folder holding finished audio, titled from that folder's
+`notes.md` where one exists and by date otherwise. Transcripts, summaries, tags, notes and markers
+are **not** restored — each meeting's text is still in its `notes.md` beside the audio, and the
+meeting can be transcribed again — and the dialog says so before you confirm. Folders holding only
+raw source tracks are left for the interrupted-recording recovery on the next launch.
+
+The rebuild is written the same append-only way as a restore, so the damaged index stays on disk and
+the rebuild appears in the restore list like any other generation.
+
 ### Rehearsing the restore before you need it
 
 The recovery path is the one part of this app that is only ever used on the worst day, by whoever is

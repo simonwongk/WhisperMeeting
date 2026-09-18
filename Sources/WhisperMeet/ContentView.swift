@@ -1565,6 +1565,26 @@ struct SettingsView: View {
                         } message: {
                             Text("Your recordings are never changed by this. Each option is a copy of the index saved earlier; the meetings it did not know about will be missing until you restore a newer one.")
                         }
+                        // F289: the other route out of a read-only library, offered by the same
+                        // button when there is no earlier copy to restore. F191 slice E4 was
+                        // tested and reachable from nothing until this dialog existed.
+                        .confirmationDialog(
+                            "Rebuild the meeting index from the recording folders?",
+                            isPresented: .init(
+                                get: { model.pendingFolderRebuild != nil },
+                                set: { if !$0 { model.cancelFolderRebuild() } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Rebuild Index") {
+                                model.rebuildLibraryFromFolders(confirmed: true)
+                            }
+                            Button("Cancel", role: .cancel) { model.cancelFolderRebuild() }
+                        } message: {
+                            if let proposal = model.pendingFolderRebuild {
+                                Text(AppModel.folderRebuildMessage(proposal))
+                            }
+                        }
                 }
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
                     .font(.caption)

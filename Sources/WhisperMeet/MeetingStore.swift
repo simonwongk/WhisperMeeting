@@ -1182,7 +1182,31 @@ final class MeetingStore: ObservableObject {
     /// Append-only, through the ordinary write algorithm, so the generation being replaced stays on
     /// disk and the restore is itself undoable.
     func restoreIndexGeneration(_ generation: RetainedGeneration) throws {
-        let outcome = try meetingFiles.restore(generation: generation)
+        adoptRestoredIndex(try meetingFiles.restore(generation: generation))
+    }
+
+    /// Installs an index rebuilt from the recording folders as the current one (F289, F191 E4).
+    ///
+    /// **The second mutator that works while the library is read-only**, and the decision to have
+    /// one is F289's. It is allowed for the same reason `restoreIndexGeneration` is: nothing in
+    /// memory is trusted. The records come from `FolderRebuild.propose`, which reads the folders
+    /// on disk and nothing else, and the user has reviewed them before this is called. What makes
+    /// it safe is the write, not the source: it goes through the same append-only algorithm as a
+    /// restore — `expecting:` the current generation, so it loses a race with a live sibling
+    /// writer like any other write — so the damaged index it replaces stays on disk, and this is
+    /// itself undoable through the restore list.
+    ///
+    /// F252 closed `wontfix` because this operation "rewrites the index of an already-damaged
+    /// library" behind a bespoke path. This is not that path: the proposal, the review, the
+    /// pre-existing generation and the tested reload are all slice E2's.
+    func installRebuiltIndex(_ meetings: [MeetingRecord]) throws {
+        let current = try? meetingFiles.load()
+        adoptRestoredIndex(try meetingFiles.save(meetings, expecting: current?.token))
+    }
+
+    /// What every degraded-mode index write does after the bytes are down, shared so the two
+    /// cannot drift.
+    private func adoptRestoredIndex(_ outcome: BackupJSONStore<[MeetingRecord]>.SaveOutcome) {
         meetingsToken = outcome.token
         persistCommitCount += 1
         // Re-read rather than decoding into memory a second time, so `meetings` and the ordering
