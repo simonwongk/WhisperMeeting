@@ -2585,7 +2585,10 @@ final class AppModel: ObservableObject {
                 duration: artifact.duration,
                 recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL),
                 markers: pendingMarkers.isEmpty ? nil : pendingMarkers,
-                healthReport: artifact.healthReport
+                healthReport: artifact.healthReport,
+                // F292: the same field startup recovery uses for a sleep, so the meeting page and
+                // notes.md say why this recording is short whichever way it was saved.
+                recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
             )
             store.upsert(meeting)
             pendingMarkers = []
@@ -2661,7 +2664,8 @@ final class AppModel: ObservableObject {
                             : "The recording was recovered after a finishing error. The source files remain on this Mac, and transcription can be tried again.",
                         markers: recoveredMarkers,
                         recoveryWarning: recoveryWarning,
-                        recoverySource: recovered.source.rawValue
+                        recoverySource: recovered.source.rawValue,
+                        recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
                     ))
                     var alert = severe
                         ? "The meeting could not finish normally, and most of its audio could not be rebuilt. \(Self.severelyTruncatedRecoveryMessage)"
@@ -2859,6 +2863,13 @@ final class AppModel: ObservableObject {
             return
         }
         noteSleepInterruption(id: id, startedAt: startedAt, at: now)
+        // F292: say why it stopped, now — before the Mac sleeps, and to a user with no window.
+        // The rerun on 2026-09-19 stopped here one second after a successful restart, and the only
+        // things on record were the "resumed" banner and notification, which this replaces.
+        let notice = Self.sleepStopNotice
+        captureRestartNotice = notice
+        captureRestartNoticeIsRetrying = false
+        report(notice)
         // Move the state machine SYNCHRONOUSLY before handing off to the async stop. Without this
         // the policy's `.stopping` no-op never fires: macOS can post `willSleep` more than once
         // around a failed sleep attempt, and `stopRecording` is async, so a second notification
@@ -2869,7 +2880,17 @@ final class AppModel: ObservableObject {
         // (`canCancelRecording`), so a cancel cannot race this finalize — the same guard F139 added.
         recordingState = .stopping
         // F298: the user's title survives a sleep-triggered stop for the same reason.
-        Task { [recordingTitle] in _ = await stopRecording(title: recordingTitle) }
+        Task { [recordingTitle] in
+            // The stop is marked so the saved meeting carries the reason, and so a capture that had
+            // also died does not report its early end on top of the notice above.
+            isStoppingForSleep = true
+            isFinalizingAfterCaptureLoss = true
+            defer {
+                isStoppingForSleep = false
+                isFinalizingAfterCaptureLoss = false
+            }
+            _ = await stopRecording(title: recordingTitle)
+        }
     }
 
     /// The last thing a restart did, for the banner. Nil when nothing has happened (F275).
@@ -2900,6 +2921,13 @@ final class AppModel: ObservableObject {
     /// Set while the policy's own finalize is stopping the recording, so `stopRecording` does not
     /// report the early end a second time — the finalize notice already said it (F292).
     private var isFinalizingAfterCaptureLoss = false
+
+    /// The stop in progress was started by `willSleep` — a lid close, docked or not (F292).
+    private var isStoppingForSleep = false
+
+    /// What a user is told when a lid close or sleep stops the recording (F292). "About to", because
+    /// a docked lid close posts `willSleep` and then does not sleep.
+    nonisolated static let sleepStopNotice = "Recording stopped and saved because this Mac was going to sleep — closing the lid does this. Everything captured up to that point is kept and will be transcribed."
 
     /// One `stopRecording` at a time (F292). ⌘R stays enabled while "Finishing…", and a second stop
     /// used to run a second finalize over the first — two mixes into one `meeting.wav`, a manifest

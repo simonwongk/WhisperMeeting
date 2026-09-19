@@ -200,3 +200,12 @@ func paddingByteCountSaturates() {
     #expect(CaptureRestartPolicy.paddingByteCount(forGap: 1e18, sampleRate: 48_000) == Int64.max)
     #expect(CaptureRestartPolicy.paddingByteCount(forGap: 1, sampleRate: 48_000) == 48_000 * 4 * 2)
 }
+
+@Test("A gap under a second is described as such, not as '0 sec' (F292 rerun)")
+func subSecondGapIsDescribedPlainly() {
+    // The rerun's real gap was 0.39 s, and the notice read "The 0 sec that could not be captured".
+    let notice = CaptureRestartPolicy.notice(for: .restart(padding: 0.39), trigger: .streamFailed)
+    #expect(notice?.contains("0 sec") == false)
+    #expect(notice?.contains("under a second") == true)
+    #expect(CaptureRestartPolicy.notice(for: .restart(padding: 12), trigger: .streamFailed)?.contains("12 sec") == true)
+}

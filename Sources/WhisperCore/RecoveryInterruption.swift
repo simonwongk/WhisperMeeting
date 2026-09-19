@@ -24,7 +24,9 @@ public enum RecoveryInterruption: String, Sendable, Equatable, CaseIterable {
     public var caveat: String {
         switch self {
         case .systemSleep:
-            return "The recording stopped because this Mac went to sleep."
+            // "or was about to": a docked lid close posts `willSleep` without the Mac ever
+            // sleeping (the user's 2026-09-19 rerun), and the recording still stops and saves.
+            return "The recording stopped because this Mac went to sleep, or was about to — closing the lid does this. Everything captured before then was kept."
         }
     }
 }

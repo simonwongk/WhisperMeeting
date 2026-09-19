@@ -15,7 +15,7 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 | | Entry | Time | Why this order |
 |---|---|---|---|
 | 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
-| 2 | **F275** | ~5 min | Install the current build (`Scripts/install-app.sh`) and repeat the docked lid close. Your 09:47 run used the Sep 16 build, which has no restart code. |
+| 2 | **F275** | done | Rerun on the current build 2026-09-19; decision recorded (lid close = stop and save). |
 | 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Worth doing *with* row 2 — a recording that ends because the capture died now goes through the notification channel too, so one lid close exercises both. |
 | 5 | **F239** | one decision | Should deleting a meeting also shred it from the index history? My recommendation is in the entry (opt-in). Pure preference — there is no wrong answer. |
 | 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
@@ -66,54 +66,10 @@ None of these rots. Everything else on that list is closed with evidence in `TIC
 
 ## F275 — Confirm the capture restart on the hardware, and set the padding cap
 
-**Status (2026-09-19):** you did run 1 on 2026-09-18 at 09:47 — thank you — but with the installed
-app from Sep 16, which has none of the restart code. It reproduced the original failure exactly
-(capture gone at 13.7 s, nothing after the lid reopened, "recovered after a finishing error"), and
-tracing that through current code found and fixed a dozen more problems (see F292 in the ticket
-log). **The cap is settled:** 5 minutes stands, decided under your delegation.
-
-**What I need from you now:** install the current build, then the two runs again.
-
-```bash
-Scripts/install-app.sh
-```
-
-(Quit WhisperMeet first; the installer refuses while it is running, on purpose.) Then run 1 below
-for about a minute with the lid closed. The folder tells me the rest, including what your microphone
-does while the lid is shut (F319) — no need to note anything.
-
-**Earlier text, still accurate for what each run checks:** two physical runs and one number.
-
-**The runs.** The restart decision is pinned by tests, but no test can prove that rebuilding an
-`SCStream` after a display disappears actually resumes audio on a real Mac — that depends on
-ScreenCaptureKit's behaviour, not on this code.
-
-1. **Docked, lid closed.** Start a recording with an external display connected, close the lid, keep
-   talking for a minute, reopen. Expected: recording continues, and a banner says it resumed after a
-   display was disconnected with the gap marked as silence. This is the case that lost you 63
-   minutes of a meeting, so it is the one worth doing first.
-2. **Undocked, lid closed.** Same, but with no external display, so the Mac actually sleeps. Expected:
-   the recording is finalized and saved, and the banner says so rather than the app silently showing
-   a recording that is no longer running.
-
-If you can, note the `SCStream` error each time — `log show --last 10m --predicate 'subsystem ==
-"com.whispermeet.app"' | grep -i restart` will show what the app logged.
-
-**The number: how long a gap may be padded before the meeting is split instead.** Default shipped:
-**5 minutes**. Padding a gap writes real silence into the audio so that timestamps after it still
-line up with the clock; the trade is disk, at **384 KB per second** of silence across the two raw
-tracks:
-
-| Gap padded | Disk it costs | Reasonable? |
-|---|---|---|
-| 1 min | 23 MB | clearly fine |
-| 5 min (current default) | 115 MB | a coffee break, still one meeting |
-| 30 min | 690 MB | a long lunch — probably two meetings |
-| 8 h (lid shut overnight) | 11 GB | clearly not |
-
-Being wrong either way is harmless: too low and you get two meetings instead of one, too high and
-you get more silence. Nothing about the timeline breaks at any value. Say a number and I will change
-the default; leave it and 5 minutes stands.
+**Done, 2026-09-19.** Your rerun on the current build (00:18, docked, lid closed) showed the restart
+resuming real audio after a 0.39 s gap, then the recording stopping and saving when macOS announced
+sleep. You chose that behaviour: a lid close ends the recording and saves everything. The cap stays
+at 5 minutes. Nothing more is needed; details are in the F292 log entry.
 
 ## F230 — Watch the speaker-analysis screens once, with VoiceOver on
 

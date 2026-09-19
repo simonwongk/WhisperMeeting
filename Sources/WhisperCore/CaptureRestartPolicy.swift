@@ -160,9 +160,11 @@ public enum CaptureRestartPolicy {
         case .none:
             return nil
         case let .restart(padding):
+            // Under a second reads "0 sec" through `durationPhrase` — the user's real gap was 0.39 s.
+            let gap = padding < 1 ? "The moment (under a second)" : "The \(durationPhrase(padding))"
             return """
             Recording resumed after \(trigger.phrase). \
-            The \(durationPhrase(padding)) that could not be captured is silence in the audio, \
+            \(gap) that could not be captured is silence in the audio, \
             so the timestamps after it still line up with the clock.
             """
         case .finalize:

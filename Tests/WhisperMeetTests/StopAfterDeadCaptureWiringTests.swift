@@ -198,3 +198,53 @@ func menuBarStopKeepsTheTypedTitle() async throws {
     #expect(await model.stopRecording(title: "") == id)
     #expect(model.store.meeting(id: id)?.title == "Board prep")
 }
+
+// MARK: - The user's rerun, 2026-09-19 00:18 (F292)
+//
+// Docked, lid closed: the capture died at 10.7 s, restarted 0.4 s later with the gap padded, and
+// then macOS posted `willSleep` — though the Mac never slept — and the app stopped and saved.
+// Everything captured was kept, which the user confirmed is the behaviour they want ("once closed,
+// just auto save; just don't lose it"). What was missing: nothing said WHY it stopped. The
+// window still showed "Recording resumed…", a windowless user's last notification was that
+// resume, and the meeting itself carried no reason for being 12 seconds long.
+
+@MainActor
+private func waitUntilIdle(_ model: AppModel) async throws {
+    for _ in 0..<100 where model.recordingState != .idle {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+}
+
+@MainActor
+@Test("A lid close that stops the recording says so, replaces the 'resumed' banner, and marks the meeting (F292)")
+func sleepStopExplainsItself() async throws {
+    let (model, _, cleanup) = try makeModel()
+    defer { cleanup() }
+    await model.startRecording()
+    let id = try attachTracks(model, seconds: 11)
+    model.captureRestartNotice = "Recording resumed after the audio capture stopped unexpectedly."
+
+    model.handleSystemWillSleep()
+    try await waitUntilIdle(model)
+
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.recordingPath.hasSuffix("meeting.wav"), "a lid close must save normally, not lose the audio")
+    #expect(meeting.recoveryInterruption == RecoveryInterruption.systemSleep.rawValue,
+            "the meeting does not say why it is short")
+    #expect(MeetingStore.recoveryCaveats(for: meeting).contains { $0.contains("closing the lid") })
+    let notice = try #require(model.captureRestartNotice)
+    #expect(!notice.contains("resumed"), "the stale 'resumed' banner survived the stop")
+    #expect(notice.contains("saved"))
+    #expect(model.lastWindowlessMessage == notice, "a user with no window was not told it stopped")
+}
+
+@MainActor
+@Test("A stop the user pressed is not marked as a sleep stop (F292)")
+func userStopIsNotASleepStop() async throws {
+    let (model, _, cleanup) = try makeModel()
+    defer { cleanup() }
+    await model.startRecording()
+    let id = try attachTracks(model, seconds: 2)
+    _ = await model.stopRecording(title: "")
+    #expect(model.store.meeting(id: id)?.recoveryInterruption == nil)
+}
