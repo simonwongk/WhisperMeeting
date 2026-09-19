@@ -64,7 +64,10 @@ let package = Package(
         ),
         .testTarget(
             name: "WhisperCoreTests",
-            dependencies: ["WhisperCore"]
+            dependencies: ["WhisperCore"],
+            // Read by source path (`#filePath`) in RefinementGuardVectorTests, never from a bundle;
+            // excluded so SwiftPM stops warning that the JSON is an unhandled file.
+            exclude: ["Fixtures"]
         ),
         .testTarget(
             name: "WhisperMeetTests",
