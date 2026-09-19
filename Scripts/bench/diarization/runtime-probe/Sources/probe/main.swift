@@ -59,8 +59,15 @@ do {
     let t0 = Date()
     let result = try await manager.process(audio) { _, _ in }
     let turns = result.segments.map { seg -> Turn in
+        // Fail hard, never `?? 0` (F343). If FluidAudio ever emits `speaker_1` or `spk1` instead of
+        // `S1`, every turn collapsed to speaker 0 and the probe printed `speakers=1` with no error —
+        // a measurement tool failing silently into a plausible wrong answer, which is the exact
+        // shape of the 179-cluster episode this tool exists to investigate.
         let id = seg.speakerId.replacingOccurrences(of: "S", with: "")
-        return Turn(speaker: Int(id) ?? 0, start: Double(seg.startTimeSeconds), end: Double(seg.endTimeSeconds))
+        guard let speaker = Int(id) else {
+            fatalError("unrecognised speakerId \"\(seg.speakerId)\": this probe's parser is out of date")
+        }
+        return Turn(speaker: speaker, start: Double(seg.startTimeSeconds), end: Double(seg.endTimeSeconds))
     }
     summarize(String(format: "PYANNOTE (current runtime, %.0f s)", Date().timeIntervalSince(t0)), turns)
 } catch {
@@ -85,8 +92,23 @@ do {
 // mapping of Sortformer slots onto pyannote clusters agree?
 if let p = allTurns["PYA"], let q = allTurns["SOR"] {
     let end = max(p.map(\.end).max() ?? 0, q.map(\.end).max() ?? 0)
-    let n = Int(end * 10) + 1
-    func frames(_ t: [Turn]) -> [[Int]] { var f = Array(repeating: [Int](), count: n); for x in t { for i in Int(x.start*10)..<min(n, Int(x.end*10)) { f[i].append(x.speaker) } }; return f }
+    // `Int(Double)` traps on overflow or NaN, and this runs after a 9-hour sweep (F343). Saturating,
+    // the house standard, and the frame index is clamped into range as well: a negative start time
+    // was an out-of-range crash rather than a discarded turn.
+    let n = Int(saturating: end * 10) + 1
+    // CAVEAT: a 0.1 s grid cannot see a turn where floor(start*10) == floor(end*10), so turns under
+    // 100 ms are invisible to the agreement percentage and to the "speech only one runtime hears"
+    // figures below. F232's conclusion rests partly on short backchannels, which is exactly the
+    // population this undercounts.
+    func frames(_ t: [Turn]) -> [[Int]] {
+        var f = Array(repeating: [Int](), count: n)
+        for x in t {
+            let lower = max(0, Int(saturating: x.start * 10))
+            let upper = min(n, max(lower, Int(saturating: x.end * 10)))
+            for i in lower..<upper { f[i].append(x.speaker) }
+        }
+        return f
+    }
     let fp = frames(p), fq = frames(q)
     var co: [Int: [Int: Int]] = [:]; var both = 0
     for i in 0..<n where Set(fp[i]).count == 1 && Set(fq[i]).count == 1 { co[fq[i][0], default: [:]][fp[i][0], default: 0] += 1; both += 1 }
@@ -99,3 +121,15 @@ if let p = allTurns["PYA"], let q = allTurns["SOR"] {
     print(String(format: "speech only pyannote hears: %.1f s; only sortformer: %.1f s", Double(onlyP)/10, Double(onlyQ)/10))
 }
 print(String(format: "total %.0f s", Date().timeIntervalSince(started)))
+
+
+/// `Int(exactly:)`-style clamping, matching `CaptureRestartPolicy.saturatingFrames` in the app:
+/// `Int(Double)` traps on overflow and on NaN, and a bench tool that traps loses the whole run.
+extension Int {
+    init(saturating value: Double) {
+        if value.isNaN { self = 0 }
+        else if value >= Double(Int.max) { self = .max }
+        else if value <= Double(Int.min) { self = .min }
+        else { self = Int(value) }
+    }
+}

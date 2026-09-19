@@ -223,3 +223,41 @@ func speakerOverlayRevisionMovesOnEveryStoredChange() async throws {
     #expect(fixture.model.speakerOverlayRevision > afterRename, "clearing did not invalidate them")
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .notAnalyzed)
 }
+
+// F339 — the ≥2-cluster gate counted clusters *after* F317's sub-second suppression had already
+// turned rows `.uncertain`. In a two-cluster meeting where one participant's every confidently
+// covered row happens to be under a second — a quiet participant, or a rapid exchange — that
+// cluster disappeared from the count, the gate fell to one cluster, and every row in the meeting
+// was rewritten to `.unlabeled`: including the long, 99.8%-correct ones. The same meeting was fully
+// labelled before F317.
+
+@MainActor
+@Test("A cluster whose rows are all sub-second does not strip the meeting's other labels (F339)")
+func subSecondClusterDoesNotStripTheMeeting() async throws {
+    let fixture = try makeReviewFixture(segments: [
+        seg("a long turn", 0, 4),
+        seg("another long turn", 4, 7.4),
+        seg("mm", 7.5, 7.9)          // 0.4 s — under F317's one-second floor
+    ])
+    await analyze(fixture, [turn(0, 7.4, 0), turn(7.5, 7.9, 1)], speakers: 2)
+
+    let presentation = try #require(fixture.model.speakerOverlay(for: fixture.id))
+    #expect(!presentation.isSingleCluster, "the analysis distinguished two voices; the display rule hid one")
+    #expect(presentation.distinguishedVoiceCount == 2)
+    let labels = fixture.model.speakerRowLabels(for: fixture.id)
+    #expect(labels[0] == "Speaker 1")
+    #expect(labels[1] == "Speaker 1")
+    #expect(labels[2] == SpeakerOverlay.uncertainName, "the short row itself is still not named (F317)")
+    #expect(fixture.model.speakerReviewState(for: fixture.id) == .labeled)
+}
+
+@MainActor
+@Test("A meeting the analysis really found one voice in is still reported as one voice (F339)")
+func genuinelySingleClusterIsStillSingle() async throws {
+    let fixture = try makeReviewFixture(segments: [seg("one", 0, 4), seg("two", 4, 8)])
+    await analyze(fixture, [turn(0, 8, 0)], speakers: 1)
+
+    let presentation = try #require(fixture.model.speakerOverlay(for: fixture.id))
+    #expect(presentation.isSingleCluster)
+    #expect(fixture.model.speakerRowLabels(for: fixture.id).isEmpty)
+}

@@ -141,3 +141,27 @@ func diarizationErrorsNeverRenderTheirDiagnostic() throws {
         #expect(message.lowercased().contains("transcript"))
     }
 }
+
+// F342 — nothing capped the cluster count. `analysisConfiguration` leaves `numSpeakers`,
+// `minSpeakers` and `maxSpeakers` nil, deliberately and correctly, and the 179-cluster / 3,201 MB
+// event happened on this app's own laptop-microphone-plus-system-audio mix. The AMI corpus that
+// derived the 0.60 threshold is structurally incapable of showing that failure: it is four-speaker
+// headset-mix audio, and at 0.30 it still resolves 16 of 18 meetings to exactly four clusters. So
+// the threshold is a calibration, not a backstop, and this is the backstop.
+
+@Test("A result with an impossible number of distinct voices is refused (F342)")
+func validationRejectsPathologicalClusterCounts() throws {
+    func turns(clusters: Int) -> [SpeakerTurn] {
+        (0..<clusters).map { turn(Double($0), Double($0) + 0.5, $0) }
+    }
+    let atTheCap = turns(clusters: SpeakerTurns.maximumClusterCount)
+    #expect(try SpeakerTurns.validate(atTheCap, durationSeconds: 1_000).count == atTheCap.count)
+
+    #expect(throws: SpeakerTurnValidationError.tooManyClusters) {
+        try SpeakerTurns.validate(turns(clusters: SpeakerTurns.maximumClusterCount + 1), durationSeconds: 1_000)
+    }
+    // The observed failure, not a hypothetical one: 179 clusters on a 35-minute two-person meeting.
+    #expect(throws: SpeakerTurnValidationError.tooManyClusters) {
+        try SpeakerTurns.validate(turns(clusters: 179), durationSeconds: 1_000)
+    }
+}

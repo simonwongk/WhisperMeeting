@@ -32,6 +32,14 @@ evidence.
   runs the shipped runtime and Sortformer on one file (F232); `sweep` computes embeddings once per
   file and re-clusters at each threshold (F225).
 - `sweep_score.py` — scores a `sweep` output directory against RTTM ground truth, per threshold.
+- `ami_prepare.py` — turns word-aligned AMI annotations into the 16 kHz mono WAV and per-meeting
+  RTTM that `sweep` and `sweep_score.py` require, and **records the two decisions that move the
+  numbers**: how words become reference turns, and what gap closes one (F340).
+- `bucket_table.py` — the F317 table: what a displayed label is worth by reference-turn length and
+  whether anyone else is talking, with the sub-second gate as a parameter so the before-and-after
+  come from one run (F340).
+- `row_lengths.py` — how long a library's transcript rows actually are, which is what says how many
+  rows the sub-second rule touches. Reads timings only, never transcript text (F340).
 - `score_corpus.py` — runs the scorer over a directory of runtime output and prints the per-stratum
   table, including displayed-label precision after the product's own overlay rule.
 
@@ -53,6 +61,38 @@ python3 generate_corpus.py --list
 python3 score_diarization.py --self-test      # ALWAYS run this before trusting a number
 python3 score_corpus.py <hypothesis_dir>
 ```
+
+### Re-deriving the AMI tables (F225, F317 — see `docs/DIARIZATION_SCORECARD.md`)
+
+One step needs a third-party library and is therefore outside the committed tools, so that
+everything deciding a *number* stays inside them:
+
+```bash
+# 1. Shards -> one JSON object per meeting: {"id", "words": [[start, end, speaker], …], "audio"}.
+#    `datasets` is not a dependency of this repo; install it in a scratch venv.
+python3 -c 'from datasets import load_dataset; import json
+ds = load_dataset("diarizers-community/ami", "ihm", split="train")
+print("\n".join(json.dumps(r) for r in ds))' > ami.jsonl      # revision pinned in the scorecard
+
+# 2. Reference turns + 16 kHz mono WAV. `--gap` is the decision that moves every bucket.
+python3 ami_prepare.py --manifest ami.jsonl --out ami --gap 0.5
+
+# 3. Sweep the clustering threshold (Swift; see runtime-probe/README).
+swift run -c release sweep <models parent> sweep-out 0.30,0.40,0.50,0.55,0.60,0.65,0.70,0.80,0.90,1.00 ami/wav/*.wav
+
+# 4. The DER table.
+python3 sweep_score.py sweep-out ami/rttm
+
+# 5. The row-length table, before and after the sub-second rule.
+python3 bucket_table.py --rttm ami/rttm --hypotheses sweep-out/0.60 --gate 0
+python3 bucket_table.py --rttm ami/rttm --hypotheses sweep-out/0.60 --gate 1.0
+
+# 6. How many rows the rule touches in a real library (timings only, never text).
+python3 row_lengths.py --library "~/Library/Application Support/WhisperMeet"
+```
+
+Every one of those tools has a `--self-test` that runs offline, and
+`Scripts/tests/test_diarization_producers.py` runs all three in the quality gate.
 
 ## The scorer's conventions, stated because both have a widely-used opposite
 

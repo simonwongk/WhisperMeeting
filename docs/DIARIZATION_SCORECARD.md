@@ -16,9 +16,13 @@ reasoning are in [`DIARIZATION_RUNTIME_DECISION.md`](DIARIZATION_RUNTIME_DECISIO
 > said 90.8 % displayed-label precision for sherpa-onnx; that number describes text-to-speech, not
 > meetings, which is why §2 must never again be used to calibrate anything.
 >
-> **Neither runtime has been measured against ground truth on real audio, because none exists** (§6).
-> Cluster counts, resource use and determinism are all there is. A plausible speaker count is a
-> sanity check, not a quality gate.
+> **That was written before there was any ground truth** (§6). There is now: 18 annotated AMI
+> meetings, swept 2026-09-18, which derived the clustering threshold (F225) and measured what a
+> displayed label is worth by row length (F317) — see the two sections at the end of this document.
+> Read them with their limits, which are material: AMI is four-speaker headset-mix audio in a 75 %
+> overlap regime, and this app's own recordings measure 1–2 % overlap (F338, F342). For the sample
+> meeting in §4–§6 the original sentence still holds — cluster counts, resource use and determinism
+> are all there is, and a plausible speaker count is a sanity check, not a quality gate.
 
 ## 1. How to read this
 
@@ -286,8 +290,14 @@ rather than a threshold that tolerates it.
 
 ## 6. What neither runtime has measured
 
-**Neither runtime has been measured against ground truth on real audio, because none exists.** This
-meeting has no reference turns. Cluster counts, resource use and determinism are all there is, and
+**Superseded 2026-09-19 (F341).** Ground truth now exists: §"Sweeping the clustering threshold on
+AMI" below scores both the threshold and the displayed labels against 18 annotated AMI meetings, and
+§"What the labels are worth, by row length" says what a shown label is worth. What follows was
+written before that run and describes the *sample meeting* in this section, which still has no
+reference turns — it is kept because §4 and §5 rest on it.
+
+**This meeting has not been measured against ground truth, because it has none.** It has no reference
+turns. Cluster counts, resource use and determinism are all there is, and
 nothing in §4 or §5 says whether a single displayed label would have been *right*.
 
 **A plausible speaker count is a sanity check, not a quality gate.** Four clusters for a meeting with
@@ -346,10 +356,13 @@ installer, and nothing above the seam moved.
 
 **Next, in order:**
 
-1. **Annotated real audio (F221).** Until it exists, every figure in this document is a sanity check
-   and the quality gate stays unevaluable.
-2. **Re-derive the clustering threshold on it (F225).** 0.6 is upstream's value, not ours, and a
-   sweep point now costs 0.2 s.
+1. **Annotated real audio (F221).** ~~Until it exists, every figure in this document is a sanity
+   check and the quality gate stays unevaluable.~~ **Done 2026-09-18:** 18 AMI meetings, scored
+   below.
+2. **Re-derive the clustering threshold on it (F225).** ~~0.6 is upstream's value, not ours, and a
+   sweep point now costs 0.2 s.~~ **Done 2026-09-18 and closed:** 0.60 survives the sweep and is now
+   derived — see §"Sweeping the clustering threshold on AMI" below, and its limits, which are
+   material (F338, F342).
 3. **Overlap detection is not available from this runtime at all (F223 closed invalid; F232).**
    Measured directly rather than inferred from a meeting that may simply have had no overlap: a
    fixture with 8.1 s of *certain* simultaneous speech
@@ -459,6 +472,17 @@ a 250 ms collar.
 | 0.90 | 44.9 | 33.7 | 16.7 / 3.1 / 25.1 | 6 |
 | 1.00 | 66.3 | 62.5 | 16.3 / 3.1 / 46.9 | 1 |
 
+**The corpus cannot show the failure the threshold guards against (F342).** Over-splitting is the
+failure this value exists to prevent — 179 clusters and a 3,201 MB artifact on this app's own
+laptop-microphone plus system-audio mix, recorded in §3 — and AMI never enters that regime: at 0.30
+it still resolves 16 of 18 meetings to exactly four clusters. Headset-mix audio simply does not
+over-split. The only real-audio datapoint is the F232 probe: **4 clusters at 0.60 on both** of this
+user's 35-minute meetings (§8 item 3), which is a sanity check on one point of the curve rather than
+a curve. So the threshold is a calibration and not a backstop, and the backstop is now separate:
+`SpeakerTurns.maximumClusterCount` refuses a result with more than 64 distinct voices, leaving the
+transcript untouched and the meeting re-analysable. A cluster-count-vs-threshold curve on real
+app-mix audio is still worth having and needs the user's own recordings to produce.
+
 **Decision: 0.60 stays, and is now derived rather than inherited.** 0.55–0.65 is a flat optimum and
 0.60 is its middle. The failure the ticket feared — erring high merges two people into one cluster,
 which the overlay cannot see — begins at 0.70 (confusion 4.4 → 8.0) and is steep after it, so the
@@ -487,6 +511,30 @@ no longer names a row shorter than one second (`minimumLabelledDuration`); it re
 voice". On these reference turns that moves displayed precision from 49.5 % to 71.9 % and coverage
 from 78.3 % to 50.0 %; in the app the rows are ASR segments, of which 20.7 % are under a second in
 this user's library (8,831 rows across 21 meetings, counted without reading them).
+
+**The headline number comes from a regime this product does not have (F338).** 6,518 of those
+8,664 reference turns — **75.2 %** — have someone else talking, and the 49.5 % → 71.9 % gain is
+dominated by the overlapped sub-second bucket (2,435 rows, 88.8 % named, 6.5 % correct). The probe in
+§8 item 3 measured simultaneous speech on this user's two real 35-minute meetings at **1.2 % and
+1.9 %** of the file, nothing over 1.8 s (F232, the same day). Recomputed over the three *solo*
+buckets — the closer analogue to what this app's rows look like — the same rule trades:
+
+| | displayed precision | coverage |
+|---|---|---|
+| all 8,664 turns (the headline) | 49.5 % → **71.9 %** | 78.3 % → 50.0 % |
+| the 2,146 solo turns only | 81.1 % → **92.1 %** | 68.2 % → 54.5 % |
+
+Still positive, and a different trade from the one the headline states. (Both rows are arithmetic on
+the table above: named = rows x named %, correct = named x correct %, summed per bucket. The solo
+row is 1,464 named / 1,187 correct before, 1,169 / 1,077 after.)
+
+**And the residual error is predictable, not merely unmeasured.** The causal story above — "a
+sub-second row is usually an interjection inside someone else's turn" — describes a short *reference
+turn*, a backchannel. A sub-second *ASR segment* in a recording with 1–2 % overlap is usually a
+fragment of the floor-holder's own speech, where the existing label was right. So this is a
+known-adverse transfer, not just an untested one: the rule should abstain on fewer real rows than
+AMI suggests and gain less precision when it does. The 20.7 % figure says how many rows it touches,
+not how many it improves.
 
 **Limits.** Every AMI meeting has exactly four speakers, so the sweep cannot say how 0.60 behaves
 with two or seven. Headset-mix audio is cleaner than a laptop microphone plus system audio. The

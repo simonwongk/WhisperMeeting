@@ -277,5 +277,55 @@ func overlayAbstainsOnVeryShortRows() {
         recordingDuration: 30
     )
     #expect(rows.map(\.label) == [.uncertain, .speaker(clusterID: 1)])
+}
+
+@Test("The one-second floor is inclusive to within a rounding error, and only gates names (F343)")
+func overlayShortRowBoundaries() {
+    // `seg(20, 21.0)` above is exactly 1.0, so it never exercised the `1e-9` tolerance the rule
+    // carries for floating-point subtraction. 2.3 - 1.3 is 0.9999999999999998 in binary64 — a
+    // genuine one-second row that a strict `>=` would abstain on.
+    #expect(2.3 - 1.3 < 1.0, "the premise: this subtraction really does land under the floor")
+    let aHairUnder = SpeakerOverlay.rows(
+        segments: [seg(1.3, 2.3)], turns: [turn(0, 30, 1)], recordingDuration: 30
+    )
+    #expect(aHairUnder.map(\.label) == [.speaker(clusterID: 1)], "a hair under from arithmetic is still a second")
+
+    let clearlyUnder = SpeakerOverlay.rows(
+        segments: [seg(9.1, 10.0)], turns: [turn(0, 30, 1)], recordingDuration: 30
+    )
+    #expect(clearlyUnder.map(\.label) == [.uncertain])
+
+    // The guard ORDER the UI depends on: a short row with no coverage at all stays `.unlabeled`,
+    // not `.uncertain`. "Unclear which voice" claims voices were heard here; nothing was.
+    let noCoverage = SpeakerOverlay.rows(
+        segments: [seg(40, 40.5)], turns: [turn(0, 30, 1)], recordingDuration: 60
+    )
+    #expect(noCoverage.map(\.label) == [.unlabeled])
+
     #expect(SpeakerOverlay.minimumLabelledDuration == 1.0)
+}
+
+@Test("A final segment with no end is measured against its derived bounds, not its speech (F343)")
+func overlayShortFinalSegmentUsesDerivedBounds() {
+    // A last segment with only a start runs to the recording's end, so a genuinely sub-second one
+    // is measured against the whole tail and sails past the one-second floor. That is deliberate,
+    // not an oversight: coverage is computed over the same derived bounds, so the two agree — and
+    // the coverage rule is what actually protects the row. Pinned here so a future change to either
+    // half has to face the other.
+    let spanning = SpeakerOverlay.rows(
+        segments: [seg(0, 5), seg(29.5, nil)],
+        turns: [turn(0, 60, 1)],
+        recordingDuration: 60
+    )
+    #expect(spanning.map(\.label) == [.speaker(clusterID: 1), .speaker(clusterID: 1)],
+            "a 0.5 s segment, measured as 30.5 s — and the same voice holds all of it, so naming it is right")
+
+    // The shape that would be wrong — 0.4 s of speech inside a 30 s derived row — is refused by the
+    // coverage floor long before the duration floor could have been asked.
+    let brief = SpeakerOverlay.rows(
+        segments: [seg(0, 5), seg(29.5, nil)],
+        turns: [turn(0, 5, 1), turn(29.5, 29.9, 2)],
+        recordingDuration: 60
+    )
+    #expect(brief.map(\.label) == [.speaker(clusterID: 1), .uncertain])
 }

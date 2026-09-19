@@ -41,6 +41,10 @@ def main(argv):
             continue
         reports, shown, correct, segments = [], 0, 0, 0
         for name in sorted(os.listdir(folder)):
+            # Only the sweep's own output. `name[:-5]` on every entry turned a stray `.DS_Store`
+            # into a FileNotFoundError against the RTTM directory (F343).
+            if not name.endswith(".json"):
+                continue
             stem = name[:-5]
             reference = read_rttm(os.path.join(rttm_dir, stem + ".rttm"))
             with open(os.path.join(folder, name), encoding="utf-8") as handle:
@@ -50,11 +54,14 @@ def main(argv):
             shown += labels["labelled"]
             correct += labels["labelled_correct"]
             segments += labels["segments"]
+        # `displayed_label_metrics` calls the no-rows case 1.0 — "it was never wrong" — and this
+        # printed 0.0 for the same input. One definition, not two (F343).
+        precision = (correct / shown) if shown else 1.0
         cells = [sd.micro_average(reports, c) for c in conditions]
         first = cells[0]
         parts = "/".join(f"{100 * first[k] / first['total']:.1f}" for k in ("miss", "false_alarm", "confusion"))
         print(f"{threshold} | {len(reports)} | " + " | ".join(f"{100 * c['der']:.1f}" for c in cells)
-              + f" | {parts} | {100 * correct / max(1, shown):.1f} | {100 * shown / max(1, segments):.1f}")
+              + f" | {parts} | {100 * precision:.1f} | {100 * shown / max(1, segments):.1f}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,9 @@ guard args.count >= 5 else { print("usage: sweep <models parent> <out dir> <t1,t
 let modelsParent = URL(fileURLWithPath: args[1])
 let outRoot = URL(fileURLWithPath: args[2])
 let thresholds = args[3].split(separator: ",").compactMap { Double($0) }
+// `thresholds[0]` is indexed below, and `args.count >= 5` does not make the list non-empty: a typo
+// in the threshold argument was an index-out-of-range crash before the first file was read (F343).
+guard !thresholds.isEmpty else { print("no parsable thresholds in \"\(args[3])\""); exit(2) }
 let files = args[4...].map { URL(fileURLWithPath: $0) }
 
 func config(_ threshold: Double) -> OfflineDiarizerConfig {
@@ -41,7 +44,10 @@ for file in files {
     let preparer = OfflineDiarizerManager(config: config(thresholds[0]))
     preparer.initialize(models: models)
     let prepared = try await preparer.prepare(audio: try samples16k(file))
-    var line = "\(name) prepare \(Int(Date().timeIntervalSince(started)))s |"
+    // Saturating rather than `Int(Double)`, the house standard: a trap here loses a 9-hour sweep
+    // for a progress string (F343).
+    let prepareSeconds = Date().timeIntervalSince(started)
+    var line = "\(name) prepare \(prepareSeconds.isFinite ? Int(prepareSeconds.rounded(.down)) : -1)s |"
     for threshold in thresholds {
         let manager = OfflineDiarizerManager(config: config(threshold))
         manager.initialize(models: models)

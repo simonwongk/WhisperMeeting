@@ -128,7 +128,9 @@ postProcessing = .community
 > two are not comparable and map as `euclidean = sqrt(2 − 2·cosine)`, so reusing 0.40 would not be
 > conservative, it would be a far more aggressive setting that over-splits every meeting. 0.6 is the
 > value upstream calibrated on pyannote community-1 and is the only defensible starting point.
-> **It is not calibrated for this product.** Re-deriving it on annotated audio is F225; FluidAudio's
+> **It was not calibrated for this product** when this was written. It has since been re-derived on
+> 18 annotated AMI meetings (F225, closed 2026-09-18): 0.60 survives, on a flat 0.55–0.65 optimum.
+> FluidAudio's
 > `prepare`/`cluster` split makes that cheap, because a threshold sweep re-clusters in ~0.25 s
 > without re-running the models.
 
@@ -139,11 +141,15 @@ constraints, and that produces a plausible speaker count on the one real meeting
 it against. It does **not** clear PRD go/no-go gate 2 (quality), and it is not evidence that a label
 shown to a user would be correct.
 
-**Neither runtime has been measured against ground truth on real audio, because none exists.**
-Cluster counts, resource use and determinism are all there is. A plausible speaker count is a sanity
-check, not a quality gate. The PRD's quality gate names a Python Community-1 control that was never
-built, so it has no comparator and cannot be evaluated as written. §5.4 states this at length, and
-`DIARIZATION_SCORECARD.md` is the standing record of it.
+**Neither runtime had been measured against ground truth on real audio when this was written,
+because none existed.** Cluster counts, resource use and determinism were all there was, and a
+plausible speaker count is a sanity check, not a quality gate. **Since 2026-09-18 there is ground
+truth** — 18 annotated AMI meetings — which derived the clustering threshold (F225) and measured
+displayed-label precision by row length (F317); `DIARIZATION_SCORECARD.md` carries both, with the
+limits that matter (AMI is four-speaker headset-mix audio in a 75 % overlap regime, against 1–2 % on
+this app's own recordings — F338, F342). The PRD's quality gate still names a Python Community-1
+control that was never built, so *that* gate has no comparator and cannot be evaluated as written.
+§5.4 states this at length, and `DIARIZATION_SCORECARD.md` is the standing record of it.
 
 ---
 
@@ -396,8 +402,8 @@ meeting file agreed the same way
 **The `prepare`/`cluster` split is real, and it changes what calibration costs.** Segmentation and
 embedding took 5.77 s for this meeting (1 059 chunks, 711 embeddings); every subsequent threshold in
 the sweep above re-clustered in **0.19–0.25 s** without re-running a model. A full threshold sweep is
-therefore seconds rather than hours, which is what makes F225 cheap the moment annotated audio
-exists.
+therefore seconds rather than hours, which is what made F225 cheap once annotated audio existed —
+the AMI sweep it enabled ran 18 meetings x 9 thresholds and closed F225 on 2026-09-18.
 
 **One structural fact about the output:** across all 202 turns at the pin, **no two intervals
 intersect**. The runtime reports one speaker at a time in this configuration, so the PRD's overlap
@@ -613,8 +619,9 @@ because ordering is the runtime's property and FluidAudio promises none.
 
 **Confidence is `nil`.** FluidAudio reports a per-segment `qualityScore`, but it is not a per-turn
 clustering confidence and no threshold for it has been earned on any corpus, so no score is recorded
-rather than a misleading one. `uncertainBelowConfidence` ships at 0.0. F225 may revise this only with
-a documented before/after table.
+rather than a misleading one. `uncertainBelowConfidence` ships at 0.0, and F225 left it there: the
+AMI sweep derived the *clustering* threshold, not a confidence threshold, so nothing has earned one
+yet. Changing it still needs a documented before/after table.
 
 **Embeddings never cross the seam.** The adapter's own `Segment` carries three fields; FluidAudio's
 `TimedSpeakerSegment` carries a 256-float embedding, which the PRD's anonymity rule forbids
@@ -648,10 +655,13 @@ runtime it described; what survived it is here.
    it produces a *plausible* cluster count on one meeting. **Falsifier:** annotated real audio, which
    is F221's evidence pass. Until it exists, any label shown to a user is an assertion nobody has
    checked.
-2. **The threshold is upstream's, not ours.** 0.6 is what FluidAudio calibrated on pyannote
-   community-1. The sweep in §5.2 shows the count is stable from 0.5 to 0.7, which is reassuring
-   about robustness and says nothing about correctness. F225 re-derives it on annotated audio, made
-   cheap by the `prepare`/`cluster` split.
+2. **The threshold was upstream's, not ours** when this was written. 0.6 is what FluidAudio
+   calibrated on pyannote community-1, and the sweep in §5.2 shows only that the count is stable
+   from 0.5 to 0.7 — reassuring about robustness, silent about correctness. **F225 (closed
+   2026-09-18) re-derived it** on 18 annotated AMI meetings: 0.60 survives on a flat 0.55–0.65
+   optimum, with the merge failure starting at 0.70. Its limits are real and are recorded in
+   `DIARIZATION_SCORECARD.md`: AMI is four-speaker headset-mix audio, so it cannot exhibit the
+   over-splitting the threshold guards against (F342).
 3. **Peak memory now lives in the app's process.** 615.5 MiB at 35 minutes is a fifth of what the
    child process used, but the OS no longer reclaims it unconditionally when analysis ends or
    crashes, and nothing here measured a 90-minute meeting — several in the user's own library are

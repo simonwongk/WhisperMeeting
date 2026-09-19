@@ -1595,7 +1595,11 @@ final class AppModel: ObservableObject {
         // Asked of the stored TURNS, not of the rows: if two voices were told apart and the overlay
         // still could not attribute a line, saying "only one voice" would be false.
         if presentation.distinguishedVoiceCount <= 1 { return .singleVoice }
-        if presentation.clusterIDs.count < 2 { return .noConfidentLabels }
+        // Emptiness, not "fewer than two" (F339). The two meant the same thing while the gate in
+        // `computeSpeakerOverlay` cleared `clusterIDs` whenever it held fewer than two — it no
+        // longer does, and a meeting showing one named speaker beside an unnamed sub-second row has
+        // confident labels on screen, so calling it `.noConfidentLabels` would contradict them.
+        if presentation.clusterIDs.isEmpty { return .noConfidentLabels }
         return .labeled
     }
 
@@ -1661,13 +1665,18 @@ final class AppModel: ObservableObject {
                 isUnreadable: false
             )
         }
-        let rows = SpeakerOverlay.rows(
+        let overlay = SpeakerOverlay.overlay(
             segments: meeting.segments,
             turns: artifact.turns,
             recordingDuration: meeting.duration > 0 ? meeting.duration : nil
         )
+        let rows = overlay.rows
+        // The legend lists the clusters actually on screen; the gate below counts what the analysis
+        // distinguished, which is not the same thing once F317's sub-second rule has had its say
+        // (F339). Counting the named rows here stripped every label from a two-cluster meeting whose
+        // second participant only ever spoke in sub-second rows.
         let clusterIDs = SpeakerOverlay.clusterIDs(in: rows)
-        guard clusterIDs.count >= 2 else {
+        guard overlay.distinguishedClusterIDs.count >= 2 else {
             return SpeakerOverlayPresentation(
                 rows: rows.map { SpeakerOverlayRow(segmentIndex: $0.segmentIndex, label: .unlabeled) },
                 clusterIDs: [], aliases: [:], isStale: false, isSingleCluster: true,

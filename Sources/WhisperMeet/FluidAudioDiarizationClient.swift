@@ -54,9 +54,15 @@ enum FluidAudioDiarizationRuntime {
     /// sherpa's threshold is a cosine distance, FluidAudio's is a Euclidean distance in PLDA space
     /// (its v0.15.6 semantics fix). The two are not comparable — the mapping is
     /// `sqrt(2 − 2·cosine)` — so reusing 0.40 would not be conservatism, it would be a different,
-    /// far more aggressive setting that over-splits every meeting. The upstream value calibrated on
-    /// pyannote community-1 is the only defensible starting point until the threshold is re-derived
-    /// on annotated audio (F225).
+    /// far more aggressive setting that over-splits every meeting.
+    ///
+    /// **Derived, not inherited (F225, closed 2026-09-18).** A sweep over 18 AMI meetings put
+    /// 0.55–0.65 on a flat optimum with 0.60 in its middle; the merge failure this value guards
+    /// against starts at 0.70 and is steep after it, so 0.60 keeps a 0.05 margin on the dangerous
+    /// side. `docs/DIARIZATION_SCORECARD.md` §"Sweeping the clustering threshold" carries the table
+    /// and its limits — AMI is four-speaker headset-mix audio, which is cleaner than this app's
+    /// laptop-microphone-plus-system mix and cannot exhibit the over-splitting the value guards
+    /// (F342).
     static let clusterThreshold = 0.6
 
     /// Recorded on every sidecar so a result produced by this runtime is identifiable later.

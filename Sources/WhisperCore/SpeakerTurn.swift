@@ -61,6 +61,8 @@ public enum SpeakerTurnValidationError: Error, Sendable, Equatable {
     case negativeCluster
     case unsortedTurns
     case tooManyTurns
+    /// More distinct voices than a meeting can have — a clustering failure, not a crowd (F342).
+    case tooManyClusters
 }
 
 /// One interval exactly as a diarization runtime reported it, before remapping or validation.
@@ -94,6 +96,21 @@ public enum SpeakerTurns {
     /// far below anything that could exhaust memory.
     public static let maximumTurnCount = 200_000
 
+    /// Distinct clusters above which a result is a clustering failure rather than a meeting (F342).
+    ///
+    /// The threshold that guards against over-splitting (`clusterThreshold`, 0.60) was derived on
+    /// AMI — four-speaker headset-mix audio, which at 0.30 still resolves 16 of 18 meetings to
+    /// exactly four clusters. That corpus is structurally incapable of producing the failure the
+    /// threshold guards against, so the calibration is not also a backstop. The failure itself has
+    /// been seen here: 179 clusters and a 3,201 MB artifact on this app's own laptop-microphone
+    /// plus system-audio mix (`docs/DIARIZATION_SCORECARD.md`).
+    ///
+    /// 64 is far above any meeting this app records — the two real meetings measured produce 4 —
+    /// and far below the failure, so a result that trips this is one nobody should be shown.
+    /// Refusing leaves the transcript untouched and the meeting re-analysable, which is what the
+    /// other validation failures do.
+    public static let maximumClusterCount = 64
+
     /// The runtime reports times to three decimal places against its own duration probe, which can
     /// round a hair past ours. Tolerate that, not a real out-of-range claim.
     public static let durationTolerance: TimeInterval = 0.05
@@ -105,6 +122,9 @@ public enum SpeakerTurns {
         durationSeconds: TimeInterval
     ) throws -> [SpeakerTurn] {
         guard turns.count <= maximumTurnCount else { throw SpeakerTurnValidationError.tooManyTurns }
+        guard Set(turns.map(\.clusterID)).count <= maximumClusterCount else {
+            throw SpeakerTurnValidationError.tooManyClusters
+        }
         // The duration is this gate's own yardstick, so it is checked before it is used to judge
         // anything: `max(0, .infinity)` accepts every out-of-range turn and `max(0, .nan)` rejects
         // every turn at all — one class of bad input, two opposite outcomes, neither a policy.

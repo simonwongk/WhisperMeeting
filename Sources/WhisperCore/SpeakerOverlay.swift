@@ -53,9 +53,43 @@ public enum SpeakerOverlay {
         turns: [SpeakerTurn],
         recordingDuration: TimeInterval?
     ) -> [SpeakerOverlayRow] {
-        guard !segments.isEmpty else { return [] }
+        overlay(segments: segments, turns: turns, recordingDuration: recordingDuration).rows
+    }
+
+    /// The rows, plus the clusters the analysis actually distinguished in this transcript (F339).
+    public struct Overlay: Sendable, Equatable {
+        /// One row per segment, in the caller's own segment order.
+        public let rows: [SpeakerOverlayRow]
+
+        /// Every cluster some row is confidently covered by — whether or not that row was long
+        /// enough to be *named*. This is what a "did the analysis find more than one voice here?"
+        /// gate must count.
+        ///
+        /// Counting the named rows instead is F339: the caller's `clusterIDs.count >= 2` check ran
+        /// after F317's sub-second suppression had already turned rows `.uncertain`, so a
+        /// two-cluster meeting where one participant's confidently-covered rows all happened to be
+        /// under a second — a quiet participant, or a rapid exchange — lost that cluster from the
+        /// count, failed the gate, and had *every* row rewritten to `.unlabeled`, including the
+        /// long ones. The same meeting was fully labelled before F317.
+        public let distinguishedClusterIDs: [Int]
+
+        public init(rows: [SpeakerOverlayRow], distinguishedClusterIDs: [Int]) {
+            self.rows = rows
+            self.distinguishedClusterIDs = distinguishedClusterIDs
+        }
+    }
+
+    public static func overlay(
+        segments: [TranscriptSegment],
+        turns: [SpeakerTurn],
+        recordingDuration: TimeInterval?
+    ) -> Overlay {
+        guard !segments.isEmpty else { return Overlay(rows: [], distinguishedClusterIDs: []) }
         guard !turns.isEmpty else {
-            return segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: .unlabeled) }
+            return Overlay(
+                rows: segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: .unlabeled) },
+                distinguishedClusterIDs: []
+            )
         }
 
         // Turns are validated sorted by start, so one advancing cursor is enough to keep the walk
@@ -79,6 +113,7 @@ public enum SpeakerOverlay {
         // sorted copy of the indices and emit the rows back in the caller's own order: O(n log n)
         // once, with the linear merge walk itself untouched.
         var labels = [SpeakerOverlayLabel](repeating: .unlabeled, count: segments.count)
+        var distinguished: Set<Int> = []
         let order = segments.indices.sorted {
             (Self.startKey(of: segments, at: $0), $0) < (Self.startKey(of: segments, at: $1), $1)
         }
@@ -115,14 +150,29 @@ public enum SpeakerOverlay {
                 scan += 1
             }
 
-            labels[index] = label(
+            let segmentDuration = bounds.end - bounds.start
+            let found = label(
                 coverageByCluster: coverageByCluster,
                 overlapSeconds: overlapSeconds,
                 uncertainSeconds: uncertainSeconds,
-                segmentDuration: bounds.end - bounds.start
+                segmentDuration: segmentDuration
             )
+            if case let .speaker(clusterID) = found {
+                distinguished.insert(clusterID)
+                // F317: a row under a second is not *named*, but the cluster it was covered by was
+                // still found here — which is why the two are recorded separately.
+                if segmentDuration < minimumLabelledDuration - 1e-9 {
+                    labels[index] = .uncertain
+                    continue
+                }
+            }
+            labels[index] = found
         }
-        return segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: labels[$0]) }
+        return Overlay(
+            rows: segments.indices.map { SpeakerOverlayRow(segmentIndex: $0, label: labels[$0]) },
+            // Sorted by id for the same reason `clusterIDs(in:)` is: the id is the number shown.
+            distinguishedClusterIDs: distinguished.sorted()
+        )
     }
 
     /// The key the walk is ordered by. A segment with no usable start sorts last — it is `.unlabeled`
@@ -237,8 +287,9 @@ public enum SpeakerOverlay {
         guard !coverageByCluster.isEmpty else {
             return uncertainSeconds > 0 ? .uncertain : .unlabeled
         }
-        // A hair under the floor from floating-point subtraction is still the floor.
-        guard segmentDuration >= minimumLabelledDuration - 1e-9 else { return .uncertain }
+        // The sub-second floor is NOT applied here (F339). It used to be, and that discarded which
+        // cluster covered the row before anyone could count it — see `Overlay.distinguishedClusterIDs`.
+        // The caller applies it to the *label* immediately after, with the same tolerance.
         // Ties break toward the lower cluster id so the result is deterministic across runs: with
         // equal coverage the tuple comparison falls through to the ids, and the *swapped* operands
         // make the lower id sort first.

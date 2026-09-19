@@ -107,6 +107,21 @@ class DisplayedLabelMetrics(unittest.TestCase):
         self.assertEqual(below["labelled"], 0)
         self.assertEqual(above["labelled"], 1)
 
+    def test_sub_second_rows_are_never_named(self):
+        # F317's gate, and F343: every case here used 10 s or 100 s segments, so the newest rule in
+        # the mirror was untested and would not have failed if it had been left out entirely.
+        short = S.displayed_label_metrics([(0, 0.6, "A")], [(0, 0.6, "a")])
+        self.assertEqual(short["labelled"], 0)
+        self.assertEqual(short["abstained"], 1)
+
+    def test_the_one_second_boundary_is_inclusive(self):
+        # Exactly one second is named; a hair under is not. The Swift side allows a 1e-9 tolerance
+        # for floating-point subtraction and so does the mirror — if one of them stops, this fails.
+        exact = S.displayed_label_metrics([(0, 1.0, "A")], [(0, 1.0, "a")])
+        self.assertEqual(exact["labelled"], 1)
+        just_under = S.displayed_label_metrics([(0, 0.999, "A")], [(0, 0.999, "a")])
+        self.assertEqual(just_under["labelled"], 0)
+
 
 class SelfTestEntryPoint(unittest.TestCase):
     def test_self_test_passes(self):

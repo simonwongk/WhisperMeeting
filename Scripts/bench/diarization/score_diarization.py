@@ -430,13 +430,23 @@ MINIMUM_MARGIN = 0.20
 MINIMUM_LABELLED_DURATION = 1.0
 
 
-def overlay_label(segment, hyp_turns, uncertain_below=None, confidences=None):
+def overlay_label(segment, hyp_turns, uncertain_below=None, confidences=None,
+                  minimum_labelled_duration=MINIMUM_LABELLED_DURATION):
     """Mirror of WhisperCore's SpeakerOverlay rule, for scoring what the UI would show.
 
     Kept deliberately in lockstep with Sources/WhisperCore/SpeakerOverlay.swift: a cluster is named
     only when the segment is at least a second long AND it covers >= 80% of it AND beats the
-    runner-up by >= 20 points AND no overlap turn intersects. Any drift between the two is a bug in one of them, so the scorecard's
+    runner-up by >= 20 points. Any drift between the two is a bug in one of them, so the scorecard's
     "displayed" numbers would stop describing the product.
+
+    One rule the mirror does NOT have, and the claim used to imply it did (F343): the Swift side
+    abstains when an `.overlap` turn intersects the row, and an RTTM reference carries no overlap
+    *turns* — overlap is implied by two turns covering the same instant, which this scores as
+    ordinary competing coverage. So `"OVERLAP"` below is reachable only from a caller that passes
+    confidences, and the 75%-overlapped AMI numbers in the scorecard are produced by the coverage
+    and margin rules alone. The sub-second gate is exercised by
+    `Scripts/tests/test_score_diarization.py`; before F343 it was not, so this mirror could have
+    drifted on the newest rule without a single test noticing.
     """
     seg_start, seg_end = segment
     duration = seg_end - seg_start
@@ -459,7 +469,10 @@ def overlay_label(segment, hyp_turns, uncertain_below=None, confidences=None):
         return "OVERLAP"
     if not coverage:
         return None
-    if duration < MINIMUM_LABELLED_DURATION - 1e-9:
+    # A parameter, not the constant, so `bucket_table.py` can produce the before-and-after table the
+    # rule was chosen from without a second copy of this function (F340). Every caller in the
+    # scoring path leaves it at the shipped default.
+    if duration < minimum_labelled_duration - 1e-9:
         return None
     ranked = sorted(coverage.items(), key=lambda kv: (-kv[1], kv[0]))
     best_share = ranked[0][1] / duration
