@@ -93,6 +93,12 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case modelNotInstalled
     /// The local summarizer subprocess failed; the string carries its captured diagnostics tail (F164).
     case helperFailed(String)
+    /// The on-device model stopped at its token limit before finishing an answer (F332). Distinct
+    /// from `responseTruncated`, whose copy names Claude — nothing here reaches Claude, and saying
+    /// it did would be both wrong and alarming in a local-only product.
+    case answerTruncated
+    /// The on-device helper produced something it had to degrade to return at all (F332).
+    case answerDegraded(String)
 
     public var errorDescription: String? {
         switch self {
@@ -111,6 +117,10 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "Claude declined to summarize this transcript: \(message)"
         case .responseTruncated:
             return "Claude's summary was cut off at the length limit. Summarize a shorter transcript, or raise the summary length limit and try again."
+        case .answerTruncated:
+            return "The on-device model ran out of room before finishing the answer. The passages are what was said."
+        case let .answerDegraded(reason):
+            return "The on-device model's answer could not be read cleanly (\(reason)). The passages are what was said."
         case .unreadableResponse:
             return "Claude returned a summary the app could not read."
         case .emptyResponse:

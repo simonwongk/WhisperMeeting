@@ -253,3 +253,25 @@ func oneEnormousTermIsDroppedWhole() {
     #expect(prompt.contains("Acme"))
     #expect(prompt.contains("Kubernetes"))
 }
+
+// F333 — the advice only holds while starring can still change the order. Once more terms are
+// starred than fit, "star the terms that matter most and they are sent first" asks for something
+// already done — every star renders filled — and the user is left pressing a control that cannot
+// help them.
+
+@Test("Once more terms are starred than fit, the notice stops advising a star (F333)")
+func coverageNoticeStopsAdvisingStarsWhenEveryStarIsFilled() {
+    let many = (1...100).map { "term\($0)" }
+    let fitting = VocabularyPrompt.coverage(of: many).fitting
+    #expect(fitting < many.count, "the premise: this list is truncated")
+
+    let fewStarred = try? #require(VocabularyPrompt.coverageNotice(for: many, starredCount: 1))
+    #expect(fewStarred?.contains("Star the terms that matter most") == true)
+
+    let allStarred = try? #require(VocabularyPrompt.coverageNotice(for: many, starredCount: fitting))
+    #expect(allStarred?.contains("Star the terms that matter most") == false)
+    #expect(allStarred?.contains("unstar the ones that matter least") == true)
+
+    // A list that fits says nothing either way.
+    #expect(VocabularyPrompt.coverageNotice(for: ["Acme"], starredCount: 1) == nil)
+}

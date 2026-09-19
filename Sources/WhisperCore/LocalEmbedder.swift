@@ -86,6 +86,8 @@ public struct LocalEmbedder: Sendable {
               let data = try? Data(contentsOf: output),
               data.count == metadata.count * metadata.dimension * MemoryLayout<Float>.size
         else { throw LocalEmbedderError.unreadableOutput }
-        return (metadata.dimension, data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
+        // Alignment-safe, for the reason `SegmentEmbeddings.floats(from:count:)` documents (F333).
+        return (metadata.dimension,
+                SegmentEmbeddings.floats(from: data, count: metadata.count * metadata.dimension))
     }
 }

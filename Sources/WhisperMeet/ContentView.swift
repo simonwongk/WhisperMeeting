@@ -2507,7 +2507,11 @@ private struct VocabularyView: View {
                 // list is trimmed. Say what is true, and show the real numbers when it bites.
                 Text("Every term shown below stays on this Mac. Up to 100 reviewed terms are kept, and as many as fit the model’s prompt budget are sent to the recognizer.")
                     .foregroundStyle(.secondary)
-                if let coverage = VocabularyPrompt.coverageNotice(for: store.vocabulary) {
+                // The starred count too (F333): once more terms are starred than fit, "star the
+                // terms that matter most" asks for something already done and every star is filled.
+                if let coverage = VocabularyPrompt.coverageNotice(
+                    for: store.vocabulary, starredCount: store.prioritizedVocabulary.count
+                ) {
                     Label(coverage, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.orange)

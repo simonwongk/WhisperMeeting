@@ -201,9 +201,11 @@ Beyond the core record → transcribe flow:
   passage. It runs on this Mac, keeps a small index beside each recording, and is merged with the
   keyword results rather than replacing them.
   With the local summary model installed, **Write an Answer from These Passages** asks that model
-  for a short answer built only from the top results. It is shown only if every sentence cites a
-  passage on screen, it adds none of your vocabulary terms the passages lack, and it keeps their
-  Chinese script; otherwise you keep the passages, which are what was said.
+  for a short answer built only from the top results. It is shown only if it cites the passages on
+  screen — at least one, and never one it was not given — adds none of your vocabulary terms the
+  passages lack, and keeps their Chinese script; otherwise you keep the passages, which are what was
+  said. Citation is checked per answer, not per sentence, so read the cited passages for anything
+  you would act on.
 - **Start from Finder or Shortcuts** — WhisperMeet opens audio and video files: right-click a
   recording → *Open With → WhisperMeet*, drop it on the Dock icon, use Shortcuts' *Open File* action
   with WhisperMeet, or choose *Services → Transcribe with WhisperMeet* in Finder. The file goes

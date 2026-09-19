@@ -133,3 +133,39 @@ func realModelFindsParaphrases() async throws {
         #expect(rank.map { $0 < 3 } == true)
     }
 }
+
+// F331 — the index is only written `if !store.isDegraded` and the recording folder exists, so on a
+// degraded or read-only library — a configuration the feature explicitly advertises support for —
+// every query re-embedded every in-scope meeting. `runSearch` fires on `.onAppear` and on every
+// scope-chip and match-mode change, so that was a multi-second model run per tap.
+
+@MainActor
+@Test("A library that cannot keep the index still embeds only once per session (F331)")
+func indexIsCachedWhenItCannotBePersisted() async throws {
+    let model = try makeModel()
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "Planning", status: .completed, segments: [
+        seg(0, "We agreed fifteen percent off the annual plan."), seg(30, "The offsite moves to May."),
+    ]))
+    // No recording directory: nothing can be written beside a recording that is not there, which is
+    // the same state a degraded or read-only library leaves every meeting in.
+    let calls = Calls()
+    model.askEmbedder = { texts, kind in
+        if kind == .passage { await calls.countPassageRun() }
+        return (2, texts.flatMap(fakeVector))
+    }
+
+    let first = await model.askMeetingsByMeaning(query: "pricing decision", scope: MeetingScope())
+    #expect(first.map(\.snippet) == ["We agreed fifteen percent off the annual plan."])
+    _ = await model.askMeetingsByMeaning(query: "pricing again", scope: MeetingScope())
+    _ = await model.askMeetingsByMeaning(query: "pricing once more", scope: MeetingScope())
+    #expect(await calls.passageRuns == 1, "three queries, one model run")
+    #expect(!FileManager.default.fileExists(atPath: model.store.recordingDirectoryURL(for: id)
+        .appendingPathComponent(SegmentEmbeddings.vectorsFilename).path), "and nothing was persisted")
+
+    // An edited transcript no longer matches the cached fingerprint, so it is rebuilt — the cache
+    // must not be able to answer with stale vectors.
+    model.store.update(id: id) { $0.segments = [seg(0, "We agreed twenty percent off the annual plan.")] }
+    _ = await model.askMeetingsByMeaning(query: "pricing decision", scope: MeetingScope())
+    #expect(await calls.passageRuns == 2)
+}

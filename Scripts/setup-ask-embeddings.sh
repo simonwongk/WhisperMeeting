@@ -43,11 +43,57 @@ if [[ "$actual_model" != "$model_sha256" || "$actual_tokenizer" != "$tokenizer_s
   print -u2 "The search model failed verification; nothing was installed."
   exit 1
 fi
+
+# `config.json` was fetched but never checked (F333), and it is not inert: `embed_local.py` reads
+# `num_hidden_layers`, `num_attention_heads`, `hidden_size` and `layer_norm_eps` out of it to build
+# the forward pass, so a wrong one produces vectors that are silently garbage — a failure with no
+# symptom, because a cosine between two garbage vectors still sorts.
+#
+# Its architecture is checked rather than its bytes: a SHA would also fail on a whitespace change
+# that cannot affect anything, and these are exactly the fields the reader depends on. The two
+# equalities are the two numbers this repo already states (`embed_local.py`: "a 12-layer BERT
+# encoder, 384 dimensions"); the other two are checked for presence and structural sanity rather
+# than against a value nobody here has measured.
+EMBEDDING_STAGE="$staging" "$summarizer_directory/venv/bin/python" - <<'CONFIGCHECK' || exit 1
+import json, os, sys
+
+with open(os.path.join(os.environ["EMBEDDING_STAGE"], "config.json"), encoding="utf-8") as handle:
+    config = json.load(handle)
+
+problems = []
+if config.get("num_hidden_layers") != 12:
+    problems.append("num_hidden_layers is %r, expected 12" % config.get("num_hidden_layers"))
+if config.get("hidden_size") != 384:
+    problems.append("hidden_size is %r, expected 384" % config.get("hidden_size"))
+heads = config.get("num_attention_heads")
+if not isinstance(heads, int) or heads <= 0 or 384 % heads:
+    problems.append("num_attention_heads is %r, which does not divide hidden_size" % heads)
+eps = config.get("layer_norm_eps", 1e-12)   # embed_local.py defaults it, so absence is fine
+if not isinstance(eps, (int, float)) or not 0 < eps < 1e-3:
+    problems.append("layer_norm_eps is %r, which is not a layer-norm epsilon" % eps)
+if problems:
+    print("config.json does not describe multilingual-e5-small:", file=sys.stderr)
+    for problem in problems:
+        print("  " + problem, file=sys.stderr)
+    sys.exit(1)
+CONFIGCHECK
 rm -rf "$staging/.cache"
 
 # Swap in whole: a reader never sees a half-installed model.
+#
+# And the previous model comes back if the swap fails (F333). `mv "$target" "$previous"` followed by
+# a failing `mv "$staging" "$target"` used to leave NO model installed, with the EXIT trap removing
+# only the staging directory — an upgrade that fails halfway took away what was already working.
 previous="$summarizer_directory/.embedding-model-previous-$$"
+restore_previous() {
+  if [[ -d "$previous" && ! -d "$target" ]]; then mv "$previous" "$target"; fi
+  rm -rf "$previous"
+}
+trap 'rm -rf "$staging"; restore_previous' EXIT
 if [[ -d "$target" ]]; then mv "$target" "$previous"; fi
-mv "$staging" "$target"
+if ! mv "$staging" "$target"; then
+  print -u2 "The search model could not be installed; the previous one is being put back."
+  exit 1
+fi
 rm -rf "$previous"
 print "Search model installed: $repository @ ${revision[1,12]}"

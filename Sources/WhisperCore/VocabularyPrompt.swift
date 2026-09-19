@@ -95,9 +95,13 @@ public enum VocabularyPrompt {
     /// exactly `promptedTerms` joined, so re-adding a character slice fails a test.
     ///
     /// "Input order" is not "as the user typed" on the meeting path: `MeetingStore.promptSafeTerms`
-    /// de-duplicates through a `Set` and sorts `localizedCaseInsensitiveCompare`, so what arrives
-    /// here is alphabetised and the terms dropped are the alphabetically-last ones. That is
-    /// arbitrary from the user's point of view, and is **F272**.
+    /// de-duplicates through a `Set` and sorts `localizedCaseInsensitiveCompare`. It used to arrive
+    /// purely alphabetised, so the terms dropped were the alphabetically-last ones — arbitrary from
+    /// the user's point of view, which was F272. **F300 fixed that in the same commit that closed
+    /// F272**: starred terms lead the list and the rest follow in collation order, so what is
+    /// dropped is the unstarred tail. This comment said otherwise for one commit; the one on
+    /// `coverageNotice` below was updated and this one, which a future implementer of the prompt
+    /// path actually reads, was not (F333).
     public static func build(_ raw: [String]) -> String {
         promptedTerms(raw).joined(separator: ", ")
     }
@@ -125,9 +129,9 @@ public enum VocabularyPrompt {
     /// A plain-language notice when some terms do not fit, or nil when they all do (F272).
     ///
     /// Reports the real numbers rather than "some terms were dropped", because the latter is not
-    /// actionable — a user needs to know how far over they are to decide what to remove. Says
-    /// which terms are kept is the user's to steer: starred terms lead the list (F300), the rest
-    /// follow in collation order.
+    /// actionable — a user needs to know how far over they are to decide what to remove. Which
+    /// terms are kept is the user's to steer: starred terms lead the list (F300), the rest follow
+    /// in collation order.
     public static func coverageNotice(for raw: [String]) -> String? {
         let coverage = coverage(of: raw)
         guard coverage.isTruncated else { return nil }
@@ -135,8 +139,22 @@ public enum VocabularyPrompt {
         \(coverage.fitting) of your \(coverage.total) terms fit the model's prompt budget. \
         The rest are stored and searchable but are not sent to the recognizer — \
         the limit is the model's, and non-Latin scripts use it up faster. \
-        Star the terms that matter most and they are sent first.
+        \(starAdvice)
         """
+    }
+
+    /// The advice only holds while starring can still change the order (F333). Once more terms are
+    /// starred than fit, "star the terms that matter most and they are sent first" asks for
+    /// something already done — every star renders filled — and the user is left pressing a control
+    /// that cannot help.
+    static let starAdvice = "Star the terms that matter most and they are sent first."
+    static let unstarAdvice = "More terms are starred than fit, so starring cannot help further — unstar the ones that matter least, or remove them."
+
+    /// The notice for a list whose starred terms alone overrun the budget.
+    public static func coverageNotice(for raw: [String], starredCount: Int) -> String? {
+        guard let notice = coverageNotice(for: raw) else { return nil }
+        guard starredCount >= coverage(of: raw).fitting else { return notice }
+        return notice.replacingOccurrences(of: starAdvice, with: unstarAdvice)
     }
 
     /// Exactly the terms that reach `--initial_prompt` — what `build` keeps after budgeting (F265).

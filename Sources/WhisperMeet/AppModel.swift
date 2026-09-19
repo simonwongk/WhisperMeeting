@@ -4174,6 +4174,8 @@ final class AppModel: ObservableObject {
     /// Keyword search fused with search by meaning (F316). Falls back to exactly `askMeetings` when
     /// the model is absent or anything about it fails: meaning is an addition, never a dependency.
     func askMeetingsByMeaning(query: String, scope: MeetingScope, limit: Int = 10) async -> [CitedResult] {
+        // Guarded like the sibling rankers (F333): every `prefix` below traps on a negative count.
+        guard limit > 0 else { return [] }
         let lexical = askMeetings(query: query, scope: scope, limit: max(limit, 20))
         guard isAskEmbeddingInstalled,
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -4183,29 +4185,54 @@ final class AppModel: ObservableObject {
         do {
             let indexed = try await askIndexes(for: searchable)
             let question = try await askEmbedder([query], .query)
-            let semantic = SemanticRanker.rank(query: question.vectors, in: indexed, limit: max(limit, 20))
+            // The scalar dot-product loop over every segment of every in-scope meeting, off the
+            // main actor for the same reason as the read above (F331).
+            let queryVector = question.vectors
+            let ranked = max(limit, 20)
+            let semantic = await Task.detached(priority: .userInitiated) {
+                SemanticRanker.rank(query: queryVector, in: indexed, limit: ranked)
+            }.value
             return RankFusion.fuse(lexical: lexical, semantic: semantic, limit: limit)
         } catch {
             return Array(lexical.prefix(limit))
         }
     }
 
-    /// Each meeting's index: read from beside its recording when it matches the transcript, built
-    /// (all missing meetings in one model run) and saved otherwise.
+    /// Embedding indexes loaded or built in this session, by meeting id (F331).
+    ///
+    /// Checked before the disk read, and it is what makes a library that cannot persist usable:
+    /// `askIndexes` only writes `if !store.isDegraded` and the recording folder exists, so on a
+    /// degraded or read-only library — a configuration the feature explicitly advertises support
+    /// for — every query re-embedded every in-scope meeting. `runSearch` fires on `.onAppear` and on
+    /// every scope-chip and match-mode change, so that was a multi-second model run per tap.
+    ///
+    /// Validity is the fingerprint, not the id: an edited or re-transcribed meeting no longer
+    /// matches and is rebuilt. Bounded, because a session can visit a whole library.
+    private var askIndexCache: [UUID: SegmentEmbeddings] = [:]
+
+    /// About 16 MB of vectors — a 384-dimension index of ~10,000 rows is ~15 MB, so an ordinary
+    /// library fits whole and a very large one simply stops caching rather than growing without end.
+    private static let askIndexCacheVectorLimit = 4_000_000
+
+    /// Each meeting's index: taken from the session cache, else read from beside its recording when
+    /// it matches the transcript, else built (all missing meetings in one model run) and saved.
     private func askIndexes(
         for meetings: [SearchableMeeting]
     ) async throws -> [(meeting: SearchableMeeting, index: SegmentEmbeddings)] {
-        var ready: [UUID: SegmentEmbeddings] = [:]
+        // Off the main actor (F331): this is a `Data(contentsOf:)` per meeting, a SHA-256 over every
+        // meeting's full transcript text, and an `Array` copy of every vector block — all of which
+        // ran on the MainActor, per query, because `AppModel` is `@MainActor`.
+        let requests = meetings.map {
+            (id: $0.id, texts: $0.segments.map(\.text), directory: store.recordingDirectoryURL(for: $0.id))
+        }
+        let cache = askIndexCache
+        var ready = await Task.detached(priority: .userInitiated) {
+            Self.readAskIndexes(for: requests, cache: cache)
+        }.value
+        for (id, index) in ready where askIndexCache[id] != index { cacheAskIndex(index, for: id) }
         var missing: [SearchableMeeting] = []
-        for meeting in meetings {
-            let directory = store.recordingDirectoryURL(for: meeting.id)
-            if let index = SegmentEmbeddings.read(
-                from: directory, modelID: AskEmbeddingRuntime.modelID, texts: meeting.segments.map(\.text)
-            ) {
-                ready[meeting.id] = index
-            } else {
-                missing.append(meeting)
-            }
+        for meeting in meetings where ready[meeting.id] == nil {
+            missing.append(meeting)
         }
         if !missing.isEmpty {
             isIndexingForAsk = true
@@ -4223,7 +4250,9 @@ final class AppModel: ObservableObject {
                 )
                 offset += length
                 ready[meeting.id] = index
-                // A read-only library still searches by meaning; it just does not keep the index.
+                cacheAskIndex(index, for: meeting.id)
+                // A read-only library still searches by meaning; it just does not keep the index on
+                // disk — the session cache above is what keeps it from re-embedding every query.
                 let directory = store.recordingDirectoryURL(for: meeting.id)
                 if !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) {
                     try? index.write(to: directory)
@@ -4231,6 +4260,35 @@ final class AppModel: ObservableObject {
             }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
+    }
+
+    private func cacheAskIndex(_ index: SegmentEmbeddings, for id: UUID) {
+        let held = askIndexCache.values.reduce(0) { $0 + $1.vectors.count }
+        guard held + index.vectors.count <= Self.askIndexCacheVectorLimit else { return }
+        askIndexCache[id] = index
+    }
+
+    /// The disk half of `askIndexes`, as a pure function over plain values so it can run off the
+    /// main actor (F331). Returns what it has; the caller embeds the rest.
+    private nonisolated static func readAskIndexes(
+        for requests: [(id: UUID, texts: [String], directory: URL)],
+        cache: [UUID: SegmentEmbeddings]
+    ) -> [UUID: SegmentEmbeddings] {
+        var ready: [UUID: SegmentEmbeddings] = [:]
+        for request in requests {
+            let fingerprint = SegmentEmbeddings.fingerprint(of: request.texts)
+            if let cached = cache[request.id], cached.fingerprint == fingerprint,
+               cached.modelID == AskEmbeddingRuntime.modelID, cached.count == request.texts.count {
+                ready[request.id] = cached
+                continue
+            }
+            if let index = SegmentEmbeddings.read(
+                from: request.directory, modelID: AskEmbeddingRuntime.modelID, texts: request.texts
+            ) {
+                ready[request.id] = index
+            }
+        }
+        return ready
     }
 
     // MARK: - Ask Meetings: a written answer (F182)

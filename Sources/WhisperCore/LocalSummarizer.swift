@@ -222,7 +222,30 @@ public struct LocalSummarizer: MeetingSummarizer {
         guard let payload = try? JSONDecoder().decode(LocalSummaryOutput.self, from: Data(contentsOf: outputURL)) else {
             throw SummarizerError.unreadableResponse
         }
+        // The summary path returns a degraded payload deliberately — a summary you can read beats a
+        // dead end. An *answer* cannot take that trade (F332). `parse_summary` degrades unparseable
+        // model output into a raw-text summary with a warning, and `--max-tokens 400` can stop the
+        // model mid-sentence (`finishReason == "length"`); either way the result is then shown with
+        // the same authority as a clean one as long as it happens to contain one `[n]`. The user is
+        // left with the passages, which are what was said — the same place every other refusal
+        // leaves them.
+        if let refusal = Self.answerRefusal(warning: payload.warning, finishReason: payload.finishReason) {
+            throw refusal
+        }
         return payload.summary
+    }
+
+    /// Why a helper payload may not be shown as an answer, or nil when it may (F332).
+    ///
+    /// Pure so the rule is testable without a 5 GB model and a subprocess. The finish reason comes
+    /// from `mlx_lm`'s `stream_generate`, which reports `"length"` when it stopped at `--max-tokens`
+    /// rather than at an end-of-turn token.
+    static func answerRefusal(warning: String?, finishReason: String?) -> SummarizerError? {
+        if let warning, !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .answerDegraded(warning)
+        }
+        if finishReason == "length" { return .answerTruncated }
+        return nil
     }
 
     static let answerFormatInstruction = """
