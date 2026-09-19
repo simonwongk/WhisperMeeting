@@ -213,7 +213,10 @@ Beyond the core record → transcribe flow:
   each new recording you add to it once the file has finished copying, with a notification first.
   Files already in the folder are left alone, originals are never moved or deleted, a file that
   arrives during a recording waits until it ends, and one dropped while the app was closed is picked
-  up at the next launch. It never records on its own.
+  up at the next launch — including a recording you already had, copied in with its original date.
+  Turning the feature off and on again, or choosing a different folder, starts fresh: whatever is in
+  the folder at that moment is left alone. If the folder cannot be read, Settings says so rather than
+  silently importing nothing. It never records on its own.
 - **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
   **Add from a Link…** button appears on the record screen. Paste a link to a single video and
   WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any

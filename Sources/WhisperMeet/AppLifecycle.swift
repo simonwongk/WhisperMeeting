@@ -52,13 +52,19 @@ public final class AppLifecycle: ObservableObject {
     /// Hands waiting files to the importer once it is safe to: a launch *caused by* opening a file
     /// delivers the file before anything else has run, and importing ahead of startup recovery
     /// could index a new meeting while recovery is still deciding what the library holds.
+    /// Drains rather than bails: an import takes seconds, and a second drop on the Dock while the
+    /// first is importing used to append to `pendingFiles`, hit the `isDelivering` guard, and sit
+    /// there until some later unrelated `open()` happened to flush it — so the second drag appeared
+    /// to do nothing at all (F322).
     public func deliverPendingFiles() async {
         guard didFinishStartupRecovery, !isDelivering, !pendingFiles.isEmpty, let onOpenFiles else { return }
         isDelivering = true
         defer { isDelivering = false }
-        let batch = pendingFiles
-        pendingFiles.removeAll()
-        await onOpenFiles(batch)
+        while !pendingFiles.isEmpty {
+            let batch = pendingFiles
+            pendingFiles.removeAll()
+            await onOpenFiles(batch)
+        }
     }
 
     private var observers: [NSObjectProtocol] = []

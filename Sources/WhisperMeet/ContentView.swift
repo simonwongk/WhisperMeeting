@@ -484,7 +484,7 @@ private struct RecordMeetingView: View {
             case let .success(urls):
                 guard !urls.isEmpty else { return }
                 Task {
-                    if let id = await model.importRecordings(from: urls, title: model.recordingTitle) {
+                    if let id = await model.importRecordings(from: urls, title: model.recordingTitle).firstID {
                         onMeetingSaved(id)
                         model.recordingTitle = ""
                     }
@@ -1856,6 +1856,14 @@ struct SettingsView: View {
                         Spacer()
                         Button("Choose Folder…") { chooseWatchedFolder() }
                             .buttonStyle(.bordered)
+                    }
+                    // F325 — an unreadable folder used to be indistinguishable from an empty one,
+                    // so the feature could sit here looking on while nothing was ever read.
+                    if let problem = model.watchedFolderProblem {
+                        Label(problem, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

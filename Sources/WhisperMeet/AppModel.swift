@@ -408,59 +408,151 @@ final class AppModel: ObservableObject {
     @Published var watchedFolderEnabled: Bool {
         didSet {
             defaults.set(watchedFolderEnabled, forKey: Self.watchedFolderEnabledKey)
+            // Turning it ON starts a fresh baseline (F323). The record from the last time it was on
+            // is a month stale after a month off, so every file added meanwhile would count as new
+            // and import again — duplicate meetings and a queued transcription each, on a plain
+            // settings toggle. F318's own rule is that what is already in the folder when watching
+            // starts is never imported.
+            if didLoadWatchedFolderSettings, watchedFolderEnabled, !oldValue, let path = watchedFolderPath {
+                Self.setWatchedFolderKnownFiles(nil, for: path, in: defaults)
+            }
             restartWatchedFolder()
         }
     }
     @Published var watchedFolderPath: String? {
         didSet {
             defaults.set(watchedFolderPath, forKey: Self.watchedFolderPathKey)
+            // A newly chosen folder is baselined the same way, for the same reason (F323).
+            if didLoadWatchedFolderSettings, let path = watchedFolderPath, path != oldValue {
+                Self.setWatchedFolderKnownFiles(nil, for: path, in: defaults)
+            }
             restartWatchedFolder()
         }
     }
+
+    /// False until `init` has loaded both settings from disk.
+    ///
+    /// Load-bearing, not defensive: `@Published` assignments in `init` go through the setter, so
+    /// without this every launch would take the "the user just turned this on" branch above and
+    /// discard the folder's record — the same shape as the bug that made the first version forget
+    /// its saved date on every launch, found on a real relaunch rather than by a unit test.
+    private var didLoadWatchedFolderSettings = false
+
     static let watchedFolderEnabledKey = "watchedFolderEnabled"
     static let watchedFolderPathKey = "watchedFolderPath"
-    static let watchedFolderLastLookKey = "watchedFolderLastLook"
+    static let watchedFolderKnownFilesKey = "watchedFolderKnownFiles"
 
-    /// When this folder was last looked at, or nil if it never was.
+    /// What each watched folder was known to hold at its last look (F320).
     ///
-    /// Stored as `[folder: date]` so the date can only ever be read for the folder it was written
-    /// for. The first version cleared a bare date in `watchedFolderPath`'s `didSet` — which also
-    /// fires when `init` loads the saved path, because `@Published` assignments in `init` go through
-    /// the setter. So every launch forgot the last look, and a recording dropped while the app was
-    /// closed was filed under "already there". Found on a real relaunch, not by the unit tests.
-    static func watchedFolderLastLook(for path: String, in defaults: UserDefaults) -> Date? {
-        (defaults.dictionary(forKey: watchedFolderLastLookKey) as? [String: Date])?[path]
+    /// Replaces the `[folder: Date]` last-look of the first version — see `WatchedFolderInbox` for
+    /// why a modification date cannot answer "did this arrive while I was away". Stored as one
+    /// `[folder: [path: version]]` blob so that writing folder B's record cannot erase folder A's:
+    /// `defaults.set([path: date], forKey:)` replaced the whole dictionary and did exactly that,
+    /// discarding the one thing the per-folder shape was introduced for.
+    ///
+    /// An install upgrading across this change has no record, so its first look re-baselines the
+    /// folder: nothing is imported twice, and a file dropped in during the upgrade itself is the one
+    /// case that reads as "already there".
+    static func watchedFolderKnownFiles(for path: String, in defaults: UserDefaults) -> WatchedFolderInbox.Snapshot? {
+        storedWatchedFolderKnownFiles(in: defaults)[path]
+    }
+
+    /// Records (or, with nil, forgets) one folder's files, leaving every other folder's alone.
+    static func setWatchedFolderKnownFiles(
+        _ snapshot: WatchedFolderInbox.Snapshot?,
+        for path: String,
+        in defaults: UserDefaults
+    ) {
+        var all = storedWatchedFolderKnownFiles(in: defaults)
+        all[path] = snapshot
+        guard let data = try? JSONEncoder().encode(all) else { return }
+        defaults.set(data, forKey: watchedFolderKnownFilesKey)
+    }
+
+    private static func storedWatchedFolderKnownFiles(in defaults: UserDefaults) -> [String: WatchedFolderInbox.Snapshot] {
+        guard let data = defaults.data(forKey: watchedFolderKnownFilesKey),
+              let stored = try? JSONDecoder().decode([String: WatchedFolderInbox.Snapshot].self, from: data)
+        else { return [:] }
+        return stored
     }
 
     private let watchedFolderMonitor = WatchedFolderMonitor()
+
     /// Finished files waiting for the app to be free. A file that arrives mid-recording is kept and
     /// imported afterwards — the inbox hands each file over once, so dropping it here would lose it.
     private(set) var pendingWatchedFiles: [URL] = []
+
+    /// The batch an import is running on right now, held apart from `pendingWatchedFiles` so a look
+    /// during the import neither re-delivers it nor writes it into the saved record (F321).
+    private(set) var inFlightWatchedFiles: [URL] = []
+
+    /// The running import of watched files, or nil when none is running. Assigned before the task
+    /// can run, so it is also the guard against two overlapping imports of the same queue.
+    private(set) var watchedFolderDelivery: Task<Void, Never>?
+
+    /// Why the watched folder is not being read, or nil when it is (F325).
+    @Published private(set) var watchedFolderProblem: String?
 
     /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
     /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
     func restartWatchedFolder() {
         guard didPerformStartupRecovery, watchedFolderEnabled, let path = watchedFolderPath, !path.isEmpty else {
             watchedFolderMonitor.stop()
+            watchedFolderProblem = nil
             return
         }
-        let lastLook = Self.watchedFolderLastLook(for: path, in: defaults)
-        watchedFolderMonitor.start(folder: URL(fileURLWithPath: path, isDirectory: true), lastLook: lastLook) { [weak self] now, ready in
-            self?.watchedFolderLooked(at: now, ready: ready)
+        let known = Self.watchedFolderKnownFiles(for: path, in: defaults)
+        watchedFolderMonitor.start(
+            folder: URL(fileURLWithPath: path, isDirectory: true), known: known
+        ) { [weak self] snapshot, ready, problem in
+            self?.watchedFolderLooked(snapshot: snapshot, ready: ready, problem: problem)
         }
     }
 
-    func watchedFolderLooked(at safeLastLook: Date, ready: [URL]) {
-        pendingWatchedFiles.append(contentsOf: ready)
-        // The saved date only moves while nothing is waiting: a file held back by a recording
-        // lives in memory, so quitting now must leave it "new" for the next launch.
-        if pendingWatchedFiles.isEmpty, let path = watchedFolderPath {
-            defaults.set([path: safeLastLook], forKey: Self.watchedFolderLastLookKey)
+    func watchedFolderLooked(
+        snapshot: WatchedFolderInbox.Snapshot?,
+        ready: [URL],
+        problem: WatchedFolderMonitor.Problem? = nil
+    ) {
+        watchedFolderProblem = problem.map(Self.watchedFolderMessage(for:))
+        // A file the inbox hands over again — because a failed import left it changed, and changed
+        // means new — must not be queued twice and imported as two meetings.
+        let alreadyQueued = Set((pendingWatchedFiles + inFlightWatchedFiles).map(\.path))
+        pendingWatchedFiles.append(contentsOf: ready.filter { !alreadyQueued.contains($0.path) })
+        if let snapshot, let path = watchedFolderPath {
+            // A file waiting for the app to be free, or being imported right now, is left out of
+            // the record deliberately: it lives in memory, so quitting now must leave it new for
+            // the next launch.
+            let held = Set((pendingWatchedFiles + inFlightWatchedFiles).map(\.path))
+            Self.setWatchedFolderKnownFiles(snapshot.filter { !held.contains($0.key) }, for: path, in: defaults)
         }
-        guard !pendingWatchedFiles.isEmpty, recordingState == .idle, !isImporting, !isPreflightTestActive,
-              !isInstallingRecognitionRuntime else { return }
+        deliverWatchedFiles()
+    }
+
+    static func watchedFolderMessage(for problem: WatchedFolderMonitor.Problem) -> String {
+        switch problem {
+        case .missing:
+            return "The watched folder cannot be found. It may have been renamed or deleted, or be on a volume that is not mounted."
+        case .unreadable:
+            return "WhisperMeet cannot read the watched folder. Choose it again to grant access."
+        }
+    }
+
+    /// Hands the waiting files to the importer and keeps whatever it would not take (F321).
+    ///
+    /// The first version took the batch out of the queue and only then started the import in a
+    /// detached `Task`. The inbox had already recorded those files as handed over, so every way the
+    /// import can decline — a degraded or read-only library, a recording that started during the
+    /// main-actor hop, the storage-headroom guard — lost the user's recording silently, after the
+    /// notification had already told them it was being imported. `performStartupRecovery` restarts
+    /// the watcher on *every* exit path including the degraded early return, so "the library cannot
+    /// accept changes right now" is the normal case, not a hypothetical.
+    private func deliverWatchedFiles() {
+        guard watchedFolderDelivery == nil, !pendingWatchedFiles.isEmpty, recordingState == .idle,
+              !isImporting, !isPreflightTestActive, !isInstallingRecognitionRuntime else { return }
         let batch = pendingWatchedFiles
         pendingWatchedFiles.removeAll()
+        inFlightWatchedFiles = batch
         let names = batch.map(\.lastPathComponent).joined(separator: ", ")
         // Said before the import starts, window or no window: the user did not press anything.
         // `NSApp` is nil in a headless test process, where `UNUserNotificationCenter.current()`
@@ -468,7 +560,16 @@ final class AppModel: ObservableObject {
         if NSApp != nil {
             Self.deliverNotification(title: "WhisperMeet", body: "Importing from your watched folder: \(names)")
         }
-        Task { _ = await importRecordings(from: batch, title: "") }
+        watchedFolderDelivery = Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.importRecordings(from: batch, title: "", requireReadableAudio: true)
+            self.inFlightWatchedFiles = []
+            // Back on the queue, at the front: the next look retries them. Only refusals that can
+            // succeed later come back — a file the importer rejected on its merits is left to the
+            // inbox, which offers it again if and when it changes.
+            self.pendingWatchedFiles.insert(contentsOf: outcome.notImported, at: 0)
+            self.watchedFolderDelivery = nil
+        }
     }
 
     /// Above this, a link download asks for explicit confirmation before starting.
@@ -635,6 +736,8 @@ final class AppModel: ObservableObject {
         linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
         watchedFolderEnabled = defaults.bool(forKey: Self.watchedFolderEnabledKey)
         watchedFolderPath = defaults.string(forKey: Self.watchedFolderPathKey)
+        // Both settings are now loaded, so a later change to either is the user's (F323).
+        didLoadWatchedFolderSettings = true
         // Reuse the probes already run above rather than hitting the filesystem twice.
         runtimeExecutableURL = whisperURL
         isQwenInstalled = qwenIsInstalled
@@ -3342,16 +3445,40 @@ final class AppModel: ObservableObject {
     /// like a live recording. Whisper (via FFmpeg) decodes any supported container directly, so no
     /// conversion is needed here.
     func importRecording(from sourceURL: URL, title: String) async -> UUID? {
-        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return nil }
+        if case .success(let id) = await importOne(from: sourceURL, title: title, requireReadableAudio: false) {
+            return id
+        }
+        return nil
+    }
+
+    /// Why an import did not produce a meeting.
+    ///
+    /// The distinction exists for the watched folder, which owns a queue: `retryable` means nothing
+    /// about the file was wrong and the same file will import once the app is free, so it goes back
+    /// on the queue (F321). `permanent` means the importer judged the file itself — and the file is
+    /// then left to the inbox, which offers it again if and when it changes. Re-queueing those would
+    /// re-copy a broken file every three seconds forever.
+    enum ImportRefusal: Error, Equatable {
+        case retryable
+        case permanent
+    }
+
+    /// The single place a file becomes a meeting, and the only one that classifies its refusals.
+    private func importOne(
+        from sourceURL: URL,
+        title: String,
+        requireReadableAudio: Bool
+    ) async -> Result<UUID, ImportRefusal> {
+        guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return .failure(.retryable) }
         guard !isInstallingRecognitionRuntime else {
             alertMessage = "Wait for the local recognition model installation to finish before importing."
-            return nil
+            return .failure(.retryable)
         }
         // Must precede the copy below: while the library is read-only the `store.upsert` in
         // `adoptImportedRecording` is refused, so the file would be copied into the library and then
         // never indexed — and `orphanedRecordings()` reports nothing while degraded, so the import
         // would vanish with no error shown (F187).
-        guard libraryAcceptsChanges("Import") else { return nil }
+        guard libraryAcceptsChanges("Import") else { return .failure(.retryable) }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin.
@@ -3359,7 +3486,7 @@ final class AppModel: ObservableObject {
             let needed = Int64(sourceSize) + 500_000_000
             if available < needed {
                 alertMessage = "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
-                return nil
+                return .failure(.retryable)
             }
         }
         isImporting = true
@@ -3370,16 +3497,30 @@ final class AppModel: ObservableObject {
             let copiedURL = try await Task.detached(priority: .userInitiated) {
                 try Self.copyImportedRecording(from: sourceURL, into: directory)
             }.value
+            let duration = await Self.loadDuration(of: copiedURL)
+            // `loadDuration` returns 0 when `AVURLAsset` cannot parse the file — a truncated MP4 or
+            // M4A whose `moov` atom never arrived is the shape a writer that paused longer than the
+            // watched folder's settle window leaves behind. Adopting it upserts a zero-duration
+            // meeting and queues a transcription for a prefix of a recording, filed as if it were
+            // complete (F326). Silent, because nobody pressed anything: the file stays in the user's
+            // folder untouched, and the inbox offers it again the moment the writer touches it.
+            if requireReadableAudio, duration == 0 {
+                isImporting = false
+                try? FileManager.default.removeItem(at: directory)
+                return .failure(.permanent)
+            }
             let fallbackTitle = sourceURL.deletingPathExtension().lastPathComponent
             let displayTitle = cleanTitle.isEmpty
                 ? (fallbackTitle.isEmpty ? "Imported Recording" : fallbackTitle)
                 : cleanTitle
-            return await adoptImportedRecording(id: id, at: copiedURL, title: displayTitle)
+            return .success(await adoptImportedRecording(
+                id: id, at: copiedURL, title: displayTitle, knownDuration: duration
+            ))
         } catch {
             isImporting = false
             try? FileManager.default.removeItem(at: directory)
             alertMessage = "The recording could not be imported: \(error.localizedDescription)"
-            return nil
+            return .failure(.permanent)
         }
     }
 
@@ -3543,9 +3684,17 @@ final class AppModel: ObservableObject {
         at fileURL: URL,
         title: String,
         source: MediaSource? = nil,
-        referenceSegments: [TranscriptSegment]? = nil
+        referenceSegments: [TranscriptSegment]? = nil,
+        knownDuration: TimeInterval? = nil
     ) async -> UUID {
-        let duration = await Self.loadDuration(of: fileURL)
+        // `knownDuration` is the file import's already-measured length (F326); every other caller
+        // measures here.
+        let duration: TimeInterval
+        if let knownDuration {
+            duration = knownDuration
+        } else {
+            duration = await Self.loadDuration(of: fileURL)
+        }
         store.upsert(MeetingRecord(
             id: id,
             title: title,
@@ -3581,7 +3730,7 @@ final class AppModel: ObservableObject {
             return
         }
         NSApp?.activate(ignoringOtherApps: true)
-        if let id = await importRecordings(from: urls, title: "") {
+        if let id = await importRecordings(from: urls, title: "").firstID {
             pendingNavigation = MeetingNavigationRequest(meetingID: id, seek: nil)
         }
     }
@@ -3591,18 +3740,34 @@ final class AppModel: ObservableObject {
     func setRecordingStateForTesting(_ state: RecordingState) { recordingState = state }
     #endif
 
-    func importRecordings(from urls: [URL], title: String) async -> UUID? {
-        // Guarded here as well as in `importRecording`, so a multi-file drop yields one message
-        // instead of the same refusal repeated once per file (F187).
-        guard libraryAcceptsChanges("Import") else { return nil }
+    /// What importing a batch did. `notImported` lists the files a caller that owns a queue should
+    /// keep and offer again — it carries only the refusals that can succeed later (F321).
+    struct ImportOutcome {
         var firstID: UUID?
+        var notImported: [URL]
+    }
+
+    @discardableResult
+    func importRecordings(from urls: [URL], title: String, requireReadableAudio: Bool = false) async -> ImportOutcome {
+        // Guarded here as well as in `importOne`, so a multi-file drop yields one message
+        // instead of the same refusal repeated once per file (F187).
+        guard libraryAcceptsChanges("Import") else {
+            return ImportOutcome(firstID: nil, notImported: urls)
+        }
+        var firstID: UUID?
+        var notImported: [URL] = []
         for url in urls {
             let itemTitle = urls.count == 1 ? title : ""
-            if let id = await importRecording(from: url, title: itemTitle), firstID == nil {
-                firstID = id
+            switch await importOne(from: url, title: itemTitle, requireReadableAudio: requireReadableAudio) {
+            case .success(let id):
+                if firstID == nil { firstID = id }
+            case .failure(.retryable):
+                notImported.append(url)
+            case .failure(.permanent):
+                continue
             }
         }
-        return firstID
+        return ImportOutcome(firstID: firstID, notImported: notImported)
     }
 
     nonisolated private static func copyImportedRecording(
@@ -3621,8 +3786,35 @@ final class AppModel: ObservableObject {
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
+        let before = sourceVersion(of: sourceURL)
         try FileManager.default.copyItem(at: sourceURL, to: destination)
+        // The source is open anyway, so re-stating it is O(1) — and it catches exactly the case the
+        // watched folder's settle window cannot: a writer that paused longer than six seconds and
+        // then resumed, leaving a copy that is a prefix of the real recording (F326).
+        if let before, let after = sourceVersion(of: sourceURL), after != before {
+            try? FileManager.default.removeItem(at: destination)
+            throw ImportError.sourceChangedDuringCopy
+        }
         return destination
+    }
+
+    /// What the importer refuses on the file's own merits.
+    enum ImportError: LocalizedError {
+        case sourceChangedDuringCopy
+
+        var errorDescription: String? {
+            switch self {
+            case .sourceChangedDuringCopy:
+                return "it was still being written while it was copied. It will be imported once it is finished."
+            }
+        }
+    }
+
+    nonisolated private static func sourceVersion(of url: URL) -> WatchedFolderInbox.Version? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+              let size = values.fileSize, let modified = values.contentModificationDate
+        else { return nil }
+        return WatchedFolderInbox.Version(size: Int64(size), modified: modified)
     }
 
     nonisolated private static func loadDuration(of url: URL) async -> TimeInterval {
