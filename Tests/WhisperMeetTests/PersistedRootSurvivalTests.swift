@@ -11,8 +11,29 @@ import Testing
 //
 // What the inventory was FOR is the property that a newer build's value cannot make a root
 // unreadable. So each root is round-tripped with an unfamiliar enum value in it, and asserted to
-// survive. That fails loudly when someone adds a throwing enum to a persisted type, which is the
-// event the inventory existed to make visible.
+// survive.
+//
+// **What this does and does not catch, measured rather than claimed.** An earlier version of this
+// paragraph said it "fails loudly when someone adds a throwing enum to a persisted type, which is
+// the event the inventory existed to make visible". That is true of a REQUIRED field and false of
+// an OPTIONAL one, and the asymmetry runs the wrong way:
+//
+//     new throwing enum, optional field       -> decodes; this guard stays green
+//     new throwing enum, required field       -> throws; this guard fails loudly
+//     new throwing enum, required + default   -> throws; the synthesized decoder ignores the
+//                                                default and still demands the key
+//
+// Optional is how a persisted type normally gains a field — that is the whole point of F188's
+// append-only rule — so the claim failed in exactly the case this exists to cover and held in the
+// case that would have been caught anyway. The reason is narrow: every fixture below predates such
+// a field, so the key is absent and `decodeIfPresent` returns nil without entering the enum's
+// decoder. A key that IS present with an unmatched value throws, whether the fixture was written by
+// hand or generated.
+//
+// So the gap is *unexercised*, not *unknown*, and the repair is a fixture derived from the type
+// carrying every optional field with a deliberately unmatched value. Note when building it that an
+// explicit JSON `null` also returns nil without throwing — a generator emitting `"field": null`
+// would look like it exercises the field and would not.
 //
 // The four roots, all through `BackupJSONStore`, established by the F188 review:
 //   [MeetingRecord] · [String] (vocabulary) · [ReplacementRule] · DictationLog
