@@ -44,8 +44,17 @@ public final class AppLifecycle: ObservableObject {
     /// Accepts files from Finder "Open With", the Dock, Shortcuts' "Open File" or the Finder
     /// service. Anything the importer cannot read is dropped here, before it can raise an error
     /// about a PDF the user never meant to transcribe.
+    /// Told when an open contained nothing the importer can read (F344). A *mixed* drop stays
+    /// silent about its rejects — the readable ones are being imported, which is the answer — but an
+    /// explicit "Open With" on one PDF used to do nothing at all, visibly.
+    public var onRejectedFiles: (([URL]) -> Void)?
+
     public func open(_ urls: [URL]) {
-        pendingFiles.append(contentsOf: ExternalFileIntake.sort(urls).importable)
+        let sorted = ExternalFileIntake.sort(urls)
+        pendingFiles.append(contentsOf: sorted.importable)
+        if sorted.importable.isEmpty, !sorted.rejected.isEmpty {
+            onRejectedFiles?(sorted.rejected)
+        }
         Task { await deliverPendingFiles() }
     }
 

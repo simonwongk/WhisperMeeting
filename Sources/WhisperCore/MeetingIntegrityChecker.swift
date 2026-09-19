@@ -48,7 +48,9 @@ public enum WAVInspection {
                 channels = le16(data, body + 2)
                 sampleRate = le32(data, body + 4)
                 bitsPerSample = le16(data, body + 14)
-            } else if identifier == "ds64", size >= 16, body + 16 <= data.count {
+            // 28, the EBU Tech 3306 minimum (riffSize, dataSize, sampleCount, table length), not
+            // the 16 that happened to cover the two fields read below (F344).
+            } else if identifier == "ds64", size >= 28, body + 16 <= data.count {
                 // A loop, not a one-line reduce: CI's compiler gave up type-checking the reduce.
                 var declared: UInt64 = 0
                 for offset in 0..<8 {

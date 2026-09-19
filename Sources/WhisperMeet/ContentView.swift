@@ -797,7 +797,11 @@ private struct RecordMeetingView: View {
     private func statusReason(_ health: RecordingHealthSnapshot) -> String {
         if health.captureStoppedOnBothChannels {
             // F292: a lid closed while docked, or a display unplugged — not a microphone fault.
-            return "Audio capture stopped on both channels. This happens when a display is disconnected or the lid is closed; WhisperMeet is trying to restart it."
+            // No "…is trying to restart it" here (F344): this is a pure function of one snapshot,
+            // and the claim is false once the padding cap is reached and while the recording is
+            // finishing. The restart, when there is one, says so itself through
+            // `captureRestartNotice`, which knows the state this does not.
+            return "Audio capture stopped on both channels. This happens when a display is disconnected or the lid is closed."
         }
         if let warning = health.warnings.first {
             return warningMessage(warning)

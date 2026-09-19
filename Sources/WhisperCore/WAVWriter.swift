@@ -48,10 +48,18 @@ public enum WAVWriter {
     /// it. It is written only past the limit so that every ordinary recording stays byte-identical
     /// to what every earlier version wrote. `classicDataLimit` is a parameter so a test can cross
     /// the boundary without writing 4 GiB.
+    ///
+    /// `forceRF64` is for a writer that **reserved** 80 bytes before it knew how much it would
+    /// write: the recovery rebuild reserves from the tracks' declared length and writes from what it
+    /// actually mixed, which is less when a track dies partway (F336). The header must fill the
+    /// reserve exactly, or the difference is zero bytes sitting inside the declared `data` range.
     public static func header(
-        sampleRate: UInt32, dataByteCount64: UInt64, classicDataLimit: UInt64 = WAVWriter.classicDataLimit
+        sampleRate: UInt32,
+        dataByteCount64: UInt64,
+        classicDataLimit: UInt64 = WAVWriter.classicDataLimit,
+        forceRF64: Bool = false
     ) -> Data {
-        guard dataByteCount64 > classicDataLimit else {
+        guard forceRF64 || dataByteCount64 > classicDataLimit else {
             return header(sampleRate: sampleRate, dataByteCount: UInt32(clamping: dataByteCount64))
         }
         var data = Data()

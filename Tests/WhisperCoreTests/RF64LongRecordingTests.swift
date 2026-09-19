@@ -19,17 +19,55 @@ func ordinaryRecordingsKeepTheClassicHeader() {
 
 @Test("Past the classic limit the header is RF64 and declares the real length (F302)")
 func longRecordingsGetAnRF64Header() throws {
+    // One byte over, not a comfortable million: the boundary is where an off-by-one lives (F344).
+    #expect(WAVWriter.headerLength(dataByteCount: WAVWriter.classicDataLimit + 1) == 80)
+    #expect(WAVWriter.header(sampleRate: 48_000, dataByteCount64: WAVWriter.classicDataLimit + 1).count == 80)
+
     let bytes = UInt64(UInt32.max) + 1_000_000
     #expect(WAVWriter.headerLength(dataByteCount: bytes) == 80)
     let header = WAVWriter.header(sampleRate: 48_000, dataByteCount64: bytes)
     #expect(header.count == 80)
     #expect(String(data: header[0..<4], encoding: .ascii) == "RF64")
     #expect(String(data: header[12..<16], encoding: .ascii) == "ds64")
-    var declared: UInt64 = 0
-    for (offset, byte) in header[28..<36].enumerated() {
-        declared |= UInt64(byte) << UInt64(8 * offset)
+    func le64(_ range: Range<Int>) -> UInt64 {
+        var value: UInt64 = 0
+        for (offset, byte) in header[range].enumerated() { value |= UInt64(byte) << UInt64(8 * offset) }
+        return value
     }
-    #expect(declared == bytes)
+    #expect(le64(20..<28) == 72 + bytes, "riffSize: everything after the first 8 bytes")
+    #expect(le64(28..<36) == bytes)
+    #expect(le64(36..<44) == bytes / 2, "sampleCount: 16-bit mono, so two bytes a sample")
+}
+
+@Test("The integrity checker finds nothing wrong with an RF64 recording (F344)")
+func integrityCheckerAcceptsAnRF64Recording() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("rf64-check-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("meeting.wav")
+    var data = WAVWriter.header(sampleRate: 48_000, dataByteCount64: 9_600, classicDataLimit: 1_000)
+    data.append(Data(repeating: 0, count: 9_600))
+    try data.write(to: url)
+
+    let header = try #require(WAVInspection.header(at: url))
+    #expect(header.declaredDataBytes == 9_600)
+    #expect(header.dataOffset == 80)
+    #expect(header.sampleRate == 48_000)
+    #expect(header.bitsPerSample == 16)
+    #expect(header.channels == 1)
+
+    // The sweep itself, which is what the library actually runs over a recovered recording.
+    let findings = MeetingIntegrityChecker.check(MeetingIntegrityDescriptor(
+        recordingURL: url, sourceTracks: [], indexDurationSeconds: 0.1
+    ))
+    #expect(findings.isEmpty, "an RF64 recording is a whole recording, not a damaged one")
+
+    // And the same file cut short is still caught, so the acceptance above is not blanket.
+    try data.prefix(80 + 4_000).write(to: url)
+    let truncated = MeetingIntegrityChecker.check(MeetingIntegrityDescriptor(
+        recordingURL: url, sourceTracks: [], indexDurationSeconds: 0.1
+    ))
+    #expect(truncated.contains { if case .wavTruncated = $0 { return true } else { return false } })
 }
 
 private func writeFloats(_ values: [Float], to url: URL) throws {

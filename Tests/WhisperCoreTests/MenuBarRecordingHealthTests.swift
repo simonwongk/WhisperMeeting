@@ -23,32 +23,32 @@ private func menu(_ health: RecordingHealthSnapshot?, recording: Bool = true) ->
     )
 }
 
-@Test("A healthy recording adds no health line and keeps the recording symbol (F294)")
+@Test("A healthy recording adds no health line and does not mark the icon (F294)")
 func healthyRecordingHasNoHealthLine() {
     #expect(menu(snapshot([])).healthLine == nil)
-    #expect(menu(snapshot([])).symbol == "record.circle.fill")
+    #expect(!menu(snapshot([])).isAtRisk)
     #expect(menu(nil).healthLine == nil)
 }
 
-@Test("An at-risk recording names its worst problem in the menu and changes the icon (F294)")
+@Test("An at-risk recording names its worst problem in the menu and marks the icon (F294, F337)")
 func atRiskRecordingIsNamedInTheMenu() {
     let presentation = menu(snapshot([.microphoneClipping, .microphoneCaptureStopped]))
     #expect(presentation.healthLine == "⚠︎ Microphone capture stopped")
-    #expect(presentation.symbol == "exclamationmark.triangle.fill")
+    #expect(presentation.isAtRisk)
 }
 
 @Test("A caution is named in the menu but does not change the icon (F294)")
 func cautionIsNamedWithoutChangingTheIcon() {
     let presentation = menu(snapshot([.microphoneClipping]))
     #expect(presentation.healthLine == "Microphone is clipping")
-    #expect(presentation.symbol == "record.circle.fill")
+    #expect(!presentation.isAtRisk)
 }
 
 @Test("Health from a recording that has ended is not shown (F294)")
 func staleHealthIsNotShownWhenIdle() {
     let presentation = menu(snapshot([.lowStorage]), recording: false)
     #expect(presentation.healthLine == nil)
-    #expect(presentation.symbol == "record.circle")
+    #expect(!presentation.isAtRisk)
 }
 
 @Test("An at-risk problem is announced once, not once a second (F294)")

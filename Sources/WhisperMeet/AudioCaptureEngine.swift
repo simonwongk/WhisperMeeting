@@ -54,7 +54,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     )
 
     private let captureQueue = DispatchQueue(label: "com.whispermeet.audio-capture", qos: .userInitiated)
-    private var stream: SCStream?
+
+    /// The live capture stream, or nil.
+    ///
+    /// Stored behind `captureQueue` like `streamError`, `streamDied` and `pendingRestartPadding`
+    /// (F334). `start()`/`stop()` reach it from the MainActor, `restartAfterFailure` from the
+    /// cooperative pool — both are `nonisolated async`, so under SE-0338 they genuinely run in
+    /// parallel — and the sample handler reaches it from the capture queue. Code already on that
+    /// queue uses `_stream` directly; a `sync` from the queue would deadlock.
+    private var _stream: SCStream?
+    private var stream: SCStream? {
+        get { captureQueue.sync { _stream } }
+        set { captureQueue.sync { _stream = newValue } }
+    }
     private var systemWriter: FloatTrackWriter?
     private var microphoneWriter: FloatTrackWriter?
     private var sessionDirectory: URL?
@@ -67,11 +79,16 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// each of its awaits, gives up if a stop or cancel has reset the engine in the meantime —
     /// otherwise a restart outliving Stop's bounded wait would start a stream nothing ever stops,
     /// and the next recording's `start()` would find `stream != nil` and silently do nothing.
-    private var sessionGeneration = 0
+    private var _sessionGeneration = 0
+    private var sessionGeneration: Int { captureQueue.sync { _sessionGeneration } }
     /// A restart is between tearing down the dead stream and paying its padding (F292). A stop that
     /// lands then — only possible once Stop's bounded wait has run out — is stopping a capture that
     /// had died, and must not treat a half-started stream's refusal to stop as a finishing failure.
-    private var restartInProgress = false
+    private var _restartInProgress = false
+    private var restartInProgress: Bool {
+        get { captureQueue.sync { _restartInProgress } }
+        set { captureQueue.sync { _restartInProgress = newValue } }
+    }
     private var healthMonitor: RecordingHealthMonitor?
     private var healthUpdate: (@Sendable (RecordingHealthSnapshot) -> Void)?
     private var healthTimer: DispatchSourceTimer?
@@ -221,8 +238,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // path: a zero-aligned rebuild that drops each track's start offset and never transcribes.
         // That is exactly what the user's 2026-09-18 lid-close test produced. The tracks of a dead
         // capture are not damaged — they simply end early — so the normal mix is the right one.
-        var captureHadDied = streamDied || restartInProgress
-            || (stream == nil && injectedStopCapture == nil)
+        var captureHadDied = captureQueue.sync {
+            streamDied || _restartInProgress || (_stream == nil && injectedStopCapture == nil)
+        }
 
         do {
             if let injectedStopCapture {
@@ -370,7 +388,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         captureQueue.async { [weak self] in
-            guard let self, self.stream === stream else { return }
+            // Already on the capture queue: the stored property, not the syncing accessor (F334).
+            guard let self, self._stream === stream else { return }
             self.handleStreamFailure(error)
         }
     }
@@ -481,16 +500,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// display was gone, so silence is the truth about that interval rather than an invention about
     /// audio that existed.
     func restartAfterFailure(paddingFrames: Int64) async throws {
-        let generation = sessionGeneration
-        restartInProgress = true
-        defer { if generation == sessionGeneration { restartInProgress = false } }
         // The death is cleared BEFORE the new stream can start, so a new stream that dies at once
         // records its own death rather than having it erased by a clear that runs after it. Put
         // back if the restart fails, which keeps `hasStreamError` true for the retry.
-        let previousError = streamError
-        captureQueue.sync {
+        let (generation, previousError) = captureQueue.sync { () -> (Int, Error?) in
+            let previous = streamError
+            _restartInProgress = true
             streamError = nil
             streamDied = false
+            return (_sessionGeneration, previous)
+        }
+        defer {
+            captureQueue.sync { if generation == _sessionGeneration { _restartInProgress = false } }
         }
         var startedStream: SCStream?
         do {
@@ -509,9 +530,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                     self.stream = nil
                 }
                 let stream = try await makeStream()
-                try ensureSession(generation)
-                setPendingRestartPadding(paddingFrames)
-                self.stream = stream
+                try publishRestart(stream, generation: generation, paddingFrames: paddingFrames)
                 try await stream.startCapture()
                 startedStream = stream
                 try ensureSession(generation)
@@ -523,13 +542,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             if let startedStream { try? await startedStream.stopCapture() }
             // Only this recording's state is put back. If a stop or cancel reset the engine while
             // the restart was waiting, the state belongs to nobody — or to the next recording.
-            if generation == sessionGeneration {
-                if startedStream != nil || injectedRestartCapture == nil { self.stream = nil }
-                setPendingRestartPadding(0)
-                captureQueue.sync {
-                    streamError = streamError ?? previousError ?? error
-                    streamDied = true
-                }
+            captureQueue.sync {
+                guard generation == _sessionGeneration else { return }
+                if startedStream != nil || injectedRestartCapture == nil { _stream = nil }
+                pendingRestartPadding = 0
+                streamError = streamError ?? previousError ?? error
+                streamDied = true
             }
             if !(error is CancellationError) {
                 Self.logger.error(
@@ -551,6 +569,43 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private func ensureSession(_ generation: Int) throws {
         guard generation == sessionGeneration else { throw CancellationError() }
     }
+
+    /// Hands the restarted stream over to the engine — the check and both assignments in **one**
+    /// step on the capture queue (F334).
+    ///
+    /// Separately they were a check-then-act: a `reset()` landing between "is this session still
+    /// mine?" and the assignment left `stream` non-nil and silence owed on an engine that had been
+    /// reset, and the catch below deliberately restores nothing in that case. `start()` is
+    /// `guard stream == nil`, so the next meeting then recorded nothing at all — the precise
+    /// failure the generation counter exists to prevent. Stop's bounded wait
+    /// (`waitForCaptureRestartToSettle`, 10 s) running out is what puts the two in parallel.
+    private func publishRestart(_ stream: SCStream?, generation: Int, paddingFrames: Int64) throws {
+        try captureQueue.sync {
+            guard generation == _sessionGeneration else { throw CancellationError() }
+            #if DEBUG
+            onRestartPublishWindowForTesting?()
+            #endif
+            pendingRestartPadding = max(0, paddingFrames)
+            if let stream { _stream = stream }
+        }
+    }
+
+    #if DEBUG
+    /// Test seams for F334: the window between "is this session still mine?" and publishing the
+    /// restarted stream is where a racing `reset()` used to land. Nothing in the app sets these.
+    var onRestartPublishWindowForTesting: (@Sendable () -> Void)?
+
+    var sessionGenerationForTesting: Int { sessionGeneration }
+    var pendingRestartPaddingForTesting: Int64 { captureQueue.sync { pendingRestartPadding } }
+    var hasLiveStreamForTesting: Bool { stream != nil }
+
+    func publishRestartForTesting(generation: Int, paddingFrames: Int64) throws {
+        try publishRestart(nil, generation: generation, paddingFrames: paddingFrames)
+    }
+
+    /// What a stop or a cancel does to the session state, without the stream teardown around it.
+    func resetForTesting() { reset() }
+    #endif
 
     /// Silence owed to both tracks by a restart in progress (F292). Read and written only on the
     /// capture queue, which is also where the sample handler runs, so it is paid exactly once.
@@ -650,15 +705,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private func reset() {
         stopHealthTimer()
         endRecordingActivity()
-        stream = nil
+        // Every field a restart on another thread can be reading, in one step, so the restart sees
+        // either the whole reset or none of it (F334).
+        captureQueue.sync {
+            _stream = nil
+            streamError = nil
+            streamDied = false
+            _restartInProgress = false
+            _sessionGeneration += 1
+            pendingRestartPadding = 0
+        }
         systemWriter = nil
         microphoneWriter = nil
         sessionDirectory = nil
         startedAt = nil
-        streamError = nil
-        streamDied = false
-        restartInProgress = false
-        sessionGeneration += 1
         healthMonitor = nil
         healthUpdate = nil
         levelsUpdate = nil
@@ -670,7 +730,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // capture refuse to retry the following one.
         restartCount = 0
         paddedGaps = []
-        pendingRestartPadding = 0
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }

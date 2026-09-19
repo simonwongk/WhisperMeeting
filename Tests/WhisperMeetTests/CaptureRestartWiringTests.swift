@@ -379,7 +379,10 @@ func resumeIsAnnouncedWindowless() async throws {
     model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
     await model.handleCaptureInterruption(trigger: .streamFailed, gap: 8, now: Date())
 
-    let sent = try #require(model.lastWindowlessMessage, "the resume was only shown in the window")
+    // `lastWindowlessMessage` records what was *offered* to the windowless channel, before the
+    // has-a-window check — so this proves the resume went through `report`, not that a notification
+    // was posted. Posting needs `NSApp`, which a headless test does not have (F344).
+    let sent = try #require(model.lastWindowlessMessage, "the resume never reached the windowless channel")
     #expect(sent.contains("Recording resumed"))
     #expect(model.alertMessage == nil, "a successful resume is news, not an alert to dismiss")
 }

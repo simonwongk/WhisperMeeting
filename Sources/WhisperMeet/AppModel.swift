@@ -230,6 +230,21 @@ final class AppModel: ObservableObject {
     var isProposingCorrections: Bool { proposingCorrectionsID != nil }
     @Published private(set) var recordingPreflight = RecordingPreflightStatus.checking
     @Published private(set) var recordingHealth: RecordingHealthSnapshot?
+
+    /// Whether the menu-bar icon should show the at-risk warning (F337). The same rule the menu's
+    /// own health line uses, so the two cannot disagree.
+    var isRecordingAtRisk: Bool {
+        MenuBarRecording.isAtRisk(
+            isRecording: isRecordingActive,
+            isStopping: recordingState == .stopping,
+            health: recordingHealth
+        )
+    }
+
+    #if DEBUG
+    /// Test seam: health otherwise only arrives from a live capture's 1 Hz tick.
+    func setRecordingHealthForTesting(_ snapshot: RecordingHealthSnapshot?) { recordingHealth = snapshot }
+    #endif
     /// Which at-risk problems this recording has already announced (F294). Reset per recording.
     private var riskAnnouncer = RecordingRiskAnnouncer()
     @Published private(set) var isImporting = false
@@ -493,6 +508,9 @@ final class AppModel: ObservableObject {
     /// Why the watched folder is not being read, or nil when it is (F325).
     @Published private(set) var watchedFolderProblem: String?
 
+    /// The record as last written to defaults, so an unchanged folder is not rewritten every look.
+    private var lastWrittenWatchedFolderRecord: WatchedFolderInbox.Snapshot?
+
     /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
     /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
     func restartWatchedFolder() {
@@ -502,6 +520,7 @@ final class AppModel: ObservableObject {
             return
         }
         let known = Self.watchedFolderKnownFiles(for: path, in: defaults)
+        lastWrittenWatchedFolderRecord = known
         watchedFolderMonitor.start(
             folder: URL(fileURLWithPath: path, isDirectory: true), known: known
         ) { [weak self] snapshot, ready, problem in
@@ -524,7 +543,13 @@ final class AppModel: ObservableObject {
             // the record deliberately: it lives in memory, so quitting now must leave it new for
             // the next launch.
             let held = Set((pendingWatchedFiles + inFlightWatchedFiles).map(\.path))
-            Self.setWatchedFolderKnownFiles(snapshot.filter { !held.contains($0.key) }, for: path, in: defaults)
+            let record = snapshot.filter { !held.contains($0.key) }
+            // Only when it changed. A quiet folder looks the same every three seconds, and writing
+            // it anyway is ~28,800 defaults writes a day for no new information (F344).
+            if record != lastWrittenWatchedFolderRecord {
+                Self.setWatchedFolderKnownFiles(record, for: path, in: defaults)
+                lastWrittenWatchedFolderRecord = record
+            }
         }
         deliverWatchedFiles()
     }
@@ -2665,7 +2690,12 @@ final class AppModel: ObservableObject {
         // F292: one stop at a time, and never mid-start — `start()` is still building the stream and
         // its writers, and a stop then would finalize under it. Stop is pressed again once live.
         guard !isStopInFlight else { return nil }
-        if case .starting = recordingState { return nil }
+        if case .starting = recordingState {
+            // Silent until F344: `SCShareableContent.current` can take seconds, and ⌘R or the
+            // menu-bar Stop in that window looked like a key that did nothing.
+            report("The recording is still starting. Try Stop again in a moment.")
+            return nil
+        }
         isStopInFlight = true
         defer { isStopInFlight = false }
         // The menu-bar Stop and ⌘R pass "" — the windowless paths — which threw away a title typed
@@ -3738,6 +3768,9 @@ final class AppModel: ObservableObject {
     #if DEBUG
     /// Test seam: the recording state is otherwise only reachable through a real capture.
     func setRecordingStateForTesting(_ state: RecordingState) { recordingState = state }
+
+    /// Test seam: the active meeting is otherwise only set by starting a real capture.
+    func setActiveMeetingIDForTesting(_ id: UUID?) { activeMeetingID = id }
     #endif
 
     /// What importing a batch did. `notImported` lists the files a caller that owns a queue should

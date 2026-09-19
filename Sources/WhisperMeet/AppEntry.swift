@@ -84,6 +84,10 @@ struct WhisperMeetApp: App {
                     lifecycle.onOpenFiles = { [weak model] urls in
                         await model?.importExternalFiles(urls)
                     }
+                    lifecycle.onRejectedFiles = { [weak model] urls in
+                        let what = urls.count == 1 ? urls[0].lastPathComponent : "those files"
+                        model?.report("WhisperMeet can only transcribe audio and video: \(what) was not imported.")
+                    }
                     AppLifecycleDelegate.lifecycle = lifecycle
                     AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
                     lifecycle.begin()
@@ -114,7 +118,7 @@ struct WhisperMeetApp: App {
     private var menuBarSymbol: String {
         // F294: a recording losing audio outranks dictation state — it is the one thing in the menu
         // bar that cannot wait, and with no window open the icon is all the user can see.
-        if model.isRecordingActive, model.recordingHealth?.overallStatus == .atRisk {
+        if model.isRecordingAtRisk {
             return "exclamationmark.triangle.fill"
         }
         switch dictation.status {

@@ -133,52 +133,16 @@ func expiresStaleRecordingLevel() {
     #expect(!expired.microphoneActive)
 }
 
-// MARK: - F150: warning before the WAV length field runs out
-
-@Test("A recording approaching the WAV length limit is warned about (F150)")
-func approachingWavLimitWarns() {
-    // `meeting.wav` is 48 kHz mono 16-bit, so the `UInt32` `data`-chunk size runs out at
-    // 4,294,967,295 / 96,000 ≈ 44,739 s ≈ 12 h 25 m. Past that the samples are still written, but a
-    // strict reader — ffmpeg among them — honours the declared size and ignores everything beyond
-    // ~4 GB. So the recording looks truncated when exported or re-transcribed, while being complete
-    // on disk.
-    //
-    // F150's fix options are segmenting or RF64; this is its "at minimum warn near the limit", and
-    // it is the part that needs no 12-hour recording to verify. The warning fires with time to act:
-    // a user who is told at 11 h 55 m can stop and start a second recording, which is the outcome
-    // segmenting would have produced automatically.
-    let monitor = RecordingHealthMonitor(startedAt: 0)
-    let warned = RecordingHealthMonitor.approachingLengthLimit(
-        elapsedSeconds: RecordingHealthMonitor.wavLengthLimitSeconds
-            - RecordingHealthMonitor.lengthLimitWarningLeadSeconds
-    )
-    #expect(warned)
-    #expect(!RecordingHealthMonitor.approachingLengthLimit(elapsedSeconds: 3_600))
-    #expect(RecordingHealthMonitor.approachingLengthLimit(elapsedSeconds: 1e9),
-            "past the limit is still worth warning about, not silently fine")
-    _ = monitor
-}
-
-@Test("The limit is derived from the header's own arithmetic, not a magic number (F150)")
-func lengthLimitIsDerived() {
-    // 16-bit mono at 48 kHz is 96,000 bytes per second, and the field is a `UInt32`. Deriving it
-    // means a future sample-rate or bit-depth change moves the warning with it, rather than leaving
-    // a constant that quietly describes the wrong format — which is the F208/F196 failure applied
-    // to a number instead of a sentence.
-    let bytesPerSecond = 48_000.0 * 2
-    let expected = Double(UInt32.max) / bytesPerSecond
-    #expect(abs(RecordingHealthMonitor.wavLengthLimitSeconds - expected) < 1)
-    // ~12 h 25 m, as F150 states.
-    #expect(RecordingHealthMonitor.wavLengthLimitSeconds > 44_000)
-    #expect(RecordingHealthMonitor.wavLengthLimitSeconds < 45_000)
-}
+// MARK: - F302: the WAV length limit no longer warns, because RF64 removed it
 
 @Test("A very long recording is no longer warned about: RF64 keeps it readable (F302, was F150)")
 func lengthWarningIsRetired() {
     let monitor = RecordingHealthMonitor(startedAt: 0)
-    let late = monitor.snapshot(
-        at: RecordingHealthMonitor.wavLengthLimitSeconds + 3_600,
-        availableStorageBytes: 500_000_000_000
-    )
+    // Well past where the classic WAV `data` field runs out — 48 kHz mono 16-bit is 96,000 bytes a
+    // second against a `UInt32`, so ~44,739 s (12 h 25 m). The derivation used to live in a constant
+    // on the monitor; with nothing warning, the constant was two green tests of an unreachable
+    // helper, so it is written out here instead (F335).
+    let pastTheClassicWAVLimit = Double(UInt32.max) / (48_000.0 * 2) + 3_600
+    let late = monitor.snapshot(at: pastTheClassicWAVLimit, availableStorageBytes: 500_000_000_000)
     #expect(!late.warnings.contains(.approachingLengthLimit))
 }

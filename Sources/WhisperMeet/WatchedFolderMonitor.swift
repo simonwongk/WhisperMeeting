@@ -42,9 +42,13 @@ final class WatchedFolderMonitor {
         self.onLook = onLook
         inbox = WatchedFolderInbox(known: known)
         look()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.look() }
         }
+        // `.common`, not the default mode (F344): a menu-bar app spends real time in menu tracking,
+        // and in `.default` the looks stop for as long as a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func stop() {

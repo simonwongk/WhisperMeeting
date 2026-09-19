@@ -286,7 +286,8 @@ public enum InterruptedRecordingRecovery {
         in directory: URL,
         sampleRate: Double,
         openTrack: TrackOpener,
-        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
+        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup,
+        classicDataLimit: UInt64 = WAVWriter.classicDataLimit
     ) throws -> RecoveredRecording? {
         if let finished = finalizedRecording(in: directory) {
             // Only a capture gets a manifest: an import has no source tracks to describe.
@@ -315,7 +316,8 @@ public enum InterruptedRecordingRecovery {
             in: directory,
             sampleRate: sampleRate,
             openTrack: openTrack,
-            sizeOf: sizeLookup
+            sizeOf: sizeLookup,
+            classicDataLimit: classicDataLimit
         )
     }
 
@@ -333,7 +335,10 @@ public enum InterruptedRecordingRecovery {
         in directory: URL,
         sampleRate: Double = 48_000,
         openTrack: TrackOpener = fileTrackOpener,
-        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup
+        sizeOf sizeLookup: SizeLookup = InterruptedRecordingRecovery.fileSizeLookup,
+        // A parameter for the same reason `FloatTrackMixer.mix` has one (F336): this is the app's
+        // *second* WAV writer, and without a seam its RF64 branch was never executed by any test.
+        classicDataLimit: UInt64 = WAVWriter.classicDataLimit
     ) throws -> RecoveredRecording? {
         let fileManager = FileManager.default
         let systemURL = directory.appendingPathComponent(systemFile)
@@ -351,7 +356,8 @@ public enum InterruptedRecordingRecovery {
             try fileManager.removeItem(at: outputURL)
         }
         fileManager.createFile(atPath: outputURL.path, contents: nil)
-        // Anything that throws from here on leaves a 44-byte stub whose header was never written.
+        // Anything that throws from here on leaves a 44- or 80-byte stub (F302) whose header was
+        // never written.
         // `wavDuration` refuses it, so it is not mistaken for a finalized recording, but it is also
         // not a recording — remove it so the folder still looks like the interrupted capture it is
         // and the next launch retries the rebuild. Declared before the close defer so it runs after
@@ -361,7 +367,9 @@ public enum InterruptedRecordingRecovery {
         let output = try FileHandle(forWritingTo: outputURL)
         defer { try? output.close() }
         // 44 bytes, or 80 when the rebuild is long enough to need RF64 (F302) — matching the mixer.
-        let headerLength = WAVWriter.headerLength(dataByteCount: UInt64(max(0, totalFrames)) * 2)
+        let headerLength = WAVWriter.headerLength(
+            dataByteCount: UInt64(max(0, totalFrames)) * 2, classicDataLimit: classicDataLimit
+        )
         try ThrowingFileHandleIO.write(Data(repeating: 0, count: headerLength), to: output)
 
         let readSystem = try openTrack(systemFrames > 0 ? systemURL : nil)
@@ -399,7 +407,15 @@ public enum InterruptedRecordingRecovery {
                 // Saturating, matching `FloatTrackMixer`'s identical line. Leaving one of a
                 // matched pair fixed is the F278/F282 duplication failure, so both move together.
                 sampleRate: UInt32(saturating: sampleRate),
-                dataByteCount64: dataByteCount
+                dataByteCount64: dataByteCount,
+                classicDataLimit: classicDataLimit,
+                // The header has to fill the reserve above, and `mixTracks` can return fewer frames
+                // than the tracks declared — unlike `FloatTrackMixer.mix`, whose loop always reaches
+                // `totalFrames`. A rebuild that reserved RF64 and then truncated below the limit
+                // used to write a 44-byte classic header into an 80-byte hole, leaving 36 zero bytes
+                // inside the declared `data` range: audio shifted by 18 frames, the last 18 frames
+                // outside the declared size, and every check still passing (F336).
+                forceRF64: headerLength == 80
             ),
             to: output
         )
@@ -475,15 +491,22 @@ public enum InterruptedRecordingRecovery {
         return size / Int64(MemoryLayout<Float>.size)
     }
 
-    /// The duration of a finalized recording at `url`, or nil when it is not one. Test seam.
+    #if DEBUG
+    /// The duration of a finalized recording at `url`, or nil when it is not one. Test seam, gated
+    /// like the capture engine's (F344): an ungated one reads as production API with no caller.
     static func finalizedDuration(at url: URL) -> TimeInterval? { wavDuration(at: url) }
+    #endif
 
     private static func wavDuration(at url: URL) -> TimeInterval? {
         // An RF64 recording (F302) carries its length in `ds64`, which the shared header reader
         // understands. The same rule applies as below: a file shorter than it declares is not a
         // finished recording.
-        if let magic = try? FileHandle(forReadingFrom: url).read(upToCount: 4),
-           String(data: magic, encoding: .ascii) == "RF64" {
+        let magic: Data? = {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            return try? handle.read(upToCount: 4)
+        }()
+        if let magic, String(data: magic, encoding: .ascii) == "RF64" {
             guard let header = WAVInspection.header(at: url),
                   let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
             else { return nil }
