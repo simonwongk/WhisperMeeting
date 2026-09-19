@@ -15,7 +15,7 @@ order I would answer them. Every one is optional and nothing rots if you ignore 
 | | Entry | Time | Why this order |
 |---|---|---|---|
 | 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
-| 2 | **F275** | ~15 min | Two lid-close recordings. This is the durability question you originally asked; the restart logic is tested, but no test can prove a real lid close behaves the way the tests assume. |
+| 2 | **F275** | ~5 min | Install the current build (`Scripts/install-app.sh`) and repeat the docked lid close. Your 09:47 run used the Sep 16 build, which has no restart code. |
 | 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Worth doing *with* row 2 — a recording that ends because the capture died now goes through the notification channel too, so one lid close exercises both. |
 | 5 | **F239** | one decision | Should deleting a meeting also shred it from the index history? My recommendation is in the entry (opt-in). Pure preference — there is no wrong answer. |
 | 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
@@ -66,9 +66,23 @@ None of these rots. Everything else on that list is closed with evidence in `TIC
 
 ## F275 — Confirm the capture restart on the hardware, and set the padding cap
 
-**Status:** the code is shipped and tested; these two things cannot be settled without you.
+**Status (2026-09-19):** you did run 1 on 2026-09-18 at 09:47 — thank you — but with the installed
+app from Sep 16, which has none of the restart code. It reproduced the original failure exactly
+(capture gone at 13.7 s, nothing after the lid reopened, "recovered after a finishing error"), and
+tracing that through current code found and fixed a dozen more problems (see F292 in the ticket
+log). **The cap is settled:** 5 minutes stands, decided under your delegation.
 
-**What I need from you:** two physical runs and one number.
+**What I need from you now:** install the current build, then the two runs again.
+
+```bash
+Scripts/install-app.sh
+```
+
+(Quit WhisperMeet first; the installer refuses while it is running, on purpose.) Then run 1 below
+for about a minute with the lid closed. The folder tells me the rest, including what your microphone
+does while the lid is shut (F319) — no need to note anything.
+
+**Earlier text, still accurate for what each run checks:** two physical runs and one number.
 
 **The runs.** The restart decision is pinned by tests, but no test can prove that rebuilding an
 `SCStream` after a display disappears actually resumes audio on a real Mac — that depends on

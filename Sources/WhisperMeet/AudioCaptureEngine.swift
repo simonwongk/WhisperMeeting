@@ -14,6 +14,9 @@ struct RecordingArtifact: Sendable {
     /// The capture's health rollup (nil when no monitor ran, e.g. an injected test capture). Surfaced
     /// on the meeting as a channel-level advisory (F79).
     let healthReport: RecordingHealthReport?
+    /// The capture died before Stop and was not revived, so the audio ends before the recording
+    /// did (F292). The file is still a normal, aligned finalize of everything captured.
+    var captureStoppedEarly = false
 }
 
 enum AudioCaptureError: LocalizedError {
@@ -57,6 +60,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var sessionDirectory: URL?
     private var startedAt: Date?
     private var streamError: Error?
+    /// The stream itself stopped — as opposed to one buffer failing to convert or write, which also
+    /// sets `streamError` (F292). Only a real death means the audio ends early.
+    private var streamDied = false
+    /// Bumped by every `reset()` (F292). A restart remembers the value it started under and, after
+    /// each of its awaits, gives up if a stop or cancel has reset the engine in the meantime —
+    /// otherwise a restart outliving Stop's bounded wait would start a stream nothing ever stops,
+    /// and the next recording's `start()` would find `stream != nil` and silently do nothing.
+    private var sessionGeneration = 0
+    /// A restart is between tearing down the dead stream and paying its padding (F292). A stop that
+    /// lands then — only possible once Stop's bounded wait has run out — is stopping a capture that
+    /// had died, and must not treat a half-started stream's refusal to stop as a finishing failure.
+    private var restartInProgress = false
     private var healthMonitor: RecordingHealthMonitor?
     private var healthUpdate: (@Sendable (RecordingHealthSnapshot) -> Void)?
     private var healthTimer: DispatchSourceTimer?
@@ -153,6 +168,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             self.stream = stream
             sessionDirectory = directory
             streamError = nil
+            streamDied = false
             startedAt = Date()
             // Establish the monitor, callbacks, and level fields BEFORE capture begins so the
             // capture queue never reads or writes them concurrently with this setup. No sample
@@ -189,31 +205,51 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 
     func stop() async throws -> RecordingArtifact {
+        // The writers count too (F292): a restart that failed in `makeStream` leaves `stream == nil`
+        // with the tracks still open, and the old guard threw `noAudioCaptured` there without ever
+        // reaching `reset()` — leaking the power assertion, the health timer and the dead stream's
+        // state into the next recording. The `defer` stays AFTER the guard: a stop that arrives
+        // while `start()` is still building the stream must not tear down the writers it just made.
         guard let directory = sessionDirectory,
-              stream != nil || injectedStopCapture != nil else {
+              stream != nil || systemWriter != nil || microphoneWriter != nil
+                || injectedStopCapture != nil else {
             throw AudioCaptureError.noAudioCaptured
         }
         defer { reset() }
+        // F292: a capture that already died is finalized from what it wrote, like any other. This
+        // used to rethrow the death, which sent Stop down the "recovered after a finishing error"
+        // path: a zero-aligned rebuild that drops each track's start offset and never transcribes.
+        // That is exactly what the user's 2026-09-18 lid-close test produced. The tracks of a dead
+        // capture are not damaged — they simply end early — so the normal mix is the right one.
+        var captureHadDied = streamDied || restartInProgress
+            || (stream == nil && injectedStopCapture == nil)
 
         do {
             if let injectedStopCapture {
                 try await injectedStopCapture()
-            } else {
-                try await stream?.stopCapture()
+            } else if let stream {
+                // Stopping a stream ScreenCaptureKit already stopped throws; that is the death we
+                // already know about, not a new failure.
+                if captureHadDied {
+                    try? await stream.stopCapture()
+                } else {
+                    try await stream.stopCapture()
+                }
             }
         } catch {
             stopHealthTimer()
             await captureQueue.flush()
-            preservePartialTracks()
-            throw error
+            // A death delivered between the check above and this stop is still a death, not a
+            // finishing failure.
+            if streamDied {
+                captureHadDied = true
+            } else {
+                preservePartialTracks()
+                throw error
+            }
         }
         stopHealthTimer()
         await captureQueue.flush()
-
-        if let streamError {
-            preservePartialTracks()
-            throw streamError
-        }
 
         let systemTrack: FloatTrack
         let microphoneTrack: FloatTrack
@@ -265,13 +301,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             )
         }
         // Capture the health rollup before `reset()` (deferred) nils the monitor.
-        let artifact = RecordingArtifact(
+        var artifact = RecordingArtifact(
             mixedRecordingURL: mixedURL,
             systemTrackURL: systemTrack.url,
             microphoneTrackURL: microphoneTrack.url,
             duration: duration,
             healthReport: healthMonitor?.report()
         )
+        artifact.captureStoppedEarly = captureHadDied
         return artifact
     }
 
@@ -296,6 +333,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     ) {
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
         do {
+            // F292: a restarted capture's first buffer must land AFTER the silence for the gap.
+            try applyPendingRestartPaddingIfNeeded()
             let now = ProcessInfo.processInfo.systemUptime
             switch outputType {
             case .audio:
@@ -358,6 +397,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// (F253). `RecordingHealthMonitor` already surfaces the dead stream within ~4 s.
     func handleStreamFailure(_ error: Error) {
         streamError = error
+        streamDied = true
     }
 
     /// Whether the capture currently holds its `beginActivity` power assertion (F254).
@@ -422,52 +462,121 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         return stream
     }
 
-    /// Pads the gap with silence and brings the capture back up (F275).
+    /// Brings the capture back up and pads the gap with silence (F275, reworked by F292).
     ///
-    /// The padding goes in FIRST and into both tracks, because that is the whole difference between
-    /// this and a splice: without it the samples after the gap sit at the wrong offset and every
-    /// later timestamp is wrong by the gap's duration — wrong *invisibly*, since the file plays and
-    /// the numbers are self-consistent. That is F151, and reintroducing it deliberately would be
-    /// worse than losing the segment, because the user cannot detect it.
+    /// The padding goes into both tracks, because that is the whole difference between this and a
+    /// splice: without it the samples after the gap sit at the wrong offset and every later
+    /// timestamp is wrong by the gap's duration — wrong *invisibly*, since the file plays and the
+    /// numbers are self-consistent. That is F151, and reintroducing it deliberately would be worse
+    /// than losing the segment, because the user cannot detect it.
+    ///
+    /// **Written only once the new stream is running** (F292). It used to go in first, so a
+    /// restart that then failed left silence on disk that neither the sidecar nor the manifest
+    /// recorded — and now that a failed restart is retried rather than ending the meeting, every
+    /// retry would have padded the same outage again. Instead the silence is *owed*: set before
+    /// `startCapture`, paid on the capture queue before the first new buffer is written (or right
+    /// after `startCapture` returns, whichever comes first), and cancelled if the start fails.
     ///
     /// Writing silence here is not the fabrication F256 refuses: nothing was captured while the
     /// display was gone, so silence is the truth about that interval rather than an invention about
     /// audio that existed.
     func restartAfterFailure(paddingFrames: Int64) async throws {
-        if let injectedRestartCapture {
-            restartCount += 1
-            try await injectedRestartCapture(paddingFrames)
-            return
+        let generation = sessionGeneration
+        restartInProgress = true
+        defer { if generation == sessionGeneration { restartInProgress = false } }
+        // The death is cleared BEFORE the new stream can start, so a new stream that dies at once
+        // records its own death rather than having it erased by a clear that runs after it. Put
+        // back if the restart fails, which keeps `hasStreamError` true for the retry.
+        let previousError = streamError
+        captureQueue.sync {
+            streamError = nil
+            streamDied = false
         }
-        // Tear down whatever is left of the dead stream before building another. `stopCapture` on
-        // an already-dead stream throws, which is expected and not a failure of the restart.
-        if let stream {
-            try? await stream.stopCapture()
-            self.stream = nil
+        var startedStream: SCStream?
+        do {
+            if let injectedRestartCapture {
+                // The injected seam stands in for building and starting the stream only; the owing,
+                // paying and cancelling of the padding below is the real logic, so tests drive it.
+                setPendingRestartPadding(paddingFrames)
+                try await injectedRestartCapture(paddingFrames)
+                try ensureSession(generation)
+            } else {
+                // Tear down whatever is left of the dead stream before building another.
+                // `stopCapture` on an already-dead stream throws, which is expected here.
+                if let stream {
+                    try? await stream.stopCapture()
+                    try ensureSession(generation)
+                    self.stream = nil
+                }
+                let stream = try await makeStream()
+                try ensureSession(generation)
+                setPendingRestartPadding(paddingFrames)
+                self.stream = stream
+                try await stream.startCapture()
+                startedStream = stream
+                try ensureSession(generation)
+            }
+            try captureQueue.sync { try applyPendingRestartPaddingIfNeeded() }
+        } catch {
+            // A stream this restart started is stopped again whatever went wrong after it started:
+            // left running, it would capture into writers that are about to be dropped.
+            if let startedStream { try? await startedStream.stopCapture() }
+            // Only this recording's state is put back. If a stop or cancel reset the engine while
+            // the restart was waiting, the state belongs to nobody — or to the next recording.
+            if generation == sessionGeneration {
+                if startedStream != nil || injectedRestartCapture == nil { self.stream = nil }
+                setPendingRestartPadding(0)
+                captureQueue.sync {
+                    streamError = streamError ?? previousError ?? error
+                    streamDied = true
+                }
+            }
+            if !(error is CancellationError) {
+                Self.logger.error(
+                    "Recording capture restart failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)"
+                )
+            }
+            throw error
         }
-        // Recorded BEFORE the padding goes in, so `startSeconds` is where the gap begins rather
-        // than where it ends (F282). The system track's count is the reference; both tracks are
-        // padded by the same amount, which is what keeps them aligned.
+        // Counted only when it worked (F292). The bound exists for a capture that keeps dying after
+        // it comes back; a restart that cannot even start is bounded by the padding cap instead,
+        // with a backoff between attempts, so a display that is gone for good still ends in a save.
+        restartCount += 1
+        Self.logger.info(
+            "Recording capture restarted after \(paddingFrames) padded frames (restart \(self.restartCount))"
+        )
+    }
+
+    /// Throws `CancellationError` when a stop or cancel has reset the engine since `generation`.
+    private func ensureSession(_ generation: Int) throws {
+        guard generation == sessionGeneration else { throw CancellationError() }
+    }
+
+    /// Silence owed to both tracks by a restart in progress (F292). Read and written only on the
+    /// capture queue, which is also where the sample handler runs, so it is paid exactly once.
+    private var pendingRestartPadding: Int64 = 0
+
+    func setPendingRestartPadding(_ frames: Int64) {
+        captureQueue.sync { pendingRestartPadding = max(0, frames) }
+    }
+
+    /// Pays owed restart silence into both tracks and records where it went (F282). Must run on
+    /// the capture queue, or in a test with no capture running.
+    func applyPendingRestartPaddingIfNeeded() throws {
+        guard pendingRestartPadding > 0 else { return }
+        let frames = pendingRestartPadding
+        pendingRestartPadding = 0
+        // Recorded before the padding goes in, so `startSeconds` is where the gap begins. The
+        // system track's count is the reference; both tracks get the same amount, which is what
+        // keeps them aligned with each other.
         let framesBeforePadding = systemWriter?.frameCount ?? 0
-        try systemWriter?.appendSilence(frames: paddingFrames)
-        try microphoneWriter?.appendSilence(frames: paddingFrames)
+        try systemWriter?.appendSilence(frames: frames)
+        try microphoneWriter?.appendSilence(frames: frames)
         paddedGaps.append(
             SourceTrackManifest.PaddedGap(
                 startSeconds: Double(framesBeforePadding) / Self.targetSampleRate,
-                durationSeconds: Double(paddingFrames) / Self.targetSampleRate
+                durationSeconds: Double(frames) / Self.targetSampleRate
             )
-        )
-        // Count the attempt before it can fail: a restart that throws must still burn a retry, or a
-        // display that is gone for good spins forever — the bound the policy exists to enforce.
-        restartCount += 1
-        let stream = try await makeStream()
-        self.stream = stream
-        try await stream.startCapture()
-        // Only now is the capture actually live again. Clearing earlier would tell the health
-        // monitor the stream is fine while it is still being built.
-        streamError = nil
-        Self.logger.info(
-            "Recording capture restarted after \(paddingFrames) padded frames (attempt \(self.restartCount))"
         )
     }
 
@@ -490,6 +599,37 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard !displayIDs.isEmpty else { return nil }
         return displayIDs.firstIndex(of: mainDisplayID) ?? 0
     }
+
+    #if DEBUG
+    /// Test seam (F292): real track writers without a capture, so `stop()`'s finalize can be driven
+    /// the way a dead capture leaves it.
+    func beginTestTrackSession(in directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        systemWriter = try FloatTrackWriter(
+            outputURL: directory.appendingPathComponent("system-audio.f32"), targetSampleRate: Self.targetSampleRate
+        )
+        microphoneWriter = try FloatTrackWriter(
+            outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate
+        )
+        sessionDirectory = directory
+        healthMonitor = RecordingHealthMonitor(startedAt: ProcessInfo.processInfo.systemUptime)
+    }
+
+    func writeTestFrames(system: Int64, microphone: Int64, systemStart: Double, microphoneStart: Double) throws {
+        try systemWriter?.appendTestFrames(system, firstPresentationTime: systemStart)
+        try microphoneWriter?.appendTestFrames(microphone, firstPresentationTime: microphoneStart)
+    }
+
+    /// A buffer that failed to convert or write while the stream kept running — `streamError`
+    /// without a death, which the sample handler's catch produces.
+    func recordWriteFailureForTesting(_ error: Error) {
+        streamError = error
+    }
+
+    var testFrameCounts: (system: Int64, microphone: Int64) {
+        (systemWriter?.frameCount ?? 0, microphoneWriter?.frameCount ?? 0)
+    }
+    #endif
 
     /// Whether a stream failure has been recorded — `stop()` uses this to preserve partial tracks.
     var hasStreamError: Bool { streamError != nil }
@@ -516,6 +656,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         sessionDirectory = nil
         startedAt = nil
         streamError = nil
+        streamDied = false
+        restartInProgress = false
+        sessionGeneration += 1
         healthMonitor = nil
         healthUpdate = nil
         levelsUpdate = nil
@@ -527,6 +670,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // capture refuse to retry the following one.
         restartCount = 0
         paddedGaps = []
+        pendingRestartPadding = 0
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
@@ -746,6 +890,14 @@ private final class FloatTrackWriter {
     func appendSilence(frames: Int64) throws {
         try track.appendSilence(frames: frames)
     }
+
+    #if DEBUG
+    /// Test seam (F292): frames with a stated start, standing in for converted sample buffers.
+    func appendTestFrames(_ frames: Int64, firstPresentationTime start: Double) throws {
+        if firstPresentationTime == nil { firstPresentationTime = start }
+        try track.appendSilence(frames: frames)
+    }
+    #endif
 
     func finish() throws -> FloatTrack {
         // `FloatTrackFile.finish` is idempotent, which this path needs: `preservePartialTracks()`

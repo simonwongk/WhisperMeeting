@@ -83,6 +83,13 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
         self.warnings = warnings
     }
 
+    /// Both channels stopped together — the capture itself stopped, not one device (F292). On the
+    /// user's docked lid close this read "Microphone audio stopped arriving. Check the microphone
+    /// connection.", which blamed a microphone for a display event.
+    public var captureStoppedOnBothChannels: Bool {
+        warnings.contains(.microphoneCaptureStopped) && warnings.contains(.systemAudioCaptureStopped)
+    }
+
     /// One-word health rollup derived purely from `warnings`, so the UI does not have to
     /// re-implement the severity logic. A stopped channel or low storage puts the recording at
     /// risk; clipping or not-yet-detected system audio is a caution; anything else is good.

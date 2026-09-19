@@ -71,3 +71,23 @@ func differentProblemsAreAnnouncedSeparately() {
             == "Recording needs attention: Low storage — recording may stop soon.")
     #expect(announcer.announcement(for: snapshot([.microphoneClipping, .systemAudioNotDetected])) == nil)
 }
+
+@Test("After a resume the announcer re-arms once health is clean, so a second outage is announced (F292)")
+func announcerRearmsAfterResume() {
+    var announcer = RecordingRiskAnnouncer()
+    #expect(announcer.announcement(for: snapshot([.microphoneCaptureStopped])) != nil)
+    announcer.rearm()
+    // The ticks right after a restart still carry the old outage — staleness is measured from the
+    // last sample — and must not announce "needs attention" straight after "resumed".
+    #expect(announcer.announcement(for: snapshot([.microphoneCaptureStopped])) == nil)
+    #expect(announcer.announcement(for: snapshot([])) == nil)
+    #expect(announcer.announcement(for: snapshot([.microphoneCaptureStopped])) != nil,
+            "a new outage after a clean resume must be announced")
+}
+
+@Test("Both channels stopping together is recognised as the capture stopping, not a microphone fault (F292)")
+func bothChannelsStoppedIsCaptureStopped() {
+    #expect(snapshot([.microphoneCaptureStopped, .systemAudioCaptureStopped]).captureStoppedOnBothChannels)
+    #expect(!snapshot([.microphoneCaptureStopped]).captureStoppedOnBothChannels)
+    #expect(!snapshot([]).captureStoppedOnBothChannels)
+}

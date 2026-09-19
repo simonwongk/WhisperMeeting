@@ -70,8 +70,25 @@ public struct RecordingRiskAnnouncer: Sendable {
 
     public init() {}
 
+    /// Forgets what was announced, after the capture recovered (F292): a second outage in the same
+    /// recording is new information, and the restart bound keeps a flapping capture from repeating
+    /// it more than a few times.
+    public mutating func rearm() {
+        rearmWhenClear = true
+    }
+
+    /// Set by `rearm()`; the next snapshot with no at-risk warning clears what was announced. Not
+    /// cleared at once: the health monitor's staleness is measured from the last sample, so the
+    /// ticks straight after a restart still show the old outage, and re-arming then would announce
+    /// "needs attention" right after "resumed" (F292 review).
+    private var rearmWhenClear = false
+
     /// The message to deliver for `snapshot`, or nil when there is nothing new to say.
     public mutating func announcement(for snapshot: RecordingHealthSnapshot) -> String? {
+        if rearmWhenClear, snapshot.overallStatus != .atRisk {
+            announced.removeAll()
+            rearmWhenClear = false
+        }
         let fresh = snapshot.warnings.filter { warning in
             RecordingHealthSnapshot(
                 microphoneLevel: snapshot.microphoneLevel, systemAudioLevel: snapshot.systemAudioLevel,

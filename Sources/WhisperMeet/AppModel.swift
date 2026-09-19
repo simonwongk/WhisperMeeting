@@ -290,7 +290,12 @@ final class AppModel: ObservableObject {
     }
 
     /// Posts `message` as a notification when there is no window to show it in (F257).
+    /// The last message offered to the windowless channel, whether or not a notification could be
+    /// posted — so tests can see what a user with no window would have been sent (F292).
+    private(set) var lastWindowlessMessage: String?
+
     private func postWindowlessAlert(_ message: String) {
+        lastWindowlessMessage = message
         // `NSApp` is nil in a headless test process, the same reason
         // `postTranscriptionNotification` binds rather than force-unwraps. A test asserting `report`
         // cannot and should not post to the user's Notification Centre.
@@ -2484,6 +2489,8 @@ final class AppModel: ObservableObject {
         let id = UUID()
         activeMeetingID = id
         captureRestartNotice = nil
+        nextCaptureRestartAttemptAt = nil
+        failedCaptureRestartAttempts = 0
         let directory = store.recordingDirectoryURL(for: id)
         do {
             _ = try store.recordingDirectory(for: id)
@@ -2507,7 +2514,10 @@ final class AppModel: ObservableObject {
                     // never sleeps. Before this the banner appeared here and nothing else happened.
                     if self.recorder.hasStreamError {
                         await self.handleCaptureInterruption(trigger: .streamFailed)
-                    } else {
+                    } else if !self.isRestartingCapture {
+                        // F292: the engine clears the death before the new stream starts, so a tick
+                        // mid-restart would otherwise stamp "alive" on a capture that may yet fail
+                        // — and the retry would then measure its gap from that false moment.
                         self.noteCaptureAlive()
                     }
                 }
@@ -2523,6 +2533,10 @@ final class AppModel: ObservableObject {
             }
             let startedAt = Date()
             recordingState = .recording(startedAt: startedAt)
+            // F292: the capture is alive from its first moment. Left nil until the first 1 Hz tick,
+            // a capture that died in that second measured every gap as 0 — so the padding cap never
+            // ended it, and a late success padded nothing and spliced the timeline.
+            captureLastAliveAt = startedAt
             // F258: put the session's metadata on disk alongside the audio, from the first moment of
             // capture. Everything the user enters during a recording used to exist only in RAM, so
             // any end the app did not control returned the audio and lost the meeting.
@@ -2545,10 +2559,21 @@ final class AppModel: ObservableObject {
 
     func stopRecording(title: String) async -> UUID? {
         guard let id = activeMeetingID else { return nil }
+        // F292: one stop at a time, and never mid-start — `start()` is still building the stream and
+        // its writers, and a stop then would finalize under it. Stop is pressed again once live.
+        guard !isStopInFlight else { return nil }
+        if case .starting = recordingState { return nil }
+        isStopInFlight = true
+        defer { isStopInFlight = false }
+        // The menu-bar Stop and ⌘R pass "" — the windowless paths — which threw away a title typed
+        // during the recording (found by the F292 review). An empty title means "the one typed".
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? recordingTitle : title
         // F253: the capture is ending, so stop watching for sleep. Dropped here rather than in each
         // exit branch, because every path out of this function ends the recording.
         stopObservingSystemSleep()
         recordingState = .stopping
+        // F292: `.stopping` first, so no new restart starts; then let one already running finish.
+        await waitForCaptureRestartToSettle()
         let directory = store.recordingDirectoryURL(for: id)
         do {
             let artifact = try await recorder.stop()
@@ -2573,9 +2598,20 @@ final class AppModel: ObservableObject {
             releaseCaptureLock(removingFile: true)
 
             refreshRuntime()
-            if isSelectedEngineInstalled {
+            let transcribing = isSelectedEngineInstalled
+            if transcribing {
                 beginTranscription(id: id)
-            } else {
+            }
+            // F292: saved normally, but the audio ends before the recording did. Said once — not
+            // when the policy's own finalize already said it — and in the same alert as the
+            // missing-engine message, so neither replaces the other.
+            if artifact.captureStoppedEarly, !isFinalizingAfterCaptureLoss {
+                var message = Self.captureStoppedEarlyMessage(
+                    audioDuration: artifact.duration, transcribing: transcribing
+                )
+                if !transcribing, let unavailable = transcriptionUnavailableMessage { message += " " + unavailable }
+                report(message)
+            } else if !transcribing {
                 // F262: name the engine that is installed instead of telling a user who just
                 // installed one to install one.
                 alertMessage = transcriptionUnavailableMessage
@@ -2648,6 +2684,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What a user is told when Stop saved a capture that had died and never came back (F292).
+    nonisolated static func captureStoppedEarlyMessage(audioDuration: TimeInterval, transcribing: Bool) -> String {
+        "The audio capture stopped \(CaptureRestartPolicy.durationPhrase(audioDuration)) into this " +
+            "recording and could not be restarted, so the saved audio ends there. Everything captured " +
+            "before that was kept" + (transcribing ? " and is being transcribed." : ".")
+    }
+
     /// Lets go of the live capture's folder lock (F297). Idempotent; a nil lock is a no-op.
     private func releaseCaptureLock(removingFile: Bool) {
         captureLock?.release(removingFile: removingFile)
@@ -2675,6 +2718,10 @@ final class AppModel: ObservableObject {
         // A cancel that arrives during finalization (`.stopping`) or when idle must be a no-op so it
         // can't race/corrupt a simultaneous Stop (F139).
         guard canCancelRecording else { return }
+        // F292: out of `.recording` first, so no health tick starts a restart while the engine is
+        // being cancelled; then let a restart already running finish.
+        recordingState = .stopping
+        await waitForCaptureRestartToSettle()
         stopObservingSystemSleep()   // F253
         // Before the engine removes the folder, so nothing is held on a directory being deleted
         // (F297).
@@ -2777,6 +2824,13 @@ final class AppModel: ObservableObject {
         displayObserver = nil
         sleepBeganAt = nil
         captureLastAliveAt = nil
+        nextCaptureRestartAttemptAt = nil
+        failedCaptureRestartAttempts = 0
+        // F292: except the "keeps trying" line, which describes a recording that is still live.
+        if captureRestartNoticeIsRetrying {
+            captureRestartNotice = nil
+            captureRestartNoticeIsRetrying = false
+        }
         // `captureRestartNotice` deliberately survives this. Its entire job is to explain a stop the
         // user did not ask for, and this teardown runs *as part of* that stop — clearing it here
         // meant the explanation was written and erased in the same breath, so the recording just
@@ -2833,6 +2887,58 @@ final class AppModel: ObservableObject {
     /// all over again, which is precisely the defect padding exists to prevent. Found by a red test.
     private var isHandlingCaptureInterruption = false
 
+    /// Whether `restartAfterFailure` is running right now (F292). Narrower than
+    /// `isHandlingCaptureInterruption`, which also covers the finalize that calls `stopRecording`:
+    /// Stop, Cancel and sleep wait on THIS, and waiting on the wider flag from inside the finalize
+    /// would wait on itself.
+    private(set) var isRestartingCapture = false
+
+    /// When a failed restart may be tried again, and how many have failed in a row (F292).
+    private var nextCaptureRestartAttemptAt: Date?
+    private var failedCaptureRestartAttempts = 0
+
+    /// Set while the policy's own finalize is stopping the recording, so `stopRecording` does not
+    /// report the early end a second time — the finalize notice already said it (F292).
+    private var isFinalizingAfterCaptureLoss = false
+
+    /// One `stopRecording` at a time (F292). ⌘R stays enabled while "Finishing…", and a second stop
+    /// used to run a second finalize over the first — two mixes into one `meeting.wav`, a manifest
+    /// rewritten without its padded gaps, a record upserted without its markers. Not `.stopping`:
+    /// the sleep and capture-loss paths set that themselves before calling in.
+    private var isStopInFlight = false
+
+    /// Whether `captureRestartNotice` is the "keeps trying" line, which only describes a live
+    /// recording and must not outlive it (F292).
+    private var captureRestartNoticeIsRetrying = false
+
+    /// Seconds to wait after the `failures`-th consecutive failed restart (F292).
+    ///
+    /// The first retry comes quickly because the realistic cause is a display that is still coming
+    /// back — the user's docked lid close turned the display off and on within two seconds. Later
+    /// ones slow down so a display that is gone for good costs a query every ten seconds, not every
+    /// tick, until the padding cap saves the recording.
+    nonisolated static func captureRestartBackoff(afterFailures failures: Int) -> TimeInterval {
+        switch failures {
+        case ..<1: return 0
+        case 1: return 2
+        case 2: return 4
+        case 3: return 8
+        default: return 10
+        }
+    }
+
+    /// Waits for an in-flight restart to finish before a stop, cancel or sleep touches the engine
+    /// (F292). The engine has no lock; a stop landing inside a restart could tear down the new
+    /// stream's writers under it, or leave a freshly started stream running with nothing to stop
+    /// it. Bounded, so a restart that hangs cannot hold a Stop hostage.
+    private func waitForCaptureRestartToSettle() async {
+        var waited = 0
+        while isRestartingCapture, waited < 200 {
+            try? await Task.sleep(for: .milliseconds(50))
+            waited += 1
+        }
+    }
+
     /// Marks the capture as alive now, so a later failure can measure how long it was dead (F275).
     func noteCaptureAlive(at now: Date = Date()) {
         captureLastAliveAt = now
@@ -2858,6 +2964,9 @@ final class AppModel: ObservableObject {
         defer { isHandlingCaptureInterruption = false }
         // Measured from when the capture was last known alive, unless the caller knows better (a
         // wake knows the sleep duration; a test states it outright).
+        // F292: never measure from nothing. A missing anchor (a caller that did not start the
+        // recording through `startRecording`) becomes this moment, so the gap still grows from here.
+        if captureLastAliveAt == nil, recordingState.isLive { captureLastAliveAt = now }
         let measuredGap = gap ?? captureLastAliveAt.map { now.timeIntervalSince($0) } ?? 0
         let action = CaptureRestartPolicy.action(
             trigger: trigger,
@@ -2871,6 +2980,11 @@ final class AppModel: ObservableObject {
             if recordingState.isLive, !recorder.hasStreamError { captureLastAliveAt = now }
             return
         case let .restart(padding):
+            // F292: a failed attempt is retried after a backoff instead of ending the meeting. Only
+            // the 1 Hz tick waits it out: a display reconfiguring or the Mac waking is news that
+            // conditions changed — often the display coming back — and is tried at once.
+            if trigger == .streamFailed, let next = nextCaptureRestartAttemptAt, now < next { return }
+            let meetingID = activeMeetingID
             let frames = CaptureRestartPolicy.paddingFrames(
                 forGap: padding,
                 sampleRate: AudioCaptureEngine.captureSampleRate
@@ -2879,8 +2993,14 @@ final class AppModel: ObservableObject {
             // the restart is in flight should see when the audio actually stopped, since that is
             // what its own growth probe is measuring against.
             updateRecordingSession { $0.outageBeganAt = now.addingTimeInterval(-padding) }
+            isRestartingCapture = true
             do {
                 try await recorder.restartAfterFailure(paddingFrames: frames)
+                isRestartingCapture = false
+                // F292: a Stop or sleep that waited on this restart owns the recording now. The
+                // padding is on disk and the stop will record it; announcing a resume to a user
+                // who just pressed Stop would be false.
+                guard case .recording = recordingState, activeMeetingID == meetingID else { return }
                 // Recorded only now, after the silence is actually on disk. Noting it first meant a
                 // failed restart left a claim in the sidecar that a gap had been padded when none
                 // was — and startup recovery would then describe an unpatched set of tracks as
@@ -2891,12 +3011,34 @@ final class AppModel: ObservableObject {
                 // durable record of what happened.
                 updateRecordingSession { $0.outageBeganAt = nil }
                 captureLastAliveAt = now
-                captureRestartNotice = CaptureRestartPolicy.notice(for: action, trigger: trigger)
+                nextCaptureRestartAttemptAt = nil
+                failedCaptureRestartAttempts = 0
+                let notice = CaptureRestartPolicy.notice(for: action, trigger: trigger)
+                captureRestartNotice = notice
+                captureRestartNoticeIsRetrying = false
+                // F292: the window shows this as a banner; a user with no window was told the
+                // recording needed attention and, until now, never that it recovered. A
+                // notification only — not `report`, which would also raise an alert to dismiss for
+                // good news. And the risk alert re-arms, so a second outage is announced too.
+                if let notice { postWindowlessAlert(notice) }
+                riskAnnouncer.rearm()
             } catch {
-                // The restart itself failed — the display is likely gone for good. Save rather than
-                // leave the capture dead, which is the state this ticket exists to end. The retry
-                // was already counted, so a repeated failure reaches the bound and stops.
-                await finalizeAfterFailedRestart(trigger: trigger)
+                isRestartingCapture = false
+                guard case .recording = recordingState, activeMeetingID == meetingID else { return }
+                // F292: retried, not finalized. The first attempt comes about a second after the
+                // death, and on the user's docked lid close the display was only back two seconds
+                // later — one failure used to end a meeting that had minutes left to recover in.
+                // The padding cap still ends it: `captureLastAliveAt` is not moved by a failure, so
+                // the measured gap keeps growing until the policy says `.finalize`.
+                failedCaptureRestartAttempts += 1
+                nextCaptureRestartAttemptAt = now.addingTimeInterval(
+                    Self.captureRestartBackoff(afterFailures: failedCaptureRestartAttempts)
+                )
+                captureRestartNotice = """
+                    The audio capture stopped \(CaptureRestartPolicy.durationPhrase(padding)) ago and could not \
+                    be restarted yet. WhisperMeet keeps trying; the gap will be silence in the audio.
+                    """
+                captureRestartNoticeIsRetrying = true
             }
         case .finalize:
             await finalizeAfterFailedRestart(trigger: trigger)
@@ -2908,6 +3050,7 @@ final class AppModel: ObservableObject {
         guard recordingState.isLive else { return }
         let notice = CaptureRestartPolicy.notice(for: .finalize, trigger: trigger)
         captureRestartNotice = notice
+        captureRestartNoticeIsRetrying = false
         // F294: the banner is window-only, and this is the message saying the recording ENDED —
         // the highest-stakes thing the app can tell someone, and the case F257's channel did not
         // carry. A user recording from the menu bar with no window open learned nothing.
@@ -2918,6 +3061,8 @@ final class AppModel: ObservableObject {
         // Synchronously, before the async stop, for the reason `handleSystemWillSleep` documents:
         // a second trigger arriving mid-stop must see `.stopping` and no-op rather than race it.
         recordingState = .stopping
+        isFinalizingAfterCaptureLoss = true
+        defer { isFinalizingAfterCaptureLoss = false }
         // F298: the user's own title, not `""`. The comment here used to explain that the title
         // lived in `ContentView`'s `@State` and could not reach the model — true when written, and
         // false once F298 moved it. This is the path that ends a recording *because* the capture

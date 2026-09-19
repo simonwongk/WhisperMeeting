@@ -175,7 +175,7 @@ public enum CaptureRestartPolicy {
 
     /// "1 min 32 sec" — coarse on purpose, since the number is a description of a hole in the audio
     /// rather than a measurement the user can act on to more precision than this.
-    static func durationPhrase(_ seconds: TimeInterval) -> String {
+    public static func durationPhrase(_ seconds: TimeInterval) -> String {
         // Saturating: `seconds` reaches here from wall-clock arithmetic and from a decoded
         // sidecar, and `Int(Double)` traps rather than saturating.
         let total = Int(saturating: seconds)

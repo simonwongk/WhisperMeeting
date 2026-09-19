@@ -300,8 +300,12 @@ func finalizeReachesAWindowlessUser() async throws {
         now: Date()
     )
 
-    // Two things are legitimately reported in this flow — the finalize notice, then the
-    // recovered-after-an-abnormal-finish message — and `alertMessage` holds the last. My first
+    // Two things are reported in this flow HERE — the finalize notice, then the
+    // recovered-after-an-abnormal-finish message — and `alertMessage` holds the last. That second
+    // message is an artefact of this fixture: its injected engine has no track writers, so its
+    // `stop()` cannot finalize and falls to recovery. Since F292 a real dead capture finalizes
+    // normally and reports once; `StopAfterDeadCaptureWiringTests` covers that path with real
+    // writers. My first
     // assertion required it to equal `captureRestartNotice`, which assumed a single message; that
     // was a wrong expectation of mine, not a defect. What matters is the substance: a user with no
     // window open is told the recording ended *and* that the audio was kept.

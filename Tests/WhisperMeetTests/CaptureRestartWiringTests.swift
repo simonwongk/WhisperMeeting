@@ -263,8 +263,125 @@ func failedRestartRecordsNoPaddedGap() async throws {
 
     let session = RecordingSessionSidecar.read(in: directory)
     #expect(session?.paddedGaps.isEmpty != false, "recorded a gap that was never padded")
-    // And it must not leave the capture dead — a failed restart falls through to saving.
-    #expect(!model.recordingState.isLive)
+    // F292: and it no longer ends the meeting. The 2026-09-18 lid-close trace showed the first
+    // restart is attempted about a second after the death — often while the display is still
+    // coming back — and one failure used to save and end a meeting that had minutes to recover.
+    #expect(model.recordingState.isLive, "one failed restart ended the recording")
+}
+
+@MainActor
+@Test("A failed restart is retried after a backoff, and the retry pads the whole gap once (F292)")
+func failedRestartIsRetriedWithBackoff() async throws {
+    struct RestartFailed: Error {}
+    let attempts = Locked<[Int64]>([])
+    let failuresLeft = Locked(2)
+    let (model, root, defaults, suite) = try makeRestartModel(restart: { frames in
+        attempts.withLock { $0.append(frames) }
+        if failuresLeft.withLock({ left in defer { left -= 1 }; return left > 0 }) { throw RestartFailed() }
+    })
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    let start = Date(timeIntervalSince1970: 1_757_000_000)
+    model.noteCaptureAlive(at: start)
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+
+    await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(1))   // fails
+    await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(2))   // backing off
+    #expect(attempts.withLock { $0.count } == 1, "retried on every tick instead of backing off")
+
+    await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(4))   // fails again
+    await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(20))  // succeeds
+    #expect(attempts.withLock { $0.count } == 3)
+    #expect(model.recordingState.isLive)
+    // The successful attempt pads the whole outage, measured from the last time the capture was
+    // alive — not just the time since the previous failed attempt.
+    // Typed, for the reason `deadStreamIsRestartedAndAnnounced` gives: an inferred literal compares
+    // as a different integer type and fails while both sides print 960000.
+    let wholeGap: Int64 = 20 * 48_000
+    #expect(attempts.withLock { $0.last } == wholeGap)
+    #expect(model.captureRestartNotice?.contains("20 sec") == true)
+    #expect(model.recorder.restartCount == 1, "failed attempts must not spend the restart budget")
+}
+
+@MainActor
+@Test("Retries end at the padding cap by saving the recording, not by giving up silently (F292)")
+func retriesEndAtThePaddingCap() async throws {
+    struct RestartFailed: Error {}
+    let (model, root, defaults, suite) = try makeRestartModel(restart: { _ in throw RestartFailed() })
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    await model.startRecording()
+    let start = Date(timeIntervalSince1970: 1_757_000_000)
+    model.noteCaptureAlive(at: start)
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+
+    await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(1))
+    #expect(model.recordingState.isLive)
+    await model.handleCaptureInterruption(
+        trigger: .streamFailed, now: start.addingTimeInterval(CaptureRestartPolicy.defaultMaximumPaddedGap + 1)
+    )
+    #expect(!model.recordingState.isLive, "a capture gone past the cap must be saved")
+    #expect(model.captureRestartNotice?.contains("saved") == true)
+}
+
+@MainActor
+@Test("Stop during an in-flight restart waits for it instead of racing the engine (F292)")
+func stopWaitsForAnInFlightRestart() async throws {
+    let events = Locked<[String]>([])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F292-race-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let suite = "F292.race.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let recorder = AudioCaptureEngine(
+        stoppingCapture: { events.withLock { $0.append("stop") } },
+        finishingTracks: {},
+        preservingPartialTracks: {},
+        startingCapture: { _, _, _ in },
+        restartingCapture: { _ in
+            events.withLock { $0.append("restart-began") }
+            try? await Task.sleep(for: .milliseconds(200))
+            events.withLock { $0.append("restart-ended") }
+        },
+        directory: root
+    )
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: recorder, defaults: defaults,
+                         whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") }, qwenInstalled: { true })
+    await model.startRecording()
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+
+    async let restart: Void = model.handleCaptureInterruption(trigger: .streamFailed, gap: 2)
+    try await Task.sleep(for: .milliseconds(50))
+    _ = await model.stopRecording(title: "")
+    _ = await restart
+
+    #expect(events.withLock { $0 } == ["restart-began", "restart-ended", "stop"])
+}
+
+@MainActor
+@Test("A resumed recording is announced to a user with no window, and the risk alert re-arms (F292, F294)")
+func resumeIsAnnouncedWindowless() async throws {
+    let (model, root, defaults, suite) = try makeRestartModel()
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    await model.startRecording()
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+    await model.handleCaptureInterruption(trigger: .streamFailed, gap: 8, now: Date())
+
+    let sent = try #require(model.lastWindowlessMessage, "the resume was only shown in the window")
+    #expect(sent.contains("Recording resumed"))
+    #expect(model.alertMessage == nil, "a successful resume is news, not an alert to dismiss")
 }
 
 // MARK: - F284: three writers, each clobbering the others' fields
