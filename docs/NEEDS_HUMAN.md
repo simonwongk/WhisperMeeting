@@ -15,17 +15,18 @@ out *not* to be answered and are still here, now with the board tickets they alw
 
 ## Where to start
 
-Six entries, over the cap of five. Rather than drop one of your unanswered questions to get under
+Seven entries, over the cap of five. Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
 | 1 | **F188** | **1 min** | One word, and it releases a ticket that has been stuck for two days because the question never reached you. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
-| 3 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
-| 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
-| 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
+| 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
+| 4 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
+| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
+| 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
+| 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 
 ---
 
@@ -87,6 +88,33 @@ true, and I should not have written it: two code-only items are still parked beh
 run — notification authorization at *post* time (a different bug from the ordering fix that landed),
 and the alert sites that are still window-only. Neither needs you. They are on the ticket, and any
 agent can take them; the run below is the only part that is genuinely yours.
+
+---
+
+## F353 — Press Restore Library once, on a real backup container
+
+**Status:** `blocked`. **This letter was wrongly retired earlier today and is back.** I moved F288
+to Settled on the strength of its heading ("done without you, 2026-09-17") and its `fixed` outcome,
+without reading its Gaps. Its Gaps say the opposite: the case the letter named was never looked at,
+and the button was never pressed. whisper-62 caught it within the hour. The residual now has its own
+ticket, **F353**, which it should have had when F288 closed.
+
+**What I need from you:** about three minutes on the restore screen.
+
+Two things went unchecked when F288 closed:
+
+1. **Restore Library was never actually pressed.** The apply path is covered by tests
+   (`BackupRestoreApplyTests`), but on screen the confirmation was cancelled both times. So the
+   screen has never been driven through to the end.
+2. **The container case — the one F288's letter was written to check — was not the one tested.** An
+   unrelated folder was used instead. So the case that matters is the case with no evidence.
+
+Choose a real backup container, read the plan the screen shows you, and **accept** the confirmation
+rather than cancelling. What I need to know is whether the screen told the truth about what it was
+about to do — the plan it previews against what you find afterwards.
+
+If you would rather not run a real restore, say so and this closes `wontfix` with that as the
+reason; it is a reasonable answer and better than an open question nobody will ask again.
 
 ---
 
@@ -216,7 +244,7 @@ Kept as a record so nothing here is the only copy of anything; the full entries 
 |---|---|
 | **F275** — confirm the capture restart on hardware, set the padding cap | **Done 2026-09-19.** Your rerun (docked, lid closed) showed the restart resuming real audio after a 0.39 s gap, then stopping and saving when macOS announced sleep. You chose that behaviour; the cap stays at 5 minutes. |
 | **F257** — confirm a menu-bar-only session gets its notices | Closed `partial` 2026-09-17. The remaining ask is live under **F294** above, where it belongs. |
-| **F288** — confirm the restore screen renders and reads well | **Done without you, 2026-09-17.** |
+| **F288** — confirm the restore screen renders and reads well | Closed `fixed` 2026-09-17, but **not** fully done: its Gaps record that Restore Library was never pressed and that the container case it named was not the one tested. That residual is live above as **F353**. |
 | **F244** — the fidelity benchmark's terminology review and two downloads | Closed `fixed` 2026-09-17 under your delegation. Both asks were answered in-body: the term list was settled with you on 09-16, and both downloads went ahead pinned by revision and SHA-256. |
 | **F225** — re-derive the clustering threshold on annotated audio | Closed `fixed` 2026-09-18. Answered by measurement: 18 AMI meetings, 0.60 survives as the middle of a flat optimum. |
 | **F232** — Sortformer versus the shipped runtime | Closed `wontfix` 2026-09-18. Answered by measurement on two of your real meetings: stay on the current runtime. |
