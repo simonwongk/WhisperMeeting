@@ -6,316 +6,218 @@ Letters to you, not a work queue — each is something no test and no agent can 
 nothing here is the only record of anything. Conventions are in
 [`../AGENTS.md`](../AGENTS.md).
 
+**Rebuilt 2026-09-19 (whisper-37).** This file had drifted badly: eight letters, five of whose asks
+were already answered, while four live questions had no letter at all and one — F188's — had never
+been written down anywhere you read. The answered ones are summarised under
+[Settled](#settled-nothing-needed-from-you) at the bottom rather than deleted. Two of them turned
+out *not* to be answered and are still here, now with the board tickets they always should have had
+(**F351**, **F352**).
+
 ## Where to start
 
-Seven entries, which is over the cap of five — my fault, I escalated F244 when it was already at
-six. Rather than drop one of your unanswered questions to get under the line, here they are in the
-order I would answer them. Every one is optional and nothing rots if you ignore all of them.
+Six entries, over the cap of five. Rather than drop one of your unanswered questions to get under
+the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F244**, the *first* item only | **1 min** | One yes/no, and the question changed after I fixed half of it. Your Traditional Chinese is no longer being converted — the guard now refuses it. But refusing means you get your raw dictation back with no cleanup at all, so the question is whether to also name the script in the prompt, which would let refinement actually work for you. |
-| 2 | **F275** | done | Rerun on the current build 2026-09-19; decision recorded (lid close = stop and save). |
-| 4 | **F257** | ~2 min | One menu-bar recording, to confirm notices reach you when no window is open. Worth doing *with* row 2 — a recording that ends because the capture died now goes through the notification channel too, so one lid close exercises both. |
-| 5 | **F239** | one decision | Should deleting a meeting also shred it from the index history? My recommendation is in the entry (opt-in). Pure preference — there is no wrong answer. |
-| 6 | **F241** | yes/no + audio | Permission to download ASR benchmark weights, and real audio with proper nouns if you have any you don't mind me using. |
-| 7 | **F230** | ~20 min | VoiceOver on the speaker screens. Real work, and the least urgent — it gates polish, not correctness. |
-| — | **F244**, the rest | ~30 min | The corpus terminology review. Unblocks the whole content-fidelity benchmark, so it is the highest-*value* item and also the largest; separated from row 1 so the one-minute answer isn't stuck behind it. |
-| — | **F201 · F225 · F232 · F181** | 1 min to answer | Four short answers for the rest of tonight's list — a product call (F232), a mic run (F201), audio or a download permission (F225), a build-system yes/no (F181). None rots. |
+| 1 | **F188** | **1 min** | One word, and it releases a ticket that has been stuck for two days because the question never reached you. |
+| 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
+| 3 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
+| 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
+| 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
+| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 
 ---
 
-## F201 · F225 · F232 · F181 — Four tickets from tonight's list that only you can move
+## F188 — One word about the library's schema fence
 
-**Status:** every ticket from the list you gave me that an agent could finish is finished (F214,
-F297, F289, F312, F313, and half of F174 and F184). These four are the remainder, and each is
-stopped by something that is yours: a microphone, your audio, a product call, or a permission.
-One letter rather than four, because this file is already over its cap and the answers are short.
+**Status:** the analysis is finished and written up; the decision is yours and has never been asked.
+The ticket (`F188`) is `blocked` on this letter as of 2026-09-19. It spent two days marked
+`in-progress` instead, which means "claimed, do not touch" — so no other agent worked it and you
+never saw the question. That was a bookkeeping error, not a hard problem.
 
-**What I need from you:** four things, in the order I would take them.
+**What I need from you:** one of three words.
 
-1. **F232 — answered by measurement, 2026-09-18; nothing needed.** Under your delegation I
-   measured Sortformer on two of your real ~35-minute meetings (counts and timings only). No
-   overlap reached 2 s, three quarters were under half a second, and the two runtimes disagreed on
-   who was speaking for about half the frames. Decision: **stay** on the current runtime; the
-   shipped sentence is the mitigation. Numbers are in `docs/DIARIZATION_SCORECARD.md`.
+The full reasoning is in `docs/superpowers/specs/2026-09-17-schema-fence-design.md` (110 lines,
+written by another session on 2026-09-17). The short version:
 
-2. **F201 — fifteen minutes with a microphone.** Dictation refinement has never been exercised
-   with real speech in the installed app: Settings → refinement on, hold the hotkey, one short
-   English dictation, one Mandarin, one over 60 words (must skip refinement), two back-to-back
-   (busy-skip), and one after five idle minutes (raw fallback is acceptable). Confirm the history
-   records raw + outcome. Tonight's F214 numbers say the F212 build refines 75 % of attempts on
-   your Mac, so it works; what nobody has watched is the *pill* and the *paste*. **Answer:** do the
-   run and tell me what looked wrong, or "skip" and it stays open.
+`meetings.json` is a **bare JSON array** of records. There is no envelope, so there is nowhere to
+put a schema version — and adding one *is itself* the incompatible change every older reader breaks
+on. That is the whole difficulty.
 
-3. **F225 — answered by measurement, 2026-09-18; nothing needed.** Under your delegation I
-   downloaded a public annotated meeting corpus (AMI validation, CC BY 4.0, 1.03 GB, bench cache)
-   and swept the threshold over 18 real meetings. The shipped 0.60 is the middle of the flat
-   optimum, so it stays. The run also showed names on rows under one second are usually wrong, so
-   those rows now read "Unclear which voice" (F317).
+The part that reframes it: **no change to the file can make an already-shipped reader refuse.** A
+reader that does not know about versions cannot check one. So the fence's stated goal — protect the
+library against a downgrade to a build you already have — is not achievable by a format change at
+all. Option A achieves it only by *being* the breakage.
 
-4. **F181 — done without the build change, 2026-09-18; nothing needed.** App Intents cannot be
-   built here (the metadata tool is Xcode-only), so I shipped the entry points that need no such
-   step: *Open With → WhisperMeet*, Dock drops, Shortcuts' *Open File*, and a Finder service,
-   *Transcribe with WhisperMeet*. All three were run for real against a scratch library. The
-   watched folder is F318.
+- **"Flag day"** — wrap the array in an envelope, migrate once, and downgrading past this build
+  needs the recovery flow. Defensible only if you actually install old builds.
+- **"Mark it"** — a `schemaVersion` on each record. No envelope, no breakage, nothing reads it
+  today; it makes the *next* incompatible change cheap. F188 item 1 then closes as "marked, not
+  fenced". **This is the recommendation**, on the reasoning that F190's recoverable generations plus
+  F187 and F193 already turn "an old build wrote something wrong" from a wipe into a recoverable
+  incident — which is most of what the flag day would buy, without a cost that lands on you once,
+  guaranteed.
+- **"Neither yet"** — nothing is written, the note stays attached, and the next person re-derives
+  the analysis.
 
-None of these rots. Everything else on that list is closed with evidence in `TICKET_LOG.md`.
+You are **not** being asked whether to *check* a version once one exists. That is free and obvious
+and needs no decision.
 
 ---
 
-## F275 — Confirm the capture restart on the hardware, and set the padding cap
+## F294 — Confirm a menu-bar-only session gets its notices
 
-**Done, 2026-09-19.** Your rerun on the current build (00:18, docked, lid closed) showed the restart
-resuming real audio after a 0.39 s gap, then the recording stopping and saving when macOS announced
-sleep. You chose that behaviour: a lid close ends the recording and saves everything. The cap stays
-at 5 minutes. Nothing more is needed; details are in the F292 log entry.
+**Status:** `blocked`. This ask used to live under the F257 letter, and F257 closed on 2026-09-17 —
+so the question has been filed under a closed ticket since. It belongs to F294.
+
+**What I need from you:** one recording, about two minutes.
+
+Close the main window entirely. Start a recording from the menu bar, let it run a moment, then stop
+it. What I need to know is whether the notification actually arrived on screen — the first one
+especially, because a first run evaluates the post while macOS is still showing you the permission
+prompt, and that first notification is the one this whole path exists to deliver.
+
+If you want to exercise more of it in the same two minutes: close the lid while it records. A
+recording that ends because the capture died now goes through the same notification channel, so one
+lid close covers both.
+
+**One correction to what this letter used to say.** It claimed "the code work is done". That is not
+true, and I should not have written it: two code-only items are still parked behind this physical
+run — notification authorization at *post* time (a different bug from the ordering fix that landed),
+and the alert sites that are still window-only. Neither needs you. They are on the ticket, and any
+agent can take them; the run below is the only part that is genuinely yours.
+
+---
+
+## F352 · F351 — Two short answers, no work either way
+
+*(The questions were first asked as F239 and F241; those tickets closed `partial` and these are the
+live tickets carrying their remainders.)*
+
+**Status:** both were closed `partial` on 2026-09-17 with their follow-up pointing at *this file*
+rather than at a ticket, which by AGENTS.md is an invalid close — so each has sat here as a question
+with no board record at all. They now have tickets: **F352** (F239) and **F351** (F241).
+
+**What I need from you:** two answers.
+
+**1. F239 — should deleting a meeting also shred it from the index history?**
+
+*Forget History* shipped, so you can already clear it by hand. What did not ship is doing it
+automatically on delete, and that is the half that makes deletion mean deletion without you having
+to remember a second command. One of: **automatic**, **opt-in**, or **leave it**. My recommendation
+is opt-in. It is pure preference and there is no wrong answer — but the design depends on which you
+pick, because rewriting a retained generation breaks its content-addressed name.
+
+**2. F241 — may I download the 4-bit ASR weights (~1.2 GB), and do you have real audio?**
+
+Only the 8-bit weights are on this Mac; the 4-bit cache entry is a 4 KB stub. The comparison cannot
+run without a deliberate fetch, and a ~1.2 GB network download for a benchmark on a local-only app
+is a question rather than a step. **Yes/no.** Separately: any real audio with proper nouns in it
+that you do not mind being used would improve the benchmark more than the download would — the
+synthetic clips give usable relative deltas and useless absolute numbers.
+
+---
+
+## F201 — Fifteen minutes with a microphone
+
+**Status:** `blocked`. Dictation refinement has never been exercised with real speech in the
+installed app. The numbers say it works — 75 % of attempts refine on your Mac — but what nobody has
+watched is the pill and the paste.
+
+**What I need from you:** one dictation session, about fifteen minutes.
+
+Settings → refinement on, then hold the hotkey for each of these:
+
+1. One short English dictation.
+2. One Mandarin dictation.
+3. One over 60 words — this **must skip** refinement.
+4. Two back-to-back — the second should skip, busy.
+5. One after five idle minutes — falling back to raw is acceptable.
+
+Then check that the history records the raw text and the outcome for each. Tell me what looked
+wrong, or say "skip" and it stays open.
+
+---
 
 ## F230 — Watch the speaker-analysis screens once, with VoiceOver on
 
-**Status:** the fixtures exist and the code-side claims are tested. What is left cannot be observed
-by a test.
+**Status:** `blocked`, and **narrower than when this was written**. Two of the seven checks below
+are now covered by tests — cancel-mid-run leaving no `diarization.json`
+(`DiarizationWiringTests.diarizationCancellationWritesNothing`) and the single-voice copy
+(`DiarizationWiringTests` + `SpeakerReviewSurfaceTests`) — so they are struck. What is left is the
+part no test can reach.
 
-**What I need from you:** twenty minutes with the app, VoiceOver on for part of it.
+**What I need from you:** about twenty minutes with the app, VoiceOver on for part of it.
 
-The three blockers F229 hit are gone — `Scripts/bench/diarization/make-ui-fixtures.sh` generates
-what was missing:
+The fixtures exist:
 
 ```bash
 Scripts/bench/diarization/make-ui-fixtures.sh audio ~/Desktop/ui-fixtures
 Scripts/bench/diarization/make-ui-fixtures.sh models off   # then `on` to put it back
 ```
 
-`ui-single-voice.wav` produces exactly one cluster, so the single-voice state is reachable.
-`ui-long-cancel.wav` is three hours that analyse in 59 s, which is a wide enough window to press
-Cancel — the 46-minute real meeting finished in ~15 s, which is what defeated the last attempt.
-Both are synthetic speech and belong to nobody; delete the meetings afterwards.
+Both fixtures are synthetic speech and belong to nobody; delete the meetings afterwards.
 
-What to look at:
-
-1. **Cancel mid-run**, using the long fixture. Afterwards there should be no `diarization.json` in
-   the meeting's folder.
-2. **The single-voice copy**, using the single-voice fixture. It should not say "one voice" in a way
-   that implies the others were identified — that distinction is deliberate.
-3. **The model-absent copy**: `models off`, open the speaker-analysis screen, read the installer
+1. **The model-absent copy**: `models off`, open the speaker-analysis screen, read the installer
    text, then `models on`.
-4. **Import a fixture and leave it untranscribed** to reach the no-transcript state.
-5. **VoiceOver on** (⌘F5): a transcript row for an anonymous speaker should *say* "inferred". The
-   text is asserted by tests; that VoiceOver actually speaks it is not.
-6. **Keyboard only** (Tab / arrows): every control on those screens reachable without the mouse.
-7. **Dynamic Type large** and **Reduce Motion on**: nothing clipped, nothing that only animates.
+2. **Import a fixture and leave it untranscribed** to reach the no-transcript state.
+3. **VoiceOver on** (⌘F5): a transcript row for an anonymous speaker should *say* "inferred". The
+   text is asserted by tests; that VoiceOver speaks it is not.
+4. **Keyboard only** (Tab / arrows): every control on those screens reachable without the mouse.
+5. **Dynamic Type large** and **Reduce Motion on**: nothing clipped, nothing that only animates.
 
-Snapshot `meetings.json` before and after if you want to be careful — nothing here should change it
-beyond the meetings you import and delete.
-
-The reason this is yours: VoiceOver's spoken output, keyboard focus order and type scaling are
-things only a person can confirm, and the accessibility claims are the ones that most deserve
-confirming rather than asserting.
+The reason this is yours: spoken output, focus order and type scaling are things only a person can
+confirm, and the accessibility claims are the ones that most deserve confirming rather than
+asserting.
 
 ---
 
-## F241 — Two decisions about the ASR benchmark
+## F299 · F347 · F349 — Three speaker-label questions that need your own meetings
 
-**Status:** the long-form fixture is shipped and it reaches the batched meeting path. These two are
-the half I could not do.
+**Status:** all three `blocked`. None of them had a letter before today, which is why none has
+moved. One letter rather than three, because the answers are short and this file is over its cap.
 
-**What I need from you:** a yes/no on a download, and some real audio if you have it.
+**What I need from you:** a delegation, or one command — and for the third, real time.
 
-**1. May I download the 4-bit Qwen weights (~1.2 GB)?** The benchmark's whole problem is that it
-cannot tell a good model from a bad one: when 4-bit weights were rejected, the bench had scored them
-*perfectly* — 0.0000 error on all ten clips, identical to the 8-bit weights it kept. Meanwhile on a
-real recording the 4-bit model turned "Apple Times" into "EPT" and "Hadas" into "Head Office".
+**1. F349 — one command, and it closes a real gap in the evidence.** The clustering threshold
+(0.60) was derived on AMI: four-speaker headset audio that never over-splits. The failure that
+threshold guards against — 179 clusters on a 35-minute meeting — happened on *your* mix, which AMI
+structurally cannot reproduce. So the value is calibrated on material that cannot show the failure
+it prevents. `sweep` prints cluster counts per threshold and needs no ground truth: run it over two
+of your recordings across 0.30–1.00 and we learn where the real cliff is. Say the word and I will
+give you the exact command, or do it under delegation as with the F232 probe.
 
-The new long-form fixture does score non-zero (3.09%), so it finally has a scale. But I cannot check
-whether it actually separates the two models, because only the 8-bit weights are on this Mac — the
-4-bit entry in the cache is a 4 KB stub. It is a normal Hugging Face download, but it is a network
-fetch for a benchmark, on a machine whose whole point is staying local, so I would rather ask.
+**2. F347 — whether the sub-second rule helps your transcripts.** Rows under a second no longer get
+a speaker name. That was decided on AMI, where 75 % of reference turns have someone else talking;
+your own meetings measure 1.2–1.9 %. The trade is still positive on the closest analogue, but the
+direction of the error is predicted to be adverse — a sub-second row in a quiet recording is usually
+a fragment of the person already speaking, where the old label was right. Twenty of your own
+sub-second rows, labelled by ear, would settle it.
 
-**2. Do you have a recording with names and product terms in it?** This matters more than the
-download. The fixture's errors turn out to be mostly *spacing* around English words inside Chinese
-sentences — real, but not the kind of mistake that made 4-bit unusable. The mistakes that mattered
-were proper nouns, and the synthetic bench clips do not contain any.
+**3. F299 — does the labelling actually help you find things?** The product gate nobody has scored:
+a handful of find-the-moment tasks on one real meeting, timed, with labels and without. This is the
+largest of the three and the least urgent — it gates promoting speaker labels out of beta, not
+correctness.
 
-Any meeting where people say company names, product names or colleagues' names would work, and it
-would not need to be shared — I would only need the audio on this Mac and a rough transcript to
-score against. Without it, the bench can tell that a model is *different*; it still cannot tell that
-one is *wrong about names*, which is the failure you would actually notice.
-
----
-
-## F257 — Confirm a menu-bar-only session now gets its notices
-
-**Status:** the code is shipped and tested; this needs the app in front of you.
-
-**What I need from you:** one run, about two minutes.
-
-Everything about the app's lifecycle used to hang off the main window, so recording from the menu bar
-with the window closed meant no notice when something went wrong and no final save on quit. That is
-fixed, but no test can watch a windowless launch — the delegate firing without a window is AppKit's
-promise, not this code's.
-
-1. **Close the main window** (⌘W). The menu-bar icon stays; the app is still running.
-2. **Start a recording from the menu bar**, say a few words, then **Stop & Transcribe** from the same
-   menu.
-3. **Quit from the menu bar** while a transcript edit is still fresh — type in a transcript, then
-   quit within a second or two. Reopen and confirm the edit survived.
-4. If you can make a save fail (the simplest way: with WhisperMeet quit, `chmod 500` the library
-   folder, then launch and add a tag), confirm you get a **notification** saying changes could not be
-   saved rather than nothing at all. Put the permissions back with `chmod 700` afterwards.
-
-Expected: a notification for anything that would have been an alert, and no lost edit on quit.
-
-**Two things changed after this entry was written, and both affect what you will see.**
-
-The app used to ask for notification permission at the moment it wanted to post, and then post
-*immediately* without waiting for your answer — so the very first notification was the one most
-likely to be dropped, which for this test is the one being tested. It now waits for the answer
-before posting. If macOS shows you the permission prompt during step 4, allow it and the notice
-still arrives; before, allowing it would have been too late for that first message.
-
-And step 2 got stricter. A recording that **ends because the capture died** — lid closed on a
-docked Mac, display disconnected — used to tell you only through a banner in the window, which is
-the one thing you will not have open. It now goes through the same notification channel, along with
-the three "your recording could not be finalized" messages. So if you want to exercise the case
-that matters most, **close the lid mid-recording** instead of pressing Stop, then reopen: you should
-be told the recording ended and that the audio was kept. That overlaps with the F275 runs above, so
-doing those two together covers both entries.
-
-If a notification never appears at all, check System Settings → Notifications for WhisperMeet.
-
-What is still window-only, deliberately: the live recording-health banner. Telling you about a
-degrading recording while you have no window open needs the menu itself to carry it, which is a
-design question rather than a fix. Say if you want that.
+*A correction on the first two:* their tickets said your meetings are something "no session here may
+read". That was my wording and it overstates the rule — AGENTS.md bans reading your recordings **for
+testing**, and on 2026-09-18, under your delegation, a session ran the Sortformer probe over two of
+your real meetings and reported counts and timings only. These need your permission, not a wall.
 
 ---
 
-## F239 — Should deleting a meeting also shred it from the saved index history?
+## Settled — nothing needed from you
 
-**Status:** the *Forget History* command is shipped (Settings → Meeting library). This is the
-remaining half, and it is a defaults question rather than an engineering one.
+Kept as a record so nothing here is the only copy of anything; the full entries are in
+[`TICKET_LOG.md`](TICKET_LOG.md).
 
-**What I need from you:** one decision — automatic, opt-in, or leave it.
-
-**The situation.** WhisperMeet keeps recent copies of your meeting index so a bad save can be undone
-(that is what recovered your library once already). Those copies contain meeting titles, transcripts
-and notes. When you delete a meeting, its recording goes immediately — but its text stays in those
-copies until they age out, which is about a week, **except** for the copy holding the most meetings,
-which is kept indefinitely. On a library that is not growing, that copy can hold a deleted meeting's
-transcript for as long as you keep using the app.
-
-You can now clear all of it at once with *Forget History*. The question is whether deleting a single
-meeting should shred just that meeting from those copies, automatically.
-
-| Option | What you get | What it costs |
-|---|---|---|
-| **Automatic** | Delete means delete, with nothing to remember | Each deletion rewrites the saved copies, so the undo protection for *that moment* is weakened — and the rewrite is the most intricate part of the storage code |
-| **Opt-in** (a setting, default off) | The same, for anyone who turns it on | Anyone who does not know the setting exists is where we are today |
-| **Leave it** | *Forget History* covers the need, bluntly | You have to remember to run it, and it clears everything rather than one meeting |
-
-My recommendation is **opt-in**, for one reason: automatic would silently weaken the protection that
-exists because this library was destroyed once, and that trade should be yours to make knowingly
-rather than a side effect of pressing Delete. But if you delete sensitive meetings regularly,
-automatic is the only option that does not depend on memory.
-
----
-
-F243 was decided by the user on 2026-09-16 and moved to `TICKETS.md`: a silence gate may drop a
-chunk only when it is COMPLETELY silent. The broader near-silent gate the estimate was based on
-was not authorised.
-
----
-
-## F288 — Confirm the restore screen renders and reads well — **done without you, 2026-09-17**
-
-F312 made it possible to run a scratch copy of the app on a throwaway library, so the three checks
-in this letter were done on screen by whisper-37. Two passed; the third — choosing the
-`WhisperMeet Backups` folder itself — was *not* refused and offered "Restore Anyway" on a plan that
-would have copied the wrong folder into the library. Fixed in `2c3af46` and re-checked. Nothing is
-needed from you; the record is `F288` in `TICKET_LOG.md`.
-
----
-
-## F244 — The fidelity benchmark is built and waiting on two things only you can give
-
-**What I need:** your terminology review, and a yes or no on two downloads. Roughly 30 minutes of
-reading; the runs afterwards are unattended.
-
-Everything else is done. `run_fidelity.py` drives the app's own helper scripts over a corpus,
-`report.py` turns the records into a scorecard and a review page that lists only the flagged items,
-and a Swift test keeps the bench's copy of your prompts byte-equal to the ones the app sends. A
-`--smoke` run against the Qwen already installed on this Mac takes 39 seconds and passes.
-
-### 1. The corpus terminology (`Scripts/bench/fidelity/corpus/APPENDIX.md`, local-only)
-
-The eight topics and the protected-term list. I drafted them; you know whether the terms are the
-right ones, whether the aliases are the forms that actually appear in your work, and whether a topic
-is missing. Nothing can be measured until this is right, because the protected terms *are* the
-measurement — and they also seed F245's guard list, so a term missing here is a term the app will
-never learn to protect.
-
-One request while you are in there: the claims now take `action_aliases` and `target_aliases`, which
-say what counts as the same claim said differently. These must be written **before** any model runs.
-Written afterwards they become a per-item choice about which paraphrases to forgive, and since the
-sensitive-versus-control difference decides whether we replace the model, that choice could
-manufacture the difference it claims to measure.
-
-### 2. May I download two models?
-
-Gemma 4 E4B and Breeze2, into `~/Library/Caches/WhisperMeet-Bench/` — not the checkout, which is
-under `~/Documents` and may be iCloud-synced. Pinned revisions behind a SHA-256 gate, the same way
-the app's own installer works. Without them the benchmark can say whether Qwen has a problem but not
-whether switching would fix it, which is the question F246 has to answer.
-
-This is separate from the two 4-bit ASR weights in the F241 entry above; answering one does not
-answer the other.
-
-### What the smoke run already found, on six deliberately mundane items
-
-Not the real measurement — six neutral items, one sample each, no sensitive arm and no control, so
-the scorecard prints *incomparable* and refuses to imply a difference. But three of them are worth
-your attention now, because they are not about politics at all:
-
-- **A Traditional-Chinese dictation came back Simplified — and I have now stopped that, which
-  changes what I need from you.** 個→个, 貨→货, 倫→伦, 辦→办, on ordinary business text. The app's
-  language check reports "Chinese" for both scripts, so it could not see the conversion, and a test
-  over that exact pair confirmed the guard **accepted** it. Your text was being overwritten.
-
-  **Fixed, and it needed no permission**, because the fix only ever falls back to what you actually
-  said: the guard now refuses an output that turns your Traditional input Simplified, exactly as it
-  already refused one that turned your Chinese into English. If you dictate in Traditional Chinese,
-  your words are safe as of today.
-
-  **But refusing is not the same as working.** A refused refinement means you get your raw dictation
-  back — no punctuation, no capitalisation, no filler removal. So the feature is now safe for you
-  and does nothing for you, and that is the trade I cannot settle alone:
-
-  **May I name the script in the refinement prompt?** Telling the model "reply in Traditional
-  Chinese" should stop it converting in the first place, so refinement would work for you again
-  rather than being rejected. The reason I am asking rather than doing it: the app has no way to
-  know which script you prefer, so naming one is a guess about you, and guessing "Traditional"
-  would be wrong for anyone who writes Simplified. The alternatives are a setting you pick once, or
-  detecting it from your own dictation — which the app can now do, since the character tables
-  landed with the guard.
-
-  A one-word answer is enough: **Traditional**, **Simplified**, **ask me in Settings**, or **leave
-  it as is**. Any of those unblocks it; "leave it as is" is a real answer and means refinement stays
-  effectively off for your Traditional dictation, which is safe.
-
-  None of this needs the corpus review below. That is still required for everything about
-  politically sensitive material, which is a separate question.
-
-- **Asked to fix one misspelling, the model also rewrote 陳經理 into 陳怡君** — a title into a
-  person's name. That is not a recognition error, it changes who the transcript says was speaking,
-  and the correction sheet arrives with every proposal pre-selected, so it lands on one click.
-- **An English summary dropped the approver's name entirely** and attached the person responsible
-  for the problem to the fix rather than the act. Ordinary business text.
-
-Each is one observation, so none is a rate. They tell you the harness can see this class of thing,
-and that the class is not hypothetical.
-
-### If you would rather not
-
-The harness keeps working on the neutral corpus, so nothing rots. F244 simply stays blocked, and
-F245 and F246 stay blocked behind it — meaning the app keeps shipping the current prompts and the
-current guards, and the script drift above stays unfixed. That is the cost of leaving it, stated so
-it is a choice rather than a default.
+| Was asking | Outcome |
+|---|---|
+| **F275** — confirm the capture restart on hardware, set the padding cap | **Done 2026-09-19.** Your rerun (docked, lid closed) showed the restart resuming real audio after a 0.39 s gap, then stopping and saving when macOS announced sleep. You chose that behaviour; the cap stays at 5 minutes. |
+| **F257** — confirm a menu-bar-only session gets its notices | Closed `partial` 2026-09-17. The remaining ask is live under **F294** above, where it belongs. |
+| **F288** — confirm the restore screen renders and reads well | **Done without you, 2026-09-17.** |
+| **F244** — the fidelity benchmark's terminology review and two downloads | Closed `fixed` 2026-09-17 under your delegation. Both asks were answered in-body: the term list was settled with you on 09-16, and both downloads went ahead pinned by revision and SHA-256. |
+| **F225** — re-derive the clustering threshold on annotated audio | Closed `fixed` 2026-09-18. Answered by measurement: 18 AMI meetings, 0.60 survives as the middle of a flat optimum. |
+| **F232** — Sortformer versus the shipped runtime | Closed `wontfix` 2026-09-18. Answered by measurement on two of your real meetings: stay on the current runtime. |
+| **F181** — Finder / Shortcuts / Dock entry points | Closed `partial` 2026-09-18. Shipped without the Xcode-only build step; the watched folder became F318, now closed. |
