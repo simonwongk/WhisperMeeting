@@ -15,10 +15,15 @@ func directoryNamedLikeARecordingIsRejected() throws {
     let real = root.appendingPathComponent("call.m4a")
     try Data("not really audio, but a file".utf8).write(to: real)
 
-    #expect(!ExternalFileIntake.isImportable(bundle), "copying a whole tree to fail at duration load")
-    #expect(ExternalFileIntake.isImportable(real))
+    // The name says yes and the filesystem says no; `sort` is where both are asked, because the
+    // watched folder asks `isImportable` of every candidate every three seconds and must not stat.
+    #expect(ExternalFileIntake.isImportable(bundle), "the name alone cannot tell")
+    #expect(ExternalFileIntake.isDirectory(bundle))
+    let sorted = ExternalFileIntake.sort([bundle, real])
+    #expect(sorted.importable == [real], "copying a whole tree to fail at duration load")
+    #expect(sorted.rejected == [bundle])
     // A path that does not exist yet is still importable: the copy reports its own failure.
-    #expect(ExternalFileIntake.isImportable(URL(fileURLWithPath: "/nowhere/later.wav")))
+    #expect(ExternalFileIntake.sort([URL(fileURLWithPath: "/nowhere/later.wav")]).importable.count == 1)
 }
 
 @MainActor

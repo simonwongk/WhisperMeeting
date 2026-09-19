@@ -4229,7 +4229,12 @@ final class AppModel: ObservableObject {
         var ready = await Task.detached(priority: .userInitiated) {
             Self.readAskIndexes(for: requests, cache: cache)
         }.value
-        for (id, index) in ready where askIndexCache[id] != index { cacheAskIndex(index, for: id) }
+        // By fingerprint, not by value: `SegmentEmbeddings` is `Equatable` over its whole `vectors`
+        // array, so comparing entries would walk millions of floats per meeting per query — the cost
+        // this cache exists to remove.
+        for (id, index) in ready where askIndexCache[id]?.fingerprint != index.fingerprint {
+            cacheAskIndex(index, for: id)
+        }
         var missing: [SearchableMeeting] = []
         for meeting in meetings where ready[meeting.id] == nil {
             missing.append(meeting)
@@ -4262,10 +4267,16 @@ final class AppModel: ObservableObject {
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
     }
 
+    /// Running total of `askIndexCache`'s vectors, so the bound costs O(1) rather than a walk of
+    /// every cached index on every insert.
+    private var askIndexCacheVectorCount = 0
+
     private func cacheAskIndex(_ index: SegmentEmbeddings, for id: UUID) {
-        let held = askIndexCache.values.reduce(0) { $0 + $1.vectors.count }
+        let replacing = askIndexCache[id]?.vectors.count ?? 0
+        let held = askIndexCacheVectorCount - replacing
         guard held + index.vectors.count <= Self.askIndexCacheVectorLimit else { return }
         askIndexCache[id] = index
+        askIndexCacheVectorCount = held + index.vectors.count
     }
 
     /// The disk half of `askIndexes`, as a pure function over plain values so it can run off the
