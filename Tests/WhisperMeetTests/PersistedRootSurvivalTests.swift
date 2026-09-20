@@ -35,6 +35,23 @@ import Testing
 // explicit JSON `null` also returns nil without throwing — a generator emitting `"field": null`
 // would look like it exercises the field and would not.
 //
+// **And do not assert it with a round-trip.** A property with a declared default that is missing
+// from `MeetingRecord`'s hand-written `CodingKeys` encodes to nothing and decodes back to its
+// default, so the value returns correct having never been written:
+//
+//     struct Row: Codable { var id: Int; var schemaVersion: Int = 2
+//                           enum CodingKeys: String, CodingKey { case id } }
+//     encode -> {"id":1}          round-trip -> schemaVersion == 2
+//
+// That is F304's exact failure — a field persisted by nothing — surviving a test written to catch
+// it. Distinct from the absent-key case above: there the property IS in `CodingKeys` and the JSON
+// omits the key; here the property is not in `CodingKeys` at all, so the decoder never looks and
+// the default fills in. Assert the encoded bytes (`JSONSerialization` on the output, or
+// `MeetingRecordWireFormatTests`' `Mirror` check), never a decode of your own encode.
+//
+// whisper-37 hit this an hour after we agreed the rule, in a test whose own comment said "and it
+// reaches disk".
+//
 // The four roots, all through `BackupJSONStore`, established by the F188 review:
 //   [MeetingRecord] · [String] (vocabulary) · [ReplacementRule] · DictationLog
 //
