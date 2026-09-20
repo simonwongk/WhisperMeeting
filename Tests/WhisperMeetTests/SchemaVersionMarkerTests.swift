@@ -39,6 +39,16 @@ func newRecordsCarryTheSchemaVersion() throws {
     // And it reaches disk. `MeetingRecord` has a hand-written `CodingKeys`, so a new stored
     // property persists only if it was added there — the F304 trap, and the single likeliest way
     // for a version marker to end up quietly useless.
+    //
+    // Asserted on the **encoded bytes**, not on a round-trip. A round-trip cannot see this failure:
+    // with the key missing from `CodingKeys`, `encode` omits it and the synthesized `init(from:)`
+    // falls back to the property's declared default, so the value comes back correct having never
+    // been written. This test WAS a round-trip when first written and passed with the key removed —
+    // its own comment claimed a guarantee it did not provide, which is the defect this ticket keeps
+    // producing. `everyStoredFieldIsEncoded` catches it too, from the other direction.
+    let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any]
+    #expect(wire?["schemaVersion"] as? Int == MeetingRecord.currentSchemaVersion,
+            "the marker never reached the wire, so nothing on disk would carry it")
     let restored = try JSONDecoder().decode(MeetingRecord.self, from: JSONEncoder().encode(record))
     #expect(restored.schemaVersion == MeetingRecord.currentSchemaVersion)
 }

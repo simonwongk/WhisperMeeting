@@ -63,6 +63,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// It describes the record's content, not the bytes around it: a record nobody edited keeps
     /// saying what it was written against even when the file is rewritten for an unrelated reason.
     /// `MeetingStore.upsert` and `update` stamp it, because those are where content changes.
+    ///
+    /// Stamping on every *save* instead is the obvious simplification and it is a trap. A record
+    /// untouched since the old schema genuinely has old-schema content; marking it current would
+    /// make a future migration **skip exactly the records that need migrating**. That is worse than
+    /// having no marker — no marker means "check everything", a wrong marker means "check nothing"
+    /// with a confident-looking reason. `rewriteHistory` does not stamp either, for the same rule
+    /// aimed at evidence: it rewrites *retained generations*, and restamping one would make a
+    /// snapshot claim a version it was never written under.
     var schemaVersion: Int? = MeetingRecord.currentSchemaVersion
 
     let id: UUID
