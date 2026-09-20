@@ -158,19 +158,23 @@ func theWireKeySetIsPinned() throws {
         try JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any]
     )
     let expected: Set<String> = [
+        // F188's version marker. It is written on every record this build persists, so it is never
+        // absent from a freshly encoded one — unlike the four nil optionals noted below.
+        "schemaVersion",
         "id", "title", "createdAt", "duration", "recordingPath", "status", "transcriptText",
         "languageCode", "confidence", "segments", "errorMessage",
         "transcriptNormalized", "markers", "pinned", "notes", "tags", "alignmentWarning",
         "recoveryWarning", "recoverySource", "staleTranscriptWarning", "recoveryInterruption",
         "languageWarning", "transcriptionEngine",
     ]
-    // 23 keys for 27 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
+    // 24 keys for 28 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
     // nil here, and a nil optional is omitted rather than written as null — so they are absent by
     // design, not by omission from `CodingKeys`.
     //
     // These counts are the part that went stale, so they are stated rather than implied: 26 comes
     // from `Mirror`, which `everyStoredFieldIsEncoded` reads directly. If this literal disagrees
     // with the wire format again, that test is the one that will say which field.
+    // (The prose count above was 23/27 before F188 added `schemaVersion`.)
     #expect(Set(object.keys) == expected,
             "a persisted field changed its on-disk name or stopped being written")
 }

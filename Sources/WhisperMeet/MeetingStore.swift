@@ -29,6 +29,42 @@ enum MeetingStatus: String, Codable, Sendable {
 }
 
 struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
+    /// The schema this build writes. Bumped when a persisted shape changes incompatibly.
+    ///
+    /// 2, not 1, because 1 is the implicit shape of every index written before the marker existed —
+    /// which is what `schemaVersion == nil` means, and why nothing needs to rewrite those records to
+    /// give them a number they already have by omission.
+    static let currentSchemaVersion = 2
+
+    /// The schema version this record's **content** was written against, or nil when it was written
+    /// before the marker existed (F188 item 1, "Mark it", the user's answer of 2026-09-19).
+    ///
+    /// **It is a marker, not a fence, and the distinction is the whole reason this option was
+    /// chosen.** The fence F188 asked for cannot exist: no change to this file can make an
+    /// *already-shipped* reader refuse, because a reader that does not know about versions cannot
+    /// check one — `Codable` ignores an unknown key, which is exactly what makes adding this field
+    /// free. So this buys diagnosis and cheap future migration, and buys **no** protection against a
+    /// downgrade. That protection is F190's recoverable generations plus F188 item 3's exclusive
+    /// instance guard, which does not exist yet. The alternative that would have fenced (an
+    /// envelope) does so only by *being* the breakage it prevents, once, for every user who
+    /// downgrades; `docs/superpowers/specs/2026-09-17-schema-fence-design.md` has the full
+    /// reasoning and the user's answer.
+    ///
+    /// **Nothing reads this to make a decision, and that is enforced** by
+    /// `markerIsNeverReadToMakeADecision`. A reader that branches on it turns this into the fence
+    /// the analysis says it cannot be, and does so invisibly, because such code looks like an
+    /// improvement.
+    ///
+    /// **One file holds records at mixed versions, and that is normal** — records written by
+    /// different builds. So *"the index's version"* is not a well-formed question; only *"this
+    /// record's version"* is. Anyone reaching for the former will find nothing to reach for, and the
+    /// obvious repair is an envelope, which is the rejected option arriving by the back door.
+    ///
+    /// It describes the record's content, not the bytes around it: a record nobody edited keeps
+    /// saying what it was written against even when the file is rewritten for an unrelated reason.
+    /// `MeetingStore.upsert` and `update` stamp it, because those are where content changes.
+    var schemaVersion: Int? = MeetingRecord.currentSchemaVersion
+
     let id: UUID
     var title: String
     let createdAt: Date
@@ -216,6 +252,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// `theWireKeySetIsPinned` asserts the full set, because a case missing from this enum is
     /// exactly that silent loss.
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion
         case id, title, createdAt, duration, recordingPath, status, transcriptText
         case languageCode, confidence, segments, errorMessage, summary, transcriptNormalized
         case markers, pinned, notes, tags, healthReport, alignmentWarning, recoveryWarning
@@ -765,6 +802,10 @@ final class MeetingStore: ObservableObject {
             meetings.append(meeting)
         }
         meetings = MeetingOrdering.sorted(meetings)
+        // Content written by this build carries this build's schema version (F188, "Mark it").
+        if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
+            meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
+        }
         persistMeetings()
         scheduleNotesSidecarWrite(for: meeting.id)
     }
@@ -773,6 +814,8 @@ final class MeetingStore: ObservableObject {
         guard mutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
+        // As in `upsert`: the version tracks the content, and the content just changed (F188).
+        meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
         persistMeetings()
         scheduleNotesSidecarWrite(for: id)
     }

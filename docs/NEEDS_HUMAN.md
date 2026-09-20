@@ -15,55 +15,17 @@ out *not* to be answered and are still here, now with the board tickets they alw
 
 ## Where to start
 
-Seven entries, over the cap of five. Rather than drop one of your unanswered questions to get under
+Six entries, over the cap of five. Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F188** | **1 min** | One word, and it releases a ticket that has been stuck for two days because the question never reached you. |
-| 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
-| 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 4 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
-| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
-| 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
-
----
-
-## F188 — One word about the library's schema fence
-
-**Status:** the analysis is finished and written up; the decision is yours and has never been asked.
-The ticket (`F188`) is `blocked` on this letter as of 2026-09-19. It spent two days marked
-`in-progress` instead, which means "claimed, do not touch" — so no other agent worked it and you
-never saw the question. That was a bookkeeping error, not a hard problem.
-
-**What I need from you:** one of three words.
-
-The full reasoning is in `docs/superpowers/specs/2026-09-17-schema-fence-design.md` (110 lines,
-written by another session on 2026-09-17). The short version:
-
-`meetings.json` is a **bare JSON array** of records. There is no envelope, so there is nowhere to
-put a schema version — and adding one *is itself* the incompatible change every older reader breaks
-on. That is the whole difficulty.
-
-The part that reframes it: **no change to the file can make an already-shipped reader refuse.** A
-reader that does not know about versions cannot check one. So the fence's stated goal — protect the
-library against a downgrade to a build you already have — is not achievable by a format change at
-all. Option A achieves it only by *being* the breakage.
-
-- **"Flag day"** — wrap the array in an envelope, migrate once, and downgrading past this build
-  needs the recovery flow. Defensible only if you actually install old builds.
-- **"Mark it"** — a `schemaVersion` on each record. No envelope, no breakage, nothing reads it
-  today; it makes the *next* incompatible change cheap. F188 item 1 then closes as "marked, not
-  fenced". **This is the recommendation**, on the reasoning that F190's recoverable generations plus
-  F187 and F193 already turn "an old build wrote something wrong" from a wipe into a recoverable
-  incident — which is most of what the flag day would buy, without a cost that lands on you once,
-  guaranteed.
-- **"Neither yet"** — nothing is written, the note stays attached, and the next person re-derives
-  the analysis.
-
-You are **not** being asked whether to *check* a version once one exists. That is free and obvious
-and needs no decision.
+| 1 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
+| 2 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
+| 3 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
+| 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
+| 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
+| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 
 ---
 
@@ -242,6 +204,7 @@ Kept as a record so nothing here is the only copy of anything; the full entries 
 
 | Was asking | Outcome |
 |---|---|
+| **F188** — one word about the library's schema fence | **Answered 2026-09-19: "Mark it."** Each record now carries a `schemaVersion`, written where content changes. It is a **marker, not a fence** — an already-shipped reader ignores an unknown key, so it cannot refuse on one — which is exactly why you were asked rather than told. Item 1 of F188 is done; the ticket stays open for its instance guard. |
 | **F275** — confirm the capture restart on hardware, set the padding cap | **Done 2026-09-19.** Your rerun (docked, lid closed) showed the restart resuming real audio after a 0.39 s gap, then stopping and saving when macOS announced sleep. You chose that behaviour; the cap stays at 5 minutes. |
 | **F257** — confirm a menu-bar-only session gets its notices | Closed `partial` 2026-09-17. The remaining ask is live under **F294** above, where it belongs. |
 | **F288** — confirm the restore screen renders and reads well | Closed `fixed` 2026-09-17, but **not** fully done: its Gaps record that Restore Library was never pressed and that the container case it named was not the one tested. That residual is live above as **F353**. |
