@@ -15,17 +15,41 @@ out *not* to be answered and are still here, now with the board tickets they alw
 
 ## Where to start
 
-Six entries, over the cap of five. Rather than drop one of your unanswered questions to get under
+Seven entries, over the cap of five. Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
-| 2 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 3 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
-| 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
-| 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
+| 1 | **F355** | ~2 min | Listen to one recording. The mix gain rule changed today and no ear has been near it. |
+| 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
+| 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
+| 4 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
+| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
+| 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
+| 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
+
+---
+
+## F355 — Listen to one recording, and tell me if the buzz is gone
+
+**Status:** `blocked`. The mix gain rule changed today (F345) and every number justifying it is
+synthetic. The defect was reported by ear; nothing has been heard since.
+
+**What I need from you:** one short recording, played back.
+
+Play something with sound through your Mac, talk over it for thirty seconds, stop, and listen to
+the result. Two things to judge:
+
+1. **Is the buzz gone?** The mechanism certainly is — below the knee the output is now bit-identical
+   to an ideal linear mix, so there is no amplitude modulation left to make sidebands. But "the
+   mechanism is absent" and "it sounds right" are different claims and I can only make the first.
+2. **Is the overlap level comfortable?** Passages where you and the system audio are both talking
+   are now **1.7 to 5.0 dB louder** than they used to be. That was your call this morning, and it is
+   the honest consequence of deleting a rule that was quietly ducking whoever was already talking.
+   Solo passages are unchanged to the bit.
+
+If something still buzzes, tell me what it sounds like and roughly when — a recording of it is not
+needed and I would rather not have one.
 
 ---
 

@@ -30,15 +30,22 @@ public enum FloatTrackMixer {
     /// Frames per read. Also the interval at which an off-by-one would put a click in a recording.
     static let chunkFrames = 8_192
 
-    /// Below this magnitude a sample counts as silence for the gain rule.
-    static let activityFloor: Float = 0.01
-
-    /// Gain when both tracks carry audio — summing two active tracks at unity would clip.
-    static let overlappingGain: Float = 0.5
-
-    /// Gain when only one track carries audio. Nearly unity on purpose: one side talking at a time
+    /// Gain applied to the sum while it fits. Nearly unity on purpose: one side talking at a time
     /// is the common case in a meeting, and halving it there would make every recording quiet.
     static let soloGain: Float = 0.95
+
+    /// Where the curve stops being exactly linear, in units of `|system + microphone|`.
+    ///
+    /// Forced from both sides rather than chosen. A float32 track is nominally within [-1, 1], so a
+    /// *lone* track's `|sum|` never exceeds 1.0 and the knee must be at least 1.0 or a loud solo
+    /// passage would be distorted. And `soloGain * |sum|` must stay below 1.0 to leave the limiter
+    /// anywhere to work, which needs `|sum| < 1/0.95 = 1.0526`. 1.0 is the only round number in
+    /// that window.
+    static let linearSumLimit: Float = 1.0
+
+    /// What is left between the knee's output and full scale — the room the limiter has. About
+    /// 0.05; not exactly, because `Double(Float(0.95))` is 0.949999988079071.
+    static let limiterHeadroom = 1.0 - Double(soloGain) * Double(linearSumLimit)
 
     /// Sums one frame of the two tracks into a clamped 16-bit sample.
     ///
@@ -48,11 +55,47 @@ public enum FloatTrackMixer {
     /// places drifts; the drift would be audible only in the rebuild path, where nobody has the
     /// original recording to compare against.
     ///
+    /// **Why this is a curve and not a choice between two gains (F345).** It used to pick `0.5`
+    /// when both tracks exceeded an activity floor and `0.95` otherwise, decided from the
+    /// *instantaneous* sample. A microphone waveform crosses that floor twice per cycle, so the
+    /// system track was multiplied by a square wave at roughly twice the microphone's dominant
+    /// frequency: amplitude modulation, measured on synthetic signals at **−14.9 dBc** of injected
+    /// sidebands against a −103 dBc quantization floor, and reported on real captures as a buzz.
+    /// The failure is better stated in the time domain — a **one-LSB change in the input moved the
+    /// output by up to 3,096 LSB**, because the gain could change by 0.45 between adjacent samples.
+    ///
+    /// So the gain stopped being a two-valued choice. Below the knee the output is exactly
+    /// `soloGain * (system + microphone)` — bit-identical to an ideal linear mix, with no modulator
+    /// left to make sidebands. Above it, an odd, monotone, `C¹`-continuous soft limiter that
+    /// asymptotes *below* full scale, which is what now prevents the clipping the old `0.5` branch
+    /// existed to prevent: `0.8 + 0.6` peaks at 32,576 rather than clipping 17% of its frames.
+    ///
+    /// **It is deliberately memoryless.** An envelope follower or a smoothed gain would need state,
+    /// and state here has to survive `chunkFrames` boundaries *and* stay identical between this
+    /// path and the recovery rebuild, whose `chunkSize` is a parameter (8,192 in production, 100 in
+    /// `RecoveryTruncationTests`). Both stateful designs were measured and both were worse: an
+    /// envelope shifts the effective floor by the signal's crest factor, and a smoothed gain cannot
+    /// outrun the sum, so it clips where this does not. A pure function of one frame keeps chunking
+    /// free — mixing at chunk sizes 1, 100 and 8,192 is byte-identical — and keeps
+    /// `InterruptedRecordingRecovery` unchanged.
+    ///
     /// Clamped before conversion, because `Int16(1.4 * 32767)` traps and a wrapped sum would flip
-    /// sign — a loud click where the honest failure is a quiet clip.
+    /// sign — a loud click where the honest failure is a quiet clip. The clamp is now unreachable
+    /// for finite input (the curve's own ceiling is below 1.0) and is kept for NaN, which reaches
+    /// `min(1, nan) == 1.0` and so still produces full scale rather than trapping.
     public static func mixedSample(system: Float, microphone: Float) -> Int16 {
-        let bothActive = abs(system) > activityFloor && abs(microphone) > activityFloor
-        let mixed = (system + microphone) * (bothActive ? overlappingGain : soloGain)
+        let sum = system + microphone
+        let magnitude = abs(sum)
+        let shaped: Float
+        if magnitude <= linearSumLimit {
+            shaped = soloGain * magnitude
+        } else {
+            // `1 - h/(1 + e)` with `e` rising linearly past the knee: equal to `soloGain * |sum|`
+            // and to its slope at the knee, monotone after it, and bounded above by 1.
+            let excess = Double(soloGain) * (Double(magnitude) - Double(linearSumLimit)) / limiterHeadroom
+            shaped = Float(1.0 - limiterHeadroom / (1 + excess))
+        }
+        let mixed = sum < 0 ? -shaped : shaped
         return Int16(max(-1, min(1, mixed)) * Float(Int16.max))
     }
 
