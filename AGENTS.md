@@ -525,6 +525,30 @@ does not:
 - **A fixed time budget in a test.** `for _ in 0..<200 { sleep(25ms) }` makes "slow" a property of
   the host, and the runner is slower than any developer Mac. This one is not a toolchain gap — it is
   avoidable by not using a clock.
+- **An Apple API that *raises* where the code assumes it *throws*.** A `do/catch` around an Apple
+  framework call proves nothing: an Objective-C `NSException` is not a Swift error, no `catch` sees
+  it, and the process aborts. F356 took the app down twice on 2026-09-21 from
+  `MicDictationRecorder.start` — the input format was read, then handed to `installTap` 22 ms later,
+  and enabling the input stream had reconfigured the device in between, so AVFAudio raised. The
+  `do { try engine.start() } catch` three lines below looked like error handling and was decoration.
+  No gate can see this: it needs a real audio device to change rate inside that window, on a machine
+  with a microphone, so `swift build`, `swift test` and CI are all green through it — and were, for
+  months, until a phone call put the built-in mic into its 24 kHz voice mode.
+
+  Two rules come out of it, and the second is the one that generalises:
+
+  - **Read the SDK header before you trust a `catch`.** The headers say which calls raise, in as
+    many words. `AVAudioEngine.h` on `inputNode`: "Trying to perform input through the input node
+    when it is not enabled or available will cause the engine to throw an error (when possible) **or
+    an exception**." That same sentence names the probe that avoids it — check `inputFormat` for
+    non-zero sample rate **and channel count** — which the code was not doing either (F358).
+  - **Make the raise impossible rather than planning to handle it.** You cannot handle it. F356's
+    fix is not a narrower window — re-reading the format one line before `installTap` would only
+    have shortened the 22 ms, because the install is *what causes* the reconfiguration. It is
+    `format: nil`, which declines to assert a format at all, plus deriving the converter from each
+    buffer. `AudioCaptureEngine.append` had been doing exactly that for meeting capture the whole
+    time, which is why the meeting path was never exposed. **When one capture path is immune to a
+    bug the other has, the difference between them is the fix** — look there before designing one.
 
 **The duration heuristic — the cheapest signal there is.** A full run takes minutes (3m22s was the
 last known-good baseline). **A run that finishes in under a minute tested nothing** — it died before

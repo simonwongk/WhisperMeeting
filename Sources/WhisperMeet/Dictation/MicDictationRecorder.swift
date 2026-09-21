@@ -12,11 +12,13 @@ protocol DictationRecording: AnyObject {
 /// Mic-only capture for quick dictation. Uses AVAudioEngine (NOT ScreenCaptureKit) so dictation
 /// never requires Screen Recording permission. Produces a 16 kHz mono WAV in the temp dir.
 ///
-/// Thread model: the input tap runs on an AVAudioEngine-owned thread; it converts each buffer using
-/// converter/format captured as locals (never shared state), then hands the resulting samples to
-/// `processingQueue` — the ONLY place `samples` is touched. `stop()`/`cancel()` remove the tap and
-/// then drain `processingQueue` (a `sync` barrier) before reading, so no in-flight tap chunk can
-/// race the read. This mirrors the tap+queue+flush discipline `AudioCaptureEngine` already uses.
+/// Thread model: the input tap runs on an AVAudioEngine-owned thread; it converts each buffer
+/// through a `DictationTapConverter` created per capture and touched only by that thread, then
+/// hands the resulting samples to `processingQueue` — the ONLY place `samples` is touched.
+/// `stop()`/`cancel()` remove the tap and then drain `processingQueue` (a `sync` barrier) before
+/// reading, so no in-flight tap chunk can race the read. This mirrors the tap+queue+flush
+/// discipline `AudioCaptureEngine` already uses, and since F356 it also mirrors the rule that
+/// matters more: the capture format is read from each buffer, never pinned ahead of the tap.
 final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     enum RecorderError: Error {
         case audioFormatUnavailable
@@ -47,24 +49,34 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         guard !isRecording else { return }
 
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
+        // The documented availability probe, and both halves of it. AVAudioEngine.h, `inputNode`:
+        // "Check for the input node's input format (i.e. hardware format) for non-zero sample rate
+        // and channel count to see if input is enabled. Trying to perform input through the input
+        // node when it is not enabled or available will cause the engine to throw an error (when
+        // possible) or an exception." An exception is not a Swift error and no `catch` below can
+        // see it, so this guard is the whole defence (F358). It reads `inputFormat`, not
+        // `outputFormat`, because that is the property that sentence names.
+        let hardwareFormat = input.inputFormat(forBus: 0)
         guard
-            inputFormat.sampleRate > 0,
-            let outputFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: targetSampleRate,
-                channels: 1,
-                interleaved: false
-            ),
-            let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+            hardwareFormat.sampleRate > 0,
+            hardwareFormat.channelCount > 0,
+            let converter = DictationTapConverter(targetSampleRate: targetSampleRate)
         else {
             throw RecorderError.audioFormatUnavailable
         }
 
         processingQueue.sync { sampleBuffer.removeAll(keepingCapacity: true) }
 
-        input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            self?.handleTap(buffer: buffer, converter: converter, outputFormat: outputFormat, onLevel: onLevel)
+        // `format: nil`, and that is the F356 fix rather than a simplification. AVAudioNode.h
+        // documents the argument as "If non-nil, attempts to apply this as the format of the
+        // specified output bus" — so a non-nil value is a claim about the hardware, checked against
+        // the live device at install time. Enabling the input stream is itself what reconfigures
+        // that device, so a format read beforehand is stale by the time it is validated, and
+        // AVFAudio answers a mismatch by raising. nil declines to make the claim: the tap delivers
+        // the device's own format and `DictationTapConverter` reads it per buffer. Re-reading the
+        // format one line earlier would only have shortened the window, not closed it.
+        input.installTap(onBus: 0, bufferSize: 1_024, format: nil) { [weak self] buffer, _ in
+            self?.handleTap(buffer: buffer, converter: converter, onLevel: onLevel)
         }
         engine.prepare()
         do {
@@ -76,45 +88,17 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         isRecording = true
     }
 
-    /// Runs on the tap thread. Converts the live buffer to 16 kHz mono using the captured converter,
-    /// then hands the samples to `processingQueue` (the engine's buffer is not retained past here).
+    /// Runs on the tap thread. Converts the live buffer at whatever format it arrived in, then
+    /// hands the samples to `processingQueue` (the engine's buffer is not retained past here).
     private func handleTap(
         buffer: AVAudioPCMBuffer,
-        converter: AVAudioConverter,
-        outputFormat: AVAudioFormat,
+        converter: DictationTapConverter,
         onLevel: @escaping @Sendable (Float) -> Void
     ) {
-        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 16)
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-
-        var supplied = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            if supplied {
-                status.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard error == nil, let channel = output.floatChannelData?[0] else { return }
-
-        let frames = Int(output.frameLength)
-        guard frames > 0 else { return }
-        var chunk = [Float](repeating: 0, count: frames)
-        var sumOfSquares: Float = 0
-        for index in 0..<frames {
-            let value = channel[index]
-            chunk[index] = value
-            sumOfSquares += value * value
-        }
-        let level = min(1, (sumOfSquares / Float(frames)).squareRoot() * 8)
-
+        guard let chunk = converter.convert(buffer) else { return }
         processingQueue.async {
-            self.sampleBuffer.append(contentsOf: chunk)
-            DispatchQueue.main.async { onLevel(level) }
+            self.sampleBuffer.append(contentsOf: chunk.samples)
+            DispatchQueue.main.async { onLevel(chunk.level) }
         }
     }
 
