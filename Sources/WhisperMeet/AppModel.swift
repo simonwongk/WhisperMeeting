@@ -1781,7 +1781,8 @@ final class AppModel: ObservableObject {
         }
         let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? SegmentAudioRange.headerBytes
         let range = SegmentAudioRange.byteRange(
-            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate)
+            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate),
+            availableBytes: fileSize
         )
         let clamped = range.clamped(to: SegmentAudioRange.headerBytes..<max(SegmentAudioRange.headerBytes, fileSize))
         // Partial read: seek to the clip's byte range and read only those bytes — never the whole file,
