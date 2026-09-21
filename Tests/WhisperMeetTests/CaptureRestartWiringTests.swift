@@ -469,3 +469,54 @@ func aMarkerDoesNotEraseAPaddedGap() async throws {
     #expect(session.paddedGaps.count == 1, "adding a marker erased the padded gap")
     #expect(session.markers.count == 1)
 }
+
+// F363 — `hasStreamError` cannot tell a failed buffer write from a dead stream, and the restart
+// decision was reading it. The engine draws the distinction itself (`AudioCaptureEngine.swift:74-77`)
+// and `DeadCaptureStopTests.writeFailureIsNotAnEarlyStop` already pins it for `stop()`; this pins it
+// for the consumer that tears the stream down, which is where it actually costs the user audio.
+
+private struct WriteFailed: Error {}
+
+@MainActor
+@Test("A failed buffer write does not restart a stream that is still alive (F363)")
+func writeFailureDoesNotRestartALiveStream() async throws {
+    let padded = Locked<[Int64]>([])
+    let (model, root, defaults, suite) = try makeRestartModel(restart: { frames in
+        padded.withLock { $0.append(frames) }
+    })
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    // A buffer that failed to convert or write — ENOSPC is the realistic cause. The SCStream is
+    // untouched and keeps delivering.
+    model.recorder.recordWriteFailureForTesting(WriteFailed())
+    await model.handleCaptureInterruption(trigger: .streamFailed, gap: 1, now: Date())
+
+    #expect(padded.withLock { $0 }.isEmpty, """
+        a live stream was torn down and its timeline padded with silence for audio that was captured
+        """)
+    #expect(model.recorder.restartCount == 0)
+    #expect(model.recordingState.isLive, "the meeting was ended while its capture was alive")
+}
+
+@MainActor
+@Test("A dead stream still restarts, so F363's fix did not disable F275 (F363)")
+func deadStreamStillRestarts() async throws {
+    let padded = Locked<[Int64]>([])
+    let (model, root, defaults, suite) = try makeRestartModel(restart: { frames in
+        padded.withLock { $0.append(frames) }
+    })
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    await model.startRecording()
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+    await model.handleCaptureInterruption(trigger: .streamFailed, gap: 1, now: Date())
+
+    #expect(padded.withLock { $0 }.count == 1, "a real death must still be restarted")
+}

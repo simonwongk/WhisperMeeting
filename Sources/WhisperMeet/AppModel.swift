@@ -2650,7 +2650,13 @@ final class AppModel: ObservableObject {
                     // F275: this 1 Hz tick is the only trigger that catches the case with no power
                     // event — a docked lid close, where the display-bound stream dies and the Mac
                     // never sleeps. Before this the banner appeared here and nothing else happened.
-                    if self.recorder.hasStreamError {
+                    // F363: `captureDidDie`, not `hasStreamError`. A buffer that failed to convert
+                    // or write also sets an error, and restarting a stream that is still delivering
+                    // costs real audio and pads the timeline with silence that never happened. A
+                    // write failure now falls through to `noteCaptureAlive()`, which is correct —
+                    // the capture IS alive — and is why the anchor no longer freezes under one.
+                    // Surfacing that failure to the user is F368; it is not surfaced today either.
+                    if self.recorder.captureDidDie {
                         await self.handleCaptureInterruption(trigger: .streamFailed)
                     } else if !self.isRestartingCapture {
                         // F292: the engine clears the death before the new stream starts, so a tick
@@ -3142,13 +3148,13 @@ final class AppModel: ObservableObject {
         let action = CaptureRestartPolicy.action(
             trigger: trigger,
             state: recordingState.policyState,
-            streamIsAlive: !recorder.hasStreamError,
+            streamIsAlive: !recorder.captureDidDie,   // F363
             gap: measuredGap,
             restartsSoFar: recorder.restartCount
         )
         switch action {
         case .none:
-            if recordingState.isLive, !recorder.hasStreamError { captureLastAliveAt = now }
+            if recordingState.isLive, !recorder.captureDidDie { captureLastAliveAt = now }
             return
         case let .restart(padding):
             // F292: a failed attempt is retried after a backoff instead of ending the meeting. Only

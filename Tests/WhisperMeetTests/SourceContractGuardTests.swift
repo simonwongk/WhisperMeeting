@@ -104,3 +104,51 @@ func whisperCoreImportsNothingUnexpected() throws {
         \(offenders.joined(separator: "\n"))
         """)
 }
+
+// MARK: - F364
+
+/// The fields `AudioCaptureEngine`'s own comment declares queue-protected. Until F364 that sentence
+/// was false for two of them, for months, and no test could see it — the claim lives in prose and the
+/// violation lives in a declaration twenty lines away. This is the crude check that would have caught
+/// it, which is exactly the argument F306 makes.
+private let queueProtectedCaptureFields = [
+    "stream", "streamError", "streamDied", "restartInProgress", "sessionGeneration",
+]
+
+@Test("Every field AudioCaptureEngine calls queue-protected actually is (F364)")
+func captureEngineQueueProtectedFieldsHaveAccessors() throws {
+    let file = try #require(
+        try sourceFiles(under: "Sources/WhisperMeet")
+            .first { $0.path.hasSuffix("AudioCaptureEngine.swift") }
+    )
+    var offenders: [String] = []
+    for field in queueProtectedCaptureFields {
+        guard file.lines.contains(where: { $0.text.contains("private var _\(field)") }) else {
+            offenders.append("_\(field): no `private var _\(field)` storage")
+            continue
+        }
+        // The ACCESSOR's own declaration, not the file at large. The first version of this guard
+        // searched the whole source for `captureQueue.sync { _streamDied }` and passed after the
+        // protection was deliberately removed, because `captureDidDie` contains that same text —
+        // F285's shape, in the check written to prevent F285's shape.
+        guard let declaration = file.lines.firstIndex(where: {
+            $0.text.contains("private var \(field):") || $0.text.contains("private var \(field) ")
+        }) else {
+            offenders.append("\(field): no un-prefixed accessor declared")
+            continue
+        }
+        let body = file.lines[declaration..<min(declaration + 6, file.lines.count)]
+            .map(\.text).joined(separator: "\n")
+        if !body.contains("captureQueue.sync") {
+            offenders.append("\(field): its accessor does not go through captureQueue.sync")
+        }
+    }
+    #expect(offenders.isEmpty, """
+        AudioCaptureEngine's comment on `_stream` names the fields stored behind `captureQueue`. Each
+        needs `_`-prefixed storage AND an un-prefixed accessor whose own body syncs on that queue —
+        code already on the queue uses the storage directly, because a `sync` from the queue
+        deadlocks.
+
+        \(offenders.joined(separator: "\n"))
+        """)
+}

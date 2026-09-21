@@ -57,8 +57,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// The live capture stream, or nil.
     ///
-    /// Stored behind `captureQueue` like `streamError`, `streamDied` and `pendingRestartPadding`
-    /// (F334). `start()`/`stop()` reach it from the MainActor, `restartAfterFailure` from the
+    /// Stored behind `captureQueue` like `_streamError`, `_streamDied` and `pendingRestartPadding`
+    /// (F334, and F364 for the first two — the sentence was false for them until then). `start()`/`stop()` reach it from the MainActor, `restartAfterFailure` from the
     /// cooperative pool — both are `nonisolated async`, so under SE-0338 they genuinely run in
     /// parallel — and the sample handler reaches it from the capture queue. Code already on that
     /// queue uses `_stream` directly; a `sync` from the queue would deadlock.
@@ -71,10 +71,25 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var microphoneWriter: FloatTrackWriter?
     private var sessionDirectory: URL?
     private var startedAt: Date?
-    private var streamError: Error?
+    /// Any capture failure: a stream death, or one buffer failing to convert or write.
+    ///
+    /// F364: this and `_streamDied` were plain stored properties while the comment on `_stream`
+    /// above declared them queue-protected — false for both, and read from three threads. They now
+    /// follow the same `_`-storage-plus-accessor pattern as `_stream`. **Code already on
+    /// `captureQueue` must use the `_` storage; a `sync` from the queue deadlocks.**
+    private var _streamError: Error?
+    private var streamError: Error? {
+        get { captureQueue.sync { _streamError } }
+        set { captureQueue.sync { _streamError = newValue } }
+    }
     /// The stream itself stopped — as opposed to one buffer failing to convert or write, which also
-    /// sets `streamError` (F292). Only a real death means the audio ends early.
-    private var streamDied = false
+    /// sets `_streamError` (F292). Only a real death means the audio ends early, and only a real
+    /// death may tear a live capture down to restart it (F363).
+    private var _streamDied = false
+    private var streamDied: Bool {
+        get { captureQueue.sync { _streamDied } }
+        set { captureQueue.sync { _streamDied = newValue } }
+    }
     /// Bumped by every `reset()` (F292). A restart remembers the value it started under and, after
     /// each of its awaits, gives up if a stop or cancel has reset the engine in the meantime —
     /// otherwise a restart outliving Stop's bounded wait would start a stream nothing ever stops,
@@ -184,8 +199,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             let contentReadyAt = ProcessInfo.processInfo.systemUptime
             self.stream = stream
             sessionDirectory = directory
-            streamError = nil
-            streamDied = false
+            captureQueue.sync {
+                _streamError = nil
+                _streamDied = false
+            }
             startedAt = Date()
             // Establish the monitor, callbacks, and level fields BEFORE capture begins so the
             // capture queue never reads or writes them concurrently with this setup. No sample
@@ -239,7 +256,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // That is exactly what the user's 2026-09-18 lid-close test produced. The tracks of a dead
         // capture are not damaged — they simply end early — so the normal mix is the right one.
         var captureHadDied = captureQueue.sync {
-            streamDied || _restartInProgress || (_stream == nil && injectedStopCapture == nil)
+            _streamDied || _restartInProgress || (_stream == nil && injectedStopCapture == nil)
         }
 
         do {
@@ -373,7 +390,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 break
             }
         } catch {
-            streamError = error
+            // Already on `captureQueue` — the sample handler is installed with it as its
+            // `sampleHandlerQueue` (`:479-480`), so the stored property, not the accessor (F364).
+            _streamError = error
         }
     }
 
@@ -390,7 +409,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         captureQueue.async { [weak self] in
             // Already on the capture queue: the stored property, not the syncing accessor (F334).
             guard let self, self._stream === stream else { return }
-            self.handleStreamFailure(error)
+            self.recordStreamDeath(error)
         }
     }
 
@@ -415,8 +434,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// rest of a meeting — and it goes away once something finalizes automatically on stream death
     /// (F253). `RecordingHealthMonitor` already surfaces the dead stream within ~4 s.
     func handleStreamFailure(_ error: Error) {
-        streamError = error
-        streamDied = true
+        captureQueue.sync { recordStreamDeath(error) }
+    }
+
+    /// The body of `handleStreamFailure`, for callers already on `captureQueue`.
+    ///
+    /// F364 split these apart rather than making one function guess. The delegate reaches this from
+    /// inside a `captureQueue.async`, where the syncing accessors would deadlock; the tests and the
+    /// internal seam reach `handleStreamFailure` from off the queue, where the stored properties
+    /// would race. Both are real callers, so both need their own door.
+    private func recordStreamDeath(_ error: Error) {
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        _streamError = error
+        _streamDied = true
     }
 
     /// Whether the capture currently holds its `beginActivity` power assertion (F254).
@@ -504,10 +534,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // records its own death rather than having it erased by a clear that runs after it. Put
         // back if the restart fails, which keeps `hasStreamError` true for the retry.
         let (generation, previousError) = captureQueue.sync { () -> (Int, Error?) in
-            let previous = streamError
+            let previous = _streamError
             _restartInProgress = true
-            streamError = nil
-            streamDied = false
+            _streamError = nil
+            _streamDied = false
             return (_sessionGeneration, previous)
         }
         defer {
@@ -546,8 +576,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 guard generation == _sessionGeneration else { return }
                 if startedStream != nil || injectedRestartCapture == nil { _stream = nil }
                 pendingRestartPadding = 0
-                streamError = streamError ?? previousError ?? error
-                streamDied = true
+                _streamError = _streamError ?? previousError ?? error
+                _streamDied = true
             }
             if !(error is CancellationError) {
                 Self.logger.error(
@@ -678,7 +708,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// A buffer that failed to convert or write while the stream kept running — `streamError`
     /// without a death, which the sample handler's catch produces.
     func recordWriteFailureForTesting(_ error: Error) {
-        streamError = error
+        streamError = error   // the syncing accessor: tests call this from off the queue
     }
 
     var testFrameCounts: (system: Int64, microphone: Int64) {
@@ -687,7 +717,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     #endif
 
     /// Whether a stream failure has been recorded — `stop()` uses this to preserve partial tracks.
-    var hasStreamError: Bool { streamError != nil }
+    var hasStreamError: Bool { captureQueue.sync { _streamError != nil } }
+
+    /// Whether the capture stream itself died, as opposed to a buffer failing to convert or write.
+    ///
+    /// F363: the restart decision used to read `hasStreamError`, which cannot tell the two apart, so
+    /// a single throwing write — a full disk is the realistic cause — tore down a stream that was
+    /// still delivering, padded the timeline with silence for audio that had been captured, recorded
+    /// the fabricated outage in the manifest, and ended the meeting after three cycles telling the
+    /// user the capture "stopped unexpectedly". `_streamDied` is written only by `recordStreamDeath`,
+    /// reached only from `stream(_:didStopWithError:)` and the restart's own failure path, so it
+    /// means a death and nothing else.
+    var captureDidDie: Bool { captureQueue.sync { _streamDied } }
 
     private func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -709,8 +750,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // either the whole reset or none of it (F334).
         captureQueue.sync {
             _stream = nil
-            streamError = nil
-            streamDied = false
+            _streamError = nil
+            _streamDied = false
             _restartInProgress = false
             _sessionGeneration += 1
             pendingRestartPadding = 0
