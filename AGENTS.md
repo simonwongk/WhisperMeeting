@@ -540,8 +540,10 @@ does not:
   - **Read the SDK header before you trust a `catch`.** The headers say which calls raise, in as
     many words. `AVAudioEngine.h` on `inputNode`: "Trying to perform input through the input node
     when it is not enabled or available will cause the engine to throw an error (when possible) **or
-    an exception**." That same sentence names the probe that avoids it — check `inputFormat` for
-    non-zero sample rate **and channel count** — which the code was not doing either (F358).
+    an exception**." The sentence immediately before it names the probe that avoids it — check
+    `inputFormat` for non-zero sample rate **and channel count** — which the code was not doing
+    either (F358). The probe narrows that window; only the tap's `format: nil` closes one outright,
+    and the difference between narrowing and closing is the whole lesson (F374).
   - **Make the raise impossible rather than planning to handle it.** You cannot handle it. F356's
     fix is not a narrower window — re-reading the format one line before `installTap` would only
     have shortened the 22 ms, because the install is *what causes* the reconfiguration. It is

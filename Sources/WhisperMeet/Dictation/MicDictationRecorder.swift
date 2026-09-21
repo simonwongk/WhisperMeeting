@@ -16,7 +16,9 @@ protocol DictationRecording: AnyObject {
 /// through a `DictationTapConverter` created per capture and touched only by that thread, then
 /// hands the resulting samples to `processingQueue` — the ONLY place `samples` is touched.
 /// `stop()`/`cancel()` remove the tap and then drain `processingQueue` (a `sync` barrier) before
-/// reading, so no in-flight tap chunk can race the read. This mirrors the tap+queue+flush
+/// reading. `removeTap` is not documented to join a tap block already executing, so a chunk enqueued
+/// after the drain can still be dropped — bounded at one buffer, ~21 ms — but nothing can race the
+/// read of `samples` itself. This mirrors the tap+queue+flush
 /// discipline `AudioCaptureEngine` already uses, and since F356 it also mirrors the rule that
 /// matters more: the capture format is read from each buffer, never pinned ahead of the tap.
 final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
@@ -55,7 +57,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         // node when it is not enabled or available will cause the engine to throw an error (when
         // possible) or an exception." An exception is not a Swift error and no `catch` below can
         // see it, so this guard is the whole defence (F358). It reads `inputFormat`, not
-        // `outputFormat`, because that is the property that sentence names.
+        // `outputFormat`, because that is the property those sentences name.
+        //
+        // Be clear about what this does NOT do: the probe is read here and `engine.start()` runs
+        // below, so input becoming unavailable in between can still raise — structurally the same
+        // read-then-use shape F356 is about. Unlike the tap's format, the API offers no way to
+        // decline the claim, so this narrows the window and cannot close it. Tracked as F374.
         let hardwareFormat = input.inputFormat(forBus: 0)
         guard
             hardwareFormat.sampleRate > 0,
@@ -96,9 +103,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         onLevel: @escaping @Sendable (Float) -> Void
     ) {
         guard let chunk = converter.convert(buffer) else { return }
+        let level = chunk.level
         processingQueue.async {
             self.sampleBuffer.append(contentsOf: chunk.samples)
-            DispatchQueue.main.async { onLevel(chunk.level) }
+            // `level`, not `chunk` — capturing the struct would hold its samples array alive for a
+            // main-queue hop to deliver one Float.
+            DispatchQueue.main.async { onLevel(level) }
         }
     }
 

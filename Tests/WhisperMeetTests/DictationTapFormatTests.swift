@@ -1,11 +1,13 @@
 import AVFoundation
 import Foundation
 import Testing
+@testable import WhisperCore
 @testable import WhisperMeet
 
-// F356 — on 2026-09-21 the app aborted twice from `MicDictationRecorder.start`. The input format was
-// read at `:50` and handed to `installTap` at `:66`, and enabling the input stream reconfigured the
-// device in between, so AVFAudio raised an NSException that Swift cannot catch. The two crashes
+// F356 — on 2026-09-21 the app aborted twice from `MicDictationRecorder.start`. In the pre-fix file
+// (c58351a) the input format was read at `:50` and handed to `installTap` at `:66`; enabling the input
+// stream reconfigured the device in between, so AVFAudio raised an NSException that Swift cannot catch.
+// Those line numbers are the crashing file's, not this tree's — the fix moved them. The two crashes
 // disagreed about which rate was stale (48000 then 24000, then 24000 then 48000), which is what
 // proves no pinned value is correct.
 //
@@ -44,21 +46,29 @@ func dictationGuardProbesTheHardwareFormat() throws {
     #expect(source.contains("hardwareFormat.sampleRate > 0"))
     #expect(source.contains("hardwareFormat.channelCount > 0"))
 }
-/// 0.1 s of full-scale tone at `sampleRate`, mono float — the shape a tap delivers.
-private func toneBuffer(sampleRate: Double, seconds: Double = 0.1) throws -> AVAudioPCMBuffer {
+
+/// `seconds` of a 440 Hz sine at `amplitude`, mono float — the shape a tap delivers.
+///
+/// A sine rather than a constant, because a resampler is exactly the thing a DC signal cannot probe;
+/// and 0.1 amplitude rather than full scale, because the meter is `min(1, rms * 8)` and any amplitude
+/// above ~0.177 saturates it, which would make every level assertion below pass by construction.
+private func toneBuffer(
+    sampleRate: Double,
+    seconds: Double = 0.1,
+    amplitude: Float = 0.1
+) throws -> AVAudioPCMBuffer {
     let format = try #require(AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
     ))
-    let frames = AVAudioFrameCount(sampleRate * seconds)
+    let frames = AVAudioFrameCount(saturating: sampleRate * seconds)
     let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
     buffer.frameLength = frames
     let channel = try #require(buffer.floatChannelData?[0])
     for index in 0..<Int(frames) {
-        channel[index] = sin(2 * .pi * 440 * Double(index) / sampleRate).magnitude > 0 ? 1 : -1
+        channel[index] = amplitude * Float(sin(2 * .pi * 440 * Double(index) / sampleRate))
     }
     return buffer
 }
-
 @Test("A mid-stream input format change still converts to the dictation sample rate (F356)")
 func converterRebuildsWhenTheInputFormatChanges() throws {
     let converter = try #require(DictationTapConverter(targetSampleRate: 16_000))
@@ -73,7 +83,11 @@ func converterRebuildsWhenTheInputFormatChanges() throws {
     for _ in 0..<5 {
         let chunk = try #require(converter.convert(try toneBuffer(sampleRate: 24_000)))
         #expect(chunk.samples.count > 0, "conversion stopped producing audio after the format change")
-        #expect(chunk.level.isFinite && chunk.level >= 0 && chunk.level <= 1, "level \(chunk.level)")
+        // A real value, not `0...1`: the meter is `min(1, rms * 8)`, so a `0...1` bound is satisfied by
+        // construction for any non-silent buffer — and by a NaN, since `min(1, .nan)` is 1. A 0.1
+        // amplitude sine has rms 0.0707, so the meter must read 0.566; measured 0.5652–0.5662 across
+        // both rates, and resampling is what makes it a band rather than a point.
+        #expect(abs(chunk.level - 0.566) < 0.02, "meter read \(chunk.level), expected ~0.566")
         total += chunk.samples.count
         afterTheChange += chunk.samples.count
     }
