@@ -483,6 +483,20 @@ a curve. So the threshold is a calibration and not a backstop, and the backstop 
 transcript untouched and the meeting re-analysable. A cluster-count-vs-threshold curve on real
 app-mix audio is still worth having and needs the user's own recordings to produce.
 
+**Reproduced end to end, 2026-09-21 (F348).** Both tables above were regenerated from the
+committed producers against the cached corpus, and every figure matched: the DER row at the shipped
+0.60 (24.6 / 6.9 / 17.2 / 3.0 / 4.4) and at every other threshold, all eighteen cells of the
+row-length table, and both headline pairs — 49.5 % → 71.9 % precision, 78.3 % → 50.0 % coverage.
+So these numbers are now re-obtainable rather than asserted.
+
+Getting there required fixing three defects in the producers, none of which their self-tests could
+see because all three lie on the path from a *filename* to a number and the self-tests fed
+hand-made data: `bucket_table.py` called a reader that did not exist, it passed
+`optimal_mapping`'s arguments in the wrong order (its signature is `(hyp, ref)`), and the README
+documented `sweep_score.py`'s two arguments reversed — which made it print a bare header and exit
+**0**. `bucket_table.py` now has an end-to-end self-test whose fixture requires a non-identity
+speaker mapping, and `sweep_score.py` refuses rather than printing an empty table.
+
 **Decision: 0.60 stays, and is now derived rather than inherited.** 0.55–0.65 is a flat optimum and
 0.60 is its middle. The failure the ticket feared — erring high merges two people into one cluster,
 which the overlay cannot see — begins at 0.70 (confusion 4.4 → 8.0) and is steep after it, so the

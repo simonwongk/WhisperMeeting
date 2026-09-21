@@ -81,7 +81,7 @@ python3 ami_prepare.py --manifest ami.jsonl --out ami --gap 0.5
 swift run -c release sweep <models parent> sweep-out 0.30,0.40,0.50,0.55,0.60,0.65,0.70,0.80,0.90,1.00 ami/wav/*.wav
 
 # 4. The DER table.
-python3 sweep_score.py sweep-out ami/rttm
+python3 sweep_score.py ami/rttm sweep-out      # <rttm dir> first, then <sweep dir>
 
 # 5. The row-length table, before and after the sub-second rule.
 python3 bucket_table.py --rttm ami/rttm --hypotheses sweep-out/0.60 --gate 0

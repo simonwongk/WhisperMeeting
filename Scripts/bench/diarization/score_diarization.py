@@ -170,6 +170,24 @@ def cooccurrence(hyp_turns, ref_turns):
     return hyp_labels, ref_labels, matrix
 
 
+def read_rttm(path):
+    """Reference turns from a NIST RTTM file, as (start, end, speaker) tuples.
+
+    Lived in `sweep_score.py` until F348, where `bucket_table.py` called `sd.read_rttm` and
+    discovered it did not exist — the producer had never been run against a real file, because its
+    self-test fed `tally` hand-made turns and never reached the reading path. One copy, in the
+    module both readers already import.
+    """
+    turns = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            parts = line.split()
+            if len(parts) >= 8 and parts[0] == "SPEAKER":
+                start, duration = float(parts[3]), float(parts[4])
+                turns.append((start, start + duration, parts[7]))
+    return turns
+
+
 def optimal_mapping(hyp_turns, ref_turns):
     """One global injective map hypothesis_label -> reference_label maximising matched time.
 

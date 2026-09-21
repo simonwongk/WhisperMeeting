@@ -16,15 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import score_diarization as sd  # noqa: E402
 
 
-def read_rttm(path):
-    turns = []
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            parts = line.split()
-            if len(parts) >= 8 and parts[0] == "SPEAKER":
-                start, duration = float(parts[3]), float(parts[4])
-                turns.append((start, start + duration, parts[7]))
-    return turns
+read_rttm = sd.read_rttm   # one copy, in the shared module (F348)
 
 
 def main(argv):
@@ -35,10 +27,12 @@ def main(argv):
     strict = conditions[0]
     print("threshold | files | " + " | ".join(f"DER {c}" for c in conditions)
           + f" | miss/FA/confusion ({strict}) | displayed precision | coverage")
+    scored_any = False
     for threshold in sorted(os.listdir(sweep_dir)):
         folder = os.path.join(sweep_dir, threshold)
         if not os.path.isdir(folder):
             continue
+        scored_any = True
         reports, shown, correct, segments = [], 0, 0, 0
         for name in sorted(os.listdir(folder)):
             # Only the sweep's own output. `name[:-5]` on every entry turned a stray `.DS_Store`
@@ -62,6 +56,15 @@ def main(argv):
         parts = "/".join(f"{100 * first[k] / first['total']:.1f}" for k in ("miss", "false_alarm", "confusion"))
         print(f"{threshold} | {len(reports)} | " + " | ".join(f"{100 * c['der']:.1f}" for c in cells)
               + f" | {parts} | {100 * precision:.1f} | {100 * shown / max(1, segments):.1f}")
+
+    # A header with no rows under it reads as "scored, nothing to say". It actually means the two
+    # arguments were swapped — the usage is <rttm dir> <sweep dir>, and the README had it backwards
+    # until F348 followed its own instructions and got exactly this (F343's lesson, one script over).
+    if not scored_any:
+        raise SystemExit(
+            f"no threshold directories in {sweep_dir!r} — arguments are <rttm dir> <sweep dir>, "
+            "and nothing was scored"
+        )
 
 
 if __name__ == "__main__":
