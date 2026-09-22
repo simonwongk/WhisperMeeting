@@ -10,10 +10,7 @@ import Testing
 // Comments are stripped before every check. AGENTS.md records why: in F285 a paragraph explaining a
 // regression satisfied the assertion that was supposed to detect it.
 
-private let repositoryRoot = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent()   // WhisperMeetTests
-    .deletingLastPathComponent()   // Tests
-    .deletingLastPathComponent()   // repository root
+private let repositoryRoot = SourceAssertion.repositoryRoot
 
 private struct SwiftFile {
     let path: String
@@ -23,22 +20,11 @@ private struct SwiftFile {
 /// Every `.swift` file under `Sources/`, comment lines blanked, with 1-based line numbers kept so a
 /// failure names the line a person can open.
 private func sourceFiles(under directory: String) throws -> [SwiftFile] {
-    let root = repositoryRoot.appendingPathComponent(directory)
-    let enumerator = try #require(
-        FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil),
-        "could not enumerate \(directory)"
-    )
     var files: [SwiftFile] = []
-    for case let url as URL in enumerator where url.pathExtension == "swift" {
+    for url in try SourceAssertion.swiftFileURLs(under: directory) {
         let text = try String(contentsOf: url, encoding: .utf8)
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .enumerated()
-            .map { index, line -> (Int, String) in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return (index + 1, trimmed.hasPrefix("//") ? "" : String(line))
-            }
         files.append(SwiftFile(path: url.path.replacingOccurrences(of: repositoryRoot.path + "/", with: ""),
-                               lines: lines))
+                               lines: SourceAssertion.numbered(SourceAssertion.stripComments(text))))
     }
     #expect(!files.isEmpty, "found no Swift files under \(directory) — this guard would pass vacuously")
     return files

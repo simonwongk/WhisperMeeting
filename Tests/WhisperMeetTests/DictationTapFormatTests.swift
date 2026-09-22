@@ -16,30 +16,18 @@ import Testing
 // — the F306/F174 precedent for a failure whose entry point the harness cannot drive — and the
 // behaviour the fix introduces is covered directly, headlessly, below it.
 
-private func uncommentedSource(_ path: String) throws -> String {
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // WhisperMeetTests
-        .deletingLastPathComponent()   // Tests
-        .deletingLastPathComponent()   // repository root
-        .appendingPathComponent(path)
-    return try String(contentsOf: url, encoding: .utf8)
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
-        .joined(separator: "\n")
-}
-
 private let recorderSource = "Sources/WhisperMeet/Dictation/MicDictationRecorder.swift"
 
 @Test("The dictation tap never pins a client format (F356)")
 func dictationTapInstallsWithoutAPinnedFormat() throws {
-    let source = try uncommentedSource(recorderSource)
+    let source = try SourceAssertion.uncommentedSource(recorderSource)
     #expect(source.contains("format: nil"), "a non-nil format is what AVFAudio validates and raises on")
     #expect(!source.contains("format: inputFormat"), "the read-then-install race is exactly this argument")
 }
 
 @Test("The microphone-availability guard uses the documented hardware probe (F358)")
 func dictationGuardProbesTheHardwareFormat() throws {
-    let source = try uncommentedSource(recorderSource)
+    let source = try SourceAssertion.uncommentedSource(recorderSource)
     // AVAudioEngine.h, `inputNode`: "Check for the input node's input format (i.e. hardware format)
     // for non-zero sample rate and channel count to see if input is enabled."
     #expect(source.contains("input.inputFormat(forBus: 0)"))

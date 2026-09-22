@@ -127,28 +127,26 @@ func markerIsNeverReadToMakeADecision() throws {
     // "Mark it" was chosen over "Flag day" on the reasoning that no format change can make an
     // already-shipped reader refuse. If production code ever branches on this value, the ticket's
     // claim of "marked, not fenced" silently becomes false. This is the assertion that fails first.
-    let sources = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources")
     var offenders: [String] = []
-    let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)!
-    for case let url as URL in enumerator where url.pathExtension == "swift" {
+    for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
         // `DiarizationArtifact` has its own, unrelated `schemaVersion`, and it genuinely **is** a
         // fence: it throws `malformed` on a mismatch. It can be, and this cannot, for a reason
         // worth keeping in view — that file is a sidecar this app wholly owns, and refusing it
         // costs one re-run of the analysis. Refusing `meetings.json` costs the user their library.
         // Same field name, opposite correct answer.
         guard url.lastPathComponent != "DiarizationArtifact.swift" else { continue }
-        let text = try String(contentsOf: url, encoding: .utf8)
-        for (number, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        let text = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8))
+        for (number, line) in SourceAssertion.numbered(text) {
             let code = line.trimmingCharacters(in: .whitespaces)
-            guard code.contains("schemaVersion"), !code.hasPrefix("//"), !code.hasPrefix("///") else { continue }
+            // A comment line is already blank, so the `contains` below skips it — the two
+            // `hasPrefix` guards this replaced said the same thing one layer later (F375).
+            guard code.contains("schemaVersion") else { continue }
             // Declaring it, and stamping it, are the only permitted uses.
             let declares = code.contains("var schemaVersion") || code.contains("currentSchemaVersion =")
             let stamps = code.contains("schemaVersion = MeetingRecord.currentSchemaVersion")
             let names = code.contains("case ") && code.contains("schemaVersion")
             if !(declares || stamps || names) {
-                offenders.append("\(url.lastPathComponent):\(number + 1): \(code)")
+                offenders.append("\(url.lastPathComponent):\(number): \(code)")
             }
         }
     }

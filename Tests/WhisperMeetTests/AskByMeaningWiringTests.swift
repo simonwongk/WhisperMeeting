@@ -81,16 +81,13 @@ func meaningSearchFallsBackToKeywords() async throws {
 
 @Test("The Ask view uses the fused search and offers the download with its size (F316)")
 func askViewIsWiredToMeaningSearch() throws {
-    func source(_ path: String) throws -> String {
-        try String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent(path), encoding: .utf8)
-    }
-    let view = try source("Sources/WhisperMeet/ContentView.swift")
+    let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     #expect(view.contains("await model.askMeetingsByMeaning(query: asked, scope: askedScope)"))
     #expect(view.contains("model.installAskEmbeddingModel()"))
     #expect(view.contains("490 MB"))
-    let build = try source("Scripts/build-app.sh")
+    // Read raw, not through the Swift stripper: `build-app.sh` comments with `#`, and running a
+    // `//` stripper over it would be a no-op dressed up as a guard (F375).
+    let build = try String(contentsOf: SourceAssertion.url("Scripts/build-app.sh"), encoding: .utf8)
     #expect(build.contains("embed_local.py") && build.contains("setup-ask-embeddings.sh"))
 }
 

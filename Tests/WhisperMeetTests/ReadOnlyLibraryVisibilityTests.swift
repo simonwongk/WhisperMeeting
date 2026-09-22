@@ -83,13 +83,7 @@ func readOnlyNoticeIsRenderedOutsideTheAlert() throws {
     // on screen saying so. Asserted against `ContentView`'s source with comments stripped
     // (F306's method), because there is no view harness and the model tests above cannot tell a
     // modal from a banner — which is precisely how F194 shipped a modal loop with green tests.
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
-    let source = try String(contentsOf: url, encoding: .utf8)
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
-        .joined(separator: "\n")
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     #expect(source.contains("ReadOnlyLibraryBanner(model: model)"))
     #expect(source.contains("struct ReadOnlyLibraryBanner"))
 }

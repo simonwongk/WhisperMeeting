@@ -416,17 +416,9 @@ func theRebuildOfferIsReachableFromTheView() throws {
     // the view and look. `InstallReclaimTests` set the precedent of asserting against source when
     // the behaviour itself is out of reach. It would have caught this exact regression, which is
     // the bar that matters.
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // WhisperMeetTests
-        .deletingLastPathComponent()   // Tests
-        .deletingLastPathComponent()   // repository root
-        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
-    let source = try String(contentsOf: url, encoding: .utf8)
-        // Comments stripped, so a mention of the name in prose — including the explanation of this
-        // very regression — cannot satisfy the assertion. F285's false positive was exactly that.
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
-        .joined(separator: "\n")
+    // Comments stripped, so a mention of the name in prose — including the explanation of this
+    // very regression — cannot satisfy the assertion. F285's false positive was exactly that.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
 
     #expect(
         source.contains("requestSourceRebuild"),

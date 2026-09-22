@@ -158,13 +158,7 @@ func viewWiresTheFolderRebuild() throws {
     // `WhisperMeet` target has no view harness and the tests above drive the model directly —
     // which is the right way to test it and structurally cannot notice that nothing calls it.
     // This ticket exists because F191 claimed a route that did not exist.
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
-    let source = try String(contentsOf: url, encoding: .utf8)
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
-        .joined(separator: "\n")
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     #expect(source.contains("model.pendingFolderRebuild"))
     #expect(source.contains("model.rebuildLibraryFromFolders(confirmed: true)"))
     #expect(source.contains("model.cancelFolderRebuild()"))

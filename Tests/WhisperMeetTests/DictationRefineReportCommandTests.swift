@@ -91,15 +91,7 @@ func launcherCallsTheReportCommand() throws {
     // Asserted against `AppEntry`'s source, comments stripped — F306's method and its reason: the
     // tests above drive the command directly, which is the right way to test it and structurally
     // cannot notice that nothing calls it.
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // WhisperMeetTests
-        .deletingLastPathComponent()   // Tests
-        .deletingLastPathComponent()   // repository root
-        .appendingPathComponent("Sources/WhisperMeet/AppEntry.swift")
-    let source = try String(contentsOf: url, encoding: .utf8)
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
-        .joined(separator: "\n")
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     #expect(source.contains("DictationRefineReportCommand.logURL(in: CommandLine.arguments)"))
     #expect(source.contains("DictationRefineReportCommand.runAndExit"))
 }
