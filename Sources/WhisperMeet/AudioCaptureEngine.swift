@@ -67,8 +67,25 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         get { captureQueue.sync { _stream } }
         set { captureQueue.sync { _stream = newValue } }
     }
-    private var systemWriter: FloatTrackWriter?
-    private var microphoneWriter: FloatTrackWriter?
+    /// The two track writers, behind `captureQueue` for F334's reason and F365's (F364 did the
+    /// same for `_streamError`/`_streamDied`). The sample handler and
+    /// `applyPendingRestartPaddingIfNeeded` touch them from the capture queue; `start`, `stop`,
+    /// `reset` and `preservePartialTracks` from the MainActor; `restartAfterFailure` from the
+    /// cooperative pool. An unsynchronized load/store of a strong reference can over-release, and
+    /// this one is a `FloatTrackWriter` holding an open descriptor.
+    ///
+    /// **Code already on `captureQueue` must use the `_` storage; a `sync` from the queue
+    /// deadlocks.** Converted site by site for that reason, never by rename.
+    private var _systemWriter: FloatTrackWriter?
+    private var systemWriter: FloatTrackWriter? {
+        get { captureQueue.sync { _systemWriter } }
+        set { captureQueue.sync { _systemWriter = newValue } }
+    }
+    private var _microphoneWriter: FloatTrackWriter?
+    private var microphoneWriter: FloatTrackWriter? {
+        get { captureQueue.sync { _microphoneWriter } }
+        set { captureQueue.sync { _microphoneWriter = newValue } }
+    }
     private var sessionDirectory: URL?
     private var startedAt: Date?
     /// Any capture failure: a stream death, or one buffer failing to convert or write.
@@ -123,7 +140,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     ///
     /// Accumulated here rather than read back from the session sidecar because this is the layer
     /// that does the padding and therefore the only one that knows the frame offset it went in at.
-    private var paddedGaps: [SourceTrackManifest.PaddedGap] = []
+    /// Behind `captureQueue` (F365): appended by the padding on the capture queue and read by
+    /// `stop()` from the MainActor, so a raced `Array` could lose or duplicate a span — F282's end
+    /// state reached through a race instead of through a lost field.
+    private var _paddedGaps: [SourceTrackManifest.PaddedGap] = []
+    private var paddedGaps: [SourceTrackManifest.PaddedGap] {
+        get { captureQueue.sync { _paddedGaps } }
+        set { captureQueue.sync { _paddedGaps = newValue } }
+    }
 
     /// Restarts attempted for the current recording, which `CaptureRestartPolicy` bounds (F275).
     private(set) var restartCount = 0
@@ -373,13 +397,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             let now = ProcessInfo.processInfo.systemUptime
             switch outputType {
             case .audio:
-                if let level = try systemWriter?.append(sampleBuffer) {
+                if let level = try _systemWriter?.append(sampleBuffer) {
                     healthMonitor?.receive(.systemAudio, level: level, at: now)
                     levelMeter.receive(.systemAudio, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
                 }
             case .microphone:
-                if let level = try microphoneWriter?.append(sampleBuffer) {
+                if let level = try _microphoneWriter?.append(sampleBuffer) {
                     healthMonitor?.receive(.microphone, level: level, at: now)
                     levelMeter.receive(.microphone, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
@@ -565,7 +589,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 startedStream = stream
                 try ensureSession(generation)
             }
-            try captureQueue.sync { try applyPendingRestartPaddingIfNeeded() }
+            // The check and the padding in ONE step on the queue (F365). `ensureSession` on the
+            // line before is a check-then-act: a stop landing between it and this `sync` would
+            // pay silence into writers `stop()` is already finishing, and
+            // `FloatTrackFile.swift:150-151` says what that costs — the descriptor may already
+            // have been reused by another open file, so the write lands in an unrelated one.
+            try captureQueue.sync {
+                guard generation == _sessionGeneration else { throw CancellationError() }
+                try applyPendingRestartPaddingIfNeeded()
+            }
         } catch {
             // A stream this restart started is stopped again whatever went wrong after it started:
             // left running, it would capture into writers that are about to be dropped.
@@ -593,6 +625,44 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         Self.logger.info(
             "Recording capture restarted after \(paddingFrames) padded frames (restart \(self.restartCount))"
         )
+    }
+
+    /// Invalidates an in-flight restart so a stop can finalize without racing it (F365).
+    ///
+    /// Stop's bounded wait used to be a fall-through: `waitForCaptureRestartToSettle` returned
+    /// nothing and the caller proceeded either way, so a restart that outlived the 10 s bound ran
+    /// in parallel with `stop()`'s finalize. `restartAfterFailure` exceeds 10 s easily — it awaits
+    /// `SCShareableContent.excludingDesktopWindows`, the call this file logs separately because it
+    /// is slow, and slowest exactly when displays are in flux.
+    ///
+    /// Bumping the generation is what the counter is for: the restart's next `ensureSession`
+    /// throws `CancellationError`, its catch stops any stream it started, and its state-restoring
+    /// `sync` sees a generation that is no longer its own and touches nothing.
+    ///
+    /// `_restartInProgress` is deliberately left set. `stop()` reads it to decide `captureHadDied`,
+    /// and a capture whose restart was abandoned did die; clearing it here would send Stop down the
+    /// "finishing failure" path instead of the normal finalize.
+    ///
+    /// Returns whether there was a restart to abandon, so the caller can say so rather than guess.
+    @discardableResult
+    func abandonInFlightRestart() -> Bool {
+        let abandoned: Bool = captureQueue.sync {
+            guard _restartInProgress else { return false }
+            _sessionGeneration += 1
+            // Nothing is owed any more: the restart that owed it is cancelled, and paying it would
+            // put silence into a timeline that never had a gap paid for it.
+            pendingRestartPadding = 0
+            return true
+        }
+        // Logged either way. "The wait ran out and there was nothing in flight" is a different
+        // fact from "the wait ran out and a restart was killed", and the first one means the
+        // bound is mistuned rather than that a restart hung.
+        if abandoned {
+            Self.logger.error("Stop's restart wait ran out; the in-flight capture restart was cancelled.")
+        } else {
+            Self.logger.info("Stop's restart wait ran out, but no restart was in flight.")
+        }
+        return abandoned
     }
 
     /// Throws `CancellationError` when a stop or cancel has reset the engine since `generation`.
@@ -654,10 +724,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // Recorded before the padding goes in, so `startSeconds` is where the gap begins. The
         // system track's count is the reference; both tracks get the same amount, which is what
         // keeps them aligned with each other.
-        let framesBeforePadding = systemWriter?.frameCount ?? 0
-        try systemWriter?.appendSilence(frames: frames)
-        try microphoneWriter?.appendSilence(frames: frames)
-        paddedGaps.append(
+        let framesBeforePadding = _systemWriter?.frameCount ?? 0
+        try _systemWriter?.appendSilence(frames: frames)
+        try _microphoneWriter?.appendSilence(frames: frames)
+        _paddedGaps.append(
             SourceTrackManifest.PaddedGap(
                 startSeconds: Double(framesBeforePadding) / Self.targetSampleRate,
                 durationSeconds: Double(frames) / Self.targetSampleRate
@@ -755,9 +825,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             _restartInProgress = false
             _sessionGeneration += 1
             pendingRestartPadding = 0
+            // F365: inside, where this block's own comment always said they belonged. Nilling a
+            // writer outside the sync is the over-release the accessors exist to prevent, and it
+            // raced `applyPendingRestartPaddingIfNeeded` on the capture queue.
+            _systemWriter = nil
+            _microphoneWriter = nil
+            _paddedGaps = []
         }
-        systemWriter = nil
-        microphoneWriter = nil
         sessionDirectory = nil
         startedAt = nil
         healthMonitor = nil
@@ -770,7 +844,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // times", so carrying the count into the next recording would make a Mac that lost one
         // capture refuse to retry the following one.
         restartCount = 0
-        paddedGaps = []
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }

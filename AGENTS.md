@@ -123,9 +123,30 @@ owner-independent definition of done.
 
 IDs are `F<n>`, continuing the finding-ID series already used in commits and `docs/CHANGELOG.md`.
 **F1–F23 are consumed** by earlier review rounds (they predate the board and were never persisted —
-their outcomes live in `CHANGELOG.md`). When you file a ticket, take the next free ID from the
-**Next free ID** line at the top of `docs/TICKETS.md` and bump that line in the same commit. If
-another agent raced you to an ID, take the next free one and move on.
+their outcomes live in `CHANGELOG.md`).
+
+**Allocate with `Scripts/allocate-ticket-id.sh`, never by reading a number (F378).** It prints the
+next free ID and reserves it with `mkdir docs/.ticket-ids/F<n>` — one atomic filesystem operation
+that fails if the directory exists, so of two sessions racing for the same number exactly one
+wins. Pass `--count N` for a batch.
+
+```bash
+Scripts/allocate-ticket-id.sh            # prints e.g. F390, and reserves it
+Scripts/allocate-ticket-id.sh --count 3
+```
+
+This replaces "take the next free ID from the **Next free ID** line". That line is still
+maintained as a human-readable hint and the dashboard still validates it, but it is **not** an
+allocator and reading it more carefully cannot make it one: on 2026-09-21 two sessions filed two
+different tickets as **F356** twenty minutes apart, and both had read the same line and both were
+right about what it said. There was no last saver to blame — a lost update is a different failure
+from two correct reads of a correct value. Deriving the number by scanning `### F<n>` in both
+files does not help either, because two concurrent scanners derive the same answer.
+
+The reservation is a marker, not a ticket: it says the number is spoken for, and the board entry
+follows. Reservations are never released — releasing one reintroduces the reuse this prevents,
+and an empty directory costs nothing. `docs/.ticket-ids/` is local-only agent state like the board
+itself.
 
 | Status | Meaning |
 |---|---|

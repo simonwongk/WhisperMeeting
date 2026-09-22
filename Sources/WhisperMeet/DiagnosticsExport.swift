@@ -11,6 +11,7 @@ enum DiagnosticsExport {
     static func input(
         meetings: [MeetingRecord],
         vocabulary: [String],
+        crashReports: [CrashReportRecord] = [],
         recordingBytes: (MeetingRecord) -> Int64?
     ) -> DiagnosticsInput {
         let mapped = meetings.map { meeting in
@@ -35,6 +36,6 @@ enum DiagnosticsExport {
                 }
             )
         }
-        return DiagnosticsInput(meetings: mapped, vocabulary: vocabulary)
+        return DiagnosticsInput(meetings: mapped, vocabulary: vocabulary, crashReports: crashReports)
     }
 }

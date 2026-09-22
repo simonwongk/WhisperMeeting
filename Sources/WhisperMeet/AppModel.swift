@@ -269,6 +269,49 @@ final class AppModel: ObservableObject {
     /// Holds the `storageErrorMessage` subscription for the app's lifetime (F257).
     private var storageErrorObserver: AnyCancellable?
 
+    /// Crash reports macOS wrote since a given instant (F370).
+    ///
+    /// Injected so a test points at a fixture directory rather than at the user's own
+    /// `~/Library/Logs/DiagnosticReports`, which a test must never read: it is real crash data
+    /// about real applications, and the F70 rule against touching a user's own files covers it as
+    /// much as it covers their meetings.
+    var crashReportsSince: @Sendable (Date) -> [CrashReportRecord] = { since in
+        CrashReportInventory.reports(in: CrashReportInventory.defaultDirectory(), newerThan: since)
+    }
+
+    /// Notices a crash that happened while the app was not running, and says so once (F370).
+    ///
+    /// Before this, the app could crash and nobody found out: macOS wrote two `WhisperMeet-*.ips`
+    /// files for F356 and nothing ever looked at them, so the bug ran in the field for months and
+    /// was diagnosed only because the user pasted a report by hand.
+    ///
+    /// The launch stamp is written **whatever** the sweep found, including when it found nothing
+    /// and when reading the directory failed. A stamp written only on success would re-report the
+    /// same crash on every launch until one succeeded.
+    func reportCrashesSinceLastLaunch(now: Date = Date()) {
+        let previous = defaults.object(forKey: Self.lastLaunchKey) as? Double
+        // The stamp is written FIRST and unconditionally, including on the branch below that
+        // reports nothing. A stamp written only on success would re-report the same crash on
+        // every launch until one sweep succeeded.
+        defaults.set(now.timeIntervalSince1970, forKey: Self.lastLaunchKey)
+        // **A first launch is silent, and that is a decision rather than an oversight.** With no
+        // stamp there is no "since", so the only honest sweep is the whole directory — every
+        // crash the Mac still has on disk, from builds that predate this feature, announced as
+        // though it had just happened. That is noise, not news, and it would make the notice the
+        // kind a user learns to dismiss.
+        //
+        // It also makes the behaviour depend on the machine: every test that builds an `AppModel`
+        // does so on a fresh `UserDefaults` suite, so each of them would read the user's real
+        // `~/Library/Logs/DiagnosticReports` and pass or fail according to what was in it. There
+        // happen to be zero WhisperMeet reports there today, which is luck, not a property.
+        guard let previous else { return }
+        let reports = crashReportsSince(Date(timeIntervalSince1970: previous))
+        guard let notice = CrashReportInventory.notice(for: reports) else { return }
+        // Through `report(_:)`, not `alertMessage`: a crash noticed at launch is exactly the kind
+        // of message F257 established must reach a user with no window open.
+        report(notice)
+    }
+
     /// Tells the user something, wherever they can be reached (F257).
     ///
     /// With a window, this is the alert it always was. Without one, it also posts a notification —
@@ -414,6 +457,9 @@ final class AppModel: ObservableObject {
     @Published var linkImportEnabled: Bool {
         didSet { defaults.set(linkImportEnabled, forKey: Self.linkImportEnabledKey) }
     }
+    /// When this app last launched, so a crash report written since then can be noticed exactly
+    /// once (F370). Epoch seconds; absent before the first launch that shipped this.
+    static let lastLaunchKey = "lastLaunchAtEpoch"
     static let linkImportEnabledKey = "linkImportEnabled"
 
     // MARK: - Watched folder (F318)
@@ -1999,6 +2045,9 @@ final class AppModel: ObservableObject {
         // F257: idempotent, and started here because this is the one method that runs once per
         // launch regardless of window state now that `AppLifecycle` owns the call.
         observeStorageErrors()
+        // F370. Before the runtime reclaims below, because those can take seconds and a crash the
+        // user has not been told about should not queue behind an installer self-heal.
+        reportCrashesSinceLastLaunch()
         // Self-heal an interrupted Qwen install *before* refreshing runtime state, so a runtime that a
         // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
         // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
@@ -2733,8 +2782,9 @@ final class AppModel: ObservableObject {
         // exit branch, because every path out of this function ends the recording.
         stopObservingSystemSleep()
         recordingState = .stopping
-        // F292: `.stopping` first, so no new restart starts; then let one already running finish.
-        await waitForCaptureRestartToSettle()
+        // F292: `.stopping` first, so no new restart starts; then let one already running finish
+        // — or cancel it if it will not (F365).
+        await settleCaptureRestartBeforeTeardown()
         let directory = store.recordingDirectoryURL(for: id)
         do {
             let artifact = try await recorder.stop()
@@ -2884,9 +2934,9 @@ final class AppModel: ObservableObject {
         // can't race/corrupt a simultaneous Stop (F139).
         guard canCancelRecording else { return }
         // F292: out of `.recording` first, so no health tick starts a restart while the engine is
-        // being cancelled; then let a restart already running finish.
+        // being cancelled; then let a restart already running finish — or cancel it (F365).
         recordingState = .stopping
-        await waitForCaptureRestartToSettle()
+        await settleCaptureRestartBeforeTeardown()
         stopObservingSystemSleep()   // F253
         // Before the engine removes the folder, so nothing is held on a directory being deleted
         // (F297).
@@ -3120,12 +3170,47 @@ final class AppModel: ObservableObject {
     /// (F292). The engine has no lock; a stop landing inside a restart could tear down the new
     /// stream's writers under it, or leave a freshly started stream running with nothing to stop
     /// it. Bounded, so a restart that hangs cannot hold a Stop hostage.
-    private func waitForCaptureRestartToSettle() async {
+    ///
+    /// **Returns whether it settled, and the caller must act on it (F365.)** This used to return
+    /// nothing: both callers proceeded to `stop()`/`cancel()` either way, so the bound was a
+    /// fall-through rather than a decision and nothing recorded that it had run out. AGENTS.md's
+    /// rule is require the precondition or remove it; `settleAbandoningRestart()` below is the
+    /// requiring half.
+    private func waitForCaptureRestartToSettle() async -> Bool {
         var waited = 0
-        while isRestartingCapture, waited < 200 {
+        while isRestartingCapture, waited < captureRestartSettleTicks {
             try? await Task.sleep(for: .milliseconds(50))
             waited += 1
         }
+        return !isRestartingCapture
+    }
+
+    /// 50 ms ticks. 200 → 10 s.
+    private var captureRestartSettleTicks: Int {
+        #if DEBUG
+        return captureRestartSettleTicksForTesting ?? 200
+        #else
+        return 200
+        #endif
+    }
+
+    #if DEBUG
+    /// Test seam (F365): the bound, shortened so the expiry can be driven without a ten-second
+    /// test. Nothing in the app assigns it.
+    var captureRestartSettleTicksForTesting: Int?
+    #endif
+
+    /// Waits for a restart, and cancels it if it will not settle (F365).
+    ///
+    /// The deferred branch, not the destructive one: bumping the engine's session generation makes
+    /// the restart's next `ensureSession` throw, so it stops any stream it started and touches no
+    /// state that is no longer its. Without this, Stop's finalize ran in parallel with a restart
+    /// that was still writing — an unsynchronized `FloatTrackWriter` reference, a descriptor
+    /// `finish()` had already closed, and a `paddedGaps` array two threads were appending to.
+    private func settleCaptureRestartBeforeTeardown() async {
+        guard await !waitForCaptureRestartToSettle() else { return }
+        // The engine logs it — it owns the state and already has the logger this file does not.
+        recorder.abandonInFlightRestart()
     }
 
     /// Marks the capture as alive now, so a later failure can measure how long it was dead (F275).
@@ -4571,6 +4656,12 @@ final class AppModel: ObservableObject {
             // Diagnostics report what is actually stored (a count, never the terms), so this is the
             // full list — the prompt-capped view would understate the library (F187).
             vocabulary: store.vocabulary,
+            // F370: everything macOS has written for this app, not just what this launch noticed.
+            // A user exporting diagnostics is answering "what went wrong", and the crash from two
+            // launches ago is part of the answer.
+            crashReports: CrashReportInventory.reports(
+                in: CrashReportInventory.defaultDirectory(), newerThan: nil
+            ),
             recordingBytes: { meeting in
                 let path = store.recordingURL(for: meeting).path
                 let size = try? FileManager.default.attributesOfItem(atPath: path)[.size]

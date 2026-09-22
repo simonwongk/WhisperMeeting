@@ -18,6 +18,9 @@ docs/TICKETS.md
 docs/TICKET_LOG.md
 Scripts/generate-tickets-dashboard.py
 Scripts/tests/test_generate_tickets_dashboard.py
+docs/.ticket-ids/
+Scripts/allocate-ticket-id.sh
+Scripts/tests/test_allocate_ticket_id.py
 
 # Generated diarization fixtures — regenerable from manifest.json, verified by manifest.lock.json
 Scripts/bench/diarization/out/

@@ -39,10 +39,18 @@ public struct DiagnosticsInput: Sendable {
 
     public let meetings: [Meeting]
     public let vocabulary: [String] // count only is emitted, never the terms
+    /// Crash reports macOS wrote for this app (F370). Names and timestamps only — an `.ips` is
+    /// full of absolute paths and this bundle promises to carry none.
+    public let crashReports: [CrashReportRecord]
 
-    public init(meetings: [Meeting], vocabulary: [String]) {
+    public init(
+        meetings: [Meeting],
+        vocabulary: [String],
+        crashReports: [CrashReportRecord] = []
+    ) {
         self.meetings = meetings
         self.vocabulary = vocabulary
+        self.crashReports = crashReports
     }
 }
 
@@ -91,11 +99,24 @@ public enum DiagnosticsBundleBuilder {
                 "errorMessage": errorMessage,
             ]
         }
-        let payload: [String: Any] = [
+        // F370: the bundle used to contain nothing about crashes at all, so the one artifact a
+        // support question needs was the one thing it could not carry. Names and epochs only —
+        // quoting an `.ips` would put absolute paths into a bundle whose whole guarantee is that
+        // it has none (F70) — plus the command that recovers the exception reason the report
+        // itself does not have.
+        let crashReports: [[String: Any]] = input.crashReports.map { report in
+            ["name": report.fileName, "writtenAt": Int(saturating: report.writtenAt.timeIntervalSince1970)]
+        }
+        var payload: [String: Any] = [
             "meetingCount": input.meetings.count,
             "vocabularyTermCount": input.vocabulary.count,
             "meetings": meetings,
+            "crashReportCount": input.crashReports.count,
+            "crashReports": crashReports,
         ]
+        if let oldest = input.crashReports.last {
+            payload["crashLogCommand"] = CrashReportInventory.logShowCommand(since: oldest.writtenAt)
+        }
         guard let data = try? JSONSerialization.data(
             withJSONObject: payload,
             options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
