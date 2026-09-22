@@ -207,3 +207,41 @@ func unsurfacedErrorsAreDeclaredInCode() throws {
     }
     #expect(Set(silent) == ["Problem", "ImportRefusal"], "\(silent)")
 }
+
+// MARK: - F391, reported by whisper-9d and confirmed here
+
+@Test("A diagnostic never carries an absolute path into a public log line (F391)")
+func diagnosticsAreRedacted() {
+    // Reported from a read-only review of `f9e3a79..f3b2e45`, and it is my own regression from
+    // F366. `diagnostic(for:)` returns `String(describing: error)` for anything conforming to
+    // `LocalizedError`, and `LocalWhisperError.processFailed(String)` carries the helper
+    // subprocess's raw stderr — a Python traceback, full of absolute paths — which
+    // `DictationController.swift:832` then interpolates at `privacy: .public`.
+    //
+    // F154 exists to stop exactly that, and `publicLogDescription` is on the same line doing its
+    // job while the call I added walks around it.
+    let helperFailure = LocalWhisperError.processFailed(
+        "Traceback (most recent call last):\n  File \"/Users/someone/Library/Application Support/whisper/run.py\", line 42"
+    )
+    let diagnostic = ErrorPresentation.diagnostic(for: helperFailure)
+    #expect(!diagnostic.contains("/Users/"), "\(diagnostic)")
+    #expect(!diagnostic.contains("Application Support"), "\(diagnostic)")
+    #expect(diagnostic.contains("<path>"), "the redaction marker must survive: \(diagnostic)")
+    // The case name is the useful part and must not be redacted away with the path.
+    #expect(diagnostic.contains("processFailed"), "\(diagnostic)")
+
+    // A framework NSError still reports its domain and code, which carry nothing private and are
+    // the whole point of the function for that class.
+    let avfaudio = NSError(domain: "com.apple.coreaudio.avfaudio", code: -10_851)
+    #expect(ErrorPresentation.diagnostic(for: avfaudio).contains("-10851"))
+}
+
+@Test("Redaction happens inside the helper, not at its call sites (F391)")
+func redactionIsNotLeftToCallers() throws {
+    // Four sites call `diagnostic(for:)` today. Redacting at each one is how the fifth caller
+    // reintroduces this, so the guarantee lives in the function.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperCore/ErrorPresentation.swift")
+    let body = try #require(source.range(of: "static func diagnostic(for error: any Error) -> String {"))
+    let window = source[body.lowerBound...].prefix(600)
+    #expect(window.contains("redactPaths"), "\(window)")
+}

@@ -50,18 +50,33 @@ public enum ErrorPresentation {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The raw text for a log: domain and code for an `NSError`, the Swift description otherwise.
+    /// The specific text for a log: domain and code for an `NSError`, the case name and its
+    /// associated values otherwise — **path-redacted, always** (F391).
     ///
-    /// Never shown to a user and never truncated. `DiagnosticsBundleBuilder.publicLogDescription`
-    /// is the redacting counterpart for anything that may carry a path; this one is for errors that
-    /// carry a numeric code and nothing private.
+    /// Never shown to a user and never truncated.
+    ///
+    /// **The redaction is the correction of a claim this comment used to make.** It said the
+    /// function was "for errors that carry a numeric code and nothing private", which is false:
+    /// `LocalWhisperError.processFailed(String)` and `QwenASRError` carry the helper subprocess's
+    /// raw stderr — a Python traceback, full of absolute paths — and
+    /// `DictationController.swift:832` interpolates this at `privacy: .public`. F154 exists to
+    /// stop precisely that, and `publicLogDescription` was on the same line doing its job while
+    /// this call walked around it. The sentence was wrong the moment it was written, and it is
+    /// what made the call look safe to write at four sites.
+    ///
+    /// Redacting here rather than at each call site is deliberate: the fifth caller is how this
+    /// comes back.
     public static func diagnostic(for error: any Error) -> String {
         // `String(describing:)` on one of this repo's enums gives the case name and its associated
         // values, which is the most specific thing available. On a framework `NSError` it gives a
         // long dump whose useful part is the domain and the code, so take those directly.
-        if error is any LocalizedError { return String(describing: error) }
+        if error is any LocalizedError {
+            return DiagnosticsBundleBuilder.redactPaths(String(describing: error))
+        }
         let bridged = error as NSError
-        return "\(bridged.domain) \(bridged.code)"
+        // Redacted too. A domain is not a path today, and nothing guarantees the next framework
+        // agrees — this costs one regex over a short string on an error path.
+        return DiagnosticsBundleBuilder.redactPaths("\(bridged.domain) \(bridged.code)")
     }
 }
 

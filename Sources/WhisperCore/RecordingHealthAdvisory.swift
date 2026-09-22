@@ -22,6 +22,7 @@ public enum RecordingHealthAdvisory {
                 subject: "The microphone",
                 measured: report.microphoneFramesMeasured,
                 atFullScale: report.microphoneFramesAtFullScale,
+                worstSecond: report.microphoneWorstSecond,
                 sustainedTail: " Move the microphone further away or lower its input level."
             ))
         }
@@ -30,6 +31,7 @@ public enum RecordingHealthAdvisory {
                 subject: "System audio",
                 measured: report.systemAudioFramesMeasured,
                 atFullScale: report.systemAudioFramesAtFullScale,
+                worstSecond: report.systemAudioWorstSecond,
                 // No action. Nothing here establishes that changing a source app's own volume
                 // changes what the capture receives, and the live surfaces make the same
                 // distinction — the microphone gets an instruction, system audio does not.
@@ -69,10 +71,21 @@ public enum RecordingHealthAdvisory {
     ///
     /// The `nil` band is every report written before F346 — and it deliberately does not keep the
     /// old wording, because the old wording is what is being removed.
+    ///
+    /// **The locator, added by F379.** The fraction above answers "how much of this recording
+    /// clipped". It is the right answer for the case F346 was filed about — 139 full-scale samples
+    /// in 14.4 million — and the wrong one for eight seconds of genuine clipping inside five
+    /// minutes, which reads 0.09% and lands in the band that calls it "a small share". Eight
+    /// seconds of flat-topped audio is not a small share of anything a listener cares about.
+    ///
+    /// So the worst second is reported *alongside* the total rather than instead of it, and only
+    /// when it actually disagrees with it. F346 measured a longest-run figure and rejected it as a
+    /// **severity** proxy; this uses it as a **locator**, which is the use that ticket left open.
     static func clippingNote(
         subject: String,
         measured: Int?,
         atFullScale: Int?,
+        worstSecond: ClippedSecond? = nil,
         sustainedTail: String
     ) -> String {
         guard let measured, let atFullScale, measured > 0, atFullScale <= measured else {
@@ -84,20 +97,36 @@ public enum RecordingHealthAdvisory {
                 + "\(grouped(measured)) samples reached it, so nothing was clipped."
         }
         let fraction = Double(atFullScale) / Double(measured)
+        let burst = concentrationClause(overall: fraction, worstSecond: worstSecond)
         if fraction < 0.0001 {
             let oneIn = Int(saturating: (1 / fraction).rounded())
             return "\(subject) reached full scale on \(grouped(atFullScale)) of "
                 + "\(grouped(measured)) samples — about 1 in \(grouped(oneIn)). "
-                + "That is far too few to be a level problem."
+                + (burst.isEmpty ? "That is far too few to be a level problem." : burst.trimmingCharacters(in: .whitespaces))
         }
         if fraction < 0.01 {
             return "\(subject) reached full scale on \(grouped(atFullScale)) of "
                 + "\(grouped(measured)) samples (\(percent(fraction))) — a small share of the "
-                + "recording, but enough that some of it may be distorted."
+                + "recording, but enough that some of it may be distorted." + burst
         }
         return "\(subject) was at full scale for \(grouped(atFullScale)) of "
             + "\(grouped(measured)) samples (\(percent(fraction))). The waveform is flat-topped "
-            + "there and will sound distorted." + sustainedTail
+            + "there and will sound distorted." + burst + sustainedTail
+    }
+
+    /// " The worst second of it was N% at full scale, so the distortion is in one stretch rather
+    /// than spread out." — or nothing at all.
+    ///
+    /// Two conditions, and both are needed. The worst second must be **substantially** clipped
+    /// (≥1%), or a second holding three stray frames would be announced; and it must be **at least
+    /// ten times** the overall fraction, or evenly-spread clipping would say "concentrated" about
+    /// itself, since its worst second matches its average by definition. Together they are what
+    /// makes the same total count produce different sentences depending on where it sits.
+    private static func concentrationClause(overall: Double, worstSecond: ClippedSecond?) -> String {
+        guard let worstSecond, let peak = worstSecond.fraction else { return "" }
+        guard peak >= 0.01, peak >= overall * 10 else { return "" }
+        return " The worst second of it was \(percent(peak)) at full scale, so the distortion is "
+            + "concentrated in one stretch rather than spread across the recording."
     }
 
     private static func grouped(_ value: Int) -> String {

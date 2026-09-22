@@ -159,6 +159,14 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
     public let microphoneFramesAtFullScale: Int?
     public let systemAudioFramesMeasured: Int?
     public let systemAudioFramesAtFullScale: Int?
+    /// The worst single second of each channel (F379).
+    ///
+    /// The whole-recording fraction F346 introduced answers "how much of this recording clipped".
+    /// The listener's question is closer to "is there a stretch I cannot use", and a global
+    /// denominator cannot express that: eight seconds of genuine clipping in a five-minute
+    /// recording reads 0.09%, which lands in the band that says "a small share".
+    public let microphoneWorstSecond: ClippedSecond?
+    public let systemAudioWorstSecond: ClippedSecond?
 
     public init(
         warnings: Set<RecordingHealthWarning>,
@@ -169,12 +177,16 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
         microphoneFramesMeasured: Int? = nil,
         microphoneFramesAtFullScale: Int? = nil,
         systemAudioFramesMeasured: Int? = nil,
-        systemAudioFramesAtFullScale: Int? = nil
+        systemAudioFramesAtFullScale: Int? = nil,
+        microphoneWorstSecond: ClippedSecond? = nil,
+        systemAudioWorstSecond: ClippedSecond? = nil
     ) {
         self.microphoneFramesMeasured = microphoneFramesMeasured
         self.microphoneFramesAtFullScale = microphoneFramesAtFullScale
         self.systemAudioFramesMeasured = systemAudioFramesMeasured
         self.systemAudioFramesAtFullScale = systemAudioFramesAtFullScale
+        self.microphoneWorstSecond = microphoneWorstSecond
+        self.systemAudioWorstSecond = systemAudioWorstSecond
         self.warnings = warnings
         self.worstStatus = worstStatus
         self.microphoneStaleSeconds = microphoneStaleSeconds
@@ -219,6 +231,27 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
         microphoneFramesAtFullScale = try? container.decodeIfPresent(Int.self, forKey: .microphoneFramesAtFullScale)
         systemAudioFramesMeasured = try? container.decodeIfPresent(Int.self, forKey: .systemAudioFramesMeasured)
         systemAudioFramesAtFullScale = try? container.decodeIfPresent(Int.self, forKey: .systemAudioFramesAtFullScale)
+        // Same leniency, same reason (F379): absent in every report written before today.
+        microphoneWorstSecond = try? container.decodeIfPresent(ClippedSecond.self, forKey: .microphoneWorstSecond)
+        systemAudioWorstSecond = try? container.decodeIfPresent(ClippedSecond.self, forKey: .systemAudioWorstSecond)
+    }
+}
+
+/// One second of a channel, as measured (F379).
+public struct ClippedSecond: Codable, Sendable, Equatable {
+    public let framesMeasured: Int
+    public let framesAtFullScale: Int
+
+    public init(framesMeasured: Int, framesAtFullScale: Int) {
+        self.framesMeasured = framesMeasured
+        self.framesAtFullScale = framesAtFullScale
+    }
+
+    /// Nil rather than zero when nothing was measured, so a caller cannot divide by an empty
+    /// second and read the result as "clean".
+    public var fraction: Double? {
+        guard framesMeasured > 0 else { return nil }
+        return Double(framesAtFullScale) / Double(framesMeasured)
     }
 }
 
@@ -241,9 +274,49 @@ public final class RecordingHealthMonitor {
         /// unmeasured buffers reports the measured ones rather than a silent undercount of both.
         var framesMeasured: Int?
         var framesAtFullScale: Int?
+        /// The one-second bucket being filled, and the worst one finished so far (F379).
+        ///
+        /// A whole-recording fraction cannot express "there is a stretch I cannot use": eight
+        /// seconds of genuine clipping inside a five-minute recording is 0.09% overall, which
+        /// lands in the band that says "a small share". Eight seconds of flat-topped audio is not
+        /// a small share of anything a listener cares about. One-second buckets are the smallest
+        /// window that survives a buffer-size change without becoming noise.
+        var currentSecond: Int?
+        var currentSecondMeasured = 0
+        var currentSecondAtFullScale = 0
+        var worstSecondMeasured: Int?
+        var worstSecondAtFullScale: Int?
+
+        /// Closes the open bucket, keeping it if it is the worst seen. Chosen by COUNT, not by
+        /// fraction: at a fixed sample rate the count is how long the clipping lasted, while a
+        /// fraction lets a second that carried three frames outrank a second that was solid.
+        /// The worst finished bucket, or the open one when it is worse — without mutating, so a
+        /// `report()` mid-recording is a read.
+        var worstSecondIncludingOpenBucket: ClippedSecond? {
+            let best: ClippedSecond? = worstSecondAtFullScale.map {
+                ClippedSecond(framesMeasured: worstSecondMeasured ?? 0, framesAtFullScale: $0)
+            }
+            guard currentSecond != nil else { return best }
+            guard currentSecondAtFullScale > (best?.framesAtFullScale ?? -1) else { return best }
+            return ClippedSecond(
+                framesMeasured: currentSecondMeasured, framesAtFullScale: currentSecondAtFullScale
+            )
+        }
+
+        mutating func closeCurrentSecond() {
+            guard currentSecond != nil else { return }
+            if currentSecondAtFullScale > (worstSecondAtFullScale ?? -1) {
+                worstSecondAtFullScale = currentSecondAtFullScale
+                worstSecondMeasured = currentSecondMeasured
+            }
+            currentSecond = nil
+            currentSecondMeasured = 0
+            currentSecondAtFullScale = 0
+        }
     }
 
     private let startedAt: TimeInterval
+
     private let initialGracePeriod: TimeInterval
     private let staleAfter: TimeInterval
     private let systemDetectionGracePeriod: TimeInterval
@@ -351,7 +424,12 @@ public final class RecordingHealthMonitor {
             microphoneFramesMeasured: microphone.framesMeasured,
             microphoneFramesAtFullScale: microphone.framesAtFullScale,
             systemAudioFramesMeasured: systemAudio.framesMeasured,
-            systemAudioFramesAtFullScale: systemAudio.framesAtFullScale
+            systemAudioFramesAtFullScale: systemAudio.framesAtFullScale,
+            // The open bucket counts too. A recording that ends mid-second — every recording —
+            // would otherwise drop its last second, and the last second is exactly where a user
+            // who stopped because of the noise would have heard it.
+            microphoneWorstSecond: microphone.worstSecondIncludingOpenBucket,
+            systemAudioWorstSecond: systemAudio.worstSecondIncludingOpenBucket
         )
     }
 
@@ -380,6 +458,15 @@ public final class RecordingHealthMonitor {
         if let measured = level.framesMeasured, let atFullScale = level.framesAtFullScale {
             channel.framesMeasured = (channel.framesMeasured ?? 0) + measured
             channel.framesAtFullScale = (channel.framesAtFullScale ?? 0) + atFullScale
+            // F379. `Int(saturating:)` because `time` is a `systemUptime` a caller supplies and
+            // `Int(Double)` traps; the bucket index only has to be stable, not meaningful.
+            let second = Int(saturating: time.rounded(.down))
+            if channel.currentSecond != second {
+                channel.closeCurrentSecond()
+                channel.currentSecond = second
+            }
+            channel.currentSecondMeasured += measured
+            channel.currentSecondAtFullScale += atFullScale
         }
     }
 }
