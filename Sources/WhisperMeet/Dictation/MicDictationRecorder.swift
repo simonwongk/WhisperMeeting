@@ -22,10 +22,28 @@ protocol DictationRecording: AnyObject {
 /// discipline `AudioCaptureEngine` already uses, and since F356 it also mirrors the rule that
 /// matters more: the capture format is read from each buffer, never pinned ahead of the tap.
 final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
-    enum RecorderError: Error {
+    /// `LocalizedError`, like every other error type in both targets (F366). Without it the
+    /// Swift-to-NSError bridge answers `localizedDescription` with "The operation couldn't be
+    /// completed. (WhisperMeet.MicDictationRecorder.RecorderError error 0.)" — and that string was
+    /// used verbatim as the dictation overlay's copy and persisted into `dictation-log.json`, so
+    /// the app's own diagnostics recorded a case index instead of what went wrong.
+    enum RecorderError: LocalizedError {
         case audioFormatUnavailable
         case notRecording
         case noAudioCaptured
+
+        var errorDescription: String? {
+            switch self {
+            case .audioFormatUnavailable:
+                // The device-change class F356 and F357 are about. Says what to check, because
+                // "unavailable" on its own leaves the user with nothing to do.
+                return "No microphone was available. Check that an input device is connected and selected in System Settings › Sound."
+            case .notRecording:
+                return "Dictation was not recording, so there was nothing to finish."
+            case .noAudioCaptured:
+                return "No audio was captured."
+            }
+        }
     }
 
     private let engine = AVAudioEngine()

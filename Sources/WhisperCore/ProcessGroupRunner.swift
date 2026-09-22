@@ -1,10 +1,20 @@
 import Foundation
 
-public enum ProcessGroupRunnerError: Error, Equatable {
+public enum ProcessGroupRunnerError: LocalizedError, Equatable {
     /// `posix_spawn` itself failed (bad path, permissions); carries its errno.
     case spawnFailed(Int32)
     /// No output for longer than the stall timeout — the tree was killed.
     case stalled(TimeInterval)
+
+    public var errorDescription: String? {
+        switch self {
+        case .spawnFailed(let code):
+            let reason = String(cString: strerror(code))
+            return "The downloader could not be started: \(reason) (errno \(code))."
+        case .stalled(let seconds):
+            return "The download stopped responding for \(Int(seconds.rounded())) seconds and was cancelled."
+        }
+    }
 }
 
 /// Runs a child process **in its own process group**, streaming its merged stdout+stderr, so that

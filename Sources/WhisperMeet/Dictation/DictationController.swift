@@ -651,9 +651,19 @@ final class DictationController: ObservableObject {
             log.notice("listening")
             return true
         } catch {
-            _ = session.handle(.engineFailed(error.localizedDescription))
+            // F366: `error.localizedDescription` is the bridge's case-index sentence for anything
+            // without copy of its own — `RecorderError` before it conformed, and every `NSError`
+            // AVFAudio throws from `engine.start()` ("com.apple.coreaudio.avfaudio error -10851"),
+            // which no conformance here can fix. The person sees a sentence; the code goes to the
+            // diagnostic log, where the support question that follows will want it.
+            let sentence = ErrorPresentation.sentence(
+                for: error,
+                fallback: "The microphone could not be started. Check that an input device is connected and selected in System Settings › Sound."
+            )
+            log.error("capture failed: \(ErrorPresentation.diagnostic(for: error), privacy: .public)")
+            _ = session.handle(.engineFailed(sentence))
             hotkeyMonitor.resetToggleState() // capture never began — never leave toggle latched "on" (F38)
-            fail(error.localizedDescription)
+            fail(sentence)
             return false
         }
     }
@@ -772,11 +782,18 @@ final class DictationController: ObservableObject {
                 }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
-                log.error("transcription failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
+                // Raw here, sentence below (F366). `publicLogDescription` redacts paths, which a
+                // transcription error can carry; `ErrorPresentation.diagnostic` adds the domain and
+                // code for a framework error that carries neither a path nor any English.
+                log.error("transcription failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public) [\(ErrorPresentation.diagnostic(for: error), privacy: .public)]")
+                let sentence = ErrorPresentation.sentence(
+                    for: error,
+                    fallback: "The transcription could not be completed."
+                )
                 await MainActor.run {
                     guard self.enabled else { return }
-                    _ = self.session.handle(.engineFailed(error.localizedDescription))
-                    self.fail(error.localizedDescription)
+                    _ = self.session.handle(.engineFailed(sentence))
+                    self.fail(sentence)
                 }
             }
         }
@@ -940,7 +957,7 @@ final class DictationController: ObservableObject {
                 _ = try await engine.transcribe(wavAt: url, language: .automatic, initialPrompt: nil)
                 message = "✓ \(engineName) responded — dictation pipeline is working."
             } catch {
-                message = "✗ \(error.localizedDescription)"
+                message = "✗ \(ErrorPresentation.sentence(for: error, fallback: "\(engineName) did not respond."))"
             }
             try? FileManager.default.removeItem(at: url)
             await MainActor.run {

@@ -14,9 +14,16 @@ public struct FloatTrack: Equatable, Sendable {
     }
 }
 
-public enum FloatTrackMixError: Error, Equatable {
+public enum FloatTrackMixError: LocalizedError, Equatable {
     /// Neither track ever received a buffer, so there is no timeline to mix onto.
     case noAudioCaptured
+
+    public var errorDescription: String? {
+        switch self {
+        case .noAudioCaptured:
+            return "No audio was captured on either track, so there was nothing to rebuild."
+        }
+    }
 }
 
 /// Mixes the microphone and system-audio tracks into the `meeting.wav` a recording is played and

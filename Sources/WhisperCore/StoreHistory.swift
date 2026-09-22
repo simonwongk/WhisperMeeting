@@ -1,8 +1,15 @@
 import Foundation
 
-public enum StoreHistoryError: Error, Sendable, Equatable {
+public enum StoreHistoryError: LocalizedError, Sendable, Equatable {
     /// The file's bytes no longer fingerprint to the value in its own name.
     case fingerprintMismatch(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .fingerprintMismatch(let name):
+            return "The saved copy \"\(name)\" does not match its own checksum, so it was not restored."
+        }
+    }
 }
 
 /// How much history to keep, counted in content and time — never in saves (F190).

@@ -3513,7 +3513,9 @@ final class AppModel: ObservableObject {
     /// on the queue (F321). `permanent` means the importer judged the file itself — and the file is
     /// then left to the inbox, which offers it again if and when it changes. Re-queueing those would
     /// re-copy a broken file every three seconds forever.
-    enum ImportRefusal: Error, Equatable {
+    /// `UnsurfacedError`: a `Result` discriminator that decides re-queueing, never copy — every
+    /// site that refuses has already set `alertMessage` with a sentence of its own (F366).
+    enum ImportRefusal: UnsurfacedError, Equatable {
         case retryable
         case permanent
     }

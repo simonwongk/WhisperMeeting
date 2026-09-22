@@ -18,7 +18,9 @@ final class WatchedFolderMonitor {
     /// span silently every three seconds for the life of the process with the feature visibly on in
     /// Settings. The app is not sandboxed, so `NSOpenPanel` confers no persistent access to a
     /// TCC-protected location: declining one prompt is enough to reach this.
-    enum Problem: Error, Sendable, Equatable {
+    /// `UnsurfacedError`: `onLook` receives this and decides what to say; the value itself is
+    /// never rendered (F366).
+    enum Problem: UnsurfacedError, Sendable, Equatable {
         case missing
         case unreadable
     }

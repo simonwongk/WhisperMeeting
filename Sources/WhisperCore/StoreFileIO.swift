@@ -51,9 +51,21 @@ public enum StoreWritePhase: String, Sendable, CaseIterable, Codable {
     case prune
 }
 
-public enum StoreIOError: Error, Sendable, Equatable {
+public enum StoreIOError: LocalizedError, Sendable, Equatable {
     case destinationExists(String)
     case posix(operation: String, path: String, code: Int32)
+
+    public var errorDescription: String? {
+        switch self {
+        case .destinationExists(let path):
+            return "A file already exists at \(path), so nothing was written."
+        case .posix(let operation, let path, let code):
+            // `strerror` rather than the number alone: "No space left on device" is the whole
+            // answer to the support question that a bare 28 only starts.
+            let reason = String(cString: strerror(code))
+            return "Could not \(operation) \(path): \(reason) (errno \(code))."
+        }
+    }
 }
 
 /// The filesystem, as a value (F190). Defaults are the real Foundation/POSIX calls; a test

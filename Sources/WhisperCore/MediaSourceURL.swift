@@ -4,10 +4,21 @@ import Foundation
 /// subprocess (F183). Framework-free and exhaustively unit-tested, because the pasted string becomes a
 /// subprocess argument: getting this wrong is a flag-injection vector, not just a bad-input bug.
 public enum MediaSourceURL {
-    public enum ValidationError: Error, Equatable {
+    public enum ValidationError: LocalizedError, Equatable {
         case empty
         case notHTTP          // only http/https are accepted (rejects file:, data:, javascript:, …)
         case flagInjection    // the URL begins with "-", so yt-dlp would read it as an option
+
+        public var errorDescription: String? {
+            switch self {
+            case .empty:
+                return "Enter a link first."
+            case .notHTTP:
+                return "Only http and https links can be imported."
+            case .flagInjection:
+                return "A link cannot begin with \"-\"."
+            }
+        }
     }
 
     /// The recognized shape of a valid link. `videoID` is populated for YouTube; `isPlaylist` lets the

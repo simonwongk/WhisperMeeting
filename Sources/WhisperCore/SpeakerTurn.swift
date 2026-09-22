@@ -51,7 +51,7 @@ public struct SpeakerTurn: Codable, Sendable, Equatable {
     }
 }
 
-public enum SpeakerTurnValidationError: Error, Sendable, Equatable {
+public enum SpeakerTurnValidationError: LocalizedError, Sendable, Equatable {
     case notFinite
     /// The recording duration the turns are measured against is not a usable number.
     case invalidDuration
@@ -63,6 +63,27 @@ public enum SpeakerTurnValidationError: Error, Sendable, Equatable {
     case tooManyTurns
     /// More distinct voices than a meeting can have — a clustering failure, not a crowd (F342).
     case tooManyClusters
+
+    /// One shared opening, because every case here means the same thing to a person: the analysis
+    /// produced something the app will not trust. The clause after it is what a support question
+    /// would need, and is the only part that differs.
+    public var errorDescription: String? {
+        "The speaker analysis was rejected: " + reason + "."
+    }
+
+    private var reason: String {
+        switch self {
+        case .notFinite: return "a turn carried a value that is not a number"
+        case .invalidDuration: return "the recording's length is not a usable number"
+        case .negativeStart: return "a turn starts before the recording does"
+        case .reversedInterval: return "a turn ends before it starts"
+        case .exceedsDuration: return "a turn runs past the end of the recording"
+        case .negativeCluster: return "a turn was given a negative speaker number"
+        case .unsortedTurns: return "the turns are not in time order"
+        case .tooManyTurns: return "there are more turns than a meeting can plausibly contain"
+        case .tooManyClusters: return "more distinct voices were found than a meeting can have, which is a clustering failure rather than a crowd"
+        }
+    }
 }
 
 /// One interval exactly as a diarization runtime reported it, before remapping or validation.
