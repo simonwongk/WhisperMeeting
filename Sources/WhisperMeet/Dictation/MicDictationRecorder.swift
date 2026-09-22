@@ -22,8 +22,11 @@ protocol DictationRecording: AnyObject {
 /// hands the resulting samples to `processingQueue` — the ONLY place `samples` is touched.
 /// `stop()`/`cancel()` remove the tap and then drain `processingQueue` (a `sync` barrier) before
 /// reading. `removeTap` is not documented to join a tap block already executing, so a chunk enqueued
-/// after the drain can still be dropped — bounded at one buffer, ~21 ms — but nothing can race the
-/// read of `samples` itself. This mirrors the tap+queue+flush
+/// after the drain can still be dropped — bounded at one buffer, which is **~100 ms, not the ~21 ms
+/// this comment used to claim** (F359: AVFAudio clamped the 1,024-frame request up to 4,800, and
+/// the request now says 4,800). That is the worst-case audio lost at the very end of a dictation,
+/// so the correction matters to a user and not only to a reader. Nothing can race the read of
+/// `samples` itself. This mirrors the tap+queue+flush
 /// discipline `AudioCaptureEngine` already uses, and since F356 it also mirrors the rule that
 /// matters more: the capture format is read from each buffer, never pinned ahead of the tap.
 final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
@@ -233,7 +236,25 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         // AVFAudio answers a mismatch by raising. nil declines to make the claim: the tap delivers
         // the device's own format and `DictationTapConverter` reads it per buffer. Re-reading the
         // format one line earlier would only have shortened the window, not closed it.
-            input.installTap(onBus: 0, bufferSize: 1_024, format: nil) { [weak self] buffer, _ in
+            // 4,800 frames — 100 ms at 48 kHz — because that is what AVFAudio delivers anyway
+            // (F359). `AVAudioNode.h` documents the parameter's "supported range is [100, 400]
+            // ms", and this asked for 1,024 frames: 21.3 ms, a twentieth of the documented
+            // minimum. Measured on this Mac rather than inferred from the header:
+            //
+            //     requested 1,024  (21.3 ms)  -> delivered 4,800   (100.0 ms)
+            //     requested 4,800  (100.0 ms) -> delivered 4,800   (100.0 ms)
+            //     requested 8,192  (170.7 ms) -> delivered 8,192   (170.7 ms)
+            //     requested 19,200 (400.0 ms) -> delivered 19,200  (400.0 ms)
+            //
+            // So an out-of-range request is silently clamped to the nearest supported value and
+            // an in-range one is honoured exactly. This is a no-op in behaviour and the point is
+            // that the number now says what happens: the tap fires ten times a second, not fifty.
+            //
+            // A frame count cannot be in range at every rate — 4,800 is 200 ms at 24 kHz (voice
+            // mode), 300 ms at 16 kHz, and 50 ms at 96 kHz. The first two are inside the range;
+            // the third is below it and AVFAudio clamps, which is the measured behaviour above
+            // rather than an assumption about it.
+            input.installTap(onBus: 0, bufferSize: 4_800, format: nil) { [weak self] buffer, _ in
                 self?.handleTap(buffer: buffer, converter: converter, onLevel: onLevel)
             }
             engine.prepare()

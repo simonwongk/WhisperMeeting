@@ -108,3 +108,27 @@ func converterIsRebuiltOnlyWhenTheFormatChanges() throws {
     _ = converter.convert(try toneBuffer(sampleRate: 24_000))
     #expect(converter.rebuildCountForTesting == 2)
 }
+
+@Test("The tap asks for a buffer size inside AVFAudio's documented range (F359)")
+func theTapBufferSizeIsInTheDocumentedRange() throws {
+    // `AVAudioNode.h`: "the requested size of the incoming buffers in sample frames. Supported
+    // range is [100, 400] ms." The old value, 1,024 frames, is 21.3 ms at 48 kHz — a twentieth of
+    // the minimum — and AVFAudio silently delivered 4,800 instead. Measured on real hardware,
+    // which is the only way that could be known:
+    //
+    //     requested 1,024 -> delivered 4,800    requested 8,192  -> delivered 8,192
+    //     requested 4,800 -> delivered 4,800    requested 19,200 -> delivered 19,200
+    //
+    // A source assertion because a test process cannot install a tap without a microphone, and
+    // `swift test` must never need one.
+    let source = try SourceAssertion.uncommentedSource(recorderSource)
+    let call = try #require(source.range(of: "installTap(onBus: 0, bufferSize: "))
+    let tail = source[call.upperBound...]
+    let digits = String(tail.prefix(while: { $0.isNumber || $0 == "_" })).replacingOccurrences(of: "_", with: "")
+    let frames = try #require(Double(digits))
+    // At the 48 kHz this Mac's input runs at. Stated as the rate rather than left implicit,
+    // because a frame count is only in range relative to one.
+    let milliseconds = frames / 48_000 * 1_000
+    #expect(milliseconds >= 100 && milliseconds <= 400,
+            "\(frames) frames is \(milliseconds) ms at 48 kHz, outside the documented [100, 400]")
+}
