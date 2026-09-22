@@ -138,6 +138,32 @@ public enum LibraryWriterLock {
     public static func shared(for root: URL) -> LibraryWriterLeaseHandle {
         memo.handle(for: root)
     }
+
+    /// Re-asks the kernel who holds the lease, and adopts the answer (F188).
+    ///
+    /// `shared(for:)` memoizes for the life of the process. That is right for a lease we HOLD — the
+    /// open descriptor *is* the lease, so re-acquiring could only contend with ourselves — and
+    /// wrong for every other answer, because `.heldElsewhere` is a fact about one instant that the
+    /// app then believes forever. `RecordingFolderLiveness`'s doc comment names the consequence;
+    /// F255's recovery gate is where it bites, since `AppModel.performStartupRecovery` re-runs
+    /// mid-session after a library recovery and is decided by a lease sampled at launch.
+    ///
+    /// Three properties, and the first two are what make this safe to add:
+    ///
+    /// 1. A `.held` lease short-circuits with no syscall and the SAME handle, so the descriptor
+    ///    this process depends on can never be dropped or re-contended here.
+    /// 2. Every other outcome carries a nil descriptor, so replacing the memoized handle closes
+    ///    nothing.
+    /// 3. It can only ever turn a refusal into permission or leave it alone. `acquire` is
+    ///    non-blocking and never unlinks, so re-asking cannot take a lock off a live holder.
+    ///
+    /// **Still never on the save path.** Not because of the cost — this is the abnormal path by
+    /// construction, and the normal one returns without a syscall — but because F190's rule is that
+    /// no lock acquisition may sit between a user's keystroke and their index being durable, and an
+    /// instance that reaches here is precisely one that might have to open a file to answer.
+    public static func refresh(for root: URL) -> LibraryWriterLeaseHandle {
+        memo.refresh(for: root)
+    }
 }
 
 /// One lease per resolved library path, for the lifetime of the process.
@@ -152,6 +178,20 @@ private final class MemoizedLeases: @unchecked Sendable {
             let handle = LibraryWriterLock.acquire(root: root)
             handles[key] = handle
             return handle
+        }
+    }
+
+    func refresh(for root: URL) -> LibraryWriterLeaseHandle {
+        let key = root.resolvingSymlinksInPath().standardizedFileURL.path
+        return lock.withLock {
+            // The short-circuit is load-bearing, not an optimisation: `flock` attaches to the open
+            // file description, so a second `open` in this process gets EWOULDBLOCK and we would
+            // report `.heldElsewhere` against ourselves — and overwriting the memo would drop the
+            // last strong reference to the descriptor that is the lease.
+            if let existing = handles[key], case .held = existing.lease { return existing }
+            let attempt = LibraryWriterLock.acquire(root: root)
+            handles[key] = attempt
+            return attempt
         }
     }
 }

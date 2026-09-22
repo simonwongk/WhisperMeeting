@@ -2048,6 +2048,15 @@ final class AppModel: ObservableObject {
             // where this instance is recovering its OWN folder after its own finalization failed —
             // and since nothing gates `startRecording` on the lease, that instance may well not hold
             // it. Gating the function instead of the loop would break exactly that case.
+            // F188: re-ask before deciding, because the answer in hand is from `MeetingStore.init`.
+            // This method runs AGAIN mid-session — `recoverLibrary` and `rebuildLibraryFromFolders`
+            // both reset `didPerformStartupRecovery` and call it once the library is writable — so
+            // without this, the second sweep refuses to rebuild the user's own crashed recording on
+            // the strength of a rival copy that quit before they pressed Restore, and the notice
+            // below tells them to quit something that is not running. `refreshWriterLease()`
+            // short-circuits without a syscall when we already hold the lease, so the ordinary
+            // launch pays nothing for it.
+            store.refreshWriterLease()
             let lease = store.writerLease
             // Asked even when the gate is shut, so the notice below is about folders that actually
             // exist. `orphanedRecordings()` is a pure read-and-report — that is the stated reason
@@ -3787,6 +3796,13 @@ final class AppModel: ObservableObject {
 
     /// Test seam: the active meeting is otherwise only set by starting a real capture.
     func setActiveMeetingIDForTesting(_ id: UUID?) { activeMeetingID = id }
+
+    /// Test seam: stands in for the two production sites that re-run startup recovery inside one
+    /// launch — `recoverLibrary` and `rebuildLibraryFromFolders`, which both clear
+    /// `didPerformStartupRecovery` and call `performStartupRecovery()` again once the library is
+    /// writable (F193). Reaching either of them needs a damaged index and a restorable generation;
+    /// what F188 needs to exercise is the second run itself, so this is that line and nothing more.
+    func resetStartupRecoveryForTesting() { didPerformStartupRecovery = false }
     #endif
 
     /// What importing a batch did. `notImported` lists the files a caller that owns a queue should

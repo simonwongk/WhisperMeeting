@@ -88,3 +88,55 @@ func degradedLibraryStillReportsNoOrphans() throws {
     #expect(store.mayRebuildInterruptedRecordings)
     #expect(try store.orphanedRecordings().isEmpty)
 }
+
+// F188 — the same gate, one launch later.
+//
+// The recipe above keeps the rival alive for the whole test because that is the state F255 cared
+// about. This one lets the rival quit, which is the state the app is actually in most of the time
+// it believes otherwise: `writerLease` is sampled in `init` and `performStartupRecovery` re-runs
+// mid-session after a library recovery (`AppModel.swift:4976`, `:5016`), so the second sweep is
+// decided by a fact about launch. Red before the fix: `refreshWriterLease()` does not exist.
+@Test("A rival that has quit stops blocking recovery once the lease is re-asked (F188)")
+@MainActor
+func leaseGateReopensAfterTheRivalQuits() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetLeaseRefresh-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    _ = try makeLiveLookingCaptureFolder(in: root)
+
+    let blocker = LibraryWriterLock.acquire(root: root)
+    let store = MeetingStore(rootDirectory: root)
+    try #require(store.writerLease == .heldElsewhere(realm: "shared"))
+    try #require(!store.mayRebuildInterruptedRecordings)
+
+    blocker.release()
+    // Still refused, and this assertion is the point of the test rather than an aside: nothing in
+    // the store notices a release, so the user's crashed recording stays unrecovered for the rest
+    // of this session no matter what they do.
+    #expect(!store.mayRebuildInterruptedRecordings)
+
+    store.refreshWriterLease()
+    #expect(store.writerLease == .held(realm: "shared"))
+    #expect(store.mayRebuildInterruptedRecordings)
+}
+
+@Test("Re-asking while the rival is still there changes nothing (F188)")
+@MainActor
+func refreshingUnderALiveRivalKeepsTheGateShut() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetLeaseRefreshHeld-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = try makeLiveLookingCaptureFolder(in: root)
+
+    let blocker = LibraryWriterLock.acquire(root: root)
+    try withExtendedLifetime(blocker) {
+        let store = MeetingStore(rootDirectory: root)
+        try #require(store.writerLease == .heldElsewhere(realm: "shared"))
+        store.refreshWriterLease()
+        #expect(store.writerLease == .heldElsewhere(realm: "shared"))
+        #expect(!store.mayRebuildInterruptedRecordings)
+    }
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("system-audio.f32").path))
+}

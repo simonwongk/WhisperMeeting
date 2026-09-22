@@ -200,3 +200,71 @@ func notHoldingTheLeaseNeverDegradesTheLibrary() throws {
     holder.release()
     contender.release()
 }
+
+// F188 item 3's prerequisite — a lease sampled once outlives the rival it described.
+//
+// `shared(for:)` memoizes for the life of the process. That is right for a lease we HOLD (the open
+// descriptor *is* the lease, so re-asking could only lose it) and wrong for every other answer:
+// `RecordingFolderLiveness`'s doc comment names the consequence, and F255's recovery gate is where
+// it bites, because `AppModel.performStartupRecovery` re-runs mid-session (`AppModel.swift:4976`,
+// `:5016`) against a lease sampled at launch. Until something re-asks the kernel, an instance whose
+// rival quit half an hour ago still refuses to rebuild the user's own crashed recording.
+//
+// Red before the fix: `LibraryWriterLock.refresh` does not exist.
+
+@Test("A memoized .heldElsewhere upgrades to .held once the rival releases (F188)")
+func aStaleHeldElsewhereUpgradesOnRefresh() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // Another copy of the app owns the library when we launch.
+    let rival = LibraryWriterLock.acquire(root: root)
+    try #require(rival.lease == .held(realm: "shared"))
+    try #require(LibraryWriterLock.shared(for: root).lease == .heldElsewhere(realm: "shared"))
+
+    // It quits. The kernel released its flock on the last close — there is no stale lock on disk —
+    // but our memoized answer still says otherwise, and that is the defect, not a test artefact.
+    rival.release()
+    #expect(LibraryWriterLock.shared(for: root).lease == .heldElsewhere(realm: "shared"))
+
+    #expect(LibraryWriterLock.refresh(for: root).lease == .held(realm: "shared"))
+    // And the upgrade is durable: the memo now holds the acquired descriptor, so every later
+    // `shared(for:)` sees it too. A refresh that only returned a value would leave every existing
+    // caller reading the stale one.
+    #expect(LibraryWriterLock.shared(for: root).lease == .held(realm: "shared"))
+}
+
+@Test("Refreshing a lease we hold returns the same handle and keeps its descriptor (F188)")
+func refreshingAHeldLeaseIsANoOp() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let held = LibraryWriterLock.shared(for: root)
+    try #require(held.lease == .held(realm: "shared"))
+    let descriptor = try #require(held.descriptorForTesting)
+
+    // Identity, not just equality. Re-acquiring here would contend with ourselves (the two-handles
+    // test above proves one process's second `open` gets EWOULDBLOCK), so a refresh that did not
+    // short-circuit would downgrade a held lease to `.heldElsewhere` against itself — and, worse,
+    // replacing the memoized handle would drop the only strong reference to the descriptor that IS
+    // the lease.
+    let again = LibraryWriterLock.refresh(for: root)
+    #expect(again === held)
+    #expect(again.descriptorForTesting == descriptor)
+}
+
+@Test("A refresh that still finds a rival keeps reporting one (F188)")
+func refreshUnderALiveRivalStillReportsHeldElsewhere() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let rival = LibraryWriterLock.acquire(root: root)
+    try #require(rival.lease == .held(realm: "shared"))
+    try #require(LibraryWriterLock.shared(for: root).lease == .heldElsewhere(realm: "shared"))
+
+    // The counterpart to the upgrade test: a refresh is a question, not a way to take a lock off
+    // somebody. `acquire` is non-blocking and never unlinks, so a live holder is still the holder.
+    #expect(LibraryWriterLock.refresh(for: root).lease == .heldElsewhere(realm: "shared"))
+    #expect(rival.descriptorForTesting != nil, "the rival must still hold its own descriptor")
+    rival.release()
+}

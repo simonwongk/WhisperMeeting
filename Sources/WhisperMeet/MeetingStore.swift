@@ -755,6 +755,23 @@ final class MeetingStore: ObservableObject {
         InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(writerLease)
     }
 
+    /// Re-asks who holds the lease, so a launch-time answer cannot outlive the rival it described
+    /// (F188).
+    ///
+    /// Deliberately a method and not folded into `mayRebuildInterruptedRecordings`: that is a
+    /// computed property read from views, and a property that mutates `@Published` state on read is
+    /// how a SwiftUI update loop starts. The caller that needs a fresh answer asks for one.
+    ///
+    /// Not on any save path, and not at init — `init` has just acquired. This exists for the one
+    /// caller that runs more than once per launch: `AppModel.performStartupRecovery`, which re-runs
+    /// after a library recovery clears the read-only state and would otherwise decide the
+    /// interrupted-recording rebuild on a lease sampled before the other copy quit.
+    func refreshWriterLease() {
+        let handle = LibraryWriterLock.refresh(for: rootDirectory)
+        leaseHandle = handle
+        writerLease = handle.lease
+    }
+
     func orphanedRecordings() throws -> [OrphanedRecording] {
         // An index that did not fully load is indistinguishable from "no meetings", which is exactly
         // how every recording folder came to look orphaned on 2026-08-14 (F187).

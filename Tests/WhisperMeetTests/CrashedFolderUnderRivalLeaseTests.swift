@@ -171,3 +171,46 @@ func recordingHoldsTheCaptureLock() async throws {
     #expect(model.activeMeetingID == nil)
     #expect(RecordingCaptureLock.probe(in: directory) == .noLockFile)
 }
+
+// MARK: - F188: the rival that quit
+
+@Test("A relaunch-free recovery rebuilds once the other copy has quit (F188)")
+@MainActor
+func recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching() async throws {
+    // The end-to-end shape of the lease refresh, through the surface a user actually reaches.
+    // A folder with no capture lock is decided by the lease alone (F297's `.noLockFile` rung), so
+    // this test is about the lease and nothing else.
+    //
+    // Sequence: A holds the library, B launches and sweeps — refused, and told to quit A. The user
+    // quits A. B sweeps again, which is exactly what `recoverLibrary`/`rebuildLibraryFromFolders`
+    // make happen without a relaunch. Before F188 the second sweep gave the same answer as the
+    // first, forever, because `writerLease` was read once in `MeetingStore.init`.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RivalQuitThenRecover-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = try makeDeadLookingFolder(in: root)
+    let suite = "WhisperMeet.RivalQuitThenRecover.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+    let instanceA = LibraryWriterLock.acquire(root: root)
+    let b = makeModel(root: root, suite: suite)
+    try #require(b.store.writerLease == .heldElsewhere(realm: "shared"))
+    await b.performStartupRecovery()
+    #expect(b.store.meetings.isEmpty)
+    #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") == true)
+
+    // The user does what the notice asked — and does NOT relaunch, which the notice also asked for
+    // and which this change makes unnecessary.
+    instanceA.release()
+    b.resetStartupRecoveryForTesting()
+    b.alertMessage = nil
+    await b.performStartupRecovery()
+
+    #expect(b.store.writerLease == .held(realm: "shared"))
+    #expect(b.store.meetings.count == 1, "the recording should be back without a relaunch")
+    #expect(FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent("meeting-recovered.wav").path
+    ))
+    #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true, "\(b.alertMessage ?? "")")
+}
