@@ -20,7 +20,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F355** | ~2 min | Listen to one recording. The mix gain rule changed today and no ear has been near it. |
+| 1 | **F355** | ~3 min | Listen to one recording, and read its health note. Two audio changes landed today and no ear or eye has been near either. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 4 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
@@ -30,12 +30,14 @@ the line, here they are in the order I would answer them. Every one is optional 
 
 ---
 
-## F355 — Listen to one recording, and tell me if the buzz is gone
+## F355 — Listen to one recording, and read what it says about itself
 
 **Status:** `blocked`. The mix gain rule changed today (F345) and every number justifying it is
 synthetic. The defect was reported by ear; nothing has been heard since.
 
-**What I need from you:** one short recording, played back.
+**What I need from you:** one short recording, played back — and a glance at what it says afterwards.
+
+Two changes landed today and both need an ear or an eye, so they share this one recording.
 
 Play something with sound through your Mac, talk over it for thirty seconds, stop, and listen to
 the result. Two things to judge:
@@ -47,6 +49,13 @@ the result. Two things to judge:
    are now **1.7 to 5.0 dB louder** than they used to be. That was your call this morning, and it is
    the honest consequence of deleting a rule that was quietly ducking whoever was already talking.
    Solo passages are unchanged to the bit.
+
+3. **And read the meeting's health note, if it shows one.** F346 replaced "System audio was
+   clipping (too loud) at times" — a sentence that said the identical thing about 139 stray samples
+   and a recording that was flat-topped for a seventh of its length, and that sent an investigation
+   after the wrong fault. It now reports what was measured, e.g. *"System audio reached full scale
+   on 139 of 14,400,000 samples — about 1 in 103,597. That is far too few to be a level problem."*
+   What I need to know is whether that reads as informative or as noise.
 
 If something still buzzes, tell me what it sounds like and roughly when — a recording of it is not
 needed and I would rather not have one.

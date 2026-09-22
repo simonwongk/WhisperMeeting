@@ -9,9 +9,20 @@ public struct RecordingAudioLevel: Sendable, Equatable {
     public let rms: Float
     public let peak: Float
 
-    public init(rms: Float, peak: Float) {
+    /// Frames this observation was computed over, and how many of them sat at the rail (F346).
+    ///
+    /// Counted rather than inferred, because the clamp below destroys the only other evidence:
+    /// `peak` is `min(1, …)`, so a buffer that merely touched full scale and one that was driven
+    /// far past it are indistinguishable from here on. Nil means "this build did not measure it",
+    /// which is every level constructed before F346 and every hand-built one in a test.
+    public let framesMeasured: Int?
+    public let framesAtFullScale: Int?
+
+    public init(rms: Float, peak: Float, framesMeasured: Int? = nil, framesAtFullScale: Int? = nil) {
         self.rms = max(0, min(1, rms))
         self.peak = max(0, min(1, peak))
+        self.framesMeasured = framesMeasured
+        self.framesAtFullScale = framesAtFullScale
     }
 
     public static let silent = RecordingAudioLevel(rms: 0, peak: 0)
@@ -127,13 +138,43 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
     public let systemAudioStaleSeconds: TimeInterval
     public let systemAudioEverDetected: Bool
 
+    /// How many frames were examined per channel, and how many were at full scale (F346).
+    ///
+    /// Four plain `Int?`s rather than a nested struct or a `Float`, and each choice was forced:
+    ///
+    /// - **`Int`, never `Float`.** `BackupJSONStore` encodes with a plain `JSONEncoder`, which has
+    ///   no `nonConformingFloatEncodingStrategy` — so one NaN reaching this field would throw and
+    ///   take the whole `meetings.json` write with it. A count cannot be NaN.
+    /// - **Flat, not a nested `Codable` struct.** A nested type gets a synthesised decoder that is
+    ///   strict about its own non-optional members, so any member added to it later would throw on
+    ///   every older report. Flat optionals stay additive forever.
+    /// - **`let` with no property default.** This type has a hand-written `init(from:)`, and a
+    ///   `let` with no default makes the compiler *force* it to be decoded there. Declared `var`,
+    ///   the identical field compiles clean, reaches the wire, and reads back nil — F304's shape,
+    ///   one level down. `swiftc -typecheck` does not catch it; only a full compile does.
+    ///
+    /// Nil means "not measured", which is every report written before F346 — distinct from zero,
+    /// which means measured and nothing was at the rail.
+    public let microphoneFramesMeasured: Int?
+    public let microphoneFramesAtFullScale: Int?
+    public let systemAudioFramesMeasured: Int?
+    public let systemAudioFramesAtFullScale: Int?
+
     public init(
         warnings: Set<RecordingHealthWarning>,
         worstStatus: RecordingHealthStatus,
         microphoneStaleSeconds: TimeInterval,
         systemAudioStaleSeconds: TimeInterval,
-        systemAudioEverDetected: Bool
+        systemAudioEverDetected: Bool,
+        microphoneFramesMeasured: Int? = nil,
+        microphoneFramesAtFullScale: Int? = nil,
+        systemAudioFramesMeasured: Int? = nil,
+        systemAudioFramesAtFullScale: Int? = nil
     ) {
+        self.microphoneFramesMeasured = microphoneFramesMeasured
+        self.microphoneFramesAtFullScale = microphoneFramesAtFullScale
+        self.systemAudioFramesMeasured = systemAudioFramesMeasured
+        self.systemAudioFramesAtFullScale = systemAudioFramesAtFullScale
         self.warnings = warnings
         self.worstStatus = worstStatus
         self.microphoneStaleSeconds = microphoneStaleSeconds
@@ -170,15 +211,36 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
             TimeInterval.self, forKey: .systemAudioStaleSeconds
         )
         systemAudioEverDetected = try container.decode(Bool.self, forKey: .systemAudioEverDetected)
+        // `try?` as well as `decodeIfPresent` (F346): absent is the ordinary case for every report
+        // written before today, and a *malformed* value — a float where an Int belongs, say — must
+        // degrade this one field to nil rather than fail the decode of the whole meetings array.
+        // That is the same leniency the warnings decode above exists for.
+        microphoneFramesMeasured = try? container.decodeIfPresent(Int.self, forKey: .microphoneFramesMeasured)
+        microphoneFramesAtFullScale = try? container.decodeIfPresent(Int.self, forKey: .microphoneFramesAtFullScale)
+        systemAudioFramesMeasured = try? container.decodeIfPresent(Int.self, forKey: .systemAudioFramesMeasured)
+        systemAudioFramesAtFullScale = try? container.decodeIfPresent(Int.self, forKey: .systemAudioFramesAtFullScale)
     }
 }
 
 /// Evaluates capture health from a serial stream of audio observations.
 public final class RecordingHealthMonitor {
+    /// A frame at or above this magnitude is at the rail (F346).
+    ///
+    /// `32767 / 32768` exactly — a dyadic rational, so float32 holds it with no rounding. It is the
+    /// largest magnitude a 16-bit source produces under the usual `/32768` normalisation, so a
+    /// full-scale int16 sample lands *on* the floor rather than one ulp under it. Deliberately not
+    /// the 0.98 that raises the warning: that one answers "is this worth mentioning", this one
+    /// answers "did this frame actually clip", and conflating them is the defect.
+    public static let fullScaleFloor: Float = Float(Int16.max) / 32768
+
     private struct ChannelState {
         var level: RecordingAudioLevel = .silent
         var lastReceivedAt: TimeInterval?
         var lastClippedAt: TimeInterval?
+        /// Accumulated only from observations that carried counts, so a mix of measured and
+        /// unmeasured buffers reports the measured ones rather than a silent undercount of both.
+        var framesMeasured: Int?
+        var framesAtFullScale: Int?
     }
 
     private let startedAt: TimeInterval
@@ -285,7 +347,11 @@ public final class RecordingHealthMonitor {
             worstStatus: worstStatus,
             microphoneStaleSeconds: microphoneStaleSeconds,
             systemAudioStaleSeconds: systemAudioStaleSeconds,
-            systemAudioEverDetected: systemAudio.lastReceivedAt != nil
+            systemAudioEverDetected: systemAudio.lastReceivedAt != nil,
+            microphoneFramesMeasured: microphone.framesMeasured,
+            microphoneFramesAtFullScale: microphone.framesAtFullScale,
+            systemAudioFramesMeasured: systemAudio.framesMeasured,
+            systemAudioFramesAtFullScale: systemAudio.framesAtFullScale
         )
     }
 
@@ -308,6 +374,12 @@ public final class RecordingHealthMonitor {
         channel.lastReceivedAt = time
         if level.peak >= 0.98 {
             channel.lastClippedAt = time
+        }
+        // The trigger above is unchanged on purpose (F346): a recording that was flagged before
+        // still is. What changes is that the evidence now survives alongside it.
+        if let measured = level.framesMeasured, let atFullScale = level.framesAtFullScale {
+            channel.framesMeasured = (channel.framesMeasured ?? 0) + measured
+            channel.framesAtFullScale = (channel.framesAtFullScale ?? 0) + atFullScale
         }
     }
 }
