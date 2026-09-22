@@ -398,12 +398,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             switch outputType {
             case .audio:
                 if let level = try _systemWriter?.append(sampleBuffer) {
+                    healthMonitor?.recordWriteOutcome(succeeded: true)
                     healthMonitor?.receive(.systemAudio, level: level, at: now)
                     levelMeter.receive(.systemAudio, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
                 }
             case .microphone:
                 if let level = try _microphoneWriter?.append(sampleBuffer) {
+                    healthMonitor?.recordWriteOutcome(succeeded: true)
                     healthMonitor?.receive(.microphone, level: level, at: now)
                     levelMeter.receive(.microphone, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
@@ -417,6 +419,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             // Already on `captureQueue` — the sample handler is installed with it as its
             // `sampleHandlerQueue` (`:479-480`), so the stored property, not the accessor (F364).
             _streamError = error
+            // F386. Since F363 stopped a failed write tearing the stream down, a persistent
+            // failure drops every buffer while the recording looks alive: the HUD counts, the
+            // level meter moves, and nothing lands. `_streamError` alone does not surface —
+            // three consecutive failures raise an at-risk warning, which the risk announcer and
+            // the menu-bar title already carry.
+            healthMonitor?.recordWriteOutcome(succeeded: false)
         }
     }
 

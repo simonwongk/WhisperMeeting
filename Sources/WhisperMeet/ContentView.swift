@@ -867,6 +867,10 @@ private struct RecordMeetingView: View {
             "System audio is clipping and may sound distorted."
         case .lowStorage:
             "Storage is running low. Stop soon to protect the recording."
+        case .captureWritesFailing:
+            // The one warning that means audio is being lost as they read it, so the instruction
+            // comes first (F386).
+            "Stop this recording: audio is no longer being written to disk. Check free space. What was captured before now is safe."
         case .approachingLengthLimit:
             // Says what happens and what to do, and does not mention the format. A user cannot act
             // on "the WAV data-size field is a UInt32"; they can act on "stop and start another".

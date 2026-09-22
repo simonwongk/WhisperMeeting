@@ -72,6 +72,14 @@ public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codab
     case microphoneClipping
     case systemAudioClipping
     case lowStorage
+    /// Buffers are arriving and none of them is reaching disk (F386).
+    ///
+    /// Not "a write failed" — one failure is a blip and `_streamError` already records it. This
+    /// is the *persistent* case: since F363 stopped a failed write tearing the stream down, a
+    /// capture whose writes all fail keeps running, the HUD keeps counting and the level meter
+    /// keeps moving while nothing lands. The worst version of the failure this app guards
+    /// against is an hour of that.
+    case captureWritesFailing
     /// **Decode-only** (F335). F150 warned when the classic WAV `data` field was about to run out;
     /// F302 made long recordings RF64, so nothing emits this any more and the helper that decided
     /// when to was deleted. The case, `RecordingHUD.rank`/`message` and `ContentView`'s branch stay
@@ -86,7 +94,7 @@ public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codab
     /// declare which side it is on.
     public var isAtRisk: Bool {
         switch self {
-        case .microphoneCaptureStopped, .systemAudioCaptureStopped, .lowStorage:
+        case .microphoneCaptureStopped, .systemAudioCaptureStopped, .lowStorage, .captureWritesFailing:
             return true
         case .systemAudioNotDetected, .microphoneClipping, .systemAudioClipping, .approachingLengthLimit:
             return false
@@ -322,8 +330,26 @@ public final class RecordingHealthMonitor {
     private let systemDetectionGracePeriod: TimeInterval
     private let clippingHoldPeriod: TimeInterval
     private let lowStorageThresholdBytes: Int64
+    /// How many consecutive failed appends mean the pipeline is broken rather than blipping.
+    ///
+    /// **Three is a judgement, not a measurement, and F386 asked for a measurement.** Producing
+    /// one means filling a disk or pulling a volume mid-capture, which is not something this
+    /// session could stage. The reasoning it rests on instead: one failure is a transient and is
+    /// already recorded as a stream error; three in a row with no success between them is not.
+    /// The asymmetry decides it — a false warning costs a banner, a missed one costs the whole
+    /// recording — and `consecutiveWriteFailures` resetting on any success is what stops the low
+    /// threshold turning into noise.
+    private let writeFailureThreshold: Int
     private var microphone = ChannelState()
     private var systemAudio = ChannelState()
+
+    /// Consecutive failed appends, reset by any success (F386).
+    ///
+    /// **Consecutive, not cumulative, and that is the property that makes it safe to warn on.** A
+    /// running total would creep past any threshold over a long recording and raise an alarm
+    /// about a capture that is working; a consecutive count can only be high while nothing is
+    /// landing right now.
+    private var consecutiveWriteFailures = 0
 
     // Accumulated across the capture for the post-meeting report (F58).
     private var seenWarnings: Set<RecordingHealthWarning> = []
@@ -338,6 +364,7 @@ public final class RecordingHealthMonitor {
         staleAfter: TimeInterval = 3,
         systemDetectionGracePeriod: TimeInterval = 15,
         clippingHoldPeriod: TimeInterval = 3,
+        writeFailureThreshold: Int = 3,
         lowStorageThresholdBytes: Int64 = 2_000_000_000
     ) {
         self.startedAt = startedAt
@@ -345,6 +372,7 @@ public final class RecordingHealthMonitor {
         self.staleAfter = staleAfter
         self.systemDetectionGracePeriod = systemDetectionGracePeriod
         self.clippingHoldPeriod = clippingHoldPeriod
+        self.writeFailureThreshold = max(1, writeFailureThreshold)
         self.lowStorageThresholdBytes = lowStorageThresholdBytes
     }
 
@@ -378,6 +406,9 @@ public final class RecordingHealthMonitor {
         if systemAudio.lastReceivedAt == nil,
            time - startedAt >= systemDetectionGracePeriod {
             warnings.append(.systemAudioNotDetected)
+        }
+        if writesAreFailing {
+            warnings.append(.captureWritesFailing)
         }
         if recentlyClipped(microphone, at: time) {
             warnings.append(.microphoneClipping)
@@ -437,6 +468,15 @@ public final class RecordingHealthMonitor {
         guard let lastReceivedAt = channel.lastReceivedAt else { return true }
         return time - lastReceivedAt > staleAfter
     }
+
+    /// One append's outcome (F386). Called from the capture queue, like `receive`.
+    public func recordWriteOutcome(succeeded: Bool) {
+        consecutiveWriteFailures = succeeded ? 0 : consecutiveWriteFailures + 1
+    }
+
+    /// Whether writes are failing persistently right now — the live half of the warning, for a
+    /// caller that has to decide something rather than display it.
+    public var writesAreFailing: Bool { consecutiveWriteFailures >= writeFailureThreshold }
 
     private func recentlyClipped(_ channel: ChannelState, at time: TimeInterval) -> Bool {
         guard let lastClippedAt = channel.lastClippedAt else { return false }

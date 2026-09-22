@@ -41,6 +41,15 @@ public enum RecordingHealthAdvisory {
         if report.warnings.contains(.lowStorage) {
             notes.append("Storage ran low while recording.")
         }
+        if report.warnings.contains(.captureWritesFailing) {
+            // First in severity but placed with the other capture failures for reading order.
+            // Says what was lost rather than what failed: a persistent write failure means the
+            // audio after that point is simply not in the file (F386).
+            notes.append(
+                "Audio stopped being written to disk partway through, so part of this recording "
+                + "was not saved. What was written before that point is intact."
+            )
+        }
         // A flagged report with nothing to say about it (F188). Every note above reads `warnings`,
         // so a report written by a NEWER build — whose status or whose only warning this build does
         // not recognise — used to fall out of here as `nil` and render no advisory at all: the user
