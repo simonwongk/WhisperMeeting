@@ -1,0 +1,216 @@
+{
+  "_comment": [
+    "F350. The evidence set behind SemanticRanker.minimumSimilarity and RankFusion.k, which",
+    "until now lived in one session's shell history and could not be re-derived.",
+    "",
+    "Wholly invented. No user meeting, recording or transcript was read to build it (AGENTS.md).",
+    "",
+    "Every question is a PARAPHRASE of its passage, sharing as few content words with it as a",
+    "natural phrasing allows. That is the point: a question that repeats the passage's own words",
+    "is answered by BM25 alone and measures nothing about search by meaning. It also means the",
+    "keyword-only recall reported by the scorer is expected to be LOW — that is the baseline the",
+    "semantic half has to beat, not a defect."
+  ],
+  "meetings": [
+    {
+      "title": "Pricing review",
+      "segments": [
+        "Let us start with where the tiers landed after last quarter's feedback.",
+        "We are moving the starter plan from nineteen dollars to twenty-nine a month.",
+        "Anyone already on the old rate keeps it for twelve months, no exceptions.",
+        "The enterprise tier stays negotiated, so nothing changes for those accounts.",
+        "Support wants a week of lead time before the page goes live.",
+        "I will draft the email to existing customers by Thursday.",
+        "We should expect some churn in the first month and plan for it.",
+        "Next item is the renewal dashboard nobody has looked at since June."
+      ]
+    },
+    {
+      "title": "Hiring sync",
+      "segments": [
+        "Three candidates finished the on-site loop this week.",
+        "The backend role has been open for four months now, which is too long.",
+        "We are losing people at the take-home stage because it takes six hours.",
+        "Let us cut the exercise down to ninety minutes and see if that helps.",
+        "Referrals convert twice as often as inbound applications do.",
+        "I want a written scorecard before anyone debriefs out loud.",
+        "Budget approves two more headcount for the second half of the year.",
+        "The intern programme starts in June and needs mentors assigned."
+      ]
+    },
+    {
+      "title": "Incident postmortem",
+      "segments": [
+        "The outage began at 03:12 and lasted just under forty minutes.",
+        "A configuration push removed the read replica from the pool.",
+        "Nobody was paged because the alert routed to a rotation that had ended.",
+        "Customers saw timeouts on checkout but no data was lost.",
+        "We are adding a staging soak of thirty minutes before any pool change.",
+        "The on-call schedule will be validated automatically every morning.",
+        "I do not want to blame the person who ran the push; the guardrail was missing.",
+        "Follow-up items are due before the end of the sprint."
+      ]
+    },
+    {
+      "title": "Roadmap planning",
+      "segments": [
+        "We have committed to offline mode for the autumn release.",
+        "Search is the single most requested thing in the feedback inbox.",
+        "The mobile rewrite slips to next year; there is no way around it.",
+        "Two engineers move to the integrations team starting Monday.",
+        "Anything not on this list is explicitly not happening this half.",
+        "We will review scope again after the design review in three weeks.",
+        "Marketing needs six weeks of notice before any launch date is public.",
+        "Let us keep one slot free for whatever the incident review turns up."
+      ]
+    },
+    {
+      "title": "Design review",
+      "segments": [
+        "The new onboarding drops from nine screens to four.",
+        "People abandon at the permissions step more than anywhere else.",
+        "We should explain why the microphone is needed before we ask for it.",
+        "Dark mode contrast fails on the secondary buttons at the moment.",
+        "Every icon needs a text label; the icon-only row tested badly.",
+        "Animation stays under two hundred milliseconds or it feels sluggish.",
+        "We are not shipping the illustration set until legal clears the licence.",
+        "Accessibility review happens before the beta, not after it."
+      ]
+    },
+    {
+      "title": "Vendor negotiation",
+      "segments": [
+        "Their first quote came in at ninety thousand for the year.",
+        "We have leverage because our contract renews before their quarter ends.",
+        "Legal flagged the auto-renewal clause and wants it struck.",
+        "If they will not move on price, we walk and self-host for six months.",
+        "The migration would cost us about three engineer-weeks.",
+        "I have a call with their account team on Wednesday morning.",
+        "Do not mention the competing quote until they put something in writing.",
+        "We need a decision before the board meeting in two weeks."
+      ]
+    }
+  ],
+  "pairs": [
+    {
+      "question": "How much more will the cheapest plan cost?",
+      "meeting": 0,
+      "segment": 1
+    },
+    {
+      "question": "Are current subscribers protected from the increase?",
+      "meeting": 0,
+      "segment": 2
+    },
+    {
+      "question": "How much warning does the help desk need?",
+      "meeting": 0,
+      "segment": 4
+    },
+    {
+      "question": "Do we think anyone will cancel?",
+      "meeting": 0,
+      "segment": 6
+    },
+    {
+      "question": "Why are applicants dropping out partway through?",
+      "meeting": 1,
+      "segment": 2
+    },
+    {
+      "question": "What is the plan to shorten the assignment?",
+      "meeting": 1,
+      "segment": 3
+    },
+    {
+      "question": "Which source of applicants works best?",
+      "meeting": 1,
+      "segment": 4
+    },
+    {
+      "question": "Can we hire anyone else this year?",
+      "meeting": 1,
+      "segment": 6
+    },
+    {
+      "question": "What actually caused the failure?",
+      "meeting": 2,
+      "segment": 1
+    },
+    {
+      "question": "Why did no alert reach anyone?",
+      "meeting": 2,
+      "segment": 2
+    },
+    {
+      "question": "Did anything get corrupted or disappear?",
+      "meeting": 2,
+      "segment": 3
+    },
+    {
+      "question": "What are we changing so this cannot recur?",
+      "meeting": 2,
+      "segment": 4
+    },
+    {
+      "question": "What did we promise to ship in the autumn?",
+      "meeting": 3,
+      "segment": 0
+    },
+    {
+      "question": "What got pushed out of this year entirely?",
+      "meeting": 3,
+      "segment": 2
+    },
+    {
+      "question": "Is anyone changing teams?",
+      "meeting": 3,
+      "segment": 3
+    },
+    {
+      "question": "How far ahead does the marketing team need a date?",
+      "meeting": 3,
+      "segment": 6
+    },
+    {
+      "question": "How much shorter is the new first-run flow?",
+      "meeting": 4,
+      "segment": 0
+    },
+    {
+      "question": "Where do people give up during setup?",
+      "meeting": 4,
+      "segment": 1
+    },
+    {
+      "question": "What is wrong with the colours in the dark theme?",
+      "meeting": 4,
+      "segment": 3
+    },
+    {
+      "question": "How fast do transitions have to be?",
+      "meeting": 4,
+      "segment": 5
+    },
+    {
+      "question": "What did the supplier ask for initially?",
+      "meeting": 5,
+      "segment": 0
+    },
+    {
+      "question": "What did the lawyers object to?",
+      "meeting": 5,
+      "segment": 2
+    },
+    {
+      "question": "What is our fallback if they refuse to discount?",
+      "meeting": 5,
+      "segment": 3
+    },
+    {
+      "question": "How much work would it be to move off them?",
+      "meeting": 5,
+      "segment": 4
+    }
+  ]
+}

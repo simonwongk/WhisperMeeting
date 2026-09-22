@@ -1,24 +1,46 @@
 #!/usr/bin/env python3
-"""Turn the `diarizers-community/ami` parquet shards into what the sweep needs (F340).
+"""Turn `diarizers-community/ami` annotations into what the sweep needs (F340).
 
 `sweep` requires 16 kHz mono WAV and `sweep_score.py` requires `<rttm dir>/<name>.rttm`. Nothing in
 the repo produced either, so the DER table and the F317 bucket table rested on one session's shell
-history. This is that step, committed — including the two decisions that materially move both
-tables and were previously unrecorded:
+history. This is that step, committed.
 
-  * **How word-aligned annotations become reference turns.** AMI ships per-word timings. A turn is
-    a maximal run of consecutive words from one speaker whose gaps are all `--gap` or shorter.
-  * **What closes a turn.** `--gap`, default 0.5 s. Larger merges a speaker's pauses into one long
-    turn (fewer, longer reference turns — which moves every row-length bucket); smaller splits
-    normal speech into fragments.
-
-Stdlib only, like the rest of `Scripts/`: parquet is read with a minimal reader over the subset of
-the format HuggingFace's exports use, and audio is decoded only when it is already WAV inside the
-shard. If a shard uses a codec this cannot decode, the script says so and names the file rather than
-writing a wrong one — a prep tool that half-works is how an unreproducible number happens.
-
-    python3 ami_prepare.py --shards <dir of .parquet> --out <dir>
+    python3 ami_prepare.py --manifest <ami.jsonl> --out <dir> [--gap 0.5]
     python3 ami_prepare.py --self-test
+
+**Corrected 2026-09-22 (F377), by running it against the real shards for the first time.** Three
+of the paragraphs that used to be here were wrong, and every one of them was about the path from a
+file to a number — the same shape F348 found in the other two producers.
+
+  * **The usage line said `--shards <dir of .parquet>`. There is no such argument**, and no
+    parquet reader in this file; it reads the JSONL the README's step 1 produces. Anyone following
+    the docstring got `error: unrecognized arguments: --shards`. The claim that "parquet is read
+    with a minimal reader" described a design that was never here.
+  * **"AMI ships per-word timings" is false for these shards.** The `ihm` config ships
+    **utterances**: measured over 2,646 entries from four meetings, the median entry is **1.34 s**
+    and the longest is 46.5 s. A word is around 0.3 s. So the per-speaker merge below is joining
+    utterances, not words.
+  * **`--gap` does far less on this data than "moves every bucket" implies.** Measured over all 18
+    validation meetings: 8,664 reference turns at `--gap 0`, 8,557 at the 0.5 default — **1.2%
+    fewer**. It bites at 2.0 s (6,272 turns, 27.6% fewer). The rule is still the right one to make
+    explicit; the size of its effect was overstated because the input was assumed to be words.
+
+**The committed corpus does not correspond to this default.** The 18 cached RTTMs under
+`~/Library/Caches/WhisperMeet-Bench/ami/wav/` — which the scorecard's DER and bucket tables were
+computed from — reproduce byte-identically at any `--gap` from 0 to **0.06**, and at 0.5 only 7 of
+18 match. At `--gap 0` each utterance becomes its own reference turn (IB4010: 921 entries, 921
+turns). Reproduce the corpus with `--gap 0`, not the default. Whether 0 or 0.5 is the right
+reference-turn rule for pre-segmented input is a methodology question, not a bug: **F393**.
+
+The 18th meeting, IB4011, is a separate and smaller thing: at `--gap 0` its line *set* is
+identical and two turns with bit-identical starts and ends (2384.100, 1.020 s, speakers MIO046 and
+MIO095) appear in the opposite order. `sorted()` here breaks that tie on the speaker string and is
+deterministic, so the cached file was written by a predecessor of this code. No number changes —
+DER and the buckets are order-independent — so it is recorded rather than chased: **F394**.
+
+Stdlib only, like the rest of `Scripts/`. Audio is decoded only when the manifest carries an
+`audio` path and it is already WAV; a manifest with no `audio` produces RTTMs alone, which is all
+the reproduction check needs.
 """
 
 import argparse

@@ -68,14 +68,45 @@ One step needs a third-party library and is therefore outside the committed tool
 everything deciding a *number* stays inside them:
 
 ```bash
-# 1. Shards -> one JSON object per meeting: {"id", "words": [[start, end, speaker], …], "audio"}.
-#    `datasets` is not a dependency of this repo; install it in a scratch venv.
-python3 -c 'from datasets import load_dataset; import json
-ds = load_dataset("diarizers-community/ami", "ihm", split="train")
-print("\n".join(json.dumps(r) for r in ds))' > ami.jsonl      # revision pinned in the scorecard
+# 1. Shards -> one JSON object per meeting: {"id", "words": [[start, end, speaker], …]}, and
+#    optionally "audio": <path to a WAV already on disk>. Omit "audio" to produce RTTMs only,
+#    which is all the reproduction check in step 2a needs.
+#
+#    CORRECTED 2026-09-22 (F377). The command that used to be here could not work and had never
+#    been run: the dataset has no `id` and no `words` column (it has `audio`, `timestamps_start`,
+#    `timestamps_end`, `speakers`), and `json.dumps(row)` raises
+#    `TypeError: Object of type bytes is not JSON serializable` on the audio bytes. It also asked
+#    for `split="train"`; the cached shards and the 18 committed RTTMs are `validation`.
+#
+#    `pyarrow` reads the shards directly and is already in the bench venv, so no `datasets`
+#    install is needed. The shards live in ~/Library/Caches/WhisperMeet-Bench/ami/ihm/.
+"$HOME/Library/Caches/WhisperMeet-Bench/venv/bin/python" - <<'PYEOF' > ami.jsonl
+import glob, json, os
+import pyarrow.parquet as pq
+shards = sorted(glob.glob(os.path.expanduser(
+    "~/Library/Caches/WhisperMeet-Bench/ami/ihm/validation-*.parquet")))
+for shard in shards:
+    reader = pq.ParquetFile(shard)
+    for batch in reader.iter_batches(batch_size=1, columns=[
+        "audio", "timestamps_start", "timestamps_end", "speakers"
+    ]):
+        row = batch.to_pylist()[0]
+        print(json.dumps({
+            # "IB4010.Mix-Headset.wav" -> "IB4010", which is how the RTTMs are named.
+            "id": row["audio"]["path"].split(".")[0],
+            "words": list(zip(row["timestamps_start"], row["timestamps_end"], row["speakers"])),
+        }))
+PYEOF
 
-# 2. Reference turns + 16 kHz mono WAV. `--gap` is the decision that moves every bucket.
+# 2. Reference turns (+ 16 kHz mono WAV when the manifest carries an audio path).
 python3 ami_prepare.py --manifest ami.jsonl --out ami --gap 0.5
+
+# 2a. Reproduce the COMMITTED corpus, which is not what the default produces (F377). The 18 cached
+#     RTTMs match byte-for-byte at any gap from 0 to 0.06 and at 0.5 only 7 of 18 match, so the
+#     numbers in the scorecard correspond to ~0 — one reference turn per AMI utterance. Which of
+#     the two is the right rule for pre-segmented input is F393.
+python3 ami_prepare.py --manifest ami.jsonl --out ami-committed --gap 0
+diff -r ami-committed/rttm ~/Library/Caches/WhisperMeet-Bench/ami/wav   # IB4011 only: see F394
 
 # 3. Sweep the clustering threshold (Swift; see runtime-probe/README).
 swift run -c release sweep <models parent> sweep-out 0.30,0.40,0.50,0.55,0.60,0.65,0.70,0.80,0.90,1.00 ami/wav/*.wav
