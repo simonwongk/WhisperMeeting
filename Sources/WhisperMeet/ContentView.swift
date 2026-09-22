@@ -2047,7 +2047,7 @@ private struct LinkImportSheet: View {
                 if let progress = model.mediaDownloadProgress {
                     if let fraction = progress.fractionCompleted {
                         ProgressView(value: fraction) {
-                            Text("Downloading audio… \(Int((fraction * 100).rounded()))%")
+                            Text("Downloading audio… \(Int(saturating: fraction * 100))%")
                         }
                     } else {
                         ProgressView("Preparing the download…").controlSize(.small)
@@ -4149,7 +4149,7 @@ private struct SecondOpinionSheet: View {
                     let engine = engineName ?? "the other engine"
                     if let fraction = progress?.fractionCompleted, progress?.phase == .transcribing {
                         ProgressView(value: fraction) {
-                            Text("Re-transcribing with \(engine)… \(Int((fraction * 100).rounded()))%")
+                            Text("Re-transcribing with \(engine)… \(Int(saturating: fraction * 100))%")
                         }
                         .frame(maxWidth: 320)
                     } else {
@@ -4771,7 +4771,7 @@ private struct PlayableTranscriptView: View {
             if speakerReviewState == .analyzing, let fraction = model.diarizationProgress {
                 ProgressView(value: fraction)
                     .progressViewStyle(.linear)
-                    .accessibilityLabel("Speaker analysis \(Int((fraction * 100).rounded())) percent complete")
+                    .accessibilityLabel("Speaker analysis \(Int(saturating: fraction * 100)) percent complete")
             }
             if speakerReviewState == .labeled, !speakerClusterIDs.isEmpty {
                 speakerLegendChips
@@ -4887,7 +4887,7 @@ private struct PlayableTranscriptView: View {
             }
             .buttonStyle(LinkPressStyle())
             .help("Whisper flagged these as low-confidence, likely-silence (text over near-silent audio), or repetitive, worst first. Tap to review; this never changes your transcript.")
-            Text("· \(Int((qualityReport.confidence * 100).rounded()))% clean")
+            Text("· \(Int(saturating: qualityReport.confidence * 100))% clean")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)

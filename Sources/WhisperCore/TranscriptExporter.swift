@@ -212,7 +212,7 @@ public enum TranscriptExporter {
             // The editable transcript displays whole seconds while Whisper retains subsecond cue
             // precision. Preserve that precision only when the visible whole-second timestamp was
             // not changed by the user.
-            return Int(editedStart.rounded(.down)) == Int(originalStart.rounded(.down))
+            return Int(saturating: editedStart.rounded(.down)) == Int(saturating: originalStart.rounded(.down))
         }
     }
 
@@ -524,7 +524,7 @@ public enum TranscriptExporter {
     /// `HH:MM:SS,mmm` (SRT) or `HH:MM:SS.mmm` (WebVTT).
     static func subtitleTimestamp(_ seconds: Double, millisecondSeparator: String) -> String {
         let clamped = max(0, seconds)
-        let totalMilliseconds = Int((clamped * 1000).rounded())
+        let totalMilliseconds = Int(saturating: (clamped * 1000).rounded())
         let milliseconds = totalMilliseconds % 1000
         let totalSeconds = totalMilliseconds / 1000
         let secs = totalSeconds % 60

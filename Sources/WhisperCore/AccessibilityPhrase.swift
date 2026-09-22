@@ -32,7 +32,7 @@ public enum AccessibilityPhrase {
     }
 
     public static func levelMeter(channel: String, level: Float) -> String {
-        "\(channel) level \(Int((max(0, min(1, level)) * 100).rounded())) percent"
+        "\(channel) level \(Int(saturating: Double((max(0, min(1, level)) * 100).rounded()))) percent"
     }
 
     static func statusPhrase(_ raw: String) -> String {

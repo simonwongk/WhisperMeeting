@@ -167,7 +167,7 @@ public enum TranscriptQuality {
             return nil
         }
 
-        let percent = Int((dominance * 100).rounded())
+        let percent = Int(saturating: (dominance * 100).rounded())
         return """
         This transcript looks like a decode that got stuck: one line repeats \(repeats) times, \
         about \(percent)% of it. The recording itself is fine — try Second Opinion with the other \

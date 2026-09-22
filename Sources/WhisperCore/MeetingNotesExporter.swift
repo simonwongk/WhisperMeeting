@@ -85,7 +85,7 @@ public enum MeetingNotesExporter {
         let quality = TranscriptQuality.review(segments)
         if !quality.isUnscored,
            !TranscriptFormatter.isEdited(transcriptText: transcriptText, segments: segments) {
-            let cleanPercent = Int((quality.confidence * 100).rounded())
+            let cleanPercent = Int(saturating: (quality.confidence * 100).rounded())
             lines.append("## Confidence")
             lines.append("")
             lines.append("\(cleanPercent)% clean — \(quality.flagged.count) of \(quality.scoredCount) segments flagged")

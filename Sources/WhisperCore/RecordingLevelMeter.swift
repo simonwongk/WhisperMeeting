@@ -151,7 +151,7 @@ public struct RecordingLevelMeter: Sendable {
 
     private func calibrated(_ amplitude: Float) -> Float {
         guard amplitude > 0 else { return 0 }
-        let decibels = 20 * log10(max(amplitude, 0.000_001))
+        let decibels = 20 * log10(max(0.000_001, amplitude))
         return min(1, max(0, (decibels - noiseFloorDB) / -noiseFloorDB))
     }
 }

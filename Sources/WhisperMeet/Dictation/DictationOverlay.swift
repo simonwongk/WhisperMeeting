@@ -93,8 +93,12 @@ extension DictationOverlay: DictationOverlayPresenting {}
 
 enum DictationPillLevelBucket {
     static func bucket(for level: Float) -> Int {
+        // The arithmetic stays in `Float` and only the finished value widens. Converting the
+        // input instead changes the answer: `Double(Float(0.2)) * 5` is 1.0000000149…, which
+        // `rounded(.up)` takes to 2, where the Float computation gives exactly 1. F120's
+        // bucket-equals-bars test caught that, which is the only reason this comment exists.
         let scaled = min(1, max(0, level)) * 5
-        return scaled == 0 ? 0 : Int(scaled.rounded(.up))
+        return scaled == 0 ? 0 : Int(saturating: Double(scaled.rounded(.up)))
     }
 }
 

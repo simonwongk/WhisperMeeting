@@ -59,7 +59,7 @@ public enum CaptureGapPolicy {
         // class as `WAVWriter`'s `&*` (F278): past the representable range the answer is wrong
         // either way, and clamping cannot lose a recording while trapping can.
         let ceilingSeconds = (Double(writtenFrames) + Double(maximumGapFrames)) / sampleRate
-        let expected = Int64((min(presentationOffset, ceilingSeconds) * sampleRate).rounded())
+        let expected = Int64(saturating: (min(ceilingSeconds, presentationOffset) * sampleRate).rounded())
         let gap = expected - writtenFrames
         // A buffer arriving EARLY — overlapping timestamps from a clock correction or a
         // re-delivery — cannot be fixed by truncating, because those samples are already written.

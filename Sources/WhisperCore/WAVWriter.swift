@@ -82,8 +82,7 @@ public enum WAVWriter {
     public static func pcm16Data(from samples: [Float]) -> Data {
         var data = Data(capacity: samples.count * 2)
         for sample in samples {
-            let clamped = max(-1, min(1, sample))
-            var value = Int16(clamped * Float(Int16.max)).littleEndian
+            var value = Int16(clampedAudioSample: sample).littleEndian
             withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
         }
         return data

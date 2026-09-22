@@ -103,7 +103,7 @@ public enum FloatTrackMixer {
             shaped = Float(1.0 - limiterHeadroom / (1 + excess))
         }
         let mixed = sum < 0 ? -shaped : shaped
-        return Int16(max(-1, min(1, mixed)) * Float(Int16.max))
+        return Int16(clampedAudioSample: mixed)
     }
 
     /// Writes `system` and `microphone` to `outputURL` as 16-bit mono PCM, returning its duration.

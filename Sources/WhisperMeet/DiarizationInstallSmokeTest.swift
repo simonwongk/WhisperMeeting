@@ -100,7 +100,7 @@ enum DiarizationInstallSmokeTest {
     /// for every meeting, so the smoke test exercises the same decode path a real run does.
     static func writeSilence(seconds: Double, to url: URL) throws {
         let sampleRate = 16_000
-        let byteCount = Int(Double(sampleRate) * 2 * max(0, seconds))
+        let byteCount = Int(saturating: Double(sampleRate) * 2 * max(0, seconds))
         var wav = WAVWriter.header(sampleRate: UInt32(sampleRate), dataByteCount: UInt32(byteCount))
         wav.append(Data(count: byteCount))
         try wav.write(to: url)

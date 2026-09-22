@@ -85,7 +85,7 @@ public enum RecordingHealthAdvisory {
         }
         let fraction = Double(atFullScale) / Double(measured)
         if fraction < 0.0001 {
-            let oneIn = Int((1 / fraction).rounded())
+            let oneIn = Int(saturating: (1 / fraction).rounded())
             return "\(subject) reached full scale on \(grouped(atFullScale)) of "
                 + "\(grouped(measured)) samples — about 1 in \(grouped(oneIn)). "
                 + "That is far too few to be a level problem."

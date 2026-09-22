@@ -902,7 +902,9 @@ private final class FloatTrackWriter {
               ) else {
             throw AudioCaptureError.conversionFailed("Could not read captured audio (\(status))")
         }
-        inputBuffer.frameLength = AVAudioFrameCount(sampleBuffer.numSamples)
+        // `clamping:`, not a bare conversion: `numSamples` is a signed `CMItemCount` and
+        // `UInt32(Int)` traps on a negative or oversized value (F376's sweep).
+        inputBuffer.frameLength = AVAudioFrameCount(clamping: sampleBuffer.numSamples)
 
         if converter == nil || converterInputFormat != inputFormat {
             converter = AVAudioConverter(from: inputFormat, to: targetFormat)
@@ -913,7 +915,11 @@ private final class FloatTrackWriter {
         }
 
         let ratio = targetFormat.sampleRate / inputFormat.sampleRate
-        let capacity = AVAudioFrameCount(ceil(Double(inputBuffer.frameLength) * ratio) + 32)
+        // `saturating:`, matching `DictationTapConverter` — this function's deliberate mirror,
+        // which fixed the same line in F356 while this one kept the bare conversion that traps
+        // (F376). An inconsistency between two copies of one function is how the next reader
+        // learns the wrong rule.
+        let capacity = AVAudioFrameCount(saturating: ceil(Double(inputBuffer.frameLength) * ratio) + 32)
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: capacity

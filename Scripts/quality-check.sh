@@ -104,13 +104,23 @@ while kill -0 "$test_pid" 2>/dev/null; do
   if (( elapsed >= test_timeout )); then
     print -u2 "[3/5] TEST WATCHDOG: the suite exceeded ${test_timeout}s — the F121 helper hang."
     print -u2 "  last-started test: $(grep -aE '◇ Test ' "$test_log" | tail -1)"
-    # `|| true`: under `set -euo pipefail` a no-match pgrep returns nonzero, which would exit the
-    # watchdog before it samples and kills the wedged process. Keep going so the diagnostic runs.
-    helper_pid="$(pgrep -x swiftpm-testing-helper | head -1 || true)"
-    if [[ -n "$helper_pid" ]]; then
-      print -u2 "  sampling swiftpm-testing-helper (pid $helper_pid):"
-      sample "$helper_pid" 2 2>/dev/null | sed -n '1,30p' >&2 || true
-      kill -9 "$helper_pid" 2>/dev/null || true
+    # OUR helper, not any helper (F371). This used to be
+    # `pgrep -x swiftpm-testing-helper | head -1`, which matches every such process on the machine
+    # and takes an arbitrary one — so with two agent sessions sharing this checkout, A's watchdog
+    # could SIGKILL B's healthy run, and B would see its suite die with no cause in its own output.
+    # `|| true` because a no-match must not exit the watchdog before it samples.
+    helper_pids=("${(@f)$(Scripts/find-test-helper.sh "$test_pid" 2>/dev/null || true)}")
+    helper_pids=("${(@)helper_pids:#}")
+    if (( ${#helper_pids} > 0 )); then
+      for helper_pid in $helper_pids; do
+        print -u2 "  sampling swiftpm-testing-helper (pid $helper_pid, a descendant of $test_pid):"
+        sample "$helper_pid" 2 2>/dev/null | sed -n '1,30p' >&2 || true
+        kill -9 "$helper_pid" 2>/dev/null || true
+      done
+    else
+      # Said out loud rather than silently falling back to a global match. A helper whose parent
+      # already died is reparented to launchd, and at that point nothing can prove it is ours.
+      print -u2 "  no swiftpm-testing-helper descendant of $test_pid — killing only the test process."
     fi
     kill -9 "$test_pid" 2>/dev/null || true
     cat "$test_log" >&2

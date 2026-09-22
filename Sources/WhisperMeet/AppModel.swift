@@ -1471,7 +1471,10 @@ final class AppModel: ObservableObject {
 
     /// Publishes the runtime's live progress for the review sheet.
     func apply(diarizationProgress fraction: Double) {
-        diarizationProgress = min(max(fraction, 0), 1)
+        // Constant first, both times (F369). `max(fraction, 0)` returns NaN — `max(x, y)` is
+        // `y >= x ? y : x` and every comparison against NaN is false — and `min(.nan, 1)` then
+        // keeps it, so this was the one clamp in the repo that a NaN passed straight through.
+        diarizationProgress = min(1, max(0, fraction))
     }
 
     /// Stops the in-flight analysis. The task's own epilogue clears the published state; nothing is
@@ -4201,7 +4204,7 @@ final class AppModel: ObservableObject {
     func askMeetingsByMeaning(query: String, scope: MeetingScope, limit: Int = 10) async -> [CitedResult] {
         // Guarded like the sibling rankers (F333): every `prefix` below traps on a negative count.
         guard limit > 0 else { return [] }
-        let lexical = askMeetings(query: query, scope: scope, limit: max(limit, 20))
+        let lexical = askMeetings(query: query, scope: scope, limit: max(20, limit))
         guard isAskEmbeddingInstalled,
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return Array(lexical.prefix(limit))
@@ -4213,7 +4216,7 @@ final class AppModel: ObservableObject {
             // The scalar dot-product loop over every segment of every in-scope meeting, off the
             // main actor for the same reason as the read above (F331).
             let queryVector = question.vectors
-            let ranked = max(limit, 20)
+            let ranked = max(20, limit)
             let semantic = await Task.detached(priority: .userInitiated) {
                 SemanticRanker.rank(query: queryVector, in: indexed, limit: ranked)
             }.value

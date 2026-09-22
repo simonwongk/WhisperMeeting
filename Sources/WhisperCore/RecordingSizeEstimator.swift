@@ -48,6 +48,6 @@ public enum RecordingSizeEstimator {
 
     private static func bytes(_ seconds: TimeInterval, _ perSecond: Int64) -> Int64 {
         guard seconds > 0 else { return 0 }
-        return Int64((Double(perSecond) * seconds).rounded())
+        return Int64(saturating: (Double(perSecond) * seconds).rounded())
     }
 }

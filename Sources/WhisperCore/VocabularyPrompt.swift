@@ -46,7 +46,7 @@ public enum VocabularyPrompt {
         terms.reduce(0) { total, term in
             let ascii = term.unicodeScalars.count { $0.isASCII }
             let other = term.unicodeScalars.count - ascii
-            return total + Int(ceil(Double(ascii) / 3.0)) + other * 2 + 1
+            return total + Int(saturating: ceil(Double(ascii) / 3.0)) + other * 2 + 1
         }
     }
 
