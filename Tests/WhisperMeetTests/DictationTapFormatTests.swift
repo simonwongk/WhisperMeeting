@@ -30,9 +30,16 @@ func dictationGuardProbesTheHardwareFormat() throws {
     let source = try SourceAssertion.uncommentedSource(recorderSource)
     // AVAudioEngine.h, `inputNode`: "Check for the input node's input format (i.e. hardware format)
     // for non-zero sample rate and channel count to see if input is enabled."
-    #expect(source.contains("input.inputFormat(forBus: 0)"))
+    //
+    // Both clauses, separately: a two-clause guard becomes a one-clause guard in a later edit, and
+    // the behavioural counterpart is `eitherHalfOfTheProbeRefuses` in `DictationCaptureLossTests`,
+    // which F367's probe seam made possible and which is the stronger of the two checks.
+    #expect(source.contains("engine.inputNode.inputFormat(forBus: 0)"))
     #expect(source.contains("hardwareFormat.sampleRate > 0"))
-    #expect(source.contains("hardwareFormat.channelCount > 0"))
+    #expect(source.contains("hardwareFormat.channels > 0"))
+    // The property NOT to read. F356's crash came from `outputFormat`, whose value the engine is
+    // free to change when it enables input; the header's availability sentences name `inputFormat`.
+    #expect(!source.contains("outputFormat(forBus:"))
 }
 
 /// `seconds` of a 440 Hz sine at `amplitude`, mono float — the shape a tap delivers.

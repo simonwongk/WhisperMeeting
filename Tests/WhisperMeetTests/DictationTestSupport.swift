@@ -10,6 +10,10 @@ final class FakeDictationRecorder: DictationRecording {
     private(set) var isRecording = false
     private(set) var stopCount = 0
     var startError: Error?
+    /// Thrown by `stop()`. The controller's catch there used to treat every error as "nothing
+    /// heard"; F368 made it distinguish silence from a broken capture, so a test needs to choose.
+    var stopError: Error?
+    var onCaptureInterrupted: (@Sendable (DictationCaptureInterruption) -> Void)?
     /// Duration reported by `stop()`. Default 1 s (transcribe path). Set below the session's
     /// `minClipDuration` (0.35 s) to exercise the immediate discard-to-idle path.
     var stopDuration: TimeInterval = 1
@@ -29,11 +33,20 @@ final class FakeDictationRecorder: DictationRecording {
     func stop() throws -> (url: URL, duration: TimeInterval) {
         stopCount += 1
         isRecording = false
+        if let stopError { throw stopError }
         return (outputURL, stopDuration)
     }
 
     func cancel() {
         isRecording = false
+    }
+
+    /// Stands in for the audio hardware changing under a live capture (F357). The real recorder
+    /// invokes this from a framework-owned queue after its engine has already stopped itself, so
+    /// the fake stops first and then calls, in that order.
+    func simulateCaptureInterruption(_ reason: DictationCaptureInterruption = .deviceConfigurationChanged) {
+        isRecording = false
+        onCaptureInterrupted?(reason)
     }
 }
 

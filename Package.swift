@@ -39,12 +39,23 @@ let package = Package(
         .target(
             name: "WhisperCore"
         ),
+        // The one Objective-C target (F374). It exists because Swift cannot catch an
+        // `NSException` and AVFoundation raises one on a device condition the caller cannot
+        // pre-check — an abort with no explanation, twice in the field (F356). It is deliberately
+        // NOT in `WhisperCore`: that target is Foundation-only by the purity rule in AGENTS.md,
+        // gated by F372's test. Verified to build under Command Line Tools before being adopted,
+        // because this repo has one build-system change before (`appintentsmetadataprocessor`)
+        // that turned out not to be buildable without full Xcode.
+        .target(
+            name: "ObjCExceptionBridge"
+        ),
         .executableTarget(
             name: "WhisperMeet",
             // FluidAudio is imported ONLY here. `WhisperCore` stays Foundation-only (the purity rule
             // in AGENTS.md), which is exactly why the diarization runtime lives in the app target.
             dependencies: [
                 "WhisperCore",
+                "ObjCExceptionBridge",
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],
             linkerSettings: [
@@ -71,7 +82,7 @@ let package = Package(
         ),
         .testTarget(
             name: "WhisperMeetTests",
-            dependencies: ["WhisperCore", "WhisperMeet"]
+            dependencies: ["WhisperCore", "WhisperMeet", "ObjCExceptionBridge"]
         )
     ],
     swiftLanguageModes: [.v5]

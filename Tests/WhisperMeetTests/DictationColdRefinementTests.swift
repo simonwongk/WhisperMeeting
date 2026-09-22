@@ -8,6 +8,7 @@ import WhisperCore
 /// through a press/release with a refiner whose warm-up is deliberately blocked.
 
 private final class ColdRefinementRecorder: DictationRecording {
+    var onCaptureInterrupted: (@Sendable (DictationCaptureInterruption) -> Void)?
     private(set) var isRecording = false
     private let outputURL: URL
 

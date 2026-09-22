@@ -182,10 +182,11 @@ func dictationFailuresAreMappedBeforeTheyReachTheUser() throws {
     #expect(!controller.contains("fail(error.localizedDescription)"),
             "a bridged NSError's localizedDescription must not be used as user-facing copy")
     #expect(!controller.contains("session.handle(.engineFailed(error.localizedDescription))"))
-    // Three sinks, not two: the capture failure, the transcription failure, and the self-test
-    // result line in Settings, which was rendering `error.localizedDescription` as well.
+    // Four sinks, not the two F366 named: the start failure, the transcription failure, the
+    // Settings self-test result line — which was rendering `error.localizedDescription` too — and,
+    // since F368, the `stop()` failure that is not silence.
     let mapped = controller.components(separatedBy: "ErrorPresentation.sentence(").count - 1
-    #expect(mapped == 3, "expected all three user-facing sinks to be mapped, found \(mapped)")
+    #expect(mapped == 4, "expected all four user-facing sinks to be mapped, found \(mapped)")
     #expect(controller.contains("ErrorPresentation.diagnostic(for: error)"))
     #expect(!controller.contains("\"✗ \\(error.localizedDescription)\""))
 }

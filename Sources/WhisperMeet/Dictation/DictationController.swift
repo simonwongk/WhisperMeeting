@@ -642,6 +642,12 @@ final class DictationController: ObservableObject {
             dismissWorkItem?.cancel()
             busyHideWorkItem?.cancel()
             idleEvictWorkItem?.cancel() // fresh activity resets the idle-eviction clock
+            // F357. Set before every start rather than once in `init`: the recorder is injected,
+            // and a controller that claimed a callback it had not re-established after a swap
+            // would fail exactly once, silently.
+            recorder.onCaptureInterrupted = { [weak self] reason in
+                Task { @MainActor [weak self] in self?.handleCaptureInterrupted(reason) }
+            }
             try recorder.start { [weak self] level in
                 Task { @MainActor [weak self] in self?.overlay.update(level: level) }
             }
@@ -668,17 +674,39 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// The audio hardware changed under a live capture, so the engine stopped itself (F357).
+    ///
+    /// Ends the session in a stated failure instead of leaving it in `.listening`, which is what
+    /// it did before: the tap stopped delivering and nothing noticed, so the user kept talking and
+    /// got a transcript of only the audio that preceded the change — or, if the change landed
+    /// early, the "nothing heard" overlay. Silent truncation is worse than a visible failure
+    /// because the user cannot tell it happened.
+    ///
+    /// The partial audio is discarded rather than transcribed. Pasting the first half of a
+    /// sentence into whatever field has focus is the harm, not the remedy.
+    @MainActor
+    private func handleCaptureInterrupted(_ reason: DictationCaptureInterruption) {
+        guard enabled, status == .listening else { return }
+        log.error("dictation capture interrupted: \(String(describing: reason), privacy: .public)")
+        captureWatchdog.cancel()
+        recorder.cancel()
+        _ = session.handle(.engineFailed(reason.message))
+        // As the watchdog does: this ended without a user end-edge, so toggle mode's latched state
+        // must be cleared or the next press fires a no-op end edge instead of a fresh start (F78).
+        hotkeyMonitor.resetToggleState()
+        fail(reason.message)
+    }
+
     private func beginTranscriptionIfNeeded() -> Bool {
         captureWatchdog.cancel()
         guard recorder.isRecording else { return false }
         let clip: (url: URL, duration: TimeInterval)
         do {
             clip = try recorder.stop()
-        } catch {
-            // Capture produced no usable audio (or wasn't recording). Drive the machine out of
-            // .listening and release the mic instead of wedging there forever; treat it as "nothing
-            // heard" rather than a hard error.
-            log.notice("dictation capture yielded no audio: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
+        } catch MicDictationRecorder.RecorderError.noAudioCaptured {
+            // Genuinely nothing heard. Drive the machine out of .listening and release the mic
+            // instead of wedging there forever; this is a normal no-op, not a failure.
+            log.notice("dictation capture yielded no audio")
             recorder.cancel()
             _ = session.handle(.dismiss)
             status = .idle
@@ -686,6 +714,22 @@ final class DictationController: ObservableObject {
             overlay.show(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.2)
+            return false
+        } catch {
+            // Everything else is a failure and must not be reported as silence (F368). A converter
+            // that refused every buffer produces the same empty sample array as a silent room, and
+            // treating the two alike is what made that class of failure undiagnosable: the user saw
+            // "nothing heard", the log recorded a normal empty result, and a support question had
+            // no evidence to work from.
+            let sentence = ErrorPresentation.sentence(
+                for: error,
+                fallback: "The dictation capture could not be completed."
+            )
+            log.error("dictation capture failed: \(ErrorPresentation.diagnostic(for: error), privacy: .public)")
+            recorder.cancel()
+            _ = session.handle(.engineFailed(sentence))
+            hotkeyMonitor.resetToggleState()
+            fail(sentence)
             return false
         }
         log.notice("clip \(clip.duration, format: .fixed(precision: 2))s")
