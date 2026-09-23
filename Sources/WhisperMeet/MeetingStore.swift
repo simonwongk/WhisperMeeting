@@ -151,6 +151,15 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
     var languageWarning: String?
+    /// How many echoes of a stuck decode were removed from this transcript: whole repeated lines plus
+    /// in-line copies of a looping unit (F422). Nil when nothing was removed, and on every index
+    /// written before this field existed.
+    ///
+    /// A count rather than a sentence, for the F273 reason: the notice is generated from it in one
+    /// place, so no path that owns a message can erase the fact that text was removed. Set by the
+    /// transcription write (replacing any earlier value, because a new transcript's echoes are the
+    /// only ones it can have) and added to by Remove Repeated Lines.
+    var repeatsRemoved: Int?
     /// The engine that produced this meeting's transcript, as its raw persisted string (F250).
     ///
     /// **Stored as a string, not as the enum, and that is the whole fix.** It was
@@ -221,6 +230,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         staleTranscriptWarning: String? = nil,
         recoveryInterruption: String? = nil,
         languageWarning: String? = nil,
+        repeatsRemoved: Int? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         source: MediaSource? = nil,
         referenceSegments: [TranscriptSegment]? = nil
@@ -249,6 +259,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.staleTranscriptWarning = staleTranscriptWarning
         self.recoveryInterruption = recoveryInterruption
         self.languageWarning = languageWarning
+        self.repeatsRemoved = repeatsRemoved
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
         self.source = source
         self.referenceSegments = referenceSegments
@@ -273,6 +284,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         // warns about the rest — `MeetingRecordWireFormatTests` now enumerates the stored
         // properties with `Mirror` so the omission cannot recur.
         case recoverySource, staleTranscriptWarning, recoveryInterruption
+        case repeatsRemoved
         case transcriptionEngineRawValue = "transcriptionEngine"
     }
 

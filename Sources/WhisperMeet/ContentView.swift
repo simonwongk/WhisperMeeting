@@ -2691,6 +2691,11 @@ private struct TranscriptDetailView: View {
     @State private var seekRequest: Double?
     // F186: the cross-segment repetition notice, computed once per meeting rather than per redraw.
     @State private var repetitionNotice: String?
+    // F422: how many echoes Remove Repeated Lines would take out, computed with the notice above.
+    @State private var removableRepeats = 0
+    // F424: the lines Remove Lines in Another Language offers, while its confirmation sheet is up.
+    @State private var languageRemovalOffer: LanguageRemovalOffer?
+    @Environment(\.undoManager) private var undoManager
     @State private var notesDraft = ""
     @State private var notesLoadedFor: UUID?
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
@@ -2847,13 +2852,11 @@ private struct TranscriptDetailView: View {
                     seekRequest = request.seek
                     model.pendingNavigation = nil
                 }
-                // Once per meeting, off the render path. Suppressed on a hand-edited transcript, like
-                // every other segment-derived overlay — the segments no longer describe what is shown.
-                let segments = store.meeting(id: meetingID)?.segments ?? []
-                repetitionNotice = (store.meeting(id: meetingID)?.isTranscriptEdited ?? false)
-                    ? nil
-                    : TranscriptQuality.repetitionNotice(segments)
+                refreshRepetitionState()
             }
+            // F422/F423: removing lines changes what the repetition notices describe, so they are
+            // recomputed when the lines change — still never per redraw.
+            .onChange(of: store.meeting(id: meetingID)?.segments) { _, _ in refreshRepetitionState() }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
                 Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
@@ -2885,6 +2888,12 @@ private struct TranscriptDetailView: View {
             )) {
                 GlossarySuggestionSheet(proposals: glossaryProposals ?? [], protectedTerms: store.vocabulary) { accepted in
                     model.applyGlossaryCorrections(accepted, to: meetingID)
+                }
+            }
+            .sheet(item: $languageRemovalOffer) { offer in
+                LanguageLineRemovalSheet(offer: offer) { indices in
+                    guard let removal = model.removeTranscriptLines(at: IndexSet(indices), from: meetingID) else { return }
+                    registerLineRemovalUndo(removal, model: model, undoManager: undoManager, actionName: "Remove Lines")
                 }
             }
             .sheet(isPresented: $showSecondOpinion) {
@@ -3379,7 +3388,27 @@ private struct TranscriptDetailView: View {
             // and reports full confidence; only judging the whole segment list reveals it (F186).
             // Computed once per meeting in `.task` below, never per redraw — the segment list can run to
             // thousands of entries and this sits in a view that repaints during playback (F160).
-            if let notice = repetitionNotice {
+            //
+            // F422: echoes this transcript still has, with the control that removes them BESIDE the
+            // message, never inside it (F306: nesting is what made a banner's button deletable). When
+            // there are any, they are the actionable explanation, so the F186/F261 warning waits until
+            // nothing removable is left.
+            if removableRepeats > 0 {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Label(
+                        TranscriptRepetitionCleanup.removableNotice(count: removableRepeats),
+                        systemImage: "repeat.circle"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Remove Repeated Lines") { removeRepeatedLines() }
+                        .disabled(model.lineRemovalBlockedReason(for: meetingID) != nil)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .bannerSurface(.orange)
+            } else if let notice = repetitionNotice {
                 Label(notice, systemImage: "repeat.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -3387,6 +3416,12 @@ private struct TranscriptDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .bannerSurface(.red)
                     .accessibilityElement(children: .combine)
+            }
+            // F422: said once text was removed, from the stored count, so it outlives the session.
+            if let removed = meeting.repeatsRemoved, removed > 0 {
+                Label(TranscriptRepetitionCleanup.removedNote(count: removed), systemImage: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if hasSegments && transcriptMode == .read {
@@ -3504,6 +3539,14 @@ private struct TranscriptDetailView: View {
             }
             .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited
                       || model.libraryReadOnlyFootnote != nil)
+            // F424: pick out a side-conversation in the meeting's other language. It opens a list to
+            // confirm; nothing is removed from here.
+            Button {
+                offerLanguageLineRemoval()
+            } label: {
+                Label("Remove Lines in Another Language…", systemImage: "character.bubble")
+            }
+            .disabled(model.lineRemovalBlockedReason(for: meetingID) != nil)
             // F220: optional, post-meeting, entirely local speaker-turn analysis. The disclosure
             // always comes first — this button opens it and nothing else, so no analysis can start
             // without the user having read what the labels are and are not.
@@ -3598,6 +3641,46 @@ private struct TranscriptDetailView: View {
         // Flush any pending debounced edit when the editor goes away (tab switch, detail close) so an
         // edit made in the last debounce window is never lost (F40).
         .onDisappear { store.flushPendingEdits() }
+    }
+
+    /// The two repetition notices, off the render path (F186, F422). Suppressed on a hand-edited
+    /// transcript, like every other segment-derived overlay — the segments no longer describe what
+    /// is shown.
+    private func refreshRepetitionState() {
+        let meeting = store.meeting(id: meetingID)
+        let edited = meeting?.isTranscriptEdited ?? false
+        repetitionNotice = edited ? nil : TranscriptQuality.repetitionNotice(meeting?.segments ?? [])
+        removableRepeats = edited ? 0 : model.removableRepeatCount(for: meetingID)
+    }
+
+    private func removeRepeatedLines() {
+        guard let removal = model.removeRepeatedLines(from: meetingID) else { return }
+        registerLineRemovalUndo(removal, model: model, undoManager: undoManager, actionName: "Remove Repeated Lines")
+    }
+
+    /// Builds the list for Remove Lines in Another Language (F424). Nothing is removed here; the
+    /// sheet's Remove button does that, for the lines still ticked.
+    private func offerLanguageLineRemoval() {
+        guard let meeting = store.meeting(id: meetingID),
+              let offer = model.linesOutsideMeetingLanguage(for: meetingID) else {
+            model.alertMessage = "WhisperMeet can't tell which language this meeting is in, so it can't pick out lines in another one."
+            return
+        }
+        guard !offer.indices.isEmpty else {
+            model.alertMessage = "Every line of this transcript reads as \(offer.language.displayName)."
+            return
+        }
+        languageRemovalOffer = LanguageRemovalOffer(
+            language: offer.language,
+            lines: offer.indices.map { index in
+                let segment = meeting.segments[index]
+                return LanguageRemovalOffer.Line(
+                    index: index,
+                    timestamp: segment.start.map { TranscriptFormatter.timestamp($0) },
+                    text: segment.text
+                )
+            }
+        )
     }
 
     /// Upgrades meetings transcribed before the unified-transcript change exactly once: if a
@@ -4045,6 +4128,102 @@ private struct ActionItemCard: View {
 
 /// Presents proposed spelling corrections toward the user's vocabulary for review. Nothing is applied
 /// until the user confirms — corrections only take effect after explicit review (F82/F65).
+/// Registers Edit ▸ Undo for a line removal (F423). Undo only: `undoTranscriptLineRemoval` refuses
+/// once the transcript has changed again, so a stale undo does nothing rather than overwrite.
+@MainActor
+private func registerLineRemovalUndo(
+    _ removal: AppModel.TranscriptLineRemoval,
+    model: AppModel,
+    undoManager: UndoManager?,
+    actionName: String
+) {
+    guard let undoManager else { return }
+    undoManager.registerUndo(withTarget: model) { model in
+        MainActor.assumeIsolated { _ = model.undoTranscriptLineRemoval(removal) }
+    }
+    undoManager.setActionName(actionName)
+}
+
+/// The lines Remove Lines in Another Language offers (F424), captured when the sheet opens.
+private struct LanguageRemovalOffer: Identifiable {
+    struct Line: Identifiable {
+        let index: Int
+        let timestamp: String?
+        let text: String
+        var id: Int { index }
+    }
+
+    let id = UUID()
+    /// The meeting's language — the lines listed are in the OTHER one.
+    let language: TranscriptLanguage
+    let lines: [Line]
+}
+
+/// Lists the lines in the meeting's other language, all ticked, for the user to confirm (F424).
+/// Nothing is removed until Remove is pressed; the recording is never touched.
+private struct LanguageLineRemovalSheet: View {
+    let offer: LanguageRemovalOffer
+    let onRemove: ([Int]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<Int>
+
+    init(offer: LanguageRemovalOffer, onRemove: @escaping ([Int]) -> Void) {
+        self.offer = offer
+        self.onRemove = onRemove
+        _selected = State(initialValue: Set(offer.lines.map(\.index)))
+    }
+
+    private var otherLanguageName: String {
+        (offer.language == .english ? TranscriptLanguage.chinese : .english).displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Remove Lines Not in \(offer.language.displayName)").font(.headline)
+                Text("These lines read as \(otherLanguageName) — often a side-conversation the microphone picked up. Untick any you want to keep. The recording is unchanged, and Edit ▸ Undo puts removed lines back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            List {
+                ForEach(offer.lines) { line in
+                    Toggle(isOn: Binding(
+                        get: { selected.contains(line.index) },
+                        set: { isOn in
+                            if isOn { selected.insert(line.index) } else { selected.remove(line.index) }
+                        }
+                    )) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if let timestamp = line.timestamp {
+                                Text(timestamp).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            Text(line.text)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Button(selected.count == offer.lines.count ? "Deselect All" : "Select All") {
+                    selected = selected.count == offer.lines.count ? [] : Set(offer.lines.map(\.index))
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Remove \(selected.count) Line\(selected.count == 1 ? "" : "s")", role: .destructive) {
+                    onRemove(selected.sorted())
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selected.isEmpty)
+            }
+            .padding()
+        }
+        .frame(width: 520, height: 540)
+    }
+}
+
 private struct GlossarySuggestionSheet: View {
     let proposals: [GlossaryCorrection]
     /// The user's vocabulary (F245): a proposal that would rewrite one of these arrives unticked
@@ -4372,6 +4551,7 @@ private struct PlayableTranscriptView: View {
     @State private var confirmClearSpeakerLabels = false
     @State private var confirmAnalyzeAgain = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.undoManager) private var undoManager
     // Distinguishes chevron navigation (glides) from typing (snaps): recomputeVisible() leaves
     // this false; moveSearchSelection(by:) sets it just before changing the selection.
     @State private var animateNextSearchScroll = false
@@ -4592,6 +4772,13 @@ private struct PlayableTranscriptView: View {
             }
         }
         .onChange(of: findText) { _, _ in recomputeVisible() }
+        // F423: a deleted line (or an undone deletion) arrives as new segments, and the cached rows,
+        // search ranges and speaker labels are all keyed by index — rebuild them. Array equality
+        // short-circuits on shared storage, so the playback tick pays nothing here.
+        .onChange(of: segments) { _, _ in
+            recomputeVisible()
+            refreshSpeakerReview()
+        }
         // F177 "Play source": seek (and start playing) from where an action item was raised, then
         // clear the request. `initial: true` also handles the case where the request was set in the
         // same tick this view (re)appeared after switching back to read mode.
@@ -4985,7 +5172,19 @@ private struct PlayableTranscriptView: View {
                 }
                 .disabled(model.hasActiveTranscription || model.isRunningAuxiliaryEngine)
             }
+            // F423: take a line out of the transcript — a side-conversation, an aside nobody needs.
+            // The recording is untouched and Edit ▸ Undo puts the line back. Disabled from values
+            // this view already holds, never from `lineRemovalBlockedReason`: this menu is built per
+            // row, and that call renders the whole transcript to test for manual edits (F160).
+            Divider()
+            Button("Delete Line", role: .destructive) { deleteLine(at: index) }
+                .disabled(isEdited || model.libraryReadOnlyFootnote != nil || model.hasActiveTranscription)
         }
+    }
+
+    private func deleteLine(at index: Int) {
+        guard let removal = model.removeTranscriptLines(at: [index], from: meetingID) else { return }
+        registerLineRemovalUndo(removal, model: model, undoManager: undoManager, actionName: "Delete Line")
     }
 
     private func qualityHelp(_ flags: [SegmentQualityFlag]) -> String {

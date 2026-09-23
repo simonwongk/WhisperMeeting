@@ -152,6 +152,7 @@ func theWireKeySetIsPinned() throws {
         staleTranscriptWarning: "s",
         recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
         languageWarning: "l",
+        repeatsRemoved: 3,
         transcriptionEngine: .whisperLarge
     )
     let object = try #require(
@@ -165,16 +166,17 @@ func theWireKeySetIsPinned() throws {
         "languageCode", "confidence", "segments", "errorMessage",
         "transcriptNormalized", "markers", "pinned", "notes", "tags", "alignmentWarning",
         "recoveryWarning", "recoverySource", "staleTranscriptWarning", "recoveryInterruption",
-        "languageWarning", "transcriptionEngine",
+        "languageWarning", "repeatsRemoved", "transcriptionEngine",
     ]
-    // 24 keys for 28 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
+    // 25 keys for 29 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
     // nil here, and a nil optional is omitted rather than written as null — so they are absent by
     // design, not by omission from `CodingKeys`.
     //
-    // These counts are the part that went stale, so they are stated rather than implied: 26 comes
-    // from `Mirror`, which `everyStoredFieldIsEncoded` reads directly. If this literal disagrees
+    // These counts are the part that went stale, so they are stated rather than implied: 29 is what
+    // `Mirror` reports, which `everyStoredFieldIsEncoded` reads directly. If this literal disagrees
     // with the wire format again, that test is the one that will say which field.
-    // (The prose count above was 23/27 before F188 added `schemaVersion`.)
+    // (The prose count above was 23/27 before F188 added `schemaVersion`, and 24/28 before F422 added
+    // `repeatsRemoved`. This line said "26 comes from Mirror" until F422; it was 28 at the time.)
     #expect(Set(object.keys) == expected,
             "a persisted field changed its on-disk name or stopped being written")
 }

@@ -63,6 +63,7 @@ private func fullyPopulatedRecord() -> MeetingRecord {
         staleTranscriptWarning: "stale",
         recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
         languageWarning: "language",
+        repeatsRemoved: 15,
         transcriptionEngine: .qwenBalanced,
         source: MediaSource(
             kind: MediaSource.webKind,

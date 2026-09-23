@@ -4469,6 +4469,132 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Removing transcript lines (F422, F423, F424)
+
+    /// Everything a line removal changed, so it can be undone exactly — and only while nothing else
+    /// has changed the transcript since (F423).
+    struct TranscriptLineRemoval: Equatable {
+        let meetingID: UUID
+        let segmentsBefore: [TranscriptSegment]
+        let textBefore: String
+        let repeatsRemovedBefore: Int?
+        let confidenceBefore: Double?
+        let segmentsAfter: [TranscriptSegment]
+    }
+
+    /// Why lines cannot be removed from this meeting right now, or nil when they can. One rule for
+    /// Delete Line, Remove Repeated Lines and Remove Lines Not in <language>, so a greyed-out control
+    /// and a refused call always agree.
+    ///
+    /// A hand-edited transcript is refused for the reason every Improve tool gives: its text no
+    /// longer derives from its lines, so rebuilding the text from fewer lines would overwrite the
+    /// user's edits.
+    func lineRemovalBlockedReason(for id: UUID) -> String? {
+        if let readOnly = libraryReadOnlyFootnote { return readOnly }
+        guard let meeting = store.meeting(id: id) else { return "This meeting no longer exists." }
+        guard meeting.status == .completed else {
+            return "Available once this meeting's transcription has finished."
+        }
+        if meeting.isTranscriptEdited {
+            return "Unavailable after manual edits — these tools work on the original transcription."
+        }
+        if meeting.segments.isEmpty { return "This transcript has no separate lines to remove." }
+        return nil
+    }
+
+    /// Removes the lines at `indices` and rebuilds the transcript text from the rest (F423). The
+    /// recording is never opened. Returns what to hand `undoTranscriptLineRemoval`, or nil when
+    /// nothing was removed — blocked, or no index in range.
+    ///
+    /// A deleted line is the user's choice, not a stuck decode's echo, so `repeatsRemoved` is left as
+    /// it was.
+    @discardableResult
+    func removeTranscriptLines(at indices: IndexSet, from id: UUID) -> TranscriptLineRemoval? {
+        guard lineRemovalBlockedReason(for: id) == nil, let meeting = store.meeting(id: id) else { return nil }
+        let doomed = Set(indices.filter { meeting.segments.indices.contains($0) })
+        guard !doomed.isEmpty else { return nil }
+        let remaining = meeting.segments.enumerated()
+            .filter { !doomed.contains($0.offset) }
+            .map(\.element)
+        return replaceSegments(of: meeting, with: remaining, repeatsRemoved: meeting.repeatsRemoved)
+    }
+
+    /// How many echoes Remove Repeated Lines would take out of this meeting (F422); zero when there
+    /// are none or the transcript was hand-edited.
+    func removableRepeatCount(for id: UUID) -> Int {
+        guard let meeting = store.meeting(id: id), !meeting.isTranscriptEdited else { return 0 }
+        return TranscriptRepetitionCleanup.clean(meeting.segments).removedCount
+    }
+
+    /// Runs the transcription write's cleanup over a transcript made before it existed (F422), and
+    /// adds what it removed to the meeting's count.
+    @discardableResult
+    func removeRepeatedLines(from id: UUID) -> TranscriptLineRemoval? {
+        guard lineRemovalBlockedReason(for: id) == nil, let meeting = store.meeting(id: id) else { return nil }
+        let cleaned = TranscriptRepetitionCleanup.clean(meeting.segments)
+        guard cleaned.removedCount > 0 else { return nil }
+        // Saturating: the stored count is decoded from disk, and `+` traps on overflow.
+        let (sum, overflowed) = (meeting.repeatsRemoved ?? 0).addingReportingOverflow(cleaned.removedCount)
+        return replaceSegments(of: meeting, with: cleaned.segments, repeatsRemoved: overflowed ? Int.max : sum)
+    }
+
+    /// Puts a removal back, but only if the transcript is exactly as the removal left it (F423).
+    /// Anything that changed it since — another deletion, a re-transcription, a manual edit — wins,
+    /// because restoring an older snapshot over it would silently undo that change too.
+    @discardableResult
+    func undoTranscriptLineRemoval(_ removal: TranscriptLineRemoval) -> Bool {
+        guard libraryReadOnlyFootnote == nil,
+              let meeting = store.meeting(id: removal.meetingID),
+              meeting.status == .completed,
+              meeting.segments == removal.segmentsAfter,
+              !meeting.isTranscriptEdited else { return false }
+        store.update(id: removal.meetingID) {
+            $0.segments = removal.segmentsBefore
+            $0.transcriptText = removal.textBefore
+            $0.repeatsRemoved = removal.repeatsRemovedBefore
+            $0.confidence = removal.confidenceBefore
+        }
+        return store.meeting(id: removal.meetingID)?.segments == removal.segmentsBefore
+    }
+
+    /// The meeting's language and the lines in the other one, for Remove Lines Not in <language>
+    /// (F424). Nil when the meeting's language cannot be told. Picks only; nothing is removed until
+    /// the user confirms the list and the view calls `removeTranscriptLines`.
+    func linesOutsideMeetingLanguage(for id: UUID) -> (language: TranscriptLanguage, indices: [Int])? {
+        guard let meeting = store.meeting(id: id),
+              let language = TranscriptLanguageFilter.meetingLanguage(
+                languageCode: meeting.languageCode, segments: meeting.segments
+              ) else { return nil }
+        return (language, TranscriptLanguageFilter.indices(notIn: language, segments: meeting.segments))
+    }
+
+    /// The single write behind every line removal: new lines, text rebuilt from them, and the header
+    /// confidence re-derived the way `apply(result:)` derives it, so the header never describes lines
+    /// that are gone. Nil when the store refused the write.
+    private func replaceSegments(
+        of meeting: MeetingRecord,
+        with segments: [TranscriptSegment],
+        repeatsRemoved: Int?
+    ) -> TranscriptLineRemoval? {
+        let removal = TranscriptLineRemoval(
+            meetingID: meeting.id,
+            segmentsBefore: meeting.segments,
+            textBefore: meeting.transcriptText,
+            repeatsRemovedBefore: meeting.repeatsRemoved,
+            confidenceBefore: meeting.confidence,
+            segmentsAfter: segments
+        )
+        let quality = TranscriptQuality.review(segments)
+        store.update(id: meeting.id) {
+            $0.segments = segments
+            $0.transcriptText = TranscriptFormatter.timestamped(segments)
+            $0.repeatsRemoved = repeatsRemoved
+            $0.confidence = quality.isUnscored ? nil : quality.confidence
+        }
+        guard store.meeting(id: meeting.id)?.segments == segments else { return nil }
+        return removal
+    }
+
     /// Proposes on-device LLM corrections for a meeting's transcript, guided by the business vocabulary
     /// and an optional reference document (F165). Read-only: returns reviewable `GlossaryCorrection`s
     /// that flow through the same F82 review sheet + `applyGlossaryCorrections` apply path — nothing is
@@ -4573,12 +4699,20 @@ final class AppModel: ObservableObject {
         // text; otherwise a partially-aligned result would drop content. Fall back to the complete
         // text and drop the incomplete segments so text and segments stay consistent (F144).
         let covers = !result.segments.isEmpty && Self.segmentsCoverText(result.segments, result.text)
-        let effectiveSegments = covers ? result.segments : []
+        // F422: a stuck decode's echoes are removed here, the one write every engine's result passes
+        // through, and counted so the detail view can say so. The coverage check above runs first,
+        // on the raw result, because the cleanup removes text that check would count as lost.
+        let cleaned = covers ? TranscriptRepetitionCleanup.clean(result.segments) : nil
+        let effectiveSegments = cleaned?.segments ?? []
+        let cleanedText = effectiveSegments.isEmpty ? TranscriptRepetitionCleanup.cleanText(result.text) : nil
+        let repeatsRemoved = (cleaned?.removedCount ?? 0) + (cleanedText?.removedCount ?? 0)
         store.update(id: id) {
             $0.status = .completed
             $0.transcriptText = effectiveSegments.isEmpty
-                ? result.text
+                ? (cleanedText?.text ?? result.text)
                 : TranscriptFormatter.timestamped(effectiveSegments)
+            // Replaced, never added to: a new transcript's echoes are the only ones it has.
+            $0.repeatsRemoved = repeatsRemoved > 0 ? repeatsRemoved : nil
             $0.languageCode = result.languageCode
             // Revive the header confidence label from the quality review; nil (no claim) when the
             // transcript carries no scorable segments (F56).
