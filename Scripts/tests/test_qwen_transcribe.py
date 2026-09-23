@@ -555,15 +555,21 @@ class _CyclingStep:
 
 
 class GreedyDecodeRepetitionGuardTests(unittest.TestCase):
-    """F260 — a stuck row must stop at the guard, not run to `max_tokens`."""
+    """F260 — a stuck row must stop at the guard, not run to `max_tokens`.
+
+    F421 note: these two rows are pure cycles from token zero, so `degenerate_cycle_length` trips at
+    exactly `ASR_MAX_CYCLE_REPS` real repeats (no prefix to shift the stride-aligned check off that
+    count — see `LoopGuardTrimTests` for a case where it does). `trim_cycle_tail` then cuts each back
+    to its one surviving copy, which is what these assertions now pin instead of the pre-F421 sixteen.
+    """
 
     def test_a_single_token_loop_stops_at_the_guard_not_max_tokens(self):
         rows = qwen.greedy_decode_rows([7], _CyclingStep([7]), {99}, max_tokens=4096)
-        self.assertEqual(rows, [[7] * qwen.ASR_MAX_CYCLE_REPS])
+        self.assertEqual(rows, [[7]])
 
     def test_a_two_token_loop_stops_at_the_guard(self):
         rows = qwen.greedy_decode_rows([4], _CyclingStep([9, 4]), {99}, max_tokens=4096)
-        self.assertEqual(rows[0], [4, 9] * qwen.ASR_MAX_CYCLE_REPS)
+        self.assertEqual(rows[0], [4, 9])
 
     def test_the_guard_never_runs_to_the_token_ceiling(self):
         """The regression this ticket is about: 8,192 tokens of one repeated unit."""
@@ -589,11 +595,80 @@ class GreedyDecodeRepetitionGuardTests(unittest.TestCase):
         step = _ScriptedStep([stuck, healthy], evictable=True)
         rows = qwen.greedy_decode_rows([7, 100], step, {99}, max_tokens=4096)
 
-        self.assertEqual(rows[0], [7] * qwen.ASR_MAX_CYCLE_REPS)
+        # F421: eviction is orthogonal to trimming — the stuck row still leaves through this same
+        # `keep`/eviction path, but its retired output is now the one surviving copy of its cycle.
+        self.assertEqual(rows[0], [7])
         self.assertEqual(rows[1], [100] + healthy[:-1])
         # The batch starts at 2 and narrows to 1 once the guard retires the stuck row.
         self.assertEqual(step.widths[0], 2)
         self.assertEqual(step.widths[-1], 1)
+
+
+class LoopGuardTrimTests(unittest.TestCase):
+    """F421 — a row the F260 guard retires keeps one copy of its cycle, not every repeat it emitted.
+
+    The real bug: a Qwen transcript carried `"操！"` sixteen times running, because F260 stopped the
+    row from decoding further but never touched what it had already emitted. `trim_cycle_tail` is
+    the fix; these tests drive it through `greedy_decode_rows`, the same entry point production uses,
+    never the helper directly.
+    """
+
+    def test_a_two_token_cycle_trims_to_one_copy_at_its_own_length(self):
+        """The literal shape of the user's bug: a two-token phrase (`操`, `！`) repeating forever."""
+        CAO, BANG = 30919, 6313  # stand-ins for the two token ids behind "操" and "！"
+        rows = qwen.greedy_decode_rows([CAO], _CyclingStep([BANG, CAO]), {99}, max_tokens=4096)
+        self.assertEqual(rows[0], [CAO, BANG])
+
+    def test_the_prefix_before_the_cycle_survives_trimming(self):
+        """Real content ahead of a runaway loop must not be mistaken for part of it.
+
+        This case also proves the guard's own repeat count cannot be assumed: with a one-token
+        prefix in front of a single-token cycle, the stride-4 check does not land on exactly 16
+        repeats — it first lands on 19 (see `trim_cycle_tail`'s docstring) — so a trim that assumed
+        `ASR_MAX_CYCLE_REPS - 1` copies would leave three redundant tokens behind. `PREFIX` is real,
+        non-cycle content and must come through untouched, with exactly one `CYCLE` token after it.
+        """
+        PREFIX, CYCLE = 1000, 9
+        rows = qwen.greedy_decode_rows([PREFIX], _CyclingStep([CYCLE]), {99}, max_tokens=4096)
+        self.assertEqual(rows[0], [PREFIX, CYCLE])
+
+    def test_an_eos_row_is_never_trimmed(self):
+        step = _ScriptedStep([[3, 99], [4, 5, 99]], evictable=False)
+        rows = qwen.greedy_decode_rows([1, 2], step, {99}, max_tokens=10)
+        self.assertEqual(rows, [[1, 3], [2, 4, 5]])
+
+    def test_a_row_that_reaches_max_tokens_is_never_trimmed(self):
+        rows = qwen.greedy_decode_rows([1], lambda tokens: [tokens[0] + 1], {99}, max_tokens=6)
+        self.assertEqual(rows, [[1, 2, 3, 4, 5, 6]])
+
+    def test_a_mixed_batch_trims_only_the_cycling_row(self):
+        """One row cycles (with a prefix, so its real repeat count is again 19, not 16), one hits EOS
+        immediately, and one is fed all the way to `max_tokens` without ever cycling or finishing —
+        all three share a batch, and only the cycling row's output is touched."""
+
+        class _MixedStep:
+            def __init__(self):
+                self.next_value = 300
+
+            def __call__(self, tokens):
+                out = []
+                for position in range(len(tokens)):
+                    if position == 0:
+                        out.append(9)  # keeps the row 0 cycle going
+                    elif position == 1:
+                        out.append(99)  # row 1 already finished; this value is never used
+                    else:
+                        out.append(self.next_value)
+                        self.next_value += 1
+                return out
+
+        rows = qwen.greedy_decode_rows([1000, 5, 200], _MixedStep(), {99}, max_tokens=20)
+
+        self.assertEqual(rows[0], [1000, 9])  # trimmed: prefix + one copy of the cycle
+        self.assertEqual(rows[1], [5])  # untouched: finished on EOS
+        self.assertEqual(  # untouched: ran to max_tokens, 20 distinct tokens
+            rows[2], [200] + list(range(300, 319))
+        )
 
 
 class BatchedRoutingTests(unittest.TestCase):

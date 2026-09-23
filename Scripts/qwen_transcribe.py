@@ -29,6 +29,11 @@ ASR_EOS_TOKEN_IDS = (151645, 151643)
 # times, never sixteen identical blocks in a row. Checking only every ASR_CYCLE_CHECK_STRIDE tokens
 # keeps the scan off the per-token hot path; because ASR_MAX_CYCLE_REPS is a multiple of the stride,
 # a pure cycle of length L still trips it at exactly L * ASR_MAX_CYCLE_REPS tokens.
+#
+# F260 only stopped the row; it left every already-emitted copy of the cycle in the row's output, so
+# a real transcript still carried the offending phrase sixteen (or more — see F421) times in a row.
+# F421's `trim_cycle_tail` runs when the guard trips and cuts the row's output back to a single copy
+# of the cycle, which is the only copy that is ever useful text.
 ASR_MAX_CYCLE_LEN = 8
 ASR_MAX_CYCLE_REPS = 16
 ASR_CYCLE_CHECK_STRIDE = 4
@@ -356,6 +361,33 @@ def degenerate_cycle_length(
     return None
 
 
+def trim_cycle_tail(tokens, cycle_len):
+    """Cut a row's output back to a single copy of a tail cycle `degenerate_cycle_length` found (F421).
+
+    `degenerate_cycle_length` stops counting the instant it reaches `ASR_MAX_CYCLE_REPS` — it only
+    has to prove a runaway exists, not measure it — so it tells the caller a cycle of `cycle_len` is
+    present, never how many copies. The guard also only checks every `ASR_CYCLE_CHECK_STRIDE` tokens,
+    so the row can already hold more than `ASR_MAX_CYCLE_REPS` complete copies by the time a check
+    lands: a single-token cycle with a one-token prefix in front of it has only 15 real repeats at
+    the check at token 16 (one short, so the guard does not trip), and by the next check four tokens
+    later, at token 20, the real count has jumped straight to 19 — three more than the minimum, with
+    no check ever landing on 16, 17 or 18 to catch it earlier. So the count to drop is derived here
+    by re-walking the tail without the early cutoff, never assumed to be `ASR_MAX_CYCLE_REPS - 1`
+    copies.
+
+    Anything before the cycle started — a real prefix, or nothing — is left exactly as it was; only
+    the redundant `(reps - 1) * cycle_len` trailing tokens are dropped.
+    """
+    count = len(tokens)
+    block = tokens[count - cycle_len:]
+    reps = 1
+    position = count - 2 * cycle_len
+    while position >= 0 and tokens[position:position + cycle_len] == block:
+        reps += 1
+        position -= cycle_len
+    return tokens[:count - (reps - 1) * cycle_len]
+
+
 def greedy_decode_rows(first, step, eos_ids, max_tokens):
     """Batched greedy decoding bookkeeping (F213; row eviction added by F240).
 
@@ -391,8 +423,13 @@ def greedy_decode_rows(first, step, eos_ids, max_tokens):
                 outputs[row].append(token)
                 # F260: a row stuck in a cycle finishes here rather than at `max_tokens`. It leaves
                 # through the same `keep`/eviction path as an EOS row, so there is one exit, not two.
-                if degenerate_cycle_length(outputs[row]) is not None:
+                cycle_len = degenerate_cycle_length(outputs[row])
+                if cycle_len is not None:
                     done[row] = True
+                    # F421: the guard only proves a runaway exists; it does not stop the row from
+                    # having emitted every repeat already. Cut back to one copy of the cycle here,
+                    # the single exit above, so a retired row never leaves its repeats in the text.
+                    outputs[row] = trim_cycle_tail(outputs[row], cycle_len)
                 else:
                     keep.append(position)
         if all(done):
