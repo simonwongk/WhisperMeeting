@@ -94,3 +94,30 @@ Automatic recovery protects against process failures, app interruption, corrupt 
 incomplete recording finalization. It preserves all audio files it finds. **Cancel Recording** and
 **Delete Meeting** are explicit user deletion actions and remain intentionally destructive; the
 interface and recovery documentation must state that boundary clearly.
+
+## Two copies of the app, one library — a deliberate limit
+
+If two copies of WhisperMeet open the same library, **both may write it.** The app does not, and
+will not, make a library read-only because another copy holds the single-writer lease.
+
+What it guarantees instead is that a lost race is **detected, reported and recoverable**: each save
+is a compare-and-swap against the generation it read, a refused commit raises a visible message
+rather than failing silently, the refused body is kept on disk as a branch, and the pre-existing
+generations remain restorable. Nothing is overwritten unseen.
+
+This is a trade made deliberately and it can be re-opened, so the reasoning belongs here rather
+than in a commit message. Preventing the lost update means refusing writes on a lease, and a lease
+that can make a library read-only is a new way to lock somebody out of their own meetings — which
+is the harm this whole family of protections exists to prevent. The failure it would prevent is
+recoverable; the failure it would introduce is not. A false refusal costs a user their app for as
+long as it lasts, and a lost update costs them a re-save.
+
+One reading that would weaken this has to be closed off, because an earlier draft of this section
+got it backwards. F188 added a lease *refresh*, which looks as though it retires the classic
+objection to refusing writes — that an instance which once saw a rival stays read-only for the rest
+of its life. It does not, for the case that matters. `refreshWriterLease()` has a single caller,
+inside `performStartupRecovery()`, and the only in-session route back into that method is an in-app
+Restore, which `requestLibraryRecovery()` refuses outright for a library that is not degraded. An
+instance that launches on a *healthy* library, sees a rival, and outlives it therefore never
+re-asks. The objection stands, and the decision above is the safer one because of it rather than in
+spite of it (F407).
