@@ -206,6 +206,7 @@ private func makeInterruptibleController(
         hotkeyMonitor: monitor,
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.clipboardNotifier = {}

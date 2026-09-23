@@ -1,6 +1,28 @@
+import AppKit
 import Foundation
 import WhisperCore
 @testable import WhisperMeet
+
+/// One private pasteboard for the whole test process (F427). Named uniquely, so it can never be the
+/// user's clipboard; shared rather than one per test because a named pasteboard stays in the
+/// pasteboard server until released, and no test that uses it reads it back. Tests that do assert
+/// on the clipboard (`DictationClipboardRestoreTests`) make and release their own.
+@MainActor private let isolatedTestPasteboard = NSPasteboard.withUniqueName()
+
+/// The `TextInjector` every test `DictationController` must be given (F427). The default one is the
+/// user's real clipboard and, with auto-paste on and an Accessibility-trusted test process, a real ⌘V
+/// into whatever app is focused — so running the suite used to leave "raw transcript" on the
+/// developer's clipboard. This one writes to a private pasteboard and never synthesizes a paste, so
+/// every delivery is a clipboard-only delivery to a board nobody else can see.
+/// `DictationTestIsolationGuardTests` fails any construction that omits `textInjector:`.
+@MainActor
+func isolatedTextInjector() -> TextInjector {
+    TextInjector(
+        pasteboard: isolatedTestPasteboard,
+        canSynthesizePaste: { false },
+        synthesizePaste: { false }
+    )
+}
 
 /// Shared headless fakes for `DictationController` tests. They exercise the controller's injected
 /// seams (recorder, overlay, hotkey monitor, engine) without touching microphone/Accessibility

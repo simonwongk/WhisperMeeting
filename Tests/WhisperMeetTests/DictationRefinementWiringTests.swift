@@ -41,6 +41,7 @@ private struct Harness {
             logStore: DictationLogStore(directory: directory),
             captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
             refiner: refiner,
+            textInjector: isolatedTextInjector(),
             idleEvictSeconds: idleEvictSeconds,
             activateOnInit: false
         )

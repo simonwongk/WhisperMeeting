@@ -148,6 +148,7 @@ func coldRefinerNeverBlocksFirstDictation() async throws {
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: refiner,
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
@@ -207,6 +208,7 @@ func rapidNextDictationCancelsColdRefiner() async throws {
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: refiner,
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }

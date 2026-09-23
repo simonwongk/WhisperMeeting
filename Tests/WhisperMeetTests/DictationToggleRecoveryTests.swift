@@ -35,6 +35,7 @@ func refusedToggleStartStillStartsOnNextPress() async throws {
         // A watchdog that never fires within the test window, so a started capture stays `.listening`
         // (this test is about the toggle edge, not the F50 finalize-on-timeout path).
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.configure(isMicrophoneBusy: { microphoneBusy })
@@ -97,6 +98,7 @@ func watchdogFinalizeDoesNotInvertToggle() async throws {
         captureTimeout: .seconds(120),
         // Only the first armed capture's watchdog fires; the second stays pending.
         captureSleep: { _ in if !firstArm.isFirst() { try await Task.sleep(for: .seconds(3600)) } },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
 
@@ -146,6 +148,7 @@ func dictationPausesDuringRuntimeInstall() async throws {
         hotkeyMonitor: HotkeyMonitor(hotkey: DictationHotkey(keyCode: 96, mode: .hold)),
         logStore: DictationLogStore(directory: temporaryDirectory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.configureRuntimeInstalling { installing }

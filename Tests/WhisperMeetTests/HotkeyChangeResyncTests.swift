@@ -27,6 +27,7 @@ func changingHotkeyResyncsStatus() async throws {
         overlay: SilentDictationOverlay(),
         hotkeyMonitor: monitor,
         logStore: DictationLogStore(directory: temporaryDirectory),
+        textInjector: isolatedTextInjector(),
         activateOnInit: true
     )
 

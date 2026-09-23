@@ -228,6 +228,7 @@ func meetingPreparationEvictsBothIdleHelpers() async throws {
         logStore: DictationLogStore(directory: root),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: EvictTrackingRefiner(events: events),
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
 
@@ -259,6 +260,7 @@ func meetingPreparationEvictsIdleHelpersConcurrently() async throws {
         logStore: DictationLogStore(directory: root),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: GatedEvictionRefiner(gate: gate),
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
 
@@ -295,6 +297,7 @@ func meetingPreparationCancelsQueuedWarmUp() async throws {
         logStore: DictationLogStore(directory: root),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: EvictTrackingRefiner(events: ResourceReleaseEvents()),
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
 

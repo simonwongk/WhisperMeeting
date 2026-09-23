@@ -32,6 +32,7 @@ func missedReleaseRecoversController() async throws {
         logStore: DictationLogStore(directory: temporaryDirectory),
         captureTimeout: .seconds(120),
         captureSleep: { _ in },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
 

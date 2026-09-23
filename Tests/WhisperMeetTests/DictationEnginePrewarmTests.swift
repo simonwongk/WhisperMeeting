@@ -24,6 +24,7 @@ private func makeController(
         hotkeyMonitor: monitor,
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.clipboardNotifier = {}
@@ -142,6 +143,7 @@ func failedCaptureStartDoesNotPrewarm() async throws {
         hotkeyMonitor: monitor,
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.clipboardNotifier = {}
@@ -242,6 +244,7 @@ func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: refiner,
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     let meeting = MeetingActivity()
@@ -286,6 +289,7 @@ func refinementToggleWaitsForRecognitionWarmUp() async throws {
         logStore: DictationLogStore(directory: directory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
         refiner: refiner,
+        textInjector: isolatedTextInjector(),
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
