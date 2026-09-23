@@ -391,6 +391,77 @@ class InstallerStagingTests(unittest.TestCase):
             "the staged bundle must be cleaned up when the installer refuses",
         )
 
+    def _corrupt_the_bundle_as_it_is_swapped_in(self):
+        """An `mv` shim that really moves, then damages what it moved (F381 branch 3).
+
+        Deliberately not a `codesign` shim that lies about the verdict. The post-swap check is the
+        installer's last safety property, and a test that fakes its answer proves only that the
+        script reads a variable. Here the real `mv` runs, one byte is appended to the executable
+        afterwards, and the real `codesign --verify --deep --strict` then rejects the bundle for a
+        real reason — which is also the actual failure being modelled: a bundle that was fine in
+        staging and is not fine at the destination.
+        """
+        _write_executable(
+            os.path.join(self.shims, "mv"),
+            "#!/bin/sh\n"
+            'printf "%s" "mv" >> "{log}"\n'
+            'for arg in "$@"; do printf "\\t%s" "$arg" >> "{log}"; done\n'
+            'printf "\\n" >> "{log}"\n'
+            '/bin/mv "$@" || exit $?\n'
+            'for last in "$@"; do :; done\n'
+            'if [ "$last" = "{destination}" ] && [ -f "$last/Contents/MacOS/WhisperMeet" ]; then\n'
+            '  printf "tampered\\n" >> "$last/Contents/MacOS/WhisperMeet"\n'
+            "fi\n".format(log=self.command_log, destination=self.destination),
+        )
+
+    def test_a_bundle_damaged_during_the_swap_is_rolled_back(self):
+        """F381 branch 3 — `install-app.sh`'s post-swap verification failure.
+
+        The branch that stands between a failed update and no working app, and the one nobody had
+        seen run. What is asserted is the ticket's own Verification: the destination holds the
+        previous bundle's contents, and the exit status is 1.
+        """
+        self._place_previous_app()
+        self._set_app_running(False)
+        self._corrupt_the_bundle_as_it_is_swapped_in()
+
+        result = self._run_installer()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed signature verification", result.stderr)
+        self.assertIn("previous app was restored", result.stderr)
+        self.assertTrue(
+            self._previous_app_survives(),
+            "the previous bundle must be back at the destination after a rejected swap",
+        )
+        self.assertEqual(
+            self._staging_leftovers(), [],
+            "a successful rollback cleans up its staging directory",
+        )
+
+    def test_the_rollback_message_names_a_path_that_exists(self):
+        """The half of these branches that is only a promise: what the user is told to look at.
+
+        Two of the three rollback branches preserve the backup and print where it is. If that
+        sentence ever names a path that was removed, the user is sent to an empty directory at the
+        worst possible moment — so when a message names a path, the path is checked.
+        """
+        self._place_previous_app()
+        self._set_app_running(False)
+        self._corrupt_the_bundle_as_it_is_swapped_in()
+        result = self._run_installer()
+
+        for token in result.stderr.split():
+            # `codesign` prefixes its own diagnostics with `<path>:`, so trailing punctuation has
+            # to come off before the path is real. Stripping too little turns this into a test of
+            # the tokenizer, which is how it first failed.
+            candidate = token.rstrip(".:,")
+            if candidate.startswith(self.tmp) and "WhisperMeet" in candidate:
+                self.assertTrue(
+                    os.path.exists(candidate),
+                    "stderr names {!r}, which does not exist".format(candidate),
+                )
+
     def test_the_installer_replaces_an_existing_install_and_leaves_no_backup(self):
         self._place_previous_app()
         self._set_app_running(False)
