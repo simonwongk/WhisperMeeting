@@ -60,7 +60,7 @@ final class DictationTapConverter: @unchecked Sendable {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return nil }
 
         if converter == nil || converterInputFormat != inputFormat {
-            converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+            converter = MonoDownmixConverter.make(from: inputFormat, to: targetFormat)
             // Recorded only on success. If the build failed there is nothing to reuse, so the next
             // buffer must try again rather than be matched against a format no converter exists for.
             converterInputFormat = converter == nil ? nil : inputFormat

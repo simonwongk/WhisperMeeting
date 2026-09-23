@@ -988,7 +988,7 @@ private final class FloatTrackWriter {
         inputBuffer.frameLength = AVAudioFrameCount(clamping: sampleBuffer.numSamples)
 
         if converter == nil || converterInputFormat != inputFormat {
-            converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+            converter = MonoDownmixConverter.make(from: inputFormat, to: targetFormat)
             converterInputFormat = inputFormat
         }
         guard let converter else {
@@ -1062,11 +1062,16 @@ private final class FloatTrackWriter {
         guard sampleCount > 0 else { return .silent }
         var squaredSum: Float = 0
         var peak: Float = 0
-        // F346: count the frames at the rail here, where the samples are. `peak` is clamped to 1 by
-        // `RecordingAudioLevel`, so by the time anything downstream sees it, "touched full scale
-        // once" and "flat-topped for a third of the buffer" are the same number. Measured at
-        // ~0.06 ns/frame against the loop's existing ~0.58, so about 11% of a computation that
-        // already runs on every buffer.
+        // F346: count the frames at the rail here, where the samples are — meaning **after** the
+        // downmix (F398), so this measures clipping in what was recorded and not clipping at the
+        // source. A full-scale right channel alone averages to 0.5 and does not count. Whether the
+        // figure should instead be taken per input channel, before conversion, is F419. Before
+        // F398 this read the left channel only, which was not a decision anybody made.
+        //
+        // `peak` is clamped to 1 by `RecordingAudioLevel`, so by the time anything downstream sees
+        // it, "touched full scale once" and "flat-topped for a third of the buffer" are the same
+        // number. Measured at ~0.06 ns/frame against the loop's existing ~0.58, so about 11% of a
+        // computation that already runs on every buffer.
         var framesAtFullScale = 0
         for index in 0..<sampleCount {
             let magnitude = abs(samples[index])
