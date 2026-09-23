@@ -25,6 +25,15 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _RESOLVER = os.path.normpath(os.path.join(_HERE, "..", "find-test-helper.sh"))
 _HELPER_NAME = "swiftpm-testing-helper"
+# The fake helper: sleeps for argv[1] seconds, like the /bin/sleep it replaces (F430).
+_SLEEPER_SOURCE = """
+#include <stdlib.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    sleep(argc > 1 ? (unsigned)atoi(argv[1]) : 120);
+    return 0;
+}
+"""
 
 
 def _children_of(pid):
@@ -47,14 +56,16 @@ class FindTestHelperTests(unittest.TestCase):
         # copy of /bin/sleep under this name is indistinguishable from the genuine helper to
         # anything that matches on the name — which is exactly what the old resolver did.
         self.helper = os.path.join(self.tmp, _HELPER_NAME)
-        # `copyfile`, not `copy2`: copying macOS's file flags into a temp dir raises EPERM.
-        shutil.copyfile("/bin/sleep", self.helper)
-        os.chmod(self.helper, 0o755)
-        # Re-sign, or the copy is SIGKILLed the instant it execs. A system binary's signature is
-        # only honoured at its own path; a copy elsewhere is an unsigned Mach-O, which AMFI kills
-        # on Apple silicon. Measured before this line was written: exit status 137 and no process.
-        subprocess.run(["codesign", "-f", "-s", "-", self.helper], check=True,
-                       capture_output=True)
+        # Compiled here rather than copied from /bin/sleep (F430). A copy of a system binary is
+        # SIGKILLed on exec — its signature is only honoured at its own path — and F371 fixed that
+        # on the developer's Mac by re-signing the copy ad hoc. On the `macos-15` CI runner the
+        # re-signed copy still never ran, so three tests failed there with "the fixture's helper
+        # child never appeared" and CI died before the Swift suite. A program the linker signs is
+        # the same kind of binary as every Swift test executable the runner already runs.
+        subprocess.run(
+            ["cc", "-x", "c", "-o", self.helper, "-"],
+            input=_SLEEPER_SOURCE, text=True, check=True, capture_output=True,
+        )
         self.spawned = []
 
     def tearDown(self):
@@ -79,7 +90,13 @@ class FindTestHelperTests(unittest.TestCase):
             if _children_of(parent.pid):
                 return parent, _children_of(parent.pid)[0]
             time.sleep(0.05)
-        self.fail("the fixture's helper child never appeared")
+        # Say WHY, so a recurrence names its cause instead of repeating this sentence (F430): a
+        # helper that cannot run at all is a fixture problem, not a resolver one.
+        probe = subprocess.run([self.helper, "0"], capture_output=True)
+        self.fail(
+            "the fixture's helper child never appeared "
+            f"(parent exit {parent.poll()}, helper run on its own exits {probe.returncode})"
+        )
 
     def _resolve(self, pid):
         result = subprocess.run(
