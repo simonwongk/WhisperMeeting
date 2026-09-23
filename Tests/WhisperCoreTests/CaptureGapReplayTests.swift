@@ -183,3 +183,73 @@ func anAbsurdJumpIsCapped() throws {
         #expect(track.frameCount > cap, "the cap should still have padded up to its limit")
     }
 }
+
+// MARK: - F397: a run of failed WRITES, as distinct from a run of dropped buffers
+
+/// Replays a stream in which the sample writes for `failing` indices do not land.
+///
+/// Distinct from `replay(_:into:padding:)` above in shape rather than arithmetic. In a *drop* no
+/// buffer arrives, so no offset is consumed. Here every buffer arrives on time and it is the
+/// append that fails, which is the write-failure case. Production computes the padding **before**
+/// the sample write (`AudioCaptureEngine.append`), so the order below is that order.
+///
+/// The failure is modelled by not writing, the way this file already models a drop the
+/// `SCStream` will not perform on demand: what a throw leaves behind is precisely samples that
+/// were not written, and `FloatTrackFile` has no accounting for an attempt.
+@discardableResult
+private func replayWithFailedWrites(
+    _ buffers: [(offset: Double, frames: Int)],
+    failing: Range<Int>,
+    into track: FloatTrackFile
+) throws -> Int64 {
+    var padded: Int64 = 0
+    for (index, buffer) in buffers.enumerated() {
+        let gap = CaptureGapPolicy.paddingFrames(
+            presentationOffset: buffer.offset,
+            writtenFrames: track.frameCount,
+            sampleRate: replayRate
+        )
+        if gap > 0 {
+            try track.appendSilence(frames: gap)
+            padded += gap
+        }
+        guard !failing.contains(index) else { continue }
+        try track.append([Float](repeating: 0.5, count: buffer.frames))
+    }
+    return padded
+}
+
+@Test("A run of failed writes leaves the timeline honest rather than shifted (F397)")
+func failedWritesAreReconciledToWallClock() throws {
+    // This pins the property the F397 decision rests on. The product's documented answer to "should
+    // a capture whose writes keep failing stop itself?" is no — it is reported loudly and left
+    // running — and that is only defensible because continuing is *honest*: if a failed write
+    // shifted the timeline, every timestamp after it would be wrong and stopping would be the
+    // better choice. The argument lives in `docs/PRODUCT_SPEC.md`; the property lives here, so
+    // that changing the behaviour breaks a test rather than quietly falsifying a decision.
+    try temporaryTrack("failed-writes") { track, _ in
+        // Three seconds of 100 ms buffers; the writes for one full second of them fail.
+        let buffers = healthyStream(seconds: 3.0)
+        let padded = try replayWithFailedWrites(buffers, failing: 10..<20, into: track)
+
+        #expect(track.frameCount == Int64(3.0 * replayRate),
+                "the track must still span the wall-clock it covers")
+        #expect(padded == Int64(1.0 * replayRate),
+                "and the lost second must be made up as silence, not closed up")
+    }
+}
+
+@Test("Without the padding the same failed writes shift everything after them (F397)")
+func failedWritesWithoutPaddingShiftTheTimeline() throws {
+    // The sabotage, as an assertion. Together with the test above this says the honest timeline is
+    // *caused* by the reconciliation: remove it and the recording comes back a second short, with
+    // every sample after the outage claiming a time it did not happen at.
+    try temporaryTrack("failed-writes-unpadded") { track, _ in
+        let buffers = healthyStream(seconds: 3.0)
+        for (index, buffer) in buffers.enumerated() where !(10..<20).contains(index) {
+            try track.append([Float](repeating: 0.5, count: buffer.frames))
+        }
+        #expect(track.frameCount == Int64(2.0 * replayRate))
+        #expect(track.frameCount < Int64(3.0 * replayRate))
+    }
+}

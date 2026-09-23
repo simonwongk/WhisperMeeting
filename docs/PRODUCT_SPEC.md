@@ -121,3 +121,33 @@ Restore, which `requestLibraryRecovery()` refuses outright for a library that is
 instance that launches on a *healthy* library, sees a rival, and outlives it therefore never
 re-asks. The objection stands, and the decision above is the safer one because of it rather than in
 spite of it (F407).
+
+## A recording whose writes are failing is reported, never stopped
+
+When appends to the capture tracks keep failing — a full disk is the case this is really about —
+the app tells the user, loudly and in every surface it has: the menu-bar title takes its warning
+mark, the risk announcer speaks it once, the HUD says "Audio is not being saved — stop and check
+disk space", and the in-window banner says to stop. **It does not stop the recording itself, and
+it will not.**
+
+The cost of that is real and is not hidden here: someone who starts a recording and walks away is
+not looking at any of those surfaces, and if the disk stays full they come back to an hour of
+elapsed time and a file that ends where the disk filled.
+
+It is still the right trade, because **continuing is honest.** A write that fails does not shift
+the timeline: the next write that succeeds compares the buffer's presentation time against the
+frames actually on disk and makes up the difference in silence, so a capture that recovers yields
+a correct recording with a silent stretch in it rather than a file whose every later timestamp is
+wrong. Stopping would throw that recovery away. The failures this guards against are not all
+permanent, and the one that is — a full disk — loses the same audio either way.
+
+The other half is that ending somebody's meeting recording without being asked is a large action
+taken on a heuristic, and a false positive ends a real meeting. The app's standing rule is that it
+never stops a recording on its own, the sleep path excepted, where the OS is ending it anyway.
+
+What holds this up is a property, not an intention, so it is pinned by a test rather than by this
+paragraph: `failedWritesAreReconciledToWallClock` drives a run of failed writes through the real
+writer and asserts the track still spans its wall clock, and its companion asserts the recording
+comes back short without the reconciliation. If that property ever stops being true, this decision
+should be revisited rather than preserved — a dishonest timeline would make stopping the better
+answer.
