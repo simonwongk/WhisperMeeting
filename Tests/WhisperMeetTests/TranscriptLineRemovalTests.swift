@@ -283,3 +283,41 @@ func theCountRoundTrips() throws {
     let restored = try JSONDecoder().decode(MeetingRecord.self, from: JSONEncoder().encode(record))
     #expect(restored.repeatsRemoved == 15)
 }
+
+// MARK: - F422: the per-segment re-run
+
+@MainActor
+@Test("A re-transcribed segment that loops is cleaned before it is spliced in, and counted (F422)")
+func segmentReRunIsCleanedToo() async throws {
+    let (model, root) = makeModel()
+    let id = UUID()
+    let dir = root.appendingPathComponent("Recordings/\(id.uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    // Three seconds of 48 kHz mono 16-bit silence: the `meeting.wav` layout the re-run slices (F92).
+    let frames: UInt32 = 3 * 48_000
+    var wav = WAVWriter.header(sampleRate: 48_000, dataByteCount: frames * 2)
+    wav.append(Data(count: Int(frames * 2)))
+    try wav.write(to: dir.appendingPathComponent("meeting.wav"))
+
+    let segments = [line("first", 0, 1), line("second wrong", 1, 2), line("third", 2, 3)]
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .completed, transcriptText: TranscriptFormatter.timestamped(segments),
+        segments: segments, repeatsRemoved: 2
+    ))
+    let looping = (0..<6).map { line("操！", Double($0) * 0.1, Double($0) * 0.1 + 0.05) }
+    model.runTranscriptionEngineOverride = { _, _ in
+        TranscriptionResult(
+            id: "x", text: String(repeating: "操！", count: 6), languageCode: "zh",
+            audioDuration: 1, confidence: nil, segments: looping
+        )
+    }
+
+    await model.reTranscribeSegment(id: id, index: 1)
+
+    let updated = try #require(model.store.meeting(id: id))
+    #expect(updated.segments.map(\.text) == ["first", "操！", "third"])
+    // Added to, not replaced: the rest of the transcript's earlier removals still happened.
+    #expect(updated.repeatsRemoved == 7)
+    #expect(updated.isTranscriptEdited == false)
+}

@@ -1777,11 +1777,18 @@ final class AppModel: ObservableObject {
                 alertMessage = "Re-transcribing that segment produced no timestamped text, so the original was kept."
                 return
             }
+            // F422: a re-run can loop like any transcription, so its echoes go the same way before
+            // it is spliced in, and are added to the meeting's count rather than replacing it — the
+            // rest of the transcript's earlier removals still happened.
+            let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
             store.update(id: id) { meeting in
                 guard meeting.segments.indices.contains(index) else { return }
-                let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: result.segments)
+                let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
                 meeting.segments = merged
                 meeting.transcriptText = TranscriptFormatter.timestamped(merged)
+                if cleaned.removedCount > 0 {
+                    meeting.repeatsRemoved = Self.adding(cleaned.removedCount, to: meeting.repeatsRemoved)
+                }
             }
         } catch {
             alertMessage = error.localizedDescription
@@ -4533,9 +4540,18 @@ final class AppModel: ObservableObject {
         guard lineRemovalBlockedReason(for: id) == nil, let meeting = store.meeting(id: id) else { return nil }
         let cleaned = TranscriptRepetitionCleanup.clean(meeting.segments)
         guard cleaned.removedCount > 0 else { return nil }
-        // Saturating: the stored count is decoded from disk, and `+` traps on overflow.
-        let (sum, overflowed) = (meeting.repeatsRemoved ?? 0).addingReportingOverflow(cleaned.removedCount)
-        return replaceSegments(of: meeting, with: cleaned.segments, repeatsRemoved: overflowed ? Int.max : sum)
+        return replaceSegments(
+            of: meeting,
+            with: cleaned.segments,
+            repeatsRemoved: Self.adding(cleaned.removedCount, to: meeting.repeatsRemoved)
+        )
+    }
+
+    /// Adds to a stored `repeatsRemoved`, saturating: the stored count is decoded from disk, so it can
+    /// be anything, and `+` traps on overflow.
+    private static func adding(_ count: Int, to stored: Int?) -> Int {
+        let (sum, overflowed) = (stored ?? 0).addingReportingOverflow(count)
+        return overflowed ? Int.max : sum
     }
 
     /// Puts a removal back, but only if the transcript is exactly as the removal left it (F423).

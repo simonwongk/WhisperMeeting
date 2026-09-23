@@ -158,7 +158,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// A count rather than a sentence, for the F273 reason: the notice is generated from it in one
     /// place, so no path that owns a message can erase the fact that text was removed. Set by the
     /// transcription write (replacing any earlier value, because a new transcript's echoes are the
-    /// only ones it can have) and added to by Remove Repeated Lines.
+    /// only ones it can have), and added to by Remove Repeated Lines and by a per-segment re-run.
     var repeatsRemoved: Int?
     /// The engine that produced this meeting's transcript, as its raw persisted string (F250).
     ///
