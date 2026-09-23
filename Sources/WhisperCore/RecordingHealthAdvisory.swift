@@ -97,7 +97,10 @@ public enum RecordingHealthAdvisory {
         worstSecond: ClippedSecond? = nil,
         sustainedTail: String
     ) -> String {
-        guard let measured, let atFullScale, measured > 0, atFullScale <= measured else {
+        // `atFullScale >= 0` is not redundant with `<= measured` (F400): these arrive from
+        // `meetings.json` through `try? decodeIfPresent(Int.self, …)`, which accepts any `Int`, and
+        // a decoded `-5` satisfied `-5 <= 100` and printed "on -5 of 100 samples — about 1 in -20".
+        guard let measured, let atFullScale, measured > 0, atFullScale >= 0, atFullScale <= measured else {
             return "\(subject) came close to full scale at times. "
                 + "This recording predates the measurement that would say how close, or how often."
         }
@@ -106,7 +109,9 @@ public enum RecordingHealthAdvisory {
                 + "\(grouped(measured)) samples reached it, so nothing was clipped."
         }
         let fraction = Double(atFullScale) / Double(measured)
-        let burst = concentrationClause(overall: fraction, worstSecond: worstSecond)
+        let burst = concentrationClause(
+            overall: fraction, worstSecond: worstSecond, measuredTotal: measured
+        )
         if fraction < 0.0001 {
             let oneIn = Int(saturating: (1 / fraction).rounded())
             return "\(subject) reached full scale on \(grouped(atFullScale)) of "
@@ -131,18 +136,45 @@ public enum RecordingHealthAdvisory {
     /// ten times** the overall fraction, or evenly-spread clipping would say "concentrated" about
     /// itself, since its worst second matches its average by definition. Together they are what
     /// makes the same total count produce different sentences depending on where it sits.
-    private static func concentrationClause(overall: Double, worstSecond: ClippedSecond?) -> String {
+    private static func concentrationClause(
+        overall: Double,
+        worstSecond: ClippedSecond?,
+        measuredTotal: Int
+    ) -> String {
         guard let worstSecond, let peak = worstSecond.fraction else { return "" }
+        // A second cannot be more than fully clipped, and cannot hold more frames than the whole
+        // recording (F400). Both arrive decoded and unchecked, and both produced sentences that
+        // contradict the total printed beside them — "200% at full scale" from a worst second of
+        // 96,000 clipped frames inside 48,000. A clause that cannot be true locates nothing, so it
+        // is dropped rather than clamped: the rest of the sentence is still worth printing.
+        guard peak <= 1, worstSecond.framesMeasured <= measuredTotal else { return "" }
         guard peak >= 0.01, peak >= overall * 10 else { return "" }
         return " The worst second of it was \(percent(peak)) at full scale, so the distortion is "
             + "concentrated in one stretch rather than spread across the recording."
     }
 
-    private static func grouped(_ value: Int) -> String {
+    /// Digit grouping for this sentence, pinned rather than inherited (F400).
+    ///
+    /// A `NumberFormatter` with no locale follows `Locale.current`, while `percent` below uses
+    /// `String(format:)` and always writes '.' as the decimal point. On a de_DE host the two met
+    /// in one sentence — "13.136 of 14.400.000 samples (0.09%)" — with '.' as the grouping
+    /// separator and the decimal point a clause apart. The copy around these numbers is English,
+    /// so the numbers are formatted the same way, and the pair cannot drift again.
+    ///
+    /// `locale` is a parameter only so a test can show the formatter really is locale-sensitive;
+    /// nothing in the app passes it.
+    static func grouped(_ value: Int, locale: Locale = groupingLocale) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
+        formatter.locale = locale
         return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
+
+    /// `en_US`, not `en_US_POSIX`. POSIX is the usual choice for a fixed format and is the wrong
+    /// one here: it has no digit grouping at all, so it would have printed "14400000 samples".
+    /// Caught by the test that asserts the grouped form, which is the only reason this sentence
+    /// still has commas in it.
+    static let groupingLocale = Locale(identifier: "en_US")
 
     private static func percent(_ fraction: Double) -> String {
         fraction >= 0.01
