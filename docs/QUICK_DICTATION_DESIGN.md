@@ -184,8 +184,10 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
   `9` with `.maskCommand`, keyDown+keyUp) posted to `.cgSessionEventTap`, with a small settle delay
   after setting the clipboard.
 - If `!AXIsProcessTrusted` → skip ⌘V, post a `UNUserNotification` ("Transcript copied — press ⌘V").
-- v1 leaves the transcript on the clipboard (matches "…or go to clipboard"); prior-clipboard restore
-  is deferred.
+- v1 left the transcript on the clipboard (matches "…or go to clipboard"). Since F425 an
+  auto-paste puts the user's previous clipboard back after the paste, if nothing else has written
+  to it meanwhile; clipboard-only delivery still leaves the transcript there, because that is the
+  delivery. The rules and their limits are in `TextInjector`'s doc comment.
 
 ### `DictationController` (`@MainActor ObservableObject`)
 - Wires
@@ -310,8 +312,9 @@ Per the user's "keep logs of what you've done":
 ## Deferred / future
 
 Live streaming words; dictation history; multiple hotkey profiles;
-prior-clipboard restore after paste; per-app behavior; auto-type (keystroke) delivery mode.
-(AI text cleanup left this list 2026-08-28 — shipped as F200 local refinement, see Non-goals.)
+per-app behavior; auto-type (keystroke) delivery mode.
+(AI text cleanup left this list 2026-08-28 — shipped as F200 local refinement, see Non-goals.
+Prior-clipboard restore after paste left it 2026-09-23 — shipped as F425.)
 
 ## Acceptance criteria
 

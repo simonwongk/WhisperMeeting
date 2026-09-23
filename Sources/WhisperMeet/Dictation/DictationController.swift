@@ -69,6 +69,7 @@ final class DictationController: ObservableObject {
     private let overlay: any DictationOverlayPresenting
     private let engine: SelectableDictationEngine
     private let refiner: any DictationTextRefining
+    private let textInjector: TextInjector
     private let engineFactory: (DictationTranscriptionEngine) -> DictationEngine
     private let captureTimeout: Duration
     private let captureSleep: DictationCaptureWatchdog.Sleep
@@ -135,12 +136,14 @@ final class DictationController: ObservableObject {
             try await Task.sleep(for: $0)
         },
         refiner: (any DictationTextRefining)? = nil,
+        textInjector: TextInjector? = nil,
         idleEvictSeconds: TimeInterval = 300,
         activateOnInit: Bool = true
     ) {
         self.defaults = defaults
         self.recorder = recorder
         self.overlay = overlay ?? DictationOverlay()
+        self.textInjector = textInjector ?? TextInjector()
         self.hotkeyMonitor = hotkeyMonitor
         self.logStore = logStore ?? DictationLogStore()
         self.captureTimeout = captureTimeout
@@ -654,6 +657,9 @@ final class DictationController: ObservableObject {
             status = .listening
             overlay.show(.listening)
             captureWatchdog.arm()
+            // F425: a pasted dictation gives the user's clipboard back afterwards. The copy starts
+            // here, while the user speaks, and reads off the main thread because it can block.
+            textInjector.captureWillStart(autoPaste: autoPaste)
             log.notice("listening")
             return true
         } catch {
@@ -848,7 +854,7 @@ final class DictationController: ObservableObject {
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
             status = .delivering
-            let delivery = autoPaste ? TextInjector.deliver(payload) : deliverClipboardOnly(payload)
+            let delivery = textInjector.deliver(payload, autoPaste: autoPaste)
             _ = session.handle(.delivered)
             switch delivery {
             case .pasted: overlay.show(.done)
@@ -871,12 +877,6 @@ final class DictationController: ObservableObject {
             scheduleDismiss(after: 1.0)
             status = .idle
         }
-    }
-
-    private func deliverClipboardOnly(_ text: String) -> TextInjector.Delivery {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        return .clipboard
     }
 
     private func flashBusy() {

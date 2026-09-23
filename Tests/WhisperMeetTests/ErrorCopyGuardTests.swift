@@ -194,8 +194,10 @@ func dictationFailuresAreMappedBeforeTheyReachTheUser() throws {
 @Test("An error that is control flow declares itself silent rather than inventing copy (F366)")
 func unsurfacedErrorsAreDeclaredInCode() throws {
     // The guard above skips a type that conforms to `UnsurfacedError`, so the exemption is only as
-    // trustworthy as the count of who uses it. Two today, both found BY the guard rather than
-    // listed for it, and neither has "Error" in its name.
+    // trustworthy as the count of who uses it. Three today, all found BY the guard rather than
+    // listed for it, and none has "Error" in its name. The third is F425's
+    // `PasteboardSnapshot.Refusal`, a "do not restore the clipboard" reason that only reaches the
+    // diagnostic log.
     var silent: [String] = []
     for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
         let code = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8),
@@ -205,7 +207,7 @@ func unsurfacedErrorsAreDeclaredInCode() throws {
             silent.append(declared.name)
         }
     }
-    #expect(Set(silent) == ["Problem", "ImportRefusal"], "\(silent)")
+    #expect(Set(silent) == ["Problem", "ImportRefusal", "Refusal"], "\(silent)")
 }
 
 // MARK: - F391, reported by whisper-9d and confirmed here
