@@ -99,14 +99,18 @@ for shard in shards:
 PYEOF
 
 # 2. Reference turns (+ 16 kHz mono WAV when the manifest carries an audio path).
-python3 ami_prepare.py --manifest ami.jsonl --out ami --gap 0.5
+#
+#    `--gap` defaults to 0 since F393: one reference turn per annotated AMI utterance. The shards
+#    ship utterances, not words (8,664 entries, median 1.61 s), so merging across them invents
+#    reference turns nobody annotated — in a table whose whole subject is reference-turn length.
+#    Pass a larger --gap to get the other rule; the scorecard records which one its numbers used.
+python3 ami_prepare.py --manifest ami.jsonl --out ami
 
-# 2a. Reproduce the COMMITTED corpus, which is not what the default produces (F377). The 18 cached
-#     RTTMs match byte-for-byte at any gap from 0 to 0.06 and at 0.5 only 7 of 18 match, so the
-#     numbers in the scorecard correspond to ~0 — one reference turn per AMI utterance. Which of
-#     the two is the right rule for pre-segmented input is F393.
-python3 ami_prepare.py --manifest ami.jsonl --out ami-committed --gap 0
-diff -r ami-committed/rttm ~/Library/Caches/WhisperMeet-Bench/ami/wav   # IB4011 only: see F394
+# 2a. The check that the pipeline above is the one the scorecard's numbers came from: 17 of the
+#     18 RTTMs come back byte-identical. The 18th, IB4011, has the same line SET with two tied
+#     turns in the opposite order — a cached file written by a predecessor of this tool, no
+#     number affected. That is F394, and it is the only expected output of this diff.
+diff -r ami/rttm ~/Library/Caches/WhisperMeet-Bench/ami/wav   # IB4011 only: see F394
 
 # 3. Sweep the clustering threshold (Swift; see runtime-probe/README).
 swift run -c release sweep <models parent> sweep-out 0.30,0.40,0.50,0.55,0.60,0.65,0.70,0.80,0.90,1.00 ami/wav/*.wav

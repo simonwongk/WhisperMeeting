@@ -5,7 +5,7 @@
 the repo produced either, so the DER table and the F317 bucket table rested on one session's shell
 history. This is that step, committed.
 
-    python3 ami_prepare.py --manifest <ami.jsonl> --out <dir> [--gap 0.5]
+    python3 ami_prepare.py --manifest <ami.jsonl> --out <dir> [--gap 0]
     python3 ami_prepare.py --self-test
 
 **Corrected 2026-09-22 (F377), by running it against the real shards for the first time.** Three
@@ -17,20 +17,28 @@ file to a number — the same shape F348 found in the other two producers.
     the docstring got `error: unrecognized arguments: --shards`. The claim that "parquet is read
     with a minimal reader" described a design that was never here.
   * **"AMI ships per-word timings" is false for these shards.** The `ihm` config ships
-    **utterances**: measured over 2,646 entries from four meetings, the median entry is **1.34 s**
-    and the longest is 46.5 s. A word is around 0.3 s. So the per-speaker merge below is joining
-    utterances, not words.
+    **utterances**: over all 8,664 annotated entries in the 18 validation meetings the median is
+    **1.61 s**, the mean 3.64 s, the 90th percentile 9.15 s and the longest 96.9 s. Only 10.8% are
+    even as short as a word (~0.3 s). So the per-speaker merge below is joining utterances, not
+    words. (An earlier revision of this bullet said 1.34 s / 46.5 s, which was one shard — four
+    meetings, 2,646 entries — read as if it were the corpus.)
   * **`--gap` does far less on this data than "moves every bucket" implies.** Measured over all 18
     validation meetings: 8,664 reference turns at `--gap 0`, 8,557 at the 0.5 default — **1.2%
     fewer**. It bites at 2.0 s (6,272 turns, 27.6% fewer). The rule is still the right one to make
     explicit; the size of its effect was overstated because the input was assumed to be words.
 
-**The committed corpus does not correspond to this default.** The 18 cached RTTMs under
-`~/Library/Caches/WhisperMeet-Bench/ami/wav/` — which the scorecard's DER and bucket tables were
-computed from — reproduce byte-identically at any `--gap` from 0 to **0.06**, and at 0.5 only 7 of
-18 match. At `--gap 0` each utterance becomes its own reference turn (IB4010: 921 entries, 921
-turns). Reproduce the corpus with `--gap 0`, not the default. Whether 0 or 0.5 is the right
-reference-turn rule for pre-segmented input is a methodology question, not a bug: **F393**.
+**The default is 0, decided in F393.** One reference turn per AMI utterance, which is what the
+committed corpus already is. Of the 18 cached RTTMs under
+`~/Library/Caches/WhisperMeet-Bench/ami/wav/` — the ones the scorecard's DER and bucket tables were
+computed from — **17 reproduce byte-identically** at any `--gap` from 0 to 0.06; at 0.08 it is 14,
+at 0.10 twelve, and at the old 0.5 default seven. The 18th is IB4011, two paragraphs down: the same
+lines, two of them swapped.
+
+The rule, stated so it can be argued with: **trust the corpus's own segmentation.** AMI's
+utterance boundaries are human annotation, and merging across them invents reference turns nobody
+annotated — in a table (F317's) whose entire subject is how long a reference turn is. The merging
+code is kept because `--gap` remains the honest knob for anyone who wants the other rule, and
+because it is what makes the decision visible rather than baked in.
 
 The 18th meeting, IB4011, is a separate and smaller thing: at `--gap 0` its line *set* is
 identical and two turns with bit-identical starts and ends (2384.100, 1.020 s, speakers MIO046 and
@@ -44,6 +52,7 @@ the reproduction check needs.
 """
 
 import argparse
+import ast
 import json
 import os
 import struct
@@ -51,18 +60,30 @@ import sys
 import wave
 
 
+# The reference-turn rule, in one place. F393 decided 0: one turn per annotated AMI utterance.
+# It is a constant rather than a number written in three signatures because that is exactly how
+# F393's defect arose — `--gap` had been moved to 0 while `prepare()` still said 0.5, so the same
+# corpus produced different reference turns depending on which door you came in by. `self_test`
+# asserts that no signature in this file reintroduces a literal.
+DEFAULT_GAP = 0.0
+
+
 # --------------------------------------------------------------------------------------
-# Reference turns from word-aligned annotations. This is the part that moves the numbers.
+# Reference turns from the corpus's own annotations. This is what moves the numbers.
 # --------------------------------------------------------------------------------------
 
-def turns_from_words(words, gap=0.5):
-    """Maximal runs of one speaker's own consecutive words, split wherever a gap exceeds `gap`.
+def turns_from_words(words, gap=DEFAULT_GAP):
+    """Maximal runs of one speaker's own consecutive entries, split wherever a gap exceeds `gap`.
 
-    `words` is an iterable of (start, end, speaker). Merging is **per speaker**, not over the
-    globally sorted list: AMI's word alignments come from per-speaker headset channels, so another
-    participant speaking in the middle of someone's pause does not end their turn. Merging over the
-    global order instead would make every reference turn shorter in exactly the meetings with the
-    most crosstalk — which is the population the row-length buckets are about.
+    `words` is an iterable of (start, end, speaker). The parameter name is historical: for the
+    `ihm` shards these are **utterances, not words** (see the module docstring), which is why
+    `DEFAULT_GAP` is 0 and this merges nothing unless a caller asks it to.
+
+    Merging is **per speaker**, not over the globally sorted list: AMI's annotations come from
+    per-speaker headset channels, so another participant speaking in the middle of someone's pause
+    does not end their turn. Merging over the global order instead would make every reference turn
+    shorter in exactly the meetings with the most crosstalk — which is the population the
+    row-length buckets are about.
 
     The result is sorted by start and never contains a zero-length or reversed turn.
     """
@@ -137,21 +158,24 @@ def write_16k_mono(path, frames, channels, sample_width, rate):
 # --------------------------------------------------------------------------------------
 
 def read_manifest(path):
-    """A shard manifest: one JSON object per meeting.
+    """A shard manifest: one JSON object per meeting, `{"id", "words", "audio"?}`.
 
-    The parquet shards are converted to this by `datasets`, which is not a dependency here. The
-    documented route is:
+    `words` is a list of `[start, end, speaker]` triples. For the `ihm` shards these are
+    **utterances, not words** — see the module docstring, and the `--gap` default that follows
+    from it. `audio` is optional and, when present, must already be WAV.
 
-        python3 -c "from datasets import load_dataset; ..."   # see the README
+    Converting the published parquet shards into this file is the README's step 1, and it is
+    deliberately outside this tool: that step is the one that needs a third-party library, and
+    everything that decides a *number* lives in here with nothing but the stdlib.
 
-    so that the one step needing a third-party library is explicit and outside the committed tool,
-    and everything that decides a *number* is inside it.
+    **It is not `datasets`.** The route this docstring used to document could not run against
+    these shards at all (F377) — step 1 reads the parquet directly with `pyarrow`.
     """
     with open(path, encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def prepare(manifest_path, out_dir, gap=0.5):
+def prepare(manifest_path, out_dir, gap=DEFAULT_GAP):
     meetings = read_manifest(manifest_path)
     audio_dir = os.path.join(out_dir, "wav")
     rttm_dir = os.path.join(out_dir, "rttm")
@@ -173,6 +197,37 @@ def prepare(manifest_path, out_dir, gap=0.5):
                 )
         written.append((name, len(turns)))
     return written
+
+
+def assert_gap_default_has_one_home():
+    """Every `gap` default in this file is `DEFAULT_GAP`, and the CLI agrees with it.
+
+    Derived, not restated: it parses this file and reads whatever signatures are actually there,
+    so a function added later — or an old one edited back to a literal — is caught too. Restating
+    "check prepare and turns_from_words" is the shape of check that let the two drift apart.
+    """
+    tree = ast.parse(open(__file__, encoding="utf-8").read())
+    seen = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        spec = node.args
+        positional = spec.posonlyargs + spec.args
+        pairs = list(zip(positional[len(positional) - len(spec.defaults):], spec.defaults))
+        pairs += [(a, d) for a, d in zip(spec.kwonlyargs, spec.kw_defaults) if d is not None]
+        for arg, default in pairs:
+            if arg.arg != "gap":
+                continue
+            seen.append(node.name)
+            assert isinstance(default, ast.Name) and default.id == "DEFAULT_GAP", (
+                "%s(gap=...) defaults to a literal; use DEFAULT_GAP so the rule has one home"
+                % node.name)
+
+    # A scan that matches nothing passes vacuously, so name the two that must be in it. This is
+    # a floor on the scan, not the list it checks.
+    assert set(seen) >= {"turns_from_words", "prepare"}, seen
+    assert build_parser().get_default("gap") == DEFAULT_GAP, build_parser().get_default("gap")
+    assert DEFAULT_GAP == 0.0, DEFAULT_GAP
 
 
 def self_test():
@@ -198,16 +253,28 @@ def self_test():
     assert struct.unpack("<2h", downmixed) == (15, 35), struct.unpack("<2h", downmixed)
     halved = resample_to_16k_mono(struct.pack("<4h", 1, 2, 3, 4), 1, 2, 32_000)
     assert struct.unpack("<2h", halved) == (1, 3)
+
+    assert_gap_default_has_one_home()
     print("ami_prepare self-test passed")
 
 
-def main(argv):
+def build_parser():
+    """Split out of `main` so `self_test` can read the CLI's real default
+    rather than restate it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", help="JSONL: one {id, words, audio} object per meeting")
     parser.add_argument("--out", help="output directory (wav/ and rttm/ are created under it)")
-    parser.add_argument("--gap", type=float, default=0.5,
-                        help="seconds of silence that close a reference turn (default 0.5)")
+    # Default 0 since F393: one reference turn per AMI utterance. See the module docstring for
+    # the rule and why merging pre-segmented annotation was the wrong default.
+    parser.add_argument("--gap", type=float, default=DEFAULT_GAP,
+                        help="seconds of silence that close a reference turn "
+                             "(default %g — one turn per annotated utterance)" % DEFAULT_GAP)
     parser.add_argument("--self-test", action="store_true")
+    return parser
+
+
+def main(argv):
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.self_test:
         self_test()

@@ -448,10 +448,26 @@ installer, and nothing above the seam moved.
 ## The clustering threshold, derived on annotated meetings (F225, 2026-09-18)
 
 **Corpus.** AMI Meeting Corpus, headset-mix (`ihm`) **validation** split: 18 meetings, 9.6 hours,
-four speakers each, word-aligned reference turns. CC BY 4.0, fetched from the
-`diarizers-community/ami` mirror on Hugging Face at revision `8cdaae2e` (3 parquet files, 1.03 GB,
-kept in `~/Library/Caches/WhisperMeet-Bench/ami` — never in the checkout). Real meetings with real
-ground truth, which is what F217's synthetic corpus explicitly is not.
+four speakers each. CC BY 4.0, fetched from the `diarizers-community/ami` mirror on Hugging Face
+at revision `8cdaae2e` (3 parquet files, 1.03 GB, kept in
+`~/Library/Caches/WhisperMeet-Bench/ami` — never in the checkout). Real meetings with real ground
+truth, which is what F217's synthetic corpus explicitly is not.
+
+**Reference turns: one per annotated utterance (`ami_prepare.py --gap 0`).** This paragraph used to
+say "word-aligned reference turns", and that was wrong. Measured over all **8,664** annotated
+entries in the 18 meetings, the median annotation is **1.61 s**, the mean 3.64 s and the longest
+96.9 s, and only 10.8% are even as short as a word (~0.3 s). They are utterances. (F377 first
+caught this against one shard and reported 1.34 s / 46.5 s; that was four meetings read as if it
+were the corpus, corrected here in F393.) The tables above and the F317 table below were computed from
+RTTMs that merge nothing, which is what `--gap 0` produces and what the cached corpus reproduces
+byte for byte.
+
+The rule, so it can be argued with rather than inherited (F393): **trust the corpus's own
+segmentation.** AMI's utterance boundaries are human annotation, and merging across them invents
+reference turns nobody annotated — in a table whose entire subject is how long a reference turn is.
+`ami_prepare.py` keeps `--gap` as a knob for anyone who wants the other rule; it no longer defaults
+to it. For scale: merging at 0.5 s removes 1.2% of the 8,664 reference turns, and at 2.0 s removes
+27.6%.
 
 **Method.** `runtime-probe`'s `sweep` runs segmentation and embeddings once per meeting
 (`OfflineDiarizerManager.prepare`, 3–9 s each) and re-clusters at each threshold with the app's own
