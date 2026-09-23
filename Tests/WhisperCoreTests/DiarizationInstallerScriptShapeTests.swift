@@ -241,11 +241,17 @@ func diarizationInstallerPinsMatchTheDecisionRecord() throws {
     // The staged directory name is the landmine this whole adoption tripped over: `Repo.diarizer`
     // is the Hugging Face slug `…/speaker-diarization-coreml`, but `folderName` strips `-coreml`,
     // and the resulting error names the folder rather than the repo, so it misdirects.
-    #expect(script.contains(#"model_directory_name="speaker-diarization""#))
-    #expect(!installerCode(script).contains("speaker-diarization-coreml/models"))
-    #expect(script.contains("https://huggingface.co/${model_repo}/resolve/main"))
+    // Through `installerCode`, like the negative assertion below it and unlike the three of these
+    // that used the raw text until F384. Every one of them is a claim about what the installer
+    // *does* — which directory it stages, which host it fetches from, which threshold it pins —
+    // and the paragraph above each is prose about exactly those things. F285 is a false positive
+    // of precisely this shape, and this file already had the helper that prevents it.
+    let code = installerCode(script)
+    #expect(code.contains(#"model_directory_name="speaker-diarization""#))
+    #expect(!code.contains("speaker-diarization-coreml/models"))
+    #expect(code.contains("https://huggingface.co/${model_repo}/resolve/main"))
     // The threshold is part of the pin and belongs in the MANIFEST a result's sidecar is compared to.
-    #expect(script.contains(#"cluster_threshold="0.6""#))
+    #expect(code.contains(#"cluster_threshold="0.6""#))
     #expect(decision.contains("clustering.threshold = 0.6"))
 }
 
