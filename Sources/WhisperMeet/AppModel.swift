@@ -1829,7 +1829,7 @@ final class AppModel: ObservableObject {
             raw.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian
         }
         let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? SegmentAudioRange.headerBytes
-        let range = SegmentAudioRange.byteRange(
+        let range = try SegmentAudioRange.byteRange(
             startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate),
             availableBytes: fileSize
         )
