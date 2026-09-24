@@ -56,6 +56,7 @@ private struct ColdRefinementEngine: DictationEngine {
 private final class ColdRefinementHotkey: HotkeyMonitoring {
     var onPressStart: (() -> Void)?
     var onPressEnd: (() -> Void)?
+    var onPressCancel: (() -> Void)?
 
     @discardableResult
     func start(hotkey: DictationHotkey) -> Bool { true }

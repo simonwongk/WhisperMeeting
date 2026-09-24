@@ -79,6 +79,9 @@ Fallback / edge branches:
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
+- **Trigger used in a shortcut** (a modifier trigger held while another key goes down or the mouse
+  is clicked: ⌘-Tab, ⌥-click, a character typed with Right ⌥) → the capture is dropped unheard;
+  nothing is transcribed, pasted or logged (F448).
 - **A meeting is actively recording** → dictation hotkey is inert (mic-contention guard); menu bar
   and pill explain why. Symmetrically, starting a meeting while dictating is blocked until release.
 - **Engine/helper failure** → pill shows a short error; text (if any) still lands on clipboard.

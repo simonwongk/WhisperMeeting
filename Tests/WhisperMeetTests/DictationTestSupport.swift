@@ -155,6 +155,7 @@ struct FixedTextDictationEngine: DictationEngine {
 final class FakeHotkeyMonitor: HotkeyMonitoring {
     var onPressStart: (() -> Void)?
     var onPressEnd: (() -> Void)?
+    var onPressCancel: (() -> Void)?
     var startResult = true
     private(set) var startCount = 0
     private(set) var stopCount = 0

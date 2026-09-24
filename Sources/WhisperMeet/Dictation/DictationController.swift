@@ -190,6 +190,7 @@ final class DictationController: ObservableObject {
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
+        hotkeyMonitor.onPressCancel = { [weak self] in self?.handlePressCancel() }
         if activateOnInit {
             ensureHelperInstalled()
             apply()
@@ -657,6 +658,24 @@ final class DictationController: ObservableObject {
 
     private func handlePressEnd() {
         _ = beginTranscriptionIfNeeded()
+    }
+
+    /// The press that started this capture was half of a shortcut (F448): ⌘-Tab, ⌥-click, a
+    /// character typed with Right ⌥. The user never meant to dictate, so the capture is dropped
+    /// unheard — nothing is transcribed, pasted or logged — rather than finished. Only a capture
+    /// still listening is dropped: a toggle-mode press that turned dictation OFF has already handed
+    /// its audio to transcription, and that dictation is the user's.
+    private func handlePressCancel() {
+        guard enabled, session.state == .listening, recorder.isRecording else { return }
+        log.notice("dictation cancelled — the trigger was part of a shortcut")
+        captureWatchdog.cancel()
+        recorder.cancel()
+        _ = session.handle(.dismiss)
+        status = .idle
+        hideOverlay()
+        // Toggle mode latched "on" at this press; the next press must start a dictation, not end one.
+        hotkeyMonitor.resetToggleState()
+        scheduleIdleEviction()
     }
 
     private func startCapture() -> Bool {
