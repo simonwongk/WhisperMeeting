@@ -38,6 +38,11 @@ public struct DictationSession: Sendable {
         case (.idle, .startPressed):
             state = .listening
             return .startCapture
+        case (.done, .startPressed), (.failed, .startPressed):
+            // The last result is still on screen, waiting for its dismiss (F443). Nothing is in
+            // flight any more, so the press is the next dictation, not a collision with this one.
+            state = .listening
+            return .startCapture
         case (_, .startPressed):
             return .busy
         case let (.listening, .endPressed(duration)):

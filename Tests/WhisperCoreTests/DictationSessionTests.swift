@@ -44,3 +44,33 @@ func sessionGuards() {
     #expect(s.handle(.engineFailed("boom")) == DictationSession.Action.none)
     #expect(s.state == .failed(.engine("boom")))
 }
+
+@Test("a press while the last result is still showing starts the next capture (F443)")
+func sessionPressAfterResultStartsCapture() {
+    var delivered = DictationSession()
+    _ = delivered.handle(.startPressed); _ = delivered.handle(.endPressed(clipDuration: 1))
+    _ = delivered.handle(.transcriptReady("hi")); _ = delivered.handle(.delivered)
+    #expect(delivered.state == .done)
+    #expect(delivered.handle(.startPressed) == .startCapture)
+    #expect(delivered.state == .listening)
+
+    var empty = DictationSession()
+    _ = empty.handle(.startPressed); _ = empty.handle(.endPressed(clipDuration: 1))
+    _ = empty.handle(.transcriptReady(""))
+    #expect(empty.handle(.startPressed) == .startCapture)
+    #expect(empty.state == .listening)
+
+    var failed = DictationSession()
+    _ = failed.handle(.startPressed); _ = failed.handle(.engineFailed("boom"))
+    #expect(failed.handle(.startPressed) == .startCapture)
+    #expect(failed.state == .listening)
+
+    // Still refused while a dictation is genuinely in flight.
+    var transcribing = DictationSession()
+    _ = transcribing.handle(.startPressed); _ = transcribing.handle(.endPressed(clipDuration: 1))
+    #expect(transcribing.handle(.startPressed) == .busy)
+    #expect(transcribing.state == .transcribing)
+    _ = transcribing.handle(.transcriptReady("hi"))
+    #expect(transcribing.handle(.startPressed) == .busy)
+    #expect(transcribing.state == .delivering)
+}

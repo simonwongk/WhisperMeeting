@@ -80,6 +80,9 @@ final class DictationController: ObservableObject {
     private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
+    /// What the pill is saying, apart from a busy flash; nil while it is hidden. The flash puts this
+    /// back when it ends, so refusing a press never hides a dictation that is still in flight (F443).
+    private var shownPhase: DictationOverlay.Phase?
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
     /// Both warm-up tasks are cancellable and generation-guarded. A meeting release must prevent a
@@ -474,7 +477,7 @@ final class DictationController: ObservableObject {
             busyHideWorkItem?.cancel()
             idleEvictWorkItem?.cancel()
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
-            overlay.hide()
+            hideOverlay()
             invalidateEngineWarmth()
             engine.shutdown()             // release the resident model/subprocess when disabled
             // Keep a real wait-for-exit boundary in case the user re-enables dictation before the
@@ -626,10 +629,12 @@ final class DictationController: ObservableObject {
             prepareRefinerForCapture()
             prewarmEngineForCapture()
         case .busy:
-            // A press arrived while a dictation is still in flight — leave the in-flight session and
-            // its overlay untouched. Never reset it here; that would drop the pending transcript.
+            // A press arrived while a dictation is still in flight — leave the in-flight session
+            // alone. Never reset it here; that would drop the pending transcript. Say so, though,
+            // rather than swallowing the press (F443); the flash hands the pill back afterwards.
             // The monitor's toggle IS reset so the user's next press starts a fresh capture.
             log.notice("dictation press ignored — busy")
+            flashBusy()
             hotkeyMonitor.resetToggleState()
         default:
             hotkeyMonitor.resetToggleState()
@@ -655,7 +660,7 @@ final class DictationController: ObservableObject {
                 Task { @MainActor [weak self] in self?.overlay.update(level: level) }
             }
             status = .listening
-            overlay.show(.listening)
+            showPhase(.listening)
             captureWatchdog.arm()
             log.notice("listening")
             return true
@@ -714,7 +719,7 @@ final class DictationController: ObservableObject {
             _ = session.handle(.dismiss)
             status = .idle
             scheduleIdleEviction()
-            overlay.show(.empty)
+            showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.2)
             return false
@@ -743,11 +748,11 @@ final class DictationController: ObservableObject {
             try? FileManager.default.removeItem(at: clip.url)
             status = .idle
             scheduleIdleEviction() // a too-short tap still leaves the model warm — re-arm eviction
-            overlay.hide()
+            hideOverlay()
             return true
         case .transcribe:
             status = .transcribing
-            overlay.show(.transcribing)
+            showPhase(.transcribing)
             transcribe(clip: clip)
             return true
         default:
@@ -795,7 +800,7 @@ final class DictationController: ObservableObject {
                 var rawText: String?
                 var refinement: String?
                 if refineOn, !cleaned.isEmpty {
-                    await MainActor.run { if self.enabled { self.overlay.show(.refining) } }
+                    await MainActor.run { if self.enabled { self.showPhase(.refining) } }
                     // F245: the whole vocabulary, not the prompt-capped slice and not gated on
                     // the engine's prompt support — this is a guard on the model's output, not a
                     // hint to the recognizer, and a term the user taught the app must survive
@@ -854,8 +859,8 @@ final class DictationController: ObservableObject {
             let delivery = textInjector.deliver(payload, autoPaste: autoPaste)
             _ = session.handle(.delivered)
             switch delivery {
-            case .pasted: overlay.show(.done)
-            case .clipboard: overlay.show(.copied); clipboardNotifier()
+            case .pasted: showPhase(.done)
+            case .clipboard: showPhase(.copied); clipboardNotifier()
             }
             log.notice("delivered via \(delivery == .pasted ? "paste" : "clipboard", privacy: .public)")
             logStore.record(
@@ -866,7 +871,7 @@ final class DictationController: ObservableObject {
             )
             scheduleDismiss(after: 1.1)
         case .none where session.state == .failed(.emptyTranscript):
-            overlay.show(.empty)
+            showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.3)
             status = .idle
@@ -876,21 +881,36 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// A refused press, said out loud: every refusal flashes, whether a meeting, a mic test or a
+    /// model install holds the resources or a dictation is still in flight (F443). The flash never
+    /// takes the pill over — when it ends, the pill goes back to `shownPhase`, or is hidden if
+    /// nothing was showing — so a press during "Transcribing…" cannot leave that dictation without
+    /// its pill. It uses its OWN work item so it can never cancel a pending session-resetting
+    /// dismiss (which would leave the session wedged outside .idle).
     private func flashBusy() {
-        // Meeting-active guard path. Only flash when idle — never disrupt an in-flight or
-        // still-settling session. Uses its OWN work item so it can never cancel a pending
-        // session-resetting dismiss (which would leave the session wedged outside .idle).
-        guard session.state == .idle else { return }
         overlay.show(.busy)
         busyHideWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.overlay.hide() }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if let phase = self.shownPhase { self.overlay.show(phase) } else { self.overlay.hide() }
+        }
         busyHideWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
     }
 
+    private func showPhase(_ phase: DictationOverlay.Phase) {
+        shownPhase = phase
+        overlay.show(phase)
+    }
+
+    private func hideOverlay() {
+        shownPhase = nil
+        overlay.hide()
+    }
+
     private func fail(_ message: String) {
         status = .error(message)
-        overlay.show(.error)
+        showPhase(.error)
         logStore.record(text: "", outcome: .failed(message))
         scheduleDismiss(after: 1.6)
     }
@@ -899,7 +919,7 @@ final class DictationController: ObservableObject {
         dismissWorkItem?.cancel()
         busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.overlay.hide()
+            self?.hideOverlay()
             _ = self?.session.handle(.dismiss)
             self?.status = .idle
             self?.prewarmRefinerWhenSafe()
