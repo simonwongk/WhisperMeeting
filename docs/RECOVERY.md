@@ -126,8 +126,8 @@ counts and dates, which is the distinction that matters: *"42 · 0 meetings · 3
 Restoring is **append-only**. The chosen generation is written as a *new* save, so the generation it
 replaced is still on disk and the restore itself can be undone.
 
-If the library is open read-only, restoring still works — it is the one action that is not refused,
-because it reads the bytes off disk and verifies them rather than trusting anything in memory. **You
+If the library is open read-only, restoring still works — it is not refused, because it reads the
+bytes off disk and verifies them rather than trusting anything in memory. **You
 will need to quit and reopen WhisperMeet afterwards** to get back to a writable library.
 
 ### Rebuilding the index from the recording folders
@@ -142,6 +142,15 @@ raw source tracks are left for the interrupted-recording recovery on the next la
 
 The rebuild is written the same append-only way as a restore, so the damaged index stays on disk and
 the rebuild appears in the restore list like any other generation.
+
+### Restoring a whole backup
+
+*Restore…* in Settings brings back one dated folder made by *Back up library…* — recordings and
+indexes together. It works while the library is read-only too, since that is the state it exists to
+repair: when the index and its backup copy are unreadable and no past generation was kept, a full
+backup is the way out. Before anything is written, the files it would replace are copied into a
+hidden `.pre-restore-<time>` folder inside the library and kept afterwards, so the restore can be
+undone. While it runs, WhisperMeet takes no other changes to the library.
 
 ### Rehearsing the restore before you need it
 

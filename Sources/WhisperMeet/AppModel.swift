@@ -1990,6 +1990,13 @@ final class AppModel: ObservableObject {
     /// READS the library, while this overwrites it — so running during a capture would replace the
     /// index of a meeting being recorded right now.
     ///
+    /// **Not refused while the library is read-only (F466)**, where `backUpLibrary` is. A read-only
+    /// library is the state a restore exists to repair: when the index and its backup copy are
+    /// unreadable and no earlier generation was kept, a full backup is the only way out, and
+    /// refusing it is the dead end `MeetingStore.restoreIndexGeneration` is documented to avoid.
+    /// It is safe for the same reason that one is: nothing in memory is trusted. The restore copies
+    /// files from the backup, keeps the library's current state aside first, and reloads.
+    ///
     /// The plan is built with the deep check. It costs minutes on a library of recordings, and this
     /// is the one place that is the right trade: the user is about to overwrite everything they
     /// have, and the cheap check cannot see same-size corruption. A fast answer that might be wrong
@@ -1999,7 +2006,6 @@ final class AppModel: ObservableObject {
             alertMessage = reason
             return
         }
-        guard libraryAcceptsChanges("Restoring the library") else { return }
         let library = store.rootDirectory
         do {
             let plan = try await Task.detached(priority: .userInitiated) {
@@ -2074,11 +2080,10 @@ final class AppModel: ObservableObject {
     private func applyLibraryRestore(
         _ pending: PendingLibraryRestore, acceptingUnverifiedBackup: Bool
     ) async {
-        defer {
-            objectWillChange.send()
-            store.endLibraryRestore()
-        }
         let library = store.rootDirectory
+        // The launch skips its recovery work on a read-only library (F466), so a restore that
+        // repairs one has that work to resume — see below.
+        let wasReadOnly = store.isDegraded
         do {
             let outcome = try await Task.detached(priority: .userInitiated) {
                 try BackupRestore.apply(
@@ -2090,6 +2095,15 @@ final class AppModel: ObservableObject {
             }.value
             // The files on disk changed underneath this object, with no write algorithm to notice.
             store.reloadAfterLibraryRestore()
+            endLibraryRestore()
+            if wasReadOnly, !store.isDegraded {
+                // As `recoverLibrary` does, and for its reason: `performStartupRecovery` marked
+                // itself done before its read-only early return, so without this the notes backfill
+                // and the interrupted-recording rebuild wait for a relaunch nobody is told to do.
+                // After the hold ends, because that work writes to the library.
+                didPerformStartupRecovery = false
+                Task { await performStartupRecovery() }
+            }
             // Asked of the reload, not assumed from the copy (F463). Every file can land and the
             // library still not open — an older backup carries no checksums, so a damaged index in
             // it is found only now — and announcing success over a read-only library is the F187
@@ -2107,11 +2121,18 @@ final class AppModel: ObservableObject {
             }
             alertMessage = message
         } catch {
+            endLibraryRestore()
             // The offer is not put back. It was taken when the user answered, and the dialog it
             // belonged to has closed; `BackupRestore` either wrote nothing or has already rolled
             // the library back, so choosing the same backup again is safe.
             alertMessage = "The library could not be restored, and nothing was changed. \(error.localizedDescription)"
         }
+    }
+
+    /// Ends the hold `performLibraryRestore` began (F506), on both of the restore's paths.
+    private func endLibraryRestore() {
+        objectWillChange.send()
+        store.endLibraryRestore()
     }
 
     /// One retained index generation, described for the user to choose between (F193).

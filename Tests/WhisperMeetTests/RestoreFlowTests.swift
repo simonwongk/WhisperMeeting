@@ -9,13 +9,14 @@ import Testing
 // produced. That last property is structural rather than conventional, exactly as F193 made it: a
 // caller cannot restore something the user never saw a description of.
 //
-// The busyness and read-only guards matter more here than for a backup. A backup only reads the
-// library; a restore writes over it, so doing it during a recording would overwrite the index of a
-// meeting in progress.
+// The busyness guards matter more here than for a backup. A backup only reads the library; a
+// restore writes over it, so doing it during a recording would overwrite the index of a meeting in
+// progress. (The read-only guard is the other way round since F466: a backup is refused on a
+// read-only library and a restore is not — see `RestoreReadOnlyLibraryTests`.)
 
-/// A valid index, because an unreadable one degrades the library and every restore is then
-/// correctly refused. My first fixture wrote raw text into `meetings.json` and all six tests
-/// failed — which was the read-only guard working, not the flow being broken.
+/// A valid index, because these tests are about a healthy library. My first fixture wrote raw text
+/// into `meetings.json` and all six tests failed — which was the read-only guard of the time
+/// refusing every restore, not the flow being broken; F466 has since removed that guard.
 private let indexAtBackup = #"[]"#
 // ISO8601 `createdAt`, which is what `MeetingStore`'s decoder expects. A numeric one — valid for
 // the plain `JSONDecoder()` other suites decode fixtures with — quarantines the index, and the
