@@ -2673,6 +2673,8 @@ private struct TranscriptDetailView: View {
     let meetingID: UUID
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmSummarize = false
+    // F515: Transcribe Again replaces the transcript, so it always asks first.
+    @State private var confirmTranscribeAgain = false
     // F220: the disclosure shown before every speaker analysis — the inverse of `confirmSummarize`,
     // which warns that content leaves this Mac.
     @State private var confirmDiarization = false
@@ -2857,6 +2859,12 @@ private struct TranscriptDetailView: View {
             // F422/F423: removing lines changes what the repetition notices describe, so they are
             // recomputed when the lines change — still never per redraw.
             .onChange(of: store.meeting(id: meetingID)?.segments) { _, _ in refreshRepetitionState() }
+            .alert("Transcribe this meeting again?", isPresented: $confirmTranscribeAgain) {
+                Button("Cancel", role: .cancel) {}
+                Button("Transcribe Again") { model.transcribeAgain(id: meetingID) }
+            } message: {
+                Text("A new transcript is made from the recording and replaces this one, including any edits, deleted lines and removed repeats. It uses the engine and language selected in Settings. The recording is unchanged, and if the new run is cancelled or fails, this transcript stays.")
+            }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
                 Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
@@ -3362,14 +3370,21 @@ private struct TranscriptDetailView: View {
             // Explain in plain language when timestamp alignment was unavailable, so a transcript
             // with no seekable timestamps never looks like a silent failure (F30). The complete text
             // below is authoritative; only the per-segment timing is missing.
+            //
+            // F515: transcribing again is what brings the timestamps back (F420), so the control that
+            // does it sits beside this message — beside, never inside it (F306).
             if let warning = meeting.alignmentWarning {
-                Label(warning, systemImage: "clock.badge.exclamationmark")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .bannerSurface(.orange)
-                    .accessibilityElement(children: .combine)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Label(warning, systemImage: "clock.badge.exclamationmark")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Transcribe Again…") { confirmTranscribeAgain = true }
+                        .disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .bannerSurface(.orange)
             }
 
             // Flag when the transcript's language disagrees with the language the user selected, so
@@ -3469,6 +3484,14 @@ private struct TranscriptDetailView: View {
             ? model.speakerAnalysisUnavailability(for: meeting)
             : nil
         return Menu {
+            // F515: first, because it is the one that replaces everything below it. Asks first.
+            Button {
+                confirmTranscribeAgain = true
+            } label: {
+                Label("Transcribe Again…", systemImage: "arrow.clockwise")
+            }
+            .disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)
+            Divider()
             Button {
                 suggestVocabulary(meeting)
             } label: {
@@ -3584,7 +3607,7 @@ private struct TranscriptDetailView: View {
             Label("Improve", systemImage: "sparkles")
         }
         .fixedSize()
-        .help("Tools that work on this transcript: vocabulary suggestions, spelling corrections, a second engine's comparison, and optional anonymous speaker-turn analysis. Everything runs on this Mac.")
+        .help("Tools that work on this transcript: transcribing it again, vocabulary suggestions, spelling corrections, a second engine's comparison, and optional anonymous speaker-turn analysis. Everything runs on this Mac.")
     }
 
     /// Ongoing improvement work surfaced as a labeled status line under the header instead of a

@@ -4051,6 +4051,23 @@ final class AppModel: ObservableObject {
         pumpTranscriptionQueue()
     }
 
+    /// Transcribes a meeting that already has a transcript again, replacing it (F515). A completed
+    /// meeting had no way to reach `beginTranscription` — the only Transcribe button shows for
+    /// `.recorded` and `.failed` — though F420's lost timestamps come back only this way and three
+    /// notices say "transcribe again". The confirmation that it replaces edits is the view's.
+    func transcribeAgain(id: UUID) {
+        beginTranscription(id: id)
+    }
+
+    /// Why Transcribe Again cannot run for this meeting now, or nil. Only what `beginTranscription`
+    /// cannot already say in an alert: a read-only library, and a meeting already being transcribed.
+    func transcribeAgainBlockedReason(for id: UUID) -> String? {
+        if let readOnly = libraryReadOnlyFootnote { return readOnly }
+        guard let meeting = store.meeting(id: id) else { return "This meeting no longer exists." }
+        if meeting.status == .processing { return "This meeting is already being transcribed." }
+        return nil
+    }
+
     /// Starts the next queued transcription if nothing is currently running.
     private func pumpTranscriptionQueue() {
         guard let next = transcription.startNext() else { return }
@@ -4709,11 +4726,24 @@ final class AppModel: ObservableObject {
 
     func recoverInterruptedTranscriptions() {
         for meeting in store.meetings where meeting.status == .processing {
+            // F515: a re-run interrupted by quitting still has the transcript it was replacing.
+            let keepsTranscript = Self.holdsTranscript(meeting)
             store.update(id: meeting.id) {
-                $0.status = .recorded
-                $0.errorMessage = "Local transcription was interrupted. Start it again; the recording is unchanged."
+                $0.status = keepsTranscript ? .completed : .recorded
+                $0.errorMessage = keepsTranscript
+                    ? nil
+                    : "Local transcription was interrupted. Start it again; the recording is unchanged."
             }
         }
+    }
+
+    /// Whether a meeting still holds a transcript from an earlier run (F515). A re-run that does not
+    /// finish — cancelled, failed, or cut off by quitting — leaves that transcript untouched, because
+    /// only `apply(result:)` writes one; so the meeting goes back to `.completed`, not to a state
+    /// that presents it as never transcribed.
+    static func holdsTranscript(_ meeting: MeetingRecord) -> Bool {
+        !meeting.segments.isEmpty
+            || !meeting.transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func performTranscription(id: UUID) async {
@@ -4834,9 +4864,12 @@ final class AppModel: ObservableObject {
     }
 
     private func handleCancellation(id: UUID) {
+        let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
         store.update(id: id) {
-            $0.status = .recorded
-            $0.errorMessage = "Local transcription was cancelled. The recording is unchanged."
+            $0.status = keepsTranscript ? .completed : .recorded
+            $0.errorMessage = keepsTranscript
+                ? nil
+                : "Local transcription was cancelled. The recording is unchanged."
         }
         transcriptionProgress[id] = nil
     }
@@ -4879,9 +4912,13 @@ final class AppModel: ObservableObject {
             } ?? false
             if recordingIsSafe { message += " The recording is safe on this Mac." }
         }
+        // F515: a failed re-run keeps the transcript it would have replaced, so the meeting stays
+        // completed and the alert says the old one is still there.
+        let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
+        if keepsTranscript { message += " The previous transcript is unchanged." }
         store.update(id: id) {
-            $0.status = .failed
-            $0.errorMessage = message
+            $0.status = keepsTranscript ? .completed : .failed
+            $0.errorMessage = keepsTranscript ? nil : message
         }
         transcriptionProgress[id] = nil
         alertMessage = message
