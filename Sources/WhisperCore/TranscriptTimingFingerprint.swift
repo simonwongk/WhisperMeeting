@@ -20,6 +20,30 @@ public enum TranscriptTimingFingerprint {
     /// one straight to `Int64` traps the process, which is a crash caused by data rather than code.
     private static let unusableTiming = UInt64.max &- 1
 
+    /// Whether going from `old` to `new` only removed or restored whole lines: one list's
+    /// `(start, end)` pairs are an in-order subsequence of the other's (F426). Text is ignored —
+    /// this is about timing only, like the fingerprint itself.
+    ///
+    /// Speaker labels are drawn fresh from the analysis's turns and each line's own bounds, so under
+    /// such a change every surviving line's label is exactly what it was, and an analysis that
+    /// matched `old` still describes `new`. A line that MOVED is never compatible, however small the
+    /// move: that is what a re-transcription looks like, and what the fingerprint exists to catch.
+    public static func onlyAddsOrRemovesLines(from old: [TranscriptSegment], to new: [TranscriptSegment]) -> Bool {
+        func isSubsequence(_ shorter: [TranscriptSegment], of longer: [TranscriptSegment]) -> Bool {
+            var cursor = longer.startIndex
+            for line in shorter {
+                while cursor < longer.endIndex,
+                      !(longer[cursor].start == line.start && longer[cursor].end == line.end) {
+                    cursor += 1
+                }
+                guard cursor < longer.endIndex else { return false }
+                cursor += 1
+            }
+            return true
+        }
+        return new.count <= old.count ? isSubsequence(new, of: old) : isSubsequence(old, of: new)
+    }
+
     public static func compute(_ segments: [TranscriptSegment]) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         func mix(_ value: UInt64) {

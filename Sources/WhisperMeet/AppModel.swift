@@ -4570,7 +4570,9 @@ final class AppModel: ObservableObject {
             $0.repeatsRemoved = removal.repeatsRemovedBefore
             $0.confidence = removal.confidenceBefore
         }
-        return store.meeting(id: removal.meetingID)?.segments == removal.segmentsBefore
+        guard store.meeting(id: removal.meetingID)?.segments == removal.segmentsBefore else { return false }
+        carrySpeakerAnalysis(of: removal.meetingID, from: removal.segmentsAfter, to: removal.segmentsBefore)
+        return true
     }
 
     /// The meeting's language and the lines in the other one, for Remove Lines Not in <language>
@@ -4608,7 +4610,49 @@ final class AppModel: ObservableObject {
             $0.confidence = quality.isUnscored ? nil : quality.confidence
         }
         guard store.meeting(id: meeting.id)?.segments == segments else { return nil }
+        carrySpeakerAnalysis(of: meeting.id, from: meeting.segments, to: segments)
         return removal
+    }
+
+    /// Keeps a meeting's speaker analysis current across a line removal or its undo (F426).
+    ///
+    /// Labels are drawn fresh from the analysis's turns and each line's own bounds, so when a change
+    /// only removed or restored whole lines, every surviving label is exactly what it was — but the
+    /// artifact's timing fingerprint cannot tell that from a re-transcription, and one Delete Line
+    /// used to leave "these labels no longer line up" until a minutes-long re-analysis. So the
+    /// fingerprint is carried to the new lines, and only when both hold:
+    ///
+    /// - the change is a pure removal or restoration (`onlyAddsOrRemovesLines`); and
+    /// - the analysis matched the OLD lines. An analysis that was already stale stays stale — a
+    ///   deletion must not quietly revive labels nobody re-checked.
+    ///
+    /// Anything that fails — no analysis, an unreadable one, a refused save — leaves the file as it
+    /// was, so the labels read stale: the pre-F426 behaviour, and never a wrong label.
+    private func carrySpeakerAnalysis(
+        of meetingID: UUID,
+        from old: [TranscriptSegment],
+        to new: [TranscriptSegment]
+    ) {
+        guard TranscriptTimingFingerprint.onlyAddsOrRemovesLines(from: old, to: new),
+              case let .ready(artifact) = DiarizationArtifactStore.load(
+                meetingID: meetingID, in: store.rootDirectory
+              ),
+              artifact.transcriptTimingFingerprint == TranscriptTimingFingerprint.compute(old)
+        else { return }
+        // Written at this build's schema version (the initialiser's default): it is this build's
+        // codec writing it, and a newer file would have loaded as `.unavailable`, never `.ready`.
+        let carried = DiarizationArtifactV1(
+            meetingID: artifact.meetingID,
+            recording: artifact.recording,
+            transcriptTimingFingerprint: TranscriptTimingFingerprint.compute(new),
+            producer: artifact.producer,
+            createdAt: artifact.createdAt,
+            turns: artifact.turns,
+            aliases: artifact.aliases
+        )
+        guard (try? DiarizationArtifactStore.save(carried, for: meetingID, in: store.rootDirectory)) != nil
+        else { return }
+        invalidateSpeakerOverlayCache()
     }
 
     /// Proposes on-device LLM corrections for a meeting's transcript, guided by the business vocabulary

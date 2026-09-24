@@ -58,15 +58,11 @@ public enum TranscriptRepetitionCleanup {
             }
             let run = inlineCleaned[index..<runEnd]
             if run.count >= minimumRepeatedLines {
-                var kept = inlineCleaned[index]
-                // The kept line spans the whole loop, so playback highlights it for the stretch the
-                // copies covered. Only a line that already has a start is widened: an untimed line
-                // stays untimed rather than borrowing a time from a copy.
-                if kept.start != nil, let latest = run.compactMap(\.end).max(),
-                   latest > (kept.end ?? -Double.infinity) {
-                    kept.end = latest
-                }
-                result.append(kept)
+                // The kept line keeps its own timing, exactly as the recognizer gave it (F426). It
+                // used to be widened over the whole loop so playback highlighted the stretch; that
+                // moved a line, and a moved line is what makes a speaker analysis read stale.
+                // Keeping it means every removal here is a pure deletion.
+                result.append(inlineCleaned[index])
                 removed += run.count - 1
             } else {
                 result.append(contentsOf: run)

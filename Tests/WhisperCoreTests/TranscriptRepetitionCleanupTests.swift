@@ -12,7 +12,7 @@ private func line(_ text: String, _ start: Double?, _ end: Double?) -> Transcrip
     TranscriptSegment(speaker: nil, start: start, end: end, text: text)
 }
 
-@Test("A run of identical lines keeps its first line and spans the whole run (F422)")
+@Test("A run of identical lines keeps its first line, with that line's own timing (F422, F426)")
 func aRunOfIdenticalLinesIsReducedToOne() {
     // The exhibit's shape: sixteen copies, their timestamps crushed into two seconds.
     var segments = [
@@ -34,13 +34,12 @@ func aRunOfIdenticalLinesIsReducedToOne() {
         "The question might ask you like what is going there.",
     ])
     #expect(result.removedCount == 15)
-    // The surviving line covers the whole loop, so playback highlights it for the whole stretch
-    // instead of leaving two seconds that belong to no line.
+    // The surviving line is the first copy, timed as the recognizer timed it — not stretched over
+    // the loop, which would move a line and make an existing speaker analysis read stale (F426).
     let kept = result.segments[2]
-    let lastCopyStart: Double = 1670.6 + Double(15) * 0.13
-    let lastCopyEnd: Double = lastCopyStart + 0.1
+    let firstCopyEnd: Double = 1670.6 + 0.1
     #expect(kept.start == 1670.6)
-    #expect(kept.end == lastCopyEnd)
+    #expect(kept.end == firstCopyEnd)
 }
 
 @Test("Lines that differ only in case or punctuation are the same line (F422)")
