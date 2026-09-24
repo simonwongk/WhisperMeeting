@@ -347,6 +347,11 @@ public enum TranscriptFormatter {
 public struct TranscriptionResult: Sendable, Equatable {
     public let id: String
     public let text: String
+    /// An ISO 639-1 code whenever the engine named a language the app pins ("en", "zh"), because
+    /// `init` normalises through `WhisperLanguage.code(forReported:)` (F535). openai-whisper writes
+    /// a pinned language back as the name it was passed, and this value becomes the meeting's
+    /// stored `languageCode`, which `lang:` search and the language filter compare as a code — so
+    /// doing it here means no engine can store a name.
     public let languageCode: String?
     public let audioDuration: Double?
     public let confidence: Double?
@@ -367,7 +372,7 @@ public struct TranscriptionResult: Sendable, Equatable {
     ) {
         self.id = id
         self.text = text
-        self.languageCode = languageCode
+        self.languageCode = WhisperLanguage.code(forReported: languageCode)
         self.audioDuration = audioDuration
         self.confidence = confidence
         self.segments = segments

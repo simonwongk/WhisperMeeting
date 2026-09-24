@@ -43,6 +43,29 @@ func transcribesWithLocalWhisper() async throws {
     #expect(arguments.containsSubsequence(["--output_format", "json"]))
 }
 
+@Test("Every pinned meeting language is stored as a code the app's language checks recognise (F535)")
+func everyPinnedMeetingLanguageIsStoredAsACode() async throws {
+    // Derived from the cases, so a language added later is covered without editing this test.
+    // `TranscriptLanguageFilter.meetingLanguage` is the reader: with no segments to count it can
+    // only answer from the stored code, and it answers nil for a name like "Chinese".
+    for language in WhisperLanguage.allCases where language.commandLineValue != nil {
+        let fixture = try LocalWhisperFixture()
+        defer { fixture.remove() }
+        let client = LocalWhisperClient(
+            executableURL: fixture.executableURL,
+            modelDirectory: fixture.modelDirectory
+        )
+        let result = try await client.transcribe(
+            recordingAt: fixture.audioURL,
+            options: .accuracyFirst(model: .large, language: language)
+        )
+        #expect(
+            TranscriptLanguageFilter.meetingLanguage(languageCode: result.languageCode, segments: []) != nil,
+            "a meeting pinned to \(language) was stored as \(String(describing: result.languageCode))"
+        )
+    }
+}
+
 @Test("Automatic detection does not force a language and Turbo remains original-language transcription")
 func usesAutomaticLanguageWithTurbo() async throws {
     let fixture = try LocalWhisperFixture()
@@ -271,6 +294,10 @@ private struct LocalWhisperFixture {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("audio".utf8).write(to: audioURL)
 
+        // F535: the JSON's `language` is what openai-whisper really writes — the `--language` value
+        // exactly as passed (20250625 `transcribe.py:159`, returned at `:513`), or a detected code
+        // when none was. This stub used to answer "zh" whatever it was asked, which is the same
+        // wrong assumption the client made, so the test could not see the client store "Chinese".
         let script = #"""
         #!/bin/zsh
         set -euo pipefail
@@ -278,15 +305,16 @@ private struct LocalWhisperFixture {
         shift
         printf '%s\n' "$@" > "${audio}.arguments"
         output_dir=""
+        language="zh"
         while (( $# > 0 )); do
-          if [[ "$1" == "--output_dir" ]]; then
-            output_dir="$2"
-            break
-          fi
+          case "$1" in
+            --output_dir) output_dir="$2"; shift ;;
+            --language) language="$2"; shift ;;
+          esac
           shift
         done
         mkdir -p "$output_dir"
-        printf '%s' '{"text":"你好，欢迎使用 WhisperMeet。","language":"zh","segments":[{"start":0.25,"end":2.5,"text":"你好，欢迎使用 WhisperMeet。"}]}' > "$output_dir/meeting.json"
+        printf '{"text":"你好，欢迎使用 WhisperMeet。","language":"%s","segments":[{"start":0.25,"end":2.5,"text":"你好，欢迎使用 WhisperMeet。"}]}' "$language" > "$output_dir/meeting.json"
         """#
         try makeExecutable(at: executableURL, script: script)
     }

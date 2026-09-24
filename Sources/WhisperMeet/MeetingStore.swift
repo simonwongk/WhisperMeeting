@@ -1796,10 +1796,24 @@ final class MeetingStore: ObservableObject {
         """
     }
 
+    /// A loaded record, with a language name an earlier build stored read as its code (F535).
+    ///
+    /// Before F535 a Whisper meeting transcribed under a pinned language stored "Chinese" or
+    /// "English" — the name openai-whisper echoes back — where every other path stores "zh"/"en".
+    /// `lang:` search and `TranscriptLanguageFilter` compare the field as a code, and the detail
+    /// chip and exports print it. `TranscriptionResult` now normalises, so nothing new can store a
+    /// name; this is for libraries that already hold one. It changes memory only: the file follows
+    /// at the next save, and "zh"/"en" are what earlier builds already read from every Qwen meeting.
+    private static func withLanguageCodeNormalized(_ record: MeetingRecord) -> MeetingRecord {
+        var record = record
+        record.languageCode = WhisperLanguage.code(forReported: record.languageCode)
+        return record
+    }
+
     private func loadMeetings() {
         do {
             guard let result = try meetingFiles.load() else { return }
-            meetings = MeetingOrdering.sorted(result.value)
+            meetings = MeetingOrdering.sorted(result.value.map(Self.withLanguageCodeNormalized))
             // A reload replaces every record, so no memo can describe one (F541): a meeting a
             // restore removed would otherwise keep its transcript copy in memory until quit.
             transcriptEditMemos.removeAll()
