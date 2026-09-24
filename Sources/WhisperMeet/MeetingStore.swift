@@ -292,12 +292,6 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     var orderedMarkers: [RecordingMarker] {
         (markers ?? []).sorted { $0.offset < $1.offset }
     }
-
-    /// Whether the user has edited the transcript away from Whisper's segment rendering. When true,
-    /// segment-derived overlays (quality flags, marker context) no longer match the shown text.
-    var isTranscriptEdited: Bool {
-        TranscriptFormatter.isEdited(transcriptText: transcriptText, segments: segments)
-    }
 }
 
 struct OrphanedRecording: Sendable, Equatable {
@@ -973,6 +967,47 @@ final class MeetingStore: ObservableObject {
         meetings.first { $0.id == id }
     }
 
+    // MARK: - Hand-edited transcripts (F541)
+
+    /// The comparison behind `isTranscriptEdited(_:)`. Injectable only so a test can count how often
+    /// it runs; defaults to the formatter's.
+    var transcriptEditCheck: (String, [TranscriptSegment]) -> Bool = { text, segments in
+        TranscriptFormatter.isEdited(transcriptText: text, segments: segments)
+    }
+
+    private struct TranscriptEditInput: Equatable {
+        let text: String
+        let segments: [TranscriptSegment]
+    }
+
+    /// Each meeting's last answer, with the text and lines it was computed from. Not `@Published`:
+    /// it is filled from view bodies, and a published write there would schedule another render.
+    private var transcriptEditMemos: [UUID: LastValueMemo<TranscriptEditInput, Bool>] = [:]
+
+    /// Whether the user edited `meeting`'s transcript away from the rendering of its lines. When true,
+    /// segment-derived overlays (quality flags, marker context) no longer describe the shown text, and
+    /// the tools that rebuild the text from the lines refuse.
+    ///
+    /// Remembered per meeting and worked out again only when the text or the lines change (F541).
+    /// The comparison renders the whole transcript, one formatted line per segment, and the
+    /// transcript card used to ask from up to eleven places per render — so every Notes keystroke
+    /// and every progress update the model published rendered a six-hour transcript that many times.
+    /// Keyed on the two values, not on the paths that change them, so no mutation path can leave the
+    /// answer stale.
+    func isTranscriptEdited(_ meeting: MeetingRecord) -> Bool {
+        let memo: LastValueMemo<TranscriptEditInput, Bool>
+        if let existing = transcriptEditMemos[meeting.id] {
+            memo = existing
+        } else {
+            memo = LastValueMemo()
+            transcriptEditMemos[meeting.id] = memo
+        }
+        let check = transcriptEditCheck
+        return memo.value(for: TranscriptEditInput(text: meeting.transcriptText, segments: meeting.segments)) {
+            check($0.text, $0.segments)
+        }
+    }
+
     /// Removes a recording directory. Injectable so the failure path is testable (F146).
     var removeRecordingDirectory: (URL) throws -> Void = { url in
         if FileManager.default.fileExists(atPath: url.path) {
@@ -1094,6 +1129,9 @@ final class MeetingStore: ObservableObject {
     /// is best-effort, and a deletion whose queue write is lost is a deletion whose text ages out as
     /// it did before F295, which is the state we are improving on, not a regression from it.
     private func shredFromHistory(_ ids: [UUID], now: Int = Int(Date().timeIntervalSince1970)) {
+        // The edited-check memo holds a copy of each transcript it answered for (F541). Every path
+        // that deletes a meeting comes through here, so its copy goes at once rather than at quit.
+        for id in ids { transcriptEditMemos[id] = nil }
         var pending = pendingShreds
         for id in ids { pending[id] = now }
         pendingShreds = pending

@@ -3313,6 +3313,7 @@ private struct TranscriptDetailView: View {
     @ViewBuilder
     private func transcriptSection(_ meeting: MeetingRecord) -> some View {
         let hasSegments = !meeting.segments.isEmpty
+        let isEdited = store.isTranscriptEdited(meeting)
         VStack(alignment: .leading, spacing: 12) {
             // Four improvement actions live in one labeled menu (F172): seven inline controls
             // compressed every label to "Suggest…"/"Correct…"; menu items have room for full
@@ -3440,7 +3441,7 @@ private struct TranscriptDetailView: View {
             }
 
             if hasSegments && transcriptMode == .read {
-                if meeting.isTranscriptEdited {
+                if isEdited {
                     Text("Read view shows the original timestamped transcription; your edits are in Edit view. Quality flags are hidden here because they describe the original text.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -3451,7 +3452,7 @@ private struct TranscriptDetailView: View {
                     meetingID: meetingID,
                     recordingURL: store.recordingURL(for: meeting),
                     segments: meeting.segments,
-                    isEdited: meeting.isTranscriptEdited,
+                    isEdited: isEdited,
                     seekRequest: $seekRequest
                 )
                 .id(meetingID)
@@ -3483,6 +3484,7 @@ private struct TranscriptDetailView: View {
         let speakerReason = offersSpeakerAnalysis
             ? model.speakerAnalysisUnavailability(for: meeting)
             : nil
+        let isEdited = store.isTranscriptEdited(meeting)
         return Menu {
             // F515: first, because it is the one that replaces everything below it. Asks first.
             Button {
@@ -3508,7 +3510,7 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
             }
-            .disabled(store.vocabulary.isEmpty || meeting.isTranscriptEdited)
+            .disabled(store.vocabulary.isEmpty || isEdited)
             // F179: exact user-defined replacement rules, reviewed through the same sheet. No model.
             Button {
                 let proposals = model.replacementRuleCorrections(for: meetingID)
@@ -3520,7 +3522,7 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
             }
-            .disabled(store.replacementRules.isEmpty || meeting.isTranscriptEdited
+            .disabled(store.replacementRules.isEmpty || isEdited
                       || model.libraryReadOnlyFootnote != nil)
             if SummarizerRuntime.isSupportedOnCurrentMac {
                 Button {
@@ -3539,7 +3541,7 @@ private struct TranscriptDetailView: View {
                 } label: {
                     Label("Correct with Local AI…", systemImage: "wand.and.stars.inverse")
                 }
-                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited || store.vocabulary.isEmpty
+                .disabled(model.isProposingCorrections || isEdited || store.vocabulary.isEmpty
                           || model.libraryReadOnlyFootnote != nil)
                 // F170: guide the same on-device correction pass with a chosen reference document
                 // (spec/glossary). Works without any vocabulary — the reference is the target — so it is
@@ -3549,7 +3551,7 @@ private struct TranscriptDetailView: View {
                 } label: {
                     Label("Correct with Local AI + Reference File…", systemImage: "doc.text.magnifyingglass")
                 }
-                .disabled(model.isProposingCorrections || meeting.isTranscriptEdited
+                .disabled(model.isProposingCorrections || isEdited
                           || model.libraryReadOnlyFootnote != nil)
             }
             Divider()
@@ -3560,7 +3562,7 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
-            .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || meeting.isTranscriptEdited
+            .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || isEdited
                       || model.libraryReadOnlyFootnote != nil)
             // F424: pick out a side-conversation in the meeting's other language. It opens a list to
             // confirm; nothing is removed from here.
@@ -3582,7 +3584,7 @@ private struct TranscriptDetailView: View {
                 }
                 .disabled(speakerReason != nil)
             }
-            if meeting.isTranscriptEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
+            if isEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
                 || speakerReason != nil || model.libraryReadOnlyFootnote != nil {
                 Divider()
                 // F194: first, because it outranks the others — when the library is read-only none of
@@ -3590,7 +3592,7 @@ private struct TranscriptDetailView: View {
                 if let readOnly = model.libraryReadOnlyFootnote {
                     Text(readOnly)
                 }
-                if meeting.isTranscriptEdited {
+                if isEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
                 }
                 if store.vocabulary.isEmpty {
@@ -3671,7 +3673,7 @@ private struct TranscriptDetailView: View {
     /// is shown.
     private func refreshRepetitionState() {
         let meeting = store.meeting(id: meetingID)
-        let edited = meeting?.isTranscriptEdited ?? false
+        let edited = meeting.map { store.isTranscriptEdited($0) } ?? false
         repetitionNotice = edited ? nil : TranscriptQuality.repetitionNotice(meeting?.segments ?? [])
         removableRepeats = edited ? 0 : model.removableRepeatCount(for: meetingID)
     }
@@ -4579,12 +4581,21 @@ private struct PlayableTranscriptView: View {
     // this false; moveSearchSelection(by:) sets it just before changing the selection.
     @State private var animateNextSearchScroll = false
 
-    // Computed once — segments are fixed for the life of this view.
-    private let qualityReport: TranscriptQualityReport
-    private let flagsByIndex: [Int: [SegmentQualityFlag]]
+    // F541: the quality review runs when the lines or the edited state change. The detail view
+    // above rebuilds this view on every render — each Notes keystroke, each progress update the
+    // model publishes — and the review used to run in the initializer every time.
+    @State private var reviewMemo = LastValueMemo<TranscriptReviewOverlay.Input, TranscriptReviewOverlay>()
+
+    private var review: TranscriptReviewOverlay {
+        reviewMemo.value(for: TranscriptReviewOverlay.Input(segments: segments, isEdited: isEdited)) {
+            TranscriptReviewOverlay($0)
+        }
+    }
+    private var qualityReport: TranscriptQualityReport { review.report }
+    private var flagsByIndex: [Int: [SegmentQualityFlag]] { review.flagsByIndex }
 
     /// When the transcript has been edited, the segment-derived quality flags no longer describe the
-    /// shown text, so they're suppressed (see MeetingRecord.isTranscriptEdited).
+    /// shown text, so they're suppressed (see MeetingStore.isTranscriptEdited).
     private let isEdited: Bool
 
     init(
@@ -4603,13 +4614,6 @@ private struct PlayableTranscriptView: View {
         self.segments = segments
         self.isEdited = isEdited
         _seekRequest = seekRequest
-        // Edited transcript → the flags describe the original segments, not what's shown, so drop
-        // them (no banner, no per-line markers) rather than present stale review state.
-        let report = isEdited ? TranscriptQualityReport(flagged: [], scoredCount: 0) : TranscriptQuality.review(segments)
-        self.qualityReport = report
-        self.flagsByIndex = Dictionary(
-            uniqueKeysWithValues: report.flagged.map { ($0.index, $0.flags) }
-        )
         _playback = StateObject(wrappedValue: TranscriptPlaybackController(url: recordingURL))
         _visible = State(initialValue: segments.enumerated().map {
             IndexedSegment(id: $0.offset, segment: $0.element)
@@ -5198,7 +5202,7 @@ private struct PlayableTranscriptView: View {
             // F423: take a line out of the transcript — a side-conversation, an aside nobody needs.
             // The recording is untouched and Edit ▸ Undo puts the line back. Disabled from values
             // this view already holds, never from `lineRemovalBlockedReason`: this menu is built per
-            // row, and that call renders the whole transcript to test for manual edits (F160).
+            // row, and that call looks the meeting up in the library again for every row (F160).
             Divider()
             Button("Delete Line", role: .destructive) { deleteLine(at: index) }
                 .disabled(isEdited || model.libraryReadOnlyFootnote != nil || model.hasActiveTranscription)

@@ -4485,7 +4485,7 @@ final class AppModel: ObservableObject {
     /// text from the corrected segments. Skipped when the transcript was hand-edited (segment-derived
     /// text no longer matches what's shown). The recording is never opened (F82).
     func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) {
-        guard let meeting = store.meeting(id: id), !meeting.isTranscriptEdited, !corrections.isEmpty else { return }
+        guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return }
         let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments)
         store.update(id: id) {
             $0.segments = corrected
@@ -4519,7 +4519,7 @@ final class AppModel: ObservableObject {
         guard meeting.status == .completed else {
             return "Available once this meeting's transcription has finished."
         }
-        if meeting.isTranscriptEdited {
+        if store.isTranscriptEdited(meeting) {
             return "Unavailable after manual edits — these tools work on the original transcription."
         }
         if meeting.segments.isEmpty { return "This transcript has no separate lines to remove." }
@@ -4546,7 +4546,7 @@ final class AppModel: ObservableObject {
     /// How many echoes Remove Repeated Lines would take out of this meeting (F422); zero when there
     /// are none or the transcript was hand-edited.
     func removableRepeatCount(for id: UUID) -> Int {
-        guard let meeting = store.meeting(id: id), !meeting.isTranscriptEdited else { return 0 }
+        guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting) else { return 0 }
         return TranscriptRepetitionCleanup.clean(meeting.segments).removedCount
     }
 
@@ -4580,7 +4580,7 @@ final class AppModel: ObservableObject {
               let meeting = store.meeting(id: removal.meetingID),
               meeting.status == .completed,
               meeting.segments == removal.segmentsAfter,
-              !meeting.isTranscriptEdited else { return false }
+              !store.isTranscriptEdited(meeting) else { return false }
         store.update(id: removal.meetingID) {
             $0.segments = removal.segmentsBefore
             $0.transcriptText = removal.textBefore
@@ -4684,7 +4684,7 @@ final class AppModel: ObservableObject {
             return []
         }
         guard let meeting = store.meeting(id: id) else { return [] }
-        guard !meeting.isTranscriptEdited else {
+        guard !store.isTranscriptEdited(meeting) else {
             alertMessage = "This transcript was hand-edited, so AI correction is unavailable — it would not match your edits."
             return []
         }

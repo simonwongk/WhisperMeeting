@@ -91,7 +91,7 @@ func transcriptionWriteRemovesEchoes() {
     #expect(stored?.transcriptText.components(separatedBy: "操！").count == 2)
     // The stored text is the rendering of the stored lines, so nothing reads as a manual edit and
     // every Improve tool stays available.
-    #expect(stored?.isTranscriptEdited == false)
+    #expect(stored.map { model.store.isTranscriptEdited($0) } == false)
 }
 
 @MainActor
@@ -142,7 +142,7 @@ func removeRepeatedLinesOnAStoredTranscript() throws {
     let stored = try #require(model.store.meeting(id: id))
     #expect(stored.segments.count == 4)
     #expect(stored.repeatsRemoved == 17)
-    #expect(stored.isTranscriptEdited == false)
+    #expect(model.store.isTranscriptEdited(stored) == false)
     #expect(model.removableRepeatCount(for: id) == 0)
 
     #expect(model.undoTranscriptLineRemoval(removal))
@@ -191,7 +191,7 @@ func deletingALineRemovesOnlyThatLine() throws {
     let stored = try #require(model.store.meeting(id: id))
     #expect(stored.segments == [segments[0], segments[2]])
     #expect(stored.transcriptText == TranscriptFormatter.timestamped([segments[0], segments[2]]))
-    #expect(stored.isTranscriptEdited == false)
+    #expect(model.store.isTranscriptEdited(stored) == false)
     // Deleting a line is not a stuck decode's echo, so it is not counted as one.
     #expect(stored.repeatsRemoved == nil)
     #expect(try Data(contentsOf: audio) == audioBytes)
@@ -319,5 +319,5 @@ func segmentReRunIsCleanedToo() async throws {
     #expect(updated.segments.map(\.text) == ["first", "操！", "third"])
     // Added to, not replaced: the rest of the transcript's earlier removals still happened.
     #expect(updated.repeatsRemoved == 7)
-    #expect(updated.isTranscriptEdited == false)
+    #expect(model.store.isTranscriptEdited(updated) == false)
 }
