@@ -1206,8 +1206,7 @@ final class AppModel: ObservableObject {
             secondOpinionRunningID = nil
             secondOpinionProgress = nil
             secondOpinionEngine = nil
-            isRunningAuxiliaryEngine = false
-            if !hasActiveTranscription { warmIdleDictationRecognition() }
+            endAuxiliaryEngineRun()
         }
     }
 
@@ -1487,12 +1486,11 @@ final class AppModel: ObservableObject {
             await performSpeakerDiarization(request)
             diarizationRunningID = nil
             diarizationProgress = nil
-            isRunningAuxiliaryEngine = false
             diarizationTask = nil
             // Analysis never evicts the dictation helpers itself, but it does hold the auxiliary flag
-            // a finishing transcription checks before rewarming, so without this a rewarm could fall
-            // between the two and leave the next hotkey cold.
-            if !hasActiveTranscription { warmIdleDictationRecognition() }
+            // a finishing transcription checks before rewarming, so without the epilogue's rewarm one
+            // could fall between the two and leave the next hotkey cold.
+            endAuxiliaryEngineRun()
         }
     }
 
@@ -1908,8 +1906,7 @@ final class AppModel: ObservableObject {
         isRunningAuxiliaryEngine = true
         Task {
             await reTranscribeSegment(id: id, index: index)
-            isRunningAuxiliaryEngine = false
-            if !hasActiveTranscription { warmIdleDictationRecognition() }
+            endAuxiliaryEngineRun()
         }
     }
 
@@ -3019,20 +3016,21 @@ final class AppModel: ObservableObject {
             releaseCaptureLock(removingFile: true)
 
             refreshRuntime()
-            let transcribing = isSelectedEngineInstalled
-            if transcribing {
+            let engineInstalled = isSelectedEngineInstalled
+            if engineInstalled {
                 beginTranscription(id: id)
             }
+            // F470: what the queue actually holds, not whether an engine is installed — a meeting
+            // queued behind a second opinion is not being transcribed yet.
+            let start = transcriptionStart(for: id)
             // F292: saved normally, but the audio ends before the recording did. Said once — not
             // when the policy's own finalize already said it — and in the same alert as the
             // missing-engine message, so neither replaces the other.
             if artifact.captureStoppedEarly, !isFinalizingAfterCaptureLoss {
-                var message = Self.captureStoppedEarlyMessage(
-                    audioDuration: artifact.duration, transcribing: transcribing
-                )
-                if !transcribing, let unavailable = transcriptionUnavailableMessage { message += " " + unavailable }
+                var message = Self.captureStoppedEarlyMessage(audioDuration: artifact.duration, start: start)
+                if !engineInstalled, let unavailable = transcriptionUnavailableMessage { message += " " + unavailable }
                 report(message)
-            } else if !transcribing {
+            } else if !engineInstalled {
                 // F262: name the engine that is installed instead of telling a user who just
                 // installed one to install one.
                 alertMessage = transcriptionUnavailableMessage
@@ -3107,10 +3105,27 @@ final class AppModel: ObservableObject {
     }
 
     /// What a user is told when Stop saved a capture that had died and never came back (F292).
-    nonisolated static func captureStoppedEarlyMessage(audioDuration: TimeInterval, transcribing: Bool) -> String {
-        "The audio capture stopped \(CaptureRestartPolicy.durationPhrase(audioDuration)) into this " +
+    nonisolated static func captureStoppedEarlyMessage(audioDuration: TimeInterval, start: TranscriptionStart) -> String {
+        let tail: String
+        switch start {
+        case .running: tail = " and is being transcribed."
+        case .queued: tail = ", and it will be transcribed when the work ahead of it finishes."
+        case .notStarted: tail = "."
+        }
+        return "The audio capture stopped \(CaptureRestartPolicy.durationPhrase(audioDuration)) into this " +
             "recording and could not be restarted, so the saved audio ends there. Everything captured " +
-            "before that was kept" + (transcribing ? " and is being transcribed." : ".")
+            "before that was kept" + tail
+    }
+
+    /// Where a meeting's transcription stands right after it was requested (F470).
+    enum TranscriptionStart: Equatable {
+        case running, queued, notStarted
+    }
+
+    func transcriptionStart(for id: UUID) -> TranscriptionStart {
+        if transcription.activeID == id { return .running }
+        if transcription.isPending(id) { return .queued }
+        return .notStarted
     }
 
     /// Lets go of the live capture's folder lock (F297). Idempotent; a nil lock is a no-op.
@@ -4186,8 +4201,6 @@ final class AppModel: ObservableObject {
         return seconds.isFinite && seconds > 0 ? seconds : 0
     }
 
-    /// Requests transcription for a meeting. If another transcription is already running, this one
-    /// waits in the queue and starts automatically when the active one finishes.
     /// Meetings that have audio on disk but no transcript yet — the queue candidates (F185).
     var readyToTranscribeMeetings: [MeetingRecord] {
         store.meetings.filter { $0.status == .recorded && !$0.recordingPath.isEmpty }
@@ -4209,20 +4222,21 @@ final class AppModel: ObservableObject {
         return ready.count
     }
 
+    /// Requests transcription for a meeting. While another transcription, an auxiliary engine run
+    /// (second opinion, segment re-run, speaker analysis) or Quick Dictation holds the models, the
+    /// job waits in the queue and starts on its own when that work ends (F470).
     func beginTranscription(id: UUID) {
         guard !isInstallingRecognitionRuntime else {
             alertMessage = "Wait for the local recognition model installation to finish before transcribing."
             return
         }
-        guard !isDictationActive() else {
-            alertMessage = "Finish the current Quick Dictation before starting a meeting transcription."
-            return
-        }
-        // A second-opinion or segment re-run is holding the engine; don't start a normal run atop it (F140).
-        guard !isRunningAuxiliaryEngine else {
-            alertMessage = "Finish the second-opinion or segment re-run before transcribing this meeting."
-            return
-        }
+        // F470: Quick Dictation and an auxiliary engine run used to be refused here with an alert,
+        // and every automatic caller — Stop & Transcribe, file, link and watched-folder imports —
+        // then left the new meeting `.recorded` with nothing to retry it. They queue instead:
+        // `pumpTranscriptionQueue` holds the job while either is running, which is still F140's
+        // guarantee that no normal run starts atop an auxiliary one, and each of them pumps the
+        // queue when it ends (`endAuxiliaryEngineRun`, `resumeTranscriptionQueue`).
+        //
         // Must precede the enqueue: the model can run for minutes, and the `store.update` that stores
         // the transcript is refused while the library is read-only, so the whole run would be thrown
         // away in silence (F187).
@@ -4268,8 +4282,40 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    /// Starts the next queued transcription if nothing is currently running.
+    /// Starts a transcription that queued while Quick Dictation was active (F470). AppEntry calls it
+    /// from `DictationController`'s activity-ended hook; with nothing waiting it does nothing.
+    func resumeTranscriptionQueue() {
+        pumpTranscriptionQueue()
+    }
+
+    /// What a queued meeting is waiting for, for its status card (F470). Read from whatever is
+    /// actually holding the queue, so a meeting queued behind a second opinion does not say it is
+    /// waiting for a transcription that is not running.
+    var queuedTranscriptionWaitMessage: String {
+        if hasActiveTranscription { return "Waiting for the current transcription to finish." }
+        if secondOpinionRunningID != nil { return "Waiting for the second opinion to finish." }
+        if diarizationRunningID != nil { return "Waiting for speaker analysis to finish." }
+        // The third and last holder of the auxiliary flag.
+        if isRunningAuxiliaryEngine { return "Waiting for the segment re-run to finish." }
+        if isDictationActive() { return "Waiting for Quick Dictation to finish." }
+        return "Waiting to start."
+    }
+
+    /// The one epilogue of every auxiliary engine run — second opinion, segment re-run, speaker
+    /// analysis: release the engine, start whatever queued behind it (F470), and rewarm dictation
+    /// only when no meeting transcription took the engine next.
+    private func endAuxiliaryEngineRun() {
+        isRunningAuxiliaryEngine = false
+        pumpTranscriptionQueue()
+        if !hasActiveTranscription { warmIdleDictationRecognition() }
+    }
+
+    /// Starts the next queued transcription if nothing is running. A queued job also waits while an
+    /// auxiliary engine run or Quick Dictation holds the models (F470): starting it atop an auxiliary
+    /// run is what F140 forbids, and during dictation `executeEngine` would refuse it with
+    /// `EngineAdmissionError.dictationActive`, which fails the meeting instead of leaving it queued.
     private func pumpTranscriptionQueue() {
+        guard !isRunningAuxiliaryEngine, !isDictationActive() else { return }
         guard let next = transcription.startNext() else { return }
         // A pending id never has a live task (tasks exist only for the active job and are cleared
         // before finishActive), so this holds by construction — asserted rather than guarded, so a

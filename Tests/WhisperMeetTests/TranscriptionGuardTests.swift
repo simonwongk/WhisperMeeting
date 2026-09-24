@@ -51,12 +51,21 @@ func applyKeepsSegmentsWhenTheyCoverText() throws {
     #expect(model.store.meeting(id: id)?.segments.count == 2)
 }
 
-// F140 — a normal transcription must refuse to start while an auxiliary (second-opinion/segment-rerun)
-// engine run is active.
+// F140 — a normal transcription must never start while an auxiliary (second-opinion/segment-rerun)
+// engine run is active. Until F470 it was refused with an alert, which lost every automatic request;
+// it now waits in the queue, and F140's half of the contract — nothing runs atop the auxiliary
+// engine — is what this still pins.
 @MainActor
-@Test("beginTranscription refuses while an auxiliary engine run is active (F140)")
-func beginTranscriptionRefusesDuringAuxiliaryRun() async throws {
-    let model = try makeModel()
+@Test("beginTranscription never starts a run atop an auxiliary engine run; it queues (F140, F470)")
+func beginTranscriptionNeverStartsDuringAuxiliaryRun() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("TxGuard-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
+    let defaults = UserDefaults(suiteName: "TxGuard.\(UUID().uuidString)")!
+    // Pinned installed, so the request reaches the queue on any host — including a runner with no
+    // engine, where it would otherwise stop at the install gate and pass for the wrong reason.
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
+                         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
+    model.selectedEngine = .whisperLarge
     let id1 = UUID()
     model.store.upsert(MeetingRecord(
         id: id1, title: "A", recordingPath: "Recordings/\(id1.uuidString)/meeting.wav",
@@ -75,9 +84,17 @@ func beginTranscriptionRefusesDuringAuxiliaryRun() async throws {
     #expect(model.isRunningAuxiliaryEngine == true)
 
     model.beginTranscription(id: id2)
-    #expect(model.alertMessage != nil)                 // rejected with guidance
-    #expect(model.hasActiveTranscription == false)     // id2 not enqueued
+    #expect(model.hasActiveTranscription == false)     // nothing started atop the auxiliary run
+    #expect(model.isQueuedForTranscription(id2))       // …and nothing was lost either
+    #expect(model.alertMessage == nil)
 
-    // Drain the auxiliary run.
-    while model.isRunningAuxiliaryEngine { await Task.yield() }
+    // Drain the auxiliary run, then the queued job it was holding.
+    var ticks = 0
+    while model.isRunningAuxiliaryEngine || model.hasActiveTranscription || model.isQueuedForTranscription(id2),
+          ticks < 200_000 {
+        await Task.yield()
+        ticks += 1
+    }
+    try #require(!model.hasActiveTranscription && !model.isQueuedForTranscription(id2), "the queue never drained")
+    #expect(model.store.meeting(id: id2)?.status == .completed)
 }

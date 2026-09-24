@@ -3231,7 +3231,7 @@ private struct TranscriptDetailView: View {
                         if meeting.status == .processing {
                             Text(transcriptionPhaseLabel(meeting)).foregroundStyle(.secondary)
                         } else if isQueued {
-                            Text("Waiting for the current transcription to finish.").foregroundStyle(.secondary)
+                            Text(model.queuedTranscriptionWaitMessage).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
                         } else if meeting.status == .recorded {

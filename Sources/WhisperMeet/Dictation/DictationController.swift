@@ -26,7 +26,7 @@ final class DictationController: ObservableObject {
         case error(String)
     }
 
-    @Published private(set) var status: Status = .disabled
+    @Published private(set) var status: Status = .disabled { didSet { noteActivityChange() } }
     @Published var enabled: Bool { didSet { persist(); apply() } }
     @Published var hotkey: DictationHotkey {
         didSet {
@@ -69,8 +69,8 @@ final class DictationController: ObservableObject {
 
     let logStore: DictationLogStore
     @Published var selfTestResult: String?
-    @Published private(set) var isSelfTesting = false
-    @Published private(set) var isSwitchingModel = false
+    @Published private(set) var isSelfTesting = false { didSet { noteActivityChange() } }
+    @Published private(set) var isSwitchingModel = false { didSet { noteActivityChange() } }
 
     private let defaults: UserDefaults
     private let hotkeyMonitor: any HotkeyMonitoring
@@ -239,6 +239,26 @@ final class DictationController: ObservableObject {
     /// memory even though neither needs the microphone.
     func configureMeetingTranscriptionRunning(_ provider: @escaping () -> Bool) {
         isMeetingTranscriptionRunning = provider
+    }
+
+    /// Called each time `isActive` falls from true to false. A meeting transcription that arrived
+    /// during a dictation waits in the queue rather than being refused (F470), and this is what
+    /// starts it — without it the job would wait for the next unrelated queue event.
+    func configureActivityEnded(_ handler: @escaping () -> Void) {
+        onActivityEnded = handler
+    }
+
+    private var onActivityEnded: () -> Void = {}
+    /// `isActive` as last observed by `noteActivityChange`, so the hook fires on the falling edge
+    /// only — `status` passes through several active phases in one dictation.
+    private var wasActive = false
+
+    /// Run from the `didSet` of every stored input to `isActive`.
+    private func noteActivityChange() {
+        let active = isActive
+        let ended = wasActive && !active
+        wasActive = active
+        if ended { onActivityEnded() }
     }
 
     /// Releases only idle models before a meeting engine begins. Waiting for the children to exit

@@ -81,6 +81,9 @@ struct WhisperMeetApp: App {
                     // the stored list is no longer trimmed to a prompt budget (F187).
                     dictation.configureVocabulary { [weak model] in model?.store.promptVocabulary ?? [] }
                     model.configureDictationGuard { dictation.isActive }
+                    // F470: a transcription requested during a dictation queues instead of being
+                    // refused; this starts it when the dictation ends.
+                    dictation.configureActivityEnded { [weak model] in model?.resumeTranscriptionQueue() }
                     model.configureIdleDictationModelRelease { [weak dictation] in
                         await dictation?.releaseIdleModelsForMeetingTranscription()
                     }
