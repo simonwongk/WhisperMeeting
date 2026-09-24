@@ -52,7 +52,9 @@ func finishingSegmentRerunRewarmsDictationRecognition() async throws {
         title: "Synthetic",
         recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
         status: .completed,
-        transcriptText: "original",
+        // The text its lines render to. A bare "original" reads as a hand-edited transcript (it
+        // lacks the line's timestamp), which F436 rightly refuses to re-run.
+        transcriptText: TranscriptFormatter.timestamped([segment]),
         segments: [segment],
         transcriptionEngine: .whisperLarge
     ))

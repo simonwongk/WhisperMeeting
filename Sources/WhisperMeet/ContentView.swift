@@ -5211,10 +5211,12 @@ private struct PlayableTranscriptView: View {
             }
             if segment.start != nil, segment.end != nil {
                 Divider()
+                // F436: greyed on a hand-edited transcript, like Delete Line below and for the same
+                // reason — putting the new line in rebuilds the text from the lines.
                 Button("Re-transcribe this segment") {
                     model.requestSegmentReTranscription(id: meetingID, index: index)
                 }
-                .disabled(model.hasActiveTranscription || model.isRunningAuxiliaryEngine)
+                .disabled(isEdited || model.hasActiveTranscription || model.isRunningAuxiliaryEngine)
             }
             // F423: take a line out of the transcript — a side-conversation, an aside nobody needs.
             // The recording is untouched and Edit ▸ Undo puts the line back. Disabled from values
@@ -5223,6 +5225,10 @@ private struct PlayableTranscriptView: View {
             Divider()
             Button("Delete Line", role: .destructive) { deleteLine(at: index) }
                 .disabled(isEdited || model.libraryReadOnlyFootnote != nil || model.hasActiveTranscription)
+            // F436: why the items above are grey, in the same menu, rather than a mystery-gray row.
+            if isEdited {
+                Text(AppModel.editedTranscriptReason)
+            }
         }
     }
 

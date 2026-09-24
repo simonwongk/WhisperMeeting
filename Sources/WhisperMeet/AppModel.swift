@@ -1235,12 +1235,25 @@ final class AppModel: ObservableObject {
     }
 
     /// Replace one diverging segment's text with the other engine's reading (F88), on explicit apply.
+    ///
+    /// Refused on a hand-edited transcript (F436): the text is rebuilt from the lines, which would
+    /// replace every edit. Checked on the record being written. The menu item that starts Second
+    /// Opinion is greyed for an edited transcript, but that held when the comparison began, not
+    /// when Replace is pressed.
     func applySecondOpinionSpan(_ span: TranscriptComparisonSpan, to id: UUID) {
         guard let secondary = span.secondaryText else { return }
+        var refusedForEdits = false
         store.update(id: id) { meeting in
+            guard !store.isTranscriptEdited(meeting) else {
+                refusedForEdits = true
+                return
+            }
             guard let index = meeting.segments.firstIndex(where: { $0.start == span.start && $0.text == span.primaryText }) else { return }
             meeting.segments[index].text = secondary
             meeting.transcriptText = TranscriptFormatter.timestamped(meeting.segments)
+        }
+        if refusedForEdits {
+            alertMessage = Self.secondOpinionReplaceRefusedForEdits
         }
     }
 
@@ -1766,6 +1779,18 @@ final class AppModel: ObservableObject {
         speakerOverlayRevision &+= 1
     }
 
+    /// Why a segment re-run was refused before it started: the transcript was edited by hand (F436).
+    static let segmentReRunRefusedForEdits = "This transcript was edited by hand, so a segment can't be "
+        + "re-transcribed — putting the new line in rebuilds the text from the original lines and would "
+        + "replace your edits."
+    /// Why a finished segment re-run was not put in: the transcript was edited while it ran (F436).
+    static let segmentReRunDiscardedForEdits = "The transcript was edited while that segment was being "
+        + "re-transcribed, so the new line was not put in — it would have replaced your edits."
+    /// Why Second Opinion's Replace was refused: the transcript was edited by hand (F436).
+    static let secondOpinionReplaceRefusedForEdits = "This transcript was edited by hand, so a line can't "
+        + "be replaced with the other engine's reading — that rebuilds the text from the original lines "
+        + "and would replace your edits."
+
     /// Re-transcribe a single segment (F92): slice that segment's audio from the recording, run the
     /// meeting's engine on the clip, and splice the result back — the recording is never modified.
     /// The heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards
@@ -1776,6 +1801,12 @@ final class AppModel: ObservableObject {
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
               let end = meeting.segments[index].end else { return }
+        // F436: the splice rebuilds the text from the lines, which is every hand edit gone. Refused
+        // here, before any engine time, and again at the write below.
+        guard !store.isTranscriptEdited(meeting) else {
+            alertMessage = Self.segmentReRunRefusedForEdits
+            return
+        }
         // The engine and language the meeting was transcribed with, not the ones Settings hold now
         // (F471): Settings are for the next meeting, and a line re-run under another language pin
         // can come back translated. The engine falls back to Settings only for a meeting that never
@@ -1802,8 +1833,15 @@ final class AppModel: ObservableObject {
             // rest of the transcript's earlier removals still happened.
             let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
             var spliced = false
+            var editedMeanwhile = false
             store.update(id: id) { meeting in
                 guard meeting.segments.indices.contains(index) else { return }
+                // F436: re-checked on the record being written, not the one read before the engine
+                // ran. The engine takes seconds to minutes, and an edit made in that time wins.
+                guard !store.isTranscriptEdited(meeting) else {
+                    editedMeanwhile = true
+                    return
+                }
                 spliced = true
                 let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
                 meeting.segments = merged
@@ -1816,6 +1854,9 @@ final class AppModel: ObservableObject {
                 // metrics, so a flagged replacement has to be able to lower it.
                 let quality = TranscriptQuality.review(merged)
                 meeting.confidence = quality.isUnscored ? nil : quality.confidence
+            }
+            if editedMeanwhile {
+                alertMessage = Self.segmentReRunDiscardedForEdits
             }
             // Said rather than refused: see `segmentRerunWarning` for why a line in the other
             // script is more likely the faithful one (F471).
@@ -1842,6 +1883,11 @@ final class AppModel: ObservableObject {
         // Guarded here as well as in the delegate, so the refusal is one immediate message rather
         // than one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
+        // The same reasoning for a hand-edited transcript (F436); `reTranscribeSegment` checks again.
+        guard store.meeting(id: id)?.isTranscriptEdited != true else {
+            alertMessage = Self.segmentReRunRefusedForEdits
+            return
+        }
         isRunningAuxiliaryEngine = true
         Task {
             await reTranscribeSegment(id: id, index: index)
@@ -4579,6 +4625,11 @@ final class AppModel: ObservableObject {
         let segmentsAfter: [TranscriptSegment]
     }
 
+    /// The one sentence for a transcript tool greyed out because the transcript was edited by hand —
+    /// said by `lineRemovalBlockedReason` and beside the Read view's per-line menu items (F436).
+    static let editedTranscriptReason =
+        "Unavailable after manual edits — these tools work on the original transcription."
+
     /// Why lines cannot be removed from this meeting right now, or nil when they can. One rule for
     /// Delete Line, Remove Repeated Lines and Remove Lines Not in <language>, so a greyed-out control
     /// and a refused call always agree.
@@ -4593,7 +4644,7 @@ final class AppModel: ObservableObject {
             return "Available once this meeting's transcription has finished."
         }
         if store.isTranscriptEdited(meeting) {
-            return "Unavailable after manual edits — these tools work on the original transcription."
+            return Self.editedTranscriptReason
         }
         if meeting.segments.isEmpty { return "This transcript has no separate lines to remove." }
         return nil
