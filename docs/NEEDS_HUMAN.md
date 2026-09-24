@@ -27,7 +27,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
 | 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
 | 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
-| 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste. The case you reported on 2026-09-23, which only your phone can reproduce. |
+| 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
 
 ---
 
@@ -233,21 +233,21 @@ your real meetings and reported counts and timings only. These need your permiss
 
 ## F428 — Copy on your iPhone, dictate on the Mac, then paste
 
-**Status:** `blocked`. F425 (2026-09-23) makes a dictation put your clipboard back 1.5 seconds after
-it pastes, instead of leaving the dictation there. Every test of it uses a private pasteboard; none
-used a real Universal Clipboard item, which is the case you reported.
+**Status:** `blocked`. Tried once on 2026-09-24 with F425: no more "raw transcript" (that was the test
+suite, F427), but the iPhone's text still did not come back. F516 rebuilt the mechanism the way Wispr
+Flow, Superwhisper and VoiceInk do it — the clipboard is copied at the moment of pasting, not when
+you start speaking — and it now writes the clipboard's *types* (never its content) to the log, so
+one more try tells us exactly what macOS hands WhisperMeet for an iPhone item.
 
-**What I need from you:** with the build that includes F425 installed, copy some text on your iPhone,
-press the dictation hotkey on the Mac and dictate a sentence into any text field, wait two seconds,
-then paste somewhere else — and tell me what the paste gave you.
+**What I need from you:** with the build that includes F516 installed, copy some text on your
+iPhone, dictate a sentence into a text box on the Mac, wait two seconds, paste somewhere else — and
+tell me what the paste gave you. I will read the log line myself.
 
 - **Your iPhone's text** — fixed; F428 closes.
-- **The dictation again** — the restore did not happen. Most likely cause: fetching the phone's data
-  counted as a clipboard change, so the saved copy looked stale. Tell me, and I will look at that.
-- **A macOS prompt** asking whether WhisperMeet may read or paste from other apps, on the first
-  dictation — expected on some macOS versions. Allow keeps the restore working; Don't Allow turns it
-  off and dictation still pastes. Tell me if you would rather never see that prompt: the fix then
-  skips the restore until you allow it in System Settings.
+- **The dictation again** — the log will say why (for example, that the iPhone item never reached
+  the Mac's clipboard before the paste, which no paste-based dictation app can work around).
+- **A macOS prompt** asking whether WhisperMeet may read the clipboard — Allow keeps the restore
+  working; Don't Allow turns it off and dictation still pastes.
 
 ---
 
