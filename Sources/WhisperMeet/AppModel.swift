@@ -2090,7 +2090,13 @@ final class AppModel: ObservableObject {
             }.value
             // The files on disk changed underneath this object, with no write algorithm to notice.
             store.reloadAfterLibraryRestore()
-            var message = "Your library was restored from the backup."
+            // Asked of the reload, not assumed from the copy (F463). Every file can land and the
+            // library still not open — an older backup carries no checksums, so a damaged index in
+            // it is found only now — and announcing success over a read-only library is the F187
+            // honesty rule broken in the one place the user is most likely to believe it.
+            var message = store.isDegraded
+                ? "The backup's files were copied into your library, but WhisperMeet could not fully read the restored library, so it is open in read-only mode."
+                : "Your library was restored from the backup."
             if let snapshot = outcome.preRestoreSnapshot {
                 // Named, because the user may want it back and because a restore that silently
                 // disposed of their previous library would not be reversible.

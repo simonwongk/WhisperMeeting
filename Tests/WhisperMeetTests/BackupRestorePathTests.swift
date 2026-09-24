@@ -68,6 +68,7 @@ private func handPlan(add: [String] = [], overwrite: [String] = []) -> BackupRes
         wouldOverwrite: overwrite,
         wouldAdd: add,
         notInBackup: [],
+        wouldSetAside: [],
         bytesToWrite: 0,
         verification: .init(isIntact: true, isUnverifiable: false, problems: [])
     )

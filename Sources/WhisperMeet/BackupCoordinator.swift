@@ -64,10 +64,13 @@ enum BackupCoordinator {
     ///   dropped one of the three.
     /// - Every `.backup.json` was absent, so a restored library had no redundancy behind a single
     ///   decode failure — the redundancy F190 exists to provide.
-    /// - Every `.ledger.json` was absent. Checked rather than assumed: this does NOT make a
-    ///   restored library read as divergent, because `isDivergent` opens with
-    ///   `guard let ledger else { return false }`. The cost is losing divergence detection until
-    ///   the next save, not a quarantine on first load.
+    /// - Every `.ledger.json` was absent. That alone does not make a restored library read as
+    ///   divergent, because `isDivergent` opens with `guard let ledger else { return false }` —
+    ///   but only when no ledger is there at all. Restoring such a backup used to leave the LIVE
+    ///   ledger beside the restored index, which is exactly a ledger contradicting its primary,
+    ///   and the library opened read-only (F463). The restore now sets the live lineage aside
+    ///   (`BackupRestorePlan.wouldSetAside`), so the cost is back to losing divergence detection
+    ///   until the next save.
     static let indexStems = ["meetings", "vocabulary", "replacement-rules"]
 
     /// Excluded deliberately, and asserted by a test so it stays a decision rather than an
@@ -79,8 +82,17 @@ enum BackupCoordinator {
     /// - Quarantined `*.unreadable-*.json` files are evidence of one incident, kept in place by
     ///   `StoreQuarantine` precisely so they sit beside the library they came from.
     static let backedUpEntries: [String] = ["Recordings"] + indexStems.flatMap {
-        ["\($0).json", "\($0).backup.json", "\($0).ledger.json"]
+        let files = indexFiles(of: $0)
+        return [files.primary] + files.lineage
     } + ["vocabulary.priority.json"] // F300: which terms are starred; absent until one is.
+
+    /// The files one index is kept in: the index itself, and the previous generation and ledger
+    /// F190 keeps beside it. The two `lineage` files describe the primary they sit next to, so a
+    /// restore that replaces the primary takes its lineage from the backup too, or sets the live
+    /// lineage aside where the backup has none (F463).
+    static func indexFiles(of stem: String) -> (primary: String, lineage: [String]) {
+        ("\(stem).json", ["\(stem).backup.json", "\(stem).ledger.json"])
+    }
 
     /// Back up `source` into `destination/<managedSubfolder>/<now>/`, retaining the newest `retain`
     /// complete generations.

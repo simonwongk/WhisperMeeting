@@ -477,9 +477,11 @@ final class MeetingStore: ObservableObject {
     ///
     /// Every mutator refuses meanwhile. The restore copies every recording and takes minutes, and a
     /// change saved during it lands in files the restore is about to overwrite and misses the
-    /// pre-restore snapshot, which was taken before the copy began — so it is in neither. Separate
-    /// from `health` because nothing here is damaged: it ends when the restore does, with
-    /// `endLibraryRestore()`, whichever way the restore went.
+    /// pre-restore snapshot, which was taken before the copy began — so it is in neither. And once
+    /// a restore has set the live ledger aside (F463), a save of this object's pre-restore list is
+    /// not even caught as a conflict: with no ledger to contradict it, it is adopted over the
+    /// restored index. Separate from `health` because nothing here is damaged: it ends when the
+    /// restore does, with `endLibraryRestore()`, whichever way the restore went.
     @Published private(set) var isRestoringLibrary = false
 
     static let changeRefusedDuringRestore = "Your library is being restored, so this change was not saved. Try again when the restore finishes."

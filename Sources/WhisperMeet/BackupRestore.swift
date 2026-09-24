@@ -95,7 +95,9 @@ enum BackupRestore {
         var preserved: [(original: URL, saved: URL)] = []
         do {
             try fileManager.createDirectory(at: snapshot, withIntermediateDirectories: true)
-            for path in plan.wouldOverwrite {
+            // The files it will set aside are preserved exactly like the ones it will overwrite,
+            // so rollback and a later undo treat them the same way (F463).
+            for path in plan.wouldOverwrite + plan.wouldSetAside {
                 let original = library.appendingPathComponent(path)
                 let saved = snapshot.appendingPathComponent(path)
                 try fileManager.createDirectory(
@@ -113,6 +115,14 @@ enum BackupRestore {
         // that assumed the whole plan had been attempted would delete files it never created.
         var written: [URL] = []
         do {
+            // First, before any index is replaced (F463). A restored index beside the live ledger
+            // opens read-only; either index without a ledger is an unrecorded generation, which
+            // the store adopts. So when the backup has no ledger of its own, a restore that dies
+            // after this line — where rollback cannot run — has not left an index beside a ledger
+            // that contradicts it. They are already in the snapshot.
+            for path in plan.wouldSetAside {
+                try fileManager.removeItem(at: library.appendingPathComponent(path))
+            }
             for path in paths {
                 let source = generation.appendingPathComponent(path)
                 let target = library.appendingPathComponent(path)
@@ -152,7 +162,7 @@ enum BackupRestore {
         for url in written where added.contains(url.standardizedFileURL.path) {
             try? fileManager.removeItem(at: url)
         }
-        // Files it OVERWROTE come back from the snapshot.
+        // Files it OVERWROTE or SET ASIDE come back from the snapshot.
         for (original, saved) in preserved {
             try? fileManager.removeItem(at: original)
             try? fileManager.createDirectory(

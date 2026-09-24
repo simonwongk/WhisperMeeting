@@ -30,6 +30,13 @@ struct BackupRestorePlan: Equatable, Sendable {
     /// index, so they become unreferenced on disk, which is the F255 harm arriving by a different
     /// road. Naming them is the difference between a restore the user chose and one they regret.
     let notInBackup: [String]
+    /// **Live index files the restore moves into the pre-restore snapshot** (F463): the previous
+    /// generation and ledger of an index the backup replaces but carries no such file for — every
+    /// backup made before F191 slice A. Left in place, the live ledger would describe a generation
+    /// that is no longer there, and the next load reads that as a rival writer and opens the library
+    /// read-only. Moved rather than deleted, because undoing the restore needs them back. Not in
+    /// `notInBackup`: they are not left on disk, and they are not meetings.
+    let wouldSetAside: [String]
 
     let bytesToWrite: Int64
     let verification: BackupManifest.VerificationResult
@@ -113,11 +120,19 @@ struct BackupRestorePlan: Equatable, Sendable {
 
         let overwrite = backupPaths.intersection(libraryPaths).sorted()
         let add = backupPaths.subtracting(libraryPaths).sorted()
+        // Only for an index whose primary the backup replaces. When the backup has no copy of an
+        // index at all, the live one stays, and its lineage belongs with it.
+        let setAside = BackupCoordinator.indexStems.flatMap { stem -> [String] in
+            let files = BackupCoordinator.indexFiles(of: stem)
+            guard backupPaths.contains(files.primary) else { return [] }
+            return files.lineage.filter { libraryPaths.contains($0) && !backupPaths.contains($0) }
+        }.sorted()
         // Restricted to the entries a backup covers at all. Without this, every install log and
         // downloaded runtime in the library would be reported as "not in the backup" — true, and
         // noise that would bury the two or three lines the user needs to read.
         let missing = libraryPaths
             .subtracting(backupPaths)
+            .subtracting(setAside)
             .filter(isCoveredByBackup)
             .sorted()
 
@@ -127,6 +142,7 @@ struct BackupRestorePlan: Equatable, Sendable {
             wouldOverwrite: overwrite,
             wouldAdd: add,
             notInBackup: missing,
+            wouldSetAside: setAside,
             bytesToWrite: backupPaths.reduce(Int64(0)) { $0 + (backupFiles[$1] ?? 0) },
             verification: verification
         )
@@ -173,13 +189,17 @@ struct BackupRestorePlan: Equatable, Sendable {
     /// vaguer one.
     func checkPaths(from generation: URL, into library: URL) throws {
         let generationRoot = generation.resolvingSymlinksInPath()
-        for path in wouldOverwrite + wouldAdd {
+        // `wouldSetAside` is removed from the library, so its targets pass the same test; it has no
+        // source, because nothing is copied in its place.
+        for path in wouldOverwrite + wouldAdd + wouldSetAside {
             let target = library.appendingPathComponent(path)
             guard Self.isRestorablePath(path),
                   MeetingStore.isWithinLibrary(target, root: library),
                   Self.itemType(at: target) != .typeDirectory else {
                 throw BackupRestoreError.unrestorablePath(path)
             }
+        }
+        for path in wouldOverwrite + wouldAdd {
             let source = generation.appendingPathComponent(path)
             if let type = Self.itemType(at: source) {
                 guard type == .typeRegular,
