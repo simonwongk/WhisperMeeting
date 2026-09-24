@@ -1081,14 +1081,22 @@ final class MeetingStore: ObservableObject {
     }
 
     /// Deleted ids awaiting their shred, keyed by the epoch second of the deletion.
+    ///
+    /// Read leniently (F498). `UUID(uuidString:)` accepts either case, so a file naming one meeting
+    /// in two spellings — hand-edited, or written by something other than this build — holds two
+    /// keys for one id, and `Dictionary(uniqueKeysWithValues:)` trapped on it. This getter runs at
+    /// every launch, so that file took the app down before any window could say why. The later
+    /// deletion time wins: the shred then waits for the later of the two, and waiting loses nothing
+    /// where shredding early cannot be taken back.
     private(set) var pendingShreds: [UUID: Int] {
         get {
             guard let data = try? Data(contentsOf: pendingShredURL),
                   let raw = try? JSONDecoder().decode([String: Int].self, from: data)
             else { return [:] }
-            return Dictionary(uniqueKeysWithValues: raw.compactMap { key, value in
-                UUID(uuidString: key).map { ($0, value) }
-            })
+            return Dictionary(
+                raw.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } },
+                uniquingKeysWith: max
+            )
         }
         set {
             let raw = Dictionary(uniqueKeysWithValues: newValue.map { ($0.key.uuidString, $0.value) })
@@ -1115,11 +1123,39 @@ final class MeetingStore: ObservableObject {
     /// Shreds every queued deletion older than the grace window from the retained history and the
     /// backup copy. Idempotent; called at launch by `performStartupRecovery` and after each delete.
     /// Returns the ids shredded.
+    ///
+    /// Two things are settled before anything is due (F498), and both are written back even when
+    /// nothing is:
+    ///
+    /// - **A queued id that is a live meeting again is cancelled, not shredded.** The grace window
+    ///   exists so a mistaken delete can be undone, and every undo — restoring a generation from
+    ///   the recovery list, restoring a backup (which does not carry this queue, so the live one
+    ///   survives it), or a rebuild or recovery that finds the meeting's folder still on disk —
+    ///   brings the meeting back under its old id without touching this file.
+    ///   Shredding it anyway stripped a live meeting from every generation that held it, which is
+    ///   the undo protection taken away from exactly the meeting the user had just rescued. Checked
+    ///   here rather than in each restore path because this is the only place a shred happens, so
+    ///   no future route back can miss it.
+    /// - **A deletion dated in the future is re-dated to now.** A wrong clock or a foreign file
+    ///   would otherwise defer the shred until that date — for `Int.max`, forever — and deferring
+    ///   forever is its own failure: the text stays in the history the user was told it would
+    ///   leave. Re-dating bounds the wait at one grace period from when it is first seen.
+    ///
+    /// Due is decided against a cutoff rather than as `now - deletedAt`, which trapped on a deletion
+    /// time near `Int.min` — at every launch, like the getter's duplicate keys.
     @discardableResult
     func processPendingShreds(now: Int = Int(Date().timeIntervalSince1970)) -> [UUID] {
         guard !isDegraded else { return [] }   // F187: no rewrite of a library we could not read
-        let pending = pendingShreds
-        let due = pending.filter { now - $0.value >= Int(Self.shredGracePeriod) }.map(\.key)
+        let stored = pendingShreds
+        let live = Set(meetings.map(\.id))
+        var pending: [UUID: Int] = [:]
+        for (id, deletedAt) in stored where !live.contains(id) {
+            pending[id] = min(deletedAt, now)
+        }
+        if pending != stored { pendingShreds = pending }
+        let (cutoff, overflowed) = now.subtractingReportingOverflow(Int(Self.shredGracePeriod))
+        // An overflowed cutoff means a `now` near `Int.min`; nothing is due then, which defers.
+        let due = pending.filter { !overflowed && $0.value <= cutoff }.map(\.key)
         guard !due.isEmpty else { return [] }
         let gone = Set(due)
         do {

@@ -230,6 +230,12 @@ that held the meeting is re-recorded without it under a new name, and the backup
 generations that never held it are not touched, so the ability to undo a bad save is kept for every
 other meeting. The queue of pending deletions is `meetings.pending-shred.json`.
 
+Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
+list, or restoring a backup — cancels its shred: a meeting that is in the library again is never
+removed from the history (F498). A deletion recorded
+with a date in the future, from a clock that was set wrong, is treated as happening when WhisperMeet
+next checks, so its week starts then rather than never.
+
 If the shred cannot complete (a permission error on the history directory, say), the meeting is still
 deleted and the app says so; *Forget History* in Settings → Meeting library removes the whole saved
 history at once, and quitting WhisperMeet and deleting `meetings.history/` by hand does the same.

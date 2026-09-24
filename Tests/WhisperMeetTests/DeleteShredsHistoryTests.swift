@@ -122,3 +122,126 @@ func pendingShredsPersistAcrossLaunches() throws {
     #expect(reopened.processPendingShreds(now: Int(Date().timeIntervalSince1970) + week + 1) == [secret])
     #expect(!(try allIndexText(in: root).values.contains { $0.contains("confidential-kestrel") }))
 }
+
+// MARK: - F498: the undo the window exists for, and a queue file nobody vouched for
+
+/// A library where "Board review" was deleted by mistake: its text is still in the history, and its
+/// shred is queued.
+@MainActor
+private func makeMistakenDelete(_ label: String) throws -> (MeetingStore, URL, UUID) {
+    let (store, root) = try makeLibrary(label)
+    let secret = UUID()
+    store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed, transcriptText: "ordinary"))
+    store.upsert(MeetingRecord(id: secret, title: "Board review", status: .completed,
+                               transcriptText: "the confidential-kestrel figures"))
+    store.delete(id: secret)
+    try #require(store.pendingShreds.keys.contains(secret))
+    return (store, root, secret)
+}
+
+private func historyHolds(_ needle: String, in root: URL) throws -> Bool {
+    try allIndexText(in: root).contains { $0.key.hasPrefix("history/") && $0.value.contains(needle) }
+}
+
+@MainActor
+@Test("A meeting brought back from the recovery list is not shredded a week later (F498)")
+func restoredMeetingIsNotShredded() throws {
+    let (store, root, secret) = try makeMistakenDelete("restored")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // The undo F295's window exists for.
+    let target = try #require(try store.indexGenerations().first { $0.recordCount == 2 })
+    try store.restoreIndexGeneration(target)
+    try #require(store.meetings.contains { $0.id == secret })
+    let generations = Set(try store.indexGenerations().map(\.name))
+
+    let shredded = store.processPendingShreds(now: Int(Date().timeIntervalSince1970) + week + 1)
+
+    #expect(shredded.isEmpty, "a meeting the user brought back is live, not deleted")
+    #expect(store.pendingShreds.isEmpty, "its shred is cancelled, not left queued to fire later")
+    // A shred re-records every generation that held the meeting under a new name, so the same
+    // names still being there is the proof nothing was rewritten.
+    #expect(generations.isSubset(of: Set(try store.indexGenerations().map(\.name))),
+            "the generations holding a live meeting were rewritten")
+    #expect(store.meetings.contains { $0.id == secret })
+}
+
+@MainActor
+@Test("A meeting brought back by a whole-library restore is not shredded either (F498)")
+func meetingRestoredFromABackupIsNotShredded() throws {
+    let (store, root) = try makeLibrary("backup")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secret = UUID()
+    store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed, transcriptText: "ordinary"))
+    store.upsert(MeetingRecord(id: secret, title: "Board review", status: .completed,
+                               transcriptText: "the confidential-kestrel figures"))
+    // What last night's backup holds. `meetings.pending-shred.json` is not in a backup, so the
+    // live queue survives the restore that replaces the index underneath it.
+    let backedUp = try Data(contentsOf: root.appendingPathComponent("meetings.json"))
+    store.delete(id: secret)
+    try backedUp.write(to: root.appendingPathComponent("meetings.json"))
+    store.reloadAfterLibraryRestore()
+    try #require(store.meetings.contains { $0.id == secret })
+    try #require(!store.isDegraded)
+    let generations = Set(try store.indexGenerations().map(\.name))
+
+    let shredded = store.processPendingShreds(now: Int(Date().timeIntervalSince1970) + week + 1)
+
+    #expect(shredded.isEmpty)
+    #expect(store.pendingShreds.isEmpty)
+    #expect(generations.isSubset(of: Set(try store.indexGenerations().map(\.name))))
+}
+
+/// `UUID(uuidString:)` reads either case, so one id spelled two ways is ONE key — and
+/// `Dictionary(uniqueKeysWithValues:)` traps on it. The getter runs at every launch, from
+/// `performStartupRecovery`, so the file took the app down before a window could explain anything.
+@MainActor
+@Test("A queue naming one meeting in two spellings is read as one entry, not a crash (F498)")
+func caseVariantQueueKeysAreOneEntry() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeleteShred-case-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let file = #"{"\#(id.uuidString.lowercased())":1000,"\#(id.uuidString)":2000}"#
+    try Data(file.utf8).write(to: root.appendingPathComponent("meetings.pending-shred.json"))
+
+    let store = MeetingStore(rootDirectory: root)
+
+    // The later deletion time, so the shred waits for the later of the two: nothing is lost by
+    // waiting, and shredding early is the one direction that cannot be taken back.
+    #expect(store.pendingShreds == [id: 2000])
+}
+
+@MainActor
+@Test("A deletion time far in the past is due, and its arithmetic cannot trap (F498)")
+func deletionTimeAtIntMinIsDueWithoutTrapping() throws {
+    let (store, root, secret) = try makeMistakenDelete("intmin")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data(#"{"\#(secret.uuidString)":\#(Int.min)}"#.utf8)
+        .write(to: root.appendingPathComponent("meetings.pending-shred.json"))
+
+    let shredded = store.processPendingShreds(now: Int(Date().timeIntervalSince1970))
+
+    #expect(shredded == [secret])
+    #expect(!(try historyHolds("confidential-kestrel", in: root)))
+    #expect(store.pendingShreds.isEmpty)
+}
+
+/// A deletion dated in the future — a clock that was set wrong, a file from somewhere else — would
+/// defer its shred until then, which for `Int.max` is forever. Deferring forever is itself the
+/// failure: the text stays in the history the user was told it would leave.
+@MainActor
+@Test("A deletion dated in the future is re-dated to now, so its shred still comes (F498)")
+func futureDeletionTimeIsClampedToNow() throws {
+    let (store, root, secret) = try makeMistakenDelete("future")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data(#"{"\#(secret.uuidString)":\#(Int.max)}"#.utf8)
+        .write(to: root.appendingPathComponent("meetings.pending-shred.json"))
+    let now = Int(Date().timeIntervalSince1970)
+
+    #expect(store.processPendingShreds(now: now).isEmpty, "not due yet: the window starts now")
+    #expect(store.pendingShreds == [secret: now], "and it starts now, on disk")
+    #expect(store.processPendingShreds(now: now + week) == [secret])
+    #expect(!(try historyHolds("confidential-kestrel", in: root)))
+}
