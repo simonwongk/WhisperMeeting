@@ -717,9 +717,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// The privacy counterpart to `restore`, and the trade is explicit: this **discards the undo
     /// protection** F190 exists to provide. Retained generations hold meeting titles, transcripts,
     /// notes and summaries, so deleting a meeting leaves its text in every generation that predates
-    /// the deletion — bounded by the retention policy's oldest age anchor, except for the
-    /// high-water generation, which is pinned indefinitely and so keeps that text for as long as the
-    /// library does not grow.
+    /// the deletion until something removes it: the retention policy's oldest age anchor, except
+    /// for the high-water generation, which is pinned indefinitely — or `rewriteHistory`, which is
+    /// how `MeetingStore` shreds a deleted meeting from every generation a week after the delete
+    /// (F295). This is the immediate, all-records version, and it does not touch the backup copy.
     ///
     /// A caller must therefore present this as losing the ability to undo a bad save, not as
     /// housekeeping. Nothing here decides when to call it.

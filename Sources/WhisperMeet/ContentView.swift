@@ -1652,10 +1652,11 @@ struct SettingsView: View {
                             Text(AppModel.restoreConfirmationMessage(pending))
                         }
                     }
-                // F239: "Delete Meeting" removes the recording folder at once but leaves the
-                // meeting's text in the retained index generations. Destructive role and a
-                // confirmation, because this is the one command here that discards protection
-                // rather than adding any.
+                // F239, F295: "Delete Meeting" removes the recording folder at once and the
+                // meeting's text from the retained index generations a week later, on its own.
+                // This removes all of that history now. Destructive role and a confirmation,
+                // because this is the one command here that discards protection rather than
+                // adding any.
                 HStack {
                     Label("Forget saved index history", systemImage: "clock.badge.xmark")
                     Spacer()

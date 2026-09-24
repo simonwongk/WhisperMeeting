@@ -260,7 +260,9 @@ public struct StoreHistory: Sendable {
     /// not. The bound was the retention policy's oldest age anchor — about a week — with one
     /// unbounded exception: `pinHighWaterRecordCount` pins the largest generation indefinitely, so
     /// on a library that is not growing the text stays forever. Before this the only remedy was the
-    /// one `docs/RECOVERY.md` documents: deleting the directory by hand.
+    /// one `docs/RECOVERY.md` documents: deleting the directory by hand. F295 has since made the
+    /// per-meeting removal automatic, a week after each delete; this remains the immediate,
+    /// whole-history version (F450 corrected the places that still said otherwise).
     ///
     /// **`conflict-` branches go too, and that is a deliberate departure from `prune`.** `prune`
     /// never touches them because they are a losing writer's work and exist nowhere else, so only

@@ -1268,16 +1268,22 @@ final class MeetingStore: ObservableObject {
             : "\(count) meetings had a recording path that did not point to their own recording folder, so no files were deleted from disk for them; they were removed from the list."
     }
 
-    /// Forgets the retained index history, so a deleted meeting's text leaves the disk (F239).
+    /// Forgets the retained index history now — the immediate counterpart to the automatic shred
+    /// (F239, F295).
     ///
-    /// `Delete Meeting` removes the recording folder at once but leaves the meeting's title,
-    /// transcript, notes and summary in every retained generation under `meetings.history/`. Those
-    /// age out on the retention policy's oldest anchor — about a week — except for the high-water
-    /// generation, which is pinned indefinitely, so on a library that is not growing the text stays
-    /// for good. This is the command that removes it.
+    /// Deleting a meeting removes its recording folder at once; its title, transcript, notes and
+    /// summary stay in the retained generations under `meetings.history/` and in the backup copy for
+    /// `shredGracePeriod` (a week), so a mistaken delete can be undone, and `processPendingShreds`
+    /// then removes them from every generation automatically. This command does not wait: it removes
+    /// every generation and conflict branch at once, for every meeting. It does not rewrite
+    /// `meetings.backup.json`, the previous generation, so a meeting deleted by the most recent save
+    /// is still there until the next save rotates it out.
     ///
-    /// **It discards F190's undo protection**, which is why it is not automatic and why the caller
-    /// must say so. Returns how many generations were removed, so the UI can report what happened
+    /// **It discards F190's undo protection for the whole library**, not just for deleted meetings,
+    /// which is why it is a separate command the caller must describe as such. (This comment used to
+    /// say a deleted meeting's text could stay in the history for good unless this ran; F295 made
+    /// the per-meeting removal automatic, and F450 corrected the comment.) Returns how many
+    /// generations were removed, so the UI can report what happened
     /// rather than claim success; a failure sets `storageErrorMessage` and returns nil, because a
     /// privacy command that reports erasure it did not achieve is worse than one that fails loudly.
     @discardableResult
