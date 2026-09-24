@@ -55,3 +55,37 @@ func secondOpinionDoesNotMutateStoredTranscript() async throws {
     #expect(model.store.meeting(id: id)?.segments[1].text == "second thing")
     #expect(model.store.meeting(id: id)?.segments[0].text == "hello world")        // untouched
 }
+
+// F472 — the other engine's boundaries sit a fraction of a second away from this transcript's, so
+// every line after the first overlapped the other engine's previous sentence too. Pairing with the
+// first overlap offered that sentence as the other reading, and Replace wrote it in: the same
+// sentence twice, and the real line gone.
+@MainActor
+@Test("Replace writes the other engine's reading of the same line, not its previous sentence (F472)")
+func secondOpinionReplaceWritesTheMatchingLine() async throws {
+    let (model, _) = try makeModel()
+    let id = UUID()
+    let stored = [seg("We should ship on Friday.", 10.0, 13.2), seg("Then we review the numbrs.", 13.2, 18.0)]
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M",
+        recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(stored),
+        segments: stored
+    ))
+    model.runTranscriptionEngineOverride = { _, _ in
+        TranscriptionResult(
+            id: "x", text: "We should ship on Friday. Then we review the numbers.", languageCode: "en",
+            audioDuration: 18.1, confidence: nil,
+            segments: [seg("We should ship on Friday.", 9.8, 13.3), seg("Then we review the numbers.", 13.3, 18.1)]
+        )
+    }
+
+    await model.computeSecondOpinion(id: id)
+    let diverging = try #require(model.secondOpinionSpans?.first { $0.kind == .diverge })
+    model.applySecondOpinionSpan(diverging, to: id)
+
+    #expect(model.store.meeting(id: id)?.segments.map(\.text) == [
+        "We should ship on Friday.", "Then we review the numbers.",
+    ])
+}
