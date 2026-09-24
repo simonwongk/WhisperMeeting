@@ -203,7 +203,12 @@ public struct QwenASRClient: Sendable {
         // F263: alignment now degrades per sentence, so a transcript can be MOSTLY seekable with a
         // few passages untimed. Saying "unavailable" over that would be false, and saying nothing
         // would leave the gaps unexplained — so describe exactly what happened.
-        let untimed = segments.filter { $0.start == nil }.count
+        // A line with no letters or digits ("…", a stray ".") has nothing to align, so it is not a
+        // passage that failed to match (F429). It is still shown, untimed.
+        let untimed = segments.filter { segment in
+            segment.start == nil
+                && segment.text.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        }.count
         guard untimed > 0 else { return nil }
         let passages = untimed == 1 ? "passage" : "passages"
         let pronoun = untimed == 1 ? "it is" : "they are"

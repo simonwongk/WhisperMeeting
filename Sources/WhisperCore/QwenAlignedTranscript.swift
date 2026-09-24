@@ -47,9 +47,9 @@ public enum QwenAlignedTranscript {
                let offset = place(
                    key, in: stream, cursor: cursor, unplaced: unplaced, followedBy: following[index]
                ) {
-                // A sentence that begins or ends inside an aligner word ("I think." / ".maybe …"
-                // against the one word "thinkmaybe") takes that word's timing. It is the same word,
-                // not a neighbour's, so the rule below is not bent.
+                // A sentence that begins or ends inside an aligner word (`I said "wait.` /
+                // `"Maybe …` against the one word "waitmaybe") takes that word's timing. It is the
+                // same word, not a neighbour's, so the rule below is not bent.
                 let last = offset + key.count - 1
                 result.append(TranscriptSegment(
                     speaker: nil,
@@ -213,8 +213,8 @@ public enum QwenAlignedTranscript {
 
     /// The transcript cut into sentences at `.`, `?`, `!`, `。`, `？`, `！` and newlines.
     ///
-    /// A `.`, `?` or `!` followed directly by a letter, a digit, or a comma, semicolon or colon
-    /// (ASCII or fullwidth) does not end a sentence (F420). The aligner splits English on whitespace, so "A.D.,",
+    /// A `.`, `?` or `!` followed directly by a letter, a digit, a comma, semicolon or colon
+    /// (ASCII or fullwidth), or another `.`, `?` or `!` (F429) does not end a sentence (F420). The aligner splits English on whitespace, so "A.D.,",
     /// "Sources.com" and "3.5" each reach it as one word, and cutting them put a sentence boundary
     /// in the middle of an aligner word — "… A." / "D." / ", …" — besides leaving lines
     /// like "D." that are not sentences. The comma, semicolon and colon are there because no
@@ -261,8 +261,12 @@ public enum QwenAlignedTranscript {
     private static let clauseContinuations: Set<Character> = [",", ";", ":", "，", "；", "："]
 
     /// Whether `next`, directly after a `.`, `?` or `!`, means the sentence has not ended (F420).
+    ///
+    /// Another `.`, `?` or `!` also continues it (F429): a run of them — "...", "?!" — is ONE
+    /// ending, cut after its last mark. Cutting at each mark left lines of bare "." that no aligner
+    /// word can time, and each was then counted as a passage that "could not be matched".
     private static func continuesSentence(_ next: Character) -> Bool {
-        if clauseContinuations.contains(next) { return true }
+        if clauseContinuations.contains(next) || wordInternalTerminators.contains(next) { return true }
         guard next.isLetter || next.isNumber else { return false }
         return !isCJKIdeograph(next)
     }

@@ -20,8 +20,8 @@ import Testing
 // Fixture fidelity: for English the aligner splits the chunk text on whitespace and keeps only
 // Unicode L*/N* characters and the apostrophe of each piece (mlx-audio 0.3.1,
 // `stt/models/qwen3_asr/qwen3_forced_aligner.py`: `tokenize_space_lang`, `clean_token`,
-// `is_kept_char`), so "B.C.," arrives as the single word "BC" and "think...maybe" as
-// "thinkmaybe". `alignerWords` reproduces exactly that for the ASCII text used here.
+// `is_kept_char`), so "B.C.," arrives as the single word "BC" and `"wait."Maybe` as
+// "waitmaybe". `alignerWords` reproduces exactly that for the ASCII text used here.
 
 /// What the forced aligner reports for English text, one `wordSeconds`-long word after another
 /// starting at `from`, so every expected timing in this file can be read off a word count.
@@ -95,36 +95,32 @@ func domainNameDoesNotUntimeLaterSentences() throws {
 
 @Test("A sentence that begins inside an aligner word takes that word's timing, and the rest stay timed (F420)")
 func boundaryInsideAnAlignerWordStaysTimed() throws {
-    // An ellipsis with no space after it is still cut by the splitter: its first two dots are each
-    // followed by a dot, which does not count as continuing the sentence, so they end sentences;
-    // only the third, followed by a letter, does not. The aligner reports "think...maybe" as ONE word,
-    // "thinkmaybe", so "I think." ends inside that word and ".maybe we start…" begins inside it.
-    // Both take its timing: it is the same word, not a neighbour's, so the F263 rule that an
-    // unmatched sentence never inherits a neighbour's timing is not in play.
+    // A closing quote after the full stop, then no space: `wait."Maybe`. The splitter ends the
+    // sentence at the `.` (a quote does not continue it), while the aligner, splitting on
+    // whitespace, reports `"wait."Maybe` as ONE word, "waitmaybe". So `I said "wait.` ends inside
+    // that word and `"Maybe we start…` begins inside it. Both take its timing: it is the same word,
+    // not a neighbour's, so the F263 rule that an unmatched sentence never inherits a neighbour's
+    // timing is not in play. (This test used an unspaced ellipsis until F429 made "..." one ending.)
     //
-    // Words: Good morning everyone (0–2) | I thinkmaybe we start with the budget (3–9) | The venue
-    // comes second (10–13) | Catering is last (14–16).
-    let text = "Good morning everyone. I think...maybe we start with the budget. The venue comes "
+    // Words: Good morning everyone (0–1.5) | I said waitmaybe we start with the budget (1.5–5.5) |
+    // The venue comes second (5.5–7.5) | Catering is last (7.5–9.0).
+    let text = "Good morning everyone. I said \"wait.\"Maybe we start with the budget. The venue comes "
         + "second. Catering is last."
     let segments = QwenAlignedTranscript.segments(fullText: text, alignedItems: alignerWords(text))
 
     let venue = try #require(segment(segments, "The venue comes second."))
-    #expect(venue.start == 5.0)
-    #expect(venue.end == 7.0)
+    #expect(venue.start == 5.5)
+    #expect(venue.end == 7.5)
     let last = try #require(segment(segments, "Catering is last."))
-    #expect(last.start == 7.0)
-    #expect(last.end == 8.5)
+    #expect(last.start == 7.5)
+    #expect(last.end == 9.0)
 
-    let think = try #require(segment(segments, "I think."))
-    #expect(think.start == 1.5)
-    #expect(think.end == 2.5, "ends with the word it ends inside")
-    let maybe = try #require(segment(segments, ".maybe we start with the budget."))
-    #expect(maybe.start == 2.0, "starts with the word it starts inside")
-    #expect(maybe.end == 5.0)
-
-    // The lone "." between them has no letters to align, so it stays untimed — as before.
-    let dot = try #require(segment(segments, "."))
-    #expect(dot.start == nil && dot.end == nil)
+    let said = try #require(segment(segments, "I said \"wait."))
+    #expect(said.start == 1.5)
+    #expect(said.end == 3.0, "ends with the word it ends inside")
+    let maybe = try #require(segment(segments, "\"Maybe we start with the budget."))
+    #expect(maybe.start == 2.5, "starts with the word it starts inside")
+    #expect(maybe.end == 5.5)
 }
 
 // MARK: - (b) a stretch of sentences the aligner output does not contain
