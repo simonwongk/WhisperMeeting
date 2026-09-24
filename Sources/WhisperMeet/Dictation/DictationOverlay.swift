@@ -16,6 +16,8 @@ private final class NonActivatingPanel: NSPanel {
 final class DictationOverlay {
     enum Phase: Equatable {
         case listening, transcribing, refining, done, copied, empty, error, busy
+        /// Copied rather than pasted, and why (F445).
+        case appChanged, secureInput
     }
 
     private let model = PillModel()
@@ -148,7 +150,8 @@ private struct DictationPill: View {
         case .listening: Circle().fill(.red).frame(width: 10, height: 10)
         case .transcribing, .refining: ProgressView().controlSize(.small).tint(.white)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .copied: Image(systemName: "doc.on.clipboard").foregroundStyle(.white)
+        case .copied, .appChanged: Image(systemName: "doc.on.clipboard").foregroundStyle(.white)
+        case .secureInput: Image(systemName: "lock.fill").foregroundStyle(.white)
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
         case .error: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .busy: Image(systemName: "hourglass").foregroundStyle(.white)
@@ -162,6 +165,8 @@ private struct DictationPill: View {
         case .refining: "Polishing…"
         case .done: "Pasted"
         case .copied: "Copied to clipboard"
+        case .appChanged: "Copied — app changed"
+        case .secureInput: "Copied — secure input"
         case .empty: "Didn’t catch that"
         case .error: "Dictation failed"
         case .busy: "Busy…"

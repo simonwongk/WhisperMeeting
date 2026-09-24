@@ -23,12 +23,22 @@ import os
 /// **Clipboard only** — auto-paste off, or no ⌘V possible (no Accessibility): the text is written
 /// and left, because the clipboard is the delivery.
 ///
+/// **Not pasted** (F445) — secure input at the press or at delivery: left on the clipboard marked
+/// concealed, never pasted, even with auto-paste off. A different app in front than the one the key
+/// was pressed in: left as an ordinary copy.
+///
 /// Where a restore cannot be shown to be right — a clipboard marked concealed, one that could not
 /// be read in full, a system setting that would ask before the read — the dictation is left on the
 /// clipboard, and it is in the dictation history either way.
 @MainActor
 final class TextInjector {
-    enum Delivery { case pasted, clipboard }
+    enum Delivery {
+        case pasted, clipboard
+        /// Left on the clipboard: the app the dictation was started in is no longer in front (F445).
+        case appChanged
+        /// Left on the clipboard, concealed, and never pasted or logged: secure input (F445).
+        case secureInput
+    }
 
     /// How long after ⌘V the clipboard is put back. Nothing tells us the target app has consumed
     /// the paste, and restoring too early makes it paste the OLD content — worse than not restoring.
@@ -73,20 +83,43 @@ final class TextInjector {
         self.schedule = schedule
     }
 
-    func deliver(_ text: String, autoPaste: Bool) -> Delivery {
+    /// What the delivery will be checked against, taken when the dictation starts (F445).
+    func target() -> FocusedTextField.Probe {
+        focusedTextField()
+    }
+
+    /// `pressed` is `target()` as it was when the key went down (F445), so the paste goes where the
+    /// user started or nowhere. Nil skips both press-time checks.
+    func deliver(_ text: String, autoPaste: Bool, pressedIn pressed: FocusedTextField.Probe? = nil) -> Delivery {
         generation &+= 1
         let carried = pending.flatMap { pasteboard.changeCount == $0.written ? $0.snapshot : nil }
         pending = nil
+        let target = focusedTextField()
 
+        // Secure input at the press or now: the words may be a password, or a password prompt has
+        // taken focus and would receive a sentence as one. Never pasted, whatever auto-paste says.
+        // Left concealed — clipboard-history tools skip it — so a dictation meant for somewhere else
+        // is not lost; the controller keeps it out of the history file.
+        if target.isSecure || pressed?.isSecure == true {
+            write(text, markers: Self.transientMarkers + [Self.concealedMarker])
+            log.notice("secure input: dictation not pasted, left concealed on the clipboard")
+            return .secureInput
+        }
         guard autoPaste, canSynthesizePaste() else {
-            write(text, transient: false)
+            write(text, markers: [])
             return .clipboard
         }
-        let target = focusedTextField()
+        // The user moved to another app while it was transcribing: ⌘V would land in whatever they
+        // are doing now. Left on the clipboard, where they can paste it where they meant.
+        if let started = pressed?.processIdentifier, let now = target.processIdentifier, started != now {
+            write(text, markers: [])
+            log.notice("frontmost app changed since the press (now \(target.summary, privacy: .public)): dictation left on the clipboard")
+            return .appChanged
+        }
         // Taken now, at paste time: an item that arrived while the user was speaking — from the
         // iPhone, say — is the clipboard they expect back. Only when it will be given back.
         let snapshot = target.isTextField ? (carried ?? takeSnapshot()) : nil
-        write(text, transient: snapshot != nil)
+        write(text, markers: snapshot != nil ? Self.transientMarkers : [])
         let written = pasteboard.changeCount
         guard synthesizePaste() else { return .clipboard }
 
@@ -101,13 +134,14 @@ final class TextInjector {
         return .pasted
     }
 
-    private func write(_ text: String, transient: Bool) {
+    /// The nspasteboard.org marker for a secret, which clipboard managers neither show nor keep.
+    nonisolated static let concealedMarker = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
+    private func write(_ text: String, markers: [NSPasteboard.PasteboardType]) {
         pasteboard.clearContents()
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
-        if transient {
-            for marker in Self.transientMarkers { item.setData(Data(), forType: marker) }
-        }
+        for marker in markers { item.setData(Data(), forType: marker) }
         pasteboard.writeObjects([item])
     }
 

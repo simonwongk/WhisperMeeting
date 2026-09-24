@@ -76,6 +76,11 @@ in `WhisperCore`.
 Fallback / edge branches:
 - **No Accessibility permission or no focused field** → text left on clipboard + a user notification
   ("Transcript copied — press ⌘V"). Pill shows "Copied to clipboard".
+- **Another app in front at delivery** than the one the key was pressed in → not pasted; text left on
+  the clipboard, pill "Copied — app changed" (F445).
+- **Secure input** (a password field has focus, or secure keyboard entry is on) at the press or at
+  delivery → never pasted and never written to the dictation history; left on the clipboard marked
+  concealed, pill "Copied — secure input" (F445).
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.

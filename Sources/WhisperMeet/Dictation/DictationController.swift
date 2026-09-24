@@ -92,6 +92,8 @@ final class DictationController: ObservableObject {
     /// What the pill is saying, apart from a busy flash; nil while it is hidden. The flash puts this
     /// back when it ends, so refusing a press never hides a dictation that is still in flight (F443).
     private var shownPhase: DictationOverlay.Phase?
+    /// What had focus when this dictation's key went down; the paste is checked against it (F445).
+    private var pressTarget: FocusedTextField.Probe?
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
     /// Both warm-up tasks are cancellable and generation-guarded. A meeting release must prevent a
@@ -695,6 +697,10 @@ final class DictationController: ObservableObject {
             status = .listening
             showPhase(.listening)
             captureWatchdog.arm()
+            // Where the key was pressed, which the paste is checked against (F445). Taken after the
+            // microphone started: it asks the focused app over Accessibility, and a slow app must
+            // not clip the first word.
+            pressTarget = textInjector.target()
             log.notice("listening")
             return true
         } catch {
@@ -889,19 +895,24 @@ final class DictationController: ObservableObject {
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
             status = .delivering
-            let delivery = textInjector.deliver(payload, autoPaste: autoPaste)
+            let delivery = textInjector.deliver(payload, autoPaste: autoPaste, pressedIn: pressTarget)
             _ = session.handle(.delivered)
             switch delivery {
             case .pasted: showPhase(.done)
             case .clipboard: showPhase(.copied); clipboardNotifier()
+            case .appChanged: showPhase(.appChanged); clipboardNotifier()
+            case .secureInput: showPhase(.secureInput); clipboardNotifier()
             }
-            log.notice("delivered via \(delivery == .pasted ? "paste" : "clipboard", privacy: .public)")
-            logStore.record(
-                text: payload,
-                outcome: delivery == .pasted ? .pasted : .clipboard,
-                rawText: rawText,
-                refinement: refinement
-            )
+            log.notice("delivered via \(String(describing: delivery), privacy: .public)")
+            // Secure input means the words may be a password: kept out of the history file (F445).
+            if delivery != .secureInput {
+                logStore.record(
+                    text: payload,
+                    outcome: delivery == .pasted ? .pasted : .clipboard,
+                    rawText: rawText,
+                    refinement: refinement
+                )
+            }
             scheduleDismiss(after: 1.1)
         case .none where session.state == .failed(.emptyTranscript):
             showPhase(.empty)
