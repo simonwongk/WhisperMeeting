@@ -405,6 +405,10 @@ def greedy_decode_rows(first, step, eos_ids, max_tokens):
     Without that attribute the pre-F240 behaviour is kept exactly: a finished row keeps being fed
     until every row is done and its later tokens are ignored. `step` is a bare lambda in the unit
     tests, so `filter` must stay optional rather than become a required contract.
+
+    Quick Dictation decodes through this too (F431): `qwen_dictate_server.guarded_chunk_tokens`
+    feeds it mlx-audio's own sequential token stream as a one-row batch, with a bare lambda for
+    `step`, so the F260 guard and the F421 trim apply to a dictation exactly as to a meeting.
     """
     outputs = [[] for _ in first]
     done = [False] * len(first)

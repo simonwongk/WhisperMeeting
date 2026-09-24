@@ -41,27 +41,32 @@ func qwenDictationHelperMapsSharedRequest() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let helper = repository.appendingPathComponent("Scripts/qwen_dictate_server.py")
+    // F431: the helper decodes through mlx-audio's `stream_generate`, one chunk at a time, instead
+    // of the library's unguarded `generate`; these fakes stand in for the three runtime calls.
     let program = """
     import importlib.util, json
     spec = importlib.util.spec_from_file_location("qwen_dictate_server", \(String(reflecting: helper.path)))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    class Result:
-        text = " shared audio worked "
-        segments = []
+    arguments = {}
+    module.load_clip = lambda path: arguments.update(path=path) or "clip audio"
+    module.split_clip = lambda audio, sample_rate: [(audio, 0.0)]
+    module.release_chunk_memory = lambda: None
+    class Tokenizer:
+        def decode(self, tokens, skip_special_tokens=True):
+            return " shared audio worked " if tokens == [7] else repr(tokens)
     class Model:
-        def __init__(self):
-            self.arguments = None
-        def generate(self, path, **options):
-            self.arguments = {"path": path, **options}
-            return Result()
-    model = Model()
-    response = module.transcribe_request(model, {
+        sample_rate = 16000
+        _tokenizer = Tokenizer()
+        def stream_generate(self, audio, **options):
+            arguments.update(audio=audio, **options)
+            yield 7, None
+    response = module.transcribe_request(Model(), {
         "wavPath": "/tmp/existing-capture.wav",
         "language": None,
         "initialPrompt": "Whisper-only vocabulary",
     })
-    print(json.dumps({"arguments": model.arguments, "response": response}))
+    print(json.dumps({"arguments": arguments, "response": response}))
     """
     let pipe = Pipe()
     let process = Process()
@@ -88,26 +93,37 @@ func qwenDictationHelperPrewarmsModel() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let helper = repository.appendingPathComponent("Scripts/qwen_dictate_server.py")
+    // F431: the prewarm runs the request path itself, so the clip it writes is observed where
+    // every request's clip is loaded, and the language where every request's chunk is decoded.
     let program = """
     import importlib.util, json, os, wave
     spec = importlib.util.spec_from_file_location("qwen_dictate_server", \(String(reflecting: helper.path)))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    observed = {}
+    def load_clip(path):
+        with wave.open(path, "rb") as audio:
+            observed.update(
+                exists=os.path.exists(path),
+                rate=audio.getframerate(),
+                channels=audio.getnchannels(),
+                frames=audio.getnframes(),
+            )
+        return "clip audio"
+    module.load_clip = load_clip
+    module.split_clip = lambda audio, sample_rate: [(audio, 0.0)]
+    module.release_chunk_memory = lambda: None
+    class Tokenizer:
+        def decode(self, tokens, skip_special_tokens=True):
+            return ""
     class Model:
-        def __init__(self):
-            self.observed = None
-        def generate(self, path, **options):
-            with wave.open(path, "rb") as audio:
-                self.observed = {
-                    "exists": os.path.exists(path),
-                    "rate": audio.getframerate(),
-                    "channels": audio.getnchannels(),
-                    "frames": audio.getnframes(),
-                    "language": options["language"],
-                }
-    model = Model()
-    module.prewarm(model)
-    print(json.dumps(model.observed))
+        sample_rate = 16000
+        _tokenizer = Tokenizer()
+        def stream_generate(self, audio, **options):
+            observed.update(language=options["language"])
+            yield from ()  # a generator, as the library's is
+    module.prewarm(Model())
+    print(json.dumps(observed))
     """
     let pipe = Pipe()
     let process = Process()
