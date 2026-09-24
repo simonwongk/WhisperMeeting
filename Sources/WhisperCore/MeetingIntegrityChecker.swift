@@ -19,6 +19,32 @@ public enum WAVInspection {
         /// Byte offset of the first audio sample — 44 for a canonical header, more when a writer
         /// inserted chunks before `data`. What "the file is long enough" has to be measured from.
         public let dataOffset: UInt32
+
+        /// Audio bytes per second, computed in 64 bits (F435). Each field fits its own type and the
+        /// product need not: 48 kHz × 65,535 channels × 16 bits is past `UInt32.max`, and Swift
+        /// traps on that overflow rather than wrapping, so a damaged `fmt ` chunk used to take the
+        /// app down in every reader that multiplied them as `UInt32`. The widest possible value here
+        /// is `UInt32.max × (65,535 × 65,535 / 8)`, about 2.3e18, well inside `UInt64`. Zero when
+        /// the header describes no audio: no sample rate, no channels, or under 8 bits a frame.
+        public var bytesPerSecond: UInt64 {
+            UInt64(sampleRate) * (UInt64(channels) * UInt64(bitsPerSample) / 8)
+        }
+
+        /// The byte count the header says the file must have, saturating at `UInt64.max` (F435).
+        ///
+        /// A report, not a test: an RF64 writer that never came back to finalize leaves the ds64
+        /// size at all-ones, and `dataOffset + declaredDataBytes` then overflows. Use
+        /// `holdsDeclaredData(fileSize:)` to decide whether the file is complete.
+        public var requiredFileBytes: UInt64 {
+            let (sum, overflowed) = UInt64(dataOffset).addingReportingOverflow(declaredDataBytes)
+            return overflowed ? .max : sum
+        }
+
+        /// Whether a file of `fileSize` bytes holds all the audio this header declares. Compared by
+        /// subtraction so no declared size, however absurd, can overflow it (F435).
+        public func holdsDeclaredData(fileSize: UInt64) -> Bool {
+            UInt64(dataOffset) <= fileSize && declaredDataBytes <= fileSize - UInt64(dataOffset)
+        }
     }
 
     /// How far in the `data` chunk is looked for. `afconvert`'s filler is 4 KB; 64 KB leaves room
@@ -148,12 +174,17 @@ public enum MeetingIntegrityChecker {
                 if let header = WAVInspection.header(at: descriptor.recordingURL) {
                     // From where the audio actually starts, not from a presumed 44 (F224): a file
                     // with a filler chunk is longer than its data chunk by more than the header.
-                    let requiredBytes = Int64(header.dataOffset) + Int64(clamping: header.declaredDataBytes)
-                    if requiredBytes > actualBytes {
-                        findings.append(.wavTruncated(declaredBytes: requiredBytes, actualBytes: actualBytes))
+                    // Decided by subtraction and reported saturated (F435): clamping the declared
+                    // size to `Int64.max` and THEN adding the offset was the trap, the conversion
+                    // fixed and the next operation not.
+                    if !header.holdsDeclaredData(fileSize: UInt64(max(0, actualBytes))) {
+                        findings.append(.wavTruncated(
+                            declaredBytes: Int64(clamping: header.requiredFileBytes),
+                            actualBytes: actualBytes
+                        ))
                     }
                     if let indexDuration = descriptor.indexDurationSeconds {
-                        let bytesPerSecond = Double(header.sampleRate * header.channels * header.bitsPerSample / 8)
+                        let bytesPerSecond = Double(header.bytesPerSecond)
                         if bytesPerSecond > 0 {
                             let headerDuration = Double(header.declaredDataBytes) / bytesPerSecond
                             if abs(headerDuration - indexDuration) > durationToleranceSeconds {

@@ -497,60 +497,24 @@ public enum InterruptedRecordingRecovery {
     static func finalizedDuration(at url: URL) -> TimeInterval? { wavDuration(at: url) }
     #endif
 
+    /// The duration a finished WAV declares, or nil when the file is not one: unreadable, no audio,
+    /// or shorter than its header says, which is how a mix interrupted before its header was
+    /// written reads.
+    ///
+    /// One reader for RIFF and RF64 (F302) alike: `WAVInspection` walks the chunks (F224). This
+    /// function used to read a RIFF file at the canonical offsets 22/24/34/40 and multiply the
+    /// fields as `UInt32` (F435). A Broadcast WAV import puts `bext` first, so those offsets are its
+    /// description text and the multiply trapped — at every launch, because recovery runs this on
+    /// every imported `recording.wav` whose index entry is missing. An ffmpeg WAV, with LIST before
+    /// `data`, read as under a millisecond.
     private static func wavDuration(at url: URL) -> TimeInterval? {
-        // An RF64 recording (F302) carries its length in `ds64`, which the shared header reader
-        // understands. The same rule applies as below: a file shorter than it declares is not a
-        // finished recording.
-        let magic: Data? = {
-            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-            defer { try? handle.close() }
-            return try? handle.read(upToCount: 4)
-        }()
-        if let magic, String(data: magic, encoding: .ascii) == "RF64" {
-            guard let header = WAVInspection.header(at: url),
-                  let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
-            else { return nil }
-            let frameBytes = UInt64(header.channels) * UInt64(header.bitsPerSample) / 8
-            let bytesPerSecond = UInt64(header.sampleRate) * frameBytes
-            guard bytesPerSecond > 0, header.declaredDataBytes > 0,
-                  UInt64(header.dataOffset) + header.declaredDataBytes <= size else { return nil }
-            return Double(header.declaredDataBytes) / Double(bytesPerSecond)
-        }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value else {
-            return nil
-        }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        guard let header = try? handle.read(upToCount: 44),
-              header.count == 44,
-              String(data: header[0..<4], encoding: .ascii) == "RIFF",
-              String(data: header[8..<12], encoding: .ascii) == "WAVE" else {
-            return nil
-        }
-        let channels = UInt32(littleEndianUInt16(in: header, at: 22))
-        let sampleRate = littleEndianUInt32(in: header, at: 24)
-        let bitsPerSample = UInt32(littleEndianUInt16(in: header, at: 34))
-        let dataByteCount = littleEndianUInt32(in: header, at: 40)
-        let bytesPerSecond = sampleRate * channels * bitsPerSample / 8
-        let requiredFileSize = UInt64(44) + UInt64(dataByteCount)
-        guard bytesPerSecond > 0,
-              dataByteCount > 0,
-              requiredFileSize <= fileSize else {
-            return nil
-        }
-        return Double(dataByteCount) / Double(bytesPerSecond)
-    }
-
-    private static func littleEndianUInt16(in data: Data, at index: Int) -> UInt16 {
-        UInt16(data[index]) | (UInt16(data[index + 1]) << 8)
-    }
-
-    private static func littleEndianUInt32(in data: Data, at index: Int) -> UInt32 {
-        UInt32(data[index])
-            | (UInt32(data[index + 1]) << 8)
-            | (UInt32(data[index + 2]) << 16)
-            | (UInt32(data[index + 3]) << 24)
+        guard let header = WAVInspection.header(at: url),
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+        else { return nil }
+        let bytesPerSecond = header.bytesPerSecond
+        guard bytesPerSecond > 0, header.declaredDataBytes > 0,
+              header.holdsDeclaredData(fileSize: size) else { return nil }
+        return Double(header.declaredDataBytes) / Double(bytesPerSecond)
     }
 
     private static func writeRecoveryManifestIfNeeded(
