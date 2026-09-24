@@ -274,5 +274,7 @@ func warmQwenDictationEngineUsesLocalModel() async throws {
     )
 
     #expect(result.text == "qwen result")
-    #expect(result.languageCode == "English")
+    // F447: the helper echoes the pinned name it was sent; the result carries the code the app
+    // compares on. This used to pin "English", which was the defect written down as a contract.
+    #expect(result.languageCode == "en")
 }

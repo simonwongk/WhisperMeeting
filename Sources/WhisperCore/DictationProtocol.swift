@@ -74,6 +74,10 @@ public enum DictationWireProtocol {
 
 public struct DictationResult: Sendable, Equatable {
     public let text: String
+    /// An ISO 639-1 code whenever the engine named a language the app pins ("en", "zh"), because
+    /// `init` normalises through `WhisperLanguage.code(forReported:)` (F447). Every dictation helper
+    /// echoes a pinned language back as the name it was sent, and the refine prompt keys on codes,
+    /// so doing it here means no engine can hand refinement a name.
     public let languageCode: String?
     /// Lowest per-segment `no_speech_prob` for the clip (nil if the engine can't report it). A high
     /// value means the clip was likely silence/noise — used to gate prompt-echo suppression so a
@@ -81,7 +85,7 @@ public struct DictationResult: Sendable, Equatable {
     public let noSpeechProb: Double?
     public init(text: String, languageCode: String?, noSpeechProb: Double? = nil) {
         self.text = text
-        self.languageCode = languageCode
+        self.languageCode = WhisperLanguage.code(forReported: languageCode)
         self.noSpeechProb = noSpeechProb
     }
 }

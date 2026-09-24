@@ -119,6 +119,34 @@ public enum WhisperLanguage: String, Codable, CaseIterable, Sendable, Hashable {
         case .chinese: "Chinese"
         }
     }
+
+    /// The ISO 639-1 code a transcript in this language is stored and compared under: what the Qwen
+    /// meeting helper reports, what `lang:` searches for and what `DictationRefinePrompt` keys on.
+    /// Nil for automatic, which names no language.
+    public var isoCode: String? {
+        switch self {
+        case .automatic: nil
+        case .english: "en"
+        case .chinese: "zh"
+        }
+    }
+
+    /// A language as an engine reported it, as the ISO 639-1 code the app compares on (F447, F535).
+    ///
+    /// A pinned language is sent to every engine as `commandLineValue`, and the engines hand that
+    /// same string back as the result's language: openai-whisper returns `decode_options["language"]`
+    /// unchanged (20250625, `transcribe.py:159`, returned at `:513`), mlx-whisper copies
+    /// `options.language` (0.4.3, `decoding.py:558`), and the Qwen dictation helper echoes its
+    /// request. Detected languages arrive as codes already and pass through unchanged, as does
+    /// anything the app never sends. Matched against `allCases`, so a language added later maps
+    /// without a second table to keep in step.
+    public static func code(forReported reported: String?) -> String? {
+        guard let reported else { return nil }
+        let pinned = allCases.first {
+            $0.commandLineValue?.caseInsensitiveCompare(reported) == .orderedSame
+        }
+        return pinned?.isoCode ?? reported
+    }
 }
 
 public struct LocalTranscriptionOptions: Sendable, Equatable {
