@@ -17,6 +17,7 @@ import WhisperCore
 @main
 enum WhisperMeetLauncher {
     static func main() {
+        ignoreBrokenPipeSignals()
         if let models = DiarizationInstallSmokeTest.modelsParentDirectory(in: CommandLine.arguments) {
             DiarizationInstallSmokeTest.runAndExit(modelsParentDirectory: models)
         }
@@ -28,6 +29,20 @@ enum WhisperMeetLauncher {
             )
         }
         WhisperMeetApp.main()
+    }
+
+    /// F486. A write to a pipe nobody reads raises SIGPIPE, and its default action ends the process.
+    /// Every warm helper — both dictation engines and the refiner — takes requests on a stdin pipe,
+    /// checked only by `process.isRunning` before the write, so a helper that died a moment earlier
+    /// took WhisperMeet down with it, and any meeting it was recording. Ignored, the same write
+    /// throws EPIPE, which the engines already turn into an ordinary failure.
+    ///
+    /// Process-wide rather than per pipe, so a pipe or socket added later is covered without anyone
+    /// remembering to. The helpers keep the default: Foundation's `Process` and `ProcessGroupRunner`
+    /// (`POSIX_SPAWN_SETSIGDEF`) both reset a child's signal dispositions, so an ignored SIGPIPE is
+    /// not inherited across the exec.
+    static func ignoreBrokenPipeSignals() {
+        signal(SIGPIPE, SIG_IGN)
     }
 }
 
