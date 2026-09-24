@@ -123,3 +123,35 @@ func spliceAnchorsOnTheClampedStart() {
     #expect(result[0].start == 0, "clipped from the start of the audio, so anchored there too")
     #expect(result[0].end == 1.5)
 }
+
+// F471 — the splice rebuilt each replacement from speaker/start/end/text only, so the re-run's
+// Whisper metrics were dropped: a hallucination over near-silence (no_speech_prob 0.95) was then
+// scored by the text-only heuristic, read as clean, and the orange flag it deserved never appeared.
+@Test("The splice keeps the re-run's quality metrics, so a hallucinated re-run is still flagged (F471)")
+func transcriptSegmentSpliceKeepsQualityMetrics() {
+    let original = [seg(0, 4, "a"), seg(5, 9, "b"), seg(10, 14, "c")]
+    let rerun = [TranscriptSegment(
+        speaker: nil, start: 0, end: 1.5, text: "Thank you.",
+        avgLogprob: -0.31, noSpeechProb: 0.95, compressionRatio: 0.9
+    )]
+
+    let result = TranscriptSegmentSplice.splice(original, replacingIndex: 1, with: rerun)
+
+    #expect(result[1].text == "Thank you.")
+    #expect(result[1].start == 5, "still re-anchored")
+    #expect(result[1].end == 6.5)
+    #expect(result[1].avgLogprob == -0.31)
+    #expect(result[1].noSpeechProb == 0.95)
+    #expect(result[1].compressionRatio == 0.9)
+    #expect(TranscriptQuality.review(result).flagged.map(\.index) == [1])
+}
+
+@Test("A byte range starts at the data chunk, wherever the writer put it (F471)")
+func segmentAudioByteRangeStartsAtTheDataChunk() throws {
+    // ffmpeg's LIST chunk puts the audio at 78, not 44. The range is measured from there.
+    let range = try SegmentAudioRange.byteRange(
+        startSeconds: 1.0, endSeconds: 2.0, sampleRate: 16_000, availableBytes: 78 + 96_000, dataOffset: 78
+    )
+    #expect(range.lowerBound == 78 + 1 * 16_000 * 2)
+    #expect(range.upperBound == 78 + 2 * 16_000 * 2)
+}

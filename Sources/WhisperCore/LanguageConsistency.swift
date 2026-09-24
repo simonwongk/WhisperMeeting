@@ -42,7 +42,55 @@ public enum TranscriptLanguage: Sendable, Equatable {
     }
 }
 
+extension WhisperLanguage {
+    /// The language a meeting was transcribed in, read back from the `languageCode` it stored (F471),
+    /// so a later pass over part of it can run in the same language rather than whatever Settings
+    /// hold by then.
+    ///
+    /// The stored value is what the engine returned, and the engines spell it two ways. Whisper
+    /// returns the language it decoded with exactly as it was given it: an ISO code when it detected
+    /// one ("en", "zh"), the name when the app pinned one ("English", "Chinese" — `transcribe.py`
+    /// returns `decode_options["language"]` unchanged). Qwen's helper returns "en"/"zh" either way.
+    /// Anything else — nil, empty, or a language this app cannot pin — is `.automatic`, and the
+    /// re-run detects the language for itself.
+    public init(storedLanguageCode code: String?) {
+        switch code?.lowercased() {
+        case "en", "english": self = .english
+        case "zh", "chinese": self = .chinese
+        default: self = .automatic
+        }
+    }
+}
+
 public enum LanguageConsistency {
+    /// An advisory when a re-transcribed segment reads as the other language from the one its
+    /// meeting was transcribed in, or nil (F471).
+    ///
+    /// **Advisory, not a refusal, and deliberately so.** The re-run is pinned to the meeting's
+    /// language, so a line that still comes back in the other script is one where the audio won
+    /// over the pin — in a meeting that switches language, that is the faithful reading. Refusing
+    /// would throw exactly those lines away. What this cannot catch is the opposite case, a model
+    /// that obeyed the pin and translated; no script check can, because the translation reads as
+    /// the pinned language.
+    ///
+    /// Worded without F32's "You selected …": nobody selected this language for this re-run, it
+    /// came from the meeting.
+    public static func segmentRerunWarning(meetingLanguage: WhisperLanguage, replacementText: String) -> String? {
+        let expected: TranscriptLanguage
+        switch meetingLanguage {
+        case .automatic: return nil
+        case .english: expected = .english
+        case .chinese: expected = .chinese
+        }
+        guard let actual = TranscriptLanguage.dominant(of: replacementText), actual != expected else { return nil }
+        return "The re-transcribed line reads as \(displayName(actual)), but this meeting was transcribed as "
+            + "\(displayName(expected)). Check the new line against the audio — the recording is unchanged."
+    }
+
+    private static func displayName(_ language: TranscriptLanguage) -> String {
+        language == .chinese ? "Mandarin" : "English"
+    }
+
     /// A plain-language advisory when an explicitly requested language disagrees with the
     /// transcript's dominant script (F32). Returns `nil` for `.automatic` (no user-stated intent to
     /// contradict — see the type doc), when the scripts match, or when the text is empty.

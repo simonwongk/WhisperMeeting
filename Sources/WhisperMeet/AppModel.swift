@@ -73,12 +73,15 @@ final class RecordingMeterViewModel: ObservableObject {
 /// Why a per-segment re-run could not slice a clip (F92 audit fixes).
 enum SegmentReRunError: LocalizedError {
     case unsupportedRecordingFormat
+    case unsupportedAudioLayout
     case unreadableRecording
 
     var errorDescription: String? {
         switch self {
         case .unsupportedRecordingFormat:
             return "This recording isn't a native WAV, so a single segment can't be re-transcribed in place. Re-transcribe the whole meeting instead."
+        case .unsupportedAudioLayout:
+            return "This recording isn't 16-bit mono PCM, so a single segment can't be cut from it without re-encoding. Re-transcribe the whole meeting instead."
         case .unreadableRecording:
             return "The recording could not be read for re-transcription."
         }
@@ -1763,16 +1766,25 @@ final class AppModel: ObservableObject {
         speakerOverlayRevision &+= 1
     }
 
-    /// Re-transcribe a single segment (F92): slice that segment's audio from `meeting.wav`, run the
-    /// selected engine on the clip, and splice the result back — the recording is never modified. The
-    /// heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards + wraps.
+    /// Re-transcribe a single segment (F92): slice that segment's audio from the recording, run the
+    /// meeting's engine on the clip, and splice the result back — the recording is never modified.
+    /// The heavy work is here so tests can await it directly; `requestSegmentReTranscription` guards
+    /// + wraps.
     func reTranscribeSegment(id: UUID, index: Int) async {
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         guard let meeting = store.meeting(id: id),
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
               let end = meeting.segments[index].end else { return }
-        let selection = MeetingTranscriptionSelection(engine: selectedEngine, language: selectedLanguage)
+        // The engine and language the meeting was transcribed with, not the ones Settings hold now
+        // (F471): Settings are for the next meeting, and a line re-run under another language pin
+        // can come back translated. The engine falls back to Settings only for a meeting that never
+        // recorded one, as Second Opinion's does (F142). The language is read back from the code
+        // the engine returned, which is all the meeting stores.
+        let language = WhisperLanguage(storedLanguageCode: meeting.languageCode)
+        let selection = MeetingTranscriptionSelection(
+            engine: meeting.transcriptionEngine ?? selectedEngine, language: language
+        )
         do {
             let clipURL = try Self.makeSegmentClip(
                 from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
@@ -1789,14 +1801,29 @@ final class AppModel: ObservableObject {
             // it is spliced in, and are added to the meeting's count rather than replacing it — the
             // rest of the transcript's earlier removals still happened.
             let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
+            var spliced = false
             store.update(id: id) { meeting in
                 guard meeting.segments.indices.contains(index) else { return }
+                spliced = true
                 let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
                 meeting.segments = merged
                 meeting.transcriptText = TranscriptFormatter.timestamped(merged)
                 if cleaned.removedCount > 0 {
                     meeting.repeatsRemoved = Self.adding(cleaned.removedCount, to: meeting.repeatsRemoved)
                 }
+                // The header confidence re-derived from the lines as they now are, the way
+                // `apply(result:)` and a line removal derive it (F471): the splice keeps the re-run's
+                // metrics, so a flagged replacement has to be able to lower it.
+                let quality = TranscriptQuality.review(merged)
+                meeting.confidence = quality.isUnscored ? nil : quality.confidence
+            }
+            // Said rather than refused: see `segmentRerunWarning` for why a line in the other
+            // script is more likely the faithful one (F471).
+            if spliced, let warning = LanguageConsistency.segmentRerunWarning(
+                meetingLanguage: language,
+                replacementText: cleaned.segments.map(\.text).joined(separator: " ")
+            ) {
+                alertMessage = warning
             }
         } catch {
             alertMessage = error.localizedDescription
@@ -1823,37 +1850,52 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Writes a temp WAV holding just one segment's audio, sliced from `meeting.wav`. Reads the real
-    /// sample rate from the WAV header (the recording is 48 kHz, not 16 kHz) so the byte range is
-    /// correct, then re-wraps the PCM slice with a fresh header. Never modifies the source (F92).
+    /// Writes a temp WAV holding just one segment's audio, sliced from the meeting's recording. Reads
+    /// the sample rate and where the audio starts from the WAV header (the recording is 48 kHz, not
+    /// 16 kHz), then re-wraps the PCM slice with a fresh header. Never modifies the source (F92).
+    ///
+    /// Only 16-bit mono integer PCM can be sliced this way, because the fresh header says exactly
+    /// that. The app's own recordings are always it; an import is copied verbatim and can be
+    /// anything, and a stereo or 24-bit file used to be re-wrapped as mono — audio at the wrong time
+    /// and the wrong speed, transcribed and spliced in with nothing said (F471). Those are refused.
     static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
         let handle = try FileHandle(forReadingFrom: wavURL)
         defer { try? handle.close() }
-        guard let header = try handle.read(upToCount: SegmentAudioRange.headerBytes),
-              header.count >= SegmentAudioRange.headerBytes else {
+        guard let magic = try handle.read(upToCount: 12), magic.count == 12 else {
             throw SegmentReRunError.unreadableRecording
         }
-        // Only a canonical PCM WAV can be byte-sliced. Imported recordings keep their original container
-        // (.m4a/.mp3/.mp4/.mov/.aiff/.caf); slicing those as raw WAV bytes would produce garbage, so
-        // refuse and let the caller guide the user (F92 audit fix).
-        guard header.prefix(4).elementsEqual(Array("RIFF".utf8)),
-              header.subdata(in: 8..<12).elementsEqual(Array("WAVE".utf8)) else {
+        // Only a RIFF/WAVE (or its 64-bit RF64 form, F302) can be byte-sliced. Imported recordings
+        // keep their original container (.m4a/.mp3/.mp4/.mov/.aiff/.caf); slicing those as raw WAV
+        // bytes would produce garbage, so refuse and let the caller guide the user (F92 audit fix).
+        guard magic.prefix(4).elementsEqual(Array("RIFF".utf8)) || magic.prefix(4).elementsEqual(Array("RF64".utf8)),
+              magic.subdata(in: 8..<12).elementsEqual(Array("WAVE".utf8)) else {
             throw SegmentReRunError.unsupportedRecordingFormat
         }
-        let sampleRate = header.withUnsafeBytes { raw -> UInt32 in
-            raw.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian
+        // The chunks are walked, not read at fixed offsets (F224, F471): ffmpeg's LIST chunk sits
+        // before `data`, so byte 44 is not where its audio starts.
+        guard let header = WAVInspection.header(at: wavURL) else {
+            throw SegmentReRunError.unreadableRecording
         }
-        let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? SegmentAudioRange.headerBytes
+        guard header.formatTag == 1, header.channels == 1, header.bitsPerSample == 16, header.sampleRate > 0 else {
+            throw SegmentReRunError.unsupportedAudioLayout
+        }
+        let dataOffset = Int(header.dataOffset)
+        let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? dataOffset
+        // The audio ends where the `data` chunk says, or where the file does if that is sooner. A
+        // chunk a writer appended after the audio (BWF's iXML, a trailing LIST) is not PCM.
+        let audioEnd = min(fileSize, Int(clamping: header.requiredFileBytes))
         let range = try SegmentAudioRange.byteRange(
-            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(sampleRate),
-            availableBytes: fileSize
+            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: Int(header.sampleRate),
+            availableBytes: audioEnd, dataOffset: dataOffset
         )
-        let clamped = range.clamped(to: SegmentAudioRange.headerBytes..<max(SegmentAudioRange.headerBytes, fileSize))
+        let clamped = range.clamped(to: dataOffset..<max(dataOffset, audioEnd))
         // Partial read: seek to the clip's byte range and read only those bytes — never the whole file,
         // so a multi-hundred-MB recording doesn't load into memory on the main actor (F92 audit fix).
         try handle.seek(toOffset: UInt64(clamped.lowerBound))
         let pcm = (try handle.read(upToCount: clamped.count)) ?? Data()
-        var clip = WAVWriter.header(sampleRate: sampleRate, dataByteCount: UInt32(pcm.count))
+        // The 64-bit form: `UInt32(pcm.count)` traps past 4 GiB rather than saturating, and it
+        // writes the same classic 44-byte header below that (F302).
+        var clip = WAVWriter.header(sampleRate: header.sampleRate, dataByteCount64: UInt64(pcm.count))
         clip.append(pcm)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")

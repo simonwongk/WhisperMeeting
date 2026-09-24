@@ -1,7 +1,8 @@
 import Foundation
 
 /// Pure reading of a 16-bit PCM WAV's RIFF/WAVE header — header bytes and file size only, never the
-/// audio body. Shared between recovery, the integrity check (F66) and speaker analysis.
+/// audio body. Shared between recovery, the integrity check (F66), speaker analysis and the
+/// per-segment re-run (F471).
 ///
 /// The chunks are WALKED rather than read at fixed offsets (F224). A canonical header does put
 /// `fmt ` at 12 and `data` at 36, and this file assumed that for two years, but macOS's own
@@ -11,6 +12,10 @@ import Foundation
 /// recording. Found by running the real models over a real converted file.
 public enum WAVInspection {
     public struct Header: Sendable, Equatable {
+        /// `fmt `'s format tag: 1 is integer PCM, 3 IEEE float, 0xFFFE the extensible wrapper whose
+        /// real format is a GUID further in. Read so a caller that byte-slices PCM can refuse
+        /// anything else (F471).
+        public let formatTag: UInt16
         public let channels: UInt32
         public let sampleRate: UInt32
         public let bitsPerSample: UInt32
@@ -60,6 +65,7 @@ public enum WAVInspection {
             return nil
         }
 
+        var formatTag: UInt16?
         var channels: UInt16?
         var sampleRate: UInt32?
         var bitsPerSample: UInt16?
@@ -71,6 +77,7 @@ public enum WAVInspection {
             let size = le32(data, index + 4)
             let body = index + 8
             if identifier == "fmt ", size >= 16, body + 16 <= data.count {
+                formatTag = le16(data, body)
                 channels = le16(data, body + 2)
                 sampleRate = le32(data, body + 4)
                 bitsPerSample = le16(data, body + 14)
@@ -85,8 +92,9 @@ public enum WAVInspection {
                 }
                 rf64DataBytes = declared
             } else if identifier == "data" {
-                guard let channels, let sampleRate, let bitsPerSample else { return nil }
+                guard let formatTag, let channels, let sampleRate, let bitsPerSample else { return nil }
                 return Header(
+                    formatTag: formatTag,
                     channels: UInt32(channels),
                     sampleRate: sampleRate,
                     bitsPerSample: UInt32(bitsPerSample),

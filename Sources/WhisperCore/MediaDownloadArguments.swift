@@ -52,13 +52,14 @@ public enum MediaDownloadArguments {
             "--extract-audio",
             "--audio-format", "wav",
             // Force 16 kHz mono 16-bit at the ffmpeg post-processing step, and suppress the metadata
-            // ffmpeg would otherwise write. `-map_metadata -1 -fflags +bitexact` matter for correctness,
-            // not tidiness: ffmpeg's WAV muxer emits a LIST/INFO chunk (its encoder tag) between `fmt `
-            // and `data`, and this app's WAV readers — MeetingIntegrityChecker, the interrupted-recording
+            // ffmpeg would otherwise write. `-map_metadata -1 -fflags +bitexact` keep ffmpeg's WAV muxer
+            // from emitting a LIST/INFO chunk (its encoder tag) between `fmt ` and `data`. When this was
+            // written, this app's WAV readers — MeetingIntegrityChecker, the interrupted-recording
             // duration probe, and the per-segment clip slicer — all read the data-chunk size at the fixed
-            // offset 40. With a LIST chunk present they read ITS size instead, so every link import would
-            // be reported as damaged forever, a crash-recovered import would be indexed with a ~1 ms
-            // duration, and segment re-runs would slice metadata bytes as PCM.
+            // offset 40, so a LIST chunk made every link import read as damaged, a crash-recovered import
+            // ~1 ms long, and segment re-runs slice metadata bytes as PCM. All three now walk the chunks
+            // (F224, F435, F471); the flags stay as defence in depth, and the 16-bit mono part is still
+            // what the per-segment re-run requires.
             "--postprocessor-args",
             "ExtractAudio+ffmpeg:-ar 16000 -ac 1 -sample_fmt s16 -map_metadata -1 -fflags +bitexact",
             "-o", template,

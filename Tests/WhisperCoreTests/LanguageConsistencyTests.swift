@@ -66,3 +66,36 @@ func automaticIsNeverFlagged() {
     // Empty text carries no signal either way.
     #expect(LanguageConsistency.mismatchWarning(requested: .chinese, transcript: "") == nil)
 }
+
+// F471 — a per-segment re-run is run in the language the meeting was transcribed in, read back
+// from the code the engine returned and the meeting stored. Whisper stores an ISO code when it
+// detected the language ("en", "zh") and the name it was given when it was pinned ("English",
+// "Chinese" — `whisper/transcribe.py` returns `decode_options["language"]` as passed); Qwen stores
+// "en"/"zh" either way. Anything else — nil, or a language this app does not offer — detects.
+@Test("A stored language code maps back to the language to re-run in (F471)")
+func storedLanguageCodeMapsBackToAWhisperLanguage() {
+    #expect(WhisperLanguage(storedLanguageCode: "en") == .english)
+    #expect(WhisperLanguage(storedLanguageCode: "English") == .english)
+    #expect(WhisperLanguage(storedLanguageCode: "zh") == .chinese)
+    #expect(WhisperLanguage(storedLanguageCode: "Chinese") == .chinese)
+    #expect(WhisperLanguage(storedLanguageCode: "ZH") == .chinese)
+    #expect(WhisperLanguage(storedLanguageCode: "ja") == .automatic)
+    #expect(WhisperLanguage(storedLanguageCode: "") == .automatic)
+    #expect(WhisperLanguage(storedLanguageCode: nil) == .automatic)
+}
+
+@Test("A re-run line in the meeting's other script gets an advisory that claims no user choice (F471)")
+func segmentRerunAdvisoryNamesTheMeetingsLanguage() throws {
+    let warning = try #require(LanguageConsistency.segmentRerunWarning(
+        meetingLanguage: .chinese, replacementText: "We should ship on Friday."
+    ))
+    #expect(warning.contains("English"))
+    #expect(warning.contains("Mandarin"))
+    // The language came from the meeting, not from a selection the user made for this re-run, so
+    // the F32 wording ("You selected …") would be a false attribution here.
+    #expect(!warning.contains("You selected"))
+
+    #expect(LanguageConsistency.segmentRerunWarning(meetingLanguage: .chinese, replacementText: "我们周五发布。") == nil)
+    #expect(LanguageConsistency.segmentRerunWarning(meetingLanguage: .automatic, replacementText: "Hello.") == nil)
+    #expect(LanguageConsistency.segmentRerunWarning(meetingLanguage: .english, replacementText: "  ") == nil)
+}
