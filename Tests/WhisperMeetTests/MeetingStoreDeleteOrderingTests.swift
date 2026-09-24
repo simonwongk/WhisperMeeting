@@ -102,3 +102,62 @@ func failedFlushKeepsThePendingEditForRetry() async throws {
     let saved = try #require(reloaded.meetings.first { $0.id == meeting.id })
     #expect(saved.transcriptText == "the edited transcript")
 }
+
+// MARK: - F451: the batch path is the one the UI calls
+
+/// Meetings that each own a real `Recordings/<id>/meeting.wav`, the shape every recording and
+/// import produces.
+@MainActor
+private func seedMeetings(_ titles: [String], in root: URL, store: MeetingStore) throws -> [UUID] {
+    var ids: [UUID] = []
+    for title in titles {
+        let id = UUID()
+        let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: folder.appendingPathComponent("meeting.wav"))
+        store.upsert(MeetingRecord(
+            id: id,
+            title: title,
+            recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+            status: .completed
+        ))
+        ids.append(id)
+    }
+    return ids
+}
+
+/// F190 fixed `delete(id:)`, which nothing in the UI calls. Every delete the user can make — the
+/// confirmation dialog for one meeting and the batch bar for several — goes through
+/// `AppModel.deleteMeetings(ids:)` and so `delete(ids:)`, which still removed the folders first.
+@MainActor
+@Test("A failed index save during a UI delete leaves every recording on disk (F451)")
+func uiDeleteDoesNotDestroyAudioWhenTheIndexCannotBeSaved() throws {
+    let root = try makeLibrary()
+    defer {
+        allowWrites(to: root)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let store = MeetingStore(rootDirectory: root)
+    let ids = try seedMeetings(["Budget review", "Hiring sync"], in: root, store: store)
+    let defaults = try #require(UserDefaults(suiteName: "F451-\(UUID().uuidString)"))
+    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+
+    // From here the index cannot be written; the Recordings folder itself still can be.
+    try denyWrites(to: root)
+    model.deleteMeetings(ids: ids)
+
+    for id in ids {
+        let audio = root.appendingPathComponent("Recordings/\(id.uuidString)/meeting.wav")
+        #expect(
+            FileManager.default.fileExists(atPath: audio.path),
+            "audio must survive when the index that references it could not be saved"
+        )
+    }
+    #expect(Set(store.meetings.map(\.id)) == Set(ids), "memory must match the index still on disk")
+    #expect(store.storageErrorMessage != nil, "the failed save must be reported")
+    #expect(store.pendingShreds.isEmpty, "nothing was deleted, so nothing may be queued to shred")
+
+    allowWrites(to: root)
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(Set(reopened.meetings.map(\.id)) == Set(ids))
+}

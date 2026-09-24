@@ -433,10 +433,11 @@ final class MeetingStore: ObservableObject {
     @Published private(set) var storageErrorMessage: String?
     /// The WORST load result across every persisted store this guard covers — the meeting index, the
     /// vocabulary and the replacement rules (F187). Scoped that way because it gates all three: anything
-    /// but `.complete` blocks EVERY mutation, not just persistence, because `delete` removes audio
-    /// before it saves the index. Only ever assigned through `degrade(to:)`, so a store that loaded
-    /// cleanly can never raise a damaged one back to writable — see that method for what went wrong when
-    /// it was written as a plain assignment.
+    /// but `.complete` blocks EVERY mutation, not just persistence, because a mutator's save would
+    /// overwrite an index nobody could read and some mutators touch the disk as well — the notes
+    /// sidecar, a deleted meeting's audio. Only ever assigned through `degrade(to:)`, so a store that
+    /// loaded cleanly can never raise a damaged one back to writable — see that method for what went
+    /// wrong when it was written as a plain assignment.
     @Published private(set) var health: PersistedStoreHealth = .complete
     var isDegraded: Bool { !health.allowsMutation }
 
@@ -818,7 +819,9 @@ final class MeetingStore: ObservableObject {
 
     /// Whether a mutation may proceed. Returns false and explains why in `storageErrorMessage` while the
     /// library is not known-complete (F187). MUST be the first statement of every mutator — before any
-    /// in-memory or filesystem side effect, because `delete` removes audio before it persists.
+    /// in-memory or filesystem side effect, and before the save itself: a save from a library that did
+    /// not fully load writes over the index it could not read, and `delete` removes audio once its
+    /// save has landed.
     private func mutationIsAllowed() -> Bool {
         guard isDegraded else { return true }
         storageErrorMessage = ReadOnlyLibraryNotice.mutationRefused
@@ -1029,62 +1032,14 @@ final class MeetingStore: ObservableObject {
         Self.isWithinLibrary(url, root: rootDirectory)
     }
 
+    /// Deletes one meeting. A wrapper, so there is exactly one delete (F451).
+    ///
+    /// F190 moved the index save ahead of the folder removal in this method, and the UI never
+    /// called it: every delete a user can make goes through `AppModel.deleteMeetings(ids:)` and so
+    /// `delete(ids:)`, which kept the old order. Two implementations of one operation is how a fix
+    /// reached the copy nobody used, so this no longer has a body of its own to fix.
     func delete(id: UUID) {
-        // Must precede the lookup below: this is the single most important guard in the store, because
-        // the removeRecordingDirectory call further down runs BEFORE the index is persisted. A guard
-        // placed after any side effect would still destroy audio while merely refusing to save (F187).
-        guard mutationIsAllowed() else { return }
-        guard let meeting = meeting(id: id) else { return }
-        let directory = recordingURL(for: meeting).deletingLastPathComponent()
-        // Never delete outside the library, and never delete the library root itself — a corrupt index
-        // with a `../` or empty `recordingPath` could otherwise resolve to an external or top-level dir
-        // (F148 #6). In that case remove only the index entry and say the on-disk files were left alone.
-        guard isWithinLibrary(directory),
-              directory.standardizedFileURL != rootDirectory.standardizedFileURL else {
-            let before = meetings
-            meetings.removeAll { $0.id == id }
-            guard persistMeetings() else {
-                meetings = before
-                return
-            }
-            storageErrorMessage = "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
-            // Removed from the list is still deleted, and its text goes with it (F295). The message
-            // above is kept: `shredFromHistory` only speaks on its own failure.
-            shredFromHistory([id])
-            return
-        }
-        // Persist the removal BEFORE destroying the audio it references. The old order deleted the
-        // recording first, so a failed save left an index entry pointing at audio that was already
-        // gone — and the `storageErrorMessage = nil` that followed wiped the very message the failed
-        // save had just set, so the user was told nothing at all. AGENTS.md states the rule
-        // directly: "delete removes audio before it saves the index, so blocking persistence alone
-        // is not enough" (F190).
-        let before = meetings
-        meetings.removeAll { $0.id == id }
-        guard persistMeetings() else {
-            // Nothing was destroyed. Put the entry back so memory matches the index still on disk;
-            // `persistMeetings()` has already explained the failure.
-            meetings = before
-            return
-        }
-        do {
-            try removeRecordingDirectory(directory)
-        } catch {
-            // F146 still holds: don't half-delete. Restoring the entry is safe precisely because of
-            // the ordering above — the index stopped referencing the files before anything tried to
-            // remove them, so nothing was destroyed and putting the entry back is a true rollback.
-            // If the restoring save also fails, the folder is merely orphaned, which
-            // `orphanedRecordings()` finds and can re-adopt; the save's own message stands then,
-            // because "changes could not be saved" is the more accurate thing to report.
-            meetings = before
-            if persistMeetings() {
-                storageErrorMessage = "This meeting's recording could not be removed, so it was kept to avoid an inconsistent library. \(error.localizedDescription)"
-            }
-            return
-        }
-        storageErrorMessage = nil
-        shredFromHistory([id])
-        processPendingShreds()
+        delete(ids: [id])
     }
 
     /// Delete means delete, after a grace window (F295).
@@ -1168,55 +1123,78 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    /// Deletes several meetings in one pass: one read-only check, one index write. Looping
-    /// `delete(id:)` would run a full index write per meeting, the same cost F40 removed from
-    /// per-keystroke transcript edits (F199).
+    /// Deletes meetings: one read-only check, one index write for the whole selection (F199), and
+    /// the index saved BEFORE any recording folder is removed (F190, F451). Returns the ids whose
+    /// deletion stands.
     ///
-    /// Per record this keeps both existing invariants: the containment check that stops a corrupt or
-    /// empty `recordingPath` resolving outside the library (F148 #6), and the read-only guard ahead of
-    /// any filesystem side effect, because `removeRecordingDirectory` runs before the index is
-    /// persisted (F187). No notes-sidecar hook, matching `delete(id:)` — the sidecar lives in the
-    /// recording folder, which dies with the meeting. Returns the ids actually removed.
+    /// The order is the point. Removing the folders first meant a save that then failed — a full
+    /// disk, a permissions change, a second running copy writing first — left an index that still
+    /// listed every meeting while their audio was already gone, and the integrity sweep reported
+    /// each one missing at the next launch. So the entries leave the index first; if that save fails
+    /// nothing has been touched, and memory is put back to match the index still on disk.
+    ///
+    /// Per record the existing invariants still hold: the read-only guard runs before anything else
+    /// (F187), and a folder is removed only when the containment check accepts it (F148 #6) —
+    /// otherwise only the index entry goes and the message says so. No notes-sidecar hook: the
+    /// sidecar lives in the recording folder, which dies with the meeting.
     @discardableResult
     func delete(ids: [UUID]) -> [UUID] {
         guard mutationIsAllowed() else { return [] }
-        var removed: [UUID] = []
-        var keptTitles: [String] = []
-        var escapedLibrary = false
-        for id in ids {
-            guard let meeting = meeting(id: id) else { continue }
+        var doomed: [MeetingRecord] = []
+        var seen: Set<UUID> = []
+        for id in ids where seen.insert(id).inserted {
+            if let meeting = meeting(id: id) { doomed.append(meeting) }
+        }
+        guard !doomed.isEmpty else { return [] }
+
+        // Classified before anything changes, so the save below is the first effect.
+        var folders: [UUID: URL] = [:]
+        var entryOnly = 0
+        for meeting in doomed {
             let directory = recordingURL(for: meeting).deletingLastPathComponent()
-            guard isWithinLibrary(directory),
-                  directory.standardizedFileURL != rootDirectory.standardizedFileURL else {
-                // Index entry only — nothing on disk is touched, exactly as `delete(id:)` does.
-                removed.append(id)
-                escapedLibrary = true
-                continue
-            }
-            do {
-                try removeRecordingDirectory(directory)
-                removed.append(id)
-            } catch {
-                // Don't half-delete: keep the meeting so the library stays consistent.
-                keptTitles.append(meeting.title)
+            if isWithinLibrary(directory),
+               directory.standardizedFileURL != rootDirectory.standardizedFileURL {
+                folders[meeting.id] = directory
+            } else {
+                entryOnly += 1
             }
         }
-        guard !removed.isEmpty else {
-            if !keptTitles.isEmpty {
-                storageErrorMessage = Self.batchDeleteFailureMessage(keptTitles)
-            }
+
+        let before = meetings
+        let removing = Set(doomed.map(\.id))
+        meetings.removeAll { removing.contains($0.id) }
+        guard persistMeetings() else {
+            // Nothing was destroyed. `persistMeetings()` has already explained the failure.
+            meetings = before
             return []
         }
-        let removing = Set(removed)
-        meetings.removeAll { removing.contains($0.id) }
-        let persisted = persistMeetings()
-        // After `persistMeetings()`, which clears `storageErrorMessage` on a successful write.
-        if !keptTitles.isEmpty {
-            storageErrorMessage = Self.batchDeleteFailureMessage(keptTitles)
-        } else if escapedLibrary {
-            storageErrorMessage = "One or more meetings had a recording path outside the library, so no files were deleted from disk for them; they were removed from the list."
+
+        // The index no longer references these folders, so a failure below destroys nothing that
+        // is still listed — and putting the entry back is a true rollback (F146: don't half-delete).
+        var kept: [MeetingRecord] = []
+        for meeting in doomed {
+            guard let directory = folders[meeting.id] else { continue }
+            do {
+                try removeRecordingDirectory(directory)
+            } catch {
+                kept.append(meeting)
+            }
         }
-        if persisted, !removed.isEmpty {
+        let keptIDs = Set(kept.map(\.id))
+        let removed = doomed.map(\.id).filter { !keptIDs.contains($0) }
+        if !kept.isEmpty {
+            let gone = Set(removed)
+            meetings = before.filter { !gone.contains($0.id) }
+            // If this restoring save also fails, the kept folders are merely unindexed, which
+            // `orphanedRecordings()` finds and can re-adopt; the save's own message stands then,
+            // because "changes could not be saved" is the more accurate thing to report.
+            if persistMeetings() {
+                storageErrorMessage = Self.batchDeleteFailureMessage(kept.map(\.title))
+            }
+        } else if entryOnly > 0 {
+            storageErrorMessage = Self.entryOnlyDeleteMessage(count: entryOnly)
+        }
+        if !removed.isEmpty {
             shredFromHistory(removed)
             processPendingShreds()
         }
@@ -1226,6 +1204,12 @@ final class MeetingStore: ObservableObject {
     private static func batchDeleteFailureMessage(_ titles: [String]) -> String {
         let names = titles.map { "“\($0)”" }.joined(separator: ", ")
         return "\(titles.count) meeting(s) could not have their recordings removed, so they were kept to avoid an inconsistent library: \(names)."
+    }
+
+    private static func entryOnlyDeleteMessage(count: Int) -> String {
+        count == 1
+            ? "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
+            : "\(count) meetings had a recording path outside the library, so no files were deleted from disk for them; they were removed from the list."
     }
 
     /// Forgets the retained index history, so a deleted meeting's text leaves the disk (F239).

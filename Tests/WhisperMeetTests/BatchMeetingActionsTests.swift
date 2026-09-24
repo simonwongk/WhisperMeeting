@@ -62,6 +62,10 @@ func batchDeleteKeepsWhatItCouldNotRemove() throws {
 
     #expect(store.meetings.map(\.id) == [stubborn])
     #expect(store.storageErrorMessage != nil)
+    // And on disk. Since F451 the index is saved without all three BEFORE any folder is touched,
+    // so it is the second, restoring save that brings the stubborn one back after a relaunch.
+    #expect(MeetingStore(rootDirectory: root).meetings.map(\.id) == [stubborn])
+    #expect(!store.pendingShreds.keys.contains(stubborn), "a kept meeting is not queued to shred")
 }
 
 @Test("Batch delete is refused while the library is read-only, and removes no audio")
