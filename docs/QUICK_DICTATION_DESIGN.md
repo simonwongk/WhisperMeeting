@@ -184,10 +184,16 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
   `9` with `.maskCommand`, keyDown+keyUp) posted to `.cgSessionEventTap`, with a small settle delay
   after setting the clipboard.
 - If `!AXIsProcessTrusted` → skip ⌘V, post a `UNUserNotification` ("Transcript copied — press ⌘V").
-- v1 left the transcript on the clipboard (matches "…or go to clipboard"). Since F425 an
-  auto-paste puts the user's previous clipboard back after the paste, if nothing else has written
-  to it meanwhile; clipboard-only delivery still leaves the transcript there, because that is the
-  delivery. The rules and their limits are in `TextInjector`'s doc comment.
+- v1 left the transcript on the clipboard (matches "…or go to clipboard"). Since F425, rebuilt by
+  F516 on 2026-09-24: when a text field has focus, an auto-paste copies the user's clipboard at
+  paste time, writes the transcript marked transient (nspasteboard.org), pastes, and puts the copy
+  back 1.5 s later unless something else has written the clipboard. When no text field has focus
+  the transcript is still pasted but left on the clipboard as an ordinary copy — the user's rule:
+  only a dictation that went into no text field stays on the clipboard. Clipboard-only delivery
+  leaves it there because that is the delivery. Why paste rather than an Accessibility write or
+  synthesized typing (both clipboard-free) is in `TextInjector`'s doc comment: the first fails
+  silently in Chromium/Electron, the second collides with the Pinyin input method, and Wispr Flow,
+  Superwhisper and VoiceInk all paste.
 
 ### `DictationController` (`@MainActor ObservableObject`)
 - Wires
@@ -314,7 +320,7 @@ Per the user's "keep logs of what you've done":
 Live streaming words; dictation history; multiple hotkey profiles;
 per-app behavior; auto-type (keystroke) delivery mode.
 (AI text cleanup left this list 2026-08-28 — shipped as F200 local refinement, see Non-goals.
-Prior-clipboard restore after paste left it 2026-09-23 — shipped as F425.)
+Prior-clipboard restore after paste left it 2026-09-23 — shipped as F425, rebuilt as F516.)
 
 ## Acceptance criteria
 

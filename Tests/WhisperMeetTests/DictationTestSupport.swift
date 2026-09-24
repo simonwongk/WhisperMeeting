@@ -20,6 +20,7 @@ func isolatedTextInjector() -> TextInjector {
     TextInjector(
         pasteboard: isolatedTestPasteboard,
         canSynthesizePaste: { false },
+        focusedTextField: { FocusedTextField.Probe(isTextField: false, summary: "test") },
         synthesizePaste: { false }
     )
 }

@@ -657,9 +657,6 @@ final class DictationController: ObservableObject {
             status = .listening
             overlay.show(.listening)
             captureWatchdog.arm()
-            // F425: a pasted dictation gives the user's clipboard back afterwards. The copy starts
-            // here, while the user speaks, and reads off the main thread because it can block.
-            textInjector.captureWillStart(autoPaste: autoPaste)
             log.notice("listening")
             return true
         } catch {

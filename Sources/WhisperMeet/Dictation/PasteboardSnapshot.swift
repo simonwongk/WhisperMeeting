@@ -3,7 +3,8 @@ import AppKit
 import WhisperCore
 
 /// Every item on a pasteboard, with every representation of each, copied out as bytes so a
-/// dictation paste can put the user's clipboard back after borrowing it (F425).
+/// dictation paste can put the user's clipboard back after borrowing it (F425; read at paste time
+/// since F516).
 struct PasteboardSnapshot: Equatable, Sendable {
     struct Representation: Equatable, Sendable {
         let type: String
@@ -31,9 +32,6 @@ struct PasteboardSnapshot: Equatable, Sendable {
         /// A representation produced no data — a stale item, or a promise that could not be
         /// fulfilled. Restoring the rest would hand back a different clipboard than the user had.
         case incomplete
-        /// Over the size cap. Checked as the bytes arrive, so reading stops at the first
-        /// representation that crosses it.
-        case tooLarge
         /// The pasteboard changed while it was being read, so the items may mix two contents.
         case changedWhileReading
     }
@@ -49,13 +47,11 @@ struct PasteboardSnapshot: Equatable, Sendable {
         "org.nspasteboard.TransientType",
     ]
 
-    /// Reads every item and representation. Blocking: a promised representation — Universal
-    /// Clipboard content from another device, or another app's lazily provided data — may have to
-    /// be produced or fetched here, so call this off the main thread.
-    static func read(
-        from pasteboard: NSPasteboard,
-        maximumBytes: Int
-    ) -> Result<PasteboardSnapshot, Refusal> {
+    /// Reads every item and representation. It can block while a promised representation —
+    /// Universal Clipboard content from another device, or another app's lazily provided data — is
+    /// produced; F516 reads it at paste time on the main actor anyway, as VoiceInk does, because
+    /// that is the moment whose clipboard the user expects back.
+    static func read(from pasteboard: NSPasteboard) -> Result<PasteboardSnapshot, Refusal> {
         let changeCount = pasteboard.changeCount
         guard let pasteboardItems = pasteboard.pasteboardItems else { return .failure(.unreadable) }
         let markedDoNotRetain = pasteboardItems.contains { item in
@@ -64,14 +60,11 @@ struct PasteboardSnapshot: Equatable, Sendable {
         if markedDoNotRetain { return .failure(.doNotRetain) }
 
         var items: [[Representation]] = []
-        var byteCount = 0
         for item in pasteboardItems {
             var representations: [Representation] = []
             for type in item.types {
                 // NSPasteboardItem.h: an item made stale by a new owner "will return nil".
                 guard let data = item.data(forType: type) else { return .failure(.incomplete) }
-                byteCount += data.count
-                guard byteCount <= maximumBytes else { return .failure(.tooLarge) }
                 representations.append(Representation(type: type.rawValue, data: data))
             }
             items.append(representations)
@@ -100,11 +93,5 @@ struct PasteboardSnapshot: Equatable, Sendable {
             staged.append(item)
         }
         return staged
-    }
-
-    /// The same content, known to be current under a different `changeCount` — after this
-    /// snapshot has itself been written back.
-    func current(at changeCount: Int) -> PasteboardSnapshot {
-        PasteboardSnapshot(items: items, changeCount: changeCount)
     }
 }

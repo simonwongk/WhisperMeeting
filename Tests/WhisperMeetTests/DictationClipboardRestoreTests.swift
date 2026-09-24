@@ -4,7 +4,9 @@ import Testing
 import WhisperCore
 @testable import WhisperMeet
 
-/// F425 — a dictation paste borrows the clipboard and must give it back.
+/// F425, rebuilt by F516 — a dictation paste borrows the clipboard and gives it back when the text
+/// went into a text field, and leaves it there when it did not ("只有…没有进到任何输入框的时候，才放
+/// 剪切板"). The copy is taken at paste time, as Wispr Flow, Superwhisper and VoiceInk take it.
 ///
 /// Every test that touches a pasteboard uses a private, uniquely named `NSPasteboard`, never
 /// `NSPasteboard.general`: a real pasteboard (so `changeCount`, item staleness and the
@@ -36,6 +38,8 @@ private final class ClipboardHarness {
     let scheduler = ManualScheduler()
     private(set) var pasteCount = 0
     var pasteSucceeds = true
+    /// What the focus probe reports: whether a text field has focus when the dictation is pasted.
+    var textFieldFocused = true
     static let restoreDelay: TimeInterval = 1.5
 
     init() throws {
@@ -46,12 +50,14 @@ private final class ClipboardHarness {
         try #require(board.string(forType: .string) == "probe", "the private pasteboard does not round-trip a string on this host")
     }
 
-    func makeInjector(maximumSnapshotBytes: Int = TextInjector.defaultMaximumSnapshotBytes) -> TextInjector {
+    func makeInjector() -> TextInjector {
         TextInjector(
             pasteboard: board,
             restoreDelay: Self.restoreDelay,
-            maximumSnapshotBytes: maximumSnapshotBytes,
             canSynthesizePaste: { true },
+            focusedTextField: { [unowned self] in
+                FocusedTextField.Probe(isTextField: self.textFieldFocused, summary: "test")
+            },
             synthesizePaste: { [unowned self] in
                 self.pasteCount += 1
                 return self.pasteSucceeds
@@ -77,24 +83,20 @@ private final class ClipboardHarness {
     deinit { board.releaseGlobally() }
 }
 
-/// A dictation, start to delivery, the way the controller drives the injector.
+/// A dictation's delivery, the way the controller drives the injector.
 @MainActor
-private func dictate(_ text: String, with injector: TextInjector, autoPaste: Bool = true) async -> TextInjector.Delivery {
-    injector.captureWillStart(autoPaste: autoPaste)
-    await injector.snapshotRead?.value
-    return injector.deliver(text, autoPaste: autoPaste)
+private func dictate(_ text: String, with injector: TextInjector, autoPaste: Bool = true) -> TextInjector.Delivery {
+    injector.deliver(text, autoPaste: autoPaste)
 }
 
 @MainActor
-@Test("A dictation paste puts the previous clipboard back once the paste has had time to land (F425)")
-func dictationPasteRestoresPreviousClipboard() async throws {
+@Test("Pasted into a text field, the dictation gives the clipboard back once the paste has landed (F516)")
+func pasteIntoATextFieldRestoresTheClipboard() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     harness.put("copied on my phone")
 
-    let delivery = await dictate("dictated words", with: injector)
-
-    #expect(delivery == .pasted)
+    #expect(dictate("dictated words", with: injector) == .pasted)
     #expect(harness.pasteCount == 1)
     // The paste reads the clipboard, so the dictation must still be there until the restore fires.
     #expect(harness.text == "dictated words")
@@ -106,13 +108,44 @@ func dictationPasteRestoresPreviousClipboard() async throws {
 }
 
 @MainActor
+@Test("With no text field focused, the dictation is left on the clipboard for the user to paste (F516)")
+func noTextFieldLeavesTheDictationOnTheClipboard() throws {
+    let harness = try ClipboardHarness()
+    let injector = harness.makeInjector()
+    harness.textFieldFocused = false
+    harness.put("copied on my phone")
+
+    // Still pasted — the probe can be blind to a field in an app that hides it — but reported as a
+    // clipboard delivery, so the user is told the text is on the clipboard.
+    #expect(dictate("dictated words", with: injector) == .clipboard)
+    #expect(harness.pasteCount == 1)
+    #expect(harness.scheduler.pending.isEmpty)
+    #expect(harness.text == "dictated words")
+}
+
+@MainActor
+@Test("The copy is taken at paste time, so something copied while dictating is what comes back (F516)")
+func somethingCopiedWhileDictatingIsRestored() throws {
+    // F425 read the clipboard when recording STARTED and refused to restore one that changed during
+    // the dictation — exactly what an item arriving from the iPhone mid-dictation does.
+    let harness = try ClipboardHarness()
+    let injector = harness.makeInjector()
+    harness.put("copied before dictating")
+    harness.put("copied on my phone while dictating")
+
+    #expect(dictate("dictated words", with: injector) == .pasted)
+    harness.scheduler.runAll()
+    #expect(harness.text == "copied on my phone while dictating")
+}
+
+@MainActor
 @Test("Anything written to the clipboard after the paste wins over the restore (F425)")
-func somethingCopiedAfterThePasteIsNotOverwritten() async throws {
+func somethingCopiedAfterThePasteIsNotOverwritten() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     harness.put("copied on my phone")
 
-    #expect(await dictate("dictated words", with: injector) == .pasted)
+    #expect(dictate("dictated words", with: injector) == .pasted)
     harness.put("copied a moment later")
     harness.scheduler.runAll()
 
@@ -121,62 +154,44 @@ func somethingCopiedAfterThePasteIsNotOverwritten() async throws {
 
 @MainActor
 @Test("Clipboard-only delivery leaves the dictation on the clipboard, because that is the delivery (F425)")
-func clipboardOnlyDeliveryIsNeverRestored() async throws {
+func clipboardOnlyDeliveryIsNeverRestored() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
 
     harness.put("copied on my phone")
-    #expect(await dictate("auto-paste off", with: injector, autoPaste: false) == .clipboard)
+    #expect(dictate("auto-paste off", with: injector, autoPaste: false) == .clipboard)
     harness.scheduler.runAll()
     #expect(harness.text == "auto-paste off")
     #expect(harness.pasteCount == 0)
 
-    // Auto-paste on, but no ⌘V could be synthesized (no Accessibility): the same thing.
     harness.put("copied on my phone")
     harness.pasteSucceeds = false
-    #expect(await dictate("no accessibility", with: injector) == .clipboard)
+    #expect(dictate("no accessibility", with: injector) == .clipboard)
     harness.scheduler.runAll()
     #expect(harness.text == "no accessibility")
 }
 
 @MainActor
-@Test("A clipboard that changed during the dictation is not restored over (F425)")
-func clipboardChangedDuringDictationIsNotRestored() async throws {
-    let harness = try ClipboardHarness()
-    let injector = harness.makeInjector()
-    harness.put("copied before dictating")
-
-    injector.captureWillStart(autoPaste: true)
-    await injector.snapshotRead?.value
-    harness.put("copied while dictating")
-    #expect(injector.deliver("dictated words", autoPaste: true) == .pasted)
-    harness.scheduler.runAll()
-
-    // Neither version is resurrected: the snapshot no longer describes the clipboard, and the
-    // content that replaced it was never read.
-    #expect(harness.text == "dictated words")
-}
-
-@MainActor
-@Test("A snapshot still being read when the paste happens is not used (F425)")
-func snapshotStillReadingAtDeliveryIsDiscarded() async throws {
+@Test("The borrowed clipboard item is marked transient, so clipboard history skips it (F516)")
+func theBorrowedItemIsMarkedTransient() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     harness.put("copied on my phone")
 
-    injector.captureWillStart(autoPaste: true)
-    let read = injector.snapshotRead
-    // No suspension between the two calls, so the read cannot have reported back to the main actor.
-    #expect(injector.deliver("dictated words", autoPaste: true) == .pasted)
-    await read?.value
-    harness.scheduler.runAll()
+    #expect(dictate("dictated words", with: injector) == .pasted)
+    let types = harness.contents.flatMap { $0.map(\.type) }
+    #expect(types.contains("org.nspasteboard.TransientType"))
+    #expect(types.contains("org.nspasteboard.AutoGeneratedType"))
 
-    #expect(harness.text == "dictated words")
+    // Left on the clipboard for the user, it is an ordinary copy: they may want it in their history.
+    harness.textFieldFocused = false
+    #expect(dictate("left for the user", with: injector) == .clipboard)
+    #expect(!harness.contents.flatMap { $0.map(\.type) }.contains("org.nspasteboard.TransientType"))
 }
 
 @MainActor
 @Test("Every item and every representation round-trips, in order (F425)")
-func multiTypeItemsRoundTrip() async throws {
+func multiTypeItemsRoundTrip() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     let custom = NSPasteboard.PasteboardType("com.whispermeet.tests.private-representation")
@@ -191,7 +206,7 @@ func multiTypeItemsRoundTrip() async throws {
     let before = harness.contents
     try #require(before.count == 2)
 
-    #expect(await dictate("dictated words", with: injector) == .pasted)
+    #expect(dictate("dictated words", with: injector) == .pasted)
     #expect(harness.text == "dictated words")
     harness.scheduler.runAll()
 
@@ -202,84 +217,48 @@ func multiTypeItemsRoundTrip() async throws {
 
 @MainActor
 @Test("An empty clipboard is restored to empty, not left holding the dictation (F425)")
-func emptyClipboardRestoresToEmpty() async throws {
+func emptyClipboardRestoresToEmpty() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     harness.board.clearContents()
     try #require(harness.contents.isEmpty)
 
-    #expect(await dictate("dictated words", with: injector) == .pasted)
+    #expect(dictate("dictated words", with: injector) == .pasted)
     #expect(harness.text == "dictated words")
     harness.scheduler.runAll()
-
     #expect(harness.contents.isEmpty)
 }
 
 @MainActor
-@Test("A clipboard larger than the cap is not held, so it is not restored (F425)")
-func oversizeClipboardIsNotHeld() async throws {
+@Test("A clipboard a password manager marked concealed is never copied, so it is not restored (F425)")
+func concealedClipboardIsNotHeld() throws {
     let harness = try ClipboardHarness()
-    let injector = harness.makeInjector(maximumSnapshotBytes: 8)
-    harness.put("more than eight bytes")
+    let injector = harness.makeInjector()
+    let item = NSPasteboardItem()
+    #expect(item.setString("hunter2", forType: .string))
+    #expect(item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")))
+    harness.board.clearContents()
+    #expect(harness.board.writeObjects([item]))
 
-    #expect(await dictate("dictated words", with: injector) == .pasted)
+    #expect(dictate("dictated words", with: injector) == .pasted)
     harness.scheduler.runAll()
-
     #expect(harness.text == "dictated words")
 }
 
 @MainActor
-@Test("A clipboard marked concealed or transient is never copied, so it is not restored (F425)")
-func concealedClipboardIsNotHeld() async throws {
-    for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"] {
-        let harness = try ClipboardHarness()
-        let injector = harness.makeInjector()
-        let item = NSPasteboardItem()
-        #expect(item.setString("hunter2", forType: .string))
-        #expect(item.setData(Data(), forType: NSPasteboard.PasteboardType(marker)))
-        harness.board.clearContents()
-        #expect(harness.board.writeObjects([item]))
+@Test("A second dictation before the first restore still ends with the user's clipboard (F516)")
+func rapidSecondDictationRestoresTheOriginal() throws {
+    let harness = try ClipboardHarness()
+    let injector = harness.makeInjector()
+    harness.put("copied on my phone")
 
-        #expect(await dictate("dictated words", with: injector) == .pasted)
-        harness.scheduler.runAll()
+    #expect(dictate("first sentence", with: injector) == .pasted)
+    // The clipboard now holds the first dictation; the second must not take THAT as the user's.
+    #expect(dictate("second sentence", with: injector) == .pasted)
+    #expect(harness.text == "second sentence")
+    harness.scheduler.runAll()
 
-        #expect(harness.text == "dictated words", "marker \(marker)")
-    }
-}
-
-@MainActor
-@Test("A second dictation inside the restore window still ends with the user's clipboard, whichever lands first (F425)")
-func rapidSecondDictationRestoresTheOriginal() async throws {
-    // Second paste before the first restore fires.
-    do {
-        let harness = try ClipboardHarness()
-        let injector = harness.makeInjector()
-        harness.put("copied on my phone")
-
-        #expect(await dictate("first sentence", with: injector) == .pasted)
-        #expect(await dictate("second sentence", with: injector) == .pasted)
-        #expect(harness.text == "second sentence")
-        harness.scheduler.runAll()
-
-        #expect(harness.text == "copied on my phone")
-    }
-    // First restore fires while the second dictation is still being spoken.
-    do {
-        let harness = try ClipboardHarness()
-        let injector = harness.makeInjector()
-        harness.put("copied on my phone")
-
-        #expect(await dictate("first sentence", with: injector) == .pasted)
-        injector.captureWillStart(autoPaste: true)
-        await injector.snapshotRead?.value
-        harness.scheduler.runAll()
-        #expect(harness.text == "copied on my phone")
-        #expect(injector.deliver("second sentence", autoPaste: true) == .pasted)
-        #expect(harness.text == "second sentence")
-        harness.scheduler.runAll()
-
-        #expect(harness.text == "copied on my phone")
-    }
+    #expect(harness.text == "copied on my phone")
 }
 
 /// Pins the decision in `TextInjector.allowsSnapshot(accessBehavior:)`: the private pasteboard the
@@ -295,10 +274,9 @@ func clipboardIsNotReadWhereTheSystemWouldAskOrRefuse() {
 }
 
 /// The reachable path: the hotkey's press and release drive a real `DictationController`, whose
-/// capture start and delivery reach the injector. The test touches the injector only to await its
-/// snapshot read; every call into it comes from the controller.
+/// delivery reaches the injector. Every call into the injector comes from the controller.
 @MainActor
-@Test("A hotkey dictation with auto-paste on gives the clipboard back after pasting (F425)")
+@Test("A hotkey dictation with auto-paste on gives the clipboard back after pasting (F425, F516)")
 func hotkeyDictationRestoresClipboard() async throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
@@ -328,7 +306,6 @@ func hotkeyDictationRestoresClipboard() async throws {
     harness.put("copied on my phone")
 
     monitor.onPressStart?()
-    await injector.snapshotRead?.value
     monitor.onPressEnd?()
     // The polled value is the precondition, so it is required, not merely expected.
     for _ in 0..<1_000 where controller.logStore.log.entries.isEmpty {
