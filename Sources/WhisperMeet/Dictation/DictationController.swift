@@ -28,7 +28,16 @@ final class DictationController: ObservableObject {
 
     @Published private(set) var status: Status = .disabled
     @Published var enabled: Bool { didSet { persist(); apply() } }
-    @Published var hotkey: DictationHotkey { didSet { persist(); if enabled { applyHotkeyStart() } } }
+    @Published var hotkey: DictationHotkey {
+        didSet {
+            persist()
+            // Settings' "Change" hears the trigger key itself, so re-choosing the key a dictation is
+            // being held on is routine. Nothing changed; rebuilding the tap under that dictation is
+            // the one thing that can lose its release (F446). Idle, a re-apply still re-taps.
+            guard enabled, hotkey != oldValue || session.state == .idle else { return }
+            applyHotkeyStart()
+        }
+    }
     @Published var language: WhisperLanguage { didSet { persist() } }
     @Published var autoPaste: Bool { didSet { persist() } }
     @Published private(set) var selectedEngine: DictationTranscriptionEngine
@@ -450,15 +459,20 @@ final class DictationController: ObservableObject {
     /// Start (or restart) the global hotkey tap and reflect the result in `hotkeyActive`/`status`.
     /// Shared by `apply()` and the `hotkey` didSet so changing the trigger key can never leave a
     /// stale `.error`/`.idle` verdict or a stale `hotkeyActive` behind (F39).
+    ///
+    /// A dictation in flight owns `status` until it settles (F446). Writing `.idle` over a live
+    /// `.listening` made `isActive` false with the microphone on — so the meeting guard stopped
+    /// guarding — and disarmed the capture watchdog, which finalizes only a `.listening` status.
     private func applyHotkeyStart() {
         let started = hotkeyMonitor.start(hotkey: hotkey)
         hotkeyActive = started
-        if started {
-            status = .idle
-        } else {
+        if !started {
             log.error("event tap could not be created — Accessibility/Input Monitoring off")
-            status = .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
         }
+        guard session.state == .idle else { return }
+        status = started
+            ? .idle
+            : .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
     }
 
     private func apply() {

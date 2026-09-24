@@ -51,10 +51,8 @@ final class HotkeyMonitor: HotkeyMonitoring {
 
     @discardableResult
     func start(hotkey: DictationHotkey) -> Bool {
-        stop()
-        self.hotkey = hotkey
-        keyDown = false
-        toggledOn = false
+        removeTap()
+        adopt(hotkey)
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue) |
@@ -91,6 +89,12 @@ final class HotkeyMonitor: HotkeyMonitoring {
     }
 
     func stop() {
+        removeTap()
+        keyDown = false
+        toggledOn = false
+    }
+
+    private func removeTap() {
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
@@ -100,8 +104,23 @@ final class HotkeyMonitor: HotkeyMonitoring {
         }
         tap = nil
         runLoopSource = nil
-        keyDown = false
-        toggledOn = false
+    }
+
+    /// The edge state `start` begins from (F446). Internal so a test can drive it without creating a
+    /// real event tap, which needs Accessibility and would hear the keyboard of whoever runs the
+    /// suite.
+    ///
+    /// Nothing here is assumed. The key's state is read, not reset to "up": Settings' "Change" hears
+    /// the trigger itself, so the tap is routinely rebuilt while the key that started a dictation is
+    /// still held, and a reset made that key's release look like a duplicate "up" — dropped, with the
+    /// microphone on. And toggle mode's on-state belongs to the dictation, not to the key: switching
+    /// to another toggle key while dictation is on leaves it on, so the new key's next press turns it
+    /// off. Only a change of mode clears it, since it means nothing in hold mode. (`stop()` still
+    /// clears everything: nothing can be in flight once dictation is off.)
+    func adopt(_ newHotkey: DictationHotkey) {
+        if newHotkey.mode != hotkey.mode { toggledOn = false }
+        hotkey = newHotkey
+        keyDown = currentKeyState(CGKeyCode(newHotkey.keyCode))
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
@@ -131,8 +150,13 @@ final class HotkeyMonitor: HotkeyMonitoring {
         dispatch(pressed: nowDown)
     }
 
+    /// The tap was disabled for a while, so an edge may have happened unseen. Read the key and
+    /// dispatch whatever changed (F446): only resynchronising `keyDown` corrected the state and
+    /// swallowed the edge, so a hold-mode release made during the gap left the capture running to
+    /// the 120 s watchdog, which then pasted it. A press and a release that both fall inside the gap
+    /// leave nothing in the live state, so they cannot be recovered.
     func recoverFromDisabledTap() {
-        keyDown = currentKeyState(CGKeyCode(hotkey.keyCode))
+        handleKeyStateChange(currentKeyState(CGKeyCode(hotkey.keyCode)))
     }
 
     func resetToggleState() {
