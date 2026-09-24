@@ -13,6 +13,32 @@ been written down anywhere you read. The answered ones are summarised under
 out *not* to be answered and are still here, now with the board tickets they always should have had
 (**F351**, **F352**).
 
+## Answered 2026-09-24 — you said "问题全部按推荐"
+
+You answered the eleven questions from whisper-0a40's board triage with every recommended answer.
+What that settles, so no one asks again:
+
+- **F299** — drop the blinded-reviewer value gate; close as Not planned once the spec's gate line and
+  the scorecard row say so.
+- **F351** — no 4-bit download; closed won't-fix.
+- **F352** — keep what ships (text removed one week after a delete; Forget History removes it at
+  once); closes as invalid with F450.
+- **Read-only counts from your own data** — yes to F201's dictation-log report and to F347 using your
+  meetings' system-audio tracks as the answer key; yes to the optional F349 recount and F294 log
+  read. Counts only, never transcript text.
+- **Screen control, scratch copy only** — yes, after F434 is fixed, an agent may press Restore Library
+  in a throwaway scratch app (F353). For F230 the accessibility-tree read of your real app was left
+  as your call; with "all recommended" and no recommendation given, it stays **off** until you say
+  otherwise.
+- **F230** — use one of your own multi-person meetings.
+- **F315** — no window-targeted UI automation now; closed won't-fix.
+- **F455** — for a hand-edited meeting, Ask falls back to keyword search over the edited text.
+- **F457** — block Forget History while the library is read-only, and correct its undo caption.
+- **F419** — measure clipping per input channel before the downmix.
+- **F439 · F440** — an agent may run the local-summarizer installer once for real, after both fixes.
+
+The letters below still stand for what needs your hands (F355, F294, F201, F230, F428, F353's check).
+
 ## Where to start
 
 Eight entries, over the cap of five. Rather than drop one of your unanswered questions to get under
