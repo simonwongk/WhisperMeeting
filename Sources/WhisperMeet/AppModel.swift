@@ -94,6 +94,14 @@ struct SpeakerDiarizationRequest: Sendable {
     let durationSeconds: TimeInterval
 }
 
+/// Everything the summary's "Not mentioned" note reads (F437). The view keys `.task(id:)` on it, so
+/// the note is worked out again exactly when one of these changes, and never because the body ran.
+struct SummaryCoverageInput: Equatable, Sendable {
+    let summary: MeetingSummary
+    let transcript: String
+    let terms: [String]
+}
+
 /// Everything a view needs to render anonymous speaker labels for one meeting, recomputed from the
 /// CURRENT segments (F219). Display only: nothing here is ever written into `TranscriptSegment`,
 /// `transcriptText`, or `meetings.json`.
@@ -4222,6 +4230,29 @@ final class AppModel: ObservableObject {
                   record.summary!.actionItems.indices.contains(index) else { return }
             mutation(&record.summary!.actionItems[index])
         }
+    }
+
+    // MARK: - The summary's coverage note (F437)
+
+    /// The check behind `unmentionedSummaryTerms(for:)`. Injectable so a test can see where it runs;
+    /// defaults to the core's.
+    var summaryCoverageCheck: @Sendable (SummaryCoverageInput) -> [String] = { input in
+        SummaryCoverage.unmentioned(in: input.summary, transcript: input.transcript, terms: input.terms)
+    }
+
+    /// The vocabulary terms a meeting's transcript mentions and its summary does not (F245), for the
+    /// note under the summary — worked out on a background thread (F437).
+    ///
+    /// It searches the whole transcript once per vocabulary term, so it cannot run where a render
+    /// reaches it. It used to run in the view body: every Notes keystroke, every keystroke in the
+    /// transcript's Edit view and every progress update the model published froze the window —
+    /// about 1.3 s for 105 terms over an hour's transcript, measured at -O before the core was made
+    /// to prepare the transcript once (47 ms after). The view now asks from `.task(id:)` keyed on
+    /// the input, so this runs once per change of the summary, the transcript or the vocabulary,
+    /// and none of the searching happens on the main thread.
+    func unmentionedSummaryTerms(for input: SummaryCoverageInput) async -> [String] {
+        let check = summaryCoverageCheck
+        return await Task.detached(priority: .userInitiated) { check(input) }.value
     }
 
     /// Proposed spelling corrections toward the user's vocabulary for a meeting's transcript (F82).

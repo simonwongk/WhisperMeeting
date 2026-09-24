@@ -2695,6 +2695,8 @@ private struct TranscriptDetailView: View {
     @State private var repetitionNotice: String?
     // F422: how many echoes Remove Repeated Lines would take out, computed with the notice above.
     @State private var removableRepeats = 0
+    // F437: the summary's "Not mentioned" note, with the summary text it was worked out for.
+    @State private var coverageNote: (summaryText: String, terms: [String])?
     // F424: the lines Remove Lines in Another Language offers, while its confirmation sheet is up.
     @State private var languageRemovalOffer: LanguageRemovalOffer?
     @Environment(\.undoManager) private var undoManager
@@ -3046,18 +3048,19 @@ private struct TranscriptDetailView: View {
 
     @ViewBuilder
     private func summaryBody(_ summary: MeetingSummary, transcript: String) -> some View {
+        let coverageInput = SummaryCoverageInput(summary: summary, transcript: transcript, terms: store.vocabulary)
         VStack(alignment: .leading, spacing: 14) {
             Text(summary.summary)
                 .textSelection(.enabled)
             // F245: a summary omits by design and a dropped claim leaves no trace. This is the
             // cheapest honest signal — the user's own vocabulary terms the transcript mentions
-            // and the summary does not — computed here so it follows the vocabulary.
-            let unmentioned = SummaryCoverage.unmentioned(
-                in: summary, transcript: transcript, terms: store.vocabulary
-            )
-            if !unmentioned.isEmpty {
+            // and the summary does not — recomputed whenever the vocabulary changes.
+            //
+            // F437: filled by the `.task(id:)` below, never computed here. Shown only beside the
+            // summary text it was worked out for, so a new summary never carries the last one's note.
+            if let note = coverageNote, note.summaryText == summary.summary, !note.terms.isEmpty {
                 Label {
-                    Text("Not mentioned in this summary: \(unmentioned.joined(separator: ", "))")
+                    Text("Not mentioned in this summary: \(note.terms.joined(separator: ", "))")
                 } icon: {
                     Image(systemName: "text.badge.minus")
                 }
@@ -3110,6 +3113,15 @@ private struct TranscriptDetailView: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
+        // F437: once per change of the summary, the transcript or the vocabulary, off the main
+        // thread. A keystroke in the Edit view changes the input; the run it overtakes finishes in
+        // the background and its answer is dropped.
+        .task(id: coverageInput) {
+            let terms = await model.unmentionedSummaryTerms(for: coverageInput)
+            // A newer input replaced this one while it ran; that input's own task answers.
+            guard !Task.isCancelled else { return }
+            coverageNote = (summaryText: summary.summary, terms: terms)
+        }
     }
 
     private static func summaryText(_ summary: MeetingSummary) -> String {

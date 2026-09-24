@@ -37,6 +37,30 @@ func missingTermsAreInputTermsAbsentFromOutput() {
     #expect(ProtectedTerms.missing(from: "hi", comparedTo: "hi", terms: terms).isEmpty)
 }
 
+// F437 prepares each text once per call instead of once per term. These pin the rule itself on
+// the inputs where preparing could change an answer — the text's own composition, escaping, case
+// beyond ASCII — and hold for the per-term code this replaced as well as for the new one.
+@Test("Normalising and bridging a text once per call keeps every answer the per-term rule gave (F437)")
+func preparedTextKeepsTheRule() {
+    // The TEXT's composition does not matter either, not only the term's.
+    #expect(ProtectedTerms.contains("Cafe\u{0301} Kestrel opened", term: "Café"))
+    #expect(ProtectedTerms.missing(from: "Cafe\u{0301} Kestrel", comparedTo: "Café Kestrel", terms: ["Café"]).isEmpty)
+    // A term is matched literally: its dot is not a regex wildcard.
+    #expect(ProtectedTerms.contains("try Node.js today", term: "Node.js"))
+    #expect(!ProtectedTerms.contains("try NodeXjs today", term: "Node.js"))
+    // Case folding reaches beyond ASCII.
+    #expect(ProtectedTerms.contains("L'ÉCOLE est fermée", term: "école"))
+    #expect(!ProtectedTerms.contains("anything", term: ""))
+
+    let input = "Kestrel met Fairhaven at the École; 法輪功 and Node.js came up."
+    let output = "Kestrel met at the ECOLE; Node.js came up."
+    let terms = ["kestrel", "Fairhaven", "École", "法輪功", "Node.js", "Tiananmen", ""]
+    #expect(ProtectedTerms.missing(from: output, comparedTo: input, terms: terms) == ["Fairhaven", "École", "法輪功"])
+    // The batch answer is the per-term answer, term by term.
+    #expect(ProtectedTerms.missing(from: output, comparedTo: input, terms: terms)
+        == terms.filter { ProtectedTerms.contains(input, term: $0) && !ProtectedTerms.contains(output, term: $0) })
+}
+
 @Test("A span touches a term when the term lies inside it or it lies inside the term (F245)")
 func spanTouchesTerm() {
     let terms = ["法輪功", "Chen Yi-chun", "台灣"]
