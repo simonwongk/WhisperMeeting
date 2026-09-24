@@ -88,6 +88,27 @@ def needs_temperature_fallback(compression_ratio, avg_logprob, no_speech_prob) -
     return needs
 
 
+def skips_window_as_silence(no_speech_prob, avg_logprob) -> bool:
+    """Whether `transcribe` drops this window's text as no speech — `transcribe.py:301-315` (F449).
+
+    Runs AFTER the ladder, on the result the ladder settled on. A window is skipped when
+    `no_speech_prob > NO_SPEECH_THRESHOLD`, unless `avg_logprob > LOGPROB_THRESHOLD` says the decode
+    was confident anyway; both comparisons are strict, as upstream's are. A clip whose only window
+    is skipped comes back from `transcribe` as empty text, which the app shows as "Didn't catch
+    that" instead of pasting anything. F210's single-window path replicated the ladder and not
+    this check, so for any window the rule skips it returned the decoder's guess instead of "".
+
+    What this restores is parity, not a silence detector. Measured against the installed
+    large-v3-turbo on seventeen synthetic silence and noise clips (the F449 log entry), that model
+    reported a no_speech_prob of 0.000000 on every one, so the rule — upstream's as much as this
+    copy — skipped none of them and both paths returned "Thank you." for digital silence.
+    """
+    should_skip = no_speech_prob > NO_SPEECH_THRESHOLD
+    if avg_logprob > LOGPROB_THRESHOLD:
+        should_skip = False
+    return should_skip
+
+
 def transcribe_single_window(mlx_whisper, mlx, audio, mlx_repo, language, initial_prompt):
     """One encoder pass, shared by language ID and every decode attempt (F210).
 
@@ -168,8 +189,13 @@ def transcribe_single_window(mlx_whisper, mlx, audio, mlx_repo, language, initia
                 break
         if result is None:
             return None
+        text = result.text.strip()
+        if skips_window_as_silence(result.no_speech_prob, result.avg_logprob):
+            # F449: what `transcribe` returns for a clip whose one window it skipped. The language
+            # and the score are still reported — the score is the reason the text is empty.
+            text = ""
         return {
-            "text": result.text.strip(),
+            "text": text,
             "language": result.language,
             "noSpeechProb": result.no_speech_prob,
         }

@@ -209,5 +209,132 @@ class SingleWindowFastPathTests(unittest.TestCase):
         )
 
 
+class _FakeMel:
+    """Just enough of an mx.array for `transcribe_single_window`'s slicing and casting."""
+
+    def __init__(self, frames):
+        self.shape = (frames, 128)
+
+    def __getitem__(self, _index):
+        return self
+
+    def astype(self, _dtype):
+        return self
+
+
+class SilentWindowSkipTests(unittest.TestCase):
+    """F449 — the single-window path must drop a window `transcribe()` would skip as silence.
+
+    `mlx_whisper.transcribe` runs the temperature ladder and THEN a no-voice-activity check
+    (`transcribe.py:301-315` in the installed 0.4.3): a window whose `no_speech_prob` is above
+    0.6 is skipped unless its `avg_logprob` is above -1.0, and a clip whose only window was skipped
+    comes back as empty text. F210's single-window path copied the ladder and not the check, so a
+    window `transcribe()` turns into "" (the app's "Didn't catch that") came back as the decoder's
+    guess and was pasted.
+
+    The scores below are the ticket's scenario, not a measurement: the installed large-v3-turbo
+    reported no_speech_prob 0.000000 on every synthetic silence and noise clip the F449 log lists,
+    so on those clips neither path skips anything. What these pin is that the two paths agree.
+
+    These drive the real `transcribe_single_window` with fake `mlx_whisper` modules, because the
+    defect is that the function never applied the rule, which a test of a free-standing predicate
+    cannot see.
+    """
+
+    def setUp(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+
+        self.decoded = SimpleNamespace(
+            text=" Thank you.", language="en", no_speech_prob=0.9, avg_logprob=-1.3,
+            compression_ratio=0.8,
+        )
+        decoded = lambda: self.decoded  # noqa: E731 - read at call time, so a test can replace it
+
+        class Model:
+            is_multilingual = True
+            dims = SimpleNamespace(n_mels=128)
+
+            def encoder(self, segment):
+                return segment
+
+            def decode(self, features, options):
+                return decoded()
+
+        audio = ModuleType("mlx_whisper.audio")
+        audio.N_FRAMES = 3000
+        audio.N_SAMPLES = 480000
+        # 100 content frames (one second) plus the `padding=N_SAMPLES` the real call appends.
+        audio.log_mel_spectrogram = lambda _audio, n_mels, padding: _FakeMel(3000 + 100)
+        audio.pad_or_trim = lambda segment, _length, axis: segment
+        decoding = ModuleType("mlx_whisper.decoding")
+        decoding.DecodingOptions = lambda **options: SimpleNamespace(**options)
+        transcribe = ModuleType("mlx_whisper.transcribe")
+        transcribe.ModelHolder = SimpleNamespace(get_model=lambda _repo, _dtype: Model())
+        package = ModuleType("mlx_whisper")
+
+        self._saved = {name: sys.modules.get(name) for name in (
+            "mlx_whisper", "mlx_whisper.audio", "mlx_whisper.decoding", "mlx_whisper.transcribe",
+        )}
+        sys.modules.update({
+            "mlx_whisper": package,
+            "mlx_whisper.audio": audio,
+            "mlx_whisper.decoding": decoding,
+            "mlx_whisper.transcribe": transcribe,
+        })
+
+    def tearDown(self):
+        import sys
+
+        # Put the import failure back: `SingleWindowFastPathTests` relies on mlx_whisper being
+        # absent, and a fake left in sys.modules would turn its decline into a decode.
+        for name, module in self._saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def respond(self):
+        mlx = type("FakeMLX", (), {"float16": "float16"})()
+        response = server.transcribe_single_window(
+            None, mlx, [0.0] * 16000, "repo/name", None, None
+        )
+        self.assertIsNotNone(response, "the fast path declined instead of deciding")
+        return response
+
+    def test_a_window_transcribe_would_skip_as_silence_comes_back_empty(self):
+        """The ticket's scenario: a window decoded as " Thank you." with no_speech 0.9 and
+        avg_logprob -1.3. `transcribe()` returns "" for exactly this window."""
+        self.assertEqual(self.respond()["text"], "")
+
+    def test_a_confident_decode_is_kept_despite_a_high_no_speech_prob(self):
+        """`transcribe.py:305-309`: a high enough logprob overrides no_speech — speech over noise."""
+        self.decoded.avg_logprob = -0.4
+        self.assertEqual(self.respond()["text"], "Thank you.")
+
+    def test_speech_is_returned_unchanged(self):
+        self.decoded.no_speech_prob = 0.02
+        self.decoded.avg_logprob = -0.2
+        self.assertEqual(self.respond()["text"], "Thank you.")
+
+    def test_the_thresholds_compare_exactly_as_transcribe_does(self):
+        """`no_speech_prob > 0.6` and `avg_logprob > -1.0`, both strict (`transcribe.py:303,307`).
+
+        So a logprob of exactly -1.0 does NOT rescue a no-speech window, and a no_speech_prob of
+        exactly 0.6 is not a no-speech window at all.
+        """
+        self.decoded.avg_logprob = -1.0
+        self.assertEqual(self.respond()["text"], "")
+        self.decoded.no_speech_prob = 0.6
+        self.assertEqual(self.respond()["text"], "Thank you.")
+
+    def test_a_skipped_window_still_reports_its_language_and_score(self):
+        """`transcribe()` keeps the language for a skipped clip; the score is kept too, because it
+        is the evidence for the empty text rather than a claim about any pasted text."""
+        response = self.respond()
+        self.assertEqual(response["language"], "en")
+        self.assertEqual(response["noSpeechProb"], 0.9)
+
+
 if __name__ == "__main__":
     unittest.main()
