@@ -596,9 +596,10 @@ final class MeetingStore: ObservableObject {
         let directory = root
             .appendingPathComponent(meeting.recordingPath)
             .deletingLastPathComponent()
-        // Same shape as `delete()`: never outside the library, and never the library root itself.
-        // The sidecar filename is fixed, so a root-level write could never clobber the indexes —
-        // excluding the root is for consistency with the delete path (F198).
+        // Never outside the library, and never the library root itself — the containment `delete`
+        // used before F452 narrowed it to the meeting's own folder. This one is a write of a fixed
+        // filename, so the wider check cannot remove anything and could never clobber an index; the
+        // root is excluded because no meeting's notes belong beside the indexes (F198).
         guard isWithinLibrary(directory, root: root),
               directory.standardizedFileURL != root.standardizedFileURL,
               FileManager.default.fileExists(atPath: directory.path) else { return false }
@@ -1028,8 +1029,27 @@ final class MeetingStore: ObservableObject {
         return target == base || target.hasPrefix(base + "/")
     }
 
-    func isWithinLibrary(_ url: URL) -> Bool {
-        Self.isWithinLibrary(url, root: rootDirectory)
+    /// The one folder a delete may remove: this meeting's own `Recordings/<id>` (F452).
+    ///
+    /// Inside the library was not enough. F148 #6 kept a delete from leaving the library and, inside
+    /// it, excluded only the root — so a `recordingPath` one level deep resolved its "folder" to a
+    /// directory everything shares: `Recordings/meeting.wav` to all of `Recordings`, `Models/x` to
+    /// the downloaded models, `Recordings/../Runtime/x` to the installed runtime, and a path into
+    /// another meeting's folder to that meeting's audio. Each of those was removed whole.
+    ///
+    /// Derived from `recordingPath`, because that is where the audio actually is, and accepted only
+    /// when the folder sits directly in `Recordings` under a name that parses to this meeting's id.
+    /// Compared as a `UUID`, not as a string: `FolderRebuild` keeps the folder's own spelling in
+    /// `recordingPath`, and `UUID(uuidString:)` reads either case. Anything else returns nil, and the
+    /// delete takes the index entry only and leaves the disk alone.
+    private func ownRecordingFolder(of meeting: MeetingRecord) -> URL? {
+        let folder = recordingURL(for: meeting).deletingLastPathComponent().standardizedFileURL
+        let recordings = rootDirectory
+            .appendingPathComponent("Recordings", isDirectory: true)
+            .standardizedFileURL
+        guard folder.deletingLastPathComponent().standardizedFileURL.path == recordings.path,
+              UUID(uuidString: folder.lastPathComponent) == meeting.id else { return nil }
+        return folder
     }
 
     /// Deletes one meeting. A wrapper, so there is exactly one delete (F451).
@@ -1133,10 +1153,10 @@ final class MeetingStore: ObservableObject {
     /// each one missing at the next launch. So the entries leave the index first; if that save fails
     /// nothing has been touched, and memory is put back to match the index still on disk.
     ///
-    /// Per record the existing invariants still hold: the read-only guard runs before anything else
-    /// (F187), and a folder is removed only when the containment check accepts it (F148 #6) —
-    /// otherwise only the index entry goes and the message says so. No notes-sidecar hook: the
-    /// sidecar lives in the recording folder, which dies with the meeting.
+    /// Per record: the read-only guard runs before anything else (F187), and the only folder ever
+    /// removed is the meeting's own `Recordings/<id>` (`ownRecordingFolder(of:)`, F452) — for any
+    /// other `recordingPath` only the index entry goes and the message says so. No notes-sidecar
+    /// hook: the sidecar lives in the recording folder, which dies with the meeting.
     @discardableResult
     func delete(ids: [UUID]) -> [UUID] {
         guard mutationIsAllowed() else { return [] }
@@ -1151,10 +1171,8 @@ final class MeetingStore: ObservableObject {
         var folders: [UUID: URL] = [:]
         var entryOnly = 0
         for meeting in doomed {
-            let directory = recordingURL(for: meeting).deletingLastPathComponent()
-            if isWithinLibrary(directory),
-               directory.standardizedFileURL != rootDirectory.standardizedFileURL {
-                folders[meeting.id] = directory
+            if let folder = ownRecordingFolder(of: meeting) {
+                folders[meeting.id] = folder
             } else {
                 entryOnly += 1
             }
@@ -1206,10 +1224,12 @@ final class MeetingStore: ObservableObject {
         return "\(titles.count) meeting(s) could not have their recordings removed, so they were kept to avoid an inconsistent library: \(names)."
     }
 
+    /// For a delete that removed index entries only, because the recording path did not name the
+    /// meeting's own folder (F452) — outside the library, empty, or a directory other things share.
     private static func entryOnlyDeleteMessage(count: Int) -> String {
         count == 1
-            ? "This meeting's recording path pointed outside the library, so no files were deleted from disk; the meeting was removed from the list."
-            : "\(count) meetings had a recording path outside the library, so no files were deleted from disk for them; they were removed from the list."
+            ? "This meeting's recording path did not point to its own recording folder, so no files were deleted from disk; the meeting was removed from the list."
+            : "\(count) meetings had a recording path that did not point to their own recording folder, so no files were deleted from disk for them; they were removed from the list."
     }
 
     /// Forgets the retained index history, so a deleted meeting's text leaves the disk (F239).
