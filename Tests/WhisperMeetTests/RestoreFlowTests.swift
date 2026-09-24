@@ -85,7 +85,7 @@ func unconfirmedRestoreDoesNothing() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     await model.requestLibraryRestore(from: generation)
-    await model.performLibraryRestore(confirmed: false)
+    #expect(model.performLibraryRestore(confirmed: false) == nil, "an unanswered offer starts nothing")
 
     #expect(model.pendingLibraryRestore != nil, "the user has not answered yet")
     #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
@@ -99,7 +99,7 @@ func confirmedRestoreApplies() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     await model.requestLibraryRestore(from: generation)
-    await model.performLibraryRestore(confirmed: true)
+    await model.performLibraryRestore(confirmed: true)?.value
 
     #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
         == Data(indexAtBackup.utf8))
@@ -115,7 +115,7 @@ func unofferedRestoreIsRefused() async throws {
     let (root, model, _) = try makeFixture("unoffered")
     defer { try? FileManager.default.removeItem(at: root) }
 
-    await model.performLibraryRestore(confirmed: true)
+    #expect(model.performLibraryRestore(confirmed: true) == nil, "nothing was offered, so nothing starts")
 
     #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
         == Data(indexSinceThen.utf8))
@@ -154,7 +154,7 @@ func damagedGenerationIsExplained() async throws {
     #expect(!pending.plan.isSafeToApply)
     #expect(!pending.plan.verification.problems.isEmpty)
 
-    await model.performLibraryRestore(confirmed: true)
+    await model.performLibraryRestore(confirmed: true)?.value
     // Confirming a damaged backup still does not restore it.
     #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
         == Data(indexSinceThen.utf8))
@@ -220,4 +220,68 @@ func confirmationDistinguishesUnverifiableFromDamaged() async throws {
     await model2.requestLibraryRestore(from: generation2)
     pending = try #require(model2.pendingLibraryRestore)
     #expect(AppModel.restoreConfirmationMessage(pending).contains("cannot be restored"))
+}
+
+// MARK: - F434: the confirmation's buttons
+
+// SwiftUI runs a confirmation button's action and then dismisses the dialog, and the dismissal
+// calls the `isPresented` setter — `cancelLibraryRestore()` — synchronously, before any Task the
+// action started has run. So these drive the model in exactly that order: the button's action,
+// then the dismissal, then whatever the action left running.
+
+@Test("Pressing Restore Library restores, although the dialog clears the offer as it closes (F434)")
+@MainActor
+func restoreLibraryButtonSurvivesTheDismissal() async throws {
+    let (root, model, generation) = try makeFixture("button")
+    defer { try? FileManager.default.removeItem(at: root) }
+    await model.requestLibraryRestore(from: generation)
+    try #require(model.pendingLibraryRestore?.plan.isSafeToApply == true)
+
+    let pressed = model.performLibraryRestore(confirmed: true)   // the button's action
+    model.cancelLibraryRestore()                                 // the dismissal
+    await pressed?.value
+
+    #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
+        == Data(indexAtBackup.utf8), "the library was not restored")
+    #expect(model.alertMessage?.contains("previous library") == true, "\(model.alertMessage ?? "no message at all")")
+}
+
+@Test("Pressing Restore Anyway restores an older backup, although the dialog clears the offer (F434)")
+@MainActor
+func restoreAnywayButtonSurvivesTheDismissal() async throws {
+    let (root, model, generation) = try makeFixture("anyway-button")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.removeItem(at: generation.appendingPathComponent(BackupManifest.fileName))
+    await model.requestLibraryRestore(from: generation)
+    try #require(model.pendingLibraryRestore?.plan.requiresExplicitOverride == true)
+
+    let pressed = model.performLibraryRestore(confirmed: true, acceptingUnverifiedBackup: true)
+    model.cancelLibraryRestore()
+    await pressed?.value
+
+    #expect(try Data(contentsOf: model.store.rootDirectory.appendingPathComponent("meetings.json"))
+        == Data(indexAtBackup.utf8), "the library was not restored")
+    #expect(model.alertMessage?.contains("previous library") == true, "\(model.alertMessage ?? "no message at all")")
+}
+
+@Test("Both restore buttons call the model directly, never from a Task (F434)")
+func restoreButtonsCallTheModelDirectly() throws {
+    // The model tests above cannot see the view, and the view is where this broke: each button
+    // wrapped the call in `Task { await … }`, which the dismissal outran. So the wiring is pinned
+    // against `ContentView`'s source, comments stripped and whitespace collapsed, as F306 did.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+
+    // Bound to names first, so a failure prints the one fact rather than the whole view.
+    let restoreLibraryIsDirect = source.contains(
+        #"Button("Restore Library", role: .destructive) { model.performLibraryRestore(confirmed: true) }"#
+    )
+    let restoreAnywayIsDirect = source.contains(
+        #"Button("Restore Anyway", role: .destructive) { model.performLibraryRestore(confirmed: true, acceptingUnverifiedBackup: true) }"#
+    )
+    let anyCallIsDeferred = source.contains("Task { model.performLibraryRestore")
+        || source.contains("await model.performLibraryRestore")
+    #expect(restoreLibraryIsDirect, "Restore Library does not call performLibraryRestore directly")
+    #expect(restoreAnywayIsDirect, "Restore Anyway does not call performLibraryRestore directly")
+    #expect(!anyCallIsDeferred, "a performLibraryRestore call is deferred into a Task")
 }

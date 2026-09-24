@@ -2007,8 +2007,27 @@ final class AppModel: ObservableObject {
     ///
     /// Only a plan this model produced can be applied — F193's structural guarantee, so a caller
     /// cannot restore something the user never saw described.
-    func performLibraryRestore(confirmed: Bool, acceptingUnverifiedBackup: Bool = false) async {
-        guard confirmed, let pending = pendingLibraryRestore else { return }
+    ///
+    /// **Synchronous, and the confirmation's buttons call it directly (F434).** SwiftUI runs a
+    /// button's action and then dismisses the dialog, and the dismissal's `isPresented` setter
+    /// clears `pendingLibraryRestore` before any Task the action started has run. When this was
+    /// `async` and the buttons wrapped it in `Task { await … }`, the offer was gone by the time it
+    /// was read, so both Restore Library and Restore Anyway closed the dialog and did nothing. The
+    /// offer is read here, inside the button's own call, and handed to the work that follows. The
+    /// returned Task is that work, for a caller that needs to wait for it.
+    @discardableResult
+    func performLibraryRestore(confirmed: Bool, acceptingUnverifiedBackup: Bool = false) -> Task<Void, Never>? {
+        guard confirmed, let pending = pendingLibraryRestore else { return nil }
+        // Taken now: the user has answered, and the dialog that showed it is closing.
+        pendingLibraryRestore = nil
+        return Task {
+            await applyLibraryRestore(pending, acceptingUnverifiedBackup: acceptingUnverifiedBackup)
+        }
+    }
+
+    private func applyLibraryRestore(
+        _ pending: PendingLibraryRestore, acceptingUnverifiedBackup: Bool
+    ) async {
         let library = store.rootDirectory
         do {
             let outcome = try await Task.detached(priority: .userInitiated) {
@@ -2019,7 +2038,6 @@ final class AppModel: ObservableObject {
                     acceptingUnverifiedBackup: acceptingUnverifiedBackup
                 )
             }.value
-            pendingLibraryRestore = nil
             // The files on disk changed underneath this object, with no write algorithm to notice.
             store.reloadAfterLibraryRestore()
             var message = "Your library was restored from the backup."
@@ -2033,8 +2051,9 @@ final class AppModel: ObservableObject {
             }
             alertMessage = message
         } catch {
-            // The offer stays, as F193 leaves `pendingLibraryRecovery` populated: the failure may be
-            // specific to this attempt, and `BackupRestore` has already rolled the library back.
+            // The offer is not put back. It was taken when the user answered, and the dialog it
+            // belonged to has closed; `BackupRestore` either wrote nothing or has already rolled
+            // the library back, so choosing the same backup again is safe.
             alertMessage = "The library could not be restored, and nothing was changed. \(error.localizedDescription)"
         }
     }

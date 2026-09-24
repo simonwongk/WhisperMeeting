@@ -1629,21 +1629,18 @@ struct SettingsView: View {
                         ),
                         titleVisibility: .visible
                     ) {
+                        // F434: each action calls the model directly, never inside a `Task`. The
+                        // dismissal that follows the action clears the offer before a Task body
+                        // runs, so a deferred call found nothing to restore and did nothing.
                         if let pending = model.pendingLibraryRestore, pending.plan.isSafeToApply {
-                            Button("Restore Library", role: .destructive) {
-                                Task { await model.performLibraryRestore(confirmed: true) }
-                            }
+                            Button("Restore Library", role: .destructive) { model.performLibraryRestore(confirmed: true) }
                         } else if let pending = model.pendingLibraryRestore,
                                   pending.plan.requiresExplicitOverride {
                             // Only the unverifiable case gets an override button. A backup known to
                             // be DAMAGED offers none, because there is no reading of "the user
                             // chose it" that makes copying corrupt bytes over good ones correct.
                             Button("Restore Anyway", role: .destructive) {
-                                Task {
-                                    await model.performLibraryRestore(
-                                        confirmed: true, acceptingUnverifiedBackup: true
-                                    )
-                                }
+                                model.performLibraryRestore(confirmed: true, acceptingUnverifiedBackup: true)
                             }
                         }
                         Button("Cancel", role: .cancel) { model.cancelLibraryRestore() }
