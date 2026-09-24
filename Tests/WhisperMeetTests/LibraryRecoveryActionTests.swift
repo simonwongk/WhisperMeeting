@@ -108,7 +108,7 @@ func recoveryPreservesAudio() throws {
     #expect(try Data(contentsOf: audio) == Data("audio".utf8))
 }
 
-@Test("A library that is still broken after a restore stays read-only")
+@Test("A store that is still broken after a restore stays read-only")
 @MainActor
 func revalidationDoesNotWhitewashAStillBrokenLibrary() throws {
     // `_` for the store: this test reopens the library below rather than using the first handle,
@@ -118,9 +118,13 @@ func revalidationDoesNotWhitewashAStillBrokenLibrary() throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     // Break a DIFFERENT store in the same library. `vocabulary.json` and its backup are unreadable,
-    // so re-evaluating health after the index restore must still find this and refuse mutation —
-    // the exact failure the monotonic `degrade(to:)` exists to prevent, now that recovery
-    // recomputes health instead of only ever worsening it.
+    // so re-evaluating health after the index restore must still find this and refuse its edits —
+    // recovery recomputes health rather than only ever worsening it, and must not whitewash a
+    // store it did not repair.
+    //
+    // Since F464 that refusal is the vocabulary's alone. This used to assert the whole library
+    // stayed read-only, which was the defect: the meeting index came back and the user still
+    // could not record, with nothing left in Recover Library that could help.
     try Data("broken-primary".utf8).write(to: root.appendingPathComponent("vocabulary.json"))
     try Data("broken-backup".utf8).write(to: root.appendingPathComponent("vocabulary.backup.json"))
 
@@ -129,8 +133,9 @@ func revalidationDoesNotWhitewashAStillBrokenLibrary() throws {
     let generation = try #require(try reopened.indexGenerations().first)
     try reopened.restoreIndexGeneration(generation)
 
-    #expect(reopened.isDegraded, "a readable index must not re-open a library whose vocabulary is unreadable")
-    #expect(reopened.health != .complete)
+    #expect(reopened.isListReadOnly(.vocabulary), "the restore must not whitewash an unreadable vocabulary")
+    #expect(reopened.health(of: .vocabulary) != .complete)
+    #expect(!reopened.isDegraded, "the meeting index it did restore is writable again")
 }
 
 // MARK: - F193's surface: the strings a user chooses a generation from

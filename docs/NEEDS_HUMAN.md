@@ -41,12 +41,11 @@ The letters below still stand for what needs your hands (F355, F294, F201, F230,
 
 ## Where to start
 
-Seven entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Six entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F464** | one word | Yes or no to one sentence in the product spec. The fix is built and tested; it waits only on this. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
@@ -57,6 +56,9 @@ the line, here they are in the order I would answer them. Every one is optional 
 ---
 
 ## F294 — Confirm a menu-bar-only session gets its notices
+
+*2026-09-26:* the lid-close recording of 2026-09-25 was done **with the main window open** (you
+confirmed), so it says nothing about this question; the ask below still stands as written.
 
 **Status:** `blocked`. This ask used to live under the F257 letter, and F257 closed on 2026-09-17 —
 so the question has been filed under a closed ticket since. It belongs to F294.
@@ -215,9 +217,15 @@ tell me what the paste gave you. I will read the log line myself.
 
 ---
 
-## F464 — May a damaged vocabulary file stop locking the whole library?
+## Settled — nothing needed from you
 
-**Status:** `blocked` on one sentence of [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md). The fix is written,
+**F464 — answered 2026-09-26: "改" (yes).** The spec sentence is amended in the same commit as the
+fix: the meeting index alone locks the whole library; a damaged vocabulary or replacement-rules file
+makes only that list read-only. The letter as it stood is kept below for the record.
+
+### The F464 letter, as asked
+
+**Status (when written):** `blocked` on one sentence of [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md). The fix is written,
 reviewed and tested on a branch (`8194f33`, 605 lines, 9 files); it is not merged because it
 contradicts the spec as it stands, and the spec is yours, not mine.
 
@@ -248,7 +256,6 @@ I recommend yes: a typo in a word list should not stop a lecture from being reco
 
 ---
 
-## Settled — nothing needed from you
 
 - **F352 · F351 (2026-09-25).** F352 asked whether deleting a meeting should also remove its text from
   the index history: automatic removal one week after the delete had already shipped as F295 on

@@ -5705,8 +5705,10 @@ extension AppModel {
                 Task { await performStartupRecovery() }
             }
             if store.isDegraded {
-                // The index came back but the library is still not writable, so another persisted
-                // store is damaged too. Never report success in that case — the F187 honesty rule.
+                // The generation was written, but the index it left still does not load cleanly —
+                // an empty generation beside finalized recordings reads as `.suspectEmpty`, say.
+                // Since F464 no other store can hold the library read-only, so this is about the
+                // index alone. Never report success in that case — the F187 honesty rule.
                 alertMessage = """
                     The meeting index was restored, but WhisperMeet still could not fully read its \
                     library, so it stays in read-only mode. Your recordings are untouched.
@@ -5744,8 +5746,9 @@ extension AppModel {
                 didPerformStartupRecovery = false
                 Task { await performStartupRecovery() }
             } else {
-                // The index came back but another persisted store is still damaged. Never report
-                // success in that case — the F187 honesty rule.
+                // The rebuilt index was written but still does not load cleanly (since F464 no
+                // other store can hold the library read-only). Never report success in that case —
+                // the F187 honesty rule.
                 alertMessage = """
                     The meeting index was rebuilt from the recording folders, but WhisperMeet still \
                     could not fully read its library, so it stays in read-only mode. Your recordings \

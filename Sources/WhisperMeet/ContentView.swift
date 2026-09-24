@@ -2417,6 +2417,26 @@ private struct AskMeetingsView: View {
     }
 }
 
+/// A damaged list's notice with the one control that clears it, side by side (F464). One row, not
+/// a banner with a button inside it: a control nested inside its message is what let F273's banner
+/// consolidation delete the Rebuild Audio button without anyone noticing (F306).
+private struct DamagedListNoticeRow: View {
+    let notice: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Label(notice, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(actionTitle, action: action)
+                .buttonStyle(.bordered)
+        }
+    }
+}
+
 /// Editor for exact `heard → preferred` replacement rules (F179). Rules are reviewed before they apply
 /// — they surface as proposals in a meeting's Improve ▸ Apply Replacement Rules and go through the same
 /// approve-then-apply sheet as vocabulary corrections; the audio is never touched.
@@ -2438,6 +2458,15 @@ private struct ReplacementRulesEditor: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            // F464: a damaged replacement-rules.json makes only these rules read-only, and this
+            // is where it says so — with the control that clears it beside the sentence.
+            if let notice = store.damagedListNotice(for: .replacementRules) {
+                DamagedListNoticeRow(
+                    notice: notice,
+                    actionTitle: store.keepLoadedListTitle(for: .replacementRules)
+                ) { store.keepLoadedList(.replacementRules) }
+            }
+
             HStack(spacing: 8) {
                 TextField("Heard", text: $heardDraft)
                     .textFieldStyle(.roundedBorder)
@@ -2448,7 +2477,8 @@ private struct ReplacementRulesEditor: View {
                     .onSubmit { addRule() }
                 Button("Add Rule") { addRule() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canAdd)
+                    // F464: a refused add would still clear the drafts, so it is not offered.
+                    .disabled(!canAdd || store.isListReadOnly(.replacementRules))
             }
 
             if !store.replacementRules.isEmpty {
@@ -2485,7 +2515,8 @@ private struct ReplacementRulesEditor: View {
     }
 
     private func addRule() {
-        guard canAdd else { return }
+        // F464: Return in either field reaches here too, past the disabled button.
+        guard canAdd, !store.isListReadOnly(.replacementRules) else { return }
         store.addReplacementRule(heard: heardDraft, preferred: preferredDraft)
         heardDraft = ""
         preferredDraft = ""
@@ -2536,13 +2567,26 @@ private struct VocabularyView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // F464: a damaged vocabulary.json makes only this list read-only, and this is where it
+            // says so — with the control that clears it beside the sentence, above the Add box it
+            // is about.
+            if let notice = store.damagedListNotice(for: .vocabulary) {
+                DamagedListNoticeRow(
+                    notice: notice,
+                    actionTitle: store.keepLoadedListTitle(for: .vocabulary)
+                ) { store.keepLoadedList(.vocabulary) }
+            }
+
             HStack(alignment: .top, spacing: 12) {
                 TextField("Add terms separated by commas or new lines", text: $manualTerms, axis: .vertical)
                     .lineLimit(2...5)
                     .textFieldStyle(.roundedBorder)
+                // F464: `addManualTerms` clears the field, so a refused add would lose the typing.
                 Button("Add") { addManualTerms() }
                     .buttonStyle(.borderedProminent)
+                    .disabled(store.isListReadOnly(.vocabulary))
                 Button("Import Documents…") { showsImporter = true }
+                    .disabled(store.isListReadOnly(.vocabulary))
             }
 
             if let importMessage {

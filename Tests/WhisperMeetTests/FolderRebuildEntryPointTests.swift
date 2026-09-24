@@ -133,10 +133,12 @@ func nothingToRebuildSaysSo() throws {
 }
 
 @MainActor
-@Test("A rebuild that leaves another index unreadable reports that, not success (F289)")
+@Test("A rebuild over a still-broken vocabulary leaves only the vocabulary read-only, and says so (F289, F464)")
 func rebuildOverAStillBrokenLibraryDoesNotClaimSuccess() throws {
     // F187's honesty rule, as `recoverLibrary` keeps it: the meeting index can come back while
-    // vocabulary.json is still corrupt, and then the library stays read-only and must say so.
+    // vocabulary.json is still corrupt, and the corrupt file must not be reported as repaired.
+    // Since F464 that leaves the vocabulary read-only by itself rather than the whole library,
+    // which is what this test asserted before — a rebuilt library that still refused recording.
     let (model, root, ids) = try makeDeadEndLibrary(folders: 1, label: "stillbroken")
     defer { try? FileManager.default.removeItem(at: root) }
     try Data("broken".utf8).write(to: root.appendingPathComponent("vocabulary.json"))
@@ -146,9 +148,12 @@ func rebuildOverAStillBrokenLibraryDoesNotClaimSuccess() throws {
 
     model.rebuildLibraryFromFolders(confirmed: true)
 
-    #expect(model.store.isDegraded)
+    #expect(!model.store.isDegraded)
     #expect(Set(model.store.meetings.map(\.id)) == Set(ids), "the index itself did come back")
-    #expect(model.alertMessage?.contains("read-only") == true, "\(model.alertMessage ?? "")")
+    #expect(model.store.isListReadOnly(.vocabulary))
+    // The rebuild's re-run of startup recovery reports these messages; the vocabulary's is there.
+    let notice = try #require(model.store.damagedListNotice(for: .vocabulary))
+    #expect(model.store.startupRecoveryMessages.contains(notice))
 }
 
 @MainActor

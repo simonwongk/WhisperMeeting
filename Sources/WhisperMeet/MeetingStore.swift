@@ -379,6 +379,92 @@ enum ReadOnlyLibraryNotice {
     }
 }
 
+/// What a damaged vocabulary or replacement-rule file means, in the user's words (F464).
+///
+/// Separate from `ReadOnlyLibraryNotice` on purpose. That one says the library is read-only, and a
+/// damaged list no longer makes it so; saying it anyway would send the user to Recover Library,
+/// which restores meeting indexes and cannot clear this — the dead end F464 was filed for. Each
+/// sentence names the file, what the list on screen now is, what happened to the damaged bytes,
+/// and the one control that clears it.
+enum DamagedListNotice {
+    /// The standing notice, or nil for a list that loaded cleanly. `libraryIsWritable: false`
+    /// drops the tail naming the control and saying recording is unaffected, because while the
+    /// meeting library is read-only neither is true.
+    static func notice(
+        for list: MeetingStore.EditableList,
+        health: PersistedStoreHealth,
+        libraryIsWritable: Bool
+    ) -> String? {
+        guard let what = description(of: list, health: health) else { return nil }
+        guard libraryIsWritable else { return what }
+        return "\(what) Editing the \(name(of: list)) is paused until you choose \(actionTitle(for: list, health: health)) in Business Vocabulary, which saves what is shown here as the current copy. Recording and your meetings are not affected."
+    }
+
+    /// The control beside the notice. "Keep" when the list on screen came from a file that read,
+    /// and "Start" when nothing did and the list is empty — keeping an empty list is starting over,
+    /// and the button should say so.
+    static func actionTitle(for list: MeetingStore.EditableList, health: PersistedStoreHealth) -> String {
+        let loadedSomething = health == .recoveredFromBackup || health == .divergentGenerations
+        switch list {
+        case .vocabulary: return loadedSomething ? "Keep This List" : "Start a New List"
+        case .replacementRules: return loadedSomething ? "Keep These Rules" : "Start a New Rule List"
+        }
+    }
+
+    /// Set as `storageErrorMessage` when an edit to a damaged list is refused.
+    static func refused(_ list: MeetingStore.EditableList, health: PersistedStoreHealth) -> String {
+        "Nothing was changed: the \(name(of: list)) is read-only because \(fileName(of: list)) could not be read cleanly. Choose \(actionTitle(for: list, health: health)) in Business Vocabulary to edit it again. Recording and your meetings are not affected."
+    }
+
+    private static func name(of list: MeetingStore.EditableList) -> String {
+        switch list {
+        case .vocabulary: return "vocabulary list"
+        case .replacementRules: return "replacement rules"
+        }
+    }
+
+    private static func fileName(of list: MeetingStore.EditableList) -> String {
+        "\(stem(of: list)).json"
+    }
+
+    /// Where `BackupJSONStore` retains the list's generations: `<stem>.history`, beside the file.
+    private static func historyFolder(of list: MeetingStore.EditableList) -> String {
+        "\(stem(of: list)).history"
+    }
+
+    private static func stem(of list: MeetingStore.EditableList) -> String {
+        switch list {
+        case .vocabulary: return "vocabulary"
+        case .replacementRules: return "replacement-rules"
+        }
+    }
+
+    /// Exhaustive with no `default`, like `PersistedStoreHealth.severity`: a new health must be
+    /// described here or this stops compiling, rather than silently reading as undamaged.
+    private static func description(of list: MeetingStore.EditableList, health: PersistedStoreHealth) -> String? {
+        let file = fileName(of: list)
+        switch health {
+        case .complete:
+            return nil
+        case .recoveredFromBackup:
+            return "\(file) was damaged, so this is its previous saved copy, which may be one change behind. The damaged file has not been changed, and is copied aside before anything replaces it."
+        case .divergentGenerations:
+            return "\(file) was changed outside WhisperMeet, so this is that edited copy. The version WhisperMeet last saved is still in \(historyFolder(of: list))."
+        case let .unreadable(quarantined):
+            return quarantined.isEmpty
+                ? "\(file) and its backup could not be read, and could not be copied aside, so the list is empty. Nothing was changed on disk."
+                : "\(file) and its backup could not be read, so the list is empty. The unreadable files were copied aside as \(quarantined.joined(separator: " and "))."
+        case let .unavailable(reason):
+            return "\(file) could not be read, so the list is empty. \(reason)"
+        case .partiallySalvaged, .suspectEmpty:
+            // Neither is produced for a list: no salvage is configured for either, and the empty
+            // check is the meeting index's. Said generically rather than dropped, so a list that
+            // someday reaches one is still read-only with a reason.
+            return "\(file) could not be fully read."
+        }
+    }
+}
+
 /// A save that lost a race, in terms the UI can render (F190).
 ///
 /// Carries whether the refused body was preserved, because that is the one thing the user must not
@@ -463,13 +549,20 @@ final class MeetingStore: ObservableObject {
     /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
     @Published private(set) var replacementRules: [ReplacementRule] = []
     @Published private(set) var storageErrorMessage: String?
-    /// The WORST load result across every persisted store this guard covers — the meeting index, the
-    /// vocabulary and the replacement rules (F187). Scoped that way because it gates all three: anything
-    /// but `.complete` blocks EVERY mutation, not just persistence, because a mutator's save would
-    /// overwrite an index nobody could read and some mutators touch the disk as well — the notes
-    /// sidecar, a deleted meeting's audio. Only ever assigned through `degrade(to:)`, so a store that
-    /// loaded cleanly can never raise a damaged one back to writable — see that method for what went
-    /// wrong when it was written as a plain assignment.
+    /// The meeting index's load result (F187). Anything but `.complete` makes the library read-only:
+    /// it blocks EVERY mutation, not just persistence, because a mutator's save would overwrite an
+    /// index nobody could read and some mutators touch the disk as well — the notes sidecar, a
+    /// deleted meeting's audio — and it refuses recording, whose meeting could never be indexed.
+    ///
+    /// **The meeting index's alone (F464).** This used to be the worst of three loads, the two lists
+    /// included, so a torn or hand-edited `vocabulary.json` refused recordings — and Recover Library,
+    /// which restores meeting-index generations, could not clear it. Each list now has its own
+    /// health, which makes only that list read-only; see `health(of:)`. The reverse still holds: a
+    /// read-only library refuses list edits too, because nothing is changed until recovery.
+    ///
+    /// Only ever assigned through `degrade(to:)` outside `revalidateHealth`, so the meeting index's
+    /// two verdicts in `loadMeetings` — its load's, then the suspect-empty check — and a reload that
+    /// does not reset first (`reloadForConflictRecovery`) can only ever worsen it.
     @Published private(set) var health: PersistedStoreHealth = .complete
     var isDegraded: Bool { !health.allowsMutation }
 
@@ -487,6 +580,25 @@ final class MeetingStore: ObservableObject {
     /// `nonisolated`: an immutable string read from `MeetingStoreError.errorDescription`, which is
     /// not on the main actor — the release build treats the isolated reference as an error.
     nonisolated static let changeRefusedDuringRestore = "Your library is being restored, so this change was not saved. Try again when the restore finishes."
+
+    /// The two lists that load beside the meeting index, each able to be damaged on its own (F464).
+    enum EditableList: Sendable {
+        case vocabulary
+        case replacementRules
+    }
+
+    /// Each list's own load result (F464): anything but `.complete` makes that list read-only and
+    /// nothing else. Assigned by that list's load, and by `keepLoadedList` once the list it shows has
+    /// been saved as its current copy.
+    @Published private(set) var vocabularyHealth: PersistedStoreHealth = .complete
+    @Published private(set) var replacementRulesHealth: PersistedStoreHealth = .complete
+
+    func health(of list: EditableList) -> PersistedStoreHealth {
+        switch list {
+        case .vocabulary: vocabularyHealth
+        case .replacementRules: replacementRulesHealth
+        }
+    }
 
     private(set) var startupRecoveryMessages: [String] = []
 
@@ -880,6 +992,63 @@ final class MeetingStore: ObservableObject {
         guard isDegraded else { return true }
         storageErrorMessage = ReadOnlyLibraryNotice.mutationRefused
         return false
+    }
+
+    /// `mutationIsAllowed()` for an edit to one list (F464): refused while the library is read-only,
+    /// and while that list's own file did not load cleanly — its save would replace the copy the
+    /// user has not yet chosen to keep. The same first-statement rule applies.
+    private func listMutationIsAllowed(_ list: EditableList) -> Bool {
+        guard mutationIsAllowed() else { return false }
+        let state = health(of: list)
+        guard !state.allowsMutation else { return true }
+        storageErrorMessage = DamagedListNotice.refused(list, health: state)
+        return false
+    }
+
+    /// Whether `list` is read-only because its own file did not load cleanly (F464). The Add
+    /// controls read this so typed input is not cleared by an edit that would only be refused.
+    func isListReadOnly(_ list: EditableList) -> Bool {
+        !health(of: list).allowsMutation
+    }
+
+    /// The standing notice for a damaged list, shown beside the control that clears it, or nil
+    /// when the list loaded cleanly (F464).
+    ///
+    /// Nil while the meeting library itself is read-only, too: that state refuses every edit
+    /// anyway, has its own notice and its own way out, and a second notice saying recording is
+    /// unaffected would contradict it. The list's notice appears once the library is writable.
+    func damagedListNotice(for list: EditableList) -> String? {
+        guard !isDegraded else { return nil }
+        return DamagedListNotice.notice(for: list, health: health(of: list), libraryIsWritable: true)
+    }
+
+    /// The title of the control beside `damagedListNotice(for:)`.
+    func keepLoadedListTitle(for list: EditableList) -> String {
+        DamagedListNotice.actionTitle(for: list, health: health(of: list))
+    }
+
+    /// Makes a damaged list writable again by saving what it shows as its current copy (F464).
+    ///
+    /// The way out, and the reason it is safe to offer: nothing the damage left on disk is lost by
+    /// it. A file that did not decode was either copied aside by the load (both copies unreadable)
+    /// or is copied aside by this save before anything replaces it — the quarantine step every
+    /// save runs (F187). A hand-edited copy is the one kept; its rival, the list this app last
+    /// saved, stays in the list's history, because the divergence check only fires when that
+    /// generation is still there to choose. Refused while the meeting library is read-only, like
+    /// every mutator.
+    ///
+    /// Health becomes `.complete` only once the save has landed, because only then is the list in
+    /// memory the one on disk. A save that fails leaves the list read-only and says why.
+    func keepLoadedList(_ list: EditableList) {
+        guard mutationIsAllowed(), isListReadOnly(list) else { return }
+        switch list {
+        case .vocabulary:
+            guard persistVocabulary() else { return }
+            vocabularyHealth = .complete
+        case .replacementRules:
+            guard persistReplacementRules() else { return }
+            replacementRulesHealth = .complete
+        }
     }
 
     func upsert(_ meeting: MeetingRecord) {
@@ -1352,13 +1521,13 @@ final class MeetingStore: ObservableObject {
     }
 
     func addVocabulary(_ terms: [String]) {
-        guard mutationIsAllowed() else { return }
+        guard listMutationIsAllowed(.vocabulary) else { return }
         vocabulary = Self.storedTerms(vocabulary + terms)
         persistVocabulary()
     }
 
     func removeVocabulary(_ term: String) {
-        guard mutationIsAllowed() else { return }
+        guard listMutationIsAllowed(.vocabulary) else { return }
         vocabulary.removeAll { $0 == term }
         persistVocabulary()
         if prioritizedVocabulary.contains(term) {
@@ -1380,7 +1549,7 @@ final class MeetingStore: ObservableObject {
     /// build reads, and a star is advisory — lose the side file and the prompt is simply in
     /// collation order again, which is what it was before this existed.
     func setVocabularyPriority(_ term: String, prioritized: Bool) {
-        guard mutationIsAllowed() else { return }
+        guard listMutationIsAllowed(.vocabulary) else { return }
         if prioritized {
             guard vocabulary.contains(term) else { return }
             prioritizedVocabulary.insert(term)
@@ -1408,7 +1577,7 @@ final class MeetingStore: ObservableObject {
     /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
     /// no-op (`heard == preferred`), or already-present rule. Capped so the list can't grow unbounded.
     func addReplacementRule(heard: String, preferred: String) {
-        guard mutationIsAllowed() else { return }
+        guard listMutationIsAllowed(.replacementRules) else { return }
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty, !p.isEmpty, h != p else { return }
@@ -1419,7 +1588,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func removeReplacementRule(_ rule: ReplacementRule) {
-        guard mutationIsAllowed() else { return }
+        guard listMutationIsAllowed(.replacementRules) else { return }
         replacementRules.removeAll { $0 == rule }
         persistReplacementRules()
     }
@@ -1596,21 +1765,20 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    /// Recomputes `health` from all three persisted stores, exactly as `init` does (F193).
+    /// Recomputes every store's health from disk, exactly as `init` does (F193).
     ///
     /// This is the **only** place `health` is assigned outside `degrade(to:)`, and the reset is safe
-    /// only because all three loads run immediately after it. `degrade`'s refusal to improve exists
-    /// because one shared value gates three files, and its own comment gives the failure a plain
-    /// assignment causes: "a perfectly readable `vocabulary.json` loading after a corrupt
-    /// `meetings.json` puts `.complete` back and silently re-opens every mutator on a library that
-    /// cannot be read". That hazard is a *partial* update. Here the invariant is preserved by
-    /// restating it — after these three calls `health` is again the worst state any store currently
-    /// loads to, not the worst it ever reached. A store that is still broken degrades it right back,
-    /// so recovery cannot whitewash a library that is still unreadable.
+    /// only because the loads run immediately after it: afterwards each health is again what its
+    /// file *currently* loads to, not the worst it ever reached. A store that is still broken
+    /// degrades right back, so recovery cannot whitewash one that is still unreadable — and since
+    /// F464 each list answers only for itself, so restoring the meeting index returns the library
+    /// to writable even while a damaged vocabulary stays read-only on its own.
     ///
     /// Only recovery may call this. Nothing on a save path should reconsider health.
     private func revalidateHealth() {
         health = .complete
+        vocabularyHealth = .complete
+        replacementRulesHealth = .complete
         // Cleared with `health`, and for the same reason: these describe the state being replaced.
         // The three loads append to this as they go, so without the reset a recovery would leave the
         // launch-time "read-only" message sitting in front of whatever the reload actually found —
@@ -1676,29 +1844,28 @@ final class MeetingStore: ObservableObject {
 
     /// Worsen `health` toward `state`, and never improve it (F187).
     ///
-    /// All three persisted stores load in sequence inside `init` and share this ONE value, which gates
-    /// mutation for all of them. Written as a plain `health = result.health` it becomes last-writer-wins
-    /// across three independent files: a perfectly readable `vocabulary.json` loading after a corrupt
-    /// `meetings.json` puts `.complete` back and silently re-opens every mutator on a library that
-    /// cannot be read — the exact failure this ticket exists to prevent. `.complete` is rank 0 in
-    /// `PersistedStoreHealth.severity`, so it can only ever be the starting value, never an upgrade.
+    /// Written when three stores shared this one value: as a plain `health = result.health` it was
+    /// last-writer-wins across three files, and a readable `vocabulary.json` loading after a corrupt
+    /// `meetings.json` put `.complete` back and re-opened every mutator on a library that could not
+    /// be read. Since F464 only the meeting index feeds it, and it stays monotonic for the reason
+    /// given on `health`: `loadMeetings` can reach two verdicts, and `reloadForConflictRecovery`
+    /// reloads without resetting. `.complete` is rank 0 in `PersistedStoreHealth.severity`, so it can
+    /// only ever be the starting value, never an upgrade.
     private func degrade(to state: PersistedStoreHealth) {
         guard state.isWorse(than: health) else { return }
         health = state
     }
 
-    /// Degrade to whatever a failed load implies, and record why. Fails CLOSED: a load that threw is
-    /// never a healthy store, so the `else` covers every error this does not recognize. Shared by all
-    /// three load paths so the rule cannot drift between them — `BackupJSONStoreError` lives in
-    /// WhisperCore, and a new case there raises no warning here (F187).
-    private func degrade(after error: Error) {
+    /// What a failed load implies. Fails CLOSED: a load that threw is never a healthy store, so the
+    /// `else` covers every error this does not recognize. Shared by every load path so the rule
+    /// cannot drift between them — `BackupJSONStoreError` lives in WhisperCore, and a new case there
+    /// raises no warning here (F187).
+    private static func health(after error: Error) -> PersistedStoreHealth {
         if let storeError = error as? BackupJSONStoreError,
            case let .noReadableCopy(_, _, quarantined) = storeError {
-            degrade(to: .unreadable(quarantined: quarantined))
-        } else {
-            degrade(to: .unavailable(error.localizedDescription))
+            return .unreadable(quarantined: quarantined)
         }
-        startupRecoveryMessages.append(error.localizedDescription)
+        return .unavailable(error.localizedDescription)
     }
 
     /// Rebuild a meeting list from index bytes that no longer decode as a whole, keeping every record
@@ -1851,7 +2018,8 @@ final class MeetingStore: ObservableObject {
                 if count > 0 { degrade(to: .suspectEmpty(recordingFolderCount: count)) }
             }
         } catch {
-            degrade(after: error)
+            degrade(to: Self.health(after: error))
+            startupRecoveryMessages.append(error.localizedDescription)
         }
     }
 
@@ -1877,41 +2045,50 @@ final class MeetingStore: ObservableObject {
 
     private func loadVocabulary() {
         do {
-            guard let result = try vocabularyFiles.load() else { return }
-            vocabulary = Self.storedTerms(result.value)
-            vocabularyToken = result.token
-            // Through `degrade`, never a plain assignment: this runs AFTER `loadMeetings()`, so a
-            // readable vocabulary index must not undo a degraded meeting index (F187).
-            degrade(to: result.health)
-            if result.health == .recoveredFromBackup {
-                // No re-persist here, matching the meeting index: recovering from a stale backup writes
-                // nothing, so the damaged primary is left exactly as it is for recovery to work from
-                // (F187, and what `docs/RECOVERY.md` already promises). The old `save()` also ran during
-                // `init` — bypassing `mutationIsAllowed()` entirely, on a library that had just declared
-                // itself read-only.
-                startupRecoveryMessages.append(
-                    "The vocabulary index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and the damaged copy was left exactly as it is."
-                )
+            if let result = try vocabularyFiles.load() {
+                vocabulary = Self.storedTerms(result.value)
+                vocabularyToken = result.token
+                // The list's own health, never the library's (F464). No re-persist on a backup
+                // recovery either: that writes nothing, so the damaged primary is left exactly as it
+                // is (F187, and what `docs/RECOVERY.md` promises). The old `save()` ran during
+                // `init`, bypassing every mutation guard.
+                vocabularyHealth = result.health
             }
         } catch {
-            degrade(after: error)
+            // The same state `init` starts from, so the notice's "the list is empty" is true on a
+            // recovery's reload as well — and no token, so nothing arms a checked write against a
+            // generation this load could not read.
+            vocabulary = []
+            vocabularyToken = nil
+            vocabularyHealth = Self.health(after: error)
         }
+        recordDamage(to: .vocabulary)
     }
 
     private func loadReplacementRules() {
         do {
-            guard let result = try replacementRulesFiles.load() else { return }
-            replacementRules = result.value
-            replacementRulesToken = result.token
-            degrade(to: result.health)
-            if result.health == .recoveredFromBackup {
-                // Same as `loadVocabulary`: no silent re-persist from inside `init` (F187).
-                startupRecoveryMessages.append(
-                    "The replacement-rule index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and the damaged copy was left exactly as it is."
-                )
+            if let result = try replacementRulesFiles.load() {
+                replacementRules = result.value
+                replacementRulesToken = result.token
+                // As `loadVocabulary`: its own health, and no silent re-persist (F187, F464).
+                replacementRulesHealth = result.health
             }
         } catch {
-            degrade(after: error)
+            replacementRules = []
+            replacementRulesToken = nil
+            replacementRulesHealth = Self.health(after: error)
         }
+        recordDamage(to: .replacementRules)
+    }
+
+    /// Puts a damaged list's notice in the launch alert as well as beside the list (F464). The same
+    /// sentence as the view's, generated in one place. Without the "recording is unaffected" tail
+    /// while the meeting library is read-only, which it would contradict — `loadMeetings` runs
+    /// first, so `isDegraded` is already this load's answer.
+    private func recordDamage(to list: EditableList) {
+        guard let notice = DamagedListNotice.notice(
+            for: list, health: health(of: list), libraryIsWritable: !isDegraded
+        ) else { return }
+        startupRecoveryMessages.append(notice)
     }
 }

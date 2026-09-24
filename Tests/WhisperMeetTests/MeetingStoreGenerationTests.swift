@@ -287,9 +287,10 @@ func restoringWorksWhileTheLibraryIsReadOnly() throws {
     // mutation over a vocabulary index that was still corrupt.
     //
     // That hazard was real and is still respected. `restoreIndexGeneration` does not clear health;
-    // it calls `revalidateHealth()`, which resets and then re-runs all three loads, so the value is
-    // again the worst state any store *currently* loads to rather than the worst it ever reached. A
-    // library whose vocabulary is still unreadable therefore stays read-only —
+    // it calls `revalidateHealth()`, which resets and then re-runs all three loads, so each store's
+    // health is again what it *currently* loads to rather than the worst it ever reached. Since F464
+    // each list has its own health, so a vocabulary that is still unreadable stays read-only by
+    // itself while the restored library becomes writable —
     // `revalidationDoesNotWhitewashAStillBrokenLibrary` in `LibraryRecoveryActionTests.swift` is the
     // test that holds that line, and it is the one to read if this ever needs revisiting.
     #expect(!damaged.isDegraded, "F193: a restore must return the live instance to a writable state")

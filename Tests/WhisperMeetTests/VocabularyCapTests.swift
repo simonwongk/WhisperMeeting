@@ -39,12 +39,15 @@ func vocabularyStorageSurvivesThePromptCap() throws {
 
 // MARK: - Health may only ever get worse during construction (F187)
 
-/// The hazard the plan's own wording would have created. `health` is ONE scalar shared by three stores
-/// that all load in sequence inside `init`, and `mutationIsAllowed()` gates vocabulary, replacement-rule
-/// AND meeting mutations off it. "Set `health` as in Task 4" inside `loadVocabulary` makes the
-/// assignment last-writer-wins: a perfectly readable `vocabulary.json` loading after a corrupt
-/// `meetings.json` overwrites `.unreadable` with `.complete` and silently re-opens every mutator on a
-/// library that cannot be read — the exact F187 failure, reintroduced by one line.
+/// The hazard the plan's own wording would have created, when `health` was ONE scalar shared by three
+/// stores that all load in sequence inside `init`: "Set `health` as in Task 4" inside `loadVocabulary`
+/// made the assignment last-writer-wins, so a perfectly readable `vocabulary.json` loading after a
+/// corrupt `meetings.json` overwrote `.unreadable` with `.complete` and silently re-opened every
+/// mutator on a library that cannot be read — the exact F187 failure, reintroduced by one line.
+///
+/// Since F464 each list has its own health, and `health` is the meeting index's alone. What this
+/// pins still holds and still matters: a readable list cannot make a corrupt library writable, and
+/// the list's own edits are refused too, because nothing changes until the library is recovered.
 @Test("A readable vocabulary index cannot un-degrade a library whose meeting index is corrupt")
 @MainActor
 func readableVocabularyCannotUpgradeACorruptMeetingIndex() throws {
@@ -72,13 +75,17 @@ func readableVocabularyCannotUpgradeACorruptMeetingIndex() throws {
     #expect(store.storageErrorMessage != nil)
 }
 
-/// The other direction of the same invariant: a vocabulary index that cannot be read at all must
-/// DEGRADE an otherwise healthy library rather than start empty and writable. Left writable, the next
-/// `addVocabulary` persists a one-term list over a file that held hundreds — the bytes survive in
-/// quarantine, but the live library silently loses the lot (F187).
-@Test("An unreadable vocabulary index degrades the library instead of starting empty and writable")
+/// The other direction of the same invariant: a vocabulary index that cannot be read at all must be
+/// READ-ONLY rather than start empty and writable. Left writable, the next `addVocabulary` persists a
+/// one-term list over a file that held hundreds — the bytes survive in quarantine, but the live list
+/// silently loses the lot (F187).
+///
+/// Read-only for the vocabulary alone since F464. This asserted `store.isDegraded` — the whole
+/// library read-only, recording refused — for a damaged list of terms, and the recovery the app
+/// offered for that state restores meeting indexes, which could not clear it.
+@Test("An unreadable vocabulary index is read-only instead of starting empty and writable")
 @MainActor
-func unreadableVocabularyDegradesTheLibrary() throws {
+func unreadableVocabularyIsReadOnlyInsteadOfEmptyAndWritable() throws {
     let root = try makeVocabularyRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     try Data("broken-primary".utf8).write(to: root.appendingPathComponent("vocabulary.json"))
@@ -86,7 +93,8 @@ func unreadableVocabularyDegradesTheLibrary() throws {
 
     let store = MeetingStore(rootDirectory: root)
 
-    #expect(store.isDegraded)
+    #expect(store.isListReadOnly(.vocabulary))
+    #expect(!store.isDegraded, "a damaged vocabulary makes only the vocabulary read-only (F464)")
     #expect(store.vocabulary.isEmpty)
 
     store.addVocabulary(["gamma"])
@@ -118,7 +126,8 @@ func backupRecoveredVocabularyIsReadOnlyAndNotRePersisted() throws {
     let store = MeetingStore(rootDirectory: root)
 
     #expect(store.vocabulary == ["alpha", "beta"])
-    #expect(store.isDegraded)
+    #expect(store.isListReadOnly(.vocabulary))
+    #expect(!store.isDegraded, "only the vocabulary is read-only (F464)")
     // Nothing was written during construction: the damaged primary is untouched and the backup is the
     // same generation it was before.
     #expect(bytes(at: root.appendingPathComponent("vocabulary.json")) == "truncated-primary")
@@ -141,7 +150,8 @@ func backupRecoveredReplacementRulesAreReadOnlyAndNotRePersisted() throws {
     let store = MeetingStore(rootDirectory: root)
 
     #expect(store.replacementRules.map(\.preferred) == ["Kubernetes"])
-    #expect(store.isDegraded)
+    #expect(store.isListReadOnly(.replacementRules))
+    #expect(!store.isDegraded, "only the rules are read-only (F464)")
     #expect(bytes(at: root.appendingPathComponent("replacement-rules.json")) == "truncated-primary")
     #expect(bytes(at: root.appendingPathComponent("replacement-rules.backup.json")) == backupBefore)
 }

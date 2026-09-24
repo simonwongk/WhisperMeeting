@@ -41,10 +41,14 @@ post-meeting transcript in the meeting’s original language, with all speech pr
 - Keep a previous-readable backup of meeting and vocabulary indexes. If an index copy cannot be
   read, copy its exact bytes aside before writing anything, and never overwrite bytes that failed to
   parse without first preserving a byte-exact copy — if that copy cannot be written, refuse the write
-  entirely. When any index copy is damaged, open the library read-only and block every mutation,
-  including recording, import and transcription. Take no automatic action on recording folders: never
-  rebuild history from them, and never delete audio. Restoring a damaged library is a manual procedure
-  (`docs/RECOVERY.md`); the app does not offer an in-app recovery action.
+  entirely. When the meeting index cannot be fully read, open the library read-only and block every
+  mutation, including recording, import and transcription. A damaged vocabulary or replacement-rules
+  file is quarantined and makes only that list read-only: recording, import, transcription and meeting
+  edits continue, and the list's own notice offers to keep the loaded copy or start a new list. Take no
+  automatic action on recording folders: never rebuild history from them, and never delete audio.
+  Restoring a damaged library is the Settings ▸ Recover Library… flow, which offers retained index
+  generations, and Restore… from a whole-library backup (`docs/RECOVERY.md`); the app never rebuilds
+  a library on its own.
 - Surface recovery and storage failures in plain language, state whether the recording is safe, and
   let the user reveal a meeting's recording in Finder.
 - On Macs with Homebrew installed, provide a one-click local runtime installer for FFmpeg, Python
