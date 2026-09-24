@@ -953,9 +953,21 @@ final class AppModel: ObservableObject {
     /// or `store.update` that a degraded store silently refuses — so without this the user waits out
     /// the whole job, is told nothing, and in the import case is left with audio sitting in the
     /// library that nothing will ever index.
+    ///
+    /// Also refused while a restore is copying files (F506), for the same reason in a different
+    /// state: the store would refuse the write the work leads up to, and a transcription started
+    /// now would write its result into the restored meeting when it finished.
     private func libraryAcceptsChanges(_ action: String) -> Bool {
+        guard libraryIsNotBeingRestored(action) else { return false }
         guard store.isDegraded else { return true }
         alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
+        return false
+    }
+
+    /// Refuses `action`, with a reason, while a whole-library restore is running (F506).
+    private func libraryIsNotBeingRestored(_ action: String) -> Bool {
+        guard store.isRestoringLibrary else { return true }
+        alertMessage = "\(action) cannot start while your library is being restored. Try again when the restore finishes."
         return false
     }
 
@@ -1983,11 +1995,11 @@ final class AppModel: ObservableObject {
     /// have, and the cheap check cannot see same-size corruption. A fast answer that might be wrong
     /// is worth less here than a slow one that is not.
     func requestLibraryRestore(from generation: URL) async {
-        guard libraryAcceptsChanges("Restoring the library") else { return }
-        guard !isRecordingActive, !isImporting else {
-            alertMessage = "Finish recording or importing before restoring the library."
+        if let reason = libraryRestoreBlockedReason {
+            alertMessage = reason
             return
         }
+        guard libraryAcceptsChanges("Restoring the library") else { return }
         let library = store.rootDirectory
         do {
             let plan = try await Task.detached(priority: .userInitiated) {
@@ -2015,19 +2027,57 @@ final class AppModel: ObservableObject {
     /// was read, so both Restore Library and Restore Anyway closed the dialog and did nothing. The
     /// offer is read here, inside the button's own call, and handed to the work that follows. The
     /// returned Task is that work, for a caller that needs to wait for it.
+    ///
+    /// Asks `libraryRestoreBlockedReason` again rather than trusting the answer from when the
+    /// offer was made (F506): the plan's deep check takes minutes and the dialog can stay open for
+    /// longer, and a queued transcription starts on its own when the one before it finishes. From
+    /// here until the restore ends the store takes no changes — see `MeetingStore.isRestoringLibrary`.
     @discardableResult
     func performLibraryRestore(confirmed: Bool, acceptingUnverifiedBackup: Bool = false) -> Task<Void, Never>? {
         guard confirmed, let pending = pendingLibraryRestore else { return nil }
         // Taken now: the user has answered, and the dialog that showed it is closing.
         pendingLibraryRestore = nil
+        if let reason = libraryRestoreBlockedReason {
+            alertMessage = reason
+            return nil
+        }
+        // Before the Task, so the hold covers every moment the restore could still be running.
+        objectWillChange.send()
+        store.beginLibraryRestore()
         return Task {
             await applyLibraryRestore(pending, acceptingUnverifiedBackup: acceptingUnverifiedBackup)
         }
     }
 
+    /// Why a whole-library restore cannot start now, or nil (F506).
+    ///
+    /// Anything that writes into a meeting when it finishes would write into the restored one:
+    /// a transcription, a summary, a second opinion or segment re-run. A recording or import in
+    /// progress would have its index entry overwritten.
+    private var libraryRestoreBlockedReason: String? {
+        if store.isRestoringLibrary {
+            return "A restore is already running. Wait for it to finish."
+        }
+        if isRecordingActive || isImporting {
+            return "Finish recording or importing before restoring the library."
+        }
+        if hasActiveTranscription || isRunningAuxiliaryEngine || isSummarizing {
+            return "Wait for the running transcription or summary to finish, or cancel it, before restoring the library. Its result would be written into the meeting you are restoring."
+        }
+        return nil
+    }
+
+    /// Whether the Settings restore controls should show a restore in progress. The store holds
+    /// the fact; this is its view-facing name.
+    var isRestoringLibrary: Bool { store.isRestoringLibrary }
+
     private func applyLibraryRestore(
         _ pending: PendingLibraryRestore, acceptingUnverifiedBackup: Bool
     ) async {
+        defer {
+            objectWillChange.send()
+            store.endLibraryRestore()
+        }
         let library = store.rootDirectory
         do {
             let outcome = try await Task.detached(priority: .userInitiated) {
@@ -2797,6 +2847,9 @@ final class AppModel: ObservableObject {
             alertMessage = ReadOnlyLibraryNotice.recordingRefused
             return
         }
+        // F506: the same hole as the read-only one above — `stopRecording`'s `upsert` would be
+        // refused while a restore runs — and the restore would overwrite the index regardless.
+        guard libraryIsNotBeingRestored("Recording") else { return }
         refreshRecordingPreflight()
         if recordingPreflight.microphoneAccess == .unavailable {
             alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."
@@ -5275,6 +5328,7 @@ extension AppModel {
             alertMessage = ReadOnlyLibraryNotice.lead
             return
         }
+        guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
         guard let meeting = store.meeting(id: id) else { return }
         guard let offer = sourceRebuildOffer(for: id) else {
             // Explained rather than silently absent — the user asked for something, and the two
@@ -5305,6 +5359,9 @@ extension AppModel {
     /// the reason this action is safe enough to offer at all.
     func performSourceRebuild(confirmed: Bool) {
         guard confirmed, let request = pendingSourceRebuild else { return }
+        // Asked here too: the rebuild writes audio before its `store.update`, which a restore
+        // in progress would refuse, leaving new audio the index does not describe (F506).
+        guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
         do {
             guard let rebuilt = try SourceRebuild.rebuild(request.offer) else {
                 alertMessage = "The source tracks for this meeting held no audio to rebuild. Nothing was changed."
@@ -5401,6 +5458,7 @@ extension AppModel {
     }
 
     func requestLibraryRecovery() {
+        guard libraryIsNotBeingRestored("Recovering the library") else { return }
         guard store.isDegraded else {
             // Rolling an older index over a healthy library is data loss dressed as a repair, so it
             // is refused rather than offered. Say so, rather than presenting an empty sheet.

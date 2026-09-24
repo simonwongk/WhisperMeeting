@@ -428,12 +428,18 @@ enum MeetingStoreError: LocalizedError, Equatable {
     /// reachable from the full transcription, the per-segment re-run, and the second opinion alike.
     case engineRunIsReadOnly
 
+    /// A whole-library restore is replacing files underneath the store, so nothing may be written
+    /// until it finishes (F506).
+    case libraryIsBeingRestored
+
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
             return ReadOnlyLibraryNotice.recordingRefused
         case .engineRunIsReadOnly:
             return ReadOnlyLibraryNotice.actionRefused("Transcription")
+        case .libraryIsBeingRestored:
+            return MeetingStore.changeRefusedDuringRestore
         }
     }
 }
@@ -466,6 +472,17 @@ final class MeetingStore: ObservableObject {
     /// wrong when it was written as a plain assignment.
     @Published private(set) var health: PersistedStoreHealth = .complete
     var isDegraded: Bool { !health.allowsMutation }
+
+    /// True while a whole-library restore is replacing files underneath this object (F506).
+    ///
+    /// Every mutator refuses meanwhile. The restore copies every recording and takes minutes, and a
+    /// change saved during it lands in files the restore is about to overwrite and misses the
+    /// pre-restore snapshot, which was taken before the copy began — so it is in neither. Separate
+    /// from `health` because nothing here is damaged: it ends when the restore does, with
+    /// `endLibraryRestore()`, whichever way the restore went.
+    @Published private(set) var isRestoringLibrary = false
+
+    static let changeRefusedDuringRestore = "Your library is being restored, so this change was not saved. Try again when the restore finishes."
 
     private(set) var startupRecoveryMessages: [String] = []
 
@@ -564,6 +581,7 @@ final class MeetingStore: ObservableObject {
     /// throw is the invariant that stops a future caller from reintroducing the hole (F187).
     func recordingDirectory(for id: UUID) throws -> URL {
         guard !isDegraded else { throw MeetingStoreError.libraryIsReadOnly }
+        guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
         let directory = recordingDirectoryURL(for: id)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -603,6 +621,7 @@ final class MeetingStore: ObservableObject {
         pendingSidecarFlush?.cancel()
         pendingSidecarFlush = nil
         guard !isDegraded else { return }        // F187's read-only promise stays absolute
+        guard !isRestoringLibrary else { return } // F506: the ids stay pending for the next flush
         let ids = pendingSidecarIDs
         pendingSidecarIDs = []
         for id in ids {
@@ -850,6 +869,10 @@ final class MeetingStore: ObservableObject {
     /// not fully load writes over the index it could not read, and `delete` removes audio once its
     /// save has landed.
     private func mutationIsAllowed() -> Bool {
+        if isRestoringLibrary {
+            storageErrorMessage = Self.changeRefusedDuringRestore
+            return false
+        }
         guard isDegraded else { return true }
         storageErrorMessage = ReadOnlyLibraryNotice.mutationRefused
         return false
@@ -1525,6 +1548,7 @@ final class MeetingStore: ObservableObject {
     /// Append-only, through the ordinary write algorithm, so the generation being replaced stays on
     /// disk and the restore is itself undoable.
     func restoreIndexGeneration(_ generation: RetainedGeneration) throws {
+        guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
         adoptRestoredIndex(try meetingFiles.restore(generation: generation))
     }
 
@@ -1543,6 +1567,7 @@ final class MeetingStore: ObservableObject {
     /// library" behind a bespoke path. This is not that path: the proposal, the review, the
     /// pre-existing generation and the tested reload are all slice E2's.
     func installRebuiltIndex(_ meetings: [MeetingRecord]) throws {
+        guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
         let current = try? meetingFiles.load()
         adoptRestoredIndex(try meetingFiles.save(meetings, expecting: current?.token))
     }
@@ -1612,6 +1637,24 @@ final class MeetingStore: ObservableObject {
         revalidateHealth()
         writeConflict = nil
         unsavedChanges = false
+    }
+
+    /// Holds every change to the library until `endLibraryRestore()` (F506).
+    ///
+    /// Pending debounced edits are written first, so the pre-restore snapshot — taken next, by the
+    /// restore itself — holds the user's last keystrokes instead of dropping them.
+    func beginLibraryRestore() {
+        flushPendingEdits()
+        isRestoringLibrary = true
+    }
+
+    /// Lets go of the library after a restore, whether it succeeded or failed. The refusal notice a
+    /// blocked change left behind goes with it, because it describes a state that has ended.
+    func endLibraryRestore() {
+        isRestoringLibrary = false
+        if storageErrorMessage == Self.changeRefusedDuringRestore {
+            storageErrorMessage = nil
+        }
     }
 
     /// Re-reads the library after a lost race, so the next save can succeed.

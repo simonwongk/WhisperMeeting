@@ -1549,11 +1549,24 @@ struct SettingsView: View {
                     .fixedSize()
                     Button("Back up library…") { backUpLibrary() }
                         .buttonStyle(.bordered)
+                        .disabled(model.isRestoringLibrary)
                     // F191 slice E3. Beside the backup it restores from, because that is where a
                     // user looks for it — and a restore flow nobody can reach is not a restore
                     // flow, which is why this ships with the slices rather than after them.
                     Button("Restore…") { restoreLibrary() }
                         .buttonStyle(.bordered)
+                        .disabled(model.isRestoringLibrary)
+                }
+                // F506: a restore copies every recording and takes minutes, and every change is
+                // refused until it ends. Said here, under the button that started it, so the
+                // refusals elsewhere have a visible cause.
+                if model.isRestoringLibrary {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Restoring your library. Changes are paused until it finishes.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 // F193: the recovery action, where library-level operations now live.
                 //
