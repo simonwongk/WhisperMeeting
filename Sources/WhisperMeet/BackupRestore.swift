@@ -6,6 +6,9 @@ enum BackupRestoreError: LocalizedError, Equatable {
     case planIsNotSafeToApply
     /// The library's previous state could not be preserved, so the restore was not attempted.
     case couldNotSnapshotLibrary(String)
+    /// The backup names a path a restore may not write: outside the library, outside what a backup
+    /// contains, a folder the restore would have to delete, or a link rather than a file (F432).
+    case unrestorablePath(String)
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +16,8 @@ enum BackupRestoreError: LocalizedError, Equatable {
             return "This backup could not be confirmed intact, so nothing was restored and your library is unchanged."
         case let .couldNotSnapshotLibrary(detail):
             return "WhisperMeet could not set your current library aside before restoring, so nothing was changed. \(detail)"
+        case let .unrestorablePath(path):
+            return "This backup lists \"\(path)\", which is not a file a WhisperMeet backup contains, so it cannot be restored."
         }
     }
 }
@@ -56,6 +61,9 @@ enum BackupRestore {
             || (plan.requiresExplicitOverride && acceptingUnverifiedBackup) else {
             throw BackupRestoreError.planIsNotSafeToApply
         }
+        // Again, although `make` already ran it (F432). The plan is a value that any caller can
+        // construct, and this is the step that writes, so it does not take the planner's word.
+        try plan.checkPaths(from: generation, into: library)
 
         let fileManager = FileManager.default
         let paths = plan.wouldOverwrite + plan.wouldAdd

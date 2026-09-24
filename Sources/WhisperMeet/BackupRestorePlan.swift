@@ -77,6 +77,15 @@ struct BackupRestorePlan: Equatable, Sendable {
         ) {
             throw NotABackupGeneration(path: generation.lastPathComponent)
         }
+        // Before verification, which would otherwise hash whatever a hostile list points at (F432).
+        // A manifest is the list this app writes, so a path it would never write means the list
+        // was not written by these rules — and the manifest cannot say who did, because it is an
+        // integrity check and not a signature. Refused whole rather than filtered: restoring the
+        // rest of a list known to be tampered with is not a restore the user asked for.
+        if let manifest,
+           let path = manifest.files.map(\.relativePath).sorted().first(where: { !isRestorablePath($0) }) {
+            throw BackupRestoreError.unrestorablePath(path)
+        }
         let verification = try BackupManifest.verify(in: generation, deep: deep)
 
         // The backup's file set. From the manifest when there is one — it is the authoritative
@@ -89,9 +98,13 @@ struct BackupRestorePlan: Equatable, Sendable {
                 uniquingKeysWith: { first, _ in first }
             )
         } else {
+            // A folder holds whatever was put in it: backups made before F137 copied the whole
+            // Application Support directory, runtime included, and Finder leaves `.DS_Store` in
+            // any folder someone opened. Those are dropped rather than refused, because this is
+            // still the user's backup — they are simply not part of a library (F432).
             backupFiles = relativeFileSizes(in: generation, skipping: [
                 BackupCoordinator.completionMarker, BackupManifest.fileName,
-            ])
+            ]).filter { isRestorablePath($0.key) }
         }
         let libraryFiles = relativeFileSizes(in: library, skipping: [])
 
@@ -105,14 +118,10 @@ struct BackupRestorePlan: Equatable, Sendable {
         // noise that would bury the two or three lines the user needs to read.
         let missing = libraryPaths
             .subtracting(backupPaths)
-            .filter { path in
-                BackupCoordinator.backedUpEntries.contains {
-                    path == $0 || path.hasPrefix("\($0)/")
-                }
-            }
+            .filter(isCoveredByBackup)
             .sorted()
 
-        return BackupRestorePlan(
+        let plan = BackupRestorePlan(
             generation: manifest?.generation ?? generation.lastPathComponent,
             createdAtEpoch: manifest?.createdAtEpoch ?? 0,
             wouldOverwrite: overwrite,
@@ -121,6 +130,69 @@ struct BackupRestorePlan: Equatable, Sendable {
             bytesToWrite: backupPaths.reduce(Int64(0)) { $0 + (backupFiles[$1] ?? 0) },
             verification: verification
         )
+        // Here as well as in `apply`, so a backup that cannot be restored is refused before the
+        // user is asked to confirm it rather than after.
+        try plan.checkPaths(from: generation, into: library)
+        return plan
+    }
+
+    /// Whether `relativePath` names a file a backup of this library can contain (F432).
+    ///
+    /// Relative, with no empty, `.` or `..` component, and under one of
+    /// `BackupCoordinator.backedUpEntries` — the list every backup is written from, so this and the
+    /// backup cannot disagree about what a library holds. `../../LaunchAgents/x.plist` fails the
+    /// first half and `Runtime/venv/bin/whisper` the second.
+    static func isRestorablePath(_ relativePath: String) -> Bool {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        return isCoveredByBackup(relativePath)
+    }
+
+    /// Whether `relativePath` is one of the entries a backup covers, or inside one.
+    static func isCoveredByBackup(_ relativePath: String) -> Bool {
+        BackupCoordinator.backedUpEntries.contains {
+            relativePath == $0 || relativePath.hasPrefix("\($0)/")
+        }
+    }
+
+    /// The one path check a restore passes: when the plan is made, and again before it is applied
+    /// (F432). Throws `BackupRestoreError.unrestorablePath` for the first path that fails.
+    ///
+    /// The name check is not enough on its own, because `Recordings` passes it: it is a covered
+    /// entry. Named exactly, it is the folder holding every recording, and `apply` removed whatever
+    /// stood at a target before copying over it. So every target must also be a file or absent —
+    /// never a folder — and containment is checked on the standardized URL as well as on the name.
+    ///
+    /// Every source must be a regular file that resolves inside the generation. A backup is written
+    /// from regular files and never holds a link, so one that does was placed there, and a link
+    /// copied into the library points every later write to that name wherever its author chose. A
+    /// source that is ABSENT passes: verification already reports it as missing, and the copy
+    /// fails on it and rolls back, so refusing it here would only replace a precise message with a
+    /// vaguer one.
+    func checkPaths(from generation: URL, into library: URL) throws {
+        let generationRoot = generation.resolvingSymlinksInPath()
+        for path in wouldOverwrite + wouldAdd {
+            let target = library.appendingPathComponent(path)
+            guard Self.isRestorablePath(path),
+                  MeetingStore.isWithinLibrary(target, root: library),
+                  Self.itemType(at: target) != .typeDirectory else {
+                throw BackupRestoreError.unrestorablePath(path)
+            }
+            let source = generation.appendingPathComponent(path)
+            if let type = Self.itemType(at: source) {
+                guard type == .typeRegular,
+                      MeetingStore.isWithinLibrary(source.resolvingSymlinksInPath(), root: generationRoot) else {
+                    throw BackupRestoreError.unrestorablePath(path)
+                }
+            }
+        }
+    }
+
+    /// The type of the item itself — a link is reported as a link, not as what it points at.
+    private static func itemType(at url: URL) -> FileAttributeType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
     }
 
     /// Every file under `root`, by path relative to it, with its size. Missing root reads as empty
