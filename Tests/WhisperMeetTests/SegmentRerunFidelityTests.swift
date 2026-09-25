@@ -10,7 +10,11 @@ import Testing
 //    verbatim, so a WAV with a LIST chunk was sliced from the wrong offset, and a stereo or 24-bit
 //    one was re-wrapped as mono — half-speed audio the engine then transcribed.
 // 2. It ran the engine and language Settings hold NOW, not the ones the meeting was transcribed
-//    with, and nothing checked the result's language.
+//    with, and nothing checked the result's language. The first fix then pinned the re-run to the
+//    meeting's stored `languageCode` — which under Automatic, the default, is only the DETECTED
+//    majority, so a minority-language line of a code-switched meeting was forced into the other
+//    language. The re-run pins only what the meeting's own run pinned (`requestedLanguage`, written
+//    by `apply(result:)`), and detects otherwise.
 // 3. The splice dropped the re-run's Whisper metrics, so a hallucination over near-silence scored
 //    clean and the orange flag it deserved vanished.
 //
@@ -57,7 +61,7 @@ private func silentWAV(seconds: Int) -> Data {
 @MainActor
 private func meetingWithRecording(
     _ recording: Data, fileName: String = "meeting.wav", segments: [TranscriptSegment],
-    languageCode: String? = nil, engine: MeetingTranscriptionEngine? = nil
+    languageCode: String? = nil, engine: MeetingTranscriptionEngine? = nil, requestedLanguage: String? = nil
 ) throws -> (AppModel, UUID, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("SegRerunF471-\(UUID().uuidString)")
     let id = UUID()
@@ -69,7 +73,8 @@ private func meetingWithRecording(
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/\(fileName)",
         status: .completed, transcriptText: TranscriptFormatter.timestamped(segments),
-        languageCode: languageCode, segments: segments, transcriptionEngine: engine
+        languageCode: languageCode, segments: segments, transcriptionEngine: engine,
+        requestedLanguage: requestedLanguage
     ))
     return (model, id, root)
 }
@@ -139,11 +144,14 @@ func segmentReRunRefusesLayoutsItCannotSlice() async throws {
 }
 
 @MainActor
-@Test("A re-run uses the engine and language the meeting was transcribed with, not Settings (F471)")
+@Test("A re-run uses the engine and the pinned language the meeting was transcribed with, not Settings (F471)")
 func segmentReRunUsesTheMeetingsEngineAndLanguage() async throws {
     let segments = [seg("我们开会", 0, 1), seg("然后讨论", 1, 2)]
+    // Transcribed under an explicit Mandarin pin, which the meeting recorded as its requested
+    // language; the stored "zh" is what the engine returned for it.
     let (model, id, root) = try meetingWithRecording(
-        silentWAV(seconds: 2), segments: segments, languageCode: "zh", engine: .qwenBalanced
+        silentWAV(seconds: 2), segments: segments, languageCode: "zh", engine: .qwenBalanced,
+        requestedLanguage: WhisperLanguage.chinese.rawValue
     )
     defer { try? FileManager.default.removeItem(at: root) }
     // Settings now say something else entirely — chosen for the NEXT meeting, not this one.
@@ -161,6 +169,79 @@ func segmentReRunUsesTheMeetingsEngineAndLanguage() async throws {
     #expect(call.selection == MeetingTranscriptionSelection(engine: .qwenBalanced, language: .chinese))
     #expect(model.store.meeting(id: id)?.segments[1].text == "然后讨论预算")
     #expect(model.alertMessage == nil, "a Mandarin line in a Mandarin meeting needs no advisory")
+}
+
+@MainActor
+@Test("A re-run detects its language when the meeting was transcribed automatically, whatever was detected (F471)")
+func segmentReRunDetectsWhenTheMeetingWasTranscribedAutomatically() async throws {
+    // A code-switched meeting transcribed under Automatic, the default. The stored "zh" is the
+    // majority Whisper detected from the first 30 seconds (or the majority script Qwen's helper
+    // counted) and says nothing about a pin; line 1 is the English minority. Pinning the re-run to
+    // that "zh" hands Whisper `--language Chinese` and Qwen `language Chinese<asr_text>` for an
+    // English line — this ticket's mistranslation, from the other side. nil is a meeting
+    // transcribed before the requested language was recorded; "automatic" is one after.
+    let requestedValues: [String?] = [nil, WhisperLanguage.automatic.rawValue]
+    for requested in requestedValues {
+        let label = Comment(rawValue: "requestedLanguage \(requested ?? "nil")")
+        let segments = [seg("我们开会", 0, 1), seg("the deadline is Friday", 1, 2)]
+        let (model, id, root) = try meetingWithRecording(
+            silentWAV(seconds: 2), segments: segments, languageCode: "zh", engine: .qwenBalanced,
+            requestedLanguage: requested
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        model.selectedEngine = .whisperLarge
+        model.selectedLanguage = .english
+        let call = EngineCall()
+        model.runTranscriptionEngineOverride = { selection, _ in
+            call.selection = selection
+            return TranscriptionResult(id: "x", text: "The deadline is this Friday.", languageCode: "en",
+                                       audioDuration: 1, confidence: nil,
+                                       segments: [seg("The deadline is this Friday.", 0, 1)])
+        }
+
+        await model.reTranscribeSegment(id: id, index: 1)
+
+        #expect(call.selection == MeetingTranscriptionSelection(engine: .qwenBalanced, language: .automatic), label)
+        #expect(model.store.meeting(id: id)?.segments[1].text == "The deadline is this Friday.", label)
+        // The advisory stays keyed on the language the transcript came back in, so a line in the
+        // other script is still said under Automatic — here, the switch the audio really has.
+        #expect(model.alertMessage == LanguageConsistency.segmentRerunWarning(
+            meetingLanguage: .chinese, replacementText: "The deadline is this Friday."
+        ), label)
+    }
+}
+
+@MainActor
+@Test("A transcription records the language it was asked for, and the re-run pins only that (F471)")
+func aTranscriptionRecordsItsRequestedLanguageAndTheReRunPinsOnlyThat() async throws {
+    // Through `apply(result:)`, the one write every finished transcription passes through
+    // (`performTranscription` hands it the queued Settings snapshot), and then through the re-run.
+    // Both meetings come back "zh" from the engine, so their stored code is the same; only one
+    // asked for it, and only that one is re-run under a pin.
+    let cases: [(requested: WhisperLanguage, rerunsIn: WhisperLanguage)] = [
+        (.chinese, .chinese), (.automatic, .automatic),
+    ]
+    for (requested, rerunsIn) in cases {
+        let (model, id, root) = try meetingWithRecording(silentWAV(seconds: 2), segments: [])
+        defer { try? FileManager.default.removeItem(at: root) }
+        model.apply(
+            result: TranscriptionResult(id: "x", text: "我们开会 然后讨论", languageCode: "zh", audioDuration: 2,
+                                        confidence: nil, segments: [seg("我们开会", 0, 1), seg("然后讨论", 1, 2)]),
+            to: id, requestedLanguage: requested, engine: .qwenBalanced
+        )
+        #expect(model.store.meeting(id: id)?.requestedLanguage == requested.rawValue, "\(requested)")
+        #expect(model.store.meeting(id: id)?.languageCode == "zh", "\(requested)")
+
+        let call = EngineCall()
+        model.runTranscriptionEngineOverride = { selection, _ in
+            call.selection = selection
+            return TranscriptionResult(id: "x", text: "然后讨论预算", languageCode: "zh", audioDuration: 1,
+                                       confidence: nil, segments: [seg("然后讨论预算", 0, 1)])
+        }
+        await model.reTranscribeSegment(id: id, index: 1)
+
+        #expect(call.selection == MeetingTranscriptionSelection(engine: .qwenBalanced, language: rerunsIn), "\(requested)")
+    }
 }
 
 @MainActor

@@ -65,6 +65,7 @@ private func fullyPopulatedRecord() -> MeetingRecord {
         languageWarning: "language",
         repeatsRemoved: 15,
         transcriptionEngine: .qwenBalanced,
+        requestedLanguage: WhisperLanguage.chinese.rawValue,
         source: MediaSource(
             kind: MediaSource.webKind,
             pageURL: "https://example.com/a",

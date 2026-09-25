@@ -194,6 +194,24 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         get { transcriptionEngineRawValue.flatMap(MeetingTranscriptionEngine.init(rawValue:)) }
         set { transcriptionEngineRawValue = newValue?.rawValue }
     }
+    /// The language this meeting's transcription was asked to run in — `WhisperLanguage`'s raw value
+    /// ("automatic", "english", "chinese") — or nil for a meeting transcribed before this was
+    /// recorded (F471). Written by `AppModel.apply(result:)` from the Settings snapshot the run was
+    /// queued with, and read by `reTranscribeSegment` through `WhisperLanguage(storedRequestedLanguage:)`.
+    ///
+    /// Kept apart from `languageCode`, which is what the engine *returned*. Under Automatic — the
+    /// default — that is only the detected majority language (Whisper detects once from the first
+    /// 30 seconds; Qwen's helper takes the majority script of the whole text), so it cannot say
+    /// whether anyone pinned anything. Reading a pin off it forced the majority language onto every
+    /// minority-language line of a code-switched meeting on re-run — the silent mistranslation
+    /// F471 exists to stop, arriving from the other side. A per-segment re-run pins its language
+    /// only when this says the meeting's own run was pinned.
+    ///
+    /// A plain string rather than the enum, as `transcriptionEngineRawValue` is (F250): a value this
+    /// build has never heard of decodes and round-trips untouched, and the typed read answers
+    /// `.automatic` for it — the deferring answer, since a language this build cannot pin is one it
+    /// can still detect.
+    var requestedLanguage: String?
     /// Where this meeting's audio came from when it was fetched from a link rather than recorded or
     /// imported from a local file (F183). Optional so meeting indexes written before this feature still
     /// decode — a non-optional field here would make every pre-existing meeting fail to decode, and the
@@ -232,6 +250,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         languageWarning: String? = nil,
         repeatsRemoved: Int? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
+        requestedLanguage: String? = nil,
         source: MediaSource? = nil,
         referenceSegments: [TranscriptSegment]? = nil
     ) {
@@ -261,6 +280,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.languageWarning = languageWarning
         self.repeatsRemoved = repeatsRemoved
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
+        self.requestedLanguage = requestedLanguage
         self.source = source
         self.referenceSegments = referenceSegments
     }
@@ -285,6 +305,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         // properties with `Mirror` so the omission cannot recur.
         case recoverySource, staleTranscriptWarning, recoveryInterruption
         case repeatsRemoved
+        // F471: the language the run was asked for, beside the engine that ran it. Listed for the
+        // reason the F304 comment above gives — `everyStoredFieldIsEncoded` named this field the
+        // moment the property existed without this line.
+        case requestedLanguage
         case transcriptionEngineRawValue = "transcriptionEngine"
     }
 

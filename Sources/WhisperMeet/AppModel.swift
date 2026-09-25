@@ -1810,11 +1810,15 @@ final class AppModel: ObservableObject {
         // The engine and language the meeting was transcribed with, not the ones Settings hold now
         // (F471): Settings are for the next meeting, and a line re-run under another language pin
         // can come back translated. The engine falls back to Settings only for a meeting that never
-        // recorded one, as Second Opinion's does (F142). The language is read back from the code
-        // the engine returned, which is all the meeting stores.
-        let language = WhisperLanguage(storedLanguageCode: meeting.languageCode)
+        // recorded one, as Second Opinion's does (F142). The language is pinned only when the
+        // meeting's own run was pinned — `requestedLanguage`, which `apply(result:)` records — and
+        // never read off `languageCode`: under Automatic that is the detected majority, and pinning
+        // it forces the majority language onto a minority-language line of a code-switched meeting,
+        // this ticket's mistranslation from the other side. A meeting transcribed before the field
+        // was recorded detects too: nothing is known about a pin, so none is applied.
+        let pin = WhisperLanguage(storedRequestedLanguage: meeting.requestedLanguage)
         let selection = MeetingTranscriptionSelection(
-            engine: meeting.transcriptionEngine ?? selectedEngine, language: language
+            engine: meeting.transcriptionEngine ?? selectedEngine, language: pin
         )
         do {
             let clipURL = try Self.makeSegmentClip(
@@ -1859,9 +1863,10 @@ final class AppModel: ObservableObject {
                 alertMessage = Self.segmentReRunDiscardedForEdits
             }
             // Said rather than refused: see `segmentRerunWarning` for why a line in the other
-            // script is more likely the faithful one (F471).
+            // script is more likely the faithful one (F471). Keyed on the language the transcript
+            // came back in, not on the pin, so a switch is reported under Automatic too.
             if spliced, let warning = LanguageConsistency.segmentRerunWarning(
-                meetingLanguage: language,
+                meetingLanguage: WhisperLanguage(storedLanguageCode: meeting.languageCode),
                 replacementText: cleaned.segments.map(\.text).joined(separator: " ")
             ) {
                 alertMessage = warning
@@ -4907,7 +4912,8 @@ final class AppModel: ObservableObject {
     /// Applies a completed transcription to the stored meeting. Exposed to `WhisperMeetTests` (not
     /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30). The
     /// `requestedLanguage` is the engine snapshot's selected language, used for the
-    /// "original language only" advisory (F32); it defaults to `.automatic`, which never flags.
+    /// "original language only" advisory (F32) and recorded on the meeting so a per-segment re-run
+    /// pins only what this run pinned (F471); it defaults to `.automatic`, which never flags.
     func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic, engine: MeetingTranscriptionEngine? = nil) {
         // Only use segment-derived (timestamped) text when the segments actually reconstruct the full
         // text; otherwise a partially-aligned result would drop content. Fall back to the complete
@@ -4928,6 +4934,12 @@ final class AppModel: ObservableObject {
             // Replaced, never added to: a new transcript's echoes are the only ones it has.
             $0.repeatsRemoved = repeatsRemoved > 0 ? repeatsRemoved : nil
             $0.languageCode = result.languageCode
+            // The language this run was asked for, kept apart from the one it came back in (F471):
+            // a per-segment re-run pins only when this was a pin. Written on every apply, not only
+            // for a pin — "automatic" on the record is what tells "ran under Automatic" from
+            // "transcribed before this was recorded" (nil) — and the one production caller,
+            // `performTranscription`, always has a queued selection to give.
+            $0.requestedLanguage = requestedLanguage.rawValue
             // Revive the header confidence label from the quality review; nil (no claim) when the
             // transcript carries no scorable segments (F56).
             let quality = TranscriptQuality.review(effectiveSegments)

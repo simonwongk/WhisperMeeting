@@ -67,13 +67,35 @@ func automaticIsNeverFlagged() {
     #expect(LanguageConsistency.mismatchWarning(requested: .chinese, transcript: "") == nil)
 }
 
-// F471 — a per-segment re-run is run in the language the meeting was transcribed in, read back
-// from the code the engine returned and the meeting stored. Whisper stores an ISO code when it
-// detected the language ("en", "zh") and the name it was given when it was pinned ("English",
-// "Chinese" — `whisper/transcribe.py` returns `decode_options["language"]` as passed); Qwen stores
-// "en"/"zh" either way. Anything else — nil, or a language this app does not offer — detects.
-@Test("A stored language code maps back to the language to re-run in (F471)")
-func storedLanguageCodeMapsBackToAWhisperLanguage() {
+// F471 — a per-segment re-run pins its language only when the meeting's own transcription was
+// pinned, which the meeting records as `requestedLanguage` (a `WhisperLanguage` raw value). The
+// first version of this ticket read the pin off `languageCode` instead — and that is what the
+// engine RETURNED: under Automatic, the default, it is only the detected majority language (Whisper
+// detects once from the first 30 seconds; Qwen's helper takes the majority script of the whole
+// text). So a minority-language line of a code-switched meeting was re-run with the majority
+// language forced (`--language Chinese`, `language Chinese<asr_text>`) — the mistranslation Part 2
+// of this ticket was about, in a new configuration.
+@Test("A stored requested language pins the re-run only when it was a pin (F471)")
+func storedRequestedLanguageMapsBackToAPinOrAutomatic() {
+    #expect(WhisperLanguage(storedRequestedLanguage: WhisperLanguage.chinese.rawValue) == .chinese)
+    #expect(WhisperLanguage(storedRequestedLanguage: WhisperLanguage.english.rawValue) == .english)
+    #expect(WhisperLanguage(storedRequestedLanguage: WhisperLanguage.automatic.rawValue) == .automatic)
+    // A meeting transcribed before the field was recorded: nothing is known about a pin, so none.
+    #expect(WhisperLanguage(storedRequestedLanguage: nil) == .automatic)
+    // A raw value this build cannot pin — a language a newer build offers — detects, never guesses.
+    #expect(WhisperLanguage(storedRequestedLanguage: "japanese") == .automatic)
+    #expect(WhisperLanguage(storedRequestedLanguage: "") == .automatic)
+    // A language CODE is not a requested language. Feeding `languageCode` in here by mistake must
+    // yield no pin — that is the whole reason the two fields are kept apart.
+    #expect(WhisperLanguage(storedRequestedLanguage: "zh") == .automatic)
+    #expect(WhisperLanguage(storedRequestedLanguage: "Chinese") == .automatic)
+}
+
+// The stored code keeps one job: keying the advisory that says when a re-run line came back in the
+// other script from the transcript it joins. Both spellings map because both have been stored;
+// nothing reads a pin out of which spelling it was.
+@Test("A stored language code maps back to the language the transcript came back in (F471)")
+func storedLanguageCodeMapsBackToTheTranscriptsLanguage() {
     #expect(WhisperLanguage(storedLanguageCode: "en") == .english)
     #expect(WhisperLanguage(storedLanguageCode: "English") == .english)
     #expect(WhisperLanguage(storedLanguageCode: "zh") == .chinese)

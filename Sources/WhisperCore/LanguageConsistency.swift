@@ -43,16 +43,30 @@ public enum TranscriptLanguage: Sendable, Equatable {
 }
 
 extension WhisperLanguage {
-    /// The language a meeting was transcribed in, read back from the `languageCode` it stored (F471),
-    /// so a later pass over part of it can run in the same language rather than whatever Settings
-    /// hold by then.
+    /// The language to pin a later pass over part of a meeting to, from the `requestedLanguage` the
+    /// meeting stored (F471): the pin its own transcription ran under, or `.automatic` for a meeting
+    /// that ran under Automatic, was transcribed before the field existed (nil), or names a language
+    /// this build cannot pin — an unknown raw value is detected, never guessed at.
     ///
-    /// The stored value is what the engine returned, and the engines spell it two ways. Whisper
-    /// returns the language it decoded with exactly as it was given it: an ISO code when it detected
-    /// one ("en", "zh"), the name when the app pinned one ("English", "Chinese" — `transcribe.py`
-    /// returns `decode_options["language"]` unchanged). Qwen's helper returns "en"/"zh" either way.
-    /// Anything else — nil, empty, or a language this app cannot pin — is `.automatic`, and the
-    /// re-run detects the language for itself.
+    /// This is the only thing a per-segment re-run may pin on. It is deliberately not derived from
+    /// `languageCode`: under Automatic that is the detected majority language, and pinning it forces
+    /// the majority language onto a minority-language line of a code-switched meeting — Whisper gets
+    /// `--language Chinese`, Qwen's prompt gets `language Chinese`, and the line comes back in the
+    /// wrong language with nothing said. That is the mistranslation this ticket is about.
+    public init(storedRequestedLanguage raw: String?) {
+        self = raw.flatMap(WhisperLanguage.init(rawValue:)) ?? .automatic
+    }
+
+    /// The language a meeting's transcript came back in, read back from the `languageCode` it stored
+    /// (F471). Keys the re-run advisory only — never the re-run's pin, which is
+    /// `init(storedRequestedLanguage:)` above — so a line that comes back in the other script is
+    /// still reported for a meeting that was detected rather than pinned.
+    ///
+    /// The stored value is what the engine returned, spelled either way: Whisper has stored an ISO
+    /// code ("en", "zh") or a name ("English", "Chinese"); Qwen's helper stores "en"/"zh". Both map,
+    /// and which spelling means what is not read into — nothing here depends on it. Anything else —
+    /// nil, empty, or a language this app does not offer — is `.automatic`, and the advisory stays
+    /// silent.
     public init(storedLanguageCode code: String?) {
         switch code?.lowercased() {
         case "en", "english": self = .english
@@ -64,14 +78,18 @@ extension WhisperLanguage {
 
 public enum LanguageConsistency {
     /// An advisory when a re-transcribed segment reads as the other language from the one its
-    /// meeting was transcribed in, or nil (F471).
+    /// meeting's transcript came back in, or nil (F471).
     ///
-    /// **Advisory, not a refusal, and deliberately so.** The re-run is pinned to the meeting's
-    /// language, so a line that still comes back in the other script is one where the audio won
-    /// over the pin — in a meeting that switches language, that is the faithful reading. Refusing
-    /// would throw exactly those lines away. What this cannot catch is the opposite case, a model
-    /// that obeyed the pin and translated; no script check can, because the translation reads as
-    /// the pinned language.
+    /// **Advisory, not a refusal, and deliberately so.** `meetingLanguage` is the language the
+    /// transcript came back in (`languageCode`), whether the meeting was pinned or detected — not
+    /// the re-run's pin, which is `requestedLanguage` and is `.automatic` for most meetings. Under
+    /// a pin, a line that still comes back in the other script is one where the audio won over the
+    /// pin; under Automatic the re-run detected for itself, and a line in the other script is a
+    /// switch the audio really has or a misdetection over a short clip. Either way the user should
+    /// look, and in a meeting that switches language it is the faithful reading — refusing would
+    /// throw exactly those lines away. What this cannot catch is the opposite case, a model that
+    /// obeyed a pin and translated; no script check can, because the translation reads as the
+    /// pinned language. That is why the re-run pins only what the meeting's own run pinned.
     ///
     /// Worded without F32's "You selected …": nobody selected this language for this re-run, it
     /// came from the meeting.
