@@ -100,23 +100,57 @@ public struct SummarizerRuntime: Sendable {
 
 /// An on-device `MeetingSummarizer` backed by a local `mlx_lm` model via the `summarize_local.py`
 /// helper (F164). It is the private, keyless default; `ClaudeSummarizer` remains the opt-in cloud
-/// upgrade behind the same protocol. Spawn/stream/cancel mirror `QwenASRClient`.
+/// upgrade behind the same protocol. The helper runs under `ProcessGroupRunner`, so cancelling stops
+/// it and anything it spawned, and a helper that goes silent is stopped (F512).
 public struct LocalSummarizer: MeetingSummarizer {
+    /// How long the helper may print nothing before it is presumed wedged and stopped (F512).
+    ///
+    /// Derived from what the helper reports, not from how long a summary takes: it prints before and
+    /// after loading the model, after every prompt chunk of mlx_lm's `prefill_step_size` (2,048
+    /// tokens), and while generating every 32 tokens or 5 seconds. So ten silent minutes means the
+    /// model load, one prompt chunk or one token took ten minutes.
+    ///
+    /// Measured 2026-09-24 with the installed Qwen3-8B-4bit on an 18 GB M3 Pro with 15.5 GB of swap in
+    /// use, on a synthetic 32,323-token transcript: the longest silence was 40 s, one prompt chunk
+    /// near the end of the prefill. A count-only cadence was not enough — 32 generated tokens took
+    /// 146 s in the same conditions, which is why generation also reports on time.
+    public static let defaultStallTimeout: TimeInterval = 600
+
+    /// Runs the helper — the interpreter, its arguments, its environment, and how long it may stay
+    /// silent — and returns its exit status and merged output. The default spawns it under
+    /// `ProcessGroupRunner`; a test injects one that reports a stall at once instead of sitting one
+    /// out (F512).
+    public typealias HelperRunner = @Sendable (
+        _ executableURL: URL, _ arguments: [String], _ environment: [String: String], _ stallTimeout: TimeInterval
+    ) async throws -> ProcessGroupRunner.Outcome
+
+    public static let defaultHelperRunner: HelperRunner = { executableURL, arguments, environment, stallTimeout in
+        try await ProcessGroupRunner().run(
+            executableURL: executableURL, arguments: arguments, environment: environment, stallTimeout: stallTimeout
+        )
+    }
+
     private let pythonExecutableURL: URL
     private let helperScriptURL: URL
     private let modelDirectory: URL
     private let maxTokens: Int
+    private let stallTimeout: TimeInterval
+    private let runHelper: HelperRunner
 
     public init(
         pythonExecutableURL: URL = SummarizerRuntime.pythonExecutable(),
         helperScriptURL: URL = SummarizerRuntime.helperScript(),
         modelDirectory: URL = SummarizerRuntime.modelDirectory(),
-        maxTokens: Int = 2_048
+        maxTokens: Int = 2_048,
+        stallTimeout: TimeInterval = LocalSummarizer.defaultStallTimeout,
+        runHelper: @escaping HelperRunner = LocalSummarizer.defaultHelperRunner
     ) {
         self.pythonExecutableURL = pythonExecutableURL
         self.helperScriptURL = helperScriptURL
         self.modelDirectory = modelDirectory
         self.maxTokens = maxTokens
+        self.stallTimeout = stallTimeout
+        self.runHelper = runHelper
     }
 
     public func summarize(
@@ -294,66 +328,32 @@ public struct LocalSummarizer: MeetingSummarizer {
         return environment
     }
 
-    /// Runs the helper, draining its merged stdout+stderr so no cooperative thread blocks on a full
-    /// read and cancellation can terminate the child. The result is read from `--output`, not stdout
-    /// (F24). Same streaming + `ProcessCancellationController` shape as `QwenASRClient.run`; the
-    /// helper spawns no descendant processes, so terminating the child fully cancels it (unlike the
-    /// transcription path's afconvert/ffmpeg descendants, still tracked by F153).
+    /// Runs the helper and returns its merged stdout+stderr log; the result itself is read from
+    /// `--output`, not stdout (F24).
+    ///
+    /// Through `runHelper` — by default `ProcessGroupRunner` (F512) rather than a bare `Process`, for
+    /// its stall watchdog: a helper that printed nothing — a wedged mlx, a load that never returns —
+    /// used to hold the one summary slot, and with it every Summarize and every Ask answer, until the
+    /// app was quit. Cancelling still stops the helper, now as a process group. The runner's own
+    /// errors describe a download, so both are restated here in the summarizer's words.
     private func run(arguments: [String]) async throws -> String {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = pythonExecutableURL
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = pipe
-        process.environment = Self.makeEnvironment()
-        let cancellation = ProcessCancellationController(process: process)
-
-        let handle = pipe.fileHandleForReading
-        let processExited = armedExitStream(for: process)
-        let dataStream = AsyncStream<Data> { continuation in
-            handle.readabilityHandler = { fileHandle in
-                let data = fileHandle.availableData
-                if data.isEmpty {
-                    continuation.finish()
-                } else {
-                    continuation.yield(data)
-                }
-            }
-            continuation.onTermination = { _ in
-                handle.readabilityHandler = nil
-            }
+        let outcome: ProcessGroupRunner.Outcome
+        do {
+            outcome = try await runHelper(pythonExecutableURL, arguments, Self.makeEnvironment(), stallTimeout)
+        } catch ProcessGroupRunnerError.stalled(let seconds) {
+            throw SummarizerError.helperStalled(seconds)
+        } catch ProcessGroupRunnerError.spawnFailed(let code) {
+            throw SummarizerError.helperFailed("The summarizer helper could not be started (errno \(code)).")
         }
-
-        return try await withTaskCancellationHandler {
-            try cancellation.runUnlessCancelled()
-
-            var logData = Data()
-            for await data in dataStream {
-                logData.append(data)
-                if logData.count > 200_000 {
-                    logData = logData.suffix(100_000)
-                }
-            }
-            // Wait for the child to exit via terminationHandler, not the blocking waitUntilExit()
-            // (which wedges a Swift cooperative thread under load — see armedExitStream).
-            for await _ in processExited {}
-            handle.readabilityHandler = nil
-
-            let log = String(decoding: logData, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            try Task.checkCancellation()
-            guard process.terminationStatus == 0 else {
-                throw SummarizerError.helperFailed(
-                    log.isEmpty
-                        ? "The summarizer helper exited with status \(process.terminationStatus)."
-                        : String(log.suffix(2_000))
-                )
-            }
-            return log
-        } onCancel: {
-            cancellation.cancel()
+        let log = outcome.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard outcome.exitStatus == 0 else {
+            throw SummarizerError.helperFailed(
+                log.isEmpty
+                    ? "The summarizer helper exited with status \(outcome.exitStatus)."
+                    : String(log.suffix(2_000))
+            )
         }
+        return log
     }
 }
 

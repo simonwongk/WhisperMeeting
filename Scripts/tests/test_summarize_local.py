@@ -8,7 +8,9 @@ model import is deferred inside main(), so importing the module here is safe. ma
 end-to-end by injecting a fake mlx_lm into sys.modules, mirroring test_qwen_transcribe.py.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -78,6 +80,24 @@ class ParseSummaryTests(unittest.TestCase):
         self.assertEqual(payload["actionItems"], [])
 
 
+class GenerationHeartbeatTests(unittest.TestCase):
+    """F512 — generation reports every 32 tokens, or sooner when tokens are slow, so the only silence
+    longer than a few seconds is one token that takes that long."""
+
+    def test_reports_on_the_token_count(self):
+        self.assertTrue(summ.should_report_generation(32, 0.1))
+        self.assertTrue(summ.should_report_generation(64, 0.1))
+        self.assertFalse(summ.should_report_generation(33, 0.1))
+
+    def test_reports_on_time_when_tokens_are_slow(self):
+        # Measured on a swapping Mac: 32 tokens at a 32k-token context took 146 s.
+        self.assertFalse(summ.should_report_generation(33, summ.GENERATION_REPORT_SECONDS - 0.01))
+        self.assertTrue(summ.should_report_generation(33, summ.GENERATION_REPORT_SECONDS))
+
+    def test_nothing_generated_is_not_reported(self):
+        self.assertFalse(summ.should_report_generation(0, 999))
+
+
 class BuildChatMessagesTests(unittest.TestCase):
     """The helper forwards the Swift-built system prompt verbatim (single source of truth)."""
 
@@ -112,6 +132,13 @@ def _install_fake_mlx_lm(deltas, finish_reason="stop"):
         recorded["prompt"] = prompt
         recorded["max_tokens"] = max_tokens
         recorded["sampler"] = kwargs.get("sampler")
+        # mlx_lm 0.30.5's generate_step calls this before prefill, after every prefill_step_size
+        # (2048) chunk, and once more after the first token (generate.py:425, :440, :459).
+        callback = kwargs.get("prompt_progress_callback")
+        recorded["prompt_progress_callback"] = callback
+        if callback is not None:
+            for processed in (0, 2048, 4096, 4096):
+                callback(processed, 4096)
         total = 0
         for i, delta in enumerate(deltas):
             total += 1
@@ -150,7 +177,11 @@ def _run_main(deltas, system_prompt="SYS", transcript="hello world", finish_reas
     if max_tokens is not None:
         argv += ["--max-tokens", str(max_tokens)]
     sys.argv = argv
-    code = summ.main()
+    # The helper's heartbeat goes to stderr (F512); kept here rather than in the test runner's output.
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        code = summ.main()
+    recorded["stderr"] = captured.getvalue()
     payload = None
     if os.path.exists(output_path):
         with open(output_path, encoding="utf-8") as handle:
@@ -160,6 +191,19 @@ def _run_main(deltas, system_prompt="SYS", transcript="hello world", finish_reas
 
 class MainEndToEndTests(unittest.TestCase):
     """main() streams the fake model, parses, and writes an atomic --output payload."""
+
+    def test_every_slow_phase_reports_on_stderr(self):
+        # F512: the Swift side stops a helper that prints nothing for its stall timeout. Loading the
+        # model and prefilling a long transcript used to print nothing at all, so a slow but healthy
+        # summary could not be told from a wedged one.
+        code, payload, recorded = _run_main(['{"summary":"x","keyPoints":[],"actionItems":[]}'])
+        self.assertEqual(code, 0)
+        self.assertIsNotNone(recorded.get("prompt_progress_callback"), "prefill progress is not requested")
+        lines = recorded["stderr"].splitlines()
+        self.assertIn("[summarize] loading model", lines)
+        self.assertIn("[summarize] model loaded", lines)
+        self.assertIn("[summarize] prompt 2048/4096 tokens", lines)
+        self.assertIn("[summarize] prompt 4096/4096 tokens", lines)
 
     def test_streamed_json_is_parsed_into_payload(self):
         deltas = ['{"summary":"S1",', '"keyPoints":["k1","k2"],', '"actionItems":["a1"]}']

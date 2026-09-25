@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -132,6 +133,34 @@ def write_payload(output_path: str, payload: dict) -> None:
     os.replace(temporary_output, output_path)
 
 
+def report_progress(message: str) -> None:
+    """One heartbeat line on stderr; stdout and --output stay pure (F24).
+
+    The Swift side stops a helper that prints nothing for LocalSummarizer.defaultStallTimeout (F512),
+    so every phase that can take a while says so: loading the model, each prompt chunk, and
+    generation (see should_report_generation). Silence then means stuck, not slow."""
+    print(f"[summarize] {message}", file=sys.stderr, flush=True)
+
+
+GENERATION_REPORT_TOKENS = 32
+GENERATION_REPORT_SECONDS = 5.0
+
+
+def should_report_generation(generated: int, seconds_since_report: float) -> bool:
+    """Every 32 tokens, or sooner when tokens are slow: on a swapping Mac, 32 tokens at a 32k-token
+    context were measured taking 146 s (F512), so a count alone would leave long silences that are
+    progress. With both, the only silence longer than 5 s is a single token taking that long."""
+    if generated <= 0:
+        return False
+    return generated % GENERATION_REPORT_TOKENS == 0 or seconds_since_report >= GENERATION_REPORT_SECONDS
+
+
+def report_prompt_progress(processed: int, total: int) -> None:
+    """mlx_lm's prompt_progress_callback: called before prefill, after every prefill_step_size chunk,
+    and once more after the first generated token (mlx_lm 0.30.5 generate.py:425, :440, :459)."""
+    report_progress(f"prompt {processed}/{total} tokens")
+
+
 def apply_chat_template(tokenizer, messages):
     """Apply the model's chat template with thinking disabled (summaries want the answer, not the
     reasoning trace). Fall back gracefully if a tokenizer predates the enable_thinking kwarg."""
@@ -162,24 +191,31 @@ def main() -> int:
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
 
+    report_progress("loading model")
     model, tokenizer = load(args.model)
+    report_progress("model loaded")
     prompt = apply_chat_template(tokenizer, build_chat_messages(system_prompt, transcript))
     sampler = make_sampler(temp=0.0)  # greedy: a summary should be reproducible, not sampled.
 
     pieces = []
     finish_reason = None
     generated = 0
+    last_report = time.monotonic()
+    # stream_generate passes its kwargs, this callback included, to generate_step (mlx_lm 0.30.5
+    # generate.py:692).
     for response in stream_generate(
-        model, tokenizer, prompt, max_tokens=args.max_tokens, sampler=sampler
+        model, tokenizer, prompt, max_tokens=args.max_tokens, sampler=sampler,
+        prompt_progress_callback=report_prompt_progress,
     ):
         pieces.append(response.text)
         generated = getattr(response, "generation_tokens", None) or generated
         reason = getattr(response, "finish_reason", None)
         if reason is not None:
             finish_reason = reason
-        if generated and generated % 32 == 0:
-            # Progress goes to stderr; stdout/--output stays pure (F24).
-            print(f"[summarize] generated {generated} tokens", file=sys.stderr, flush=True)
+        now = time.monotonic()
+        if should_report_generation(generated, now - last_report):
+            report_progress(f"generated {generated} tokens")
+            last_report = now
 
     summary, warning = parse_summary("".join(pieces))
     payload = dict(summary)

@@ -1099,6 +1099,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var secondOpinionEngine: MeetingTranscriptionEngine?
     /// True while a second-opinion or segment re-run engine pass is in flight (F88/F92).
     @Published private(set) var isRunningAuxiliaryEngine = false
+    /// Why the most recent second opinion has no comparison, when the reason is not an engine failure
+    /// — the sheet says it instead of its generic "couldn't run" line (F512). nil otherwise.
+    @Published private(set) var secondOpinionFailureReason: String?
+    /// The meeting whose segment re-run is in flight, for its progress row and Cancel (F512).
+    @Published private(set) var segmentReTranscriptionRunningID: UUID?
+    /// The in-flight second opinion or segment re-run, held so it can be cancelled (F512). The two
+    /// never overlap — both claim `isRunningAuxiliaryEngine` — so one handle serves both; speaker
+    /// analysis keeps its own `diarizationTask`.
+    private var auxiliaryEngineTask: Task<Void, Never>?
 
     /// The meeting whose speaker analysis is running, or nil. Scoped to an id — never a global Bool —
     /// so another meeting's view never shows this run as its own (F156/F173's lesson, F219).
@@ -1184,31 +1193,51 @@ final class AppModel: ObservableObject {
 
     /// Kick off a second opinion (F88); guarded so it never runs alongside a transcription or another
     /// auxiliary pass. The heavy work is in `computeSecondOpinion`, which tests await directly.
-    func requestSecondOpinion(id: UUID) {
+    ///
+    /// Returns whether the run started, so the view opens the review sheet only for a run it can
+    /// show — a refusal is the alert alone, never a sheet with nothing in it (F512).
+    @discardableResult
+    func requestSecondOpinion(id: UUID) -> Bool {
         guard !hasActiveTranscription, !isRunningAuxiliaryEngine else {
             alertMessage = "Finish the current transcription before requesting a second opinion."
-            return
+            return false
         }
         guard !isDictationActive() else {
             alertMessage = "Finish the current Quick Dictation before requesting a second opinion."
-            return
+            return false
         }
         // Guarded here as well as in the worker, so the refusal is one immediate message rather than
         // one raised from inside a detached task after the engine flag was already claimed (F187).
-        guard libraryAcceptsChanges("Requesting a second opinion") else { return }
+        guard libraryAcceptsChanges("Requesting a second opinion") else { return false }
         secondOpinionFailed = false
+        secondOpinionFailureReason = nil
         secondOpinionSpans = nil
         secondOpinionProgress = nil
         secondOpinionRunningID = id
         isRunningAuxiliaryEngine = true
-        Task {
+        auxiliaryEngineTask = Task {
             await computeSecondOpinion(id: id)
             secondOpinionRunningID = nil
             secondOpinionProgress = nil
             secondOpinionEngine = nil
+            auxiliaryEngineTask = nil
             endAuxiliaryEngineRun()
         }
+        return true
     }
+
+    /// Stops the in-flight second opinion (F512). Its own epilogue releases the engine and starts
+    /// whatever queued behind it; nothing is written, because only Replace writes.
+    func cancelSecondOpinion() {
+        guard secondOpinionRunningID != nil else { return }
+        auxiliaryEngineTask?.cancel()
+    }
+
+    /// Why Second Opinion cannot compare this transcript: the comparison is line by line against the
+    /// stored timestamped segments, and there are none. One sentence for both the menu's footnote
+    /// and the sheet, so the two cannot drift apart (F512).
+    static let secondOpinionNeedsTimestampsMessage =
+        "Second Opinion compares the two engines line by line, and this transcript has no timestamped lines to compare."
 
     /// Runs the non-selected engine on the meeting's recording and stores the comparison spans. Never
     /// overwrites the stored transcript — only `applySecondOpinionSpan` does, on explicit user action.
@@ -1219,8 +1248,18 @@ final class AppModel: ObservableObject {
         // without this the user waits out a full re-transcription, reviews the divergences, and every
         // Replace click silently does nothing (F187).
         guard libraryAcceptsChanges("Requesting a second opinion") else { return }
-        guard let meeting = store.meeting(id: id), meeting.status == .completed, !meeting.segments.isEmpty else { return }
+        // F512: these returned without a word, which left the sheet on "Preparing…" for good — it
+        // shows that whenever nothing is running, nothing failed and there are no spans.
+        guard let meeting = store.meeting(id: id), meeting.status == .completed else {
+            failSecondOpinion("This meeting has no finished transcript to compare against.")
+            return
+        }
+        guard !meeting.segments.isEmpty else {
+            failSecondOpinion(Self.secondOpinionNeedsTimestampsMessage)
+            return
+        }
         secondOpinionFailed = false
+        secondOpinionFailureReason = nil
         // Run the genuine OTHER engine relative to the engine that produced this transcript (recorded on
         // the meeting), not current Settings — otherwise a Settings change could re-run the same engine (F142).
         let producedBy = meeting.transcriptionEngine ?? selectedEngine
@@ -1234,10 +1273,18 @@ final class AppModel: ObservableObject {
                 await self.apply(secondOpinionProgress: progress)
             }
             secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
+        } catch is CancellationError {
+            // The user cancelled, or deleted the meeting (F512): no comparison, and nothing to say.
         } catch {
             secondOpinionFailed = true
             alertMessage = error.localizedDescription
         }
+    }
+
+    /// A second opinion that could not compare for a reason that is not the engine's (F512).
+    private func failSecondOpinion(_ reason: String) {
+        secondOpinionFailed = true
+        secondOpinionFailureReason = reason
     }
 
     /// Publishes the second-opinion engine's live progress for the sheet (F88 UX).
@@ -1881,6 +1928,8 @@ final class AppModel: ObservableObject {
             ) {
                 alertMessage = warning
             }
+        } catch is CancellationError {
+            // Cancelled, or the meeting was deleted (F512): the original line stays, and nothing to say.
         } catch {
             alertMessage = error.localizedDescription
         }
@@ -1904,10 +1953,19 @@ final class AppModel: ObservableObject {
             return
         }
         isRunningAuxiliaryEngine = true
-        Task {
+        segmentReTranscriptionRunningID = id
+        auxiliaryEngineTask = Task {
             await reTranscribeSegment(id: id, index: index)
+            segmentReTranscriptionRunningID = nil
+            auxiliaryEngineTask = nil
             endAuxiliaryEngineRun()
         }
+    }
+
+    /// Stops the in-flight segment re-run (F512). The line keeps its original text.
+    func cancelSegmentReTranscription() {
+        guard segmentReTranscriptionRunningID != nil else { return }
+        auxiliaryEngineTask?.cancel()
     }
 
     /// Writes a temp WAV holding just one segment's audio, sliced from the meeting's recording. Reads
@@ -4348,10 +4406,19 @@ final class AppModel: ObservableObject {
     }
 
 
-    /// Deletes a whole selection. Cancels each meeting's transcription first, exactly as
-    /// `deleteMeeting(id:)` does, then removes them in a single index write.
+    /// Deletes a whole selection in a single index write, first stopping every job that belongs to
+    /// one of those meetings: its transcription, its summary, and a second opinion, segment re-run or
+    /// speaker analysis running on it (F512). Their results could never be shown, and each holds a
+    /// slot while it runs — the summary slot, or the engine every queued transcription waits behind.
     func deleteMeetings(ids: [UUID]) {
-        for id in ids { cancelTranscription(id: id) }
+        for id in ids {
+            cancelTranscription(id: id)
+            cancelSummarization(id: id)
+        }
+        let doomed = Set(ids)
+        if let running = secondOpinionRunningID, doomed.contains(running) { cancelSecondOpinion() }
+        if let running = segmentReTranscriptionRunningID, doomed.contains(running) { cancelSegmentReTranscription() }
+        if let running = diarizationRunningID, doomed.contains(running) { cancelSpeakerDiarization() }
         store.delete(ids: ids)
     }
 
@@ -4397,6 +4464,13 @@ final class AppModel: ObservableObject {
             activeSummarizationID = nil
         }
         summarizationTasks[id] = task
+    }
+
+    /// Stops a meeting's summary (F512). Cancelling the task stops the local helper's process group
+    /// or the Claude request; the meeting keeps whatever summary it had, nothing is said, and the
+    /// task's own epilogue frees the slot for the next Summarize or Ask answer.
+    func cancelSummarization(id: UUID) {
+        summarizationTasks[id]?.cancel()
     }
 
     func performSummarization(
@@ -4455,6 +4529,9 @@ final class AppModel: ObservableObject {
             }
         } catch is CancellationError {
             // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.
+        } catch where Task.isCancelled {
+            // The same, reported another way (F512): URLSession fails a cancelled request with
+            // `URLError(.cancelled)`, which `ClaudeSummarizer` wraps as `requestFailed`.
         } catch {
             alertMessage = error.localizedDescription
         }

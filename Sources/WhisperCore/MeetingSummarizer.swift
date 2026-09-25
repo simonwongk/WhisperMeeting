@@ -99,6 +99,11 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case answerTruncated
     /// The on-device helper produced something it had to degrade to return at all (F332).
     case answerDegraded(String)
+    /// The local helper printed nothing for this many seconds and was stopped (F512). It reports
+    /// around loading the model, after every prompt chunk, and while generating every 32 tokens or
+    /// 5 seconds, whichever comes first (checked per token) — so silence that long means it stopped
+    /// making progress, not that it is slow.
+    case helperStalled(TimeInterval)
 
     public var errorDescription: String? {
         switch self {
@@ -129,6 +134,15 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "Install the local summarization model in Settings to create summaries on this Mac."
         case let .helperFailed(message):
             return "The local summarizer could not finish: \(message)"
+        case let .helperStalled(seconds):
+            let wait: String
+            if seconds >= 120 {
+                wait = "\(Int(saturating: (seconds / 60).rounded())) minutes"
+            } else {
+                let whole = Int(saturating: seconds.rounded())
+                wait = whole == 1 ? "1 second" : "\(whole) seconds"
+            }
+            return "The on-device model made no progress for \(wait) and was stopped. Nothing was changed, and you can try again."
         }
     }
 }

@@ -2924,7 +2924,9 @@ private struct TranscriptDetailView: View {
                     engineName: model.secondOpinionEngine?.displayName,
                     progress: model.secondOpinionProgress,
                     failed: model.secondOpinionFailed,
-                    onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) }
+                    failureReason: model.secondOpinionFailureReason,
+                    onReplace: { span in model.applySecondOpinionSpan(span, to: meetingID) },
+                    onCancel: { model.cancelSecondOpinion() }
                 )
             }
             // F170: pick a local reference document (spec/glossary) to guide the on-device correction
@@ -3036,9 +3038,15 @@ private struct TranscriptDetailView: View {
             }
 
             if isSummarizing {
-                ProgressView(model.summarizationEngine == .local ? "Summarizing on this Mac…" : "Summarizing with Claude…")
-                    .controlSize(.small)
-                    .transition(.gentleFade(reduceMotion: reduceMotion))
+                // F512: a summary could not be stopped, and a stuck one held the summary slot until
+                // the app was quit.
+                HStack(spacing: 10) {
+                    ProgressView(model.summarizationEngine == .local ? "Summarizing on this Mac…" : "Summarizing with Claude…")
+                        .controlSize(.small)
+                    Button("Cancel") { model.cancelSummarization(id: meetingID) }
+                        .controlSize(.small)
+                }
+                .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
                 summaryBody(summary, transcript: meeting.transcriptText)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
@@ -3496,6 +3504,7 @@ private struct TranscriptDetailView: View {
         .animation(reduceMotion ? nil : .uiSpring, value: isSuggestingVocab)
         .animation(reduceMotion ? nil : .uiSpring, value: model.proposingCorrectionsID)
         .animation(reduceMotion ? nil : .uiSpring, value: model.secondOpinionRunningID)
+        .animation(reduceMotion ? nil : .uiSpring, value: model.segmentReTranscriptionRunningID)
         .animation(reduceMotion ? nil : .uiSpring, value: showSecondOpinion)
     }
 
@@ -3584,13 +3593,15 @@ private struct TranscriptDetailView: View {
             Divider()
             Button {
                 model.secondOpinionSpans = nil
-                model.requestSecondOpinion(id: meetingID)
-                showSecondOpinion = true
+                // F512: only a run that started has a sheet to show; a refusal is its alert alone.
+                if model.requestSecondOpinion(id: meetingID) {
+                    showSecondOpinion = true
+                }
             } label: {
                 Label("Second Opinion (Other Engine)…", systemImage: "person.2.wave.2")
             }
             .disabled(model.isRunningAuxiliaryEngine || model.hasActiveTranscription || isEdited
-                      || model.libraryReadOnlyFootnote != nil)
+                      || meeting.segments.isEmpty || model.libraryReadOnlyFootnote != nil)
             // F424: pick out a side-conversation in the meeting's other language. It opens a list to
             // confirm; nothing is removed from here.
             Button {
@@ -3612,7 +3623,7 @@ private struct TranscriptDetailView: View {
                 .disabled(speakerReason != nil)
             }
             if isEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
-                || speakerReason != nil || model.libraryReadOnlyFootnote != nil {
+                || meeting.segments.isEmpty || speakerReason != nil || model.libraryReadOnlyFootnote != nil {
                 Divider()
                 // F194: first, because it outranks the others — when the library is read-only none of
                 // these can be applied whatever else is true of the transcript.
@@ -3627,6 +3638,10 @@ private struct TranscriptDetailView: View {
                 }
                 if store.replacementRules.isEmpty {
                     Text("Replacement rules (exact heard → preferred) are added in the Vocabulary tab.")
+                }
+                // F512: why Second Opinion is greyed out, in the words the sheet would have used.
+                if meeting.segments.isEmpty {
+                    Text(AppModel.secondOpinionNeedsTimestampsMessage)
                 }
                 if let speakerReason {
                     Text(SpeakerAnalysisCopy.footnote(for: speakerReason))
@@ -3666,6 +3681,22 @@ private struct TranscriptDetailView: View {
                 ProgressView().controlSize(.small)
                 Text("Second opinion in progress…")
                 Button("Show Progress") { showSecondOpinion = true }
+                    .controlSize(.small)
+                // F512: a whole-meeting pass that holds the engine every queued transcription waits
+                // behind; quitting was the only way to stop it.
+                Button("Cancel") { model.cancelSecondOpinion() }
+                    .controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        } else if model.segmentReTranscriptionRunningID == meetingID {
+            // F512: the segment re-run had no progress line at all, so nothing said why transcription
+            // and dictation were waiting, and nothing could stop it.
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Re-transcribing a segment…")
+                Button("Cancel") { model.cancelSegmentReTranscription() }
                     .controlSize(.small)
             }
             .font(.callout)
@@ -4359,7 +4390,11 @@ private struct SecondOpinionSheet: View {
     let engineName: String?
     let progress: LocalTranscriptionProgress?
     let failed: Bool
+    /// Said instead of the engine-failure line when the comparison could not be made for another
+    /// reason, such as a transcript with no timestamped lines (F512).
+    let failureReason: String?
     let onReplace: (TranscriptComparisonSpan) -> Void
+    let onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var replaced: Set<Int> = []
 
@@ -4375,7 +4410,7 @@ private struct SecondOpinionSheet: View {
 
             if failed {
                 Spacer()
-                Label("The other engine couldn't run, so there's no comparison. Make sure it's installed, then try again.", systemImage: "exclamationmark.triangle")
+                Label(failureReason ?? "The other engine couldn't run, so there's no comparison. Make sure it's installed, then try again.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.horizontal)
                 Spacer()
             } else if isRunning && spans == nil {
@@ -4394,6 +4429,13 @@ private struct SecondOpinionSheet: View {
                     }
                     Text("This runs a full transcription with \(engine), so it can take a while. You can keep using the app.")
                         .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                    // F512: beside the progress it stops. Meeting transcriptions queue behind this
+                    // run, so it has to be stoppable from where it is watched.
+                    Button("Cancel Second Opinion") {
+                        onCancel()
+                        dismiss()
+                    }
+                    .controlSize(.small)
                 }
                 .padding(.horizontal, 24)
                 .frame(maxWidth: .infinity)

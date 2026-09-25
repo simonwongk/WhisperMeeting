@@ -139,6 +139,65 @@ func localSummarizerCancellation() async throws {
     }
 }
 
+// F512 — a wedged helper held the one summary slot, and with it every Summarize and every Ask answer,
+// until the app was quit. The runner is a seam, so a stall is reported without sitting one out. The
+// contract this pins is the summarizer's: the helper is run with `defaultStallTimeout` of silence
+// allowed — the number the doc comment derives from what the helper reports — and the runner's
+// stall comes back in the summarizer's own words, not the runner's download wording.
+private final class HelperRunRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _stallTimeouts: [TimeInterval] = []
+    var stallTimeouts: [TimeInterval] { lock.withLock { _stallTimeouts } }
+    func record(_ stallTimeout: TimeInterval) { lock.withLock { _stallTimeouts.append(stallTimeout) } }
+}
+
+@Test("A helper the runner reports as stalled is reported as stalled, after the default ten silent minutes (F512)")
+func localSummarizerReportsAStalledHelper() async throws {
+    let fixture = try LocalSummaryFixture()
+    defer { fixture.remove() }
+    let asked = HelperRunRecorder()
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory,
+        runHelper: { _, _, _, stallTimeout in
+            asked.record(stallTimeout)
+            throw ProcessGroupRunnerError.stalled(stallTimeout)
+        }
+    )
+    do {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .balanced)
+        Issue.record("expected a helperStalled throw")
+    } catch let error as SummarizerError {
+        #expect(error == .helperStalled(LocalSummarizer.defaultStallTimeout), "got \(error)")
+        #expect(error.localizedDescription.contains("made no progress for 10 minutes and was stopped"))
+    }
+    #expect(asked.stallTimeouts == [LocalSummarizer.defaultStallTimeout])
+}
+
+// The seam cannot see inside the default runner, so this runs it for real: a child that prints
+// nothing, held to one second of silence. Its failing direction does not depend on how fast the
+// host is — a silent child is silent on any host, and left alone the script exits 0 with no output
+// 20 s later, which is `helperFailed`, not `helperStalled` — so only a watchdog that fires passes it.
+@Test("The default runner is a real stall watchdog: a silent helper is stopped and reported as stalled (F512)")
+func localSummarizerStopsASilentHelper() async throws {
+    let fixture = try LocalSummaryFixture(script: "#!/bin/zsh\nsleep 20\n")
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory,
+        stallTimeout: 1
+    )
+    do {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .balanced)
+        Issue.record("expected a helperStalled throw")
+    } catch let error as SummarizerError {
+        #expect(error == .helperStalled(1), "got \(error)")
+        #expect(error.localizedDescription.contains("made no progress for 1 second and was stopped"))
+    }
+}
+
 @Test("Summarizer model choice follows physical RAM: 8B at/above 16 GiB, 4B below")
 func summarizerModelPickByRAM() {
     let gib: UInt64 = 1024 * 1024 * 1024

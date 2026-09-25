@@ -22,14 +22,16 @@ public enum ProcessGroupRunnerError: LocalizedError, Equatable {
 ///
 /// Two things here are deliberately new work rather than copies of the existing clients:
 ///
-/// 1. **Process-group cancellation.** `ProcessCancellationController` terminates only the direct child,
-///    and `LocalSummarizer` documents surviving `afconvert`/`ffmpeg` grandchildren as a known gap. A
-///    downloader *always* spawns ffmpeg for audio extraction, so inheriting that gap would orphan a
-///    transcode on every cancel. Spawning with `POSIX_SPAWN_SETPGROUP` makes the child a group leader
-///    atomically at spawn time (no setpgid race), so `killpg` reaches the whole tree.
-/// 2. **A stall timeout.** No one-shot client in this repo has one, and none needs one: a local
-///    transcriber that is slow is still making progress. A *network* download stalled on a dead socket
-///    hangs forever, so this runner aborts when no output arrives for `stallTimeout`.
+/// 1. **Process-group cancellation.** A downloader *always* spawns ffmpeg for audio extraction, so a
+///    cancel that reached only the direct child would orphan a transcode every time. Spawning with
+///    `POSIX_SPAWN_SETPGROUP` makes the child a group leader atomically at spawn time (no setpgid
+///    race), so `killpg` reaches the whole tree — explicitly, rather than through Foundation's
+///    `Process`, which F153 measured to signal the group too via `terminate()`.
+/// 2. **A stall timeout.** The transcription clients have none and need none: a local transcriber
+///    that is slow is still making progress. A *network* download stalled on a dead socket hangs
+///    forever, so this runner aborts when no output arrives for `stallTimeout`. The local embedder
+///    and, since F512, the local summarizer run under it for the same watchdog, with a helper that
+///    reports as it works so that silence means stuck rather than slow.
 public final class ProcessGroupRunner: @unchecked Sendable {
     public struct Outcome: Sendable {
         public let exitStatus: Int32

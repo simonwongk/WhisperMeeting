@@ -535,6 +535,7 @@ final class DictationController: ObservableObject {
         let files = FileManager.default
         var helpers = Self.bundledDictationHelpers(fileManager: files)
         helpers.append(Self.bundledRefineHelper(fileManager: files))
+        helpers.append(Self.bundledSummarizeHelper(fileManager: files))
         // The one-shot Qwen meeting helper is read at process launch. Atomic replacement makes
         // readers safe, but defer a nonessential update while an existing meeting pass owns it.
         if !isMeetingTranscriptionRunning() {
@@ -589,6 +590,39 @@ final class DictationController: ObservableObject {
             runtimeInstalled: files.isExecutableFile(
                 atPath: SummarizerRuntime.pythonExecutable().path
             )
+        )
+    }
+
+    /// The one-shot summary helper rides the same sync (F512). Its stall timeout relies on the
+    /// heartbeat lines this helper prints; `setup-local-summarizer.sh` was otherwise the only thing
+    /// that wrote it, so an existing install would have kept a silent copy — and a long, healthy
+    /// prefill would then read as a stall.
+    private static func bundledSummarizeHelper(
+        fileManager files: FileManager
+    ) -> DictationHelperSync.Helper {
+        summarizeHelper(
+            bundledData: Bundle.main.url(forResource: "summarize_local", withExtension: "py")
+                .flatMap { try? Data(contentsOf: $0) },
+            fileManager: files
+        )
+    }
+
+    /// Requires the interpreter and the model, like `qwenMeetingHelper`, so an interrupted install
+    /// never gains a lone helper script. Internal for the headless sync test.
+    static func summarizeHelper(
+        bundledData: Data?,
+        applicationSupport: URL? = nil,
+        fileManager files: FileManager = .default
+    ) -> DictationHelperSync.Helper {
+        let python = SummarizerRuntime.pythonExecutable(applicationSupport: applicationSupport)
+        let model = SummarizerRuntime.modelDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("model.safetensors")
+        return DictationHelperSync.Helper(
+            name: "summarize_local",
+            bundledData: bundledData,
+            installedScript: SummarizerRuntime.helperScript(applicationSupport: applicationSupport),
+            runtimeInstalled: files.isExecutableFile(atPath: python.path)
+                && files.fileExists(atPath: model.path)
         )
     }
 
