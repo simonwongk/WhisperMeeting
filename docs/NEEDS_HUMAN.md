@@ -41,14 +41,13 @@ The letters below still stand for what needs your hands (F355, F294, F201, F230,
 
 ## Where to start
 
-Seven entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone.) Rather than drop one of your unanswered questions to get under
+Six entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 4 | **F352 · F351** | ~2 min | Two short answers: a privacy default, and a yes/no on a download. No work either way. |
 | 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
 | 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
 | 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
@@ -104,35 +103,6 @@ about to do — the plan it previews against what you find afterwards.
 
 If you would rather not run a real restore, say so and this closes `wontfix` with that as the
 reason; it is a reasonable answer and better than an open question nobody will ask again.
-
----
-
-## F352 · F351 — Two short answers, no work either way
-
-*(The questions were first asked as F239 and F241; those tickets closed `partial` and these are the
-live tickets carrying their remainders.)*
-
-**Status:** both were closed `partial` on 2026-09-17 with their follow-up pointing at *this file*
-rather than at a ticket, which by AGENTS.md is an invalid close — so each has sat here as a question
-with no board record at all. They now have tickets: **F352** (F239) and **F351** (F241).
-
-**What I need from you:** two answers.
-
-**1. F239 — should deleting a meeting also shred it from the index history?**
-
-*Forget History* shipped, so you can already clear it by hand. What did not ship is doing it
-automatically on delete, and that is the half that makes deletion mean deletion without you having
-to remember a second command. One of: **automatic**, **opt-in**, or **leave it**. My recommendation
-is opt-in. It is pure preference and there is no wrong answer — but the design depends on which you
-pick, because rewriting a retained generation breaks its content-addressed name.
-
-**2. F241 — may I download the 4-bit ASR weights (~1.2 GB), and do you have real audio?**
-
-Only the 8-bit weights are on this Mac; the 4-bit cache entry is a 4 KB stub. The comparison cannot
-run without a deliberate fetch, and a ~1.2 GB network download for a benchmark on a local-only app
-is a question rather than a step. **Yes/no.** Separately: any real audio with proper nouns in it
-that you do not mind being used would improve the benchmark more than the download would — the
-synthetic clips give usable relative deltas and useless absolute numbers.
 
 ---
 
@@ -245,6 +215,11 @@ tell me what the paste gave you. I will read the log line myself.
 ---
 
 ## Settled — nothing needed from you
+
+- **F352 · F351 (2026-09-25).** F352 asked whether deleting a meeting should also remove its text from
+  the index history: automatic removal one week after the delete had already shipped as F295 on
+  2026-09-17, and you confirmed keeping it on 2026-09-24. Closed invalid. F351 asked whether to
+  download 1.2 GB of 4-bit weights for a benchmark: you said no; closed won't-fix.
 
 Kept as a record so nothing here is the only copy of anything; the full entries are in
 [`TICKET_LOG.md`](TICKET_LOG.md).
