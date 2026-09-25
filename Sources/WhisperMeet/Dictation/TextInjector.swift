@@ -1,6 +1,7 @@
 // Sources/WhisperMeet/Dictation/TextInjector.swift
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 import os
 
@@ -206,7 +207,7 @@ final class TextInjector {
     /// Synthesizes ⌘V into the focused app. False when it cannot: no Accessibility, or the events
     /// could not be created.
     nonisolated static func postCommandV() -> Bool {
-        let vKey: CGKeyCode = 9 // kVK_ANSI_V
+        let vKey = commandVKeyCode()
         guard AXIsProcessTrusted(),
               let source = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
@@ -222,6 +223,59 @@ final class TextInjector {
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
         return true
+    }
+
+    /// The key that types v with ⌘ held on the keyboard layout in use, so the synthesized paste is
+    /// ⌘V on every layout (F489). A `CGEvent` names a key POSITION; the app receiving it turns that
+    /// into a character through the current layout, and position 9 (`kVK_ANSI_V`) is v only on
+    /// QWERTY-shaped layouts: under ⌘ it is k on Dvorak (⌘K clears Terminal's scrollback, opens
+    /// Slack's switcher) and c on Turkish (⌘C copies over the dictation just placed on the
+    /// clipboard). Asked under ⌘ rather than plain, because "Dvorak - QWERTY ⌘" puts shortcuts back
+    /// on the QWERTY keys and Russian has no v except under ⌘.
+    ///
+    /// Position 9 when the layout cannot be read or has no v under ⌘ at all (Turkmen): what the
+    /// paste always sent, and right on 246 of the 251 layouts macOS ships (measured 2026-09-25,
+    /// `PasteKeyCodeTests`).
+    nonisolated static func commandVKeyCode() -> CGKeyCode {
+        guard let layout = currentKeyboardLayoutData() else { return 9 }
+        return keyCode(typing: 0x76, withCommandIn: layout, keyboardType: UInt32(LMGetKbdType())) ?? 9
+    }
+
+    /// The 'uchr' data of the layout the user is typing through — with an input method selected, the
+    /// layout that input method uses (TextInputSources.h). Nil when there is no current input source
+    /// or the layout has only 'KCHR' data (none of the 251 installed here has).
+    nonisolated static func currentKeyboardLayoutData() -> Data? {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return nil
+        }
+        return Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+    }
+
+    /// The lowest key position (0–127) that `layoutData` maps to `character` with ⌘ held, or nil
+    /// when none does. Pure: `UCKeyTranslate` over the given 'uchr' bytes and nothing read from the
+    /// machine, which is what lets a test hand it a layout of its own. `keyboardType` is
+    /// `LMGetKbdType()`'s value; a layout with no entry for it uses its default entry, and a table
+    /// entry of 0xFFFE–0xFFFF is "no character" (UnicodeUtilities.h). No dead-key state is entered
+    /// (`kUCKeyTranslateNoDeadKeysMask`), so every key is asked in the layout's base state.
+    nonisolated static func keyCode(typing character: UniChar, withCommandIn layoutData: Data, keyboardType: UInt32) -> CGKeyCode? {
+        layoutData.withUnsafeBytes { bytes -> CGKeyCode? in
+            guard bytes.count >= MemoryLayout<UCKeyboardLayout>.size, let base = bytes.baseAddress else { return nil }
+            let layout = base.assumingMemoryBound(to: UCKeyboardLayout.self)
+            // UCKeyTranslate's modifierKeyState is `EventRecord.modifiers >> 8`; ⌘ is bit 0 of it.
+            let command = UInt32((cmdKey >> 8) & 0xFF)
+            for key in 0..<128 {
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var output = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(
+                    layout, UInt16(key), UInt16(kUCKeyActionDown), command, keyboardType,
+                    OptionBits(kUCKeyTranslateNoDeadKeysMask), &deadKeyState, output.count, &length, &output
+                )
+                if status == noErr, length == 1, output[0] == character { return CGKeyCode(key) }
+            }
+            return nil
+        }
     }
 
     nonisolated static func scheduleOnMain(
