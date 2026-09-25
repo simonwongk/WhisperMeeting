@@ -39,7 +39,8 @@ func missingTermsAreInputTermsAbsentFromOutput() {
 
 // F437 prepares each text once per call instead of once per term. These pin the rule itself on
 // the inputs where preparing could change an answer — the text's own composition, escaping, case
-// beyond ASCII — and hold for the per-term code this replaced as well as for the new one.
+// beyond ASCII. The pinned answers are the check: they were true of the per-term code this
+// replaced, and they must stay true now.
 @Test("Normalising and bridging a text once per call keeps every answer the per-term rule gave (F437)")
 func preparedTextKeepsTheRule() {
     // The TEXT's composition does not matter either, not only the term's.
@@ -56,7 +57,9 @@ func preparedTextKeepsTheRule() {
     let output = "Kestrel met at the ECOLE; Node.js came up."
     let terms = ["kestrel", "Fairhaven", "École", "法輪功", "Node.js", "Tiananmen", ""]
     #expect(ProtectedTerms.missing(from: output, comparedTo: input, terms: terms) == ["Fairhaven", "École", "法輪功"])
-    // The batch answer is the per-term answer, term by term.
+    // The batch answer is the per-term answer, term by term. Both sides go through the same
+    // prepared text now, so this checks batch against single, not new code against old — the
+    // literal answers above are what pin the rule.
     #expect(ProtectedTerms.missing(from: output, comparedTo: input, terms: terms)
         == terms.filter { ProtectedTerms.contains(input, term: $0) && !ProtectedTerms.contains(output, term: $0) })
 }

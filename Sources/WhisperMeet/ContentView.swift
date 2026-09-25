@@ -3114,9 +3114,13 @@ private struct TranscriptDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
         // F437: once per change of the summary, the transcript or the vocabulary, off the main
-        // thread. A keystroke in the Edit view changes the input; the run it overtakes finishes in
-        // the background and its answer is dropped.
+        // thread. A keystroke in the Edit view changes the input; the run it overtakes is cancelled
+        // here — a detached check cannot be cancelled once spawned, so a burst of keystrokes waits
+        // out this short pause and spawns one check, not one per key. Until the new answer lands
+        // the previous note stays on screen, deliberately: blanking it on every keystroke would
+        // flicker, and the button-free note can mislead for at most one recompute.
         .task(id: coverageInput) {
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             let terms = await model.unmentionedSummaryTerms(for: coverageInput)
             // A newer input replaced this one while it ran; that input's own task answers.
             guard !Task.isCancelled else { return }

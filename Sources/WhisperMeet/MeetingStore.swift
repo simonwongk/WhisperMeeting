@@ -1681,6 +1681,9 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value)
+            // A reload replaces every record, so no memo can describe one (F541): a meeting a
+            // restore removed would otherwise keep its transcript copy in memory until quit.
+            transcriptEditMemos.removeAll()
             meetingsToken = result.token
             degrade(to: result.health)
             if case .recoveredFromBackup = result.health {
