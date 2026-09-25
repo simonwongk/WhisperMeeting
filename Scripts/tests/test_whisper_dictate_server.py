@@ -318,7 +318,7 @@ class SilentWindowSkipTests(unittest.TestCase):
         self.assertEqual(self.respond()["text"], "Thank you.")
 
     def test_the_thresholds_compare_exactly_as_transcribe_does(self):
-        """`no_speech_prob > 0.6` and `avg_logprob > -1.0`, both strict (`transcribe.py:303,307`).
+        """`no_speech_prob > 0.6` and `avg_logprob > -1.0`, both strict (`transcribe.py:303,306`).
 
         So a logprob of exactly -1.0 does NOT rescue a no-speech window, and a no_speech_prob of
         exactly 0.6 is not a no-speech window at all.

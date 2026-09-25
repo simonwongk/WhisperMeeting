@@ -20,7 +20,6 @@ _spec.loader.exec_module(server)
 # mlx-audio 0.3.1's own defaults (`qwen3_asr.py:1008-1012` in the pinned wheel): what a request
 # decodes to when nothing narrower is passed, and so what an unguarded runaway runs to.
 LIBRARY_MAX_TOKENS = 8192
-EOS = 151645
 
 
 class _Tokenizer:
