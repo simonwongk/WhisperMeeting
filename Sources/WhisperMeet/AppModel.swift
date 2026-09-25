@@ -1889,7 +1889,7 @@ final class AppModel: ObservableObject {
         // than one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
         // The same reasoning for a hand-edited transcript (F436); `reTranscribeSegment` checks again.
-        guard store.meeting(id: id)?.isTranscriptEdited != true else {
+        guard let current = store.meeting(id: id), !store.isTranscriptEdited(current) else {
             alertMessage = Self.segmentReRunRefusedForEdits
             return
         }

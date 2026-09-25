@@ -143,7 +143,7 @@ func secondOpinionReplaceStillAppliesToAnUneditedTranscript() async throws {
 
     let meeting = try #require(model.store.meeting(id: id))
     #expect(meeting.segments[1].text == "second right")
-    #expect(meeting.isTranscriptEdited == false)
+    #expect(model.store.isTranscriptEdited(meeting) == false)
     #expect(model.alertMessage == nil)
 }
 
