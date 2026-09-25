@@ -790,7 +790,8 @@ format shared by every build a user might launch. See
   whether the previously shipped build can read what this one writes.
 - Every `Codable` change to a persisted type ships fixtures in both directions (F188).
 - An unreadable file is quarantined, never overwritten.
-- A failed load never rebuilds a library, and never permits mutation — `delete` removes audio before
-  it saves the index, so blocking persistence alone is not enough.
+- A failed load never rebuilds a library, and never permits mutation — until F451 `delete` removed audio
+  before it saved the index, so blocking persistence alone was not enough; every delete saves first
+  now, and the guard stays on the mutation regardless.
 - Enums reachable from a persisted type decode unknown raw values leniently or fail closed. Prefer a
   plain `String` as `MediaSource.kind` does.

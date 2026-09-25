@@ -2,8 +2,10 @@ import Foundation
 
 /// How much of a persisted store actually loaded (F187). Anything other than `.complete` means the
 /// in-memory value is NOT a faithful picture of what the user had, so no mutation may be applied —
-/// see `allowsMutation`. A persistence-only guard is not enough: `MeetingStore.delete` removes the
-/// recording directory before it saves the index, so a blocked save would still lose audio.
+/// see `allowsMutation`. The guard sits on the mutation, not only on the save: a save-time refusal
+/// alone lets a mutation change memory and side files first, and until F451 every delete removed the
+/// recording folder before it saved the index, so a blocked save still lost audio. F451 saves first
+/// now; the guard stays where it is because nothing should touch a library it cannot fully read.
 public enum PersistedStoreHealth: Sendable, Equatable {
     /// The primary copy decoded in full.
     case complete
