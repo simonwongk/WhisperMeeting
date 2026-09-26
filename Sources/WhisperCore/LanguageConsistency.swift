@@ -23,22 +23,50 @@ public enum TranscriptLanguage: Sendable, Equatable {
     case chinese
 
     /// The dominant script of a transcript, or `nil` when there is no scorable text. Mirrors the
-    /// Qwen helper's `detected_language_code` majority rule (`Scripts/qwen_transcribe.py`): a
-    /// transcript is Mandarin only when CJK ideographs (`U+3400…U+9FFF`) are the majority of
-    /// non-whitespace characters — so a mostly-English sentence that mentions one Chinese term is
-    /// still English (F41 parity), not zh.
+    /// Qwen helper's `detected_language_code` / `_cjk_is_majority` majority rule
+    /// (`Scripts/qwen_transcribe.py`) **by token, not by character (F296, F468)**: each CJK
+    /// ideograph (`U+3400…U+9FFF`) counts once, and each run of alphanumeric characters — however
+    /// long the run — counts once, so a mostly-English sentence that mentions one Chinese term is
+    /// still English (F41 parity), and a Mandarin sentence carrying one long English loanword is
+    /// still Mandarin (F296 parity) rather than the loanword's letters outvoting the Chinese words.
+    ///
+    /// This used to count non-whitespace *characters*, which F296 found disagreed with the Python
+    /// helper on exactly the code-switched sentences it fixed there — `test_a_code_switched_
+    /// mandarin_sentence_is_zh` in `Scripts/tests/test_qwen_transcribe.py` calls
+    /// `"这个 bug 已经 fix 了，可以 merge 了。"` "zh"; the character rule called it `.english`. Pinned
+    /// against the Python helper directly by `swiftLanguageMajorityMatchesThePythonHelper`
+    /// (`Tests/WhisperCoreTests/LanguageConsistencyTests.swift`) so the two cannot drift again
+    /// unnoticed.
     public static func dominant(of text: String) -> TranscriptLanguage? {
         var cjk = 0
-        var total = 0
+        var other = 0
+        var inLatinRun = false
+        var sawNonWhitespace = false
         for scalar in text.unicodeScalars {
-            if scalar.properties.isWhitespace { continue }
-            total += 1
+            if scalar.properties.isWhitespace {
+                inLatinRun = false
+                continue
+            }
+            sawNonWhitespace = true
             if scalar.value >= 0x3400 && scalar.value <= 0x9FFF {
                 cjk += 1
+                inLatinRun = false
+                continue
             }
+            if CharacterSet.alphanumerics.contains(scalar) {
+                // One token per run, so a long loanword does not outvote several Chinese words —
+                // matching `_cjk_is_majority`'s `in_latin_run` exactly, apostrophe quirk included:
+                // punctuation (including `'`) is neither script and always ends a run.
+                if !inLatinRun {
+                    other += 1
+                    inLatinRun = true
+                }
+                continue
+            }
+            inLatinRun = false
         }
-        guard total > 0 else { return nil }
-        return cjk * 2 > total ? .chinese : .english
+        guard sawNonWhitespace else { return nil }
+        return cjk * 2 > (cjk + other) ? .chinese : .english
     }
 }
 

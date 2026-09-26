@@ -18,12 +18,86 @@ func dominantScriptDetection() {
     #expect(TranscriptLanguage.dominant(of: "Can you send me the quarterly report by Friday?") == .english)
     // A CJK-majority sentence with an embedded English acronym is still Mandarin (cjk*2 > total).
     #expect(TranscriptLanguage.dominant(of: "请把这个报告发给张经理，然后通知团队 ASAP。") == .chinese)
-    // Latin-majority code-switch resolves to English — matching the helper's rule, which counts
-    // characters (English words carry more letters than the CJK count), not word intent (F41 parity).
-    #expect(TranscriptLanguage.dominant(of: "这个 bug 已经 fix 了，可以 merge 了。") == .english)
+    // A Mandarin sentence carrying English loanwords is still Mandarin: each loanword is ONE token
+    // (F296, F468), so 8 CJK tokens outvote 3 Latin-run tokens ("bug", "fix", "merge") — matching
+    // the Python helper's `detected_language_code`, which has called this sentence "zh" since F296.
+    #expect(TranscriptLanguage.dominant(of: "这个 bug 已经 fix 了，可以 merge 了。") == .chinese)
     // A mostly-English sentence that mentions one Chinese place name stays English (F41 parity).
     #expect(TranscriptLanguage.dominant(of: "Let's meet in 北京 next week to review.") == .english)
     #expect(TranscriptLanguage.dominant(of: "") == nil)
+}
+
+// F468 — rather than restate expected labels by hand in both languages' test suites (which is
+// exactly how `dominant`'s character rule and `_cjk_is_majority`'s token rule drifted apart in the
+// first place after F296), this asks the installed `python3` for `detected_language_code`'s own
+// answer on each vector and compares Swift's answer to it directly. A future change to either side
+// that is not mirrored in the other fails here, without either file asserting a literal that could
+// itself go stale.
+@Test("Swift's dominant-script rule agrees with Python's detected_language_code on every vector (F296, F468)")
+func swiftLanguageMajorityMatchesThePythonHelper() throws {
+    let vectors = [
+        "帮我把今天的会议纪要发给团队。",
+        "Can you send me the quarterly report by Friday?",
+        "请把这个报告发给张经理，然后通知团队 ASAP。",
+        "这个 bug 已经 fix 了，可以 merge 了。",
+        "Let's meet in 北京 next week to review.",
+        "我们的 deadline 是这个星期五。",
+        "帮我 schedule 一个 meeting，明天下午。",
+        "请 review 一下",
+        "Let's meet in 北京 and then 上海 next week",
+        "The 太极 workshop runs on Tuesday in the main hall",
+        "我们讨论了太极拳的历史和哲学",
+        "hello world",
+        "don't stop believing",
+        "！？…",
+        "123 456",
+    ]
+
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // WhisperCoreTests
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // repository root
+    let helper = repositoryRoot.appendingPathComponent("Scripts/qwen_transcribe.py")
+
+    let workDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F468-language-parity-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: workDir) }
+    let inputURL = workDir.appendingPathComponent("vectors.json")
+    let outputURL = workDir.appendingPathComponent("labels.json")
+    try JSONEncoder().encode(vectors).write(to: inputURL)
+
+    let program = """
+    import importlib.util, json
+    spec = importlib.util.spec_from_file_location("qwen_transcribe", \(String(reflecting: helper.path)))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with open(\(String(reflecting: inputURL.path)), encoding="utf-8") as handle:
+        vectors = json.load(handle)
+    labels = [module.detected_language_code(v) for v in vectors]
+    with open(\(String(reflecting: outputURL.path)), "w", encoding="utf-8") as handle:
+        json.dump(labels, handle)
+    """
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    process.arguments = ["-c", program]
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let errData = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    #expect(process.terminationStatus == 0, Comment(rawValue: String(decoding: errData, as: UTF8.self)))
+
+    let pythonLabels = try JSONDecoder().decode([String].self, from: Data(contentsOf: outputURL))
+    #expect(pythonLabels.count == vectors.count)
+    for (vector, label) in zip(vectors, pythonLabels) {
+        let expected: TranscriptLanguage = label == "zh" ? .chinese : .english
+        #expect(
+            TranscriptLanguage.dominant(of: vector) == expected,
+            "\"\(vector)\" — python's detected_language_code says \(label)"
+        )
+    }
 }
 
 // MARK: - Consistency guard
