@@ -20,6 +20,15 @@ private enum TranscriptMode: Hashable {
     case edit
 }
 
+/// Inputs to the sidebar's meeting filter (F519): the source meetings, the free-text query, and the
+/// selected tag filters. Equatable so a `LastValueMemo` can tell "nothing changed" without re-running
+/// the case-/diacritic-insensitive scan over every meeting's title, transcript and notes again.
+struct SidebarFilterInput: Equatable {
+    let meetings: [MeetingRecord]
+    let searchText: String
+    let selectedTags: Set<String>
+}
+
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
@@ -47,25 +56,39 @@ struct ContentView: View {
         store = model.store
     }
 
+    // F519: this used to be a plain computed property, re-evaluated at every read site — the
+    // empty-state check, the ForEach, and again per visible row through `selectedMeetingIDs` and its
+    // context menu — so one redraw ran the full text/tag scan over every meeting three-plus times
+    // (~1.3s at 100 meetings, ~13s at 1,000). Reading it through `filterMemo` (F541's `LastValueMemo`
+    // pattern) means any number of reads with the same meetings/query/tags cost one scan, and only a
+    // genuinely different input pays for another.
+    @State private var filterMemo = LastValueMemo<SidebarFilterInput, [MeetingRecord]>()
+
     private var filteredMeetings: [MeetingRecord] {
-        let raw = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let query = raw.isEmpty ? nil : MeetingQuery.parse(raw)
-        let selected = Array(selectedTags)
-        guard query != nil || !selected.isEmpty else { return store.meetings }
-        return store.meetings.filter { meeting in
-            MeetingLibraryFilter.includes(
-                query: query,
-                facets: MeetingFacets(
-                    languageCode: meeting.languageCode,
-                    status: meeting.status.rawValue,
-                    durationSeconds: meeting.duration,
-                    createdAt: meeting.createdAt,
-                    textFields: [meeting.title, meeting.transcriptText, meeting.notes ?? ""]
-                ),
-                meetingTags: meeting.tags ?? [],
-                selectedTags: selected,
-                tagMode: .any
-            )
+        filterMemo.value(for: SidebarFilterInput(
+            meetings: store.meetings,
+            searchText: searchText,
+            selectedTags: selectedTags
+        )) { input in
+            let raw = input.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let query = raw.isEmpty ? nil : MeetingQuery.parse(raw)
+            let selected = Array(input.selectedTags)
+            guard query != nil || !selected.isEmpty else { return input.meetings }
+            return input.meetings.filter { meeting in
+                MeetingLibraryFilter.includes(
+                    query: query,
+                    facets: MeetingFacets(
+                        languageCode: meeting.languageCode,
+                        status: meeting.status.rawValue,
+                        durationSeconds: meeting.duration,
+                        createdAt: meeting.createdAt,
+                        textFields: [meeting.title, meeting.transcriptText, meeting.notes ?? ""]
+                    ),
+                    meetingTags: meeting.tags ?? [],
+                    selectedTags: selected,
+                    tagMode: .any
+                )
+            }
         }
     }
 
