@@ -37,6 +37,10 @@ set -euo pipefail
 readonly SUSPICIOUSLY_FAST_SECONDS=180
 readonly POLL_SECONDS=20
 readonly MAX_POLLS=90   # 30 minutes; the workflow's own timeout is 40
+# Consecutive `gh run list` failures before giving up (F546). One failed call must not end the watch,
+# but an expired token or an offline Mac does not fix itself by waiting, so an unbroken run of them
+# is a verdict about gh, not about CI.
+readonly MAX_GH_FAILURES=3
 
 if ! command -v gh >/dev/null 2>&1; then
   print -u2 "gh is not installed, so the run cannot be observed. Check the Actions tab by hand:"
@@ -81,13 +85,39 @@ fi
 
 print "Watching CI for $short (poll ${POLL_SECONDS}s, give up after $((MAX_POLLS * POLL_SECONDS / 60))m)…"
 
+# gh's exit status and stderr are kept, not discarded (F546). This used to be
+# `gh run list … 2>/dev/null | head -1 || true`, so a gh that could not reach GitHub produced an empty
+# row, and an empty row is "no run for <sha> yet…" — printed every poll for the full 30 minutes.
+gh_stderr="$(mktemp -t verify-push-gh)"
+trap 'rm -f -- "$gh_stderr"' EXIT
+trap 'exit 130' HUP INT TERM
+gh_failures=0
+
 for _ in $(seq 1 $MAX_POLLS); do
-  # `|| true` so one failed API call cannot kill the watch.
-  row="$(gh run list --limit 20 \
+  gh_rc=0
+  listing="$(gh run list --limit 20 \
         --json headSha,status,conclusion,startedAt,updatedAt,databaseId \
         --jq ".[] | select(.headSha == \"$sha\") | \
              \"\(.status)\t\(.conclusion // \"-\")\t\(.startedAt)\t\(.updatedAt)\t\(.databaseId)\"" \
-        2>/dev/null | head -1 || true)"
+        2>"$gh_stderr")" || gh_rc=$?
+
+  if (( gh_rc != 0 )); then
+    gh_failures=$((gh_failures + 1))
+    gh_error="$(<"$gh_stderr")"
+    gh_error="${gh_error:-(no message)}"
+    if (( gh_failures >= MAX_GH_FAILURES )); then
+      print -u2 ""
+      print -u2 "gh could not query runs: $gh_error"
+      print -u2 "That is gh run list exiting $gh_rc on $gh_failures polls in a row, so nothing is known"
+      print -u2 "about CI for $short. Check \`gh auth status\` and the network, then run this again."
+      exit 2
+    fi
+    print -u2 "  gh run list exited $gh_rc ($gh_failures of $MAX_GH_FAILURES before giving up): $gh_error"
+    sleep $POLL_SECONDS
+    continue
+  fi
+  gh_failures=0
+  row="${listing%%$'\n'*}"
 
   if [[ -z "$row" ]]; then
     print "  no run for $short yet…"
