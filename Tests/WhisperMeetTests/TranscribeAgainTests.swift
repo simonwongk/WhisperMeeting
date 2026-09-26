@@ -121,3 +121,93 @@ func transcribeAgainIsWired() throws {
     #expect(source.contains("model.transcribeAgain(id: meetingID)"))
     #expect(source.contains(".disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)"))
 }
+
+// F507 — `recoverInterruptedTranscriptions()` reset every `.processing` meeting to `.recorded` (or
+// `.completed`, F515's case) on the assumption that `.processing` means "left over from a run this
+// process never started". Startup recovery runs it near the end of `performStartupRecovery`, after
+// several awaits that can take seconds (installer reclaim, notes backfill, detached orphan
+// rebuilds) — long enough for the user to press Transcribe on a meeting in that window, or for one
+// to queue behind Quick Dictation. Either way `.processing` can belong to a job this process IS
+// running or has already queued, and the sweep must not relabel it as interrupted.
+
+/// Holds a transcription open until the test releases it, so "active" is a state under the test's
+/// control rather than a race it hopes to win — the RestoreBusyGuardTests shape.
+private actor Latch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+@MainActor
+private func waitUntil(_ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try #require(condition(), "timed out waiting for the condition")
+}
+
+@MainActor
+@Test("Startup recovery does not mark a transcription running right now as interrupted (F507)")
+func recoveryDoesNotInterruptARunningTranscription() async throws {
+    let latch = Latch()
+    let (model, id) = try completedMeeting { _, _ in
+        await latch.wait()
+        return TranscriptionResult(id: "x", text: "New line.", languageCode: "en",
+                                   audioDuration: 2, confidence: nil, segments: [])
+    }
+    model.transcribeAgain(id: id)
+    // `activeID` is set synchronously inside `beginTranscription`'s own call, before the spawned
+    // Task has run at all — waiting on it would return before `performTranscription` reaches its
+    // own `store.update` to `.processing`. The status itself is the fact this test needs, and
+    // waiting on it is also the precondition the rest of the test depends on.
+    try await waitUntil { model.store.meeting(id: id)?.status == .processing }
+    try #require(model.transcription.activeID == id)
+
+    model.recoverInterruptedTranscriptions()
+
+    #expect(model.store.meeting(id: id)?.status == .processing,
+            "startup recovery relabelled a transcription that is running right now")
+
+    await latch.open()
+    try await waitForTheRunToEnd(model)
+}
+
+@MainActor
+@Test("Startup recovery does not mark a queued transcription as interrupted (F507)")
+func recoveryDoesNotInterruptAQueuedTranscription() async throws {
+    // A meeting whose status is still `.processing` from a run this launch never started (the
+    // ordinary stale-crash case `holdsTranscript` already covers), but which is ALSO queued for a
+    // fresh run right now — `beginTranscription` does not look at the current status before
+    // enqueueing, and a queued job's status is left alone until it actually starts. Sweeping it
+    // to `.recorded` here would contradict the transcription about to run for it.
+    let latch = Latch()
+    let (model, heldID) = try completedMeeting { _, _ in
+        await latch.wait()
+        return TranscriptionResult(id: "held", text: "Held.", languageCode: "en",
+                                   audioDuration: 2, confidence: nil, segments: [])
+    }
+    model.transcribeAgain(id: heldID)
+    try await waitUntil { model.transcription.activeID == heldID }
+
+    let queuedID = UUID()
+    model.store.upsert(MeetingRecord(id: queuedID, title: "Stale", status: .processing))
+    model.transcribeAgain(id: queuedID)
+    try #require(model.isQueuedForTranscription(queuedID))
+    #expect(model.store.meeting(id: queuedID)?.status == .processing)
+
+    model.recoverInterruptedTranscriptions()
+
+    #expect(model.store.meeting(id: queuedID)?.status == .processing,
+            "startup recovery relabelled a transcription that is queued right now")
+
+    await latch.open()
+    try await waitForTheRunToEnd(model)
+    try await waitUntil { model.store.meeting(id: queuedID)?.status == .completed || model.store.meeting(id: queuedID)?.status == .recorded }
+}

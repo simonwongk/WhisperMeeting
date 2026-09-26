@@ -5246,7 +5246,17 @@ final class AppModel: ObservableObject {
     }
 
     func recoverInterruptedTranscriptions() {
-        for meeting in store.meetings where meeting.status == .processing {
+        // F507: this runs near the end of `performStartupRecovery`, after several awaits that can
+        // take seconds (installer reclaim, notes backfill, detached orphan rebuilds) — long enough
+        // for the user to press Transcribe on a meeting, or for Stop & Transcribe to queue one,
+        // while this sweep is still to come. `.processing` means "left over from a run this
+        // process never started" only for a meeting `transcription` does not itself know about;
+        // `transcription.contains` is true for the one job actually running (`beginTranscription`
+        // sets `.processing` the moment it starts) and for anything still queued behind it, whose
+        // stored status is left exactly as it was found until it becomes active. Either way, this
+        // sweep relabelling it "interrupted" would contradict a transcription this process is
+        // running or is about to run for it.
+        for meeting in store.meetings where meeting.status == .processing && !transcription.contains(meeting.id) {
             // F515: a re-run interrupted by quitting still has the transcript it was replacing.
             let keepsTranscript = Self.holdsTranscript(meeting)
             store.update(id: meeting.id) {
