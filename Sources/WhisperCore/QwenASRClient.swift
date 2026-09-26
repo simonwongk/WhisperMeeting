@@ -146,7 +146,10 @@ public struct QwenASRClient: Sendable {
         try Task.checkCancellation()
 
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
-            if !log.isEmpty { throw QwenASRError.processFailed(log) }
+            // Summarized the same way as LocalWhisperClient (F511): the accumulated log can run to
+            // ~200 KB, all of which would otherwise land in the alert and in meetings.json's
+            // errorMessage on every index save.
+            if !log.isEmpty { throw QwenASRError.processFailed(SubprocessLogSummary.summarize(log)) }
             throw QwenASRError.missingOutput
         }
         guard let payload = try? JSONDecoder().decode(

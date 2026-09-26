@@ -130,6 +130,44 @@ func reportsProcessFailure() async throws {
     }
 }
 
+@Test("Whisper's exit-0-no-output failure keeps the alert message short (F511)")
+func capsMissingOutputLogInProcessFailedMessage() async throws {
+    // openai-whisper's real failure mode: it catches a per-file exception inside its own cli(),
+    // prints a traceback (here stood in for by a wall of tqdm-style progress noise), and exits 0
+    // without ever writing the JSON output — the "missing output" branch, not the "non-zero exit"
+    // branch already covered above. The one useful line sits at the very end.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WhisperMeetTests-\(UUID().uuidString)", isDirectory: true)
+    let executableURL = directory.appendingPathComponent("whisper")
+    let audioURL = directory.appendingPathComponent("meeting.wav")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: audioURL)
+    // ~200 KB of blank-padded noise, matching the client's own accumulation cap, plus the one
+    // line an engineer actually needs.
+    try makeExecutable(
+        at: executableURL,
+        script: """
+        #!/bin/zsh
+        for i in {1..4000}; do print '  '; print 'Downloading: 3%|##      | 30M/1.0G'; done
+        print 'Skipping meeting.wav due to UnicodeDecodeError'
+        exit 0
+        """
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let client = LocalWhisperClient(
+        executableURL: executableURL,
+        modelDirectory: directory.appendingPathComponent("Models")
+    )
+
+    do {
+        _ = try await client.transcribe(recordingAt: audioURL)
+        Issue.record("expected the missing-output branch to throw")
+    } catch let LocalWhisperError.processFailed(message) {
+        #expect(message.count < 4_500, "message must stay short; was \(message.count) characters")
+        #expect(message.contains("Skipping meeting.wav due to UnicodeDecodeError"))
+    }
+}
+
 @Test("Cancelling transcription terminates the local Whisper process")
 func cancelsLocalProcess() async throws {
     let directory = FileManager.default.temporaryDirectory

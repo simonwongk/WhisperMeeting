@@ -115,6 +115,34 @@ func qwenRuntimeCompleteness() throws {
     #expect(QwenASRRuntime.isInstalled(applicationSupport: support))
 }
 
+@Test("Qwen's exit-0-no-output failure keeps the alert message short (F511)")
+func qwenClientCapsMissingOutputLogInProcessFailedMessage() async throws {
+    // Mirrors LocalWhisperClient's own missing-output case: the helper exits 0 but never writes
+    // the transcript file, after printing a wall of progress noise with the one useful line at
+    // the very end.
+    let fixture = try QwenClientFixture(script: """
+    #!/bin/zsh
+    for i in {1..4000}; do print '  '; print 'Decoding chunk 3/400 [====      ]'; done
+    print 'Skipping meeting.wav: RuntimeError: chunk decode failed'
+    exit 0
+    """)
+    defer { fixture.remove() }
+    let client = QwenASRClient(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory,
+        alignerDirectory: fixture.alignerDirectory
+    )
+
+    do {
+        _ = try await client.transcribe(recordingAt: fixture.audioURL)
+        Issue.record("expected the missing-output branch to throw")
+    } catch let QwenASRError.processFailed(message) {
+        #expect(message.count < 4_500, "message must stay short; was \(message.count) characters")
+        #expect(message.contains("Skipping meeting.wav: RuntimeError: chunk decode failed"))
+    }
+}
+
 @Test("Cancelling Qwen transcription terminates its helper process")
 func qwenClientCancellation() async throws {
     let fixture = try QwenClientFixture(script: "#!/bin/zsh\nexec sleep 120\n")

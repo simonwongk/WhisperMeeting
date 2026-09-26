@@ -71,6 +71,37 @@ public struct LocalWhisperRuntime: Sendable {
         }
     }
 
+    /// Whether `executableURL` accepts `--carry_initial_prompt`, which openai-whisper shipped in
+    /// 20250625 (F509). `findExecutable()` accepts ANY `whisper` on `/opt/homebrew/bin`,
+    /// `/usr/local/bin` or `~/.local/bin` with no version check, and `LocalWhisperClient
+    /// .commandArguments` unconditionally adds that flag the moment the meeting has any vocabulary
+    /// term — so an older Homebrew or pipx install exits 2 on argparse for every such meeting, and
+    /// the failure classifies as "retry", which can never succeed.
+    ///
+    /// Probed with `--help` rather than a version string: openai-whisper's CLI has no `--version`,
+    /// and a `--help` process a caller runs once per runtime-discovery pass costs a few tens of
+    /// milliseconds, which is the same order of cost `venv_works` already pays synchronously in
+    /// `setup-local-whisper.sh`. Returns `false` — never throws — for a missing, non-executable, or
+    /// unresponsive binary, so a caller can use it as a plain capability gate.
+    public static func supportsCarryInitialPrompt(at executableURL: URL) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else { return false }
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["--help"]
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe() // drained so a chatty --help can never fill the pipe and hang
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return false }
+        return String(decoding: data, as: UTF8.self).contains("--carry_initial_prompt")
+    }
+
     public static func pythonExecutable(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("venv/bin/python")
@@ -163,7 +194,12 @@ public struct LocalWhisperClient: Sendable {
             .appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent)
             .appendingPathExtension("json")
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
-            if !log.isEmpty { throw LocalWhisperError.processFailed(log) }
+            // Whisper's normal failure mode (an ffmpeg decode error or OOM mid-file) is caught
+            // inside its own cli(), printed as a traceback, and followed by exit 0 — so this
+            // branch, not the non-zero-exit one below, is what a real failure usually hits.
+            // Summarized the same way (F511): the full accumulated log can run to ~200 KB, all of
+            // which would otherwise land in the alert and in meetings.json's errorMessage.
+            if !log.isEmpty { throw LocalWhisperError.processFailed(SubprocessLogSummary.summarize(log)) }
             throw LocalWhisperError.missingOutput
         }
         guard let payload = try? JSONDecoder().decode(
