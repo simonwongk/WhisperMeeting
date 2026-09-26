@@ -249,7 +249,24 @@ func diarizationInstallerPinsMatchTheDecisionRecord() throws {
     let code = installerCode(script)
     #expect(code.contains(#"model_directory_name="speaker-diarization""#))
     #expect(!code.contains("speaker-diarization-coreml/models"))
-    #expect(code.contains("https://huggingface.co/${model_repo}/resolve/main"))
+    // F483: pinned to a commit, not the mutable `resolve/main` ref — any upstream commit touching
+    // one of the 21 files used to fail every fresh install and Repair closed, for everyone, until
+    // a new build shipped.
+    #expect(
+        !code.contains(#"resolve/main"#),
+        "the download URL must not use the mutable resolve/main ref"
+    )
+    #expect(code.contains(#"model_base_url="https://huggingface.co/${model_repo}/resolve/${model_revision}""#))
+    let revisionAssignment = try #require(
+        code.range(of: #"model_revision="([0-9a-f]{40})""#, options: .regularExpression),
+        "no pinned model_revision found"
+    )
+    let scriptRevision = code[revisionAssignment]
+        .split(separator: "\"")[1]
+    #expect(
+        decision.contains(String(scriptRevision)),
+        "the decision record must document the same pinned commit the script downloads from: \(scriptRevision)"
+    )
     // The threshold is part of the pin and belongs in the MANIFEST a result's sidecar is compared to.
     #expect(code.contains(#"cluster_threshold="0.6""#))
     #expect(decision.contains("clustering.threshold = 0.6"))

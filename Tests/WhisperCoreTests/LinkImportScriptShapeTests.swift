@@ -67,6 +67,52 @@ func healthChecksIgnoreYtDlp() throws {
     #expect(!healthSection.contains("yt-dlp"))
 }
 
+@Test("openai-whisper and mlx-whisper are pinned, not --upgrade'd, in the meetings runtime installer (F483)")
+func meetingsRuntimeVersionsArePinned() throws {
+    let text = try scriptCode("Scripts/setup-local-whisper.sh")
+
+    // The old shape this replaces: `pip install --upgrade <package>` with no version at all,
+    // which could resolve a release that drops or renames a flag `commandArguments` still emits —
+    // and the only gate before deleting the previous working venv is `whisper --help`, which
+    // never imports whisper.transcribe far enough to notice a removed CLI flag either.
+    #expect(!text.contains("pip install --upgrade openai-whisper"))
+    #expect(!text.contains("pip install --upgrade mlx-whisper"))
+
+    #expect(text.contains(#"openai_whisper_version="20250625""#))
+    #expect(text.contains(#"mlx_whisper_version="0.4.3""#))
+    #expect(text.contains(#""openai-whisper==$openai_whisper_version""#))
+    #expect(text.contains(#""mlx-whisper==$mlx_whisper_version""#))
+
+    // yt-dlp is the one dependency in this script that is deliberately NOT pinned (its whole job
+    // is to track a moving target); everything else the script installs into the venv now is.
+    #expect(text.contains("pip install --upgrade yt-dlp"), "yt-dlp's own unpinned install must remain")
+}
+
+@Test("The pinned mlx-whisper version matches the fast path's own version gate (F483, F490)")
+func pinnedMlxWhisperVersionMatchesTheDictationHelperGate() throws {
+    // Derived rather than restated: whisper_dictate_server.py's EXPECTED_MLX_WHISPER_VERSION is
+    // what FALLBACK_TEMPERATURES and the thresholds were read from (F490's runtime gate), and this
+    // installer is what actually puts that version on disk. The two drifting apart would silently
+    // reintroduce the F490 gap this installer's pin is supposed to close: dictation would always
+    // decline the fast path against whatever this script actually installs.
+    let installerText = try scriptCode("Scripts/setup-local-whisper.sh")
+    let installedVersion = try #require(
+        installerText.range(of: #"mlx_whisper_version="([^"]+)""#, options: .regularExpression)
+            .map { installerText[$0] }
+    ).split(separator: "\"")[1]
+
+    let helperText = try scriptText("Scripts/whisper_dictate_server.py")
+    let expectedVersion = try #require(
+        helperText.range(of: #"EXPECTED_MLX_WHISPER_VERSION = "([^"]+)""#, options: .regularExpression)
+            .map { helperText[$0] }
+    ).split(separator: "\"")[1]
+
+    #expect(
+        installedVersion == expectedVersion,
+        "installer pins mlx-whisper==\(installedVersion) but the dictation helper's fast path only accepts \(expectedVersion)"
+    )
+}
+
 @Test("build-app.sh bundles update-yt-dlp.sh into the packaged app (F183)")
 func updateScriptIsBundled() throws {
     // Nothing else exercises Bundle.main resource lookup, so a forgotten copy line here would pass

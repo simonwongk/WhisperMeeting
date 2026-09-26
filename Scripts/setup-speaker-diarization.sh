@@ -46,7 +46,16 @@ activation_complete=0
 lock_acquired=0
 
 model_repo="FluidInference/speaker-diarization-coreml"
-model_base_url="https://huggingface.co/${model_repo}/resolve/main"
+# Pinned to a commit, not `resolve/main` (F483): the content is fixed by the SHA-256 manifest
+# below, but until this pin the REF it was fetched through was not — any upstream commit that
+# touches one of the 21 files would make every fresh install and every "Repair or Update" fail
+# closed for every user until a new build ships, and retrying could never help. Confirmed against
+# the live repo before pinning: `df2625ac79a7ac6b65ad868fee6d80f320da4232`, 2026-09-19, is later
+# than this repo's original 2026-09-13 pin commit but only touched README/license text — all 21
+# manifest files still hash-match at this commit. Re-verify the manifest against the new commit's
+# content before ever bumping this.
+model_revision="df2625ac79a7ac6b65ad868fee6d80f320da4232"
+model_base_url="https://huggingface.co/${model_repo}/resolve/${model_revision}"
 
 # NOT the repository name. FluidAudio resolves <models parent>/<Repo.diarizer.folderName>, and
 # `folderName` strips the `-coreml` suffix from the Hugging Face slug. Staging into a directory
@@ -255,6 +264,7 @@ chmod 644 "$staging_directory/THIRD-PARTY-NOTICES.txt"
 
 {
   print "model_repo=$model_repo"
+  print "model_revision=$model_revision"
   print "model_directory=$model_directory_name"
   print "runtime_id=$runtime_id"
   print "runtime_version=$runtime_version"

@@ -93,8 +93,14 @@ reports "present" for an install that fetched nothing.
 **Download total: 21,599,417 B (20.6 MiB). On disk after install: the same — there is nothing to
 extract and nothing to prune.**
 
-URLs — every file at `https://huggingface.co/FluidInference/speaker-diarization-coreml/resolve/main/<artifact>`,
-fetched anonymously. No token, no account, no click-through, no `.netrc`.
+URLs — every file at
+`https://huggingface.co/FluidInference/speaker-diarization-coreml/resolve/<commit>/<artifact>`,
+fetched anonymously. No token, no account, no click-through, no `.netrc`. **Pinned to a commit, not
+`resolve/main` (F483):** the content above is fixed by SHA-256, but until this pin the REF it was
+fetched through was not — any upstream commit touching one of the 21 files would fail every fresh
+install and Repair closed for every user until a new build shipped. Current pin:
+`df2625ac79a7ac6b65ad868fee6d80f320da4232` (2026-09-19, confirmed to still hash-match all 21 files
+before pinning). Re-verify the manifest against a new commit's content before ever bumping this.
 
 Notes on the pins:
 - **The staged directory must be named `speaker-diarization`, not `speaker-diarization-coreml`.**

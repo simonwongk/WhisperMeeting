@@ -100,20 +100,106 @@ fi
 
 python_executable="$($brew_executable --prefix python@3.11)/bin/python3.11"
 
+# F483: pinned to the exact versions the rest of this repo already assumes, rather than
+# `--upgrade` to whatever pip resolves that day. openai-whisper 20250625 is what
+# LocalWhisperClient.supportedCLIFlags/commandArguments were derived from — a --carry_initial_prompt
+# that only exists from this version on, per the live source at
+# https://github.com/openai/whisper/blob/v20250625/whisper/transcribe.py — and an unpinned
+# `--upgrade` could resolve a release that removed or renamed a flag commandArguments still emits,
+# which exits every vocabulary-bearing meeting with argparse status 2 and no rollback once the
+# staging venv passes `--help` and the working venv is deleted. mlx-whisper 0.4.3 is
+# EXPECTED_MLX_WHISPER_VERSION in whisper_dictate_server.py, which the F210 fast path's ladder and
+# thresholds were read from; that helper already declines the fast path on a mismatch, so pinning
+# here keeps the common case matching rather than falling back on every dictation.
+openai_whisper_version="20250625"
+mlx_whisper_version="0.4.3"
+
 # Build the new runtime in a STAGING venv; the live venv is untouched until the atomic swap below.
 "$python_executable" -m venv "$staging_venv"
 "$staging_venv/bin/python" -m pip install --upgrade pip
 # openai-whisper drives meetings (LocalWhisperClient) and MUST succeed — install and verify it in
 # staging first so the meetings runtime is never left unverified by a later, optional dependency, and
 # a failed upgrade can never break the working live install.
-"$staging_venv/bin/python" -m pip install --upgrade openai-whisper
+"$staging_venv/bin/python" -m pip install "openai-whisper==$openai_whisper_version"
 "$staging_venv/bin/whisper" --help >/dev/null
 
 # mlx-whisper drives quick dictation (Apple-Silicon warm helper). It is arm64-only with a larger
 # dependency tree, so install it best-effort: a failure here must NOT abort the meetings runtime.
 # (Commands in an `if` condition are exempt from `set -e`, so a failure won't kill the script.)
-if ! "$staging_venv/bin/python" -m pip install --upgrade mlx-whisper; then
+if ! "$staging_venv/bin/python" -m pip install "mlx-whisper==$mlx_whisper_version"; then
   print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
+fi
+
+# F483: pre-download and pin the Quick Dictation model, exactly like every other model this repo
+# installs (Ask embeddings, the summarizer, Qwen, diarization all pin a revision and verify
+# SHA-256). Until this, whisper_dictate_server.py fetched `mlx-community/whisper-large-v3-turbo`
+# from whatever its mutable main branch held the first time dictation warmed up, verified nothing,
+# and recorded no revision. Best-effort, like the mlx-whisper package install just above: Quick
+# Dictation must never block the meetings runtime, and the helper's own warm-up already falls back
+# to an unpinned network fetch if this step did not run or did not finish (no network at install
+# time, a build predating this fix, or a failure here) — the difference this makes is that the
+# common case gets a verified, pinned model instead of whatever HEAD happens to hold that day.
+dictation_repository="mlx-community/whisper-large-v3-turbo"
+dictation_revision="a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+dictation_config_sha256="b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379"
+dictation_weights_sha256="951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6"
+
+if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
+  # Models/ is a SIBLING of Runtime/ (LocalWhisperRuntime.modelDirectory vs .managedDirectory) —
+  # both openai-whisper's --model_dir and the dictation helper's HF cache live there.
+  models_directory="${runtime_directory:h}/Models"
+  hub_directory="$models_directory/hf/hub"
+  dictation_repo_directory_name="models--${dictation_repository//\//--}"
+  dictation_staging="$hub_directory/.dictation-model-staging-$$"
+  mkdir -p "$hub_directory"
+  rm -rf "$dictation_staging"
+
+  if DICTATION_STAGE="$dictation_staging" DICTATION_REPOSITORY="$dictation_repository" \
+     DICTATION_REVISION="$dictation_revision" \
+     "$staging_venv/bin/python" - <<'PY' >/dev/null 2>&1
+import os
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id=os.environ["DICTATION_REPOSITORY"],
+    revision=os.environ["DICTATION_REVISION"],
+    cache_dir=os.environ["DICTATION_STAGE"],
+    allow_patterns=["config.json", "weights.safetensors"],
+)
+PY
+  then
+    dictation_snapshot="$dictation_staging/$dictation_repo_directory_name/snapshots/$dictation_revision"
+    actual_config_sha="$(shasum -a 256 "$dictation_snapshot/config.json" 2>/dev/null | awk '{ print $1 }')"
+    actual_weights_sha="$(shasum -a 256 "$dictation_snapshot/weights.safetensors" 2>/dev/null | awk '{ print $1 }')"
+    if [[ "$actual_config_sha" == "$dictation_config_sha256"
+          && "$actual_weights_sha" == "$dictation_weights_sha256" ]]; then
+      # `mlx_whisper.load_model` always resolves the bare repo id through huggingface_hub with no
+      # revision argument at all — i.e. always "main" — so an offline load needs a local "main"
+      # ref to read; huggingface_hub only writes one when IT resolved "main" itself, which a
+      # pinned-commit `snapshot_download` (above) does not do. Write it here, pointing at the
+      # commit we just verified, so the helper's `HF_HUB_OFFLINE=1` fast path (once fully cached)
+      # keeps resolving to this exact pin rather than failing to resolve "main" at all.
+      mkdir -p "$dictation_staging/$dictation_repo_directory_name/refs"
+      print -n "$dictation_revision" > "$dictation_staging/$dictation_repo_directory_name/refs/main"
+
+      dictation_target="$hub_directory/$dictation_repo_directory_name"
+      dictation_backup="$hub_directory/.dictation-model-backup-$$"
+      rm -rf "$dictation_backup"
+      if [[ -e "$dictation_target" ]]; then
+        mv "$dictation_target" "$dictation_backup"
+      fi
+      if mv "$dictation_staging/$dictation_repo_directory_name" "$dictation_target"; then
+        rm -rf "$dictation_backup"
+      elif [[ -e "$dictation_backup" ]]; then
+        mv "$dictation_backup" "$dictation_target"
+      fi
+    else
+      print -u2 "Note: the Quick Dictation model failed verification; it will download unpinned on first use (meetings unaffected)."
+    fi
+  else
+    print -u2 "Note: could not pre-download the Quick Dictation model; it will download on first use (meetings unaffected)."
+  fi
+  rm -rf "$dictation_staging"
 fi
 
 # yt-dlp powers "import from a link" (F183). Three constraints fix exactly where and how it goes:
