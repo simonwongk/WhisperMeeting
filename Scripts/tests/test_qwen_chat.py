@@ -5,6 +5,7 @@ import importlib.util
 import os
 import subprocess
 import tempfile
+import ast
 import unittest
 
 
@@ -14,6 +15,25 @@ _spec = importlib.util.spec_from_file_location("qwen_chat", _SCRIPT)
 qwen_chat = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(qwen_chat)
 
+
+
+def _warm_and_banner_lines(source):
+    """Line numbers, inside main(), of the warm_device_info() call and of the banner print — read
+    from the AST so a definition or a comment elsewhere in the file cannot stand in for the call."""
+    tree = ast.parse(source)
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+    warm = banner = None
+    for node in ast.walk(main):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = getattr(node.func, "id", None)
+        if callee == "warm_device_info" and warm is None:
+            warm = node.lineno
+        if callee == "print" and node.args and isinstance(node.args[0], ast.Constant) \
+                and str(node.args[0].value).startswith("Local Qwen chat") and banner is None:
+            banner = node.lineno
+    assert warm is not None and banner is not None, "main() no longer holds both calls"
+    return warm, banner
 
 class OfflineEnvironmentTests(unittest.TestCase):
     def test_forces_hugging_face_and_transformers_offline_without_mutating_input(self):
@@ -104,11 +124,22 @@ class DeprecationNoiseTests(unittest.TestCase):
             return handle.read()
 
     def test_the_warning_is_warmed_before_the_banner(self):
+        warm, banner = _warm_and_banner_lines(self._source())
+        self.assertLess(warm, banner)
+
+    def test_the_check_fails_when_the_call_moves_below_the_banner(self):
+        """F481: the previous check indexed the first "warm_device_info()" in the file — the `def`,
+        which always precedes main() — so moving the call below the banner kept it green. The
+        mutation the ticket names, applied to the source, must now read the other way round."""
         source = self._source()
-        self.assertLess(
-            source.index("warm_device_info()"),
-            source.index("Local Qwen chat \u2014 offline"),
-        )
+        warm, banner = _warm_and_banner_lines(source)
+        lines = source.splitlines()
+        lines[warm - 1], lines[banner - 1] = lines[banner - 1], lines[warm - 1]
+        mutated = "\n".join(lines)
+        warm_after, banner_after = _warm_and_banner_lines(mutated)
+        self.assertGreater(warm_after, banner_after, "the swapped source still reads as warmed first")
+        # The blind spot, kept as evidence: the old comparison passes on the mutated source.
+        self.assertLess(mutated.index("warm_device_info()"), mutated.index("Local Qwen chat \u2014 offline"))
 
     def test_warming_suppresses_only_its_own_call(self):
         """The redirect must not span generation. Silencing fd 2 while the model runs would hide a

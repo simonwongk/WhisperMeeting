@@ -195,19 +195,6 @@ class SingleWindowFastPathTests(unittest.TestCase):
             server.transcribe_single_window(None, None, [0.0] * 1600, "repo/name", None, None)
         )
 
-    def test_an_unexpected_failure_declines_instead_of_raising(self):
-        class Exploding:
-            float16 = "f16"
-
-            def __getattr__(self, name):
-                raise RuntimeError("runtime internals moved")
-
-        self.assertIsNone(
-            server.transcribe_single_window(
-                None, Exploding(), [0.0] * 1600, "repo/name", None, None
-            )
-        )
-
 
 class _FakeMel:
     """Just enough of an mx.array for `transcribe_single_window`'s slicing and casting."""
@@ -334,6 +321,60 @@ class SilentWindowSkipTests(unittest.TestCase):
         response = self.respond()
         self.assertEqual(response["language"], "en")
         self.assertEqual(response["noSpeechProb"], 0.9)
+
+class UnexpectedFailureTests(unittest.TestCase):
+    """F481 Part 3 — the decline for a failure *inside* the fast path, after its imports succeed.
+
+    The previous test handed `transcribe_single_window` an exploding `mlx` stand-in. Under the
+    gate's python3 there is no `mlx_whisper`, so the function returned None from its import
+    `except` and never reached the code the test named; narrowing or deleting the outer
+    `except Exception` kept it green. Here the imports succeed — fake modules, as
+    `SilentWindowSkipTests` installs them — and `ModelHolder.get_model` is what raises."""
+
+    def setUp(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+
+        self.calls = []
+
+        def get_model(repo, dtype):
+            self.calls.append((repo, dtype))
+            raise RuntimeError("runtime internals moved")
+
+        audio = ModuleType("mlx_whisper.audio")
+        audio.N_FRAMES = 3000
+        audio.N_SAMPLES = 480000
+        audio.log_mel_spectrogram = lambda _audio, n_mels, padding: _FakeMel(3100)
+        audio.pad_or_trim = lambda segment, _length, axis: segment
+        decoding = ModuleType("mlx_whisper.decoding")
+        decoding.DecodingOptions = lambda **options: SimpleNamespace(**options)
+        transcribe = ModuleType("mlx_whisper.transcribe")
+        transcribe.ModelHolder = SimpleNamespace(get_model=get_model)
+        self._saved = {name: sys.modules.get(name) for name in (
+            "mlx_whisper", "mlx_whisper.audio", "mlx_whisper.decoding", "mlx_whisper.transcribe",
+        )}
+        sys.modules.update({
+            "mlx_whisper": ModuleType("mlx_whisper"),
+            "mlx_whisper.audio": audio,
+            "mlx_whisper.decoding": decoding,
+            "mlx_whisper.transcribe": transcribe,
+        })
+
+    def tearDown(self):
+        import sys
+
+        for name, module in self._saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def test_an_unexpected_failure_after_the_imports_declines_instead_of_raising(self):
+        mlx = type("FakeMLX", (), {"float16": "float16"})()
+        result = server.transcribe_single_window(None, mlx, [0.0] * 16000, "repo/name", None, None)
+        self.assertEqual(self.calls, [("repo/name", "float16")], "the failure was not raised past the imports")
+        self.assertIsNone(result)
+
 
 
 if __name__ == "__main__":
