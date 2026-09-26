@@ -59,8 +59,12 @@ public enum GlossaryCorrector {
     }
 
     /// Applies reviewed corrections to a copy of the segments: within each correction's segment,
-    /// replaces the first occurrence of its `from` phrase with `to`. Segments without a correction are
-    /// unchanged; corrections are order-independent (each targets a specific segment index).
+    /// replaces the first genuine occurrence of its `from` phrase with `to` (F444's
+    /// `ReplacementBoundary` — the same rule the matcher used to propose it, so a proposal and its
+    /// application can never disagree about which occurrence was meant: not a fragment of a longer
+    /// Latin word, and not a `from` that only reads that way because it sits inside an already-`to`
+    /// span). Segments without a correction are unchanged; corrections are order-independent (each
+    /// targets a specific segment index).
     public static func apply(
         _ corrections: [GlossaryCorrection],
         to segments: [TranscriptSegment]
@@ -68,7 +72,10 @@ public enum GlossaryCorrector {
         var result = segments
         for correction in corrections {
             guard result.indices.contains(correction.segmentIndex),
-                  let range = result[correction.segmentIndex].text.range(of: correction.from) else { continue }
+                  let range = ReplacementBoundary.firstRange(
+                    of: correction.from, notCoveredBy: correction.to,
+                    in: result[correction.segmentIndex].text
+                  ) else { continue }
             result[correction.segmentIndex].text.replaceSubrange(range, with: correction.to)
         }
         return result

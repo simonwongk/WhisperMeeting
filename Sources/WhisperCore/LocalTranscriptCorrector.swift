@@ -10,17 +10,24 @@ public struct TranscriptCorrection: Sendable, Equatable, Codable {
         self.to = to
     }
 
-    /// Maps whole-transcript corrections onto per-segment `GlossaryCorrection`s — one per segment that
-    /// contains `from` — so LLM corrections flow through the exact same review + apply path as F82's
-    /// glossary corrections (`GlossaryCorrector.apply`, which never touches audio). A consistent
-    /// mis-transcription that recurs across segments is fixed everywhere it appears.
+    /// Maps whole-transcript corrections onto per-segment `GlossaryCorrection`s — one per segment
+    /// with a genuine occurrence of `from` — so LLM corrections flow through the exact same review +
+    /// apply path as F82's glossary corrections (`GlossaryCorrector.apply`, which never touches
+    /// audio). A consistent mis-transcription that recurs across segments is fixed everywhere it
+    /// appears.
+    ///
+    /// "Genuine" is `ReplacementBoundary`'s call (F444): a plain substring test proposed a correction
+    /// for every segment that ALREADY read `to` (because `from` was a substring of it, as "Jon" is of
+    /// "Jonathan"), and could clip an unrelated word ("Jon" inside "Jones") that never mis-heard
+    /// anything.
     public static func glossaryCorrections(
         from corrections: [TranscriptCorrection],
         segments: [TranscriptSegment]
     ) -> [GlossaryCorrection] {
         var result: [GlossaryCorrection] = []
         for correction in corrections where !correction.from.isEmpty && correction.from != correction.to {
-            for (index, segment) in segments.enumerated() where segment.text.contains(correction.from) {
+            for (index, segment) in segments.enumerated()
+            where ReplacementBoundary.occurs(correction.from, notCoveredBy: correction.to, in: segment.text) {
                 result.append(GlossaryCorrection(
                     segmentIndex: index, from: correction.from, to: correction.to
                 ))
