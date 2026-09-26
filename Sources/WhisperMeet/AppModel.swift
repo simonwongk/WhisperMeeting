@@ -3359,6 +3359,11 @@ final class AppModel: ObservableObject {
         // exit branch, because every path out of this function ends the recording.
         stopObservingSystemSleep()
         recordingState = .stopping
+        // F477: a cancel-confirmation raised from a pane other than "New Meeting" (or from the menu
+        // bar) and never acted on must not survive past the recording it was about — otherwise it
+        // reappears against whatever recording comes next. Every path out of `.recording`/
+        // `.starting` goes through here or `cancelRecording()`.
+        isConfirmingCancellation = false
         // F292: `.stopping` first, so no new restart starts; then let one already running finish
         // — or cancel it if it will not (F365).
         await settleCaptureRestartBeforeTeardown()
@@ -3379,6 +3384,12 @@ final class AppModel: ObservableObject {
                 recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
             )
             store.upsert(meeting)
+            // F477: cleared here, once the meeting has been upserted with it — not by the view,
+            // which only ever ran after the in-window Stop button or an import. The menu-bar Stop,
+            // the ⌘R toggle, the sleep-triggered stop and the capture-loss finalize all reach this
+            // same success path and previously left the field set, so the NEXT recording silently
+            // started with the PREVIOUS meeting's title.
+            recordingTitle = ""
             pendingMarkers = []
             recordingState = .idle
             activeMeetingID = nil
@@ -3456,6 +3467,9 @@ final class AppModel: ObservableObject {
                         recoverySource: recovered.source.rawValue,
                         recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
                     ))
+                    // F477: this recovery path also upserts a meeting using `title`, so it must
+                    // also clear the field the fallback read from — see the success path above.
+                    recordingTitle = ""
                     var alert = severe
                         ? "The meeting could not finish normally, and most of its audio could not be rebuilt. \(Self.severelyTruncatedRecoveryMessage)"
                         : "The meeting could not finish normally, but its recording was recovered and added to history."
@@ -3531,6 +3545,11 @@ final class AppModel: ObservableObject {
         // F292: out of `.recording` first, so no health tick starts a restart while the engine is
         // being cancelled; then let a restart already running finish — or cancel it (F365).
         recordingState = .stopping
+        // F477: the menu bar's own two-step "Cancel Recording… ▸ Discard Recording" submenu calls
+        // this directly, bypassing `isConfirmingCancellation`/the dialog entirely — so a flag left
+        // over from a DIFFERENT, unacted-on confirmation (raised from some other pane) would
+        // otherwise survive this cancel and reappear against whatever recording starts next.
+        isConfirmingCancellation = false
         await settleCaptureRestartBeforeTeardown()
         stopObservingSystemSleep()   // F253
         // Before the engine removes the folder, so nothing is held on a directory being deleted

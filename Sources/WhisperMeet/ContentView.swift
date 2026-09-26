@@ -254,6 +254,23 @@ struct ContentView: View {
                 Text("This removes the local recording, its source tracks, and its transcript. This action cannot be undone by WhisperMeet.")
             }
         }
+        // F477: hosted here, on the root that is present for as long as the window is open,
+        // instead of on `RecordMeetingView` — which is built only while the sidebar selection is
+        // "New Meeting". Recording ▸ Cancel Recording… and its menu-bar equivalent both route
+        // through `model.requestCancelConfirmation()` regardless of which pane is showing, so the
+        // dialog that answers it must be too.
+        .confirmationDialog(
+            "Discard this recording?",
+            isPresented: $model.isConfirmingCancellation,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Recording", role: .destructive) {
+                Task { await model.cancelRecording() }
+            }
+            Button("Keep Recording", role: .cancel) {}
+        } message: {
+            Text("The unfinished recording and its source tracks will be permanently removed. Choose Stop Meeting if you want to keep the audio.")
+        }
     }
 
     @ViewBuilder
@@ -489,18 +506,11 @@ private struct RecordMeetingView: View {
         .animation(reduceMotion ? nil : .uiSpring, value: model.recordingState)
         .navigationTitle("New Meeting")
         .onAppear { model.refreshRecordingPreflight() }
-        .confirmationDialog(
-            "Discard this recording?",
-            isPresented: $model.isConfirmingCancellation,
-            titleVisibility: .visible
-        ) {
-            Button("Discard Recording", role: .destructive) {
-                Task { await model.cancelRecording() }
-            }
-            Button("Keep Recording", role: .cancel) {}
-        } message: {
-            Text("The unfinished recording and its source tracks will be permanently removed. Choose Stop Meeting if you want to keep the audio.")
-        }
+        // F477: the confirmationDialog for this used to be HERE, so Recording ▸ Cancel
+        // Recording…/⌘-equivalent did nothing unless "New Meeting" happened to be the visible pane
+        // — this view is built only for that sidebar selection (`singleDetail`'s `.record` case).
+        // It is now on `ContentView`'s own root below, which is present for as long as the window
+        // is open, whatever pane is showing.
         .fileImporter(
             isPresented: $showsImporter,
             allowedContentTypes: [.audio, .movie, .audiovisualContent],
