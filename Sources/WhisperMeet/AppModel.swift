@@ -967,6 +967,14 @@ final class AppModel: ObservableObject {
     /// summarizer install either. A flag added here in future is wrong in one place, not four.
     var isInstallingAnyRuntime: Bool {
         isInstallingRecognitionRuntime || isInstallingSummarizer || isInstallingDiarizationRuntime
+            // F440: isInstallingAskEmbeddings installs into $target_directory/embedding-model
+            // INSIDE the summarizer's own runtime directory (setup-ask-embeddings.sh), which
+            // installSummarizer's swap replaces wholesale. Omitted here, the two installers were
+            // not mutually exclusive: a Repair or Update started mid-download could swap the
+            // whole Summarizer/ directory out from under a concurrent Ask embedding install, or
+            // the embedding installer could write into a staging directory the summarizer install
+            // was about to move aside.
+            || isInstallingAskEmbeddings
     }
 
     /// Why "Install / Repair Local Whisper" or "Install / Repair Qwen3-ASR" cannot run right now, or
@@ -4888,7 +4896,11 @@ final class AppModel: ObservableObject {
 
     /// Downloads the search model (announced in the UI with its size) into the local-model runtime.
     func installAskEmbeddingModel() {
-        guard !isInstallingAskEmbeddings else { return }
+        // F440: !isInstallingAnyRuntime (which now includes this flag) rather than just the flag
+        // itself — this installer and installSummarizer() both write into
+        // Runtime/Summarizer/embedding-model, one wholesale-swapping the directory the other is
+        // downloading into.
+        guard !isInstallingAnyRuntime else { return }
         guard let script = Bundle.main.url(forResource: "setup-ask-embeddings", withExtension: "sh")
             ?? Self.developmentScriptURL("setup-ask-embeddings.sh") else {
             alertMessage = "The search-model installer is missing from this build."

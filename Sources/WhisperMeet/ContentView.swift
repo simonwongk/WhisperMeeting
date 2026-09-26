@@ -1835,6 +1835,9 @@ struct SettingsView: View {
                                     || model.isInstallingRuntime
                                     || model.isInstallingQwenRuntime
                                     || model.isInstallingDiarizationRuntime
+                                    // F440: installSummarizer() now refuses while Ask's embedding
+                                    // model is downloading into the same directory it swaps.
+                                    || model.isInstallingAskEmbeddings
                                     || model.hasActiveTranscription
                                     || model.isMicrophoneBusy
                                     || model.isImporting
@@ -2333,6 +2336,10 @@ private struct AskMeetingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Add Search by Meaning (490 MB)") { model.installAskEmbeddingModel() }
                         .controlSize(.small)
+                        // F440: installAskEmbeddingModel() now refuses while any other runtime
+                        // install is in progress (they share Runtime/Summarizer/embedding-model);
+                        // disabled here too so the button never silently no-ops on a click.
+                        .disabled(model.isInstallingAnyRuntime)
                         .help("Downloads intfloat/multilingual-e5-small (MIT) from Hugging Face once. Searching then runs on this Mac; nothing about your meetings is uploaded.")
                 }
                 Spacer()

@@ -69,6 +69,17 @@ cleanup_and_restore() {
         && -e "$backup_directory" ]]; then
     mv "$backup_directory" "$target_directory"
   fi
+  # F440: `embedding-model` (Ask Meetings' search-by-meaning model, installed by
+  # setup-ask-embeddings.sh into this same directory) is relocated into `$staging_directory` ahead
+  # of the swap below so the atomic `mv "$staging_directory" "$target_directory"` carries it along
+  # for free. A kill between that relocation and the swap completing would otherwise leave it
+  # sitting in `$staging_directory` for the unconditional `rm -rf` two lines down to destroy —
+  # rescue it into whichever Summarizer directory is actually live first.
+  if [[ -d "$staging_directory/embedding-model"
+        && -d "$target_directory"
+        && ! -d "$target_directory/embedding-model" ]]; then
+    mv "$staging_directory/embedding-model" "$target_directory/embedding-model"
+  fi
   if [[ -d "$staging_directory" ]]; then
     rm -rf "$staging_directory"
   fi
@@ -178,12 +189,29 @@ chmod 644 "$staging_directory/refine_server.py"
 "$staging_directory/venv/bin/python" "$staging_directory/correct_local.py" --help >/dev/null
 "$staging_directory/venv/bin/python" "$staging_directory/refine_server.py" --help >/dev/null
 
+# F440: setup-ask-embeddings.sh installs Ask Meetings' search-by-meaning model INTO this same
+# directory, at `$target_directory/embedding-model` — so the swap below, which replaces the whole
+# directory, used to delete it on every "Repair or Update". Relocate it into staging first: the
+# atomic `mv "$staging_directory" "$target_directory"` two lines down then carries it along as part
+# of the same rename, and removing `$backup_directory` afterwards no longer takes it with it,
+# because it is no longer there to take. `cleanup_and_restore` rescues it back out if a kill lands
+# before that swap completes.
+if [[ -d "$target_directory/embedding-model" ]]; then
+  mv "$target_directory/embedding-model" "$staging_directory/embedding-model"
+fi
+
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"
 fi
 if ! mv "$staging_directory" "$target_directory"; then
   if [[ -e "$backup_directory" ]]; then
     mv "$backup_directory" "$target_directory"
+  fi
+  # The relocation above emptied $target_directory's embedding-model into what is now the doomed
+  # $staging_directory; put it back before the previous-model rollback message below, since that
+  # message promises "the previous one was restored" and this is part of it.
+  if [[ -d "$staging_directory/embedding-model" && ! -d "$target_directory/embedding-model" ]]; then
+    mv "$staging_directory/embedding-model" "$target_directory/embedding-model"
   fi
   print -u2 "The new summarization model could not be activated; the previous one was restored."
   exit 1
