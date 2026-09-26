@@ -147,7 +147,11 @@ permanent, and the one that is — a full disk — loses the same audio either w
 
 The other half is that ending somebody's meeting recording without being asked is a large action
 taken on a heuristic, and a false positive ends a real meeting. The app's standing rule is that it
-never stops a recording on its own, the sleep path excepted, where the OS is ending it anyway.
+never stops a recording on a heuristic of its own. It ends one only after the capture itself has
+ended: when the Mac sleeps, and when the capture stream dies and cannot be restarted — the restarts
+have come too fast for the restart policy's bound, or the gap is longer than it will pad with
+silence (`CaptureRestartPolicy`). Then it finalizes what was captured rather than abandoning it
+(F275, F531). A failing write, as above, is not such a case.
 
 What holds this up is a property, not an intention, so it is pinned by a test rather than by this
 paragraph: `failedWritesAreReconciledToWallClock` drives a run of failed writes through the real
