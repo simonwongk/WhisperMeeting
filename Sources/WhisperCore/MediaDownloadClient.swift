@@ -163,6 +163,10 @@ public struct MediaDownloadClient: Sendable {
     /// Best-effort captions, pinned to `subLangs` so an auto-translated track is never fetched. Returns
     /// an empty array rather than throwing — a caption failure must never fail the import.
     public func captions(url: String, into directory: URL, subLangs: String) async -> [TranscriptSegment] {
+        // `none` is what the sanitizer makes of anything that is not a language tag. It matches no
+        // track, so there is nothing to fetch.
+        let language = MediaDownloadArguments.sanitizedSubLangs(subLangs)
+        guard language != "none" else { return [] }
         let runner = ProcessGroupRunner()
         guard let outcome = try? await runner.run(
             executableURL: executableURL,
@@ -174,10 +178,13 @@ public struct MediaDownloadClient: Sendable {
         ), outcome.exitStatus == 0 else {
             return []
         }
+        // Only the requested language's track is adopted, never whichever `.vtt` the listing returns
+        // first — that could be another language's (F495).
+        let expected = "\(MediaDownloadArguments.captionsBasename).\(language).vtt".lowercased()
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil
         )) ?? []
-        guard let vtt = files.first(where: { $0.pathExtension.lowercased() == "vtt" }),
+        guard let vtt = files.first(where: { $0.lastPathComponent.lowercased() == expected }),
               let text = try? String(contentsOf: vtt, encoding: .utf8) else {
             return []
         }

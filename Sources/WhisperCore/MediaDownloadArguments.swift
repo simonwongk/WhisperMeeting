@@ -17,6 +17,8 @@ import Foundation
 public enum MediaDownloadArguments {
     /// The output basename the rest of the app requires (Trap 2). yt-dlp fills the real extension.
     public static let outputBasename = "recording"
+    /// The caption fetch's output basename; yt-dlp writes each track as `captions.<lang>.vtt`.
+    public static let captionsBasename = "captions"
 
     /// Probe metadata (title/duration/uploader/filesize/live) without downloading — this is what makes
     /// the storage guard and the duration warning possible before an unbounded fetch.
@@ -72,8 +74,8 @@ public enum MediaDownloadArguments {
     /// auto-**translated** track can never be adopted into the transcript (original-language invariant).
     public static func captions(url: String, intoDirectory directory: String, subLangs: String) -> [String] {
         let template = directory.hasSuffix("/")
-            ? "\(directory)captions.%(ext)s"
-            : "\(directory)/captions.%(ext)s"
+            ? "\(directory)\(captionsBasename).%(ext)s"
+            : "\(directory)/\(captionsBasename).%(ext)s"
         return [
             "--ignore-config",
             "--no-playlist",
@@ -91,13 +93,15 @@ public enum MediaDownloadArguments {
         ]
     }
 
-    /// Keeps only a plain BCP-47-ish language code (letters, digits, and single hyphens). Anything else
-    /// falls back to a literal match on the raw value being impossible, so no captions are fetched — the
-    /// safe direction, since captions are an optional reference.
+    /// Keeps only a value shaped like a BCP 47 tag — a 2–3 letter language, then `-` subtags of 2–8
+    /// ASCII letters or digits — and never `all`, yt-dlp's alias for every track, manual and automatic
+    /// (F495). Nothing in that shape is regex syntax or yt-dlp's leading-`-` discard. Anything else
+    /// becomes `none`, which matches no track, so no captions are fetched — the safe direction, since
+    /// captions are an optional reference.
     static func sanitizedSubLangs(_ raw: String) -> String {
-        let allowed = raw.unicodeScalars.allSatisfy {
-            CharacterSet.alphanumerics.contains($0) || $0 == "-"
-        }
-        return allowed && !raw.isEmpty && raw.count <= 20 ? raw : "none"
+        let tag = #"\A[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*\z"#
+        guard raw.count <= 20, raw.lowercased() != "all",
+              raw.range(of: tag, options: .regularExpression) != nil else { return "none" }
+        return raw
     }
 }

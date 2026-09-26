@@ -54,3 +54,24 @@ func detectsPlaylistsAndChannels() throws {
     #expect(try MediaSourceURL.validate("https://www.youtube.com/@SomeCreator").isPlaylist)
     #expect(try !MediaSourceURL.validate("https://youtu.be/dQw4w9WgXcQ").isPlaylist)
 }
+
+// F495 — the channel/playlist heuristics are YouTube's, and they were applied to every host: TikTok's
+// canonical single-video URL is `/@user/video/<id>` and a Mastodon or Threads post is `/@user/<id>`,
+// so each was refused as "a playlist or channel". Other hosts rely on the always-passed --no-playlist.
+@Test("A single video on another host is not refused as a playlist or channel (F495)")
+func otherHostsAreNotJudgedByYouTubeChannelRules() throws {
+    for single in [
+        "https://www.tiktok.com/@scout2015/video/6718335390845095173",
+        "https://mastodon.social/@Gargron/109311231234567890",
+        "https://www.threads.net/@zuck/post/C1a2b3c4d5e",
+        "https://example.com/c/talks/keynote.mp4",
+        "https://example.com/watch?id=7&list=related",
+    ] {
+        let parsed = try MediaSourceURL.validate(single)
+        #expect(!parsed.isPlaylist, "\(single)")
+        #expect(parsed.kind == MediaSource.webKind)
+    }
+    // YouTube's own channel and playlist shapes are still refused.
+    #expect(try MediaSourceURL.validate("https://m.youtube.com/@SomeCreator/videos").isPlaylist)
+    #expect(try MediaSourceURL.validate("https://youtu.be/dQw4w9WgXcQ?list=PL123").isPlaylist)
+}

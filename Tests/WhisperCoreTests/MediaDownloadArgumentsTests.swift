@@ -49,7 +49,10 @@ func sanitizesSubLangs() {
     // tracks could be widened by the very metadata it is meant to constrain.
     #expect(MediaDownloadArguments.sanitizedSubLangs("en") == "en")
     #expect(MediaDownloadArguments.sanitizedSubLangs("zh-Hans") == "zh-Hans")
-    #expect(MediaDownloadArguments.sanitizedSubLangs("all") == "all") // a literal code shape, still pinned below
+    // F495: `all` is yt-dlp's alias for every track, manual and automatic, so it is refused — the
+    // one keyword this sanitizer exists to block, which this line used to pin as passing.
+    #expect(MediaDownloadArguments.sanitizedSubLangs("all") == "none")
+    #expect(MediaDownloadArguments.sanitizedSubLangs("ALL") == "none")
     #expect(MediaDownloadArguments.sanitizedSubLangs("en.*") == "none")
     #expect(MediaDownloadArguments.sanitizedSubLangs("en,fr") == "none")
     #expect(MediaDownloadArguments.sanitizedSubLangs("") == "none")
@@ -80,4 +83,41 @@ func flagShapedURLIsPositional() {
     // MediaSourceURL rejects a leading-dash URL, but -- is defense in depth if one slips through.
     let url = "https://youtu.be/-abc"
     #expect(endsWithSeparatedURL(MediaDownloadArguments.download(url: url, intoDirectory: "/tmp/x"), url))
+}
+
+@Test("The sub-language must be shaped like a BCP 47 tag: no alias, no discard, no stray text (F495)")
+func subLangsMustBeALanguageTag() {
+    for good in ["en", "fil", "en-US", "es-419", "zh-Hant", "sr-Latn"] {
+        #expect(MediaDownloadArguments.sanitizedSubLangs(good) == good)
+    }
+    // A leading `-` is yt-dlp's discard syntax; "English" is a name, not a code; a trailing newline
+    // or an empty subtag is not a tag.
+    for bad in ["-en", "English", "e", "en\n", "en-", "en--US", "en_US", "中文"] {
+        #expect(MediaDownloadArguments.sanitizedSubLangs(bad) == "none", "\(bad)")
+    }
+}
+
+@Test("Captions adopt the track in the requested language, never whichever .vtt is listed first (F495)")
+func captionsAdoptOnlyTheRequestedLanguage() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F495-captions-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func cue(_ text: String) -> String { "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n\(text)\n" }
+    // What yt-dlp leaves behind is `captions.<lang>.vtt`. The downloader here is `/usr/bin/true`: it
+    // succeeds and writes nothing, so the directory holds exactly what the test put there.
+    try cue("Bonjour à tous.").write(
+        to: directory.appendingPathComponent("captions.fr.vtt"), atomically: true, encoding: .utf8
+    )
+    let client = MediaDownloadClient(executableURL: URL(fileURLWithPath: "/usr/bin/true"))
+
+    #expect(await client.captions(url: "https://youtu.be/abc", into: directory, subLangs: "en").isEmpty)
+
+    try cue("Hello everyone.").write(
+        to: directory.appendingPathComponent("captions.en.vtt"), atomically: true, encoding: .utf8
+    )
+    let english = await client.captions(url: "https://youtu.be/abc", into: directory, subLangs: "en")
+    #expect(english.map(\.text) == ["Hello everyone."])
+    // An alias adopts nothing, whatever is on disk.
+    #expect(await client.captions(url: "https://youtu.be/abc", into: directory, subLangs: "all").isEmpty)
 }

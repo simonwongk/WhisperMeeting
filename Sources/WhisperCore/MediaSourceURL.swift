@@ -102,9 +102,14 @@ public enum MediaSourceURL {
         return nil
     }
 
-    /// Whether the URL points at a playlist or channel rather than one video — a `list=` query, or a
-    /// channel/playlist path. The caller refuses these in v1 (`--no-playlist` is also always passed).
+    /// Whether a YouTube URL points at a playlist or channel rather than one video — a `list=` query,
+    /// or a channel/playlist path. The caller refuses these in v1.
+    ///
+    /// YouTube's shapes only (F495). Elsewhere `/@user/…` is a single post — TikTok's canonical video
+    /// URL is `/@user/video/<id>`, Mastodon's and Threads' are `/@user/<id>` — so another host's link
+    /// is never judged by these rules, and relies on `--no-playlist`, which every vector passes.
     static func isPlaylistOrChannel(host: String, components: URLComponents) -> Bool {
+        guard isYouTubeHost(host) else { return false }
         if components.queryItems?.contains(where: { $0.name == "list" }) == true { return true }
         let path = components.path.lowercased()
         let firstSegment = path.split(separator: "/").first.map(String.init) ?? ""
