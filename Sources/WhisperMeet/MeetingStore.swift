@@ -210,7 +210,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// A plain string rather than the enum, as `transcriptionEngineRawValue` is (F250): a value this
     /// build has never heard of decodes and round-trips untouched, and the typed read answers
     /// `.automatic` for it — the deferring answer, since a language this build cannot pin is one it
-    /// can still detect.
+    /// can still detect. Nil is not only "written before this field existed": a downgrade round-trip
+    /// produces it too, because the older build drops the key on its next save. Both read the same
+    /// way — detect, never pin — so nil is never an age marker.
     var requestedLanguage: String?
     /// Where this meeting's audio came from when it was fetched from a link rather than recorded or
     /// imported from a local file (F183). Optional so meeting indexes written before this feature still

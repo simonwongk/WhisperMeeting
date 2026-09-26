@@ -4913,7 +4913,10 @@ final class AppModel: ObservableObject {
     /// `private`) so the alignment-warning persistence hop is testable without a GUI (F30). The
     /// `requestedLanguage` is the engine snapshot's selected language, used for the
     /// "original language only" advisory (F32) and recorded on the meeting so a per-segment re-run
-    /// pins only what this run pinned (F471); it defaults to `.automatic`, which never flags.
+    /// pins only what this run pinned (F471). It defaults to `.automatic`, which never flags — and the
+    /// default is RECORDED as the request, so a caller that omits it claims the run was automatic.
+    /// Every engine run must pass what it actually asked for; the one production caller,
+    /// `performTranscription`, passes its queue snapshot (F574's Second Opinion fix must too).
     func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic, engine: MeetingTranscriptionEngine? = nil) {
         // Only use segment-derived (timestamped) text when the segments actually reconstruct the full
         // text; otherwise a partially-aligned result would drop content. Fall back to the complete
