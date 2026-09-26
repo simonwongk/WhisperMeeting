@@ -205,7 +205,25 @@ Flow, Superwhisper and VoiceInk do it — the clipboard is copied at the moment 
 you start speaking — and it now writes the clipboard's *types* (never its content) to the log, so
 one more try tells us exactly what macOS hands WhisperMeet for an iPhone item.
 
-**What I need from you:** with the build that includes F516 installed, copy some text on your
+*2026-09-26:* you tried it (five dictations, 12:05–12:07) and I read the log: at every paste the
+Mac's clipboard held **zero items** — the iPhone's copy never reached the Mac at all, so there was
+nothing for the restore to give back, and it put the empty clipboard back over the dictation. That
+is why nothing pastes afterwards. It does not yet say whether Universal Clipboard itself is down on
+this Mac or whether the item needs a read this code does not do.
+
+**What I need from you (one step, no dictation):** copy some text on your iPhone, then paste it
+straight into any app on the Mac — Notes, say — without dictating in between.
+
+- **Nothing pastes** — Universal Clipboard is not reaching this Mac right now; WhisperMeet is not
+  in the path. The usual causes: 系统设置 ▸ 通用 ▸ 隔空投送与接力 ▸ "允许在这台 Mac 和 iCloud 设备之间使用接力"
+  off on either device, different Apple IDs, Bluetooth or Wi‑Fi off, or the two devices not both
+  awake and near; toggling Bluetooth off and on on both usually brings it back. Once a plain
+  paste works, do the dictation step once more and I read the log again.
+- **The iPhone's text pastes** — then do: copy on iPhone → dictate into a text box → wait two
+  seconds → paste elsewhere, and tell me what came out. The log will now say whether the Mac saw
+  the iPhone item (`1 item(s): …is-remote-clipboard…`) or, as today, nothing.
+
+*Earlier ask, for the record:* with the build that includes F516 installed, copy some text on your
 iPhone, dictate a sentence into a text box on the Mac, wait two seconds, paste somewhere else — and
 tell me what the paste gave you. I will read the log line myself.
 
