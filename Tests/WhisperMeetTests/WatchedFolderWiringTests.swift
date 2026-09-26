@@ -166,6 +166,36 @@ func persistingRefusalAlertsOnlyOnce() async throws {
 }
 
 @MainActor
+@Test("A whole-library restore in progress alerts once too, not on every look (F454 follow-up review)")
+func restoringLibraryRefusalAlertsOnlyOnce() async throws {
+    // A HEALTHY library (unlike `makeDegradedModel()` above) that is mid-restore — the cause the
+    // original fix's precompute missed entirely, checking only `store.isDegraded` and the storage
+    // guard. `beginLibraryRestore()`/`endLibraryRestore()` are the same internal seam
+    // `RestoreBusyGuardTests` exercises, so this does not need a real backup/restore round trip to
+    // reach `store.isRestoringLibrary == true`.
+    let (model, _) = try makeModel()
+    model.store.beginLibraryRestore()
+    defer { model.store.endLibraryRestore() }
+    let file = try makeRecordingFile()
+    defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+    model.watchedFolderLooked(snapshot: nil, ready: [file])
+    await model.watchedFolderDelivery?.value
+    #expect(model.alertMessage != nil, "the first look must explain the refusal")
+    #expect(model.pendingWatchedFiles == [file], "held on the queue, not dropped")
+    // The user dismisses the alert — exactly what ContentView's OK button does.
+    model.alertMessage = nil
+
+    // The next 3-second look finds the restore still running. Nothing about the cause has
+    // changed, so it must not alert again — the exact repeat this ticket was filed for, which the
+    // precompute's missing restore check let through for this one cause.
+    model.watchedFolderLooked(snapshot: nil, ready: [])
+    await model.watchedFolderDelivery?.value
+    #expect(model.alertMessage == nil, "the cause has not changed, so this look must not re-alert")
+    #expect(model.pendingWatchedFiles == [file], "still held, not lost while quiet")
+}
+
+@MainActor
 @Test("A file the queue accepted becomes exactly one meeting and leaves the queue (F321)")
 func acceptedBatchBecomesAMeeting() async throws {
     let (model, _) = try makeModel()

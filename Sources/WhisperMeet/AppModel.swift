@@ -674,11 +674,25 @@ final class AppModel: ObservableObject {
     }
 
     /// Why the whole waiting batch would be refused right now, or nil when it would not — the same
-    /// two causes `importOne` checks per file (F454): a read-only library, and insufficient storage
-    /// headroom for what is queued. Checked before the notification/attempt so a persisting cause is
-    /// held rather than re-surfaced on every look; the message text matches what `importOne` would
-    /// have said, so the user sees the same explanation either way.
+    /// three causes `importOne` checks per file (F454, corrected in follow-up review): a whole-library
+    /// restore in progress, a read-only library, and insufficient storage headroom for what is
+    /// queued. Checked before the notification/attempt so a persisting cause is held rather than
+    /// re-surfaced on every look.
+    ///
+    /// The first two reuse `libraryAcceptsChanges("Import")`'s own message-producing calls
+    /// (`Self.libraryRestoringMessage` and `ReadOnlyLibraryNotice.actionRefused`) rather than
+    /// re-deriving them, so this precompute and the real ladder inside `importOne` cannot drift —
+    /// this function must never itself set `alertMessage` (that would defeat the once-per-cause
+    /// de-duplication in `deliverWatchedFiles()`), which is why it cannot simply call
+    /// `libraryAcceptsChanges`/`libraryIsNotBeingRestored` directly; those two set `alertMessage` as
+    /// a side effect. An earlier version checked only `store.isDegraded`, missing the restore case
+    /// entirely: a watched file arriving during a restore passed this precompute, and then hit
+    /// `libraryIsNotBeingRestored`'s refusal inside `importOne` on every look — the exact repeat this
+    /// ticket was filed for, just for that one cause.
     private func watchedFolderImportRefusalMessage() -> String? {
+        if store.isRestoringLibrary {
+            return Self.libraryRestoringMessage("Import")
+        }
         if store.isDegraded {
             return ReadOnlyLibraryNotice.actionRefused("Import")
         }
@@ -1014,10 +1028,17 @@ final class AppModel: ObservableObject {
         return false
     }
 
+    /// The message `libraryIsNotBeingRestored` reports, factored out so `watchedFolderImportRefusalMessage()`
+    /// can precompute the identical refusal without the side effect of setting `alertMessage` itself
+    /// (F454 follow-up review) — one string, so the two call sites cannot drift apart in wording.
+    private static func libraryRestoringMessage(_ action: String) -> String {
+        "\(action) cannot start while your library is being restored. Try again when the restore finishes."
+    }
+
     /// Refuses `action`, with a reason, while a whole-library restore is running (F506).
     private func libraryIsNotBeingRestored(_ action: String) -> Bool {
         guard store.isRestoringLibrary else { return true }
-        alertMessage = "\(action) cannot start while your library is being restored. Try again when the restore finishes."
+        alertMessage = Self.libraryRestoringMessage(action)
         return false
     }
 
