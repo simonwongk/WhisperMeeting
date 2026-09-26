@@ -145,6 +145,43 @@ func restartPaddingIsWrittenOnceOnSuccess() async throws {
     #expect(try manifestJSON(in: directory)["recoveryAlignment"] as? String == "padded-after-restart")
 }
 
+@Test("A writer with no first buffer yet is not padded, and the manifest anchors the gap on the one that was (F460)")
+func restartPaddingSkipsAnUnstartedWriter() async throws {
+    // The scenario the ticket names: the user starts recording before any system audio plays, so
+    // the microphone has been capturing since t=0 and the system track has never received a
+    // buffer at all. Before this fix, `applyPendingRestartPaddingIfNeeded` padded BOTH writers
+    // from a restart mid-recording, so the system track's file started with silence it had no
+    // `firstPresentationTime` to anchor. When real system audio eventually arrived, its OWN first
+    // buffer set `firstPresentationTime` from its own timestamp — ignoring the silence already
+    // ahead of it — so the mixer's front-padding (from that timestamp) stacked on top, shifting
+    // the whole channel late, and the manifest's `paddedGaps` entry was anchored at frame 0 of a
+    // track that had not started, i.e. "the gap at 0:00".
+    let directory = try sessionDirectory("unstarted")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let engine = restartEngine(directory)
+    try engine.beginTestTrackSession(in: directory)
+    try engine.writeTestFrames(microphoneOnly: 48_000 * 10, firstPresentationTime: 0)
+    engine.handleStreamFailure(StreamDied())
+
+    try await engine.restartAfterFailure(paddingFrames: 48_000 * 3)
+
+    // The system writer got NO padding: writing it there would only become visible once its real
+    // audio starts, as an extra silent span the mixer's own front-padding does not know about.
+    #expect(engine.testFrameCounts == (system: 0, microphone: 48_000 * 13))
+
+    // System audio starts for real, 20 s after the recording began.
+    try engine.writeTestFrames(system: 48_000 * 5, microphone: 0, systemStart: 20, microphoneStart: 0)
+    _ = try await engine.stop()
+
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("meeting.wav").path))
+    let manifest = try manifestJSON(in: directory)
+    let gaps = try #require(manifest["paddedGaps"] as? [[String: Any]])
+    #expect(gaps.count == 1)
+    // Anchored on the microphone — the writer that was ACTUALLY padded — not on a system writer
+    // whose frame count was 0 and would have wrongly put the gap at 0:00.
+    #expect(abs((gaps.first?["startSeconds"] as? Double ?? -1) - 10.0) < 0.001)
+}
+
 @Test("A failed restart writes no padding, keeps the death, and the retry pads the outage once (F292)")
 func failedRestartPadsNothingAndRetryPadsOnce() async throws {
     let directory = try sessionDirectory("retry")

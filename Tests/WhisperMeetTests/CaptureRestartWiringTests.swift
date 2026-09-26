@@ -299,11 +299,16 @@ func failedRestartIsRetriedWithBackoff() async throws {
     #expect(model.recordingState.isLive)
     // The successful attempt pads the whole outage, measured from the last time the capture was
     // alive — not just the time since the previous failed attempt.
+    // 19, not 20 (F460): the wall-clock estimate is biased down by one health-tick interval, since
+    // `captureLastAliveAt` is only as fresh as the last tick and the true death could have
+    // happened anywhere in the second since — an amount `CaptureGapPolicy` tops up exactly once
+    // the resumed stream's real first buffer arrives, rather than trusting this wall-clock guess
+    // to be exact (an OVER-estimate has no such correction and would shift the timeline instead).
     // Typed, for the reason `deadStreamIsRestartedAndAnnounced` gives: an inferred literal compares
-    // as a different integer type and fails while both sides print 960000.
-    let wholeGap: Int64 = 20 * 48_000
-    #expect(attempts.withLock { $0.last } == wholeGap)
-    #expect(model.captureRestartNotice?.contains("20 sec") == true)
+    // as a different integer type and fails while both sides print the same number.
+    let wholeGapLessOneTick: Int64 = 19 * 48_000
+    #expect(attempts.withLock { $0.last } == wholeGapLessOneTick)
+    #expect(model.captureRestartNotice?.contains("19 sec") == true)
     #expect(model.recorder.restartCount == 1, "failed attempts must not spend the restart budget")
 }
 
@@ -323,8 +328,14 @@ func retriesEndAtThePaddingCap() async throws {
 
     await model.handleCaptureInterruption(trigger: .streamFailed, now: start.addingTimeInterval(1))
     #expect(model.recordingState.isLive)
+    // `+ 1 + healthTickInterval`, not `+ 1` (F460): the wall-clock estimate is now biased down by
+    // one health-tick interval before it is compared to the cap, so a margin of exactly one
+    // second past the cap would land AT the (now-effective) boundary rather than past it.
     await model.handleCaptureInterruption(
-        trigger: .streamFailed, now: start.addingTimeInterval(CaptureRestartPolicy.defaultMaximumPaddedGap + 1)
+        trigger: .streamFailed,
+        now: start.addingTimeInterval(
+            CaptureRestartPolicy.defaultMaximumPaddedGap + 1 + AudioCaptureEngine.healthTickInterval
+        )
     )
     #expect(!model.recordingState.isLive, "a capture gone past the cap must be saved")
     #expect(model.captureRestartNotice?.contains("saved") == true)

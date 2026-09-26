@@ -48,6 +48,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// The capture sample rate, for callers that must convert a duration to frames — F275's padding
     /// has to use exactly the rate the tracks were written at or the gap is the wrong length.
     static var captureSampleRate: Double { targetSampleRate }
+
+    /// The health tick's cadence (`startHealthTimer`), exposed so `AppModel` can derive a
+    /// conservative restart-padding estimate from it (F460) instead of a second literal `1`
+    /// describing the same interval in a different file.
+    static let healthTickInterval: TimeInterval = 1.0
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
         category: "RecordingStartup"
@@ -765,12 +770,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard pendingRestartPadding > 0 else { return }
         let frames = pendingRestartPadding
         pendingRestartPadding = 0
-        // Recorded before the padding goes in, so `startSeconds` is where the gap begins. The
-        // system track's count is the reference; both tracks get the same amount, which is what
-        // keeps them aligned with each other.
-        let framesBeforePadding = _systemWriter?.frameCount ?? 0
-        try _systemWriter?.appendSilence(frames: frames)
-        try _microphoneWriter?.appendSilence(frames: frames)
+        // A writer with no first buffer yet has nothing to align this padding against (F460): the
+        // MIXER's own front-padding positions a track from `firstPresentationTime` once its real
+        // audio starts, so writing silence ahead of that would double the gap AND anchor it at
+        // frame 0 of a track that had not started — `CaptureGapPolicy` never sees it as padding
+        // either, because the writer's `firstPresentationTime` is set to that first REAL buffer's
+        // own timestamp, making the offset it compares against exactly 0.
+        let systemStarted = _systemWriter?.firstPresentationTime != nil
+        let microphoneStarted = _microphoneWriter?.firstPresentationTime != nil
+        guard systemStarted || microphoneStarted else { return }
+        // Recorded before the padding goes in, so `startSeconds` is where the gap begins — on
+        // whichever writer is actually being padded, since that is the track this span sits on.
+        // Both started writers stay frame-aligned by every earlier restart, so either answers the
+        // same question when both qualify.
+        let framesBeforePadding = (systemStarted ? _systemWriter : _microphoneWriter)?.frameCount ?? 0
+        if systemStarted { try _systemWriter?.appendSilence(frames: frames) }
+        if microphoneStarted { try _microphoneWriter?.appendSilence(frames: frames) }
         _paddedGaps.append(
             SourceTrackManifest.PaddedGap(
                 startSeconds: Double(framesBeforePadding) / Self.targetSampleRate,
@@ -820,6 +835,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     func writeTestFrames(system: Int64, microphone: Int64, systemStart: Double, microphoneStart: Double) throws {
         try systemWriter?.appendTestFrames(system, firstPresentationTime: systemStart)
         try microphoneWriter?.appendTestFrames(microphone, firstPresentationTime: microphoneStart)
+    }
+
+    /// Writes frames to only the microphone writer, leaving the system writer completely
+    /// untouched — so its `firstPresentationTime` stays nil, standing in for "no system audio has
+    /// been detected yet" (F460). `writeTestFrames` above cannot express this: it calls
+    /// `appendTestFrames` on both writers unconditionally, which sets `firstPresentationTime` even
+    /// at frame count 0.
+    func writeTestFrames(microphoneOnly frames: Int64, firstPresentationTime start: Double) throws {
+        try microphoneWriter?.appendTestFrames(frames, firstPresentationTime: start)
     }
 
     /// A buffer that failed to convert or write while the stream kept running — `streamError`
@@ -929,7 +953,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private func startHealthTimer() {
         let timer = DispatchSource.makeTimerSource(queue: captureQueue)
-        timer.schedule(deadline: .now(), repeating: 1)
+        timer.schedule(deadline: .now(), repeating: Self.healthTickInterval)
         timer.setEventHandler { [weak self] in
             self?.emitHealthSnapshot()
         }

@@ -3683,7 +3683,21 @@ final class AppModel: ObservableObject {
         // F292: never measure from nothing. A missing anchor (a caller that did not start the
         // recording through `startRecording`) becomes this moment, so the gap still grows from here.
         if captureLastAliveAt == nil, recordingState.isLive { captureLastAliveAt = now }
-        let measuredGap = gap ?? captureLastAliveAt.map { now.timeIntervalSince($0) } ?? 0
+        // F460: `captureLastAliveAt` is stamped by the last CONFIRMED-alive tick, roughly
+        // `AudioCaptureEngine.healthTickInterval` apart — the true death could have happened
+        // anywhere in that interval, so `now - captureLastAliveAt` over-counts by up to one
+        // tick's worth of audio that was actually captured before it. F275 chose to let that
+        // stand on purpose ("a short pad shifts the timeline and a long one only adds silence"),
+        // which was right before F151: `CaptureGapPolicy` now compares the resumed stream's real
+        // first buffer against frames already written, and a positive shortfall there tops up
+        // EXACTLY — but a negative one (already over-padded) fails that same guard and corrects
+        // nothing, so the over-pad is what shifts the timeline permanently now. Biasing the
+        // estimate down by one tick keeps this a safe UNDER-estimate for `CaptureGapPolicy` to
+        // finish, rather than an unrecoverable over-estimate. Not applied to an explicit `gap`
+        // (a wake's sleep duration, or a test's own value), which is exact already.
+        let measuredGap = gap ?? captureLastAliveAt.map {
+            max(0, now.timeIntervalSince($0) - AudioCaptureEngine.healthTickInterval)
+        } ?? 0
         let action = CaptureRestartPolicy.action(
             trigger: trigger,
             state: recordingState.policyState,
