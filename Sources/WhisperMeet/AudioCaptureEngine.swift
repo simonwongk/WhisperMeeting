@@ -319,8 +319,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         let microphoneTrack: FloatTrack
         do {
             try injectedFinishTracks?()
-            guard let finishedSystemTrack = try systemWriter?.finish(),
-                  let finishedMicrophoneTrack = try microphoneWriter?.finish() else {
+            let (finishedSystemTrack, finishedMicrophoneTrack) = try captureQueue.sync {
+                try finishTrackWriters()
+            }
+            guard let finishedSystemTrack, let finishedMicrophoneTrack else {
                 throw AudioCaptureError.noAudioCaptured
             }
             systemTrack = finishedSystemTrack
@@ -484,6 +486,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         dispatchPrecondition(condition: .onQueue(captureQueue))
         _streamError = error
         _streamDied = true
+    }
+
+    /// Finishes both track writers, returning whatever each produced. Must run on `captureQueue`
+    /// (F388): it reaches the stored `_systemWriter`/`_microphoneWriter` directly, the same objects
+    /// `applyPendingRestartPaddingIfNeeded` calls `appendSilence` on from the capture queue. Before
+    /// this, `stop()` read the writers through the syncing `systemWriter`/`microphoneWriter`
+    /// accessors — which protect only the load of the reference — and then called `finish()`
+    /// itself OFF the queue, safe today only because the session-generation guard happens to keep
+    /// a restart from ever landing in the same window. That guarantee belongs to a different
+    /// mechanism than the queue, so a future caller that does not know about it could reopen this
+    /// silently; the precondition below traps loudly instead the moment that stops being true.
+    private func finishTrackWriters() throws -> (FloatTrack?, FloatTrack?) {
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        let system = try _systemWriter?.finish()
+        let microphone = try _microphoneWriter?.finish()
+        return (system, microphone)
     }
 
     /// Whether the capture currently holds its `beginActivity` power assertion (F254).
