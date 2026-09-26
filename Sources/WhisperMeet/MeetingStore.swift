@@ -484,7 +484,9 @@ final class MeetingStore: ObservableObject {
     /// restore does, with `endLibraryRestore()`, whichever way the restore went.
     @Published private(set) var isRestoringLibrary = false
 
-    static let changeRefusedDuringRestore = "Your library is being restored, so this change was not saved. Try again when the restore finishes."
+    /// `nonisolated`: an immutable string read from `MeetingStoreError.errorDescription`, which is
+    /// not on the main actor — the release build treats the isolated reference as an error.
+    nonisolated static let changeRefusedDuringRestore = "Your library is being restored, so this change was not saved. Try again when the restore finishes."
 
     private(set) var startupRecoveryMessages: [String] = []
 
