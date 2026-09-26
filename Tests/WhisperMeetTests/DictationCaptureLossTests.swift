@@ -114,8 +114,8 @@ func droppedBuffersAreCounted() throws {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)
     )
     // `frameLength` left at 0: the converter yields no frames and returns nil, which is the shape
-    // of every drop — a device mid-change legitimately produces one, and a broken pipeline produces
-    // nothing else. The count is what tells those apart afterwards.
+    // of every drop — an isolated one is tolerated, and a broken pipeline produces nothing else. The
+    // count is what tells those apart afterwards.
     let empty = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512))
     for _ in 0..<3 { recorder.handleTap(buffer: empty, converter: converter, onLevel: { _ in }) }
 

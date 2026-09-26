@@ -68,8 +68,10 @@ private func toneBuffer(
 func converterRebuildsWhenTheInputFormatChanges() throws {
     let converter = try #require(DictationTapConverter(targetSampleRate: 16_000))
 
-    // Half a second at 48 kHz, then half a second at 24 kHz: the exact transition the two crashes
-    // rode in on, except arriving mid-capture instead of at the tap install.
+    // Half a second at 48 kHz, then half a second at 24 kHz: the transition the two crashes rode in
+    // on, fed straight to the converter. In the app a mid-capture rate change ends the capture
+    // (F357); this pins the rebuild kept as defence in depth for a buffer whose format differs from
+    // the first one.
     var total = 0
     var afterTheChange = 0
     for _ in 0..<5 {

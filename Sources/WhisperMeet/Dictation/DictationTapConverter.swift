@@ -22,10 +22,13 @@ struct DictationTapChunk: Sendable {
 /// changes — the same rule `AudioCaptureEngine.append` already follows for meeting capture
 /// (`AudioCaptureEngine.swift:866`), which is why the meeting path was never exposed to this.
 ///
-/// A rebuild discards the resampler's priming — measured at 240 samples (15 ms at 16 kHz) going from
-/// 48 kHz and 11 samples from 24 kHz. That loss is the price of tolerating a device change mid-capture
-/// and is far cheaper than the alternatives, but it is a real gap in the audio at the moment of the
-/// change, so it belongs here rather than only in the test that measured it.
+/// Within one capture the rebuild is defence in depth, for a buffer whose format differs from the
+/// first one. It does not carry a capture through a device change: on a mid-capture sample-rate or
+/// channel-count change the engine stops itself (`AVAudioEngine.h`), `MicDictationRecorder` ends
+/// the capture and says so (F357), and the next `start()` builds a fresh converter. A rebuild
+/// discards the resampler's priming — measured at 240 samples (15 ms at 16 kHz) going from 48 kHz
+/// and 11 samples from 24 kHz — which is a real gap in the audio wherever one happens, so it
+/// belongs here rather than only in the test that measured it.
 ///
 /// Thread model: **in production** `convert` is called only from the AVAudioEngine tap thread, which is
 /// serial, and nothing else touches the converter for the lifetime of a capture; tests call it directly
@@ -53,8 +56,10 @@ final class DictationTapConverter: @unchecked Sendable {
     }
 
     /// Converts one tap buffer, rebuilding the converter if this buffer's format differs from the
-    /// last one's. Returns nil when the buffer yields no usable samples; a caller drops that chunk
-    /// rather than failing the capture, because a device mid-change can legitimately produce one.
+    /// last one's. Returns nil when the buffer yields no usable samples; the caller counts and drops
+    /// that chunk rather than failing the capture, because one unusable buffer is not by itself a
+    /// failure — whether the capture as a whole yielded nothing is `MicDictationRecorder.stop()`'s
+    /// call (F368).
     func convert(_ buffer: AVAudioPCMBuffer) -> DictationTapChunk? {
         let inputFormat = buffer.format
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return nil }

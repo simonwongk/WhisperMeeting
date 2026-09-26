@@ -306,11 +306,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         onLevel: @escaping @Sendable (Float) -> Void
     ) {
         guard let chunk = converter.convert(buffer) else {
-            // Counted, not silently dropped (F368). One drop is normal — a device mid-change
-            // legitimately produces a buffer with no usable frames — so this is not an error by
-            // itself. It becomes one when the whole capture yielded nothing and this is non-zero,
-            // which `stop()` decides. Without the count, a broken converter and a silent room are
-            // the same empty array, and the controller treats the second as a normal no-op.
+            // Counted, not silently dropped (F368). One drop is not an error by itself: tolerating
+            // a buffer with no usable frames is defence in depth, and a device that changes rate or
+            // channel count mid-capture ends the capture instead (F357). It becomes one when the
+            // whole capture yielded nothing and this is non-zero, which `stop()` decides. Without
+            // the count, a broken converter and a silent room are the same empty array, and the
+            // controller treats the second as a normal no-op.
             processingQueue.async { self.droppedChunks += 1 }
             return
         }
