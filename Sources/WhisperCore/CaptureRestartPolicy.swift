@@ -66,8 +66,23 @@ public enum CaptureRestartPolicy {
     /// break stays one meeting; a night does not.
     public static let defaultMaximumPaddedGap: TimeInterval = 5 * 60
 
-    /// How many restarts one recording may attempt before it is saved instead.
+    /// How many restarts a recording may attempt **within `defaultRestartFlappingWindow`** before it
+    /// is saved instead (F531).
     public static let defaultMaximumRestarts = 3
+
+    /// The window a burst of restarts is measured against (F531).
+    ///
+    /// **Derived, not chosen fresh.** `defaultMaximumPaddedGap` (5 minutes) is already this file's
+    /// answer to "how long can capture be dark and still be one meeting", set from the same disk-cost
+    /// reasoning above. A stream that needs another restart within twice that span is still
+    /// plausibly the same event repeating — a dock or display still misbehaving — so the window is
+    /// twice the gap cap rather than a second, independent guess.
+    ///
+    /// This is what turns "3 restarts, ever" into "3 restarts in a burst": a docked MacBook's display
+    /// blipping three times in nine minutes is one flapping stream and finalizes; the same three
+    /// blips spread across a 6-hour all-hands, each recovered and stable for hours before the next,
+    /// are three unrelated, independently-fine recoveries and must not stop a 4th.
+    public static let defaultRestartFlappingWindow: TimeInterval = 2 * defaultMaximumPaddedGap
 
     /// The manifest's `recoveryAlignment` for a recording that was padded and resumed.
     ///
@@ -78,14 +93,23 @@ public enum CaptureRestartPolicy {
     public static let paddedAlignment = "padded-after-restart"
 
     /// The action for a trigger, a lifecycle phase, and a gap.
+    ///
+    /// `restartTimestamps` is every restart this recording has made so far (`AudioCaptureEngine`'s
+    /// own clock, `ProcessInfo.processInfo.systemUptime`, so it agrees with `now`); the bound counts
+    /// only those within `restartFlappingWindow` of `now` (F531). A recording's 4th restart, hours
+    /// after the first 3 and with none of them still within the window, finalizes on none of them —
+    /// the flapping bound is for a stream that keeps dying **after it comes back**, not for a long
+    /// meeting's unrelated, independently-recovered hiccups.
     public static func action(
         trigger: Trigger,
         state: RecordingSleepPolicy.State,
         streamIsAlive: Bool,
         gap: TimeInterval,
-        restartsSoFar: Int,
+        restartTimestamps: [TimeInterval],
+        now: TimeInterval,
         maximumPaddedGap: TimeInterval = CaptureRestartPolicy.defaultMaximumPaddedGap,
-        maximumRestarts: Int = CaptureRestartPolicy.defaultMaximumRestarts
+        maximumRestarts: Int = CaptureRestartPolicy.defaultMaximumRestarts,
+        restartFlappingWindow: TimeInterval = CaptureRestartPolicy.defaultRestartFlappingWindow
     ) -> Action {
         // Only a running recording. `.starting` would race the setup, `.stopping` already owns a
         // finalize and a second would race it (the hazard F139 closed for Cancel-during-stop), and
@@ -96,8 +120,12 @@ public enum CaptureRestartPolicy {
         // restarting a working stream would drop audio to fix nothing.
         guard !streamIsAlive else { return .none }
         // Bounded, but bounded into `.finalize`, never into abandonment: leaving the capture dead
-        // and the audio unsaved is the state this ticket exists to end.
-        guard restartsSoFar < maximumRestarts else { return .finalize }
+        // and the audio unsaved is the state this ticket exists to end. Counts only restarts still
+        // within the window — `now - timestamp` rather than `timestamp - now`, so a clock that has
+        // moved backwards (an NTP correction) makes every past restart look ancient (excluded) rather
+        // than look like it is still in the future (included forever).
+        let recentRestarts = restartTimestamps.filter { now - $0 <= restartFlappingWindow }.count
+        guard recentRestarts < maximumRestarts else { return .finalize }
         // Clamped, because this is wall-clock arithmetic and wall clock moves backwards — an NTP
         // correction across a sleep is the realistic case. A negative padding is a negative frame
         // count.

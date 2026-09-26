@@ -31,7 +31,8 @@ func deadStreamIsRestartedWithPadding() {
         state: .recording,
         streamIsAlive: false,
         gap: 3,
-        restartsSoFar: 0
+        restartTimestamps: [],
+        now: 0
     )
     #expect(action == .restart(padding: 3))
 }
@@ -43,7 +44,8 @@ func longGapFinalizes() {
         state: .recording,
         streamIsAlive: false,
         gap: CaptureRestartPolicy.defaultMaximumPaddedGap + 1,
-        restartsSoFar: 0
+        restartTimestamps: [],
+        now: 0
     )
     #expect(action == .finalize)
 }
@@ -56,7 +58,8 @@ func gapAtTheCapIsPadded() {
         state: .recording,
         streamIsAlive: false,
         gap: cap,
-        restartsSoFar: 0
+        restartTimestamps: [],
+        now: 0
     )
     #expect(action == .restart(padding: cap))
 }
@@ -71,7 +74,8 @@ func liveStreamIsNotRestarted() {
             state: .recording,
             streamIsAlive: true,
             gap: 0,
-            restartsSoFar: 0
+            restartTimestamps: [],
+            now: 0
         )
         #expect(action == .none, "restarted a live stream on \(trigger)")
     }
@@ -88,23 +92,29 @@ func onlyARunningRecordingIsTouched() {
             state: state,
             streamIsAlive: false,
             gap: 1,
-            restartsSoFar: 0
+            restartTimestamps: [],
+            now: 0
         )
         #expect(action == .none, "acted on a recording in state \(state)")
     }
 }
 
-@Test("Exhausted retries finalize the recording rather than abandoning it (F275)")
+@Test("Exhausted retries within the flapping window finalize the recording rather than abandoning it (F275, F531)")
 func exhaustedRetriesFinalize() {
     // "Bound the retries" must not mean "leave the capture dead and the audio unsaved" — that is
     // the state this ticket exists to end. A display that is gone for good stops the spinning by
-    // saving what was captured.
+    // saving what was captured. All three restarts sit well inside the flapping window, so this is
+    // a genuine burst — F531's `restartsWithinTheWindowOnlyCount` below is what pins the OTHER half,
+    // that restarts spread outside the window do not.
+    let now: TimeInterval = 10_000
+    let threeRecentRestarts = [now - 30, now - 20, now - 10]
     let action = CaptureRestartPolicy.action(
         trigger: .streamFailed,
         state: .recording,
         streamIsAlive: false,
         gap: 1,
-        restartsSoFar: CaptureRestartPolicy.defaultMaximumRestarts
+        restartTimestamps: threeRecentRestarts,
+        now: now
     )
     #expect(action == .finalize)
 
@@ -113,9 +123,74 @@ func exhaustedRetriesFinalize() {
         state: .recording,
         streamIsAlive: false,
         gap: 1,
-        restartsSoFar: CaptureRestartPolicy.defaultMaximumRestarts - 1
+        restartTimestamps: Array(threeRecentRestarts.dropLast()),
+        now: now
     )
     #expect(lastAllowed == .restart(padding: 1))
+}
+
+// F531 — the bound used to count every restart for the whole recording, so a long meeting's 4th
+// UNRELATED stream death ended it even though each restart worked and the stream stayed healthy for
+// hours in between. It is now a burst: only restarts within `defaultRestartFlappingWindow` count.
+@Test("Restarts outside the flapping window do not count toward the bound (F531)")
+func restartsOutsideTheWindowDoNotCount() {
+    // Three restarts, each hours apart — a docked MacBook's display blipping at 0:50, 2:10 and 3:40
+    // into a 6-hour all-hands, each one recovering and staying healthy for hours before the next.
+    let hour: TimeInterval = 3_600
+    let now: TimeInterval = 4 * hour + 30 * 60  // 4:30 in
+    let threeRestartsHoursApart: [TimeInterval] = [50 * 60, 2 * hour + 10 * 60, 3 * hour + 40 * 60]
+    #expect(threeRestartsHoursApart.count == CaptureRestartPolicy.defaultMaximumRestarts)
+
+    // A 4th, unrelated blip at 4:30 must still be allowed to restart — none of the first three is
+    // within the window of `now`.
+    let action = CaptureRestartPolicy.action(
+        trigger: .displayReconfigured,
+        state: .recording,
+        streamIsAlive: false,
+        gap: 2,
+        restartTimestamps: threeRestartsHoursApart,
+        now: now
+    )
+    #expect(action == .restart(padding: 2), "3 restarts spread over hours finalized an unrelated 4th")
+
+    // But a burst of 3 packed into the last few minutes before this 4th one DOES finalize — the
+    // window itself still bounds a genuinely flapping stream.
+    let packedBurst: [TimeInterval] = [now - 500, now - 300, now - 100]
+    let finalizes = CaptureRestartPolicy.action(
+        trigger: .displayReconfigured,
+        state: .recording,
+        streamIsAlive: false,
+        gap: 2,
+        restartTimestamps: packedBurst,
+        now: now
+    )
+    #expect(finalizes == .finalize, "a genuine burst within the window must still finalize")
+}
+
+@Test("The flapping window is derived from the padded-gap cap already in this file, not a fresh guess (F531)")
+func flappingWindowIsDerivedFromTheGapCap() {
+    #expect(CaptureRestartPolicy.defaultRestartFlappingWindow == 2 * CaptureRestartPolicy.defaultMaximumPaddedGap)
+    #expect(CaptureRestartPolicy.defaultRestartFlappingWindow == 10 * minute)
+}
+
+@Test("A restart exactly at the edge of the window still counts; just past it does not (F531)")
+func restartAtTheWindowEdge() {
+    let now: TimeInterval = 1_000
+    let window = CaptureRestartPolicy.defaultRestartFlappingWindow
+
+    // Two restarts already in the window, one exactly at the edge (still counts) makes 3: finalize.
+    let atEdge = CaptureRestartPolicy.action(
+        trigger: .streamFailed, state: .recording, streamIsAlive: false, gap: 1,
+        restartTimestamps: [now - 1, now - 2, now - window], now: now
+    )
+    #expect(atEdge == .finalize)
+
+    // The same shape, but the oldest is one second past the edge: only 2 remain in the window.
+    let justPast = CaptureRestartPolicy.action(
+        trigger: .streamFailed, state: .recording, streamIsAlive: false, gap: 1,
+        restartTimestamps: [now - 1, now - 2, now - window - 1], now: now
+    )
+    #expect(justPast == .restart(padding: 1))
 }
 
 @Test("A backwards clock pads nothing rather than a negative span (F275)")
@@ -127,7 +202,8 @@ func backwardsClockIsClamped() {
         state: .recording,
         streamIsAlive: false,
         gap: -30,
-        restartsSoFar: 0
+        restartTimestamps: [],
+        now: 0
     )
     #expect(action == .restart(padding: 0))
 }

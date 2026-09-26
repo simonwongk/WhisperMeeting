@@ -3583,7 +3583,10 @@ final class AppModel: ObservableObject {
             state: recordingState.policyState,
             streamIsAlive: !recorder.captureDidDie,   // F363
             gap: measuredGap,
-            restartsSoFar: recorder.restartCount
+            // F531: a burst, not a lifetime total — `restartTimestamps` is filtered to the recent
+            // window inside `action`, on the same `systemUptime` clock it was recorded with.
+            restartTimestamps: recorder.restartTimestamps,
+            now: ProcessInfo.processInfo.systemUptime
         )
         switch action {
         case .none:

@@ -520,3 +520,19 @@ func deadStreamStillRestarts() async throws {
 
     #expect(padded.withLock { $0 }.count == 1, "a real death must still be restarted")
 }
+
+// F531 — the bound is a burst, not a lifetime total: `AppModel` must pass the engine's actual
+// restart TIMESTAMPS (which `CaptureRestartPolicy.action` filters to the recent window) rather than
+// a lifetime count, or the fix pinned in `CaptureRestartPolicyTests` has nothing feeding it live
+// data. `restartsAreBounded` above already proves a real burst still finalizes; this pins that the
+// call site is what makes that true, so a future edit cannot quietly revert to a bare count.
+@Test("AppModel threads the engine's real restart timestamps into the policy, not a bare count (F531)")
+func handleCaptureInterruptionPassesRestartTimestamps() throws {
+    let appModel = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
+    #expect(appModel.contains("restartTimestamps: recorder.restartTimestamps"), """
+        handleCaptureInterruption must pass recorder.restartTimestamps (a burst, filtered to the \
+        recent window inside CaptureRestartPolicy.action) rather than a lifetime restartCount — \
+        otherwise a long recording's Nth unrelated restart, hours after the first few, finalizes a \
+        healthy recording.
+        """)
+}

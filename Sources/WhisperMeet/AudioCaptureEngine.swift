@@ -151,6 +151,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// Restarts attempted for the current recording, which `CaptureRestartPolicy` bounds (F275).
     private(set) var restartCount = 0
+    /// When each restart in `restartCount` happened, on `ProcessInfo.processInfo.systemUptime`'s
+    /// clock — the same clock `CaptureRestartPolicy.action` compares against `now` to bound a
+    /// *burst* of restarts rather than a recording's lifetime total (F531).
+    private(set) var restartTimestamps: [TimeInterval] = []
 
     // Fast, throttled level stream that drives the live volume bar, separate from the 1 Hz health
     // snapshot used for warnings.
@@ -631,6 +635,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // it comes back; a restart that cannot even start is bounded by the padding cap instead,
         // with a backoff between attempts, so a display that is gone for good still ends in a save.
         restartCount += 1
+        restartTimestamps.append(ProcessInfo.processInfo.systemUptime)
         Self.logger.info(
             "Recording capture restarted after \(paddingFrames) padded frames (restart \(self.restartCount))"
         )
@@ -853,9 +858,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         injectedFinishTracks = nil
         injectedPreserveTracks = nil
         // Per recording, not per app run (F275): the policy's bound is "this meeting may restart N
-        // times", so carrying the count into the next recording would make a Mac that lost one
-        // capture refuse to retry the following one.
+        // times [within a burst]", so carrying the count (or the timestamps behind it) into the next
+        // recording would make a Mac that lost one capture refuse to retry the following one.
         restartCount = 0
+        restartTimestamps = []
         levelMeter = RecordingLevelMeter()
         lastLevelsEmittedAt = 0
     }
