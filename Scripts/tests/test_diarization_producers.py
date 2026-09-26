@@ -100,6 +100,13 @@ class ProducersRefuseWhatTheyCannotScore(unittest.TestCase):
         self.assertIn("| nobody else talking, under 1 s | 1 | 0.0 % | — |", result.stdout)
         self.assertIn("| nobody else talking, 3 s or more | 1 | 100.0 % | 100.0 % |", result.stdout)
 
+    def test_bucket_table_aggregate_is_a_dash_when_nobody_was_named(self):
+        write_meeting(self.rttm, os.path.join(self.sweep, "short"), "m3", [(0.0, 0.5, "A", "a")])
+        result = run("bucket_table.py", "--rttm", self.rttm,
+                     "--hypotheses", os.path.join(self.sweep, "short"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("displayed precision — over 0 named rows", result.stdout)
+
     def test_sweep_score_scores_a_real_threshold(self):
         result = run("sweep_score.py", self.rttm, self.sweep)
         self.assertEqual(result.returncode, 0, result.stderr)

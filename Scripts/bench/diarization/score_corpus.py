@@ -93,14 +93,18 @@ def precision(right, shown):
     return "%.1f%%" % (100.0 * right / shown) if shown else "—"
 
 
+# generate_corpus.py's DEFAULT_OUT; kept literal so this script needs nothing but the scorer.
+DEFAULT_CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("hypothesis_dir", help="one <fixture id>.txt of runtime output per fixture")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--corpus", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                         "corpus", "out"),
-                        help="directory of <fixture id>.truth.json (default: corpus/out beside this script)")
+    parser.add_argument("--corpus", default=DEFAULT_CORPUS,
+                        help="directory of <fixture id>.truth.json (default: out/ beside this script, "
+                             "where generate_corpus.py writes)")
     args = parser.parse_args()
     hyp_dir = args.hypothesis_dir
     corpus_dir = args.corpus

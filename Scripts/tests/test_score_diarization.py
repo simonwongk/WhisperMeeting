@@ -231,6 +231,22 @@ class ScoreCorpusAccountsForEveryFixture(unittest.TestCase):
                 line = next(l for l in lines if l.startswith(prefix))
                 self.assertEqual(line.split("(coverage")[0].split()[-1], "—", line)
 
+    def test_only_no_speech_fixtures_scored_is_a_table_not_a_crash(self):
+        # The speech aggregates are empty then; they are skipped, not divided by a zero total.
+        write_fixture(self.corpus, self.hypotheses, "silence_only", [], [])
+        result = self.score()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("silence_only ", result.stdout)
+        self.assertNotIn("ALL speech fixtures", result.stdout)
+
+    def test_the_default_corpus_is_where_generate_corpus_writes(self):
+        # The two defaults disagreed from the day both scripts landed (c850132), so the README's
+        # `score_corpus.py <hypothesis_dir>` never found a corpus.
+        import generate_corpus
+        import score_corpus
+        self.assertEqual(score_corpus.DEFAULT_CORPUS, generate_corpus.DEFAULT_OUT)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

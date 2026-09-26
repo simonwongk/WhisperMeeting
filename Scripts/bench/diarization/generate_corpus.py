@@ -38,6 +38,8 @@ FRAME = 160                  # 10 ms analysis frame at 16 kHz
 SAY = "say"
 AFCONVERT = "/usr/bin/afconvert"
 AFINFO = "/usr/bin/afinfo"
+# Where the corpus is written without --out, and where score_corpus.py looks without --corpus.
+DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
 # Any utterance that trims to less than this is treated as a synthesis
 # failure and aborts the run. This is the guard against the silent killer:
@@ -1051,7 +1053,7 @@ def main(argv=None):
         print("manifest error: %s" % exc, file=sys.stderr)
         return 2
 
-    out_dir = args.out or os.path.join(here, "out")
+    out_dir = args.out or DEFAULT_OUT
     if args.do_list:
         return cmd_list(man, out_dir)
     if args.verify:
