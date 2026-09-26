@@ -73,7 +73,30 @@ def error_rate(reference, hypothesis, by_char):
     return previous[len(h)] / len(r)
 
 
-def run_engine(key, spec, references, verbose):
+def matches_clip_filter(clip_id, patterns):
+    """Whether `clip_id` is named exactly, or by prefix, by one of `patterns` (F589 --clips)."""
+    return any(clip_id == pattern or clip_id.startswith(pattern) for pattern in patterns)
+
+
+def word_diff(reference, hypothesis):
+    """Per-word kept/dropped verdicts for `reference["words"]` against `hypothesis` (F589).
+
+    "Kept" is a normalized substring match — good enough for the CJK words here (no word spaces,
+    so a substring check is the natural containment test) and for the Latin words in cs1-3.
+    "Dropped" only says the word is not verbatim present; it does NOT guess a replacement, because
+    guessing "replaced by X" automatically is unreliable — the raw hypothesis is included so a
+    human reviewing the table can read off what actually stands in the word's place, if anything.
+    """
+    hyp_norm = "".join(normalize(hypothesis))
+    results = []
+    for word in reference.get("words", []):
+        word_norm = "".join(normalize(word))
+        kept = bool(word_norm) and word_norm in hyp_norm
+        results.append({"word": word, "kept": kept})
+    return results
+
+
+def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
     environment = dict(os.environ)
     environment.update({"PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"})
     environment.update(spec["env"])
@@ -121,23 +144,34 @@ def run_engine(key, spec, references, verbose):
 
     rows = []
     for clip_id, reference in sorted(references.items()):
+        if clip_filter and not matches_clip_filter(clip_id, clip_filter):
+            continue
         wav = os.path.join(CLIPS, f"{clip_id}.wav")
         if not os.path.exists(wav):
             raise SystemExit(f"missing {wav} — run Scripts/bench/generate_clips.sh first")
-        # language: null is the app's "Detect automatically" default.
-        request = {"wavPath": wav, "language": None, "initialPrompt": None}
+        # language: null is the app's "Detect automatically" default; --language overrides it to
+        # the exact pinned string the app sends (WhisperLanguage.commandLineValue, e.g. "English").
+        request = {"wavPath": wav, "language": language, "initialPrompt": None}
         clip_started = time.monotonic()
         process.stdin.write(json.dumps(request) + "\n")
         process.stdin.flush()
         response = json.loads(process.stdout.readline())
         elapsed = time.monotonic() - clip_started
         text = response.get("text") or ""
-        rate = error_rate(reference["text"], text, reference["lang"] in ("zh", "cs"))
-        rows.append({"clip": clip_id, "lang": reference["lang"], "seconds": round(elapsed, 3),
-                     "text": text, "reference": reference["text"],
-                     "error_rate": round(rate, 4), "helper_error": response.get("error")})
+        rate = error_rate(reference["text"], text, reference["lang"] in ("zh", "cs", "encs"))
+        row = {"clip": clip_id, "lang": reference["lang"], "seconds": round(elapsed, 3),
+               "text": text, "reference": reference["text"],
+               "error_rate": round(rate, 4), "helper_error": response.get("error"),
+               "reported_language": response.get("language")}
+        if "words" in reference:
+            row["words"] = word_diff(reference, text)
+        rows.append(row)
         if verbose:
             print(f"  {key:22} {clip_id}  {elapsed:6.2f}s  err={rate:.3f}  {text!r}", flush=True)
+            if "words" in row:
+                for w in row["words"]:
+                    print(f"    word {w['word']!r:16} {'KEPT' if w['kept'] else 'DROPPED'}",
+                          flush=True)
 
     process.stdin.close()
     process.wait(timeout=30)
@@ -146,9 +180,9 @@ def run_engine(key, spec, references, verbose):
 
 
 def table(results):
-    languages = ("en", "zh", "cs")
-    out = ["| engine | cold start | warm per clip | en | zh | code-switch |",
-           "|---|---|---|---|---|---|"]
+    languages = ("en", "zh", "cs", "encs")
+    out = ["| engine | cold start | warm per clip | en | zh | code-switch | en-dominant code-switch |",
+           "|---|---|---|---|---|---|---|"]
     for result in results:
         clips = result["clips"]
         warm = sum(c["seconds"] for c in clips) / len(clips)
@@ -161,17 +195,40 @@ def table(results):
     return "\n".join(out)
 
 
+def word_table(results):
+    """One row per (engine, clip, word) with its kept/dropped verdict (F589 --words)."""
+    out = ["| engine | clip | word | verdict | hypothesis |", "|---|---|---|---|---|"]
+    for result in results:
+        for clip in result["clips"]:
+            for w in clip.get("words", []):
+                verdict = "kept" if w["kept"] else "DROPPED"
+                out.append(f"| {result['label']} | {clip['clip']} | {w['word']} | {verdict} | "
+                           f"{clip['text']!r} |")
+    return "\n".join(out)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--engine", choices=sorted(ENGINES), action="append",
                         help="restrict to one engine (repeatable); default is both")
+    parser.add_argument("--clips", metavar="ID[,ID...]",
+                        help="restrict to clip ids or id-prefixes (comma-separated), "
+                             "e.g. --clips encs,cs; default is every clip in references.json")
+    parser.add_argument("--language", metavar="VALUE", default=None,
+                        help="pin the wire protocol's language field to VALUE (e.g. English, "
+                             "Chinese) instead of the default null/automatic")
+    parser.add_argument("--words", action="store_true",
+                        help="print the per-word kept/dropped table for clips whose reference "
+                             "carries a \"words\" list (F589)")
     parser.add_argument("--json", metavar="PATH", help="write per-clip detail as JSON")
     parser.add_argument("--quiet", action="store_true", help="table only")
     arguments = parser.parse_args()
 
     with open(os.path.join(CLIPS, "references.json"), encoding="utf-8") as handle:
         references = json.load(handle)
+
+    clip_filter = arguments.clips.split(",") if arguments.clips else None
 
     results = []
     for key in (arguments.engine or sorted(ENGINES)):
@@ -180,8 +237,9 @@ def main():
             print(f"skip {key}: runtime not installed", file=sys.stderr)
             continue
         if not arguments.quiet:
-            print(f"== {key} ==", flush=True)
-        results.append(run_engine(key, spec, references, not arguments.quiet))
+            print(f"== {key} (language={arguments.language!r}) ==", flush=True)
+        results.append(run_engine(key, spec, references, not arguments.quiet,
+                                  clip_filter=clip_filter, language=arguments.language))
 
     if not results:
         raise SystemExit("no engine runtime installed — nothing to compare")
@@ -190,6 +248,9 @@ def main():
     print(table(results))
     print("\nLatency varies run to run and with thermal state; error rates are deterministic "
           "for a given clip set.")
+    if arguments.words:
+        print()
+        print(word_table(results))
     if arguments.json:
         with open(arguments.json, "w", encoding="utf-8") as handle:
             json.dump(results, handle, ensure_ascii=False, indent=2)

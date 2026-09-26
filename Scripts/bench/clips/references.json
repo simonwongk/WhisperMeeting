@@ -6,7 +6,19 @@
   "zh1": {"lang": "zh", "text": "帮我把今天的会议纪要发给团队。"},
   "zh2": {"lang": "zh", "text": "这个季度的销售数据看起来很不错。"},
   "zh3": {"lang": "zh", "text": "请提醒我下午三点跟客户开会。"},
-  "cs1": {"lang": "cs", "text": "我们的 deadline 是这个星期五。"},
-  "cs2": {"lang": "cs", "text": "帮我 schedule 一个 meeting 明天下午。"},
-  "cs3": {"lang": "cs", "text": "这个 bug 已经 fix 了，可以 merge 了。"}
+  "cs1": {"lang": "cs", "text": "我们的 deadline 是这个星期五。", "words": ["deadline"]},
+  "cs2": {"lang": "cs", "text": "帮我 schedule 一个 meeting 明天下午。", "words": ["schedule", "meeting"]},
+  "cs3": {"lang": "cs", "text": "这个 bug 已经 fix 了，可以 merge 了。", "words": ["bug", "fix", "merge"]},
+  "encs1": {"lang": "encs", "text": "Please send the 会议纪要 to the whole team before 周五.",
+            "words": ["会议纪要", "周五"]},
+  "encs2": {"lang": "encs", "text": "The 客户 wants the 报价 by Tuesday.",
+            "words": ["客户", "报价"]},
+  "encs3": {"lang": "encs", "text": "Let's book a 会议室 for the 培训 next week.",
+            "words": ["会议室", "培训"]},
+  "encs4": {"lang": "encs", "text": "I'll ping 王老师 about the 作业 tonight.",
+            "words": ["王老师", "作业"]},
+  "encs5": {"lang": "encs", "text": "Our 预算 for Q4 is still under review.",
+            "words": ["预算"]},
+  "encs6": {"lang": "encs", "text": "Can you 翻译 this paragraph into English?",
+            "words": ["翻译"]}
 }
