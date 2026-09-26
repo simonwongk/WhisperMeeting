@@ -603,7 +603,7 @@ public enum TranscriptExporter {
     /// past `Int32.max` — so `%ld` is still the fix; the clamp only keeps the value a Double can
     /// represent exactly and keeps `* 1000` for milliseconds from ever needing to saturate.
     static func subtitleTimestamp(_ seconds: Double, millisecondSeparator: String) -> String {
-        let clamped = max(0, min(seconds, 1_000_000_000_000_000))
+        let clamped = max(0, min(1_000_000_000_000_000, seconds))
         let totalMilliseconds = Int(saturating: (clamped * 1000).rounded())
         let milliseconds = totalMilliseconds % 1000
         let totalSeconds = totalMilliseconds / 1000
