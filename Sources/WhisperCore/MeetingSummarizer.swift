@@ -105,6 +105,31 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case answerTruncated
     /// The on-device helper produced something it had to degrade to return at all (F332).
     case answerDegraded(String)
+    /// The on-device model stopped at its token limit before finishing a summary or a correction
+    /// pass (F475 Part 1). Sibling to `.answerTruncated`, whose copy says "the answer" and "the
+    /// passages" — neither exists for a summary or a correction, so this has its own generic copy.
+    /// Before F475, `summarize_local.py`'s `warning`/`finishReason` were decoded but never read by
+    /// `LocalSummarizer.summarize` or `LocalTranscriptCorrector.correct`, so a truncated JSON array
+    /// (`--max-tokens` hit mid-array) was parsed as a clean, if incomplete, result and shipped.
+    case localOutputTruncated
+    /// The on-device helper's summary or correction output was not the requested JSON and had to be
+    /// degraded to return at all (F475 Part 1) — `summarize_local.py`'s `parse_summary` falls back to
+    /// the model's raw text as the "summary" field, and `correct_local.py`'s `parse_corrections`
+    /// falls back to an empty corrections list; either way this warns rather than shipping it as if
+    /// the model had succeeded cleanly.
+    case localOutputDegraded(String)
+    /// A local summarize/correct/answer helper's output file did not decode as the JSON it always
+    /// writes (F475 Part 2). Distinct from `.unreadableResponse`, whose copy names Claude — nothing
+    /// here reaches Claude, and three on-device throw sites used to reuse that Claude-specific copy
+    /// anyway (`LocalSummarizer.summarize`, `LocalSummarizer.answerText`,
+    /// `LocalTranscriptCorrector.correct`).
+    case localOutputUnreadable
+    /// The transcript (plus, for a correction pass, the vocabulary and reference material) needs
+    /// more tokens than the on-device model's context window leaves room for once space is
+    /// reserved for the response (F475 Part 3). Refused before the model is even loaded — measured
+    /// against the model's own tokenizer and `config.json` `max_position_embeddings`, never a
+    /// guessed character count. `detail` names the measured token counts.
+    case localInputTooLong(String)
     /// The local helper printed nothing for this many seconds and was stopped (F512). It reports
     /// around loading the model, after every prompt chunk, and while generating every 32 tokens or
     /// 5 seconds, whichever comes first (checked per token) — so silence that long means it stopped
@@ -136,6 +161,14 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "The on-device model ran out of room before finishing the answer. The passages are what was said."
         case let .answerDegraded(reason):
             return "The on-device model's answer could not be read cleanly (\(reason)). The passages are what was said."
+        case .localOutputTruncated:
+            return "The on-device model ran out of room before finishing. Nothing was saved — try a shorter transcript, or try again."
+        case let .localOutputDegraded(reason):
+            return "The on-device model's output could not be read cleanly (\(reason)). Nothing was saved — try again."
+        case .localOutputUnreadable:
+            return "The on-device model's output could not be read. Nothing was saved — try again."
+        case let .localInputTooLong(detail):
+            return detail
         case .unreadableResponse:
             return "Claude returned a summary the app could not read."
         case .emptyResponse:

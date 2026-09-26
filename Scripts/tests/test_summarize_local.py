@@ -111,11 +111,44 @@ class BuildChatMessagesTests(unittest.TestCase):
         ])
 
 
-def _install_fake_mlx_lm(deltas, finish_reason="stop"):
-    """Inject a fake mlx_lm (+ mlx_lm.sample_utils) so main() runs without a real model.
+class ContextOverflowDetailTests(unittest.TestCase):
+    """F475 Part 3 — measured against the real installed model: mlx_lm.utils.load_tokenizer's
+    apply_chat_template on mlx-community/Qwen3-8B-4bit returns the exact token-id list
+    stream_generate receives, and a synthetic 4-hour-meeting transcript (a realistic sentence
+    repeated to approximate ~150 wpm) tokenizes to 66,001 tokens (English) / 60,000 (Mandarin) —
+    both past the installed model's max_position_embeddings of 40,960."""
+
+    def test_a_prompt_that_fits_is_not_flagged(self):
+        self.assertEqual(summ.context_overflow_detail(10_000, context_limit=40_960, max_tokens=2_048), "")
+
+    def test_a_prompt_that_exactly_fills_the_budget_is_not_flagged(self):
+        budget = 40_960 - 2_048 - summ.CONTEXT_SAFETY_MARGIN_TOKENS
+        self.assertEqual(summ.context_overflow_detail(budget, context_limit=40_960, max_tokens=2_048), "")
+
+    def test_one_token_over_budget_is_flagged(self):
+        budget = 40_960 - 2_048 - summ.CONTEXT_SAFETY_MARGIN_TOKENS
+        detail = summ.context_overflow_detail(budget + 1, context_limit=40_960, max_tokens=2_048)
+        self.assertIn(str(budget + 1), detail)
+        self.assertIn(str(budget), detail)
+        self.assertIn("40960", detail)
+        self.assertIn("shorter selection", detail)
+
+    def test_the_measured_four_hour_transcript_is_flagged_on_the_installed_model(self):
+        # The real numbers measured against mlx-community/Qwen3-8B-4bit (see class doc).
+        detail = summ.context_overflow_detail(66_001, context_limit=40_960, max_tokens=2_048)
+        self.assertNotEqual(detail, "")
+
+
+def _install_fake_mlx_lm(deltas, finish_reason="stop", context_limit=1_000_000, counted_prompt_tokens=10):
+    """Inject a fake mlx_lm (+ mlx_lm.sample_utils, mlx_lm.utils) so main() runs without a real model.
 
     stream_generate yields one GenerationResponse per delta in `deltas`; concatenated they are the
     model's full output text. The fake tokenizer records the messages it was asked to template.
+
+    F475 Part 3: `context_limit`/`counted_prompt_tokens` fake the pre-flight context-window check —
+    `mlx_lm.utils.load_config`/`load_tokenizer`. Defaults (a huge limit, a tiny counted prompt) keep
+    every EXISTING test below on the same path it always took; `MainEndToEndTests` below overrides
+    them to exercise the new "too_long" branch specifically.
     """
     recorded = {}
 
@@ -125,6 +158,13 @@ def _install_fake_mlx_lm(deltas, finish_reason="stop"):
             recorded["add_generation_prompt"] = add_generation_prompt
             recorded["kwargs"] = kwargs
             return "PROMPT<" + messages[-1]["content"] + ">"
+
+    class FakeCountingTokenizer:
+        """Stands in for `load_tokenizer`'s result in the pre-flight measurement only — a
+        SEPARATE, lighter-weight load in the real helper, never used for real generation."""
+        def apply_chat_template(self, messages, add_generation_prompt=False, **kwargs):
+            recorded["counted_messages"] = messages
+            return list(range(counted_prompt_tokens))
 
     def load(path, **kwargs):
         recorded["model_path"] = path
@@ -158,13 +198,24 @@ def _install_fake_mlx_lm(deltas, finish_reason="stop"):
     sample_utils = ModuleType("mlx_lm.sample_utils")
     sample_utils.make_sampler = lambda **kwargs: ("sampler", kwargs)
     mlx_lm.sample_utils = sample_utils
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_config = lambda path: {"max_position_embeddings": context_limit}
+    utils.load_tokenizer = lambda path: FakeCountingTokenizer()
+    mlx_lm.utils = utils
     sys.modules["mlx_lm"] = mlx_lm
     sys.modules["mlx_lm.sample_utils"] = sample_utils
+    sys.modules["mlx_lm.utils"] = utils
     return recorded
 
 
-def _run_main(deltas, system_prompt="SYS", transcript="hello world", finish_reason="stop", max_tokens=None):
-    recorded = _install_fake_mlx_lm(deltas, finish_reason=finish_reason)
+def _run_main(
+    deltas, system_prompt="SYS", transcript="hello world", finish_reason="stop", max_tokens=None,
+    context_limit=1_000_000, counted_prompt_tokens=10,
+):
+    recorded = _install_fake_mlx_lm(
+        deltas, finish_reason=finish_reason, context_limit=context_limit,
+        counted_prompt_tokens=counted_prompt_tokens
+    )
     directory = tempfile.mkdtemp()
     input_path = os.path.join(directory, "in.json")
     output_path = os.path.join(directory, "out.json")
@@ -243,6 +294,37 @@ class MainEndToEndTests(unittest.TestCase):
         self.assertEqual(payload["keyPoints"], [])
         # The model must not be invoked for an empty transcript.
         self.assertNotIn("prompt", recorded)
+
+    def test_a_too_long_prompt_is_refused_without_loading_the_full_model(self):
+        # F475 Part 3: the (comparatively expensive) full weights load must never run for a
+        # request the pre-flight check has already decided to refuse.
+        code, payload, recorded = _run_main(
+            ['ignored'], context_limit=40_960, counted_prompt_tokens=66_001, max_tokens=2_048
+        )
+        self.assertEqual(code, 0)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["summary"], "")
+        self.assertEqual(payload["keyPoints"], [])
+        self.assertEqual(payload["actionItems"], [])
+        self.assertEqual(payload["finishReason"], "too_long")
+        self.assertEqual(payload["generatedTokens"], 0)
+        self.assertIn("66001", payload["warning"])
+        self.assertIn("40960", payload["warning"])
+        # Neither the full model load NOR stream_generate ran.
+        self.assertNotIn("model_path", recorded)
+        self.assertNotIn("prompt", recorded)
+        # The counting tokenizer WAS asked to template the real system prompt + transcript.
+        self.assertEqual(recorded["counted_messages"][0], {"role": "system", "content": "SYS"})
+
+    def test_a_prompt_that_fits_still_reaches_the_real_model(self):
+        # The regression this guards against: refusing everything, including the ordinary case.
+        code, payload, recorded = _run_main(
+            ['{"summary":"x","keyPoints":[],"actionItems":[]}'], context_limit=40_960, counted_prompt_tokens=10
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["summary"], "x")
+        self.assertIn("model_path", recorded)
+        self.assertIn("prompt", recorded)
 
 class LoadHeartbeatTests(unittest.TestCase):
     """F512 review: `load()` blocks with no output, and the Swift side stops a helper that is silent

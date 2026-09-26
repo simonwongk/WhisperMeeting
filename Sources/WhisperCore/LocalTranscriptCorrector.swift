@@ -107,7 +107,16 @@ public struct LocalTranscriptCorrector: Sendable {
             LocalCorrectionOutput.self,
             from: Data(contentsOf: outputURL)
         ) else {
-            throw SummarizerError.unreadableResponse
+            throw SummarizerError.localOutputUnreadable
+        }
+        // F475 Part 1: `parse_corrections` DEGRADES rather than raises — truncated or non-JSON
+        // output becomes ([], warning) rather than a thrown error, which read identically to "the
+        // model looked and found nothing to fix" (this function's own doc comment: "an empty list
+        // is not an error on its own"). Refusing here makes the two distinguishable: a genuine
+        // empty pass returns `[]` with no warning and reaches the filter below; a degraded or
+        // truncated run is reported instead of silently proposing nothing.
+        if let refusal = LocalSummarizer.localOutputRefusal(warning: payload.warning, finishReason: payload.finishReason) {
+            throw refusal
         }
         // Keep only corrections whose `from` still appears in the transcript, so a hallucinated span
         // can never be applied. `to` must differ from `from`.

@@ -73,7 +73,24 @@ class ParseCorrectionsTests(unittest.TestCase):
         self.assertEqual(items, [])
 
 
-def _install_fake_mlx_lm(deltas, finish_reason="stop"):
+class ContextOverflowDetailTests(unittest.TestCase):
+    """F475 Part 3 — mirrors test_summarize_local.py's twin; see there for the real-model
+    measurement (mlx-community/Qwen3-8B-4bit, max_position_embeddings 40,960)."""
+
+    def test_a_prompt_that_fits_is_not_flagged(self):
+        self.assertEqual(correct.context_overflow_detail(10_000, context_limit=40_960, max_tokens=2_048), "")
+
+    def test_one_token_over_budget_is_flagged(self):
+        budget = 40_960 - 2_048 - correct.CONTEXT_SAFETY_MARGIN_TOKENS
+        detail = correct.context_overflow_detail(budget + 1, context_limit=40_960, max_tokens=2_048)
+        self.assertIn(str(budget + 1), detail)
+        self.assertIn("shorter selection", detail)
+
+
+def _install_fake_mlx_lm(deltas, finish_reason="stop", context_limit=1_000_000, counted_prompt_tokens=10):
+    """F475 Part 3: `context_limit`/`counted_prompt_tokens` fake the pre-flight context-window
+    check (`mlx_lm.utils.load_config`/`load_tokenizer`) the same way test_summarize_local.py's
+    twin does. Defaults keep every existing test on the path it always took."""
     recorded = {}
 
     class FakeTokenizer:
@@ -81,6 +98,11 @@ def _install_fake_mlx_lm(deltas, finish_reason="stop"):
             recorded["messages"] = messages
             recorded["kwargs"] = kwargs
             return "PROMPT<" + messages[-1]["content"] + ">"
+
+    class FakeCountingTokenizer:
+        def apply_chat_template(self, messages, add_generation_prompt=False, **kwargs):
+            recorded["counted_messages"] = messages
+            return list(range(counted_prompt_tokens))
 
     def load(path, **kwargs):
         recorded["model_path"] = path
@@ -102,13 +124,23 @@ def _install_fake_mlx_lm(deltas, finish_reason="stop"):
     sample_utils = ModuleType("mlx_lm.sample_utils")
     sample_utils.make_sampler = lambda **kwargs: ("sampler", kwargs)
     mlx_lm.sample_utils = sample_utils
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_config = lambda path: {"max_position_embeddings": context_limit}
+    utils.load_tokenizer = lambda path: FakeCountingTokenizer()
+    mlx_lm.utils = utils
     sys.modules["mlx_lm"] = mlx_lm
     sys.modules["mlx_lm.sample_utils"] = sample_utils
+    sys.modules["mlx_lm.utils"] = utils
     return recorded
 
 
-def _run_main(deltas, transcript="Kew Bernetes runs the cluster.", max_tokens=None):
-    recorded = _install_fake_mlx_lm(deltas)
+def _run_main(
+    deltas, transcript="Kew Bernetes runs the cluster.", max_tokens=None,
+    context_limit=1_000_000, counted_prompt_tokens=10,
+):
+    recorded = _install_fake_mlx_lm(
+        deltas, context_limit=context_limit, counted_prompt_tokens=counted_prompt_tokens
+    )
     directory = tempfile.mkdtemp()
     input_path = os.path.join(directory, "in.json")
     output_path = os.path.join(directory, "out.json")
@@ -146,6 +178,27 @@ class MainEndToEndTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["corrections"], [])
         self.assertNotIn("prompt", recorded)
+
+    def test_a_too_long_prompt_is_refused_without_loading_the_full_model(self):
+        code, payload, recorded = _run_main(
+            ['ignored'], context_limit=40_960, counted_prompt_tokens=55_000, max_tokens=2_048
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["corrections"], [])
+        self.assertEqual(payload["finishReason"], "too_long")
+        self.assertEqual(payload["generatedTokens"], 0)
+        self.assertIn("55000", payload["warning"])
+        self.assertNotIn("model_path", recorded)
+        self.assertNotIn("prompt", recorded)
+
+    def test_a_prompt_that_fits_still_reaches_the_real_model(self):
+        code, payload, recorded = _run_main(
+            ['{"corrections":[]}'], context_limit=40_960, counted_prompt_tokens=10
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["corrections"], [])
+        self.assertIn("model_path", recorded)
+        self.assertIn("prompt", recorded)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,107 @@ func correctorRejectsMissingModel() async throws {
     }
 }
 
+// F475 Part 1 — `correct_local.py`'s `parse_corrections` degrades rather than raises: unparseable
+// output becomes `([], warning)`, which read identically to "the model looked and found nothing to
+// fix" (this file's own doc comment on `correctorSkipsWithoutGuidance` notwithstanding — that one
+// never runs the model at all). Before this fix, `correct` ignored `warning`/`finishReason`
+// entirely, so a degraded or truncated run silently proposed zero corrections indistinguishably
+// from a genuine clean pass.
+@Test("A non-JSON helper payload is refused, not silently treated as zero corrections found (F475)")
+func correctorRefusesNonJSONOutput() async throws {
+    let fixture = try CorrectorFixture(outputJSON: """
+    {"corrections":[],"warning":"The local model did not return the requested JSON; proposing no corrections.",\
+    "finishReason":"stop","generatedTokens":30}
+    """)
+    defer { fixture.remove() }
+    let corrector = LocalTranscriptCorrector(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localOutputDegraded(
+        "The local model did not return the requested JSON; proposing no corrections."
+    )) {
+        _ = try await corrector.correct(transcript: "hi there", vocabulary: ["Kubernetes"], reference: nil)
+    }
+}
+
+@Test("A truncated helper payload (finishReason length) is refused (F475)")
+func correctorRefusesTruncatedOutput() async throws {
+    let fixture = try CorrectorFixture(outputJSON: """
+    {"corrections":[{"from":"Kew Bernetes","to":"Kubernetes"}],"warning":null,\
+    "finishReason":"length","generatedTokens":2048}
+    """)
+    defer { fixture.remove() }
+    let corrector = LocalTranscriptCorrector(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localOutputTruncated) {
+        _ = try await corrector.correct(transcript: "Kew Bernetes runs the cluster.", vocabulary: ["Kubernetes"], reference: nil)
+    }
+}
+
+@Test("A genuinely clean 'nothing to fix' pass still returns an empty list (F475)")
+func correctorStillReturnsAGenuineEmptyResult() async throws {
+    // The regression this guards against: refusing every empty result, including the ordinary one.
+    let fixture = try CorrectorFixture(outputJSON: #"{"corrections":[],"warning":null,"finishReason":"stop","generatedTokens":3}"#)
+    defer { fixture.remove() }
+    let corrector = LocalTranscriptCorrector(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    let corrections = try await corrector.correct(transcript: "hi there", vocabulary: ["Kubernetes"], reference: nil)
+    #expect(corrections.isEmpty)
+}
+
+// F475 Part 2 — the same Claude-named copy `.unreadableResponse` used to leak into this path too.
+@Test("An undecodable helper output file is reported without naming Claude (F475)")
+func correctorRefusesUndecodableOutputWithoutNamingClaude() async throws {
+    let fixture = try CorrectorFixture(script: """
+    #!/bin/zsh
+    while (( $# > 0 )); do
+      if [[ "$1" == "--output" ]]; then printf 'not json at all' > "$2"; fi
+      shift
+    done
+    """)
+    defer { fixture.remove() }
+    let corrector = LocalTranscriptCorrector(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localOutputUnreadable) {
+        _ = try await corrector.correct(transcript: "hi there", vocabulary: ["Kubernetes"], reference: nil)
+    }
+    #expect(!SummarizerError.localOutputUnreadable.localizedDescription.contains("Claude"))
+}
+
+// F475 Part 3 — the correction helper measures the transcript, vocabulary, and reference document
+// together against the model's context window before loading it.
+@Test("A too-long correction request is refused with the helper's own measured detail, verbatim (F475)")
+func correctorRefusesATranscriptTooLongForContext() async throws {
+    // No apostrophe: the fixture below embeds this JSON inside a single-quoted zsh string (a
+    // fixture artifact — the real payload travels as a JSON file, never through a shell string).
+    let detail = "This transcript needs about 55000 tokens, more than the 38400 available in the " +
+        "model 40960-token context window with 2048 reserved for the response. Try a shorter " +
+        "selection, or use Claude for long meetings."
+    let fixture = try CorrectorFixture(outputJSON: """
+    {"corrections":[],"warning":\(String(reflecting: detail)),"finishReason":"too_long","generatedTokens":0}
+    """)
+    defer { fixture.remove() }
+    let corrector = LocalTranscriptCorrector(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localInputTooLong(detail)) {
+        _ = try await corrector.correct(transcript: "hi there", vocabulary: ["Kubernetes"], reference: nil)
+    }
+}
+
 @Test("Cancelling a correction terminates its helper process")
 func correctorCancellation() async throws {
     let fixture = try CorrectorFixture(script: "#!/bin/zsh\nexec sleep 120\n")

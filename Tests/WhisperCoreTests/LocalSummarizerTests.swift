@@ -81,8 +81,12 @@ func localSummarizerRejectsMissingModel() async throws {
     }
 }
 
-@Test("Local summarizer still returns a degraded raw-text summary rather than failing")
-func localSummarizerReturnsDegradedSummary() async throws {
+// F475 Part 1 — before this fix, a non-JSON or truncated helper payload was stored and shown as a
+// clean summary: `summarize_local.py`'s `parse_summary` degrades rather than raises (a raw-text
+// summary with a warning, or a `finishReason: "length"` mid-array truncation), and
+// `LocalSummarizer.summarize` read only the three content fields, never `warning`/`finishReason`.
+@Test("A non-JSON helper payload is refused, not shown as a clean summary (F475)")
+func localSummarizerRefusesNonJSONOutput() async throws {
     let fixture = try LocalSummaryFixture(outputJSON: """
     {"summary":"A recap the model wrote as prose.","keyPoints":[],"actionItems":[],\
     "warning":"The local model did not return JSON; used its text as the summary.",\
@@ -94,9 +98,94 @@ func localSummarizerReturnsDegradedSummary() async throws {
         helperScriptURL: fixture.helperURL,
         modelDirectory: fixture.modelDirectory
     )
+    await #expect(throws: SummarizerError.localOutputDegraded(
+        "The local model did not return JSON; used its text as the summary."
+    )) {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .brief)
+    }
+}
+
+@Test("A truncated helper payload (finishReason length) is refused, not shown as a clean summary (F475)")
+func localSummarizerRefusesTruncatedOutput() async throws {
+    let fixture = try LocalSummaryFixture(outputJSON: """
+    {"summary":"The team reviewed the Q3 launch plan and agreed to","keyPoints":["Launch moves to Oct 14"],\
+    "actionItems":[],"warning":null,"finishReason":"length","generatedTokens":2048}
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localOutputTruncated) {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .brief)
+    }
+}
+
+@Test("A clean helper payload (no warning, ordinary stop) is still returned (F475)")
+func localSummarizerStillReturnsACleanSummary() async throws {
+    // The regression this guards against: refusing everything, including the common case.
+    let fixture = try LocalSummaryFixture(outputJSON: """
+    {"summary":"We shipped v1.","keyPoints":["Ship v1"],"actionItems":[],\
+    "warning":null,"finishReason":"stop","generatedTokens":42}
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
     let result = try await summarizer.summarize(transcript: "hello", language: nil, style: .brief)
-    #expect(result.summary == "A recap the model wrote as prose.")
-    #expect(result.keyPoints.isEmpty)
+    #expect(result.summary == "We shipped v1.")
+}
+
+// F475 Part 2 — the three local throw sites used to reuse `.unreadableResponse`, whose copy names
+// Claude ("Claude returned a summary the app could not read"), even though nothing here reaches
+// Claude.
+@Test("An undecodable helper output file is reported without naming Claude (F475)")
+func localSummarizerRefusesUndecodableOutputWithoutNamingClaude() async throws {
+    let fixture = try LocalSummaryFixture(script: """
+    #!/bin/zsh
+    while (( $# > 0 )); do
+      if [[ "$1" == "--output" ]]; then printf 'not json at all' > "$2"; fi
+      shift
+    done
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localOutputUnreadable) {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .balanced)
+    }
+    #expect(!SummarizerError.localOutputUnreadable.localizedDescription.contains("Claude"))
+}
+
+// F475 Part 3 — the helper measures the prompt against the model's context window before loading
+// it; `finishReason: "too_long"` is how it reports back that it never even tried.
+@Test("A too-long transcript is refused with the helper's own measured detail, verbatim (F475)")
+func localSummarizerRefusesATranscriptTooLongForContext() async throws {
+    // No apostrophe: the fixture below embeds this JSON inside a single-quoted zsh string, and an
+    // apostrophe would break that shell quoting — a fixture artifact, not a production constraint
+    // (the real payload travels as a JSON file, never through a shell string).
+    let detail = "This transcript needs about 66001 tokens, more than the 38400 available in the " +
+        "model 40960-token context window with 2528 reserved for the response. Try a shorter " +
+        "selection, or use Claude for long meetings."
+    let fixture = try LocalSummaryFixture(outputJSON: """
+    {"summary":"","keyPoints":[],"actionItems":[],"warning":\(String(reflecting: detail)),\
+    "finishReason":"too_long","generatedTokens":0}
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localInputTooLong(detail)) {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .balanced)
+    }
 }
 
 @Test("Local summarizer surfaces a helper failure as helperFailed")

@@ -8,6 +8,10 @@ system prompt (the single source of truth for wording) and passes it in verbatim
 runs the model and parses its text into {summary, keyPoints, actionItems}, degrading — never raising
 — when the model's output is not the requested JSON.
 
+Before loading the model, the assembled prompt is measured against the installed model's own
+context window (F475 Part 3): `finishReason: "too_long"` means the transcript needs more tokens
+than fit alongside --max-tokens of response, and the model was never even loaded.
+
     python3 summarize_local.py --model <dir> --input <in.json> --output <out.json> [--max-tokens N]
 
 in.json:  {"systemPrompt": str, "transcript": str}
@@ -22,6 +26,7 @@ import re
 import sys
 import threading
 import time
+from pathlib import Path
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -199,6 +204,36 @@ def apply_chat_template(tokenizer, messages):
         return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
 
+# F475 Part 3: neither this helper nor `LocalSummarizer` ever measured the prompt against the
+# model's context window before this. Measured against the installed mlx-community/Qwen3-8B-4bit
+# (2026-09-26, `mlx_lm.utils.load_tokenizer` + `apply_chat_template`, which returns the exact
+# token-id list `stream_generate` receives): a 348,000-character synthetic English transcript (a
+# realistic sentence repeated to approximate a 4-hour meeting at ~150 wpm) tokenizes to 66,001
+# tokens, and the Mandarin equivalent (90,000 characters) to 60,000 — both well past this model's
+# `max_position_embeddings` of 40,960. Nothing in mlx_lm 0.30.5's `stream_generate` raises when a
+# prompt exceeds it; the model runs anyway with degraded quality past its trained window, and nothing
+# said so.
+#
+# A small margin, not a large fudge factor: `apply_chat_template` already returns the exact final
+# token-id list `stream_generate` receives (verified empirically above), so there is nothing left to
+# guess about except the two token-count constants' own possible drift between mlx_lm versions.
+CONTEXT_SAFETY_MARGIN_TOKENS = 32
+
+
+def context_overflow_detail(prompt_tokens: int, context_limit: int, max_tokens: int) -> str:
+    """A human-readable detail when `prompt_tokens` leaves no room for `max_tokens` of response
+    inside `context_limit`, or "" when it fits. Pure so the budget arithmetic is testable without a
+    5 GB model — the token counts it is handed come from the real tokenizer in `main()`."""
+    budget = context_limit - max_tokens - CONTEXT_SAFETY_MARGIN_TOKENS
+    if prompt_tokens <= budget:
+        return ""
+    return (
+        f"This transcript needs about {prompt_tokens} tokens, more than the {budget} available "
+        f"in this model's {context_limit}-token context window with {max_tokens} reserved for "
+        "the response. Try a shorter selection, or use Claude for long meetings."
+    )
+
+
 def main() -> int:
     args = parse_args()
     with open(args.input, encoding="utf-8") as handle:
@@ -217,11 +252,29 @@ def main() -> int:
     # Heavy import deferred so the pure functions above import cheaply in tests.
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.utils import load_config, load_tokenizer
+
+    # F475 Part 3: measured against the REAL tokenizer and the model's own config.json, ahead of
+    # the (comparatively expensive) full weights load below — `load_config`/`load_tokenizer` read
+    # only the tokenizer files and a small JSON file, not the multi-gigabyte weights.
+    messages = build_chat_messages(system_prompt, transcript)
+    config = load_config(Path(args.model))
+    context_limit = config.get("max_position_embeddings")
+    if context_limit:
+        counting_tokenizer = load_tokenizer(Path(args.model))
+        prompt_tokens = len(apply_chat_template(counting_tokenizer, messages))
+        detail = context_overflow_detail(prompt_tokens, context_limit, args.max_tokens)
+        if detail:
+            write_payload(args.output, {
+                "summary": "", "keyPoints": [], "actionItems": [],
+                "warning": detail, "finishReason": "too_long", "generatedTokens": 0,
+            })
+            return 0
 
     report_progress("loading model")
     model, tokenizer = load_with_heartbeat(load, args.model)
     report_progress("model loaded")
-    prompt = apply_chat_template(tokenizer, build_chat_messages(system_prompt, transcript))
+    prompt = apply_chat_template(tokenizer, messages)
     sampler = make_sampler(temp=0.0)  # greedy: a summary should be reproducible, not sampled.
 
     pieces = []

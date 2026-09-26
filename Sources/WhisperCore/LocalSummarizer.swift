@@ -201,7 +201,16 @@ public struct LocalSummarizer: MeetingSummarizer {
             LocalSummaryOutput.self,
             from: Data(contentsOf: outputURL)
         ) else {
-            throw SummarizerError.unreadableResponse
+            throw SummarizerError.localOutputUnreadable
+        }
+        // F475 Part 1: `parse_summary` DEGRADES rather than raises — truncated JSON (a
+        // `--max-tokens` stop mid-array) or non-JSON text becomes a "clean-looking" payload with
+        // `warning`/`finishReason` set. Before this check, `LocalSummarizer.summarize` read only
+        // the three content fields and ignored both diagnostics, so a truncated array or the
+        // model's raw, unparsed text was stored and shown as a good summary. Checked before the
+        // empty-result guard below: a refusal here must not be shadowed by an unrelated cause.
+        if let refusal = Self.localOutputRefusal(warning: payload.warning, finishReason: payload.finishReason) {
+            throw refusal
         }
         let summary = MeetingSummary(
             summary: payload.summary,
@@ -210,8 +219,8 @@ public struct LocalSummarizer: MeetingSummarizer {
             // supporting transcript moment later, in AppModel, from the meeting's segments.
             actionItems: payload.actionItems.map { ActionItem(text: $0) }
         )
-        // A completely empty result is an error; a degraded raw-text summary (payload.warning set)
-        // is still returned — a summary the user can read beats a dead end (honest fallback).
+        // A completely empty result is an error; anything past the refusal above is a clean result
+        // the model is confident in, not a degraded fallback.
         guard !summary.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !summary.keyPoints.isEmpty
             || !summary.actionItems.isEmpty else {
@@ -256,15 +265,15 @@ public struct LocalSummarizer: MeetingSummarizer {
             )
         }
         guard let payload = try? JSONDecoder().decode(LocalSummaryOutput.self, from: Data(contentsOf: outputURL)) else {
-            throw SummarizerError.unreadableResponse
+            throw SummarizerError.localOutputUnreadable
         }
-        // The summary path returns a degraded payload deliberately — a summary you can read beats a
-        // dead end. An *answer* cannot take that trade (F332). `parse_summary` degrades unparseable
-        // model output into a raw-text summary with a warning, and `--max-tokens 400` can stop the
-        // model mid-sentence (`finishReason == "length"`); either way the result is then shown with
-        // the same authority as a clean one as long as it happens to contain one `[n]`. The user is
-        // left with the passages, which are what was said — the same place every other refusal
-        // leaves them.
+        // An *answer* cannot take the "a degraded result beats a dead end" trade `summarize` now
+        // makes only for a genuinely clean payload (F332, and F475 Part 1 gave `summarize` the same
+        // refusal). `parse_summary` degrades unparseable model output into a raw-text summary with
+        // a warning, and `--max-tokens 400` can stop the model mid-sentence (`finishReason ==
+        // "length"`); either way the result would otherwise be shown with the same authority as a
+        // clean one as long as it happens to contain one `[n]`. The user is left with the passages,
+        // which are what was said — the same place every other refusal leaves them.
         if let refusal = Self.answerRefusal(warning: payload.warning, finishReason: payload.finishReason) {
             throw refusal
         }
@@ -281,6 +290,27 @@ public struct LocalSummarizer: MeetingSummarizer {
             return .answerDegraded(warning)
         }
         if finishReason == "length" { return .answerTruncated }
+        return nil
+    }
+
+    /// `answerRefusal`'s sibling for the summarize and correct paths (F475 Part 1). Same shape and
+    /// same reason to be pure, mapping to the generic `.localOutputTruncated`/`.localOutputDegraded`
+    /// cases rather than `.answerTruncated`/`.answerDegraded`, whose copy says "the answer" and "the
+    /// passages" — neither concept exists here. Shared by `LocalSummarizer.summarize` and
+    /// `LocalTranscriptCorrector.correct` so the two helpers cannot drift on what counts as degraded.
+    static func localOutputRefusal(warning: String?, finishReason: String?) -> SummarizerError? {
+        // F475 Part 3: checked first and specifically, because `finishReason == "too_long"` means
+        // the helper refused BEFORE calling the model at all (measured against the real tokenizer
+        // and the model's context window) — a different situation from a warning about output the
+        // model actually produced, and `.localInputTooLong`'s copy is the detail verbatim, not
+        // wrapped in "the model's output could not be read cleanly (…)".
+        if finishReason == "too_long" {
+            return .localInputTooLong(warning ?? "This transcript is too long for the on-device model.")
+        }
+        if let warning, !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .localOutputDegraded(warning)
+        }
+        if finishReason == "length" { return .localOutputTruncated }
         return nil
     }
 

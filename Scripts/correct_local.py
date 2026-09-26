@@ -8,6 +8,11 @@ the model and parses its output into a list of {from, to} corrections — degrad
 when the model's output is not the requested JSON. The proposals are reviewed by the user before any
 apply; nothing here mutates a transcript.
 
+Before loading the model, the assembled prompt is measured against the installed model's own
+context window (F475 Part 3): `finishReason: "too_long"` means the transcript, vocabulary, and
+reference together need more tokens than fit alongside --max-tokens of response, and the model was
+never even loaded.
+
     python3 correct_local.py --model <dir> --input <in.json> --output <out.json> [--max-tokens N]
 
 in.json:  {"systemPrompt": str, "transcript": str}
@@ -20,6 +25,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -127,6 +133,28 @@ def apply_chat_template(tokenizer, messages):
         return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
 
+# F475 Part 3 — mirrors summarize_local.py's own constant and function of the same name (this
+# repo's existing convention for this file pair: see e.g. _strip_thinking/_json_object_candidates,
+# duplicated rather than shared, since each helper is a standalone one-shot script). See
+# summarize_local.py's copy for the real-model measurement this margin is sized from — both helpers
+# run from the identical Runtime/Summarizer model, so the same numbers apply to both.
+CONTEXT_SAFETY_MARGIN_TOKENS = 32
+
+
+def context_overflow_detail(prompt_tokens: int, context_limit: int, max_tokens: int) -> str:
+    """A human-readable detail when `prompt_tokens` leaves no room for `max_tokens` of response
+    inside `context_limit`, or "" when it fits. Pure so the budget arithmetic is testable without a
+    5 GB model — the token counts it is handed come from the real tokenizer in `main()`."""
+    budget = context_limit - max_tokens - CONTEXT_SAFETY_MARGIN_TOKENS
+    if prompt_tokens <= budget:
+        return ""
+    return (
+        f"This transcript needs about {prompt_tokens} tokens, more than the {budget} available "
+        f"in this model's {context_limit}-token context window with {max_tokens} reserved for "
+        "the response. Try a shorter selection, or use Claude for long meetings."
+    )
+
+
 def main() -> int:
     args = parse_args()
     with open(args.input, encoding="utf-8") as handle:
@@ -143,9 +171,24 @@ def main() -> int:
 
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.utils import load_config, load_tokenizer
+
+    messages = build_chat_messages(system_prompt, transcript)
+    config = load_config(Path(args.model))
+    context_limit = config.get("max_position_embeddings")
+    if context_limit:
+        counting_tokenizer = load_tokenizer(Path(args.model))
+        prompt_tokens = len(apply_chat_template(counting_tokenizer, messages))
+        detail = context_overflow_detail(prompt_tokens, context_limit, args.max_tokens)
+        if detail:
+            write_payload(args.output, {
+                "corrections": [], "warning": detail,
+                "finishReason": "too_long", "generatedTokens": 0,
+            })
+            return 0
 
     model, tokenizer = load(args.model)
-    prompt = apply_chat_template(tokenizer, build_chat_messages(system_prompt, transcript))
+    prompt = apply_chat_template(tokenizer, messages)
     sampler = make_sampler(temp=0.0)  # greedy: corrections should be reproducible.
 
     pieces = []
