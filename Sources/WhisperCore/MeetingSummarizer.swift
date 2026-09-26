@@ -83,6 +83,12 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     case missingAPIKey
     case emptyTranscript
     case requestFailed(String)
+    /// The request timed out waiting for Claude's reply (F474). Kept distinct from
+    /// `.requestFailed`: a non-streaming request sends no bytes back until generation finishes, so
+    /// timing out means URLSession genuinely sent the request and gave up waiting for an answer —
+    /// not that the request "could not be sent", which `.requestFailed`'s copy would claim and
+    /// which is not a state this case can know to be true.
+    case requestTimedOut
     case httpStatus(Int, String)
     case refused(String)
     case responseTruncated
@@ -113,6 +119,10 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "This meeting has no transcript to summarize yet."
         case let .requestFailed(message):
             return "The summary request could not be sent: \(message)"
+        case .requestTimedOut:
+            return "Claude did not answer before the request timed out. Timing out isn't the same "
+                + "as failing to send — the request may have reached Claude and still be "
+                + "generating. Nothing was saved here; try again if you'd like another attempt."
         case let .httpStatus(code, message):
             if code == 401 {
                 return "Claude rejected the API key. Check it in Settings. (\(message))"

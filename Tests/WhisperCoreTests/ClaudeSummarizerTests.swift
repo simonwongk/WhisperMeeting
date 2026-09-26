@@ -6,13 +6,22 @@ import Testing
 /// can be exercised without touching the network.
 final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var requestBody: Data?
+    nonisolated(unsafe) static var requestTimeoutInterval: TimeInterval?
     nonisolated(unsafe) static var statusCode = 200
     nonisolated(unsafe) static var responseBody = Data()
+    /// When set, `startLoading` fails the request with this URLError code instead of returning
+    /// `responseBody` — for F474, simulating a timed-out request that URLSession genuinely sent.
+    nonisolated(unsafe) static var failWithErrorCode: URLError.Code?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.requestTimeoutInterval = request.timeoutInterval
+        if let code = Self.failWithErrorCode {
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+            return
+        }
         // URLProtocol strips httpBody into httpBodyStream, so read the stream.
         if let stream = request.httpBodyStream {
             stream.open()
@@ -66,6 +75,7 @@ struct ClaudeSummarizerTests {
 @Test("The request targets the messages endpoint with the transcript and a JSON schema")
 func requestIsWellFormed() async throws {
     StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
     StubURLProtocol.responseBody = successResponse(
         #"{"summary":"s","keyPoints":[],"actionItems":[]}"#
     )
@@ -84,9 +94,45 @@ func requestIsWellFormed() async throws {
     #expect(system.contains("same language"))
 }
 
+// F474 — a non-streaming request with max_tokens 8,000 has nothing to send back until generation
+// finishes, and URLSession's (and URLRequest's) default timeoutInterval is 60 s — far shorter than
+// a long summary can take. The request must ask for enough time, matching the official Anthropic
+// SDKs' own 10-minute non-streaming default (client config: "timeout default 10 min").
+@Test("The request sets a generation-sized timeout, not URLSession's 60 s default (F474)")
+func requestTimeoutIsSizedForGeneration() async throws {
+    StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
+    StubURLProtocol.responseBody = successResponse(
+        #"{"summary":"s","keyPoints":[],"actionItems":[]}"#
+    )
+    StubURLProtocol.requestTimeoutInterval = nil
+
+    _ = try await makeSummarizer().summarize(transcript: "hello", language: nil)
+
+    let timeout = try #require(StubURLProtocol.requestTimeoutInterval)
+    #expect(timeout == ClaudeSummarizer.requestTimeoutInterval)
+    #expect(timeout >= 600, "URLSession's 60 s default is nowhere near enough for a non-streaming summary")
+}
+
+// F474 — a timed-out request is not the same event as a request that never left this Mac.
+// URLSession genuinely sent the bytes; it just gave up waiting for a reply. `.requestFailed`'s
+// copy ("could not be sent") is a claim about a state the app does not know to be true, so a
+// timeout gets its own case with copy that does not make that claim.
+@Test("A timed-out request is reported honestly, not as one that could not be sent (F474)")
+func timeoutIsNotReportedAsUnsent() async throws {
+    StubURLProtocol.failWithErrorCode = .timedOut
+
+    await #expect(throws: SummarizerError.requestTimedOut) {
+        try await makeSummarizer().summarize(transcript: "hello", language: nil)
+    }
+    let message = SummarizerError.requestTimedOut.localizedDescription
+    #expect(!message.contains("could not be sent"))
+}
+
 @Test("A structured response decodes into a MeetingSummary")
 func decodesStructuredResponse() async throws {
     StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
     StubURLProtocol.responseBody = successResponse(
         #"{"summary":"Discussed the roadmap.","keyPoints":["Ship v1","Hire QA"],"actionItems":["Email the vendor"]}"#
     )
@@ -100,6 +146,7 @@ func decodesStructuredResponse() async throws {
 @Test("A 401 surfaces as an httpStatus error")
 func mapsAuthFailure() async throws {
     StubURLProtocol.statusCode = 401
+    StubURLProtocol.failWithErrorCode = nil
     StubURLProtocol.responseBody = try! JSONSerialization.data(
         withJSONObject: ["error": ["message": "invalid x-api-key"]]
     )
@@ -112,6 +159,7 @@ func mapsAuthFailure() async throws {
 @Test("A refusal stop reason surfaces as a refused error")
 func mapsRefusal() async throws {
     StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
     StubURLProtocol.responseBody = try! JSONSerialization.data(withJSONObject: [
         "stop_reason": "refusal",
         "stop_details": ["explanation": "nope"],
@@ -126,6 +174,7 @@ func mapsRefusal() async throws {
 @Test("A max_tokens stop reason surfaces as a distinct truncation error, not unreadable")
 func mapsTruncation() async throws {
     StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
     // HTTP 200 with a truncated JSON payload — decoding this would throw .unreadableResponse.
     StubURLProtocol.responseBody = try! JSONSerialization.data(withJSONObject: [
         "stop_reason": "max_tokens",
@@ -156,6 +205,7 @@ func summaryStyleControls() async throws {
     // Request-level: the response schema is byte-identical across styles; only the system prompt changes.
     func capture(_ style: SummaryStyle) async throws -> (schema: Data, system: String) {
         StubURLProtocol.statusCode = 200
+        StubURLProtocol.failWithErrorCode = nil
         StubURLProtocol.responseBody = successResponse(#"{"summary":"s","keyPoints":[],"actionItems":[]}"#)
         StubURLProtocol.requestBody = nil
         _ = try await makeSummarizer().summarize(transcript: "hi", language: nil, style: style)

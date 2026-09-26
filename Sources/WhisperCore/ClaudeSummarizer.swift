@@ -6,6 +6,14 @@ import Foundation
 public struct ClaudeSummarizer: MeetingSummarizer {
     public static let defaultModel = "claude-opus-4-8"
 
+    /// How long a summary request waits for Claude's reply before URLSession gives up (F474).
+    ///
+    /// URLRequest's own default is 60 s — meant for interactive fetches, not a non-streaming
+    /// `max_tokens: 8000` completion, which sends no bytes back until generation finishes and can
+    /// legitimately take longer than that. 600 s matches the official Anthropic SDKs' own
+    /// non-streaming default (documented client-config timeout: "default 10 min").
+    public static let requestTimeoutInterval: TimeInterval = 600
+
     private let apiKey: String
     private let model: String
     private let maxTokens: Int
@@ -43,6 +51,8 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw SummarizerError.requestTimedOut
         } catch {
             throw SummarizerError.requestFailed(error.localizedDescription)
         }
@@ -62,6 +72,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.timeoutInterval = Self.requestTimeoutInterval
 
         let body: [String: Any] = [
             "model": model,
