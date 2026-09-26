@@ -35,21 +35,31 @@ case "$repository" in
   *) print -u2 "Unknown summarizer model: $repository"; exit 1 ;;
 esac
 
-if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+# F439: `SUMMARIZER_INSTALL_RECOVERY_ONLY` bypasses every precondition below, mirroring
+# setup-qwen-asr.sh and setup-speaker-diarization.sh — a launch-time reclaim of an interrupted
+# install must not require Homebrew, free space, or (as here) the bundled helpers or even
+# Apple-silicon, because a build missing one of those, or a reclaim running before the
+# architecture check should even matter, would otherwise make the reclaim exit before it ever
+# reaches the restore-a-complete-backup logic below, stranding the orphaned runtime — the exact
+# failure F33 closed for Qwen. Only a REAL install needs any of this.
+if [[ "${SUMMARIZER_INSTALL_RECOVERY_ONLY:-0}" != "1"
+      && ( "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ) ]]; then
   print -u2 "Local summaries currently require an Apple-silicon Mac."
   exit 1
 fi
-if [[ ! -f "$helper_source" ]]; then
-  print -u2 "The bundled local-summarizer helper is missing."
-  exit 1
-fi
-if [[ ! -f "$correction_helper_source" ]]; then
-  print -u2 "The bundled transcript-correction helper is missing."
-  exit 1
-fi
-if [[ ! -f "$refine_helper_source" ]]; then
-  print -u2 "The bundled dictation-refinement helper is missing."
-  exit 1
+if [[ "${SUMMARIZER_INSTALL_RECOVERY_ONLY:-0}" != "1" ]]; then
+  if [[ ! -f "$helper_source" ]]; then
+    print -u2 "The bundled local-summarizer helper is missing."
+    exit 1
+  fi
+  if [[ ! -f "$correction_helper_source" ]]; then
+    print -u2 "The bundled transcript-correction helper is missing."
+    exit 1
+  fi
+  if [[ ! -f "$refine_helper_source" ]]; then
+    print -u2 "The bundled dictation-refinement helper is missing."
+    exit 1
+  fi
 fi
 
 mkdir -p "$runtime_parent"
@@ -108,11 +118,21 @@ if [[ ! -e "$target_directory" ]]; then
     fi
   done
 fi
-for orphaned_backup in "$runtime_parent"/.Summarizer-backup-*(N); do
-  if ! runtime_is_complete "$orphaned_backup"; then
+# F439: mirrors setup-qwen-asr.sh / setup-speaker-diarization.sh, which purge EVERY orphaned
+# backup once the live runtime is complete — this used to remove only INCOMPLETE ones, so a
+# complete `.Summarizer-backup-<pid>` beside a complete live `Summarizer/` was kept forever,
+# re-scanned (harmlessly) on every launch, and never freed the GBs it holds.
+if runtime_is_complete "$target_directory"; then
+  for orphaned_backup in "$runtime_parent"/.Summarizer-backup-*(N); do
     rm -rf "$orphaned_backup"
-  fi
-done
+  done
+else
+  for orphaned_backup in "$runtime_parent"/.Summarizer-backup-*(N); do
+    if ! runtime_is_complete "$orphaned_backup"; then
+      rm -rf "$orphaned_backup"
+    fi
+  done
+fi
 for abandoned_staging in "$runtime_parent"/.Summarizer-install-*(N); do
   rm -rf "$abandoned_staging"
 done
@@ -188,6 +208,23 @@ chmod 644 "$staging_directory/refine_server.py"
 "$staging_directory/venv/bin/python" "$staging_directory/summarize_local.py" --help >/dev/null
 "$staging_directory/venv/bin/python" "$staging_directory/correct_local.py" --help >/dev/null
 "$staging_directory/venv/bin/python" "$staging_directory/refine_server.py" --help >/dev/null
+
+# F439: the three `--help` checks above cannot fail on a broken mlx_lm install. All three helpers
+# call `parser.parse_args()` (which `--help` short-circuits via argparse's own `sys.exit(0)`)
+# BEFORE their deferred `from mlx_lm import ...` — summarize_local.py:201/215,
+# correct_local.py:130/144, refine_server.py:276/281 — precisely so the pure functions above them
+# stay importable in tests without mlx_lm installed. That means `--help` exits before ANY of the
+# three ever imports mlx_lm, so a `pip install mlx-lm==$mlx_lm_version` that resolved a broken or
+# incompatible mlx/transitive release would pass every check here and only fail once a real
+# summarize/correct/refine request ran against the now-live (and un-rollback-able, since the
+# previous working Summarizer/ was already replaced) runtime. Import for real, matching every
+# module all three helpers actually import.
+"$staging_directory/venv/bin/python" -c '
+import mlx.core
+from mlx_lm import load, stream_generate
+from mlx_lm.sample_utils import make_sampler
+from mlx_lm.models.cache import can_trim_prompt_cache, make_prompt_cache, trim_prompt_cache
+'
 
 # F440: setup-ask-embeddings.sh installs Ask Meetings' search-by-meaning model INTO this same
 # directory, at `$target_directory/embedding-model` — so the swap below, which replaces the whole
