@@ -60,19 +60,27 @@ public final class FloatTrackFile {
     /// it is about to drop — that conversion allocates and runs on the `sampleHandlerQueue`.
     public private(set) var isFinished = false
 
+    /// Writes a buffer to the track's handle. Injected so a partial write followed by a throw
+    /// (F501) can be simulated — a real file cannot be made to fail mid-write without flakiness,
+    /// the same reason `FloatTrackMixer` and `InterruptedRecordingRecovery` inject their reads.
+    public typealias Writer = (Data, FileHandle) throws -> Void
+
     private let handle: FileHandle
     private let syncIntervalBytes: Int
     private let sync: DeviceSync
+    private let writer: Writer
     private var bytesSinceSync = 0
 
     public init(
         url: URL,
         syncIntervalBytes: Int = FloatTrackFile.captureSyncIntervalBytes,
-        sync: @escaping DeviceSync = FloatTrackFile.fullFsync
+        sync: @escaping DeviceSync = FloatTrackFile.fullFsync,
+        writer: @escaping Writer = ThrowingFileHandleIO.write
     ) throws {
         self.url = url
         self.syncIntervalBytes = syncIntervalBytes
         self.sync = sync
+        self.writer = writer
         FileManager.default.createFile(atPath: url.path, contents: nil)
         handle = try FileHandle(forWritingTo: url)
     }
@@ -89,7 +97,18 @@ public final class FloatTrackFile {
     public func append(_ samples: UnsafePointer<Float>, frameCount frames: Int) throws {
         guard !isFinished, frames > 0 else { return }
         let byteCount = frames * MemoryLayout<Float>.size
-        try ThrowingFileHandleIO.write(Data(bytes: samples, count: byteCount), to: handle)
+        do {
+            try writer(Data(bytes: samples, count: byteCount), handle)
+        } catch {
+            // A write that fails partway — typically a short write followed by ENOSPC — can leave
+            // bytes on disk beyond what `frameCount` will ever claim (F501). `frameCount * 4` is
+            // the one invariant the mixer and recovery both trust the file to hold to, so a failed
+            // write has to restore it rather than leave the file longer than its own count says.
+            // Best-effort: the write already failed, and a truncate that also fails leaves exactly
+            // the pre-F501 exposure rather than losing the frames already accounted for.
+            try? handle.truncate(atOffset: UInt64(frameCount) * UInt64(MemoryLayout<Float>.size))
+            throw error
+        }
         frameCount += Int64(frames)
         bytesSinceSync += byteCount
         if FloatTrackFile.shouldSync(bytesSinceSync: bytesSinceSync, interval: syncIntervalBytes) {

@@ -298,3 +298,58 @@ func oversizedWriteKeepsTheCadenceHonest() throws {
     try track.append([Float](repeating: 0.5, count: framesPerInterval / 2))
     #expect(spy.count == 2, "the carried remainder was discarded, so the cadence drifted")
 }
+
+// MARK: - F501: a failed write must not leave uncounted bytes on disk
+
+private struct InjectedWriteFailure: Error {}
+
+@Test("A write that fails partway is truncated back to what frameCount claims (F501)")
+func failedWriteIsTruncatedBackToFrameCount() throws {
+    // `append` only advances `frameCount` after the write returns, so a short write followed by a
+    // throw — the shape of a real write racing ENOSPC — used to leave the partial bytes sitting
+    // on disk past what `frameCount` would ever claim. A later successful append then wrote its
+    // next frames further out than `frameCount * 4`, so the file no longer matched the count the
+    // mixer and recovery both trust.
+    let url = temporaryTrackURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    var callCount = 0
+    let track = try FloatTrackFile(
+        url: url,
+        syncIntervalBytes: interval,
+        sync: { _ in },
+        writer: { data, handle in
+            callCount += 1
+            if callCount == 2 {
+                // Half the buffer lands on disk before the failure — a real short write, not a
+                // clean all-or-nothing one.
+                try ThrowingFileHandleIO.write(data.prefix(data.count / 2), to: handle)
+                throw InjectedWriteFailure()
+            }
+            try ThrowingFileHandleIO.write(data, to: handle)
+        }
+    )
+
+    try track.append([Float](repeating: 0.5, count: 4))
+    #expect(throws: InjectedWriteFailure.self) {
+        try track.append([Float](repeating: 0.25, count: 4))
+    }
+    // The failed append is not counted...
+    #expect(track.frameCount == 4)
+    // ...and the file holds no more than that — not the 16 + 8 extra bytes the half-write left.
+    let sizeAfterFailure = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
+    #expect(sizeAfterFailure == 4 * 4)
+
+    // The track keeps working afterwards, at the right offset — not appended after the orphaned
+    // bytes the failed write left behind.
+    try track.append([Float](repeating: 0.75, count: 2))
+    try track.finish()
+    #expect(track.frameCount == 6)
+    let data = try Data(contentsOf: url)
+    #expect(data.count == 6 * 4)
+    let samples = data.withUnsafeBytes { raw in
+        (0..<6).map {
+            Float(bitPattern: raw.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self).littleEndian)
+        }
+    }
+    #expect(samples == [0.5, 0.5, 0.5, 0.5, 0.75, 0.75])
+}
