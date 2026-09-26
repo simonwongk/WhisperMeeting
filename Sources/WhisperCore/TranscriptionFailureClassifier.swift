@@ -5,7 +5,7 @@ import Foundation
 public enum SuggestedAction: Sendable, Equatable {
     case installRuntime  // the runtime is missing — install it first
     case reimport        // the audio is missing/empty/too short — retrying will fail again
-    case checkInput      // the audio is there but holds no speech — check the microphone (F561)
+    case checkInput      // the audio is there but holds no speech — if recorded here, check the mic (F561)
     case retry           // a transient/subprocess failure — retrying may succeed
     case switchEngine    // this engine can't decode the recording's container — the other one can
     case none            // cancellation — not a failure the user needs to act on
@@ -48,8 +48,8 @@ public enum TranscriptionFailureClassifier {
         case .checkInput:
             return FailureCategory(
                 action: .checkInput,
-                explanation: "No speech was detected in this recording. Check that the right microphone was "
-                    + "selected and not muted — the recording is unchanged."
+                explanation: "No speech was detected in this recording. If it was recorded on this Mac, check "
+                    + "that the right microphone was selected and not muted — the recording is unchanged."
             )
         case .switchEngine:
             return FailureCategory(

@@ -54,7 +54,11 @@ func emptyTranscriptIsReportedAsNoSpeech() {
         #expect(category.action != .reimport)
         #expect(category.action != .retry) // the same audio will come back empty again
         #expect(category.explanation.contains("No speech was detected"))
-        #expect(category.explanation.contains("microphone"))
+        // The same error comes from an imported file or link with no speech in it (music, silence),
+        // where there was no microphone to check, so that advice must be conditional (F561 review).
+        let microphoneAdvice = category.explanation.components(separatedBy: ". ")
+            .first { $0.contains("microphone") }
+        #expect(microphoneAdvice?.hasPrefix("If ") == true, "\(category.explanation)")
         #expect(category.explanation.contains("unchanged"))
         #expect(!category.explanation.contains("Re-import"))
     }
