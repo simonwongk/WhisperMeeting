@@ -190,6 +190,16 @@ public struct DictationHotkey: Codable, Equatable, Sendable {
         self.keyCode = keyCode
         self.mode = mode
     }
+    /// A mode this build cannot read, such as a newer build's, decodes as hold on the same key
+    /// (F548). It used to fail the whole decode, and `DictationController` then armed Right Option,
+    /// a key the user never chose. Hold, because in hold mode the microphone is on only while the
+    /// key is down. Encoding is still synthesized, so the bytes written for a known mode are
+    /// unchanged.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyCode = try container.decode(UInt16.self, forKey: .keyCode)
+        mode = (try? container.decode(String.self, forKey: .mode)).flatMap(Mode.init(rawValue:)) ?? .hold
+    }
     /// Right Option (kVK_RightOption = 0x3D = 61), hold-to-talk. The out-of-box default.
     public static let rightOption = DictationHotkey(keyCode: 61, mode: .hold)
 }

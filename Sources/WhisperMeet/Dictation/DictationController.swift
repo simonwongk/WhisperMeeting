@@ -30,7 +30,7 @@ final class DictationController: ObservableObject {
     @Published var enabled: Bool { didSet { persist(); apply() } }
     @Published var hotkey: DictationHotkey {
         didSet {
-            persist()
+            if hotkey != oldValue { persistHotkey() }
             // Settings' "Change" hears the trigger key itself, so re-choosing the key a dictation is
             // being held on is routine. Nothing changed; rebuilding the tap under that dictation is
             // the one thing that can lose its release (F446). Idle, a re-apply still re-taps.
@@ -1129,11 +1129,17 @@ final class DictationController: ObservableObject {
 
     private func persist() {
         defaults.set(enabled, forKey: Self.enabledKey)
-        defaults.set(try? JSONEncoder().encode(hotkey), forKey: Self.hotkeyKey)
         defaults.set(language.rawValue, forKey: Self.languageKey)
         defaults.set(autoPaste, forKey: Self.autoPasteKey)
         defaults.set(useVocabulary, forKey: Self.useVocabularyKey)
         defaults.set(refineEnabled, forKey: Self.refineEnabledKey)
         defaults.set(selectedEngine.rawValue, forKey: Self.engineKey)
+    }
+
+    /// Not part of `persist()`, and written only when the hotkey changed (F548). A newer build's
+    /// mode reads here as hold, so re-saving the hotkey with every other setting replaced the
+    /// user's stored choice with this build's fallback for it.
+    private func persistHotkey() {
+        defaults.set(try? JSONEncoder().encode(hotkey), forKey: Self.hotkeyKey)
     }
 }

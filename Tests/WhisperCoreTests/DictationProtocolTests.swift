@@ -36,3 +36,36 @@ func takeLinePartial() {
 func hotkeyDefault() {
     #expect(DictationHotkey.rightOption == DictationHotkey(keyCode: 61, mode: .hold))
 }
+
+/// `DictationHotkey` exactly as every build before F548 coded it: synthesized `Codable` over a strict
+/// enum. It stands in for the previously shipped build in both directions below.
+private struct PreF548Hotkey: Codable, Equatable {
+    enum Mode: String, Codable { case hold, toggle }
+    var keyCode: UInt16
+    var mode: Mode
+}
+
+@Test("A hotkey mode from a newer build decodes as hold on the same key (F548)")
+func unknownHotkeyModeDecodesAsHoldOnTheSameKey() throws {
+    // A newer build's mode, and a field this build has never heard of beside it.
+    let newer = Data(#"{"keyCode":96,"mode":"doubleTap","tapInterval":0.3}"#.utf8)
+    #expect(try JSONDecoder().decode(DictationHotkey.self, from: newer) == DictationHotkey(keyCode: 96, mode: .hold))
+}
+
+@Test("The hotkey's bytes are unchanged for known modes, and the previous build reads them (F548)")
+func hotkeyWireShapeIsUnchangedForKnownModes() throws {
+    let modes: [(DictationHotkey.Mode, PreF548Hotkey.Mode)] = [(.hold, .hold), (.toggle, .toggle)]
+    for (mode, previousMode) in modes {
+        let written = try JSONEncoder().encode(DictationHotkey(keyCode: 97, mode: mode))
+        let previouslyWritten = try JSONEncoder().encode(PreF548Hotkey(keyCode: 97, mode: previousMode))
+        #expect(written == previouslyWritten)
+        // The previous build reads what this one writes, and this one reads what it wrote.
+        #expect(try JSONDecoder().decode(PreF548Hotkey.self, from: written) == PreF548Hotkey(keyCode: 97, mode: previousMode))
+        #expect(try JSONDecoder().decode(DictationHotkey.self, from: previouslyWritten) == DictationHotkey(keyCode: 97, mode: mode))
+        // And the on-disk names themselves, which the twin cannot check if both are edited together.
+        let object = try #require(try JSONSerialization.jsonObject(with: written) as? [String: Any])
+        #expect(Set(object.keys) == ["keyCode", "mode"])
+        #expect(object["keyCode"] as? Int == 97)
+        #expect(object["mode"] as? String == mode.rawValue)
+    }
+}

@@ -158,12 +158,15 @@ final class FakeHotkeyMonitor: HotkeyMonitoring {
     var onPressCancel: (() -> Void)?
     var startResult = true
     private(set) var startCount = 0
+    /// Every hotkey `start` was asked to arm, in order.
+    private(set) var startedHotkeys: [DictationHotkey] = []
     private(set) var stopCount = 0
     private(set) var resetToggleCount = 0
 
     @discardableResult
     func start(hotkey: DictationHotkey) -> Bool {
         startCount += 1
+        startedHotkeys.append(hotkey)
         return startResult
     }
 
