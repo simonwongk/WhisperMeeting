@@ -462,6 +462,11 @@ final class AppModel: ObservableObject {
     @Published var pendingFolderRebuild: FolderRebuild.Proposal?
     /// The reviewed rebuild offer awaiting the user's answer (F267). Nil when none is pending.
     @Published var pendingSourceRebuild: SourceRebuildRequest?
+    /// The meeting whose confirmed source-tracks rebuild is in flight, or nil (F459). Both raw
+    /// Float32 tracks are read in full and a new WAV is written — gigabytes, for a multi-hour
+    /// meeting — so this is the UI-facing signal that the work is running, the way
+    /// `diarizationRunningID`/`segmentReTranscriptionRunningID` are for their own long passes.
+    @Published private(set) var sourceRebuildRunningID: UUID?
     /// Whether the user has opted into the link-import feature. Off by default: every other
     /// boundary-crossing capability in this app is opt-in (Qwen, Claude summaries), so the network
     /// path is explicit rather than ambient.
@@ -1068,6 +1073,13 @@ final class AppModel: ObservableObject {
     /// rebuilds this instance's own folder (F256) — and defaults to the real rebuild.
     var recoverInterruptedRecording: @Sendable (URL) throws -> RecoveredRecording? = {
         try InterruptedRecordingRecovery.recover(in: $0)
+    }
+
+    /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as
+    /// `recoverInterruptedRecording` above, so a test can hold the (real, detached) work open long
+    /// enough to observe `sourceRebuildRunningID` while it runs. Defaults to the real rebuild.
+    var performSourceTracksRebuild: @Sendable (SourceRebuild.Offer) throws -> RecoveredRecording? = {
+        try SourceRebuild.rebuild($0)
     }
 
     /// Runs the read-only integrity check for one meeting's on-disk audio. Injectable so the library
@@ -5701,18 +5713,42 @@ extension AppModel {
     /// `recoverLibrary(from:confirmed:)` and `importFromURL(_:confirmedLongDuration:)` do — and it
     /// leaves the offer standing, because the user has not answered yet.
     ///
-    /// What changes is the audio's own facts: duration, and the truncation notice, which the new
-    /// rebuild either reproduces or clears. **Nothing the user wrote is touched** — F148 #1, and
-    /// the reason this action is safe enough to offer at all.
-    func performSourceRebuild(confirmed: Bool) {
-        guard confirmed, let request = pendingSourceRebuild else { return }
+    /// **Synchronous, and the confirmation's button calls it directly (F434), the same shape as
+    /// `performLibraryRestore`.** The rebuild reads both raw Float32 tracks in full and writes a new
+    /// WAV — gigabytes, for a multi-hour meeting — and until F459 that ran right here on the main
+    /// actor and beachballed the window for the whole rebuild, stalling the health tick and any
+    /// capture restart handling for a meeting recording at the same time. Every guard is checked and
+    /// the offer is captured synchronously, before any `await`, so SwiftUI's own dismissal (which
+    /// clears `pendingSourceRebuild`) cannot race the work away; the heavy read/write then runs in
+    /// `Task.detached`, and every store mutation stays on the main actor. The returned `Task` is that
+    /// work, for a caller (a test) that needs to wait for it.
+    @discardableResult
+    func performSourceRebuild(confirmed: Bool) -> Task<Void, Never>? {
+        guard confirmed, let request = pendingSourceRebuild else { return nil }
+        pendingSourceRebuild = nil
         // Asked here too: the rebuild writes audio before its `store.update`, which a restore
         // in progress would refuse, leaving new audio the index does not describe (F506).
-        guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
+        guard libraryIsNotBeingRestored("Rebuilding a recording") else { return nil }
+        sourceRebuildRunningID = request.meetingID
+        return Task {
+            await applySourceRebuild(request)
+            sourceRebuildRunningID = nil
+        }
+    }
+
+    /// The rebuild's own work, off the main actor (F459): both raw Float32 tracks are read in full
+    /// and a new WAV is written. Every store mutation stays on the main actor, exactly as
+    /// `applyLibraryRestore` and the startup sweep's own detached `recoverInterruptedRecording` call
+    /// already do.
+    private func applySourceRebuild(_ request: SourceRebuildRequest) async {
+        let rebuildCore = performSourceTracksRebuild
+        let offer = request.offer
         do {
-            guard let rebuilt = try SourceRebuild.rebuild(request.offer) else {
+            let outcome = try await Task.detached(priority: .userInitiated) {
+                try rebuildCore(offer)
+            }.value
+            guard let rebuilt = outcome else {
                 alertMessage = "The source tracks for this meeting held no audio to rebuild. Nothing was changed."
-                pendingSourceRebuild = nil
                 return
             }
             let previousDuration = store.meeting(id: request.meetingID)?.duration ?? 0
@@ -5731,22 +5767,21 @@ extension AppModel {
                    let notice = Self.staleTranscriptNotice(
                        previous: previousDuration,
                        rebuilt: rebuilt.duration,
-                       previousAudioKept: request.offer.wouldSupersedeRecording
+                       previousAudioKept: offer.wouldSupersedeRecording
                    ) {
                     meeting.staleTranscriptWarning = notice
                 }
             }
-            pendingSourceRebuild = nil
             var message = "The recording was rebuilt from its source tracks."
-            if request.offer.wouldSupersedeRecording {
+            if offer.wouldSupersedeRecording {
                 message += " The previous version is kept in this meeting's folder."
             }
             if let warning = Self.recoveryWarning(for: rebuilt) { message += " \(warning)" }
             alertMessage = message
         } catch {
-            // The offer stays up, as F193 leaves `pendingLibraryRecovery` populated: the failure
-            // may be specific to this attempt, and `SourceRebuild` has already put the previous
-            // recording back, so trying again is safe.
+            // The offer is already gone, unlike F193's `pendingLibraryRecovery`: the user answered
+            // the confirmation, and `SourceRebuild` has already put the previous recording back, so
+            // trying again (via `requestSourceRebuild`) is safe.
             alertMessage = "The recording could not be rebuilt, and nothing was changed. The original microphone and system tracks are still in this meeting's folder. \(error.localizedDescription)"
         }
     }
