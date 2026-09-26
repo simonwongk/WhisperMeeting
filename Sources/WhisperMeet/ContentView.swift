@@ -2902,7 +2902,14 @@ private struct TranscriptDetailView: View {
                             model.requestSourceRebuild(id: meetingID)
                         }
                         .buttonStyle(.link)
-                        .help("Mix the raw microphone and system tracks again, in case more audio survived than the first recovery found.")
+                        // F459: disabled while ANY rebuild is running, not only this meeting's own —
+                        // `sourceRebuildRunningID` is a single slot, and the model itself refuses a
+                        // second one; a control that stayed enabled here would let a press reach
+                        // that refusal instead of never being able to try.
+                        .disabled(model.sourceRebuildRunningID != nil)
+                        .help(model.sourceRebuildRunningID != nil
+                              ? "A source-tracks rebuild is already running. Wait for it to finish before starting another."
+                              : "Mix the raw microphone and system tracks again, in case more audio survived than the first recovery found.")
                     }
                     tagsEditor
                     notesSection

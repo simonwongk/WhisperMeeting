@@ -5710,6 +5710,17 @@ extension AppModel {
             return
         }
         guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
+        // F459: only one rebuild runs at a time — `sourceRebuildRunningID` is a single slot, filled
+        // by whichever meeting's rebuild is in flight. Without this, a second press (on this
+        // meeting, or requesting one for another while this one runs) could start a second
+        // `Task.detached` — for the same meeting, writing the same fixed `meeting-recovered.wav`
+        // concurrently; for a different one, clobbering this slot's own bookkeeping. Refused, not
+        // queued: nothing about any recording changes, and Rebuild Audio can be requested again once
+        // the running one finishes.
+        guard sourceRebuildRunningID == nil else {
+            alertMessage = "Wait for the source-tracks rebuild that is already running to finish before starting another."
+            return
+        }
         // F469: a transcription of THIS meeting — running now, or waiting in the queue — has
         // already opened (or will open) the current audio; the rebuild moves that audio aside and
         // writes a longer or shorter one, so the transcript that job produces would describe audio
@@ -5761,6 +5772,13 @@ extension AppModel {
         // Asked here too: the rebuild writes audio before its `store.update`, which a restore
         // in progress would refuse, leaving new audio the index does not describe (F506).
         guard libraryIsNotBeingRestored("Rebuilding a recording") else { return nil }
+        // F459: re-checked here too, at confirmation time — the dialog can stay open long enough
+        // for a rebuild requested (and confirmed) elsewhere to start first, and a confirmed second
+        // one would collide with it exactly as a second `requestSourceRebuild` press would.
+        guard sourceRebuildRunningID == nil else {
+            alertMessage = "Wait for the source-tracks rebuild that is already running to finish before starting another."
+            return nil
+        }
         // F469: asked again rather than trusting the answer from when the offer was made — the
         // confirmation dialog can stay open for as long as the user takes to answer it, and a
         // transcription can start (or a queued one become active) in that window exactly as F506's

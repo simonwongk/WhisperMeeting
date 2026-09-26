@@ -445,8 +445,12 @@ private final class RebuildGate: @unchecked Sendable {
     private let lock = NSLock()
     private var entered = false
     private var open = false
-    func enter() { lock.withLock { entered = true } }
+    private var callCount = 0
+    func enter() { lock.withLock { entered = true; callCount += 1 } }
     var hasEntered: Bool { lock.withLock { entered } }
+    /// How many times the injected rebuild core was actually entered — the concrete count a
+    /// "only one rebuild runs" guard is answerable to (F459).
+    var calls: Int { lock.withLock { callCount } }
     func release() { lock.withLock { open = true } }
     func wait() {
         enter()
@@ -496,6 +500,157 @@ func rebuildRunsDetachedAndReportsProgress() async throws {
 
     #expect(model.sourceRebuildRunningID == nil, "the running id was not cleared once the rebuild finished")
     #expect(abs((model.store.meeting(id: id)?.duration ?? 0) - 2.0) < 0.01)
+}
+
+// MARK: - F459 (review follow-up): sourceRebuildRunningID must actually gate a second rebuild
+//
+// F459's own ticket asked to "block a second request while one is running"; the first version of
+// the fix published `sourceRebuildRunningID` but nothing read it — not `requestSourceRebuild`, not
+// `performSourceRebuild`, not the button (`canRebuildFromSourceTracks` stays true throughout). A
+// second press was reachable exactly because the fix freed the main actor: the first rebuild no
+// longer blocks the run loop, so a second press lands while the first is still in flight and starts
+// a second `Task.detached` writing the same fixed `meeting-recovered.wav` concurrently.
+
+/// A second rebuild-eligible meeting in the SAME model/library as `makeTruncatedMeeting`'s own, for
+/// the cross-meeting confirm-time race below. Same shape, a different id and folder.
+@MainActor
+private func addSecondRebuildableMeeting(to model: AppModel, in root: URL) throws -> UUID {
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let samples = [Float](repeating: 0.3, count: 96_000)
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        try samples.withUnsafeBytes { try Data($0).write(to: folder.appendingPathComponent(name)) }
+    }
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
+        .write(to: folder.appendingPathComponent("meeting-recovered.wav"))
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Second meeting", duration: 0.1,
+        recordingPath: "Recordings/\(id.uuidString)/meeting-recovered.wav", status: .completed
+    ))
+    return id
+}
+
+@Test("A second Rebuild Audio request for the same meeting is refused while one is running, and only one rebuild runs (F459)")
+@MainActor
+func secondRebuildRequestForSameMeetingRefusedWhileOneRuns() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildSecondPressSame-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id, _) = try makeTruncatedMeeting(in: root)
+    let gate = RebuildGate()
+    model.performSourceTracksRebuild = { offer in
+        gate.wait()
+        return try SourceRebuild.rebuild(offer)
+    }
+
+    model.requestSourceRebuild(id: id)
+    let task = try #require(model.performSourceRebuild(confirmed: true))
+    try await waitUntil("the first rebuild to reach its core") { gate.hasEntered }
+    #expect(model.sourceRebuildRunningID == id)
+
+    // The second press: the same meeting, while its own rebuild is still running.
+    model.requestSourceRebuild(id: id)
+
+    #expect(model.pendingSourceRebuild == nil, "a second rebuild was offered while one was already running")
+    #expect(model.alertMessage?.contains("already running") == true, "\(model.alertMessage ?? "no message")")
+
+    gate.release()
+    await task.value
+
+    #expect(gate.calls == 1, "a second rebuild actually reached the core while the first was running")
+}
+
+@Test("Requesting a rebuild for a different meeting while one is running is refused (F459)")
+@MainActor
+func secondRebuildRequestForAnotherMeetingRefusedWhileOneRuns() async throws {
+    // `pendingSourceRebuild` is a single slot too, so a SECOND offer can only ever exist by
+    // overwriting the first — meaning `requestSourceRebuild`'s own `sourceRebuildRunningID` guard
+    // (not just `performSourceRebuild`'s) is what has to refuse the cross-meeting case, and it is
+    // what a second meeting's page actually calls when its own button is pressed.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildSecondPressOther-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, idA, _) = try makeTruncatedMeeting(in: root)
+    let idB = try addSecondRebuildableMeeting(to: model, in: root)
+    let gate = RebuildGate()
+    model.performSourceTracksRebuild = { offer in
+        gate.wait()
+        return try SourceRebuild.rebuild(offer)
+    }
+
+    model.requestSourceRebuild(id: idA)
+    let taskA = try #require(model.performSourceRebuild(confirmed: true))
+    try await waitUntil("A's rebuild to reach its core") { gate.hasEntered }
+    #expect(model.sourceRebuildRunningID == idA)
+
+    model.requestSourceRebuild(id: idB)
+
+    #expect(model.pendingSourceRebuild == nil, "B's offer was made while A's rebuild was running")
+    #expect(model.alertMessage?.contains("already running") == true, "\(model.alertMessage ?? "no message")")
+
+    gate.release()
+    await taskA.value
+
+    #expect(gate.calls == 1, "a second rebuild actually reached the core while the first was running")
+}
+
+@Test("performSourceRebuild refuses a confirmed offer for another meeting if one is already running (F459)")
+@MainActor
+func performSourceRebuildRefusesAStandingOfferOnceAnotherStartedRunning() async throws {
+    // `requestSourceRebuild`'s own guard keeps this state from arising through the normal
+    // request → confirm sequence (the previous test), so this exercises `performSourceRebuild`'s
+    // OWN re-check directly, the same way `performLibraryRestore`'s F506 re-check is asserted
+    // directly against `libraryRestoreBlockedReason` rather than only through the sequence that
+    // should already prevent it (the F279 shape: an additional refusal, not the only one).
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildConfirmOther-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, idA, _) = try makeTruncatedMeeting(in: root)
+    let idB = try addSecondRebuildableMeeting(to: model, in: root)
+    let gate = RebuildGate()
+    model.performSourceTracksRebuild = { offer in
+        gate.wait()
+        return try SourceRebuild.rebuild(offer)
+    }
+
+    model.requestSourceRebuild(id: idA)
+    let taskA = try #require(model.performSourceRebuild(confirmed: true))
+    try await waitUntil("A's rebuild to reach its core") { gate.hasEntered }
+    #expect(model.sourceRebuildRunningID == idA)
+
+    // A `SourceRebuildRequest` for B, standing as if its confirmation were already up when A
+    // started (bypassing `requestSourceRebuild`, which would refuse to create this state at all —
+    // this isolates `performSourceRebuild`'s own check).
+    let offerB = try #require(SourceRebuild.offer(
+        in: model.store.recordingDirectoryURL(for: idB), currentDuration: 0.1
+    ))
+    model.pendingSourceRebuild = AppModel.SourceRebuildRequest(meetingID: idB, meetingTitle: "Second meeting", offer: offerB)
+
+    let taskB = model.performSourceRebuild(confirmed: true)
+
+    #expect(taskB == nil, "B's rebuild started while A's was already running")
+    #expect(model.alertMessage?.contains("already running") == true, "\(model.alertMessage ?? "no message")")
+    #expect(model.store.meeting(id: idB)?.duration == 0.1, "B's audio was changed")
+
+    gate.release()
+    await taskA.value
+
+    #expect(gate.calls == 1, "a second rebuild actually reached the core while the first was running")
+}
+
+@Test("The rebuild-offer control is disabled while a rebuild is running (F459)")
+func rebuildControlIsDisabledWhileRunning() throws {
+    // No render harness (F174), so the wiring is pinned against the source, comments stripped so an
+    // explanation cannot satisfy it (F285's false positive).
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    #expect(source.contains(
+        "Button(\"Rebuild Audio from Source Tracks…\") { model.requestSourceRebuild(id: meetingID) } .buttonStyle(.link) .disabled(model.sourceRebuildRunningID != nil)"
+    ), "the offer control does not disable while a rebuild is running")
 }
 
 // MARK: - F469: a rebuild must not race a transcription of the same meeting
