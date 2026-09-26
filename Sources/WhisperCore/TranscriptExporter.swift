@@ -162,11 +162,23 @@ public enum TranscriptExporter {
     /// so nothing at the very start is silently dropped. If NOTHING in the transcript ever had a
     /// timestamp, there is nothing to fold into, so this falls back to the same single whole-duration
     /// segment the no-segments path above already produces for pure, untimed text.
+    ///
+    /// Folding text into a cue without widening the cue's WINDOW is a timing lie (AGENTS.md's F275
+    /// lesson, applied here to export rather than capture): text folded in from AFTER a cue's own
+    /// natural end could have been said any time up to the next cue's start, so the cue's displayed
+    /// end must widen to that next start (or the recording's duration, if nothing timed follows) —
+    /// otherwise the cue claims its folded words were said before they necessarily were. The mirror
+    /// case is leading text folded into the FIRST cue: it could have been said any time from the very
+    /// start of the recording, so that cue's START widens to 0 rather than keeping its own later,
+    /// natural start.
     private static func foldUntimedSegments(
         _ segments: [TranscriptSegment],
         durationSeconds: TimeInterval
     ) -> [TranscriptSegment] {
         var result: [TranscriptSegment] = []
+        // Parallel to `result`: true for a cue that had TRAILING untimed text folded into it, so its
+        // `end` still needs widening once the next cue's `start` (or the lack of one) is known.
+        var needsEndWidened: [Bool] = []
         var pendingLeadingText: [String] = []
         for segment in segments {
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -175,7 +187,9 @@ public enum TranscriptExporter {
                 if result.isEmpty {
                     pendingLeadingText.append(text)
                 } else {
-                    result[result.count - 1].text += "\n" + text
+                    let lastIndex = result.count - 1
+                    result[lastIndex].text += "\n" + text
+                    needsEndWidened[lastIndex] = true
                 }
                 continue
             }
@@ -185,13 +199,25 @@ public enum TranscriptExporter {
             } else {
                 timedSegment.text = (pendingLeadingText + [text]).joined(separator: "\n")
                 pendingLeadingText = []
+                // The leading text could have been said any time from the very start of the
+                // recording up to this cue's own natural start — the window must cover that whole
+                // span, not just the part after this cue's own speech began.
+                timedSegment.start = 0
             }
             result.append(timedSegment)
+            needsEndWidened.append(false)
         }
-        guard result.isEmpty else { return result }
-        let wholeText = pendingLeadingText.joined(separator: "\n")
-        guard !wholeText.isEmpty else { return [] }
-        return [TranscriptSegment(speaker: nil, start: 0, end: max(0, durationSeconds), text: wholeText)]
+        guard !result.isEmpty else {
+            let wholeText = pendingLeadingText.joined(separator: "\n")
+            guard !wholeText.isEmpty else { return [] }
+            return [TranscriptSegment(speaker: nil, start: 0, end: max(0, durationSeconds), text: wholeText)]
+        }
+        let cappedDuration = max(0, durationSeconds)
+        for index in result.indices where needsEndWidened[index] {
+            let nextStart = result.indices.contains(index + 1) ? result[index + 1].start : nil
+            result[index].end = min(nextStart ?? cappedDuration, cappedDuration)
+        }
+        return result
     }
 
     /// The editable transcript is the user-facing source of truth. When its non-empty lines still

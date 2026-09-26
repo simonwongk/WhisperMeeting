@@ -321,21 +321,54 @@ private struct DecodedExportPayload: Decodable {
     let segments: [DecodedExportSegment]
 }
 
-@Test("SRT/VTT export of a partly-timed transcript keeps each timed sentence its own cue, folding the untimed passage into the one before it (F473)")
+@Test("SRT/VTT export of a partly-timed transcript keeps each timed sentence its own cue, widening the folded cue's END to cover when the untimed passage could have been said (F473)")
 func partlyTimedTranscriptExportsAsSeparateCues() {
     let request = partlyTimedRequest()
 
     let srt = TranscriptExporter.render(.srt, request)
-    let expectedSRT = "1\n00:00:00,000 --> 00:00:02,000\nFirst timed sentence.\nUntimed passage in the middle."
+    // The first cue's text now includes "Untimed passage in the middle.", which could have been
+    // said anywhere between the first cue's own natural end (2) and the next cue's start (5) — so
+    // the cue's window must widen to 00:00:05,000, not stop at 00:00:02,000. Leaving it at 2 would
+    // be a timing lie: the cue's own displayed window would end before all of its text was said
+    // (AGENTS.md's F275 lesson, applied to export rather than capture).
+    let expectedSRT = "1\n00:00:00,000 --> 00:00:05,000\nFirst timed sentence.\nUntimed passage in the middle."
         + "\n\n2\n00:00:05,000 --> 00:00:08,000\nLast timed sentence.\n"
     #expect(srt == expectedSRT)
 
     let vtt = TranscriptExporter.render(.vtt, request)
-    #expect(vtt.contains("00:00:00.000 --> 00:00:02.000\nFirst timed sentence.\nUntimed passage in the middle."))
+    #expect(vtt.contains("00:00:00.000 --> 00:00:05.000\nFirst timed sentence.\nUntimed passage in the middle."))
     #expect(vtt.contains("00:00:05.000 --> 00:00:08.000\nLast timed sentence."))
     // Exactly two cues — not one giant cue spanning the whole recording (the bug), and not three
     // (the untimed passage must be folded in, not dropped or left to break a cue on its own).
     #expect(vtt.components(separatedBy: " --> ").count - 1 == 2)
+}
+
+/// The mirror of the widened-END case above: a transcript that OPENS with an untimed passage folds
+/// it into the FIRST timed cue, and that cue must widen its START to 0 rather than keep its own
+/// natural (later) start — otherwise the leading text is shown starting later than it could have
+/// been said, the same timing lie in the other direction. `pendingLeadingText` (the code path this
+/// exercises) had no test before this one (`grep pendingLeadingText Tests/` found nothing).
+@Test("SRT export of a transcript that OPENS with an untimed passage widens the first cue's START to 0 (F473)")
+func partlyTimedTranscriptWidensLeadingCueStart() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: nil, end: nil, text: "Leading untimed passage."),
+        TranscriptSegment(speaker: nil, start: 5, end: 8, text: "First timed sentence."),
+        TranscriptSegment(speaker: nil, start: 10, end: 12, text: "Second timed sentence."),
+    ]
+    let request = TranscriptExportRequest(
+        title: "Leading untimed",
+        languageCode: "en",
+        durationSeconds: 15,
+        transcriptText: TranscriptFormatter.timestamped(segments),
+        segments: segments
+    )
+
+    let srt = TranscriptExporter.render(.srt, request)
+    // The first cue's own natural end (8) is untouched — the leading text sits BEFORE its start,
+    // not after its end, so only the START needed widening, to 0.
+    let expectedSRT = "1\n00:00:00,000 --> 00:00:08,000\nLeading untimed passage.\nFirst timed sentence."
+        + "\n\n2\n00:00:10,000 --> 00:00:12,000\nSecond timed sentence.\n"
+    #expect(srt == expectedSRT)
 }
 
 @Test("JSON export of a partly-timed transcript preserves each segment's own timing, null for the untimed passage (F473)")
