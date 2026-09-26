@@ -69,3 +69,67 @@ func emptyReferenceDocumentReadsToNil() throws {
     try Data([0x00, 0x01]).write(to: unsupported)
     #expect(VocabularyExtractor.referenceText(from: unsupported) == nil)
 }
+
+// MARK: - F518 Part 2: GB18030/GBK and Big5, the standard Windows encodings for Simplified and
+// Traditional Chinese plain text, must decode correctly instead of falling through to the
+// Windows-1252 fallback and becoming Latin mojibake. Fixtures in three encodings, per the ticket:
+// English (must keep working), GBK (Simplified), and Big5 (Traditional).
+
+/// Apple's own built-in-encodings enum (`CFStringEncodingExt.h`), bridged to a Cocoa
+/// `String.Encoding` exactly as `VocabularyExtractor.readText` does — duplicated here (rather than
+/// exposed from the `private` production constant) so the fixture bytes are demonstrably built the
+/// same way a real Chinese-locale Excel/Notepad export would produce them.
+private let gb18030Encoding = String.Encoding(
+    rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+)
+private let big5Encoding = String.Encoding(
+    rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5.rawValue))
+)
+
+/// F518 Part 2 — an English glossary must keep reading correctly once GB18030/Big5 join the
+/// fallback chain: they must not intercept plain ASCII/UTF-8 text ahead of the existing encodings.
+@Test("An English document still reads correctly with GB18030/Big5 in the fallback chain (F518)")
+func englishDocumentStillReadsCorrectly() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("glossary.txt")
+    try "Kubernetes\nPrometheus\nGrafana\n".data(using: .utf8)!.write(to: url)
+
+    let terms = try VocabularyExtractor.extract(from: url)
+    #expect(terms.contains("Kubernetes"))
+    #expect(terms.contains("Prometheus"))
+    #expect(terms.contains("Grafana"))
+}
+
+/// F518 Part 2 — a GBK/GB18030 Simplified Chinese .csv (no BOM, exactly how Excel and Notepad
+/// save a Chinese-locale export) must decode to its real characters, not Windows-1252 mojibake.
+@Test("A GBK/GB18030 Simplified Chinese document decodes to its real characters, not mojibake (F518)")
+func gbkDocumentDecodesCorrectly() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("glossary.csv")
+    let text = "项目背景\n张经理，李总监\n"
+    try text.data(using: gb18030Encoding)!.write(to: url)
+
+    let raw = try #require(VocabularyExtractor.referenceText(from: url))
+    #expect(raw.contains("项目背景"))
+    #expect(raw.contains("张经理"))
+    // The Windows-1252 fallback this used to fall through to would have produced Latin garbage —
+    // pin that the mojibake byte sequence is gone, not only that the correct text is present.
+    #expect(!raw.contains("Ïî"))
+}
+
+/// F518 Part 2 — a Big5 Traditional Chinese .txt (no BOM) must decode to its real characters too.
+@Test("A Big5 Traditional Chinese document decodes to its real characters, not mojibake (F518)")
+func big5DocumentDecodesCorrectly() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("glossary.txt")
+    let text = "項目背景\n張經理、李總監\n"
+    try text.data(using: big5Encoding)!.write(to: url)
+
+    let raw = try #require(VocabularyExtractor.referenceText(from: url))
+    #expect(raw.contains("項目背景"))
+    #expect(raw.contains("張經理"))
+    #expect(!raw.contains("¶"))
+}
