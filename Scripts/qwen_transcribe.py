@@ -183,10 +183,14 @@ def alignment_language(text: str, requested: str) -> str:
 def detected_language_code(text: str) -> str:
     """Top-level en/zh label for the whole transcript.
 
-    Require CJK to be the MAJORITY of non-whitespace characters. Otherwise a mostly-English meeting
-    that mentions one Chinese name or term (e.g. "meet in \u5317\u4eac") is mislabeled `zh`, disagreeing with
-    Whisper on the same audio and biasing the summary language (F41). The per-chunk aligner
-    (`alignment_language`) now shares this same majority rule (F155).
+    `zh` when CJK ideographs are the strict majority of the text's TOKENS — one per ideograph, one per
+    run of Latin letters or digits — as `_cjk_is_majority` counts them (F296; the reasons and the
+    measured cases are in its docstring). Otherwise `en`: a mostly-English meeting that mentions one
+    Chinese name or term (e.g. "meet in \u5317\u4eac") stays English, so the label agrees with Whisper
+    on the same audio and does not bias the summary language (F41). The per-chunk aligner
+    (`alignment_language`) shares the rule (F155), and so does the app's Swift side:
+    `TranscriptLanguage.dominant` mirrors it token for token and a test compares the two live (F468).
+    (This docstring described the pre-F296 character-majority rule until F596.)
     """
     return "zh" if _cjk_is_majority(text) else "en"
 
