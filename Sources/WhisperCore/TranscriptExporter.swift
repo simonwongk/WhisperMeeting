@@ -123,9 +123,9 @@ public enum TranscriptExporter {
         case .markdown:
             return markdown(request)
         case .srt:
-            return srt(effectiveSegments(request))
+            return srt(foldUntimedSegments(effectiveSegments(request), durationSeconds: request.durationSeconds))
         case .vtt:
-            return vtt(effectiveSegments(request))
+            return vtt(foldUntimedSegments(effectiveSegments(request), durationSeconds: request.durationSeconds))
         case .json:
             return json(request)
         case .chapterList:
@@ -144,9 +144,54 @@ public enum TranscriptExporter {
     private static func chapters(_ request: TranscriptExportRequest) -> [TranscriptChapter] {
         TranscriptChapters.chapters(
             markers: request.markers,
-            segments: effectiveSegments(request),
+            segments: foldUntimedSegments(effectiveSegments(request), durationSeconds: request.durationSeconds),
             durationSeconds: request.durationSeconds
         )
+    }
+
+    /// Groups every UNTIMED segment (F263's designed state for a passage forced alignment could not
+    /// place) into the neighbouring TIMED one, for the formats that need a start time to represent an
+    /// item at all — an SRT/WebVTT cue, or chapter membership (`TranscriptChapters.assign` drops a
+    /// nil-start segment outright). JSON and HTML do NOT call this: both already render a nil start as
+    /// itself (a `null` field, a `<p>` with no timestamp anchor), so folding there would only throw
+    /// away information those formats are able to keep (F473).
+    ///
+    /// An untimed segment folds into the segment before it, matching how a reader encounters it —
+    /// immediately after whatever was just said. A run of untimed segments with nothing before them
+    /// yet (the transcript OPENS with one) instead attaches to the first timed segment that follows,
+    /// so nothing at the very start is silently dropped. If NOTHING in the transcript ever had a
+    /// timestamp, there is nothing to fold into, so this falls back to the same single whole-duration
+    /// segment the no-segments path above already produces for pure, untimed text.
+    private static func foldUntimedSegments(
+        _ segments: [TranscriptSegment],
+        durationSeconds: TimeInterval
+    ) -> [TranscriptSegment] {
+        var result: [TranscriptSegment] = []
+        var pendingLeadingText: [String] = []
+        for segment in segments {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard segment.start != nil else {
+                guard !text.isEmpty else { continue }
+                if result.isEmpty {
+                    pendingLeadingText.append(text)
+                } else {
+                    result[result.count - 1].text += "\n" + text
+                }
+                continue
+            }
+            var timedSegment = segment
+            if pendingLeadingText.isEmpty {
+                timedSegment.text = text
+            } else {
+                timedSegment.text = (pendingLeadingText + [text]).joined(separator: "\n")
+                pendingLeadingText = []
+            }
+            result.append(timedSegment)
+        }
+        guard result.isEmpty else { return result }
+        let wholeText = pendingLeadingText.joined(separator: "\n")
+        guard !wholeText.isEmpty else { return [] }
+        return [TranscriptSegment(speaker: nil, start: 0, end: max(0, durationSeconds), text: wholeText)]
     }
 
     /// The editable transcript is the user-facing source of truth. When its non-empty lines still
@@ -206,13 +251,22 @@ public enum TranscriptExporter {
     ) -> Bool {
         guard !lines.isEmpty, lines.count == segments.count else { return false }
         return zip(lines, segments).allSatisfy { line, segment in
-            guard let editedStart = line.start, let originalStart = segment.start else {
+            switch (line.start, segment.start) {
+            case (nil, nil):
+                // An untimed line matching an untimed segment (F473): F263 made a passage with no
+                // timestamp a DESIGNED state (bare line, no drift to check), not a defect — treating
+                // it as misaligned was what collapsed the whole export into one cue.
+                return true
+            case let (editedStart?, originalStart?):
+                // The editable transcript displays whole seconds while Whisper retains subsecond cue
+                // precision. Preserve that precision only when the visible whole-second timestamp was
+                // not changed by the user.
+                return Int(saturating: editedStart.rounded(.down)) == Int(saturating: originalStart.rounded(.down))
+            default:
+                // One side has a timestamp and the other does not — genuine drift (an edit added or
+                // removed a line's timestamp), not F263's untimed-by-design case.
                 return false
             }
-            // The editable transcript displays whole seconds while Whisper retains subsecond cue
-            // precision. Preserve that precision only when the visible whole-second timestamp was
-            // not changed by the user.
-            return Int(saturating: editedStart.rounded(.down)) == Int(saturating: originalStart.rounded(.down))
         }
     }
 

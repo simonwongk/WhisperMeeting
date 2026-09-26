@@ -286,3 +286,122 @@ func subtitleExportCollapsesInteriorBlankLines() {
     #expect(vtt.contains("First paragraph.\nSecond paragraph."))
     #expect(!vtt.contains("First paragraph.\n\nSecond paragraph."))
 }
+
+// MARK: - F473 (a partly-timed Qwen transcript, F263's designed untimed-passage state)
+
+private func partlyTimedSegments() -> [TranscriptSegment] {
+    [
+        TranscriptSegment(speaker: nil, start: 0, end: 2, text: "First timed sentence."),
+        TranscriptSegment(speaker: nil, start: nil, end: nil, text: "Untimed passage in the middle."),
+        TranscriptSegment(speaker: nil, start: 5, end: 8, text: "Last timed sentence."),
+    ]
+}
+
+/// Unedited (`transcriptText` is exactly what `TranscriptFormatter.timestamped` renders for these
+/// segments) — F473's own scenario, not a hand-edited transcript.
+private func partlyTimedRequest(markers: [RecordingMarker] = []) -> TranscriptExportRequest {
+    let segments = partlyTimedSegments()
+    return TranscriptExportRequest(
+        title: "Partly Timed",
+        languageCode: "en",
+        durationSeconds: 10,
+        transcriptText: TranscriptFormatter.timestamped(segments),
+        segments: segments,
+        markers: markers
+    )
+}
+
+private struct DecodedExportSegment: Decodable {
+    let start: Double?
+    let end: Double?
+    let text: String
+}
+
+private struct DecodedExportPayload: Decodable {
+    let segments: [DecodedExportSegment]
+}
+
+@Test("SRT/VTT export of a partly-timed transcript keeps each timed sentence its own cue, folding the untimed passage into the one before it (F473)")
+func partlyTimedTranscriptExportsAsSeparateCues() {
+    let request = partlyTimedRequest()
+
+    let srt = TranscriptExporter.render(.srt, request)
+    let expectedSRT = "1\n00:00:00,000 --> 00:00:02,000\nFirst timed sentence.\nUntimed passage in the middle."
+        + "\n\n2\n00:00:05,000 --> 00:00:08,000\nLast timed sentence.\n"
+    #expect(srt == expectedSRT)
+
+    let vtt = TranscriptExporter.render(.vtt, request)
+    #expect(vtt.contains("00:00:00.000 --> 00:00:02.000\nFirst timed sentence.\nUntimed passage in the middle."))
+    #expect(vtt.contains("00:00:05.000 --> 00:00:08.000\nLast timed sentence."))
+    // Exactly two cues — not one giant cue spanning the whole recording (the bug), and not three
+    // (the untimed passage must be folded in, not dropped or left to break a cue on its own).
+    #expect(vtt.components(separatedBy: " --> ").count - 1 == 2)
+}
+
+@Test("JSON export of a partly-timed transcript preserves each segment's own timing, null for the untimed passage (F473)")
+func partlyTimedTranscriptExportsJSONPerSegment() throws {
+    let json = TranscriptExporter.render(.json, partlyTimedRequest())
+    let decoded = try JSONDecoder().decode(DecodedExportPayload.self, from: Data(json.utf8))
+
+    // `#require`, not `#expect`, on the count: every indexed assertion below is meaningless (and
+    // would crash on an out-of-range index) if the transcript collapsed into fewer segments than
+    // this — which is exactly the bug this test exists to catch.
+    try #require(decoded.segments.count == 3)
+    #expect(decoded.segments[0].start == 0)
+    #expect(decoded.segments[0].text == "First timed sentence.")
+    #expect(decoded.segments[1].start == nil)
+    #expect(decoded.segments[1].end == nil)
+    #expect(decoded.segments[1].text == "Untimed passage in the middle.")
+    #expect(decoded.segments[2].start == 5)
+    #expect(decoded.segments[2].text == "Last timed sentence.")
+}
+
+@Test("HTML export of a partly-timed transcript renders the untimed passage as its own paragraph with no timestamp anchor (F473)")
+func partlyTimedTranscriptExportsHTMLPerSegment() {
+    let html = TranscriptExporter.render(.html, partlyTimedRequest())
+    #expect(html.contains("<p>Untimed passage in the middle.</p>"))
+    #expect(html.contains("First timed sentence.</p>"))
+    #expect(html.contains("Last timed sentence.</p>"))
+    // Three distinct transcript paragraphs — not one that swallows everything (scope past the meta
+    // line's own <p>, which is not part of the transcript body).
+    let transcriptSection = html.components(separatedBy: "<section class=\"transcript\">").last ?? ""
+    #expect(transcriptSection.components(separatedBy: "<p").count - 1 == 3)
+}
+
+@Test("Chaptered exports fold an untimed passage into the chapter of the segment before it (F473)")
+func partlyTimedTranscriptFoldsIntoPrecedingChapter() {
+    let marker = RecordingMarker(offset: 4, label: "Turn")
+    let request = partlyTimedRequest(markers: [marker])
+
+    let markdown = TranscriptExporter.render(.chapteredMarkdown, request)
+    let introRange = markdown.range(of: "## 00:00 Introduction")!
+    let turnRange = markdown.range(of: "## 00:04 Turn")!
+    let introSection = markdown[introRange.upperBound..<turnRange.lowerBound]
+    let turnSection = markdown[turnRange.upperBound...]
+
+    // "Introduction" (before the marker) holds the first sentence AND the untimed passage that
+    // followed it — not dropped, the way `TranscriptChapters.assign` drops a nil-start segment.
+    #expect(introSection.contains("First timed sentence."))
+    #expect(introSection.contains("Untimed passage in the middle."))
+    #expect(!introSection.contains("Last timed sentence."))
+    // "Turn" (after the marker) holds only what came after — the fold must not smear the passage
+    // into every later chapter too.
+    #expect(turnSection.contains("Last timed sentence."))
+    #expect(!turnSection.contains("Untimed passage"))
+}
+
+@Test("SRT export of a transcript where every segment is untimed still produces one whole-duration cue (F473 edge case)")
+func fullyUntimedTranscriptStillExportsAsOneCue() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: nil, end: nil, text: "First bit."),
+        TranscriptSegment(speaker: nil, start: nil, end: nil, text: "Second bit."),
+    ]
+    let request = TranscriptExportRequest(
+        title: "Fully untimed", languageCode: "en", durationSeconds: 12,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    )
+    let srt = TranscriptExporter.render(.srt, request)
+    #expect(srt.contains("00:00:00,000 --> 00:00:12,000"))
+    #expect(srt.contains("First bit.\nSecond bit."))
+    #expect(srt.components(separatedBy: " --> ").count - 1 == 1)
+}
