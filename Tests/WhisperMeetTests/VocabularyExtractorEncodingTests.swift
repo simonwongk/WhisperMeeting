@@ -133,3 +133,24 @@ func big5DocumentDecodesCorrectly() throws {
     #expect(raw.contains("張經理"))
     #expect(!raw.contains("¶"))
 }
+
+/// F518 Part 2 follow-up (review round 2) — the fix's doc comment and this ticket's log entry
+/// both claimed the GB18030/Big5-hinted detector was measured against a Western CP1252 sample
+/// with smart quotes, an em dash, and accented Latin letters, but only a plain-ASCII English
+/// fixture (`englishDocumentStillReadsCorrectly` above) was ever committed as a test — the
+/// CP1252 claim lived only in a throwaway probe script. Committed here so the claim is enforced,
+/// not remembered: hinting the detector toward GB18030/Big5 must not cost the Windows-1252
+/// fallback this text already relied on before F518 (F49).
+@Test("A Western CP1252 document with smart quotes and accents still decodes correctly (F518)")
+func westernCP1252DocumentStillDecodesCorrectly() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("notes.txt")
+    let text = "Wasn\u{2019}t sure \u{2014} see Fran\u{00E7}ois\u{2019}s notes on caf\u{00E9} menus\n"
+    try text.data(using: .windowsCP1252)!.write(to: url)
+
+    let raw = try #require(VocabularyExtractor.referenceText(from: url))
+    #expect(raw.contains("Fran\u{00E7}ois"))
+    #expect(raw.contains("caf\u{00E9}"))
+    #expect(raw.contains("Wasn\u{2019}t"))
+}

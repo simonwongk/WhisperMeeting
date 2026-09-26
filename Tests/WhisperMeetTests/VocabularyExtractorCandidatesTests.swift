@@ -75,3 +75,37 @@ func plainLineStillSavedWhole() {
     let terms = Set(VocabularyExtractor.candidates(in: "Kubernetes\n"))
     #expect(terms.contains("Kubernetes"))
 }
+
+// MARK: - F518 Part 3 follow-up (review round 2): the widened rejection set dropped a term that is
+// itself punctuated — "Yahoo!" — where the pre-F518 code kept it. Narrowed so a Latin
+// sentence-ending mark only rejects when the line goes on to show sentence structure; a Chinese
+// mark still rejects unconditionally, since no legitimate term itself ends in one.
+
+@Test("A punctuated term on its own line survives the sentence filter (F518 follow-up)")
+func punctuatedTermOnOwnLineSurvives() {
+    let terms = Set(VocabularyExtractor.candidates(in: "Yahoo!\n"))
+    #expect(terms.contains("Yahoo!"))
+}
+
+@Test("A Chinese sentence still rejects even when its only mark trails the line, no space, under the length cap (F518 follow-up)")
+func moreChineseSentencesAreRejected() {
+    let terms = Set(VocabularyExtractor.candidates(in: "这是一句话。\n请提醒我下午三点跟客户开会！\n"))
+    #expect(!terms.contains("这是一句话。"))
+    #expect(!terms.contains("请提醒我下午三点跟客户开会！"))
+    #expect(!terms.contains("这是一句话"))
+    #expect(!terms.contains("请提醒我下午三点跟客户开会"))
+}
+
+@Test("A multi-word Latin line ending in punctuation still reads as a sentence and rejects (F518 follow-up)")
+func multiWordPunctuatedLineStillRejected() {
+    let terms = Set(VocabularyExtractor.candidates(in: "Thank you!\n"))
+    #expect(!terms.contains("Thank you!"))
+}
+
+@Test("A 、-joined list still splits after the follow-up narrowing (F518 follow-up)")
+func enumerationListStillSplitsAfterFollowUp() {
+    let terms = Set(VocabularyExtractor.candidates(in: "张经理、李总监\n"))
+    #expect(terms.contains("张经理"))
+    #expect(terms.contains("李总监"))
+    #expect(!terms.contains("张经理、李总监"))
+}

@@ -83,12 +83,51 @@ enum VocabularyExtractor {
     /// stays rejected — unchanged, English-side behaviour. Deliberately excludes '、' and '，'
     /// (the full-width comma): those join short list items ("张经理、李总监") at least as often
     /// as they end a clause, so they are handled separately, by splitting rather than rejecting.
+    ///
+    /// Presence alone is not the test any more (F518 follow-up, review round 2): a line merely
+    /// *containing* one of these used to reject unconditionally, which also rejected a term that
+    /// is itself punctuated — "Yahoo!" — where the old (pre-F518) code kept it. See
+    /// `lineReadsAsSentence` below for the narrower rule that replaced the bare presence check.
     private static let sentenceEndingPunctuation = CharacterSet(charactersIn: ".,!?;:。！？；")
 
     /// Enumeration marks that join short list items on one line (F518 Part 3): the Chinese
     /// enumeration comma '、' and the full-width comma '，'. A line whose only punctuation is one
     /// of these is split into its parts instead of being kept as one joined, unusable term.
     private static let enumerationSeparators = CharacterSet(charactersIn: "、，")
+
+    /// Whether `line` reads as a sentence or clause rather than as a punctuated term (F518 Part 3
+    /// follow-up). Only called when `line` contains at least one `sentenceEndingPunctuation` mark.
+    ///
+    /// A Chinese sentence-ending mark is unambiguous: no legitimate business term itself ends in
+    /// '。', '！', or '；' — a term or name written in Chinese has no reason to carry one — so any
+    /// occurrence of one in a line that contains Han characters rejects the whole line, exactly as
+    /// before this follow-up ("这是一句话。", "请提醒我下午三点跟客户开会！").
+    ///
+    /// A Latin mark is far more overloaded — brand and product names routinely end in '!' or '?'
+    /// ("Yahoo!") — so for a line with no Han characters, presence alone no longer rejects. It
+    /// rejects only when the line goes on to show actual sentence structure: longer than a term
+    /// could be (the same 48-character cap the caller enforces, checked here so a long sentence is
+    /// recognized as a sentence rather than silently falling out of the length filter instead),
+    /// carrying whitespace-separated words the way a clause does ("Kubernetes, Prometheus" already
+    /// had this shape before this follow-up and must keep rejecting), or having more text after the
+    /// last sentence-ending mark rather than ending on one ("Wait, really?! No.").
+    private static func lineReadsAsSentence(_ line: String) -> Bool {
+        guard line.rangeOfCharacter(from: sentenceEndingPunctuation) != nil else { return false }
+        if containsHanCharacters(line) { return true }
+        if line.count > 48 { return true }
+        if line.rangeOfCharacter(from: .whitespaces) != nil { return true }
+        guard let lastScalar = line.unicodeScalars.last else { return false }
+        return !sentenceEndingPunctuation.contains(lastScalar)
+    }
+
+    /// Whether `text` contains a Han (Chinese) ideograph — the same two Unicode blocks
+    /// `ProtectedTerms.hasCJK` checks in `WhisperCore`. Duplicated rather than shared: that function
+    /// is `private` to `WhisperCore`, and this file lives in `WhisperMeet`.
+    private static func containsHanCharacters(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+        }
+    }
 
     /// Reads a plain-text document, tolerating non-UTF-8 encodings. Excel CSVs (Windows-1252),
     /// UTF-16, and Latin-1 `.txt` files are common and must not throw (F49); GB18030/GBK and Big5
@@ -114,6 +153,12 @@ enum VocabularyExtractor {
     /// require a non-lossy result — a lossy one means it had to guess at unmappable bytes, and this
     /// codebase would rather fall through than keep a guess. The plain ordered list remains below as
     /// the last-resort fallback for whatever the detector could not decide at all (a return of 0).
+    /// What "measured for this fix" means is enforced, not just remembered: GB18030 and Big5 each
+    /// have a committed fixture test (`VocabularyExtractorEncodingTests.gbkDocumentDecodesCorrectly`
+    /// / `.big5DocumentDecodesCorrectly`), and hinting the detector toward those two must not cost
+    /// the pre-existing Windows-1252 fallback — pinned by
+    /// `.westernCP1252DocumentStillDecodesCorrectly`, a sample with smart quotes, an em dash, and
+    /// accented Latin letters that GB18030/Big5 cannot represent.
     ///
     /// Residual risk, stated rather than hidden: detection is still probabilistic. A very short
     /// document (a handful of terms, as a vocabulary glossary often is) gives the statistical
@@ -216,8 +261,11 @@ enum VocabularyExtractor {
                 // enumeration mark ('、' or '，') does not by itself mean a sentence, though: it
                 // commonly *joins* short list items ("张经理、李总监"), so a line whose only
                 // punctuation is an enumeration mark is split into its parts instead of being
-                // rejected outright or kept as one unusable joined term.
-                guard line.rangeOfCharacter(from: sentenceEndingPunctuation) == nil else { continue }
+                // rejected outright or kept as one unusable joined term. `lineReadsAsSentence`
+                // (review-round-2 follow-up) narrows the sentence-mark check further: rejecting on
+                // bare presence also rejected a term that is itself punctuated ("Yahoo!"), which the
+                // pre-F518 code had kept.
+                guard !lineReadsAsSentence(line) else { continue }
                 if line.rangeOfCharacter(from: enumerationSeparators) != nil {
                     for rawPart in line.components(separatedBy: enumerationSeparators) {
                         let part = rawPart.trimmingCharacters(in: .whitespacesAndNewlines)
