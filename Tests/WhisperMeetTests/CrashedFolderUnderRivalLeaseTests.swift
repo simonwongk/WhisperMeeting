@@ -292,7 +292,10 @@ func degradedLaunchThenRestoreRebuildsAfterTheRivalQuits() async throws {
     // directly is deterministic rather than a race with that Task: `didPerformStartupRecovery` was
     // reset synchronously above and nothing has suspended yet to let the queued Task run first, so
     // this call is the one whose body executes; the queued Task later finds the flag already set
-    // and no-ops, which is the idempotence `recoverLibrary`'s doc comment already relies on.
+    // and no-ops, which is the idempotence `recoverLibrary`'s doc comment already relies on. This
+    // relies on same-actor cooperative scheduling ordering the queued `Task` behind this call rather
+    // than on any explicit synchronization — true under Swift's current MainActor scheduler, and
+    // worth re-reading if a future Swift concurrency change ever reorders queued same-actor work.
     await b.performStartupRecovery()
 
     #expect(b.store.writerLease == .held(realm: "shared"), "the lease should have been re-asked, not left stale")

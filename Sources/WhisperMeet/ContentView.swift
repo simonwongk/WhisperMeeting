@@ -5517,7 +5517,12 @@ struct WriteConflictBanner: View {
     @ObservedObject var store: MeetingStore
 
     var body: some View {
-        if let offer = store.conflictOffer {
+        // `beginLibraryRestore()` flushes pending edits before setting `isRestoringLibrary`, so an
+        // offer can exist at the moment a restore begins — and the offer's own snapshot describes a
+        // library the restore is about to replace, which `reloadAfterLibraryRestore()`/
+        // `adoptRestoredIndex()` clear once it lands (F433 follow-up). Meanwhile, its buttons must
+        // not act on a library mid-restore, so the banner itself does not render.
+        if let offer = store.conflictOffer, !store.isRestoringLibrary {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .foregroundStyle(.secondary)

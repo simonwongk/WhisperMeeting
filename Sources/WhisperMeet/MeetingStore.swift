@@ -1013,6 +1013,27 @@ final class MeetingStore: ObservableObject {
         return false
     }
 
+    /// `mutationIsAllowed()`, plus refusing a NEW edit while a lost race's `conflictOffer` is still
+    /// outstanding (F433 follow-up, F619).
+    ///
+    /// Without this, a second lost race while the first offer sits unresolved hits
+    /// `beginConflictRecovery()`'s own single-offer guard, which no-ops — leaving `writeConflict`
+    /// (and the `storageErrorMessage` `persistMeetings()` set on the failed attempt) dangling with
+    /// no offer to explain it, so the generic OK-only "could not be saved" modal this ticket removes
+    /// reappears. Refusing up front means there is no second race to lose in the first place.
+    ///
+    /// Silent by design — `storageErrorMessage` is NOT set here, unlike `mutationIsAllowed()`'s own
+    /// refusals: the `WriteConflictBanner` is already visible and already explains why nothing is
+    /// saving, and setting a message on every refused keystroke would pop the generic modal
+    /// repeatedly while the banner is up, which is the very "second alert" this exists to avoid.
+    ///
+    /// `keepConflictedEdit()`/`discardConflictedEdit()` deliberately do NOT call this — they are how
+    /// the outstanding offer gets resolved, not a new edit to refuse against it.
+    private func editMutationIsAllowed() -> Bool {
+        guard mutationIsAllowed() else { return false }
+        return conflictOffer == nil
+    }
+
     /// `mutationIsAllowed()` for an edit to one list (F464): refused while the library is read-only,
     /// and while that list's own file did not load cleanly — its save would replace the copy the
     /// user has not yet chosen to keep. The same first-statement rule applies.
@@ -1071,7 +1092,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func upsert(_ meeting: MeetingRecord) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
             meetings[index] = meeting
         } else {
@@ -1087,7 +1108,7 @@ final class MeetingStore: ObservableObject {
     }
 
     func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         // As in `upsert`: the version tracks the content, and the content just changed (F188).
@@ -1100,7 +1121,7 @@ final class MeetingStore: ObservableObject {
     /// live) but coalesce the expensive whole-index write, which otherwise ran on every keystroke
     /// (F40). See `scheduleDebouncedPersist`.
     func editTranscript(id: UUID, text: String) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].transcriptText = text
         scheduleDebouncedPersist()
@@ -1111,7 +1132,7 @@ final class MeetingStore: ObservableObject {
     /// transcript editor — the notes field had the identical per-keystroke whole-index write (F133).
     /// Empty text clears the field (nil), matching the prior binding.
     func editNotes(id: UUID, text: String) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].notes = text.isEmpty ? nil : text
         scheduleDebouncedPersist()
@@ -1167,14 +1188,23 @@ final class MeetingStore: ObservableObject {
 
     /// What a lost race lost, kept so it can be offered back rather than dropped (F433).
     ///
-    /// `losingMeetings` is this instance's `meetings` from the instant the race was detected —
-    /// before `reloadForConflictRecovery()` replaces it with the winner. Neither copy is destroyed:
-    /// the winner is what the app shows and would save next; the loser sits here until
-    /// `keepConflictedEdit()` or `discardConflictedEdit()` says what to do with it. Reapplying it
-    /// automatically would be exactly the harm the notice exists to prevent — silently overwriting
-    /// whatever the other copy just committed — so nothing here does that without the user asking.
+    /// **Carries a DELTA, never the whole array** (follow-up fix to a review finding: the first cut
+    /// stored the full `meetings` snapshot, and `keepConflictedEdit()` restored it wholesale —
+    /// silently erasing any record the reload found that was not in that snapshot, including a
+    /// completely unrelated edit the user made and successfully saved AFTER the reload but before
+    /// pressing Keep). `delta` is only the records that actually differ from what the reload found,
+    /// so reapplying them one at a time through `upsert` — a per-record merge — cannot touch
+    /// anything else in the current library.
     struct ConflictOffer: Equatable {
-        let losingMeetings: [MeetingRecord]
+        /// The records from the losing edit that differ from what the reload found. Never the whole
+        /// `meetings` array.
+        let delta: [MeetingRecord]
+        /// Each delta record's id mapped to what the reload found for that same id — absent when
+        /// the id did not exist in the reloaded (winning) copy. `keepConflictedEdit()` compares this
+        /// against the CURRENT record before reapplying: equal means nothing has touched it since
+        /// the reload, so reapplying is safe; different means something already has, and reapplying
+        /// would silently overwrite that instead of the rival's commit.
+        let reloadedByID: [UUID: MeetingRecord]
         let message: String
     }
 
@@ -1183,12 +1213,14 @@ final class MeetingStore: ObservableObject {
     @Published private(set) var conflictOffer: ConflictOffer?
 
     /// Re-reads the library after a lost race instead of leaving the token stale forever, and keeps
-    /// the edit that lost so `conflictOffer` can offer it back (F433). Wires
+    /// what the loser and winner disagree on so `conflictOffer` can offer it back (F433). Wires
     /// `reloadForConflictRecovery()` into a real caller for the first time — until this, the only
     /// caller was a test, and every later save in this session failed the same compare-and-swap.
     ///
     /// Guarded so a second race arriving while an offer is already outstanding does not overwrite
     /// the first one's retained snapshot with a smaller, more recent edit — see the ticket's Gaps.
+    /// `editMutationIsAllowed()` refuses new edits once an offer exists, so in practice this guard
+    /// is only ever reached by `keepConflictedEdit()`'s own re-offer on a second race (below).
     private func beginConflictRecovery() {
         guard conflictOffer == nil, let report = writeConflict else { return }
         let losing = meetings
@@ -1197,17 +1229,59 @@ final class MeetingStore: ObservableObject {
         // returns, so the generic "could not be saved" alert never flashes on its way to the banner
         // below, which is the one surface this conflict is meant to be resolved from.
         reloadForConflictRecovery()
-        conflictOffer = ConflictOffer(losingMeetings: losing, message: report.message)
+        let winnerByID = Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
+        let delta = losing.filter { winnerByID[$0.id] != $0 }
+        // The two sides may have genuinely agreed (a benign false conflict) — nothing was lost, so
+        // there is nothing to offer.
+        guard !delta.isEmpty else { return }
+        var reloadedByID: [UUID: MeetingRecord] = [:]
+        for record in delta {
+            if let winner = winnerByID[record.id] { reloadedByID[record.id] = winner }
+        }
+        conflictOffer = ConflictOffer(delta: delta, reloadedByID: reloadedByID, message: report.message)
     }
 
-    /// Restores the edit that lost the race and saves it against the generation just reloaded
-    /// (F433). An explicit, user-driven retry only — never automatic — because the whole point of
-    /// keeping `conflictOffer` around is that reapplying it is a choice, not a default.
+    /// Re-applies each record in the offer through its normal mutator (`upsert`) — never by
+    /// replacing `meetings` wholesale — and only when nothing has touched that record since the
+    /// reload (F433 follow-up). A record whose current copy no longer matches what the reload found
+    /// is left in a narrowed offer instead of being silently overwritten: deferred, never destroyed.
+    ///
+    /// If reapplying itself loses a NEW race (another write landed while we were reapplying), this
+    /// never finishes silently: it re-runs `beginConflictRecovery()`, the same path a debounced
+    /// flush's own race takes, so the failure is re-offered rather than swallowed.
     func keepConflictedEdit() {
+        guard mutationIsAllowed() else { return }
         guard let offer = conflictOffer else { return }
+        let currentByID = Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
+        var stillSafe: [MeetingRecord] = []
+        var movedSinceReload: [MeetingRecord] = []
+        for record in offer.delta {
+            if currentByID[record.id] == offer.reloadedByID[record.id] {
+                stillSafe.append(record)
+            } else {
+                movedSinceReload.append(record)
+            }
+        }
+        // Cleared before reapplying: `upsert` below routes through `editMutationIsAllowed()`, which
+        // refuses while an offer is outstanding, and this IS how the outstanding offer is resolved.
         conflictOffer = nil
-        meetings = MeetingOrdering.sorted(offer.losingMeetings)
-        persistMeetings()
+        for record in stillSafe {
+            upsert(record)
+            guard writeConflict?.isRace != true else {
+                beginConflictRecovery()
+                return
+            }
+        }
+        guard !movedSinceReload.isEmpty else { return }
+        let narrowedReloadedByID = offer.reloadedByID.filter { id, _ in
+            movedSinceReload.contains { $0.id == id }
+        }
+        let count = movedSinceReload.count
+        conflictOffer = ConflictOffer(
+            delta: movedSinceReload,
+            reloadedByID: narrowedReloadedByID,
+            message: "\(count == 1 ? "One meeting" : "\(count) meetings") changed after the copies were compared, so keeping \(count == 1 ? "it" : "them") would have overwritten that newer change. \(offer.message)"
+        )
     }
 
     /// Keeps the reloaded copy and discards the retained edit (F433). `meetings` already holds the
@@ -1219,7 +1293,7 @@ final class MeetingStore: ObservableObject {
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
     func setTags(id: UUID, _ raw: [String]) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         let normalized = MeetingTags.normalized(raw)
         update(id: id) { $0.tags = normalized.isEmpty ? nil : normalized }
     }
@@ -1228,7 +1302,7 @@ final class MeetingStore: ObservableObject {
     /// Normalization goes through `MeetingTags.normalized`, exactly as `setTags(id:_:)` does, so the
     /// batch and single paths cannot diverge.
     func addTag(_ tag: String, to ids: [UUID]) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         let target = Set(ids)
         var changed = false
         for index in meetings.indices where target.contains(meetings[index].id) {
@@ -1244,7 +1318,7 @@ final class MeetingStore: ObservableObject {
     /// Removes one tag from every meeting in the selection, matched case-insensitively so it agrees
     /// with `MeetingTags.normalized`'s own de-duplication rule.
     func removeTag(_ tag: String, from ids: [UUID]) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         let target = Set(ids)
         let needle = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return }
@@ -1262,7 +1336,7 @@ final class MeetingStore: ObservableObject {
 
     /// Pin or unpin a meeting so it floats to (or off) the top of the sidebar, then re-orders.
     func togglePin(id: UUID) {
-        guard mutationIsAllowed() else { return }
+        guard editMutationIsAllowed() else { return }
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         meetings[index].pinned = !(meetings[index].pinned ?? false)
         meetings = MeetingOrdering.sorted(meetings)
@@ -1497,7 +1571,7 @@ final class MeetingStore: ObservableObject {
     /// hook: the sidecar lives in the recording folder, which dies with the meeting.
     @discardableResult
     func delete(ids: [UUID]) -> [UUID] {
-        guard mutationIsAllowed() else { return [] }
+        guard editMutationIsAllowed() else { return [] }
         var doomed: [MeetingRecord] = []
         var seen: Set<UUID> = []
         for id in ids where seen.insert(id).inserted {
@@ -1842,6 +1916,10 @@ final class MeetingStore: ObservableObject {
         revalidateHealth()
         writeConflict = nil
         unsavedChanges = false
+        // A snapshot from before this restore/rebuild describes a library that no longer exists
+        // (F433 follow-up): keeping it would let `keepConflictedEdit()` reapply a stale edit over
+        // whatever this restore just installed.
+        conflictOffer = nil
         // Only when the library really is writable again. Clearing this unconditionally asserted
         // "no storage problem" about a library the reload had just found still unreadable.
         if !isDegraded {
@@ -1893,6 +1971,9 @@ final class MeetingStore: ObservableObject {
         revalidateHealth()
         writeConflict = nil
         unsavedChanges = false
+        // As in `adoptRestoredIndex` (F433 follow-up): a snapshot from before a whole-library
+        // restore describes a library the restore just replaced.
+        conflictOffer = nil
     }
 
     /// Holds every change to the library until `endLibraryRestore()` (F506).
