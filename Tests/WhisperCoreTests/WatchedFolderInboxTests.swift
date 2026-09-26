@@ -39,6 +39,34 @@ func newFileIsImportedWhenSettled() {
     #expect(inbox.ready(in: [file("call.m4a", 50)]).isEmpty, "never twice")
 }
 
+// F493 — a writer that pauses for longer than the standard settle window (6s = two looks) must not
+// be mistaken for a finished file, once this instance has actually SEEN it still streaming in — a
+// single arrival-to-final growth step (the test above) stays fast, because that shape is
+// indistinguishable from "already finished" and is the common case for small/local files.
+@Test("A file caught growing more than once needs a longer quiet period before it is ready (F493)")
+func repeatedlyGrowingFileNeedsLongerQuietPeriod() {
+    var inbox = WatchedFolderInbox()
+    _ = inbox.ready(in: [])
+    // A multi-minute recording streaming in over a slow network share: several consecutive looks
+    // each see a larger size, exactly what a real, still-in-progress transfer looks like.
+    #expect(inbox.ready(in: [file("talk.mp3", 100)]).isEmpty, "arrival")
+    #expect(inbox.ready(in: [file("talk.mp3", 200)]).isEmpty, "growth event 1")
+    #expect(inbox.ready(in: [file("talk.mp3", 300)]).isEmpty, "growth event 2 — now flagged as still streaming")
+    // The transfer stalls at 30%. The standard two-look window elapses...
+    #expect(inbox.ready(in: [file("talk.mp3", 300)]).isEmpty, "unchanged once — not enough even for the short window")
+    #expect(inbox.ready(in: [file("talk.mp3", 300)]).isEmpty,
+            "unchanged twice would have been ready under the plain settledLooks rule — this is the F493 fix")
+    // ...and the writer resumes, proving the file that would have been handed over above was
+    // genuinely incomplete.
+    #expect(inbox.ready(in: [file("talk.mp3", 900)]).isEmpty, "resumed — still not ready, and the size just changed again")
+    // It finishes and goes quiet for the full extended window (four looks) before being trusted.
+    #expect(inbox.ready(in: [file("talk.mp3", 900)]).isEmpty, "quiet look 1 of 4")
+    #expect(inbox.ready(in: [file("talk.mp3", 900)]).isEmpty, "quiet look 2 of 4")
+    #expect(inbox.ready(in: [file("talk.mp3", 900)]).isEmpty, "quiet look 3 of 4")
+    #expect(inbox.ready(in: [file("talk.mp3", 900)]).map(\.lastPathComponent) == ["talk.mp3"],
+            "quiet look 4 of 4 — ready, and only now, with the FINAL complete size")
+}
+
 @Test("Empty files, non-recordings and hidden or in-progress downloads are ignored (F318)")
 func nonRecordingsAreIgnored() {
     var inbox = WatchedFolderInbox()

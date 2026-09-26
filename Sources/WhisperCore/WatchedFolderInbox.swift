@@ -5,8 +5,9 @@ import Foundation
 /// Fed one directory listing per look. Pure, so the rule that matters — *when is a file finished?*
 /// — is tested without a folder, a timer or a recorder writing into one. A file is ready when it
 /// is a recording (`ExternalFileIntake`), was not already known, is not empty, and has had the same
-/// size and modification date for `settledLooks` consecutive looks. Each version of a file is
-/// handed over once.
+/// size and modification date for `settledLooks` consecutive looks — or `settledLooksAfterRepeatedGrowth`
+/// once it has been seen growing more than once, so a still-streaming writer's pause is not mistaken
+/// for its finish (F493). Each version of a file is handed over once.
 ///
 /// **Arrival is a listing, not a clock (F320).** The first version asked "is this file newer than
 /// the last time I looked?", using `contentModificationDate` as a proxy for when the file landed
@@ -47,15 +48,40 @@ public struct WatchedFolderInbox: Sendable {
     /// `init(known:)` on the next launch.
     public typealias Snapshot = [String: Version]
 
-    /// Looks a file must survive unchanged after it is first seen. With the monitor's 3-second
-    /// interval that is six quiet seconds — longer than any writer pauses, short enough to feel
-    /// prompt.
+    /// Looks a file must survive unchanged after it is first seen, while it has changed size or
+    /// modification date at most once since arriving. With the monitor's 3-second interval that is
+    /// six quiet seconds — long enough for a small or already-mostly-written file (one growth step
+    /// from its arrival size to its final one) to be trusted quickly.
     public static let settledLooks = 2
+
+    /// Looks a file must survive unchanged once it has been seen changing **more than once** while
+    /// being watched (F493): with the 3-second interval that is twelve quiet seconds, comfortably
+    /// longer than a stalled Finder copy over a flaky network share (observed pausing ~10s) or
+    /// `curl` between chunks.
+    ///
+    /// A single growth step (arrival size → final size) stays on `settledLooks`, because that
+    /// shape — most of a small file already on disk by the first look — is indistinguishable from
+    /// "already finished" and slowing it down would cost every ordinary quick import six extra
+    /// seconds for nothing. Multiple growth steps mean a writer that is still actively streaming
+    /// bytes in, which on a real transfer (a multi-minute recording copied over a network share) is
+    /// exactly the shape a pause-then-resume happens to, so a file this instance has SEEN doing that
+    /// earns no benefit of the doubt from a single settled-looking pause: unlike a truncated MP4/M4A
+    /// (whose missing `moov` atom `loadDuration()` (F326) catches directly), a streaming container
+    /// (MP3/FLAC/OGG, or WAV once AVFoundation can read a duration from a partial file) gives no
+    /// other signal that it is still being written, so the only lever left is time.
+    public static let settledLooksAfterRepeatedGrowth = 4
+    /// How many growth events (`> settledLooksTriggeringLongerWindow` implies "still actively
+    /// streaming", see `settledLooksAfterRepeatedGrowth`) mark a file as needing the longer window.
+    private static let growthEventsTriggeringLongerWindow = 2
 
     private var known: Snapshot?
     private var didBaseline = false
     private var handled: Snapshot = [:]
-    private var watching: [String: (version: Version, unchangedLooks: Int)] = [:]
+    /// `growthEvents` counts how many times this path's version has changed since the inbox first
+    /// saw it (never reset by an intervening stable look) — the F493 signal `settledLooksAfterRepeatedGrowth`
+    /// is gated on. `unchangedLooks` alone cannot distinguish "arrived already at its final size"
+    /// from "still streaming in and merely paused", so this is what does.
+    private var watching: [String: (version: Version, unchangedLooks: Int, growthEvents: Int)] = [:]
 
     /// `known` is what a previous run of the app last saw in this folder, or nil if it never
     /// watched it. Anything in the folder that is not in `known` arrived while the app was closed
@@ -93,7 +119,7 @@ public struct WatchedFolderInbox: Sendable {
                 if known[path] == version {
                     handled[path] = version
                 } else if entry.size > 0 {
-                    watching[path] = (version, 0)
+                    watching[path] = (version, 0, 0)
                 }
             }
             return []
@@ -107,15 +133,22 @@ public struct WatchedFolderInbox: Sendable {
             if handled[path] == version { continue }
             if let seen = watching[path], seen.version == version {
                 let looks = seen.unchangedLooks + 1
-                if looks >= Self.settledLooks {
+                let required = seen.growthEvents >= Self.growthEventsTriggeringLongerWindow
+                    ? Self.settledLooksAfterRepeatedGrowth : Self.settledLooks
+                if looks >= required {
                     handled[path] = version
                     watching[path] = nil
                     ready.append(entry.url)
                 } else {
-                    watching[path] = (version, looks)
+                    watching[path] = (version, looks, seen.growthEvents)
                 }
             } else {
-                watching[path] = (version, 0)
+                // Either the first look at this path, or its version just changed from what was
+                // being watched — the latter is a growth event: the writer is still active, and
+                // `watching[path]` already existing here is what makes this the SECOND (or later)
+                // one rather than the first, which is the F493 signal above.
+                let growthEvents = watching[path] == nil ? 0 : (watching[path]?.growthEvents ?? 0) + 1
+                watching[path] = (version, 0, growthEvents)
             }
         }
         // A file that has left the folder leaves the record with it: it is new again if the user
