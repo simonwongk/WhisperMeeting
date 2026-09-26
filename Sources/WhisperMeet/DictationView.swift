@@ -11,6 +11,10 @@ struct DictationView: View {
         engineName: "", runtimeInstalled: false, helperInstalled: false, modelReady: false,
         microphoneGranted: false, accessibilityGranted: false, hotkeyActive: false
     )
+    // F456: Clear All discards every dictation with no way back, including one whose paste failed
+    // and whose only surviving copy was this history — the same bar Delete Meeting, Forget History
+    // and Discard Recording already hold destructive actions to.
+    @State private var confirmClearHistory = false
 
     var body: some View {
         ScrollView {
@@ -90,11 +94,26 @@ struct DictationView: View {
                             // Disabled, not hidden, while the history is read-only (F187): `clear()` is
                             // guarded and would silently do nothing, and a control that does nothing when
                             // clicked is its own bug. The tooltip carries the reason.
-                            Button("Clear All", role: .destructive) { log.clear() }
+                            Button("Clear All…", role: .destructive) { confirmClearHistory = true }
                                 .disabled(!log.health.allowsMutation)
                                 .help(log.health.allowsMutation
                                       ? "Remove every dictation from this history. This cannot be undone."
                                       : "Unavailable while the history is read-only — clearing it would write over dictations that could not be read.")
+                                // Beside the control it confirms, not folded into the alert text
+                                // above it, so it stays reachable if that banner's layout changes
+                                // (the F306 lesson: a control nested inside a message is a control
+                                // that quietly disappears with it). Names the count, matching
+                                // Settings' Forget History dialog (F456).
+                                .confirmationDialog(
+                                    "Remove all \(log.log.entries.count) dictation\(log.log.entries.count == 1 ? "" : "s")?",
+                                    isPresented: $confirmClearHistory,
+                                    titleVisibility: .visible
+                                ) {
+                                    Button("Clear All", role: .destructive) { log.clear() }
+                                    Button("Cancel", role: .cancel) {}
+                                } message: {
+                                    Text("This removes every dictation from this history, including its saved backup copy. This cannot be undone.")
+                                }
                         }
                     }
                     .padding(.bottom, 8)
@@ -127,6 +146,19 @@ struct DictationView: View {
                         .bannerSurface(.orange)
                         .accessibilityElement(children: .combine)
                         .padding(.bottom, 8)
+                    }
+                    // A Clear All that could not fully remove every on-disk copy says so, rather
+                    // than reporting success while a backup or history file still holds the text
+                    // the user asked to remove (F456).
+                    if let message = log.historyEraseFailureMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bannerSurface(.orange)
+                            .accessibilityElement(children: .combine)
+                            .padding(.bottom, 8)
                     }
                     if log.log.entries.isEmpty {
                         // A read-only log will never gain entries, so do not promise that it will —

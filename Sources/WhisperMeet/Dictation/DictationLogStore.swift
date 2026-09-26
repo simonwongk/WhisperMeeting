@@ -38,6 +38,13 @@ import WhisperCore
     /// that just failed and may succeed next time, and it is cleared by a save that works.
     @Published private(set) var saveErrorMessage: String?
 
+    /// Set when `clear()` could not fully remove every on-disk copy of the pre-clear history, or
+    /// nil when the last Clear All fully succeeded (F456). Deliberately its own channel rather than
+    /// `saveErrorMessage`: that one reads as "the last dictation could not be saved", which is the
+    /// wrong sentence after an erase failure and would also be silently overwritten by the very
+    /// next dictation recorded.
+    @Published private(set) var historyEraseFailureMessage: String?
+
     /// Whether the next dictation would go unrecorded (F195).
     ///
     /// Exists so the UI can say so **before** the user holds the hotkey. The read-only banner lived
@@ -101,10 +108,41 @@ import WhisperCore
         persist()
     }
 
-    func clear() {
-        guard health.allowsMutation else { return }
+    /// Erases the whole history — not just the primary file (F456).
+    ///
+    /// A plain single save of the cleared value is not an erase: `BackupJSONStore.save` rotates
+    /// the OUTGOING (still-full) primary into `dictation-log.backup.json` and retains the
+    /// incoming (now-cleared) value as one new generation in `dictation-log.history/`, leaving
+    /// every earlier, still-full generation exactly where retention already had it. So a plain
+    /// `persist()` here would leave the pre-clear text sitting in the backup and in history,
+    /// indefinitely — recoverable by opening either file directly.
+    ///
+    /// The second `persist()`'s outgoing primary is the value the first one just wrote (already
+    /// cleared), so it rotates THAT into the backup, overwriting the stale full copy.
+    /// `forgetHistory()` then discards every retained generation — full and cleared alike; it does
+    /// not touch the backup, which is exactly why the second save had to run first.
+    @discardableResult
+    func clear() -> Bool {
+        guard health.allowsMutation else { return false }
         log = log.cleared()
         persist()
+        let firstSaveFailed = saveErrorMessage != nil
+        persist()
+        let secondSaveFailed = saveErrorMessage != nil
+        do {
+            try store.forgetHistory()
+        } catch {
+            historyEraseFailureMessage =
+                "Dictations were cleared, but their saved history copies could not be fully removed: \(error.localizedDescription)"
+            return false
+        }
+        guard !firstSaveFailed, !secondSaveFailed else {
+            historyEraseFailureMessage =
+                "Dictations were cleared, but an earlier copy may still be on disk because a save failed. Try Clear All again."
+            return false
+        }
+        historyEraseFailureMessage = nil
+        return true
     }
 
     /// A failed save — including a refused write because undecodable bytes could not be copied aside —

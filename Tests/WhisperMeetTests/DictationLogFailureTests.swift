@@ -32,6 +32,66 @@ func unreadableDictationLogIsNotOverwritten() throws {
     #expect(store.log.entries.isEmpty)
 }
 
+// MARK: - F456: Clear All erases every on-disk copy, not just the primary
+
+@Test("Clear All removes the pre-clear text from the backup and every retained history generation (F456)")
+@MainActor
+func clearAllErasesBackupAndHistory() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F456-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secret = "a dictation nobody else should be able to read back"
+
+    let store = DictationLogStore(directory: root)
+    store.record(text: secret, outcome: .pasted)
+    #expect(store.saveErrorMessage == nil)
+
+    let backupURL = root.appendingPathComponent("dictation-log.backup.json")
+    let historyDirectory = root.appendingPathComponent("dictation-log.history")
+    // Sanity: the ordinary save path really does leave the text sitting in the backup and in a
+    // retained generation — otherwise this test would pass for the wrong reason.
+    #expect(try String(contentsOf: backupURL, encoding: .utf8).contains(secret))
+    let generationsBefore = try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path)
+    #expect(!generationsBefore.isEmpty)
+    #expect(try generationsBefore.contains {
+        try String(contentsOf: historyDirectory.appendingPathComponent($0), encoding: .utf8).contains(secret)
+    })
+
+    let erased = store.clear()
+
+    #expect(erased, "the removal itself must report success")
+    #expect(store.log.entries.isEmpty)
+    #expect(store.historyEraseFailureMessage == nil)
+    #expect(!(try String(contentsOf: backupURL, encoding: .utf8).contains(secret)),
+            "the backup still held the pre-clear text")
+    let generationsAfter = try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path)
+    #expect(!generationsAfter.contains {
+        (try? String(contentsOf: historyDirectory.appendingPathComponent($0), encoding: .utf8))?.contains(secret) == true
+    }, "a retained generation still held the pre-clear text")
+}
+
+@Test("Clear All is reachable: the button opens a confirmation naming the count, beside the control (F456)")
+func clearAllConfirmationIsReachableFromTheButton() throws {
+    // `WhisperMeet` has no view-render harness (F174), so this asserts against the SOURCE rather
+    // than driving the view — comments stripped first, so a paragraph describing the confirmation
+    // does not satisfy the assertion in its place (F285's false positive).
+    let raw = try String(
+        contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/WhisperMeet/DictationView.swift"),
+        encoding: .utf8
+    )
+    let stripped = raw.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+        guard let range = line.range(of: "//") else { return String(line) }
+        return String(line[..<range.lowerBound])
+    }.joined(separator: "\n")
+    #expect(stripped.contains("confirmClearHistory = true"))
+    #expect(stripped.contains(".confirmationDialog("))
+    #expect(stripped.contains("isPresented: $confirmClearHistory"))
+    #expect(stripped.contains("log.clear()"))
+}
+
 // MARK: - F195: load errors and save errors are different channels
 
 @Test("The read-only notice is derived from health, so nothing can erase it (F195)")
