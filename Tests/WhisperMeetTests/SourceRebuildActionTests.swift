@@ -497,3 +497,208 @@ func rebuildRunsDetachedAndReportsProgress() async throws {
     #expect(model.sourceRebuildRunningID == nil, "the running id was not cleared once the rebuild finished")
     #expect(abs((model.store.meeting(id: id)?.duration ?? 0) - 2.0) < 0.01)
 }
+
+// MARK: - F469: a rebuild must not race a transcription of the same meeting
+
+/// Holds an (injected) transcription engine pass open until the test releases it — the
+/// RestoreBusyGuardTests/TranscribeAgainTests shape, local to this file.
+private actor EngineLatch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+/// A rebuild-eligible meeting (raw tracks plus a short indexed recording, no `meeting.wav`) whose
+/// recognition runtime is pinned installed, so `beginTranscription` can actually start rather than
+/// passing or failing by what this host happens to have installed (the F441 lesson).
+@MainActor
+private func makeRebuildableTranscribableMeeting(in root: URL) throws -> (model: AppModel, id: UUID) {
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let samples = [Float](repeating: 0.3, count: 96_000)          // 2s of tracks
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        try samples.withUnsafeBytes { try Data($0).write(to: folder.appendingPathComponent(name)) }
+    }
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
+        .write(to: folder.appendingPathComponent("meeting-recovered.wav"))   // 0.1s indexed
+
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+        defaults: UserDefaults(suiteName: "WhisperMeet.RebuildVsTranscription.\(UUID().uuidString)")!,
+        whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
+    )
+    model.selectedEngine = .whisperLarge
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Recovered", duration: 0.1,
+        recordingPath: "Recordings/\(id.uuidString)/meeting-recovered.wav",
+        status: .recorded
+    ))
+    return (model, id)
+}
+
+@Test("Rebuild Audio is refused while this meeting's transcription is running (F469)")
+@MainActor
+func rebuildRefusedWhileTranscribing() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildVsTranscribeActive-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id) = try makeRebuildableTranscribableMeeting(in: root)
+    let latch = EngineLatch()
+    model.runTranscriptionEngineOverride = { _, _ in
+        await latch.wait()
+        return TranscriptionResult(id: "x", text: "partial", languageCode: "en", audioDuration: 0.1,
+                                   confidence: nil, segments: [])
+    }
+    model.beginTranscription(id: id)
+    try await waitUntil("the transcription to become active") { model.hasActiveTranscription }
+
+    model.requestSourceRebuild(id: id)
+
+    #expect(model.pendingSourceRebuild == nil, "a rebuild was offered over a running transcription")
+    #expect(model.alertMessage?.contains("transcription") == true, "\(model.alertMessage ?? "no message")")
+    // Nothing was touched: the tracks are still there, unmoved, and the indexed duration unchanged.
+    #expect(model.store.meeting(id: id)?.duration == 0.1)
+
+    await latch.open()
+    try await waitUntil("the transcription to finish") { !model.hasActiveTranscription }
+}
+
+@Test("Rebuild Audio is refused while this meeting's transcription is queued (F469)")
+@MainActor
+func rebuildRefusedWhileQueued() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildVsTranscribeQueued-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id) = try makeRebuildableTranscribableMeeting(in: root)
+    // A second, unrelated meeting occupies the one concurrent transcription slot, so the rebuild
+    // target's own job sits pending rather than active — the F583 distinction ("queued" is not
+    // "running") applied to this ticket.
+    let heldID = UUID()
+    model.store.upsert(MeetingRecord(
+        id: heldID, title: "Held", recordingPath: "Recordings/\(heldID.uuidString)/meeting.wav",
+        status: .completed, transcriptText: "held",
+        segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "held")]
+    ))
+    let latch = EngineLatch()
+    model.runTranscriptionEngineOverride = { _, url in
+        if url.path.contains(heldID.uuidString) { await latch.wait() }
+        return TranscriptionResult(id: "x", text: "text", languageCode: "en", audioDuration: 2,
+                                   confidence: nil, segments: [])
+    }
+    model.transcribeAgain(id: heldID)
+    try await waitUntil("the held meeting to become active") { model.hasActiveTranscription }
+    model.beginTranscription(id: id)
+    try #require(model.isQueuedForTranscription(id))
+
+    model.requestSourceRebuild(id: id)
+
+    #expect(model.pendingSourceRebuild == nil, "a rebuild was offered over a queued transcription")
+    #expect(model.alertMessage?.contains("queue") == true, "\(model.alertMessage ?? "no message")")
+    #expect(model.store.meeting(id: id)?.duration == 0.1)
+
+    await latch.open()
+    try await waitUntil("both transcriptions to finish") { !model.hasActiveTranscription }
+}
+
+@Test("A rebuild confirmed after this meeting's transcription started is refused, and changes nothing (F469)")
+@MainActor
+func rebuildRefusedAtConfirmationWhenTranscriptionStarted() async throws {
+    // The offer can stand for as long as the confirmation dialog is open, so "nothing was
+    // transcribing when it was offered" says nothing about the moment of confirmation — the same
+    // re-check `performLibraryRestore` does for F506.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RebuildVsTranscribeConfirm-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, id) = try makeRebuildableTranscribableMeeting(in: root)
+    model.requestSourceRebuild(id: id)
+    try #require(model.pendingSourceRebuild != nil)
+
+    let latch = EngineLatch()
+    model.runTranscriptionEngineOverride = { _, _ in
+        await latch.wait()
+        return TranscriptionResult(id: "x", text: "partial", languageCode: "en", audioDuration: 0.1,
+                                   confidence: nil, segments: [])
+    }
+    model.beginTranscription(id: id)
+    try await waitUntil("the transcription to become active") { model.hasActiveTranscription }
+
+    let task = model.performSourceRebuild(confirmed: true)
+
+    #expect(task == nil, "the rebuild started over a running transcription")
+    #expect(model.alertMessage?.contains("transcription") == true, "\(model.alertMessage ?? "no message")")
+    #expect(model.store.meeting(id: id)?.duration == 0.1, "the rebuild changed the audio's facts")
+
+    await latch.open()
+    try await waitUntil("the transcription to finish") { !model.hasActiveTranscription }
+}
+
+// MARK: - F469: the stale-transcript warning's clearing is a fact, not a side effect of "finished"
+
+@Test("apply(result:) does not clear a stale-transcript warning when the audio changed since this run started (F469)")
+@MainActor
+func applyResultKeepsAStaleWarningWhenDurationChangedMidRun() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ApplyKeepsStale-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = makeModel(root: root, suite: "WhisperMeet.ApplyKeepsStale.\(UUID().uuidString)")
+    let id = UUID()
+    // The meeting's CURRENT duration (5.0) already reflects a rebuild that happened after this run
+    // started — `requestSourceRebuild`/`performSourceRebuild` refuse to let that happen, so this is
+    // the additional-refusal case where that gate is wrong somewhere nobody has thought of (F279).
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Raced", duration: 5.0, recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .processing,
+        staleTranscriptWarning: "This transcript was made from an earlier, 0:02 version of the audio, which has since been rebuilt to 0:05. Its text and timestamps do not cover the whole recording — transcribe again to replace it."
+    ))
+
+    model.apply(
+        result: TranscriptionResult(id: "x", text: "Text from the superseded audio.", languageCode: "en",
+                                    audioDuration: 2, confidence: nil, segments: []),
+        to: id,
+        audioDurationAtStart: 2.0
+    )
+
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.status == .completed)
+    #expect(meeting.staleTranscriptWarning != nil, "the warning was cleared even though the audio changed mid-run")
+}
+
+@Test("apply(result:) clears the stale-transcript warning when the audio matches what this run started with (F469)")
+@MainActor
+func applyResultClearsStaleWarningWhenDurationMatches() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ApplyClearsStale-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = makeModel(root: root, suite: "WhisperMeet.ApplyClearsStale.\(UUID().uuidString)")
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Not raced", duration: 2.0, recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .processing,
+        staleTranscriptWarning: "This transcript was made from an earlier, 0:01 version of the audio, which has since been rebuilt to 0:02. Its text and timestamps do not cover the whole recording — transcribe again to replace it."
+    ))
+
+    model.apply(
+        result: TranscriptionResult(id: "x", text: "Text from the current audio.", languageCode: "en",
+                                    audioDuration: 2, confidence: nil, segments: []),
+        to: id,
+        audioDurationAtStart: 2.0
+    )
+
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.status == .completed)
+    #expect(meeting.staleTranscriptWarning == nil, "the warning was kept even though the audio matches this run")
+}

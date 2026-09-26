@@ -5308,6 +5308,11 @@ final class AppModel: ObservableObject {
               let settings = transcriptionSettings.selection(for: id) else {
             return
         }
+        // F469: the audio duration this run is actually about to transcribe, snapshotted before
+        // anything else touches the meeting. `apply(result:)` compares this against the duration
+        // still on the record when the result lands, so its own outcome doesn't depend on whatever
+        // else did or didn't run concurrently.
+        let audioDurationAtStart = meeting.duration
         store.update(id: id) {
             $0.status = .processing
             $0.errorMessage = nil
@@ -5321,7 +5326,8 @@ final class AppModel: ObservableObject {
                 let result = try await executeEngine(settings, on: recordingURL) { progress in
                     await self.apply(progress: progress, to: id)
                 }
-                apply(result: result, to: id, requestedLanguage: settings.language, engine: settings.engine)
+                apply(result: result, to: id, requestedLanguage: settings.language, engine: settings.engine,
+                      audioDurationAtStart: audioDurationAtStart)
             } catch is CancellationError {
                 handleCancellation(id: id)
             } catch {
@@ -5348,7 +5354,12 @@ final class AppModel: ObservableObject {
     /// default is RECORDED as the request, so a caller that omits it claims the run was automatic.
     /// Every engine run must pass what it actually asked for; the one production caller,
     /// `performTranscription`, passes its queue snapshot (F574's Second Opinion fix must too).
-    func apply(result: TranscriptionResult, to id: UUID, requestedLanguage: WhisperLanguage = .automatic, engine: MeetingTranscriptionEngine? = nil) {
+    func apply(
+        result: TranscriptionResult, to id: UUID,
+        requestedLanguage: WhisperLanguage = .automatic,
+        engine: MeetingTranscriptionEngine? = nil,
+        audioDurationAtStart: TimeInterval? = nil
+    ) {
         // Only use segment-derived (timestamped) text when the segments actually reconstruct the full
         // text; otherwise a partially-aligned result would drop content. Fall back to the complete
         // text and drop the incomplete segments so text and segments stay consistent (F144).
@@ -5389,7 +5400,18 @@ final class AppModel: ObservableObject {
             // exists; a fresh transcript describes the audio that is actually there, so keeping the
             // notice would be a false claim in the other direction. My own F267 comment promised
             // this and nothing did it until now.
-            $0.staleTranscriptWarning = nil
+            //
+            // F469: "a transcription just finished" is not the fact the warning describes — whether
+            // THIS transcript's audio is still the audio on disk is. `requestSourceRebuild`/
+            // `performSourceRebuild` already refuse to run against a meeting whose transcription is
+            // active or queued, so a rebuild racing in here should be unreachable; this checks the
+            // fact itself rather than trusting that gate alone (the F279 shape — an additional
+            // refusal beside the one that should already prevent it). `$0.duration` here is the
+            // meeting's CURRENT duration (this closure never touches it), so comparing it against
+            // what this run actually saw at its own start is exact, not a guess about timing.
+            if audioDurationAtStart == nil || abs($0.duration - audioDurationAtStart!) < 0.05 {
+                $0.staleTranscriptWarning = nil
+            }
             // Carry the alignment warning onto the meeting so the detail view can explain why a
             // Qwen transcript has no seekable timestamps, instead of dropping it silently (F30).
             $0.alignmentWarning = result.alignmentWarning
@@ -5688,6 +5710,16 @@ extension AppModel {
             return
         }
         guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
+        // F469: a transcription of THIS meeting — running now, or waiting in the queue — has
+        // already opened (or will open) the current audio; the rebuild moves that audio aside and
+        // writes a longer or shorter one, so the transcript that job produces would describe audio
+        // that no longer exists. Deferred rather than run: the recording and its files are
+        // untouched, and Rebuild Audio can be requested again once the transcription finishes or is
+        // removed from the queue.
+        guard !transcription.contains(id) else {
+            alertMessage = "Wait for this meeting's transcription to finish, or remove it from the queue, before rebuilding its audio. The transcription has already opened (or is about to open) the current recording, and its result would describe audio this rebuild would replace."
+            return
+        }
         guard let meeting = store.meeting(id: id) else { return }
         guard let offer = sourceRebuildOffer(for: id) else {
             // Explained rather than silently absent — the user asked for something, and the two
@@ -5729,6 +5761,14 @@ extension AppModel {
         // Asked here too: the rebuild writes audio before its `store.update`, which a restore
         // in progress would refuse, leaving new audio the index does not describe (F506).
         guard libraryIsNotBeingRestored("Rebuilding a recording") else { return nil }
+        // F469: asked again rather than trusting the answer from when the offer was made — the
+        // confirmation dialog can stay open for as long as the user takes to answer it, and a
+        // transcription can start (or a queued one become active) in that window exactly as F506's
+        // own restore re-check documents.
+        guard !transcription.contains(request.meetingID) else {
+            alertMessage = "Wait for this meeting's transcription to finish, or remove it from the queue, before rebuilding its audio. The transcription has already opened (or is about to open) the current recording, and its result would describe audio this rebuild would replace."
+            return nil
+        }
         sourceRebuildRunningID = request.meetingID
         return Task {
             await applySourceRebuild(request)
