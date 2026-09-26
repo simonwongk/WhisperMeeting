@@ -65,6 +65,9 @@ func keepsTheDictationsOwnWrappingQuotes() {
     #expect(DictationRefinePolicy.acceptedOutput("「你好。」", input: "「你好」") == "「你好。」")
     // A model that only restyles the user's quotes has not added a wrapper either.
     #expect(DictationRefinePolicy.acceptedOutput("“Hello.”", input: "\"hello\"") == "“Hello.”")
+    // But a wrapper the model added around the user's own quotes is still the model's.
+    #expect(DictationRefinePolicy.acceptedOutput("\"\"Hello.\"\"", input: "\"hello\"") == "\"Hello.\"")
+    #expect(DictationRefinePolicy.acceptedOutput("\"“Hello.”\"", input: "\"hello\"") == "“Hello.”")
 }
 
 @Test("A wrapper the model added around an unquoted dictation is still stripped (F488 control)")

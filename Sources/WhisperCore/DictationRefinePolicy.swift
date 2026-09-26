@@ -70,10 +70,12 @@ public enum DictationRefinePolicy {
         let cleanedInput = DictationTextCleanup.clean(input)
         var candidate = output.trimmingCharacters(in: .whitespacesAndNewlines)
         candidate = strippingCodeFence(candidate)
-        // F488: quotes around the whole dictation are the user's, not a wrapper the model added —
-        // whichever pair the output keeps them in, since a model may restyle `"…"` as `“…”`.
-        if wrappingQuotes(of: cleanedInput) == nil {
-            candidate = strippingWrappingQuotes(candidate)
+        // F488: quotes around the whole dictation are the user's, whichever pair the output keeps
+        // them in (a model may restyle `"…"` as `“…”`). So a quoted dictation loses a layer only
+        // when one is left over — the model wrapped the user's quotes in its own.
+        let stripped = strippingWrappingQuotes(candidate)
+        if wrappingQuotes(of: cleanedInput) == nil || wrappingQuotes(of: stripped) != nil {
+            candidate = stripped
         }
         candidate = DictationTextCleanup.clean(candidate)
         guard !candidate.isEmpty else { return nil }
