@@ -55,6 +55,22 @@ func finishedCaptureIsRefused() throws {
     #expect(SourceRebuild.offer(in: directory, currentDuration: 2.0) == nil)
 }
 
+@Test("A folder whose meeting.wav was left partial by a failed mix is still offered (F500)")
+func partialMeetingWavIsStillOffered() throws {
+    // `FloatTrackMixer.mix` writes a zeroed header first and the real one LAST, so a mix that
+    // fails partway — a full disk, or the app killed mid-write, both real at `stop()` — leaves
+    // exactly this: 44 zero bytes and nothing that means "a capture finished". Before F500 the
+    // guard above checked existence alone, so the one folder that most needed Rebuild Audio was
+    // the one folder it refused.
+    let directory = try makeFolder("partial")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try writeTrack(96_000, named: "system-audio.f32", in: directory)
+    try Data(repeating: 0, count: 44).write(to: directory.appendingPathComponent("meeting.wav"))
+
+    let offer = try #require(SourceRebuild.offer(in: directory, currentDuration: 0))
+    #expect(offer.expectedDurationSeconds == 2.0)
+}
+
 @Test("A folder with no source tracks left is not offered")
 func noTracksMeansNoOffer() throws {
     let directory = try makeFolder("notracks")

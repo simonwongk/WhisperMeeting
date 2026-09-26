@@ -37,12 +37,17 @@ public enum SourceRebuild {
     ///
     /// Two conditions, and the second is a refusal rather than a filter.
     ///
-    /// **A folder holding `meeting.wav` is never offered.** That file is written only by
-    /// `AudioCaptureEngine.stop()`, so its presence means a capture finished normally. Rebuilding
-    /// over it and repointing the index at `meeting-recovered.wav` is precisely the harm F255
-    /// exists to prevent — the complete recording left on disk with nothing referring to it. A user
-    /// who believes their `meeting.wav` is bad has the documented manual procedure; the app will
-    /// not do it for them on a guess.
+    /// **A folder holding a COMPLETE `meeting.wav` is never offered.** That file is written only by
+    /// `AudioCaptureEngine.stop()`, so a complete header means a capture finished normally.
+    /// Rebuilding over it and repointing the index at `meeting-recovered.wav` is precisely the harm
+    /// F255 exists to prevent — the complete recording left on disk with nothing referring to it. A
+    /// user who believes their `meeting.wav` is bad has the documented manual procedure; the app
+    /// will not do it for them on a guess.
+    ///
+    /// Checked by header, not by existence (F500): a mix that failed partway (disk full, the app
+    /// killed mid-write) leaves a `meeting.wav` with a zeroed header — `FloatTrackMixer.mix` writes
+    /// it LAST — and existence alone read that exactly like a finished capture, so the one folder
+    /// that most needs a rebuild was the one folder Rebuild Audio refused.
     ///
     /// The tracks must also declare more than zero frames, or there is nothing to rebuild from.
     public static func offer(
@@ -67,9 +72,9 @@ public enum SourceRebuild {
         sampleRate: Double,
         sizeOf sizeLookup: InterruptedRecordingRecovery.SizeLookup
     ) -> Offer? {
-        guard !FileManager.default.fileExists(
-            atPath: directory.appendingPathComponent(finalizedName).path
-        ) else { return nil }
+        guard InterruptedRecordingRecovery.finalizedDuration(
+            at: directory.appendingPathComponent(finalizedName)
+        ) == nil else { return nil }
 
         // `try?` here and not below: this is the *availability* question, and a track that cannot
         // be stat'd is one this offer cannot describe honestly, so not offering is the right

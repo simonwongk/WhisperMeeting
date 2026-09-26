@@ -167,8 +167,20 @@ public enum FloatTrackMixer {
             microphonePadding + microphone.frameCount
         )
 
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        let output = try FileHandle(forWritingTo: outputURL)
+        // Written under a temporary name in the same directory and moved into place only once the
+        // mix is complete (F500). Before this, a mix that failed partway — a full disk, or the app
+        // killed mid-write, both real scenarios at `stop()` — left a zeroed-header stub sitting
+        // AT `outputURL`, where every later reader expects a finished `meeting.wav` to be. The
+        // ordering below (header first, PCM, header rewritten last) is what makes a truncated file
+        // *detectable*; the temp name plus a same-volume rename is what keeps one from being
+        // *visible* at the real path at all, including across a process death the `defer` below
+        // cannot run for.
+        let fileManager = FileManager.default
+        let tempURL = temporaryMixURL(for: outputURL)
+        fileManager.createFile(atPath: tempURL.path, contents: nil)
+        var mixSucceeded = false
+        defer { if !mixSucceeded { try? fileManager.removeItem(at: tempURL) } }
+        let output = try FileHandle(forWritingTo: tempURL)
         defer { try? output.close() }
         // The header goes in LAST, over these reserved zero bytes (44, or 80 when the mix is long
         // enough to need RF64 — known now, because `totalFrames` is: F302). That ordering is what makes a
@@ -212,7 +224,22 @@ public enum FloatTrackMixer {
             ),
             to: output
         )
+        try output.close()
+
+        if fileManager.fileExists(atPath: outputURL.path) {
+            try fileManager.removeItem(at: outputURL)
+        }
+        try fileManager.moveItem(at: tempURL, to: outputURL)
+        mixSucceeded = true
         return Double(writtenFrames) / sampleRate
+    }
+
+    /// A hidden, same-directory working name for a mix in progress. Same directory so the final
+    /// `moveItem` is a same-volume rename rather than a copy across volumes, and hidden so a mix
+    /// killed mid-write does not leave a stray file a directory listing shows as a recording.
+    private static func temporaryMixURL(for outputURL: URL) -> URL {
+        outputURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(outputURL.lastPathComponent).mixing")
     }
 
     private static func paddingFrames(

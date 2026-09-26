@@ -259,6 +259,54 @@ func genuineReadFailureThrowsRatherThanBecomingSilence() throws {
     #expect(systemChunksRead == 2, "the failure must arrive on the second chunk, not the first")
 }
 
+@Test("A mix that fails partway leaves nothing at outputURL (F500)")
+func failedMixLeavesNoPartialFileAtOutputURL() throws {
+    // Before F500 the mix wrote directly to `outputURL`, so a read failure partway left exactly
+    // the zeroed-header stub `SourceRebuild.offer` had to learn to see through. Writing to a
+    // temp name and moving it into place only on success means the failure case above no longer
+    // needs to exist: nothing is ever visible at `outputURL` until the mix is complete.
+    let fixture = try MixFixture()
+    defer { fixture.cleanUp() }
+    let frames = 8_192 * 2
+    try fixture.write([Float](repeating: 0.5, count: frames), to: fixture.system)
+    try fixture.write([Float](repeating: 0.5, count: frames), to: fixture.microphone)
+
+    var systemChunksRead = 0
+    let openTrack: FloatTrackMixer.TrackOpener = { url, paddingFrames in
+        guard url == fixture.system else {
+            return try FloatTrackMixer.fileTrackOpener(url, paddingFrames)
+        }
+        return { count in
+            systemChunksRead += 1
+            if systemChunksRead > 1 { throw InjectedReadFailure() }
+            return [Float](repeating: 0.5, count: count)
+        }
+    }
+
+    #expect(throws: InjectedReadFailure.self) {
+        _ = try FloatTrackMixer.mix(
+            system: FloatTrack(url: fixture.system, firstPresentationTime: 0, frameCount: Int64(frames)),
+            microphone: FloatTrack(
+                url: fixture.microphone,
+                firstPresentationTime: 0,
+                frameCount: Int64(frames)
+            ),
+            sampleRate: 48_000,
+            outputURL: fixture.output,
+            openTrack: openTrack
+        )
+    }
+    #expect(
+        !FileManager.default.fileExists(atPath: fixture.output.path),
+        "a failed mix left a partial file where a complete one is expected"
+    )
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path)
+    #expect(
+        !leftovers.contains { $0.hasSuffix(".mixing") },
+        "the temporary working file was not cleaned up: \(leftovers)"
+    )
+}
+
 @Test("A mix longer than one chunk is continuous across the chunk boundary (F278)")
 func mixSpansChunkBoundaries() throws {
     // The loop reads 8,192 frames at a time. An off-by-one there would leave a click or a gap

@@ -491,11 +491,14 @@ public enum InterruptedRecordingRecovery {
         return size / Int64(MemoryLayout<Float>.size)
     }
 
-    #if DEBUG
-    /// The duration of a finalized recording at `url`, or nil when it is not one. Test seam, gated
-    /// like the capture engine's (F344): an ungated one reads as production API with no caller.
+    /// The duration of a finalized recording at `url`, or nil when it is not one — a complete WAV
+    /// header, not merely a file that exists.
+    ///
+    /// No longer `#if DEBUG`-gated (F500): that gate existed because this had no production caller,
+    /// only tests. `SourceRebuild.offer` is now one — it has to tell a `meeting.wav` a mix left
+    /// mid-write (a zeroed header, F500's own scenario) from one a capture actually finished, and
+    /// existence alone cannot make that distinction.
     static func finalizedDuration(at url: URL) -> TimeInterval? { wavDuration(at: url) }
-    #endif
 
     /// The duration a finished WAV declares, or nil when the file is not one: unreadable, no audio,
     /// or shorter than its header says, which is how a mix interrupted before its header was
