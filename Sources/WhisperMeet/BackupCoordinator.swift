@@ -96,7 +96,16 @@ enum BackupCoordinator {
 
     /// Back up `source` into `destination/<managedSubfolder>/<now>/`, retaining the newest `retain`
     /// complete generations.
-    static func backUp(source: URL, destination: URL, now: Int, retain: Int) throws -> BackupSummary {
+    ///
+    /// `beforeProcessingForTesting` is a seam for F504's test only (nil in production, called with
+    /// each item's relative path right before it is copied or hardlinked): the up-front hashing
+    /// pass below runs once for the whole library before any copying starts, so mutating a file
+    /// from this hook deterministically reproduces "the source changed after being hashed, before
+    /// being copied" with no clock and no real concurrent writer.
+    static func backUp(
+        source: URL, destination: URL, now: Int, retain: Int,
+        beforeProcessingForTesting: ((String) -> Void)? = nil
+    ) throws -> BackupSummary {
         let fileManager = FileManager.default
         guard !pathsOverlap(source, destination) else { throw BackupCoordinatorError.destinationOverlapsSource }
 
@@ -153,7 +162,12 @@ enum BackupCoordinator {
 
         var copied = 0
         var skipped = 0
+        // Overrides `sourceFiles`' up-front hash for the manifest, for exactly the files this run
+        // actually re-hashed post-copy (F504) — a `.skip` entry is hardlinked from an already
+        // verified previous generation and never re-read, so its up-front hash still describes it.
+        var rehashedContent: [String: String] = [:]
         for item in plan {
+            beforeProcessingForTesting?(item.file.relativePath)
             let sourceURL = source.appendingPathComponent(item.file.relativePath)
             let destURL = generationDir.appendingPathComponent(item.file.relativePath)
             try fileManager.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -166,10 +180,9 @@ enum BackupCoordinator {
                 }
                 skipped += 1
             case .copy:
-                try fileManager.copyItem(at: sourceURL, to: destURL)
-                guard BackupVerification.succeeded(expectedHash: item.file.contentHash, actualHash: try sha256(of: destURL)) else {
-                    throw BackupCoordinatorError.verificationFailed(item.file.relativePath)
-                }
+                rehashedContent[item.file.relativePath] = try Self.copyAndVerify(
+                    from: sourceURL, to: destURL, relativePath: item.file.relativePath, fileManager: fileManager
+                )
                 copied += 1
             }
         }
@@ -177,9 +190,11 @@ enum BackupCoordinator {
         // The manifest, then the marker, both while still staged — so the whole evidence set
         // becomes visible at the final name in one rename (F191 slice D).
         //
-        // Built from `sourceFiles`, which is exactly the set that got into the generation. A
-        // hardlinked (skipped) file shares the previous generation's inode and therefore its
-        // contents, so the source hash describes it correctly.
+        // Built from `sourceFiles`, which is exactly the set that got into the generation — except
+        // a `.copy` entry's hash comes from `rehashedContent`, the hash `copyAndVerify` actually
+        // measured post-copy, not the one `descriptors(of:)` measured minutes earlier at the top of
+        // this run (F504). A hardlinked (skipped) file shares the previous generation's inode and
+        // therefore its contents, so the up-front source hash still describes it correctly.
         //
         // The marker stays. A generation written before this has no manifest and must still read
         // as complete — an improvement that made older backups unrestorable would be data loss
@@ -188,7 +203,8 @@ enum BackupCoordinator {
             generation: String(now),
             createdAtEpoch: now,
             files: sourceFiles.map {
-                .init(relativePath: $0.relativePath, size: $0.size, sha256: $0.contentHash)
+                .init(relativePath: $0.relativePath, size: $0.size,
+                      sha256: rehashedContent[$0.relativePath] ?? $0.contentHash)
             }
         ).write(to: generationDir)
         try Data().write(to: generationDir.appendingPathComponent(completionMarker))
@@ -372,6 +388,53 @@ enum BackupCoordinator {
             hasher.update(data: chunk)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Copies `sourceURL` to `destURL` and verifies the copy against a hash of the source taken
+    /// immediately AFTER the copy — never against the hash `descriptors(of:)` computed at the very
+    /// start of the run, which can be minutes stale by the time a given file's turn comes on a real
+    /// library (F504). A mismatch there does not mean the copy is corrupt: it means the source
+    /// changed between that up-front scan and this file's copy, which on a real library is
+    /// `meetings.json` being saved — atomically replaced — by a debounced write, or a batch
+    /// transcription finishing, while the backup is still hashing everything else.
+    ///
+    /// Retries once after `retryDelay` — the production default is
+    /// `MeetingStore.defaultTranscriptWriteDebounce`, exactly how long a pending debounced save can
+    /// still be in flight for — so a save that lands mid-copy is given the time it needs to settle
+    /// before this is treated as a failure. Still throws `verificationFailed` if the destination and
+    /// a freshly-read source disagree twice: at that point either the source is being written
+    /// continuously or the copy itself is corrupt, and either way the whole backup must still
+    /// refuse rather than report success over mismatched bytes (`fileManager`/`retryDelay`/`sleep`
+    /// are seams so the F504 tests can drive the retry without a real half-second wait).
+    static func copyAndVerify(
+        from sourceURL: URL,
+        to destURL: URL,
+        relativePath: String,
+        fileManager: FileManager = .default,
+        retryDelay: TimeInterval = MeetingStore.defaultTranscriptWriteDebounce,
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        // Test-only seam (nil in production): fires right after each attempt's copy, before either
+        // hash is read. The genuine race this guards is a source write landing in the sub-millisecond
+        // window between `copyItem` finishing and the immediate re-hash of the source below — too
+        // narrow to hit deterministically from a test — so this is what F504's tests use to force
+        // that same mismatch on demand, on whichever attempt they choose.
+        afterCopyForTesting: ((Int) -> Void)? = nil
+    ) throws -> String {
+        let maxAttempts = 2
+        for attempt in 1...maxAttempts {
+            if attempt > 1 {
+                try? fileManager.removeItem(at: destURL)
+                sleep(retryDelay)
+            }
+            try fileManager.copyItem(at: sourceURL, to: destURL)
+            afterCopyForTesting?(attempt)
+            let destHash = try sha256(of: destURL)
+            let sourceHashNow = try sha256(of: sourceURL)
+            if BackupVerification.succeeded(expectedHash: sourceHashNow, actualHash: destHash) {
+                return destHash
+            }
+        }
+        throw BackupCoordinatorError.verificationFailed(relativePath)
     }
 
     /// Whether to reject a backup for lack of space. Rejects ONLY on a credible positive capacity

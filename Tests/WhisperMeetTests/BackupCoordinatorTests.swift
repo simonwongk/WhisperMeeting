@@ -173,6 +173,106 @@ func appModelBackUpLibraryReachesCoordinator() async throws {
     #expect(model.alertMessage?.contains("4 file(s) copied") == true)
 }
 
+// F504 — a backup used to hash every source file up front, then verify each COPY against that
+// stale hash. `meetings.json` changing anywhere in the run — a debounced save, a batch
+// transcription finishing — made the copy of its own current bytes fail verification against the
+// hash of what it used to contain, and the whole backup was refused for a copy that was in fact
+// faithful. `beforeProcessingForTesting` fires once per plan item, right before it is copied —
+// exactly the moment `descriptors(of:)`'s up-front hash is already stale but the copy has not
+// happened yet — so mutating `meetings.json` from it reproduces the report with no clock and no
+// real concurrent writer.
+
+@Test("A source file that changes after being hashed but before being copied no longer fails the backup (F504)")
+func sourceChangedMidRunNoLongerFailsVerification() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F504-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meetings v1", to: source.appendingPathComponent("meetings.json"))
+    try write("audio-A", to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+
+    let summary = try BackupCoordinator.backUp(
+        source: source, destination: dest, now: 1_000, retain: 2,
+        beforeProcessingForTesting: { relativePath in
+            // Simulates a debounced index save landing after the up-front scan hashed the OLD
+            // content but before this file's own copy step runs.
+            if relativePath == "meetings.json" {
+                try? Data("meetings v2 (saved mid-backup)".utf8).write(to: source.appendingPathComponent("meetings.json"))
+            }
+        }
+    )
+
+    #expect(summary.verified)
+    #expect(summary.copied == 2)
+    let backedUpIndex = try String(
+        decoding: Data(contentsOf: backupRoot(dest).appendingPathComponent("1000/meetings.json")), as: UTF8.self
+    )
+    // The backup holds the NEW bytes — what was actually on disk when it was copied — not the
+    // stale up-front snapshot and not a refusal.
+    #expect(backedUpIndex == "meetings v2 (saved mid-backup)")
+}
+
+@Test("copyAndVerify retries once against a changed source, bounded rather than looping forever (F504)")
+func copyAndVerifyRetriesOnceThenGivesUp() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F504-unit-\(UUID().uuidString)")
+    let sourceURL = tmp.appendingPathComponent("meetings.json")
+    let destURL = tmp.appendingPathComponent("copy/meetings.json")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("v1", to: sourceURL)
+    // `copyItem` needs its destination's parent directory to already exist — `backUp`'s own loop
+    // creates it before calling `copyAndVerify`; these standalone unit tests must do the same.
+    try FileManager.default.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    // Mutates the source on every attempt — a pathological case (a continuously rewritten file),
+    // never one debounced save settling. The retry must still be bounded: this must throw rather
+    // than retry indefinitely.
+    var sleeps = 0
+    var attempts = 0
+    #expect(throws: BackupCoordinatorError.self) {
+        _ = try BackupCoordinator.copyAndVerify(
+            from: sourceURL, to: destURL, relativePath: "meetings.json",
+            retryDelay: 0,
+            sleep: { _ in sleeps += 1 },
+            afterCopyForTesting: { attempt in
+                attempts += 1
+                try? Data("v\(attempt + 1)".utf8).write(to: sourceURL)
+            }
+        )
+    }
+    #expect(attempts == 2, "exactly two attempts — the bound, not unbounded retrying")
+    #expect(sleeps == 1, "exactly one wait, between the two attempts")
+}
+
+@Test("copyAndVerify succeeds once the source stabilises within its one retry (F504)")
+func copyAndVerifySucceedsAfterOneRetry() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F504-unit-\(UUID().uuidString)")
+    let sourceURL = tmp.appendingPathComponent("meetings.json")
+    let destURL = tmp.appendingPathComponent("copy/meetings.json")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("v1", to: sourceURL)
+    // `copyItem` needs its destination's parent directory to already exist — `backUp`'s own loop
+    // creates it before calling `copyAndVerify`; these standalone unit tests must do the same.
+    try FileManager.default.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    var sleepCalls = 0
+    let hash = try BackupCoordinator.copyAndVerify(
+        from: sourceURL, to: destURL, relativePath: "meetings.json",
+        retryDelay: 0,
+        sleep: { _ in sleepCalls += 1 },
+        afterCopyForTesting: { attempt in
+            // Only the FIRST attempt's copy is immediately invalidated by a source write — exactly
+            // a debounced save landing right after that copy. By the retry (attempt 2), the source
+            // is stable again, the way a real save would be well within the debounce window.
+            if attempt == 1 {
+                try? Data("v2 (saved mid-copy)".utf8).write(to: sourceURL)
+            }
+        }
+    )
+    #expect(sleepCalls == 1, "exactly one retry was needed")
+    #expect(hash == (try BackupCoordinator.sha256(of: destURL)))
+    #expect(try String(decoding: Data(contentsOf: destURL), as: UTF8.self) == "v2 (saved mid-copy)")
+}
+
 private final class Captured: @unchecked Sendable {
     var source: URL?
     var destination: URL?

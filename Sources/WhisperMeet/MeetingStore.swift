@@ -622,6 +622,13 @@ final class MeetingStore: ObservableObject {
     /// per-keystroke full-index rewrite (F40) into one debounced write; tests pass a large value to
     /// prove coalescing and drive the flush explicitly.
     private let transcriptWriteDebounce: TimeInterval
+    /// The production default above, named so another type can derive a bound from it instead of
+    /// choosing its own timeout (F504): `BackupCoordinator` waits this long before retrying a copy
+    /// whose source changed mid-run, because that is exactly how long a pending debounced save can
+    /// take to land. `nonisolated`: a plain `Sendable` constant, and both this class's own init
+    /// default and `BackupCoordinator` (which is not main-actor-isolated — it runs inside
+    /// `Task.detached`) need to read it from a nonisolated context.
+    nonisolated static let defaultTranscriptWriteDebounce: TimeInterval = 0.5
     /// Count of completed index writes — lets F40's coalescing test assert how many disk writes ran.
     private(set) var persistCount = 0
     private var pendingIndexFlush: Task<Void, Never>?
@@ -654,7 +661,7 @@ final class MeetingStore: ObservableObject {
     private var replacementRulesToken: GenerationToken?
     private var leaseHandle: LibraryWriterLeaseHandle?
 
-    init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = 0.5) {
+    init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = MeetingStore.defaultTranscriptWriteDebounce) {
         // F312: one decision for the whole library, and one variable that can move it.
         self.rootDirectory = rootDirectory ?? WhisperMeetLibrary.root()
         self.transcriptWriteDebounce = transcriptWriteDebounce
