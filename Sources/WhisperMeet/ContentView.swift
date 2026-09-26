@@ -1566,7 +1566,9 @@ struct SettingsView: View {
                     Label("Back up recordings and indexes to a folder", systemImage: "externaldrive.badge.timemachine")
                     Spacer()
                     Picker("Keep", selection: $model.backupRetention) {
-                        ForEach([3, 5, 10, 20], id: \.self) { Text("Keep \($0)").tag($0) }
+                        // Reads `AppModel.offeredBackupRetentions` (F461 nit) — the same set the
+                        // stored value is validated against on launch, so the two cannot drift.
+                        ForEach(AppModel.offeredBackupRetentions, id: \.self) { Text("Keep \($0)").tag($0) }
                     }
                     .labelsHidden()
                     .fixedSize()
