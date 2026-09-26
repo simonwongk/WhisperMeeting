@@ -127,7 +127,12 @@ def resample_to_16k_mono(frames, channels, sample_width, rate):
 
     Nearest-neighbour, not a filtered resample: AMI is already 16 kHz mono in the published shards,
     so this only runs on a shard that is not, and the honest thing is a conversion whose artefacts
-    are obvious rather than one that looks principled and is not. `--strict` refuses instead.
+    are obvious rather than one that looks principled and is not.
+
+    There is no `--strict` refusal mode (F490): this docstring used to claim one, `build_parser`
+    (below) has never defined `--strict`, and a reader pointed here by that claim gets
+    "unrecognized arguments: --strict" instead. If a caller wants an aliased shard refused rather
+    than decimated, that flag would need to be added; nothing here does that today.
     """
     if sample_width != 2:
         raise ValueError("only 16-bit PCM is supported, got %d bytes per sample" % sample_width)

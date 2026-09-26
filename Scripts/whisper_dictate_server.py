@@ -63,12 +63,44 @@ def conforming_pcm16_frames(path: str, sample_rate: int = DICTATION_SAMPLE_RATE)
 
 # F210: the temperature-fallback ladder `mlx_whisper.transcribe` applies, replicated so the
 # single-window path below behaves identically. Read from the installed 0.4.3
-# (`transcribe.py:67-70`, `:207-245`) rather than assumed; pinned by
-# `test_whisper_dictate_server.py` so a runtime upgrade that changes them fails a test.
+# (`transcribe.py:67-70`, `:207-245`) rather than assumed.
+#
+# **Not pinned by a test (F490).** This comment used to claim
+# `test_the_ladder_matches_the_installed_transcribe` "pins" these constants "so a runtime upgrade
+# that changes them fails a test" — false: that test compares these constants with itself (a
+# literal copy of the same four numbers) and never imports mlx_whisper, so it passes identically
+# whether mlx-whisper is 0.4.3, a later release that moves the ladder, or not installed at all.
+# What actually keeps the fast path honest is EXPECTED_MLX_WHISPER_VERSION below: a version
+# mismatch declines the fast path in `transcribe_single_window` rather than silently diverging
+# from `mlx_whisper.transcribe`'s real behaviour.
 FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 COMPRESSION_RATIO_THRESHOLD = 2.4
 LOGPROB_THRESHOLD = -1.0
 NO_SPEECH_THRESHOLD = 0.6
+
+# The mlx-whisper version FALLBACK_TEMPERATURES and the thresholds above were derived from
+# (F490). setup-local-whisper.sh pins this exact version; `transcribe_single_window` also checks
+# it at runtime, so a fallback/dev install that resolved a different mlx-whisper — or a future pin
+# bump nobody re-derived the ladder against — declines the fast path instead of reusing a replica
+# of internals that may no longer match.
+EXPECTED_MLX_WHISPER_VERSION = "0.4.3"
+
+
+def installed_mlx_whisper_version():
+    """The installed mlx-whisper's version string, or None if it cannot be determined.
+
+    `importlib.metadata` rather than `mlx_whisper.__version__`: mlx_whisper does not export the
+    latter as of 0.4.3, and the installed-package metadata is what actually determines behaviour
+    regardless of what any module attribute says.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            return version("mlx-whisper")
+        except PackageNotFoundError:
+            return None
+    except Exception:  # pragma: no cover - defensive; never worth failing a dictation over
+        return None
 
 
 def needs_temperature_fallback(compression_ratio, avg_logprob, no_speech_prob) -> bool:
@@ -131,7 +163,14 @@ def transcribe_single_window(mlx_whisper, mlx, audio, mlx_repo, language, initia
 
     Single-window only. Dictation clips are seconds long, but a longer clip needs `transcribe`'s
     seek loop, conditioning between windows and segment assembly, none of which is replicated here.
+
+    **Declines (returns None) on any mlx-whisper other than EXPECTED_MLX_WHISPER_VERSION (F490).**
+    The ladder and thresholds above were read from that installed version's source, not derived
+    generically — a different version may have moved them, and this fast path would then silently
+    diverge from what `mlx_whisper.transcribe` (called below on any None) actually does.
     """
+    if installed_mlx_whisper_version() != EXPECTED_MLX_WHISPER_VERSION:
+        return None
     try:
         from mlx_whisper.audio import (
             N_FRAMES,

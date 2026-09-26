@@ -145,13 +145,20 @@ class PrewarmDecodeOptionsTests(unittest.TestCase):
 class TemperatureFallbackTests(unittest.TestCase):
     """F210 — the ladder the single-window path replicates from `mlx_whisper.transcribe`.
 
-    Pinned rather than trusted, because the whole change rests on behaving identically to a pinned
-    library version. If a runtime upgrade moves these, this fails and the fast path should be
-    re-verified against the bench clips before shipping — which is what caught the segment-slicing
-    difference in the first place.
+    **This does NOT catch a runtime upgrade (F490).** It used to claim it did — "pinned … so a
+    runtime upgrade that changes them fails a test" — which was false: the assertion below compares
+    these constants with a literal copy of the same four numbers, never imports mlx_whisper, and
+    runs identically under a python3 with no mlx_whisper installed at all. It can only fail if
+    someone edits the constants in whisper_dictate_server.py itself.
+    What actually keeps the fast path from silently diverging is
+    `MlxWhisperVersionGateTests` below: `transcribe_single_window` declines (falls back to the real
+    `transcribe`) unless the installed mlx-whisper is exactly `EXPECTED_MLX_WHISPER_VERSION`. If a
+    pin bump ever moves the ladder, re-derive these four numbers against the new version's source
+    (as F210's log entry did against 0.4.3) and update `EXPECTED_MLX_WHISPER_VERSION` in the same
+    change.
     """
 
-    def test_the_ladder_matches_the_installed_transcribe(self):
+    def test_the_ladder_constants_are_the_pinned_snapshot(self):
         self.assertEqual(server.FALLBACK_TEMPERATURES, (0.0, 0.2, 0.4, 0.6, 0.8, 1.0))
         self.assertEqual(server.COMPRESSION_RATIO_THRESHOLD, 2.4)
         self.assertEqual(server.LOGPROB_THRESHOLD, -1.0)
@@ -196,6 +203,91 @@ class SingleWindowFastPathTests(unittest.TestCase):
         )
 
 
+class MlxWhisperVersionGateTests(unittest.TestCase):
+    """F490 — `transcribe_single_window` must decline on any mlx-whisper other than the version
+    `FALLBACK_TEMPERATURES` and the thresholds were derived from, rather than reuse a replica of
+    internals that may no longer match.
+
+    A fake `mlx_whisper` (the same rig `SilentWindowSkipTests` uses) is installed for every test
+    here, so a mismatched version must be caught by the gate itself — reaching the fake modules at
+    all would prove nothing, since they are wired to succeed. `installed_mlx_whisper_version` is
+    monkey-patched directly rather than actually installing a package.
+    """
+
+    def setUp(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+
+        self._original_version_probe = server.installed_mlx_whisper_version
+        self.addCleanup(setattr, server, "installed_mlx_whisper_version", self._original_version_probe)
+
+        decoded = SimpleNamespace(
+            text=" Thank you.", language="en", no_speech_prob=0.05, avg_logprob=-0.3,
+            compression_ratio=1.2,
+        )
+
+        class Model:
+            is_multilingual = True
+            dims = SimpleNamespace(n_mels=128)
+
+            def encoder(self, segment):
+                return segment
+
+            def decode(self, features, options):
+                return decoded
+
+        audio = ModuleType("mlx_whisper.audio")
+        audio.N_FRAMES = 3000
+        audio.N_SAMPLES = 480000
+        audio.log_mel_spectrogram = lambda _audio, n_mels, padding: _FakeMel(3000 + 100)
+        audio.pad_or_trim = lambda segment, _length, axis: segment
+        decoding = ModuleType("mlx_whisper.decoding")
+        decoding.DecodingOptions = lambda **options: SimpleNamespace(**options)
+        transcribe = ModuleType("mlx_whisper.transcribe")
+        transcribe.ModelHolder = SimpleNamespace(get_model=lambda _repo, _dtype: Model())
+        package = ModuleType("mlx_whisper")
+
+        self._saved = {name: sys.modules.get(name) for name in (
+            "mlx_whisper", "mlx_whisper.audio", "mlx_whisper.decoding", "mlx_whisper.transcribe",
+        )}
+        sys.modules.update({
+            "mlx_whisper": package,
+            "mlx_whisper.audio": audio,
+            "mlx_whisper.decoding": decoding,
+            "mlx_whisper.transcribe": transcribe,
+        })
+        self.addCleanup(self._restore_modules)
+
+    def _restore_modules(self):
+        import sys
+        for name, module in self._saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def _call(self):
+        mlx = type("FakeMLX", (), {"float16": "float16"})()
+        return server.transcribe_single_window(
+            None, mlx, [0.0] * 16000, "repo/name", None, None
+        )
+
+    def test_a_matching_version_reaches_the_fake_modules_and_decodes(self):
+        """The rig actually works: proves the two decline tests below are declining via the
+        gate, not because the fake modules were broken all along."""
+        server.installed_mlx_whisper_version = lambda: server.EXPECTED_MLX_WHISPER_VERSION
+        result = self._call()
+        self.assertEqual(result, {"text": "Thank you.", "language": "en", "noSpeechProb": 0.05})
+
+    def test_a_mismatched_version_declines_before_reaching_the_fake_modules(self):
+        server.installed_mlx_whisper_version = lambda: "0.9.9"
+        self.assertIsNone(self._call())
+
+    def test_an_undetectable_version_also_declines(self):
+        server.installed_mlx_whisper_version = lambda: None
+        self.assertIsNone(self._call())
+
+
 class _FakeMel:
     """Just enough of an mx.array for `transcribe_single_window`'s slicing and casting."""
 
@@ -231,6 +323,12 @@ class SilentWindowSkipTests(unittest.TestCase):
     def setUp(self):
         import sys
         from types import ModuleType, SimpleNamespace
+
+        # F490: the version gate runs before any of this rig, so it must be told the fake modules
+        # are the "expected" version — otherwise every test here declines at the gate on whatever
+        # mlx-whisper (if any) actually happens to be installed on the machine running the suite.
+        self._original_version_probe = server.installed_mlx_whisper_version
+        server.installed_mlx_whisper_version = lambda: server.EXPECTED_MLX_WHISPER_VERSION
 
         self.decoded = SimpleNamespace(
             text=" Thank you.", language="en", no_speech_prob=0.9, avg_logprob=-1.3,
@@ -272,6 +370,8 @@ class SilentWindowSkipTests(unittest.TestCase):
 
     def tearDown(self):
         import sys
+
+        server.installed_mlx_whisper_version = self._original_version_probe
 
         # Put the import failure back: `SingleWindowFastPathTests` relies on mlx_whisper being
         # absent, and a fake left in sys.modules would turn its decline into a decode.
@@ -335,6 +435,10 @@ class UnexpectedFailureTests(unittest.TestCase):
         import sys
         from types import ModuleType, SimpleNamespace
 
+        # F490: see SilentWindowSkipTests — the version gate runs before this rig.
+        self._original_version_probe = server.installed_mlx_whisper_version
+        server.installed_mlx_whisper_version = lambda: server.EXPECTED_MLX_WHISPER_VERSION
+
         self.calls = []
 
         def get_model(repo, dtype):
@@ -363,6 +467,7 @@ class UnexpectedFailureTests(unittest.TestCase):
     def tearDown(self):
         import sys
 
+        server.installed_mlx_whisper_version = self._original_version_probe
         for name, module in self._saved.items():
             if module is None:
                 sys.modules.pop(name, None)
