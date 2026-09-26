@@ -244,11 +244,6 @@ class MainEndToEndTests(unittest.TestCase):
         # The model must not be invoked for an empty transcript.
         self.assertNotIn("prompt", recorded)
 
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class LoadHeartbeatTests(unittest.TestCase):
     """F512 review: `load()` blocks with no output, and the Swift side stops a helper that is silent
     for its stall timeout — so a slow cold load under swap would have read as a wedge. A thread
@@ -282,3 +277,7 @@ class LoadHeartbeatTests(unittest.TestCase):
         with contextlib.redirect_stderr(captured), self.assertRaises(RuntimeError):
             summ.load_with_heartbeat(broken_load, "/models/x", interval=0.01)
         self.assertEqual(threading.active_count(), 1, "the heartbeat thread is still running")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -565,10 +565,6 @@ class JoinTests(unittest.TestCase):
         self.assertEqual(missing, ["s2"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ResolveCorpusTests(unittest.TestCase):
     def test_the_corpus_is_chosen_by_digest_when_both_share_a_name(self):
         """Both corpora are `items.jsonl`; directory order picked the smoke one for a full run."""
@@ -596,3 +592,7 @@ class PastedAlterationTests(unittest.TestCase):
         altered = dict(missed, altered_terms=["CCP"], expected_fixes={"applied": [], "missed": []})
         self.assertFalse(report.is_alteration(missed))
         self.assertTrue(report.is_alteration(altered))
+
+
+if __name__ == "__main__":
+    unittest.main()
