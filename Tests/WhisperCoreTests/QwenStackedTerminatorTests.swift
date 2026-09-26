@@ -60,3 +60,49 @@ func wordlessLinesAreNotUnmatchedPassages() {
     let clean = [segments[0], segments[2], segments[3]]
     #expect(QwenASRClient.alignmentWarning(text: text, segments: clean, payload: payload) == nil)
 }
+
+// F608 — F429's run rule was ASCII-only: a fullwidth `？` always cut, so "真的吗？！" became "真的吗？"
+// plus a lone, untimed "！" line in the Read view and every export.
+
+/// The aligner's words for mixed text: every ideograph is its own word, as `is_cjk_char` makes it,
+/// and anything else is split on whitespace.
+private func alignerWords(_ text: String, wordSeconds: Double = 0.5) -> [QwenAlignedItem] {
+    var items: [QwenAlignedItem] = []
+    var time = 0.0
+    var latin = ""
+    func emit(_ word: String) {
+        items.append(QwenAlignedItem(text: word, start: time, end: time + wordSeconds))
+        time += wordSeconds
+    }
+    func flush() { if !latin.isEmpty { emit(latin); latin = "" } }
+    for character in text {
+        if let scalar = character.unicodeScalars.first, (0x4E00...0x9FFF).contains(scalar.value) {
+            flush()
+            emit(String(character))
+        } else if character.isLetter || character.isNumber {
+            latin.append(character)
+        } else if character.isWhitespace {
+            flush()
+        }
+    }
+    flush()
+    return items
+}
+
+@Test("Fullwidth stacked marks end one sentence and leave no lone \"！\" line (F608)")
+func fullwidthStackedMarksEndOneSentence() {
+    let text = "真的吗？！后面再说。"
+    let segments = QwenAlignedTranscript.segments(fullText: text, alignedItems: alignerWords(text))
+    #expect(segments.map(\.text) == ["真的吗？！", "后面再说。"])
+    #expect(segments.allSatisfy { $0.start != nil })
+    // 真的吗 is 0–1.5 s, 后面再说 1.5–3.5 s.
+    #expect(segments.first?.end == 1.5)
+}
+
+@Test("A run that mixes widths is one ending too, and a fullwidth mark still cuts before an ideograph (F608)")
+func mixedWidthRunsEndOneSentence() {
+    let text = "What?！ Yes。。。好的！谢谢。"
+    let segments = QwenAlignedTranscript.segments(fullText: text, alignedItems: alignerWords(text))
+    #expect(segments.map(\.text) == ["What?！", "Yes。。。", "好的！", "谢谢。"])
+    #expect(segments.allSatisfy { $0.start != nil })
+}

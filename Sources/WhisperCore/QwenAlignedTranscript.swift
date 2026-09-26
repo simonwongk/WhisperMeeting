@@ -213,33 +213,36 @@ public enum QwenAlignedTranscript {
 
     /// The transcript cut into sentences at `.`, `?`, `!`, `。`, `？`, `！` and newlines.
     ///
-    /// A `.`, `?` or `!` followed directly by a letter, a digit, a comma, semicolon or colon
-    /// (ASCII or fullwidth), or another `.`, `?` or `!` (F429) does not end a sentence (F420). The aligner splits English on whitespace, so "A.D.,",
-    /// "Sources.com" and "3.5" each reach it as one word, and cutting them put a sentence boundary
-    /// in the middle of an aligner word — "… A." / "D." / ", …" — besides leaving lines
-    /// like "D." that are not sentences. The comma, semicolon and colon are there because no
-    /// sentence ends in ".,": without them "A.D.," would still be cut before its comma. Any other
-    /// character, such as a closing quote or another terminator, still ends the sentence as before;
-    /// `place` copes with a boundary that lands inside an aligner word either way.
+    /// A run of those marks, in either width — "...", "?!", "？！" — is one ending, cut after its last
+    /// mark (F429, F608). Cutting at each mark left lines of bare "." or "！" that no aligner word can
+    /// time, and each was then counted as a passage that "could not be matched".
+    ///
+    /// A `.`, `?` or `!` followed directly by a letter, a digit, or a comma, semicolon or colon
+    /// (ASCII or fullwidth) does not end a sentence either (F420). The aligner splits English on
+    /// whitespace, so "A.D.,", "Sources.com" and "3.5" each reach it as one word, and cutting them
+    /// put a sentence boundary in the middle of an aligner word — "… A." / "D." / ", …" — besides
+    /// leaving lines like "D." that are not sentences. The comma, semicolon and colon are there
+    /// because no sentence ends in ".,": without them "A.D.," would still be cut before its comma.
+    /// Any other character, such as a closing quote, still ends the sentence as before; `place`
+    /// copes with a boundary that lands inside an aligner word either way.
     ///
     /// A CJK ideograph is the exception and still ends the sentence. The aligner makes every
     /// ideograph its own word (`is_cjk_char` in `qwen3_forced_aligner.py`, applied by
     /// `split_segment_with_chinese` and `tokenize_chinese_mixed`), so a cut in front of one is always
     /// on a word boundary, and Chinese puts no space after a sentence, so declining the cut would run
-    /// sentences together. `。`, `？`, `！` and the newline are unchanged.
+    /// sentences together. `。`, `？`, `！` and the newline never take the letter, digit or clause rule.
     private static func sentenceSlices(_ text: String) -> [String] {
-        let terminators: Set<Character> = [".", "?", "!", "。", "？", "！", "\n"]
         let characters = Array(text)
         var current = ""
         var result: [String] = []
 
         for (index, character) in characters.enumerated() {
             current.append(character)
-            guard terminators.contains(character) else { continue }
-            if wordInternalTerminators.contains(character),
-               index + 1 < characters.count,
-               continuesSentence(characters[index + 1]) {
-                continue
+            guard character == "\n" || sentenceMarks.contains(character) else { continue }
+            if index + 1 < characters.count {
+                let next = characters[index + 1]
+                if sentenceMarks.contains(character), sentenceMarks.contains(next) { continue }
+                if wordInternalTerminators.contains(character), continuesSentence(next) { continue }
             }
             let sentence = current.trimmingCharacters(in: .whitespacesAndNewlines)
             if !sentence.isEmpty {
@@ -254,6 +257,9 @@ public enum QwenAlignedTranscript {
         return result
     }
 
+    /// The marks that end a sentence; a newline ends one too, but is not a mark a run can continue.
+    private static let sentenceMarks: Set<Character> = [".", "?", "!", "。", "？", "！"]
+
     /// The terminators that can sit inside a word ("A.D.", ".com", "3.5", "Yahoo!Mail") (F420).
     private static let wordInternalTerminators: Set<Character> = [".", "?", "!"]
 
@@ -261,12 +267,9 @@ public enum QwenAlignedTranscript {
     private static let clauseContinuations: Set<Character> = [",", ";", ":", "，", "；", "："]
 
     /// Whether `next`, directly after a `.`, `?` or `!`, means the sentence has not ended (F420).
-    ///
-    /// Another `.`, `?` or `!` also continues it (F429): a run of them — "...", "?!" — is ONE
-    /// ending, cut after its last mark. Cutting at each mark left lines of bare "." that no aligner
-    /// word can time, and each was then counted as a passage that "could not be matched".
+    /// A following mark is the run rule's, in `sentenceSlices` (F429, F608).
     private static func continuesSentence(_ next: Character) -> Bool {
-        if clauseContinuations.contains(next) || wordInternalTerminators.contains(next) { return true }
+        if clauseContinuations.contains(next) { return true }
         guard next.isLetter || next.isNumber else { return false }
         return !isCJKIdeograph(next)
     }
