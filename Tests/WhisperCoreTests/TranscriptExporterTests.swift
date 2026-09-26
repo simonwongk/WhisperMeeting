@@ -233,3 +233,56 @@ func exportsSelfContainedHTML() {
     #expect(empty.contains("<html"))
     #expect(empty.contains("</html>"))
 }
+
+// MARK: - F508 (the F287 `%d` defect's unfixed sibling)
+
+@Test("A clamped duration still formats as a non-negative SRT/VTT timestamp, not one wrapped negative by a 32-bit %d (F508)")
+func subtitleTimestampClampsAnAbsurdDuration() {
+    let text = TranscriptExporter.subtitleTimestamp(1e30, millisecondSeparator: ",")
+    #expect(!text.contains("-"))
+
+    // The clamp matches `TranscriptFormatter.wholeSeconds`'s own 1e15-second ceiling (F287). Capped
+    // hours land at 1e15 / 3600 — already past `Int32.max` — so pinning the exact string is what
+    // proves `%ld` (not the clamp alone) is doing the work: the clamp does not by itself bring the
+    // hour count under a 32-bit format specifier's range.
+    let cappedSeconds = 1_000_000_000_000_000
+    let hours = cappedSeconds / 3600
+    let minutes = (cappedSeconds / 60) % 60
+    let secs = cappedSeconds % 60
+    #expect(hours > Int(Int32.max))
+    #expect(text == String(format: "%02ld:%02d:%02d,000", hours, minutes, secs))
+}
+
+@Test("SRT/VTT export of a no-segments transcript with an implausible duration reads as non-negative (F508 Part 1)")
+func subtitleExportOfImplausibleDurationIsNonNegative() {
+    // The AGENTS.md decodable-corrupt shape: a duration this large decodes cleanly (MeetingRecord.
+    // duration is a plain Double) and, with no segments, `effectiveSegments` uses it directly as the
+    // lone cue's end.
+    let request = TranscriptExportRequest(
+        title: "Corrupt duration", languageCode: "en", durationSeconds: 1e30,
+        transcriptText: "Just one line.", segments: []
+    )
+    // The cue arrow itself ("-->") is made of hyphens, so strip it before checking for a stray
+    // minus sign — otherwise every valid cue "fails" this check regardless of the timestamps.
+    let srt = TranscriptExporter.render(.srt, request).replacingOccurrences(of: "-->", with: "to")
+    #expect(!srt.contains("-"))
+    let vtt = TranscriptExporter.render(.vtt, request).replacingOccurrences(of: "-->", with: "to")
+    #expect(!vtt.contains("-"))
+}
+
+@Test("An untimed multi-paragraph transcript exports as one intact SRT/VTT cue, not one an interior blank line breaks (F508 Part 2)")
+func subtitleExportCollapsesInteriorBlankLines() {
+    let request = TranscriptExportRequest(
+        title: "Untimed multi-paragraph", languageCode: "en", durationSeconds: 30,
+        transcriptText: "First paragraph.\n\nSecond paragraph.", segments: []
+    )
+
+    let srt = TranscriptExporter.render(.srt, request)
+    // Exactly one cue: index "1", one arrow line, and the two paragraphs joined with no blank line
+    // between them — a blank line ends an SRT cue, orphaning whatever follows it as an invalid block.
+    #expect(srt == "1\n00:00:00,000 --> 00:00:30,000\nFirst paragraph.\nSecond paragraph.\n")
+
+    let vtt = TranscriptExporter.render(.vtt, request)
+    #expect(vtt.contains("First paragraph.\nSecond paragraph."))
+    #expect(!vtt.contains("First paragraph.\n\nSecond paragraph."))
+}

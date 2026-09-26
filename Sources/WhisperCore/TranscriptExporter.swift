@@ -390,7 +390,7 @@ public enum TranscriptExporter {
         var blocks: [String] = []
         var index = 1
         for segment in segments {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = collapseBlankLines(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
             guard !text.isEmpty, let start = segment.start else { continue }
             let end = segment.end ?? start
             blocks.append("""
@@ -406,7 +406,7 @@ public enum TranscriptExporter {
     private static func vtt(_ segments: [TranscriptSegment]) -> String {
         var lines = ["WEBVTT", ""]
         for segment in segments {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = collapseBlankLines(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
             guard !text.isEmpty, let start = segment.start else { continue }
             let end = segment.end ?? start
             lines.append("\(subtitleTimestamp(start, millisecondSeparator: ".")) --> \(subtitleTimestamp(end, millisecondSeparator: "."))")
@@ -414,6 +414,19 @@ public enum TranscriptExporter {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// A blank line ends a cue in both SRT and WebVTT (F508 Part 2). The no-segments export path
+    /// (`effectiveSegments`, above) can hand a single segment the WHOLE untimed transcript verbatim,
+    /// interior blank lines and all — a multi-paragraph transcript with no timestamps to split it by
+    /// — so without this, the first paragraph becomes a complete, validly-timed cue and every
+    /// paragraph after the first blank line is orphaned text with no cue header at all. Collapsing
+    /// keeps the segment as one intact cue regardless of which path produced its text.
+    private static func collapseBlankLines(_ text: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
     }
 
     /// A standalone, offline HTML document: inline `<style>` only (no external CSS/fonts/images),
@@ -522,15 +535,28 @@ public enum TranscriptExporter {
     }
 
     /// `HH:MM:SS,mmm` (SRT) or `HH:MM:SS.mmm` (WebVTT).
+    ///
+    /// F508, the F287 `%d` defect's unfixed sibling: `TranscriptFormatter.clock`/`timestamp` moved
+    /// to `%ld` because `String(format:)` reads `%d` as 32 bits off the varargs list, so an hour
+    /// count past `Int32.max` wraps to a negative number — this formatter kept `%02d` and was never
+    /// touched. Reachable the same way: a `duration` or segment `end` that decodes to an implausible
+    /// finite value (1e30, the AGENTS.md decodable-corrupt case) is exported as SRT/WebVTT with no
+    /// segments backing it, and `effectiveSegments` uses that value directly as the lone cue's end.
+    ///
+    /// The upper clamp mirrors `TranscriptFormatter.wholeSeconds`'s own 1e15-second ceiling (F287):
+    /// applied in Double space, before any Int conversion, to the same ~31-million-year bound. It is
+    /// not what stops the overflow by itself — 1e15 seconds is already ~2.78×10^11 hours, itself far
+    /// past `Int32.max` — so `%ld` is still the fix; the clamp only keeps the value a Double can
+    /// represent exactly and keeps `* 1000` for milliseconds from ever needing to saturate.
     static func subtitleTimestamp(_ seconds: Double, millisecondSeparator: String) -> String {
-        let clamped = max(0, seconds)
+        let clamped = max(0, min(seconds, 1_000_000_000_000_000))
         let totalMilliseconds = Int(saturating: (clamped * 1000).rounded())
         let milliseconds = totalMilliseconds % 1000
         let totalSeconds = totalMilliseconds / 1000
         let secs = totalSeconds % 60
         let minutes = (totalSeconds / 60) % 60
         let hours = totalSeconds / 3600
-        return String(format: "%02d:%02d:%02d%@%03d", hours, minutes, secs, millisecondSeparator, milliseconds)
+        return String(format: "%02ld:%02d:%02d%@%03d", hours, minutes, secs, millisecondSeparator, milliseconds)
     }
 }
 
