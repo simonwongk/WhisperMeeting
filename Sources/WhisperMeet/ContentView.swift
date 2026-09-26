@@ -1428,6 +1428,7 @@ struct SettingsView: View {
                             || model.isInstallingQwenRuntime
                             || model.isInstallingDiarizationRuntime
                             || model.hasActiveTranscription
+                            || model.isRunningAuxiliaryEngine
                             || model.isMicrophoneBusy
                             || model.isImporting
                             || dictation.isActive
@@ -1462,6 +1463,7 @@ struct SettingsView: View {
                                 || model.isInstallingQwenRuntime
                                 || model.isInstallingDiarizationRuntime
                                 || model.hasActiveTranscription
+                                || model.isRunningAuxiliaryEngine
                                 || model.isMicrophoneBusy
                                 || model.isImporting
                                 || dictation.isActive

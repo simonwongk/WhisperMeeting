@@ -2859,6 +2859,9 @@ final class AppModel: ObservableObject {
               !isMicrophoneBusy,
               !isImporting,
               !hasActiveTranscription,
+              !isRunningAuxiliaryEngine, // F510: a second opinion or segment re-run may be running
+              // Whisper's own CLI right now — installing atop it can move or delete the venv a live
+              // process is using (F140's guarantee, which `installQwenASR` already carried).
               !isDictationActive() else {
             return
         }
