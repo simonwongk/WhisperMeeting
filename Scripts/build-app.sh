@@ -23,8 +23,7 @@ cp ".build/release/WhisperMeet" "$app_dir/Contents/MacOS/WhisperMeet"
 # makes `codesign` reject the whole app with "bundle format unrecognized, invalid, or unsuitable".
 # Diarization never touches that code path today; shipping the bundle keeps it from becoming a
 # distribution-only crash if it ever does (F216).
-for resource_bundle in .build/release/*.bundle; do
-  [[ -e "$resource_bundle" ]] || continue
+for resource_bundle in .build/release/*.bundle(N); do
   # Remove any previous copy first: codesign leaves the bundle's files read-only, so a plain
   # `cp -R` over an existing one fails with "Permission denied" on the second build.
   rm -rf "$app_dir/Contents/Resources/${resource_bundle:t}"

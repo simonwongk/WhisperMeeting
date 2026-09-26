@@ -23,6 +23,13 @@ fi
 staging="$summarizer_directory/.embedding-model-staging-$$"
 rm -rf "$staging"
 trap 'rm -rf "$staging"' EXIT
+# zsh does not run an EXIT trap when an untrapped SIGHUP/SIGINT/SIGTERM kills the script (F482) —
+# e.g. ProcessGroupRunner's SIGTERM on a stalled download, or logout mid-install — so without this
+# a killed run leaves `.embedding-model-staging-$$` (up to ~490 MB) on disk, reclaimed by nothing:
+# nothing here scans for orphaned staging directories the way the venv/Qwen/Summarizer/Diarization
+# installers reclaim their own. `exit 130` reaches the EXIT trap like any other exit, matching the
+# four sibling installers, which already carry this line.
+trap 'exit 130' HUP INT TERM
 
 EMBEDDING_STAGE="$staging" EMBEDDING_REPOSITORY="$repository" EMBEDDING_REVISION="$revision" \
 "$summarizer_directory/venv/bin/python" - <<'PY'

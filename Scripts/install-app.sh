@@ -28,6 +28,13 @@ cleanup() {
   return $exit_status
 }
 trap cleanup EXIT
+# zsh does not run an EXIT trap when an untrapped SIGHUP/SIGINT/SIGTERM kills the script — it just
+# dies — so without this an update killed mid-swap (logout, a watchdog, ^C) skips `cleanup`
+# entirely and can leave the destination half-replaced with no rollback (F482). `exit 130` triggers
+# the EXIT trap above like any other exit, matching the four sibling installers
+# (setup-qwen-asr.sh, setup-local-whisper.sh, setup-local-summarizer.sh,
+# setup-speaker-diarization.sh), which all already carry this line.
+trap 'exit 130' HUP INT TERM
 
 if pgrep -x WhisperMeet >/dev/null 2>&1; then
   print -u2 "WhisperMeet is running. Stop or cancel any recording, quit the app, then run this installer again."
