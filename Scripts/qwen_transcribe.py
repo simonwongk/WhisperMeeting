@@ -238,6 +238,23 @@ def decoding_indices(batch, silent) -> list:
     return [index for index in batch if index not in silent]
 
 
+def _is_cjk_or_fullwidth(char: str) -> bool:
+    """Whether `char` is a CJK ideograph or full-width punctuation mark (F562).
+
+    Chinese and Japanese have no word spaces, so an ASCII space inserted at a chunk boundary between
+    two such characters is a small but real error in the transcript, not neutral whitespace. Ranges:
+    CJK Unified Ideographs, its Extension A, the CJK Symbols and Punctuation block (、。「」etc.),
+    and Halfwidth and Fullwidth Forms (covers full-width ，。！？：； etc.).
+    """
+    code = ord(char)
+    return (
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3000 <= code <= 0x303F
+        or 0xFF00 <= code <= 0xFFEF
+    )
+
+
 def joined_text(texts) -> str:
     """The whole-transcript text from per-chunk texts (F243).
 
@@ -246,10 +263,26 @@ def joined_text(texts) -> str:
     silent, which is a bug in the batch plan rather than an empty transcript. Raising keeps the
     pre-F243 behaviour, where a `None` here raised `TypeError` inside `transcribe` and fell back to
     the library's sequential decode — a safe outcome that silently skipping would have removed.
+
+    F562: mlx-audio 0.3.1's own `full_text = " ".join(all_texts)`
+    (`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:1143` in the pinned venv) always inserts a space at
+    a chunk boundary, mirrored here until now. `ASR_CHUNK_SECONDS` cuts by wall-clock time, not by
+    sentence, so that space can land mid-sentence or mid-word in a script with none of its own — a
+    30-minute Mandarin meeting picks up about one stray space per chunk boundary. The boundary omits
+    the space only when the left chunk's last character AND the right chunk's first character are
+    BOTH CJK/full-width: a code-switched boundary (Chinese ending, Latin starting, or the reverse)
+    keeps it, because that is exactly the boundary where a word separator still means something.
+    `QwenAlignedTranscript.alignmentKey` strips spaces on both sides before comparing, so this does
+    not change what the forced aligner matches against.
     """
     if any(text is None for text in texts):
         raise ValueError("every chunk must be decoded or marked silent before joining")
-    return " ".join(text for text in texts if text)
+    result = ""
+    for piece in (text for text in texts if text):
+        if result and not (_is_cjk_or_fullwidth(result[-1]) and _is_cjk_or_fullwidth(piece[0])):
+            result += " "
+        result += piece
+    return result
 
 
 def build_chunks(segments):

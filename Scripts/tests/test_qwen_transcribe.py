@@ -503,6 +503,45 @@ class JoinedTextTests(unittest.TestCase):
             qwen.joined_text(["alpha", None, "beta"])
 
 
+class JoinedTextCJKBoundaryTests(unittest.TestCase):
+    """F562 — a chunk boundary joined with an ASCII space even between two characters that would
+    never have one: Chinese and Japanese carry no word spaces, so every ASR_CHUNK_SECONDS (60 s)
+    boundary put one inside a sentence, often mid-word. mlx-audio 0.3.1's own
+    `mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:1143` does the same unconditional
+    `" ".join(all_texts)`, which is what this file mirrored until now.
+    """
+
+    def test_a_cjk_to_cjk_boundary_gets_no_space(self):
+        # The ticket's own example, split at the chunk boundary.
+        self.assertEqual(
+            qwen.joined_text(["我们明天开会", "然后讨论预算。"]),
+            "我们明天开会然后讨论预算。",
+        )
+
+    def test_a_cjk_boundary_across_full_width_punctuation_gets_no_space(self):
+        self.assertEqual(qwen.joined_text(["你好。", "谢谢。"]), "你好。谢谢。")
+
+    def test_a_latin_to_latin_boundary_still_gets_a_space(self):
+        # The pre-F562 case, unchanged: this is the regression guard for the common path.
+        self.assertEqual(qwen.joined_text(["hello", "world"]), "hello world")
+
+    def test_a_code_switched_boundary_keeps_the_space_either_direction(self):
+        # Only ONE side CJK is exactly the boundary a word separator still means something —
+        # F562 must not turn a code-switched meeting's transcript into one run-on word.
+        self.assertEqual(qwen.joined_text(["开会", "with John"]), "开会 with John")
+        self.assertEqual(qwen.joined_text(["regarding budget", "预算的问题"]), "regarding budget 预算的问题")
+
+    def test_three_chunks_mix_cjk_and_latin_boundaries_independently(self):
+        self.assertEqual(
+            qwen.joined_text(["我们讨论了", "budget", "然后决定了"]),
+            "我们讨论了 budget 然后决定了",
+        )
+
+    def test_a_silent_chunk_between_two_cjk_chunks_is_still_skipped_with_no_space(self):
+        # Silence contributes nothing either way — F243's own guarantee, unaffected by F562.
+        self.assertEqual(qwen.joined_text(["开会", "", "讨论"]), "开会讨论")
+
+
 class DegenerateCycleLengthTests(unittest.TestCase):
     """F260 — the pure tail-cycle detector behind the decoder's repetition guard.
 
