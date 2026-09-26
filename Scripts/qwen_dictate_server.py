@@ -23,20 +23,49 @@ import wave
 DICTATION_CHUNK_SECONDS = 30.0
 # F431: tokens one chunk may decode before it is cut off. mlx-audio's own default is 8192, which a
 # decoder stuck in a cycle longer than the F260 guard's window (`ASR_MAX_CYCLE_LEN` tokens) runs all
-# the way to: ~139 s per chunk at F213's measured single-row 59 tok/s, past the 120 s that
-# `WarmWhisperDictationEngine` waits for a reply. A dictation is at most 120 s
-# (`BoundedAudioSampleBuffer.maximumDurationSeconds`); with every cut landing as early as 25 s that
-# is five chunks, decoded one after another, so the cap is what bounds the worst reply.
+# the way to: ~139 s per chunk at F213's measured single-row 59 tok/s (measured on the development
+# Mac, Apple M3 Pro, 18 GB), past the 120 s that `WarmWhisperDictationEngine` waits for a reply. A
+# dictation is at most 120 s (`BoundedAudioSampleBuffer.maximumDurationSeconds`); with every cut
+# landing as early as 25 s that is five chunks, decoded one after another, so the cap is what bounds
+# the worst reply.
 #
-# Both sides of 768, measured on the F431 bench (synthetic 120 s clips, this model): the densest
-# chunk was 138 tokens for 32.7 s of speech, so 768 is over five times what speech needed; and that
-# chunk decoded end to end at ~45 tok/s, at which five chunks each stuck at 768 tokens take ~85 s,
-# inside the timeout. 1024 would have left ~113 s at that rate — too close to 120 to call a bound.
+# Both sides of 768, measured on the F431 bench (synthetic 120 s clips, this model, development Mac
+# — Apple M3 Pro, 18 GB): the densest chunk was 138 tokens for 32.7 s of speech, so 768 is over five
+# times what speech needed; and that chunk decoded end to end at ~45 tok/s, at which five chunks
+# each stuck at 768 tokens take ~85 s, inside the timeout. 1024 would have left ~113 s at that
+# rate — too close to 120 to call a bound.
 DICTATION_MAX_TOKENS = 768
 
 
 def emit(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+# The names this helper borrows from `qwen_transcribe.py` — `guarded_chunk_tokens` and
+# `transcribe_audio` reach for all three. An older sibling left behind by a stale install is
+# missing at least one of them, and the failure must name the file at startup rather than surface
+# as an `AttributeError` inside the first dictation, after several seconds of model loading.
+MEETING_HELPER_NAMES = ("greedy_decode_rows", "ASR_EOS_TOKEN_IDS", "joined_text")
+
+
+def meeting_helper_path() -> str:
+    """The path `meeting_helper()` loads — named separately so a startup check can cite it."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "qwen_transcribe.py")
+
+
+def check_meeting_helper(module, path: str):
+    """Refuse a sibling `qwen_transcribe.py` that does not expose `MEETING_HELPER_NAMES` (F431).
+
+    Returns `module` unchanged when every name is present, so a caller can chain this onto
+    `meeting_helper()` without a separate variable.
+    """
+    missing = [name for name in MEETING_HELPER_NAMES if not hasattr(module, name)]
+    if missing:
+        raise RuntimeError(
+            f"{path} does not expose {', '.join(missing)} — this helper needs the "
+            f"qwen_transcribe.py that ships beside it; reinstall with Scripts/setup-qwen-asr.sh."
+        )
+    return module
 
 
 @functools.lru_cache(maxsize=None)
@@ -47,7 +76,7 @@ def meeting_helper():
     helper was started — as a script from the runtime directory, or loaded by a test. Setup and the
     app's helper sync both place the two in `QwenASRRuntime.managedDirectory`.
     """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qwen_transcribe.py")
+    path = meeting_helper_path()
     spec = importlib.util.spec_from_file_location("qwen_transcribe", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -162,6 +191,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     arguments = parser.parse_args()
+
+    check_meeting_helper(meeting_helper(), meeting_helper_path())
 
     from mlx_audio.stt.utils import load_model
 

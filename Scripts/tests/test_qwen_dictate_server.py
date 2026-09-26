@@ -9,6 +9,7 @@ deferred into functions, and these tests replace the three that touch the runtim
 
 import importlib.util
 import os
+import sys
 import unittest
 from types import SimpleNamespace
 
@@ -112,8 +113,10 @@ class DictationDecodeTests(unittest.TestCase):
         model = _Qwen3ASR(cycle, {token: f"w{token} " for token in cycle}, repeat=True)
         self.request(model)
         self.assertLess(model.pulled, LIBRARY_MAX_TOKENS)
-        # +1: the greedy loop asks for one token past its cap before it stops asking.
-        self.assertLessEqual(model.pulled, server.DICTATION_MAX_TOKENS + 1)
+        # Pinned at `stream_generate`: the cap is handed to the library's own loop, so the model is
+        # asked for exactly DICTATION_MAX_TOKENS tokens. The guarded reader's one extra `next` finds
+        # the stream already exhausted and reads EOS without another decode step.
+        self.assertEqual(model.pulled, server.DICTATION_MAX_TOKENS)
 
     def test_ordinary_speech_is_decoded_in_full(self):
         """Natural repetition — "no, no, no" — is well under the guard and must survive intact."""
@@ -138,6 +141,40 @@ class DictationDecodeTests(unittest.TestCase):
         server.split_clip = lambda audio, sample_rate: seen.append((audio, sample_rate)) or list(self.chunks)
         self.request(_Qwen3ASR([1], {1: "hi"}))
         self.assertEqual(seen, [(("audio from", "/tmp/clip.wav"), 16_000)])
+
+
+class MeetingHelperContractTests(unittest.TestCase):
+    """F431 follow-up — this helper borrows `greedy_decode_rows`, `ASR_EOS_TOKEN_IDS` and
+    `joined_text` from the `qwen_transcribe.py` beside it. A runtime directory holding an older
+    sibling must be refused at startup, naming that file, rather than surfacing as an
+    AttributeError inside the first dictation after seconds of model loading."""
+
+    def setUp(self):
+        self._meeting_helper = server.meeting_helper
+        self._argv = sys.argv
+
+    def tearDown(self):
+        server.meeting_helper = self._meeting_helper
+        sys.argv = self._argv
+
+    def test_the_sibling_in_this_tree_passes_the_check(self):
+        module = server.meeting_helper()
+        self.assertIs(server.check_meeting_helper(module, server.meeting_helper_path()), module)
+        self.assertEqual(
+            server.MEETING_HELPER_NAMES, ("greedy_decode_rows", "ASR_EOS_TOKEN_IDS", "joined_text")
+        )
+
+    def test_startup_refuses_an_older_sibling_and_names_the_file(self):
+        """Through `main`, so the refusal is shown to come before the model import: this test
+        runs without mlx_audio, so reaching `load_model` would raise ModuleNotFoundError instead."""
+        older = SimpleNamespace(ASR_EOS_TOKEN_IDS=(1,), joined_text=" ".join)  # pre-F431 sibling
+        server.meeting_helper = lambda: older
+        sys.argv = ["qwen_dictate_server.py", "--model", "/nonexistent/model"]
+        with self.assertRaises(RuntimeError) as refused:
+            server.main()
+        message = str(refused.exception)
+        self.assertIn(server.meeting_helper_path(), message)
+        self.assertIn("greedy_decode_rows", message)
 
 
 if __name__ == "__main__":
