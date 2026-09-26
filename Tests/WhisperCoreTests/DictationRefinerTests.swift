@@ -269,10 +269,16 @@ func refinerStillNamesMandarinForADominantlyChineseDictation() async {
     // "the text's DOMINANT script is Chinese" (TranscriptLanguage.dominant, the same majority-CJK
     // rule DictationRefinePolicy.effectiveWordCount and the acceptedOutput guard already use) — it
     // must not regress the F244/F245 cases this text was already covering. This sentence keeps one
-    // embedded Latin word (as cs1-3 do) but stays majority-Chinese by that rule — unlike cs1-3
-    // themselves, which the F589 bench measured as majority-ENGLISH by this exact rule once their
-    // Latin words and ASCII punctuation are counted, so they are not a regression case for this
-    // fallback (see the F589 log entry).
+    // embedded Latin word (as cs1-3 do) and stays majority-Chinese by that rule. Under `dominant`'s
+    // current TOKEN rule (F468: one count per CJK ideograph, one per Latin/alphanumeric RUN however
+    // long) cs1-3 themselves are ALSO majority-Chinese — cs3's "这个 bug 已经 fix 了，可以 merge
+    // 了。" is 8 CJK ideographs against 3 Latin runs (bug/fix/merge), 16 > 11 — so they are not a
+    // regression case for this fallback either: both the pre-F589 code (ScriptDrift.form answers
+    // non-nil for all of them) and the post-F589 code (dominant says .chinese) send them "zh". (An
+    // earlier revision of this comment, written against F468's predecessor — a per-CHARACTER count,
+    // where a long loanword could outvote several short Chinese words — said cs1-3 measured
+    // majority-ENGLISH; that was true of the character rule, not of the token rule this file now
+    // builds against. See the F589 log entry.)
     let engine = RecordingRefineEngine()
     let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
     _ = await refiner.attempt(

@@ -237,7 +237,10 @@ def main():
             print(f"skip {key}: runtime not installed", file=sys.stderr)
             continue
         if not arguments.quiet:
-            print(f"== {key} (language={arguments.language!r}) ==", flush=True)
+            # Only note the language when --language actually overrode the default (automatic),
+            # so an ordinary run's header doesn't read as if something had been pinned.
+            suffix = f" (language={arguments.language!r})" if arguments.language else ""
+            print(f"== {key}{suffix} ==", flush=True)
         results.append(run_engine(key, spec, references, not arguments.quiet,
                                   clip_filter=clip_filter, language=arguments.language))
 
