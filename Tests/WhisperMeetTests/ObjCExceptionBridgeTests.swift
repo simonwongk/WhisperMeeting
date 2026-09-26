@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import ObjCExceptionBridge
 import Testing
@@ -71,6 +72,39 @@ func theRaiseCaseHasUserFacingCopy() {
     #expect(shown.localizedCaseInsensitiveContains("audio device changed"))
 }
 
+// MARK: - F385: AudioCaptureEngine's own raising call
+
+@Test("AVAudioPCMBuffer raises for a non-PCM format, exactly as AVAudioBuffer.h documents, and the bridge catches it (F385)")
+func nonPCMBufferFormatRaiseIsCaught() throws {
+    // Grounds F385's fix in something observed rather than only read from a header: this
+    // constructs a real, non-PCM `AVAudioFormat` (no device needed — a format is pure data) and
+    // drives the SAME initializer `FloatTrackWriter.append` calls on a captured buffer's format,
+    // proving the documented raise ("An exception is raised if the format is not PCM.",
+    // AVAudioBuffer.h) is real and that `WMRunCatchingObjCExceptions` catches it.
+    var asbd = AudioStreamBasicDescription(
+        mSampleRate: 44_100,
+        mFormatID: kAudioFormatMPEG4AAC,
+        mFormatFlags: 0,
+        mBytesPerPacket: 0,
+        mFramesPerPacket: 1_024,
+        mBytesPerFrame: 0,
+        mChannelsPerFrame: 2,
+        mBitsPerChannel: 0,
+        mReserved: 0
+    )
+    let nonPCMFormat = try #require(AVAudioFormat(streamDescription: &asbd))
+
+    var rawBuffer: AVAudioPCMBuffer?
+    var raised: NSError?
+    let completed = WMRunCatchingObjCExceptions({
+        rawBuffer = AVAudioPCMBuffer(pcmFormat: nonPCMFormat, frameCapacity: 100)
+    }, &raised)
+
+    #expect(!completed)
+    #expect(rawBuffer == nil)
+    #expect(raised != nil)
+}
+
 @Test("Every hardware call in start() is inside the bridge (F374)")
 func theHardwareCallsAreAllInsideTheBridge() throws {
     // The behavioural tests above prove the bridge works; nothing headless can prove the recorder
@@ -88,4 +122,20 @@ func theHardwareCallsAreAllInsideTheBridge() throws {
     // it far too easy to turn an ordinary error into a silent success.
     #expect(block.contains("swiftFailure = error"))
     #expect(source.contains("if let swiftFailure { throw swiftFailure }"))
+}
+
+@Test("The capture path's raising AVAudioPCMBuffer construction is inside the bridge (F385)")
+func theCaptureBufferConstructionIsInsideTheBridge() throws {
+    // Reaching this call needs a live ScreenCaptureKit buffer, which nothing headless can drive —
+    // the same reason `theHardwareCallsAreAllInsideTheBridge` above is a source assertion rather
+    // than a behavioural test. `nonPCMBufferFormatRaiseIsCaught` proves the mechanism; this proves
+    // `AudioCaptureEngine` actually uses it for the one call whose format is a device condition
+    // the caller cannot pre-check.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
+    let bridged = try #require(source.range(of: "WMRunCatchingObjCExceptions({"))
+    let closing = try #require(source.range(of: "}, &raised)"))
+    let block = source[bridged.upperBound..<closing.lowerBound]
+    #expect(block.contains("AVAudioPCMBuffer("))
+    #expect(block.contains("pcmFormat: inputFormat"))
+    #expect(block.contains("bufferListNoCopy:"))
 }

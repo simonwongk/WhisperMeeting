@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CoreGraphics
 import Foundation
+import ObjCExceptionBridge
 import OSLog
 import ScreenCaptureKit
 import WhisperCore
@@ -248,6 +249,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             levelsUpdate = onLevels
             levelMeter = RecordingLevelMeter()
             lastLevelsEmittedAt = 0
+            // Not inside the bridge (F385): `SCStream.h`'s `startCaptureWithCompletionHandler:`
+            // documents its only failure mode as the completion handler's `NSError` — the same
+            // channel `startCapture() async throws` already surfaces — and, unlike
+            // `AVAudioEngine.h`'s `inputNode`, has no sentence anywhere in the header naming an
+            // exception. Verified against the SDK header rather than assumed, per F385's own
+            // instruction not to wrap indiscriminately.
             try await stream.startCapture()
             let captureReadyAt = ProcessInfo.processInfo.systemUptime
             Self.logger.info(
@@ -633,6 +640,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 }
                 let stream = try await makeStream()
                 try publishRestart(stream, generation: generation, paddingFrames: paddingFrames)
+                // Not inside the bridge (F385) — see the reasoning at `start()`'s own call.
                 try await stream.startCapture()
                 startedStream = stream
                 try ensureSession(generation)
@@ -1039,18 +1047,38 @@ private final class FloatTrackWriter {
             flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
             blockBufferOut: &retainedBlockBuffer
         )
-        guard status == noErr,
-              let inputBuffer = AVAudioPCMBuffer(
+        // Inside the bridge (F385): `AVAudioBuffer.h` documents `initWithPCMFormat:bufferListNoCopy:`
+        // as raising "if the format is not PCM" — and `inputFormat` is not a format this code
+        // chooses, it is whatever `CMAudioFormatDescription` the captured buffer carries, a device
+        // condition the caller cannot pre-check. `targetFormat` below has no such exposure: it is
+        // built once, in `init`, from `commonFormat: .pcmFormatFloat32`, which is PCM by
+        // construction — there is nothing external to raise on, so it is not wrapped.
+        var rawInputBuffer: AVAudioPCMBuffer?
+        var raised: NSError?
+        let completed = WMRunCatchingObjCExceptions({
+            rawInputBuffer = AVAudioPCMBuffer(
                 pcmFormat: inputFormat,
                 bufferListNoCopy: bufferList.unsafePointer,
                 deallocator: nil
-              ) else {
+            )
+        }, &raised)
+        guard completed else {
+            throw AudioCaptureError.conversionFailed(
+                "Could not read captured audio (\(raised?.localizedDescription ?? "the format was rejected"))"
+            )
+        }
+        guard status == noErr, let inputBuffer = rawInputBuffer else {
             throw AudioCaptureError.conversionFailed("Could not read captured audio (\(status))")
         }
         // `clamping:`, not a bare conversion: `numSamples` is a signed `CMItemCount` and
         // `UInt32(Int)` traps on a negative or oversized value (F376's sweep).
         inputBuffer.frameLength = AVAudioFrameCount(clamping: sampleBuffer.numSamples)
 
+        // Not inside the bridge (F385): `AVAudioConverter.h`'s `initFromFormat:toFormat:`
+        // documents only "returns nil if the format conversion is not possible" — no sentence
+        // anywhere in the header names an exception, unlike `AVAudioBuffer.h`'s two PCM
+        // initializers above. `MonoDownmixConverter.make` already models that one documented
+        // failure as the `nil` the `guard` below reads.
         if converter == nil || converterInputFormat != inputFormat {
             converter = MonoDownmixConverter.make(from: inputFormat, to: targetFormat)
             converterInputFormat = inputFormat
@@ -1065,6 +1093,11 @@ private final class FloatTrackWriter {
         // (F376). An inconsistency between two copies of one function is how the next reader
         // learns the wrong rule.
         let capacity = AVAudioFrameCount(saturating: ceil(Double(inputBuffer.frameLength) * ratio) + 32)
+        // Not inside the bridge (F385): `targetFormat` is built once in `init` from
+        // `commonFormat: .pcmFormatFloat32`, which is PCM by construction — nothing external can
+        // make this raise "the format is not PCM", so there is nothing here for the bridge to
+        // guard against. The only documented failure mode left (a capacity too large for a
+        // `UInt32` byte count) already returns nil, which the `guard` below handles.
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: capacity
