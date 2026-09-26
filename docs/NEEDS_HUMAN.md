@@ -211,8 +211,21 @@ nothing for the restore to give back, and it put the empty clipboard back over t
 is why nothing pastes afterwards. It does not yet say whether Universal Clipboard itself is down on
 this Mac or whether the item needs a read this code does not do.
 
-**What I need from you (one step, no dictation):** copy some text on your iPhone, then paste it
-straight into any app on the Mac — Notes, say — without dictating in between.
+*Same day, later:* you tried the plain paste into Notes — **nothing**. So it is not WhisperMeet.
+From the Mac side (settings and system log only): Handoff is on, Bluetooth and Wi‑Fi are on, the Mac
+sees your iPhone and advertises its own clipboard to it, but the file macOS uses for the *incoming*
+clipboard was last written **2026-09-21 21:55** — the last time an iPhone copy reached this Mac,
+three days before the F516 build existed.
+
+**What I need from you (on the iPhone, in this order, then one paste test after each):**
+1. 设置 ▸ 通用 ▸ 隔空播放与接力（或"隔空播放与连续互通"）▸ **接力** — 关掉，再打开。
+2. 控制中心里确认 **Wi‑Fi 是开着的**（用蜂窝数据也要开着 Wi‑Fi；通用剪贴板走的是点对点 Wi‑Fi）。蓝牙关一次再开。
+3. 设置 ▸ 最上方你的名字 — 和 Mac 是同一个 Apple ID，且已开双重认证。
+4. 都还不行：iPhone 重启一次；再不行，Mac 上 系统设置 ▸ 通用 ▸ 隔空投送与接力 ▸ 接力 关再开。
+Once a plain paste works again, do the dictation step once and I read the log line myself.
+
+*Earlier one-step ask:* copy some text on your iPhone, then paste it straight into any app on the
+Mac — Notes, say — without dictating in between.
 
 - **Nothing pastes** — Universal Clipboard is not reaching this Mac right now; WhisperMeet is not
   in the path. The usual causes: 系统设置 ▸ 通用 ▸ 隔空投送与接力 ▸ "允许在这台 Mac 和 iCloud 设备之间使用接力"
