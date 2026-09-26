@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Score a directory of diarization runs against the F217 corpus.
 
-Usage: score_corpus.py <hypothesis_dir> [--json]
+Usage: score_corpus.py <hypothesis_dir> [--json] [--corpus <dir>]
 
 Reports per-stratum-group DER and, more importantly, displayed-label precision and coverage: what a
 reader would actually see after SpeakerOverlay's conservative rule. A corpus-wide micro-average is
 printed too, but it is dominated by whichever fixture carries the most speaker-time, so the grouped
 table is the one to read.
 """
+import argparse
 import glob
 import json
 import os
@@ -86,24 +87,56 @@ def score_fixture(corpus_dir, hyp_dir, fixture_id):
             "right": displayed["labelled_correct"]}
 
 
+def precision(right, shown):
+    """A dash when nothing was shown: `displayed_label_metrics` calls that case 1.0, and this used
+    to print 0.0% for it — two definitions where F343 asks for one (F480)."""
+    return "%.1f%%" % (100.0 * right / shown) if shown else "—"
+
+
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        return 2
-    hyp_dir = sys.argv[1]
-    corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus", "out")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("hypothesis_dir", help="one <fixture id>.txt of runtime output per fixture")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--corpus", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                         "corpus", "out"),
+                        help="directory of <fixture id>.truth.json (default: corpus/out beside this script)")
+    args = parser.parse_args()
+    hyp_dir = args.hypothesis_dir
+    corpus_dir = args.corpus
     fixtures = sorted(os.path.basename(p)[:-len(".truth.json")]
                       for p in glob.glob(os.path.join(corpus_dir, "*.truth.json")))
+    if not fixtures:
+        print("no *.truth.json in %r — generate the corpus (generate_corpus.py --out <dir>) and pass "
+              "--corpus <dir>" % corpus_dir, file=sys.stderr)
+        return 1
     results = {}
     for fixture_id in fixtures:
         scored = score_fixture(corpus_dir, hyp_dir, fixture_id)
         if scored:
             results[fixture_id] = scored
 
-    if "--json" in sys.argv:
+    # Every fixture is accounted for by id. One with no hypothesis — the runtime crashed on it, or
+    # the wrong directory was given — used to vanish from every table without a word, so the hard
+    # fixtures quietly improved "ALL speech fixtures"; with none at all, the aggregate divided by
+    # zero (F480).
+    missing = [fixture_id for fixture_id in fixtures if fixture_id not in results]
+    if not results:
+        print("no <fixture id>.txt in %r for any of the %d corpus fixtures — nothing was scored"
+              % (hyp_dir, len(fixtures)), file=sys.stderr)
+        return 1
+    accounted = "scored %d of %d corpus fixtures" % (len(results), len(fixtures))
+    if missing:
+        accounted += "; no hypothesis for: " + ", ".join(missing)
+
+    if args.json:
+        if missing:
+            print(accounted, file=sys.stderr)   # stdout stays parseable JSON
         print(json.dumps(results, indent=2, sort_keys=True))
         return 0
 
+    print(accounted)
+    print()
     print("%-22s %-17s %8s %9s %4s %4s %6s %6s %9s" % (
         "fixture", "stratum", "DER", "DER-NIST", "ref", "hyp", "rows", "shown", "precision"))
     for fixture_id in fixtures:
@@ -115,10 +148,10 @@ def main():
                 r["id"], r["stratum"], "n/a", "n/a", 0, r["speakers_hypothesis"],
                 "-", "-", "-", r["false_alarm"]))
             continue
-        print("%-22s %-17s %7.2f%% %8.2f%% %4d %4d %6d %6d %8.1f%%" % (
+        print("%-22s %-17s %7.2f%% %8.2f%% %4d %4d %6d %6d %9s" % (
             r["id"], r["stratum"], 100 * r["der"], 100 * r["der_nist"],
             r["speakers_reference"], r["speakers_hypothesis"],
-            r["rows"], r["shown"], 100 * r["right"] / r["shown"] if r["shown"] else 0))
+            r["rows"], r["shown"], precision(r["right"], r["shown"])))
 
     print()
     print("%-24s %8s %7s %7s %10s" % ("group", "DER", "rows", "shown", "precision"))
@@ -136,21 +169,21 @@ def main():
             right += r["right"]
         if not rows:
             continue
-        print("%-24s %7.2f%% %7d %7d %9.1f%%  (coverage %.1f%%)" % (
-            name, 100 * errors / total, rows, shown,
-            100 * right / shown if shown else 0, 100 * shown / rows))
+        print("%-24s %7.2f%% %7d %7d %10s  (coverage %.1f%%)" % (
+            name, 100 * errors / total, rows, shown, precision(right, shown), 100 * shown / rows))
 
     speech = [r for r in results.values() if not r["no_speech"]]
     for label, subset in (("ALL speech fixtures", speech),
                           ("EXCLUDING long-form", [r for r in speech if r["id"] != "longform_30min"])):
+        if not subset:
+            continue
         total = sum(r["total"] for r in subset)
         errors = sum(r["errors"] for r in subset)
         rows = sum(r["rows"] for r in subset)
         shown = sum(r["shown"] for r in subset)
         right = sum(r["right"] for r in subset)
-        print("%-24s %7.2f%% %7d %7d %9.1f%%  (coverage %.1f%%)" % (
-            label, 100 * errors / total, rows, shown,
-            100 * right / shown if shown else 0, 100 * shown / rows))
+        print("%-24s %7.2f%% %7d %7d %10s  (coverage %.1f%%)" % (
+            label, 100 * errors / total, rows, shown, precision(right, shown), 100 * shown / rows))
     return 0
 
 

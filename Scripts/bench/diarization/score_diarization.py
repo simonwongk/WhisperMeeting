@@ -640,7 +640,9 @@ def main():
         }, indent=2, sort_keys=True))
         return 0
 
-    print("%-18s %-16s %>8s %>10s %>8s %>6s" % ("id", "stratum", "DER", "DER-NIST", "JER", "spk"))
+    # Widths are the row format's below. `%>8s` is not a %-conversion (right-aligned is already the
+    # default), and it made this whole mode raise ValueError from F217 until F480.
+    print("%-18s %-16s %9s %10s %8s %7s" % ("id", "stratum", "DER", "DER-NIST", "JER", "spk"))
     for row in rows:
         print("%-18s %-16s %8.2f%% %9.2f%% %7.2f%% %3d/%-3d" % (
             row[0], row[1], 100 * row[2], 100 * row[3], 100 * row[4], row[5], row[6]))

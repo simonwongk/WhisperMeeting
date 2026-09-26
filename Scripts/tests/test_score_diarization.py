@@ -8,9 +8,13 @@ wrong.
 
 Run: python3 Scripts/tests/test_score_diarization.py
 """
+import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -132,6 +136,100 @@ class SelfTestEntryPoint(unittest.TestCase):
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("All golden vectors pass", result.stdout)
+
+    def test_the_default_table_prints(self):
+        # F480: the header's `%>8s` is not a %-format conversion, so every run without --json
+        # raised ValueError before printing a row; only --self-test and --json had ever been run.
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "scores.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"files": [{"id": "m1", "stratum": "clean", "duration": 20.0,
+                                      "reference": [[0, 10, "A"], [10, 20, "B"]],
+                                      "hypothesis": [[0, 10, "a"], [10, 20, "b"]]}]}, handle)
+            result = subprocess.run([sys.executable, os.path.join(BENCH, "score_diarization.py"), path],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        header, row = result.stdout.splitlines()[:2]
+        self.assertEqual(header.split(), ["id", "stratum", "DER", "DER-NIST", "JER", "spk"])
+        self.assertEqual(row.split()[:5], ["m1", "clean", "0.00%", "0.00%", "0.00%"])
+        # Each percentage heading ends where its column's values end, not merely present.
+        ends = lambda line: [m.end() for m in re.finditer(r"\S+", line)]
+        self.assertEqual(ends(header)[2:5], ends(row)[2:5])
+
+
+def write_fixture(corpus, hypotheses, fixture_id, turns, hypothesis_lines):
+    """A synthetic truth file, plus the runtime's text output unless `hypothesis_lines` is None."""
+    with open(os.path.join(corpus, fixture_id + ".truth.json"), "w", encoding="utf-8") as handle:
+        json.dump({"stratum": "synthetic", "duration": 20.0,
+                   "turns": [{"start": s, "end": e, "speaker": k} for s, e, k in turns]}, handle)
+    if hypothesis_lines is not None:
+        with open(os.path.join(hypotheses, fixture_id + ".txt"), "w", encoding="utf-8") as handle:
+            handle.write("loading model\nStarted\n" + "".join(line + "\n" for line in hypothesis_lines))
+
+
+class ScoreCorpusAccountsForEveryFixture(unittest.TestCase):
+    """F480: a fixture with no hypothesis was dropped from every table without a word, so the
+    fixtures the runtime crashed on quietly improved 'ALL speech fixtures'."""
+
+    TURNS = [(0.0, 10.0, "A"), (10.0, 20.0, "B")]
+    PERFECT = ["0.00 -- 10.00 speaker_0 confidence=0.90", "10.00 -- 20.00 speaker_3 confidence=0.90"]
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.corpus = os.path.join(self.root, "corpus")
+        self.hypotheses = os.path.join(self.root, "hyp")
+        os.makedirs(self.corpus)
+        os.makedirs(self.hypotheses)
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def score(self, *extra):
+        return subprocess.run(
+            [sys.executable, os.path.join(BENCH, "score_corpus.py"), self.hypotheses,
+             "--corpus", self.corpus, *extra],
+            capture_output=True, text=True)
+
+    def test_a_missing_hypothesis_is_named(self):
+        write_fixture(self.corpus, self.hypotheses, "en_2spk_alt", self.TURNS, self.PERFECT)
+        write_fixture(self.corpus, self.hypotheses, "long_turns", self.TURNS, None)
+        result = self.score()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("scored 1 of 2 corpus fixtures; no hypothesis for: long_turns", result.stdout)
+        as_json = self.score("--json")
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        self.assertEqual(sorted(json.loads(as_json.stdout)), ["en_2spk_alt"])   # stdout stays JSON
+        self.assertIn("no hypothesis for: long_turns", as_json.stderr)
+
+    def test_nothing_scored_is_a_refusal_not_a_table(self):
+        write_fixture(self.corpus, self.hypotheses, "en_2spk_alt", self.TURNS, None)
+        for extra in ((), ("--json",)):
+            with self.subTest(extra=extra):
+                result = self.score(*extra)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn("nothing was scored", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_an_empty_corpus_is_a_refusal(self):
+        result = self.score()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("no *.truth.json", result.stderr)
+
+    def test_precision_over_nothing_shown_is_a_dash(self):
+        # A run that named nobody showed no label, so none was wrong: `displayed_label_metrics`
+        # calls that 1.0, and 0.0% contradicted it (F343's one definition).
+        write_fixture(self.corpus, self.hypotheses, "en_2spk_alt", self.TURNS, [])
+        result = self.score()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        fixture_row = next(l for l in lines if l.startswith("en_2spk_alt "))
+        self.assertEqual(fixture_row.split()[-1], "—", fixture_row)
+        for prefix in ("2-speaker clean ", "ALL speech fixtures "):
+            with self.subTest(line=prefix):
+                line = next(l for l in lines if l.startswith(prefix))
+                self.assertEqual(line.split("(coverage")[0].split()[-1], "—", line)
 
 
 if __name__ == "__main__":
