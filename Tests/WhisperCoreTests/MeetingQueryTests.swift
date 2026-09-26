@@ -47,3 +47,18 @@ func meetingQueryFreeTextRegressionGuard() {
     #expect(MeetingQuery.parse("budget").matches(f) == TextSearch.matches("budget", in: fields))
     #expect(MeetingQuery.parse("invoice").matches(f) == TextSearch.matches("invoice", in: fields))
 }
+
+/// F590 — a full-width space (U+3000), which a Chinese IME can type between words, must split a
+/// sidebar query into terms exactly as an ASCII space does.
+@Test("A full-width-space-joined query matches what the ASCII-space query matches")
+func fullWidthSpaceQueryMatchesAsciiSpaceQuery() {
+    let fields = ["Weekly Sync", "budget discussion"]
+    let f = facet(lang: "en", duration: 600, created: day("2026-07-15"), text: fields)
+
+    let asciiQuery = MeetingQuery.parse("weekly budget")
+    let fullWidthQuery = MeetingQuery.parse("weekly\u{3000}budget")
+
+    #expect(fullWidthQuery.freeText == "weekly budget")
+    #expect(fullWidthQuery.matches(f) == asciiQuery.matches(f))
+    #expect(fullWidthQuery.matches(f))
+}

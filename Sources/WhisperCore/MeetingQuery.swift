@@ -57,7 +57,7 @@ public struct MeetingQuery: Sendable, Equatable {
     public static func parse(_ raw: String) -> MeetingQuery {
         var query = MeetingQuery()
         var freeWords: [String] = []
-        for token in raw.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init) {
+        for token in TextSearch.tokenize(raw) {
             let lower = token.lowercased()
             if lower.hasPrefix("lang:") {
                 query.language = String(lower.dropFirst(5))

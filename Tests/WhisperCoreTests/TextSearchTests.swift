@@ -56,6 +56,20 @@ func mergesOverlappingRanges() {
     #expect(TextSearch.occurrenceRanges("a b", in: "ab").count == 2)
 }
 
+@Test("A full-width space (U+3000) between query words splits terms the same as an ASCII space")
+func fullWidthSpaceSplitsQueryTerms() {
+    // A Chinese IME often inserts U+3000 IDEOGRAPHIC SPACE instead of ASCII space between words.
+    let fields = ["Weekly Sync", "We discussed the budget"]
+    #expect(TextSearch.matches("weekly\u{3000}budget", in: fields) == TextSearch.matches("weekly budget", in: fields))
+    #expect(TextSearch.matches("weekly\u{3000}budget", in: fields))
+}
+
+@Test("A full-width Latin query matches half-width text and vice versa")
+func widthInsensitiveMatching() {
+    #expect(TextSearch.matches("ＡＢＣ", in: ["order code ABC123"]))
+    #expect(TextSearch.matches("123", in: ["order code ＡＢＣ１２３"]))
+}
+
 @Test("Search indexes every occurrence across matching transcript lines")
 func indexesEveryOccurrence() {
     let occurrences = TextSearch.occurrences(

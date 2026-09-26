@@ -14,20 +14,30 @@ public struct TextSearchOccurrence: Sendable, Equatable {
 /// when every whitespace-separated term appears in at least one of the provided fields (title,
 /// transcript, …). Pure and testable.
 public enum TextSearch {
+    /// Comparison options shared by every substring match this type makes: case- and
+    /// diacritic-insensitive as before, plus width-insensitive so a full-width query term (ＡＢＣ,
+    /// as a Chinese IME can produce) matches its half-width form in the transcript, and the reverse
+    /// (F590).
+    static let matchOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+
+    /// Splits a query into terms on any Unicode whitespace — not just ASCII space/tab/newline —
+    /// so a full-width IDEOGRAPHIC SPACE (U+3000), which a Chinese input method inserts between
+    /// words, separates terms the same way an ASCII space does. Shared with `MeetingQuery.parse`
+    /// so a query typed in either surface tokenizes identically (F590); before this, a query typed
+    /// with a full-width space was one unsplit token that matched nothing.
+    public static func tokenize(_ query: String) -> [String] {
+        query.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
     public static func matches(_ query: String, in fields: [String]) -> Bool {
-        let terms = query
-            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
-            .map(String.init)
+        let terms = tokenize(query)
         guard !terms.isEmpty else { return true }
         return terms.allSatisfy { term in
             // `range(of:options:)` compares in place without allocating a folded copy of the whole
             // field, so scanning long transcripts per keystroke stays cheap. Fields are ordered
             // cheapest-first (title before transcript) by the caller for an early hit.
             fields.contains { field in
-                field.range(
-                    of: term,
-                    options: [.caseInsensitive, .diacriticInsensitive]
-                ) != nil
+                field.range(of: term, options: matchOptions) != nil
             }
         }
     }
@@ -38,9 +48,7 @@ public enum TextSearch {
         _ query: String,
         in text: String
     ) -> [Range<String.Index>] {
-        let terms = query
-            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
-            .map(String.init)
+        let terms = tokenize(query)
         guard !terms.isEmpty, !text.isEmpty else { return [] }
 
         var ranges: [Range<String.Index>] = []
@@ -49,7 +57,7 @@ public enum TextSearch {
             while start < text.endIndex,
                   let range = text.range(
                     of: term,
-                    options: [.caseInsensitive, .diacriticInsensitive],
+                    options: matchOptions,
                     range: start..<text.endIndex
                   ) {
                 ranges.append(range)
