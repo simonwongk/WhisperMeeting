@@ -92,10 +92,21 @@ public enum TranscriptComparison {
         return max(.leastNonzeroMagnitude, min(aEnd, bEnd) - max(aStart, bStart))
     }
 
+    /// Lowercased letters and digits, with a space kept only where it separates two words of a
+    /// spaced script (F570). Chinese has no word spaces, so a space kept beside an ideograph — where
+    /// one engine wrote '，' and the other wrote nothing — made identical words compare unequal.
     static func normalize(_ text: String) -> String {
-        text.lowercased()
+        let pieces = text.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        var result = ""
+        for piece in pieces {
+            if let last = result.unicodeScalars.last, let first = piece.unicodeScalars.first,
+               !ActionItemEvidence.isCJKIdeograph(last), !ActionItemEvidence.isCJKIdeograph(first) {
+                result.append(" ")
+            }
+            result.append(piece)
+        }
+        return result
     }
 }

@@ -71,3 +71,39 @@ func comparisonStillMatchesAnUntimedPassageByText() {
     #expect(spans.map(\.kind) == [.agree, .diverge])
     #expect(spans[1].secondaryText == "second segments")
 }
+
+// F570 — `normalize` re-joined its pieces with a space. English has word gaps on both sides, so a
+// comma difference vanished; Mandarin has none, so a '，' one engine wrote became a space the other
+// engine's text did not have, and the row read "Engines differ" over punctuation alone.
+@Test("Punctuation and spacing alone never make two engines differ, in Chinese as in English (F570)")
+func comparisonIgnoresPunctuationInEitherScript() {
+    let chinese = TranscriptComparison.compare(
+        [seg(0, 3, "我们明天开会，然后讨论预算。")], [seg(0, 3, "我们明天开会然后讨论预算")]
+    )
+    #expect(chinese.map(\.kind) == [.agree])
+
+    // A Latin word in Mandarin, spaced by one engine and not the other.
+    let mixed = TranscriptComparison.compare([seg(0, 2, "我们用 Zoom 开会。")], [seg(0, 2, "我们用Zoom开会")])
+    #expect(mixed.map(\.kind) == [.agree])
+
+    // The untimed-passage fallback matches by the same normalized text.
+    let untimed = TranscriptComparison.compare(
+        [seg(0, 3, "我们明天开会，然后讨论预算。")],
+        [TranscriptSegment(speaker: nil, start: nil, end: nil, text: "我们明天开会然后讨论预算")]
+    )
+    #expect(untimed.map(\.kind) == [.agree])
+
+    let english = TranscriptComparison.compare(
+        [seg(0, 3, "We meet tomorrow, then discuss.")], [seg(0, 3, "we meet tomorrow then discuss")]
+    )
+    #expect(english.map(\.kind) == [.agree])
+}
+
+@Test("A real difference still reads as one, in Chinese and between English words (F570 control)")
+func comparisonStillSeesARealDifference() {
+    let chinese = TranscriptComparison.compare([seg(0, 2, "我们明天开会。")], [seg(0, 2, "我们后天开会。")])
+    #expect(chinese.map(\.kind) == [.diverge])
+    // A space between two Latin words is a word boundary, not punctuation.
+    let english = TranscriptComparison.compare([seg(0, 2, "ice cream")], [seg(0, 2, "icecream")])
+    #expect(english.map(\.kind) == [.diverge])
+}
