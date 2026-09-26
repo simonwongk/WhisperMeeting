@@ -106,6 +106,19 @@ public enum FloatTrackMixer {
         return Int16(clampedAudioSample: mixed)
     }
 
+    /// Opens one track for chunked reading, returning a closure that reads `frameCount` frames at a
+    /// time (padded with leading silence, then zero-padded past end-of-file).
+    ///
+    /// Injected so a genuine read failure can be simulated in a test (F458): a real file cannot be
+    /// made to fail mid-read without flakiness, the same reason `InterruptedRecordingRecovery`
+    /// injects its `TrackOpener`. `mix(...)` below passes `fileTrackOpener`; only tests pass another.
+    typealias TrackOpener = (URL, Int64) throws -> (Int) throws -> [Float]
+
+    static let fileTrackOpener: TrackOpener = { url, paddingFrames in
+        let reader = try PaddedFloatReader(url: url, paddingFrames: paddingFrames)
+        return { try reader.read(frameCount: $0) }
+    }
+
     /// Writes `system` and `microphone` to `outputURL` as 16-bit mono PCM, returning its duration.
     ///
     /// Tracks are aligned by presentation timestamp: whichever started later is zero-padded at the
@@ -116,6 +129,24 @@ public enum FloatTrackMixer {
         sampleRate: Double,
         outputURL: URL,
         classicDataLimit: UInt64 = WAVWriter.classicDataLimit
+    ) throws -> TimeInterval {
+        try mix(
+            system: system,
+            microphone: microphone,
+            sampleRate: sampleRate,
+            outputURL: outputURL,
+            classicDataLimit: classicDataLimit,
+            openTrack: Self.fileTrackOpener
+        )
+    }
+
+    static func mix(
+        system: FloatTrack,
+        microphone: FloatTrack,
+        sampleRate: Double,
+        outputURL: URL,
+        classicDataLimit: UInt64 = WAVWriter.classicDataLimit,
+        openTrack: TrackOpener
     ) throws -> TimeInterval {
         let starts = [system.firstPresentationTime, microphone.firstPresentationTime].compactMap { $0 }
         guard let earliestStart = starts.min() else {
@@ -149,17 +180,14 @@ public enum FloatTrackMixer {
         )
         try ThrowingFileHandleIO.write(Data(repeating: 0, count: headerLength), to: output)
 
-        let systemReader = try PaddedFloatReader(url: system.url, paddingFrames: systemPadding)
-        let microphoneReader = try PaddedFloatReader(
-            url: microphone.url,
-            paddingFrames: microphonePadding
-        )
+        let readSystem = try openTrack(system.url, systemPadding)
+        let readMicrophone = try openTrack(microphone.url, microphonePadding)
         var writtenFrames: Int64 = 0
 
         while writtenFrames < totalFrames {
             let count = min(Int64(chunkFrames), totalFrames - writtenFrames)
-            let systemSamples = systemReader.read(frameCount: Int(count))
-            let microphoneSamples = microphoneReader.read(frameCount: Int(count))
+            let systemSamples = try readSystem(Int(count))
+            let microphoneSamples = try readMicrophone(Int(count))
             var pcm = [Int16](repeating: 0, count: Int(count))
             for index in pcm.indices {
                 pcm[index] = mixedSample(
@@ -235,8 +263,13 @@ private final class PaddedFloatReader {
     }
 
     /// Always returns `frameCount` samples — short reads and end-of-file read as silence, which is
-    /// what lets a ragged pair of tracks mix without a special case.
-    func read(frameCount: Int) -> [Float] {
+    /// what lets a ragged pair of tracks mix without a special case. A genuine I/O error throws
+    /// instead (F458): before this, `try?` collapsed an unreadable block into the same zero-filled
+    /// samples as a legitimate end-of-file, so a bad block on the source volume silently became
+    /// silence in `meeting.wav` with nothing to say it happened. `RawFloatReader.read` in
+    /// `InterruptedRecordingRecovery` drew exactly this distinction for the rebuild path in F256;
+    /// this is the capture-time mixer's half of the same fix.
+    func read(frameCount: Int) throws -> [Float] {
         var result = [Float](repeating: 0, count: frameCount)
         var destinationIndex = 0
         if paddingFrames > 0 {
@@ -247,7 +280,7 @@ private final class PaddedFloatReader {
         guard destinationIndex < frameCount else { return result }
 
         let requestedBytes = (frameCount - destinationIndex) * MemoryLayout<Float>.size
-        guard let data = try? handle.read(upToCount: requestedBytes), !data.isEmpty else {
+        guard let data = try handle.read(upToCount: requestedBytes), !data.isEmpty else {
             return result
         }
         data.withUnsafeBytes { bytes in
