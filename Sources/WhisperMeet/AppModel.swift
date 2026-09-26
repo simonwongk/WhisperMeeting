@@ -322,7 +322,16 @@ final class AppModel: ObservableObject {
     /// The launch stamp is written **whatever** the sweep found, including when it found nothing
     /// and when reading the directory failed. A stamp written only on success would re-report the
     /// same crash on every launch until one succeeded.
-    func reportCrashesSinceLastLaunch(now: Date = Date()) {
+    ///
+    /// Returns the notice rather than reporting it directly (F476). It used to call `report(_:)`
+    /// itself, which is a single `alertMessage` slot — and `performStartupRecovery` ends with its
+    /// own `report(messages.joined(...))` whenever there is anything else to say (a recovered
+    /// recording, a salvage message, a read-only library, an integrity finding). That later call
+    /// silently overwrote this one, so a crash notice reached nobody the moment the SAME launch
+    /// also had something else worth reporting — which is exactly the launch this feature is for
+    /// (F356's shape: crash mid-meeting, relaunch, the orphan loop rebuilds it). The caller now
+    /// folds this into the one combined summary, first.
+    func reportCrashesSinceLastLaunch(now: Date = Date()) -> String? {
         let previous = defaults.object(forKey: Self.lastLaunchKey) as? Double
         // The stamp is written FIRST and unconditionally, including on the branch below that
         // reports nothing. A stamp written only on success would re-report the same crash on
@@ -338,12 +347,9 @@ final class AppModel: ObservableObject {
         // does so on a fresh `UserDefaults` suite, so each of them would read the user's real
         // `~/Library/Logs/DiagnosticReports` and pass or fail according to what was in it. There
         // happen to be zero WhisperMeet reports there today, which is luck, not a property.
-        guard let previous else { return }
+        guard let previous else { return nil }
         let reports = crashReportsSince(Date(timeIntervalSince1970: previous))
-        guard let notice = CrashReportInventory.notice(for: reports) else { return }
-        // Through `report(_:)`, not `alertMessage`: a crash noticed at launch is exactly the kind
-        // of message F257 established must reach a user with no window open.
-        report(notice)
+        return CrashReportInventory.notice(for: reports)
     }
 
     /// Tells the user something, wherever they can be reached (F257).
@@ -373,9 +379,17 @@ final class AppModel: ObservableObject {
     /// dozen places, so a callback would need threading through every one of them.
     func observeStorageErrors() {
         guard storageErrorObserver == nil else { return }
+        // `removeDuplicates()` BEFORE `compactMap` (F476), deliberately the other way round from
+        // the obvious order. Dropping the nils first collapses the sequence A, nil, A (a failure,
+        // then a successful save or a dismissal, then the SAME failure again) into just A, A — two
+        // adjacent equal elements once the nil is gone — so `removeDuplicates()` swallowed the
+        // second one and a repeat of an already-cleared failure never reached a user with no
+        // window open. Deduplicating the OPTIONAL stream first sees nil as a real, distinct value
+        // in between, so the same message crossing a clear still emits twice; only truly adjacent
+        // repeats (no clear in between) collapse to one.
         storageErrorObserver = store.$storageErrorMessage
-            .compactMap { $0 }
             .removeDuplicates()
+            .compactMap { $0 }
             .sink { [weak self] message in
                 MainActor.assumeIsolated { self?.postWindowlessAlert(message) }
             }
@@ -385,8 +399,13 @@ final class AppModel: ObservableObject {
     /// The last message offered to the windowless channel, whether or not a notification could be
     /// posted — so tests can see what a user with no window would have been sent (F292).
     private(set) var lastWindowlessMessage: String?
+    /// How many times the windowless channel has been offered a message (F476). `lastWindowlessMessage`
+    /// alone cannot tell a test whether a REPEAT of the same message was offered again after a clear —
+    /// the value would read identically either way — so this counts every offer regardless of content.
+    private(set) var windowlessAlertCount = 0
 
     private func postWindowlessAlert(_ message: String) {
+        windowlessAlertCount += 1
         lastWindowlessMessage = message
         // `NSApp` is nil in a headless test process, the same reason
         // `postTranscriptionNotification` binds rather than force-unwraps. A test asserting `report`
@@ -2599,9 +2618,18 @@ final class AppModel: ObservableObject {
         // F257: idempotent, and started here because this is the one method that runs once per
         // launch regardless of window state now that `AppLifecycle` owns the call.
         observeStorageErrors()
-        // F370. Before the runtime reclaims below, because those can take seconds and a crash the
-        // user has not been told about should not queue behind an installer self-heal.
-        reportCrashesSinceLastLaunch()
+        // F370/F476: captured here, not reported, and appended to `messages` below so it survives
+        // as part of the ONE combined summary. Before the runtime reclaims below, because those can
+        // take seconds and the stamp (`reportCrashesSinceLastLaunch`'s side effect) should advance
+        // promptly — but the notice text itself is only ever shown at the bottom, alongside
+        // whatever else this launch has to say, or a later `report(messages.joined(...))` would
+        // silently replace it: there is only one `alertMessage` slot, and a crash mid-meeting
+        // (F356's shape) is exactly the launch where the orphan sweep below also has something to
+        // report.
+        var messages: [String] = []
+        if let crashNotice = reportCrashesSinceLastLaunch() {
+            messages.append(crashNotice)
+        }
         // Self-heal an interrupted Qwen install *before* refreshing runtime state, so a runtime that a
         // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
         // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
@@ -2616,7 +2644,7 @@ final class AppModel: ObservableObject {
         await reclaimInterruptedSummarizerInstall()
         refreshRuntime()
         refreshRecordingPreflight()
-        var messages = store.startupRecoveryMessages
+        messages.append(contentsOf: store.startupRecoveryMessages)
         // A library that did not fully load must never be "recovered" into a lesser one (F187). Every
         // recording folder looks orphaned when the in-memory index is empty, which is how ten meetings
         // became blank stubs on 2026-08-14. Show the state and stop; the user decides what happens next.

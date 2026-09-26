@@ -168,23 +168,26 @@ func theLaunchNoticeFiresOnceAndStamps() async throws {
     // First launch: stamped, and silent. There is no "since" to sweep from, so the only honest
     // sweep would be the whole directory — every crash still on disk, from builds that predate
     // this feature, announced as though it had just happened.
-    model.reportCrashesSinceLastLaunch()
-    #expect(model.alertMessage == nil, "\(model.alertMessage ?? "")")
+    //
+    // F476: this returns the notice now rather than reporting it directly — `performStartupRecovery`
+    // folds it into the one combined summary so a later `report(messages.joined(...))` cannot
+    // silently overwrite it — so these assert the RETURN VALUE, not `model.alertMessage`.
+    var notice = model.reportCrashesSinceLastLaunch()
+    #expect(notice == nil, "\(notice ?? "")")
     #expect(asked.withLock { $0.isEmpty }, "a first launch must not sweep at all")
     let stamp = try #require(defaults.object(forKey: AppModel.lastLaunchKey) as? Double)
 
     // Second launch: the recorded stamp is what gets asked, and a report since then is announced.
-    model.reportCrashesSinceLastLaunch()
-    #expect(model.alertMessage?.contains("crash report") == true, "\(model.alertMessage ?? "")")
+    notice = model.reportCrashesSinceLastLaunch()
+    #expect(notice?.contains("crash report") == true, "\(notice ?? "")")
     let asked_since = try #require(asked.withLock { $0.first })
     #expect(abs(asked_since.timeIntervalSince1970 - stamp) < 0.001,
             "the recorded stamp is what gets asked next time")
 
     // Third launch, nothing new: nothing said.
-    model.alertMessage = nil
     model.crashReportsSince = { _ in [] }
-    model.reportCrashesSinceLastLaunch()
-    #expect(model.alertMessage == nil)
+    notice = model.reportCrashesSinceLastLaunch()
+    #expect(notice == nil)
 }
 
 @MainActor
@@ -208,13 +211,11 @@ func theStampAdvancesUnconditionally() throws {
     )
     model.crashReportsSince = { _ in [] }
     #expect(defaults.object(forKey: AppModel.lastLaunchKey) == nil)
-    model.reportCrashesSinceLastLaunch()
+    #expect(model.reportCrashesSinceLastLaunch() == nil)
     let first = try #require(defaults.object(forKey: AppModel.lastLaunchKey) as? Double)
-    #expect(model.alertMessage == nil)
     // And again, with a stamp present and a sweep that finds nothing: the stamp still advances.
-    model.reportCrashesSinceLastLaunch(now: Date(timeIntervalSince1970: first + 60))
+    #expect(model.reportCrashesSinceLastLaunch(now: Date(timeIntervalSince1970: first + 60)) == nil)
     #expect((defaults.object(forKey: AppModel.lastLaunchKey) as? Double) == first + 60)
-    #expect(model.alertMessage == nil)
 }
 
 /// A `@Sendable` box for the injected sweep, which is `@Sendable` and read on the main actor.
