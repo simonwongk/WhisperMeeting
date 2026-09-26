@@ -5,6 +5,7 @@ import Foundation
 public enum SuggestedAction: Sendable, Equatable {
     case installRuntime  // the runtime is missing — install it first
     case reimport        // the audio is missing/empty/too short — retrying will fail again
+    case checkInput      // the audio is there but holds no speech — check the microphone (F561)
     case retry           // a transient/subprocess failure — retrying may succeed
     case switchEngine    // this engine can't decode the recording's container — the other one can
     case none            // cancellation — not a failure the user needs to act on
@@ -44,6 +45,12 @@ public enum TranscriptionFailureClassifier {
                 action: .reimport,
                 explanation: "No usable audio was found for this meeting. Re-import the recording — retrying as-is will fail again."
             )
+        case .checkInput:
+            return FailureCategory(
+                action: .checkInput,
+                explanation: "No speech was detected in this recording. Check that the right microphone was "
+                    + "selected and not muted — the recording is unchanged."
+            )
         case .switchEngine:
             return FailureCategory(
                 action: .switchEngine,
@@ -62,14 +69,16 @@ public enum TranscriptionFailureClassifier {
         if let error = error as? LocalWhisperError {
             switch error {
             case .runtimeNotInstalled: return .installRuntime
-            case .recordingNotFound, .emptyTranscript: return .reimport
+            case .recordingNotFound: return .reimport
+            case .emptyTranscript: return .checkInput
             case .processFailed, .missingOutput, .unreadableOutput: return .retry
             }
         }
         if let error = error as? QwenASRError {
             switch error {
             case .runtimeNotInstalled: return .installRuntime
-            case .recordingNotFound, .emptyTranscript: return .reimport
+            case .recordingNotFound: return .reimport
+            case .emptyTranscript: return .checkInput
             case .processFailed(let message):
                 // "unsupported file format" (miniaudio, via mlx-audio) means Qwen cannot decode this
                 // container at all — deterministic, so retrying the same engine can never work, but

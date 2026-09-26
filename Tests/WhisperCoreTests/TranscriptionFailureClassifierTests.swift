@@ -11,8 +11,8 @@ func classifiesTranscriptionFailures() {
     #expect(TranscriptionFailureClassifier.classify(QwenASRError.runtimeNotInstalled).action == .installRuntime)
     #expect(TranscriptionFailureClassifier.classify(LocalWhisperError.runtimeNotInstalled).action == .installRuntime)
 
-    // Missing / empty audio → re-import (retrying as-is fails again).
-    #expect(TranscriptionFailureClassifier.classify(QwenASRError.emptyTranscript).action == .reimport)
+    // Missing audio → re-import (retrying as-is fails again). No speech is not missing audio (F561).
+    #expect(TranscriptionFailureClassifier.classify(QwenASRError.recordingNotFound).action == .reimport)
     #expect(TranscriptionFailureClassifier.classify(LocalWhisperError.recordingNotFound).action == .reimport)
 
     // Transient subprocess failures → retry.
@@ -40,4 +40,25 @@ func qwenUnsupportedFormatSuggestsEngineSwitch() {
     #expect(!category.explanation.contains("try transcribing again"))
     // …replaced by guidance to use the other engine, which decodes more formats.
     #expect(category.explanation.contains("Whisper"))
+}
+
+/// F561 — both engines raise `.emptyTranscript` when recognition returns no text: a muted or wrong
+/// microphone, a silent meeting. That was classified `.reimport`, so the meeting said "No usable audio
+/// was found … Re-import the recording", which names the wrong cause and, for a live capture, advice
+/// that cannot be followed. And because only `.retry` keeps the underlying detail, the engine's own
+/// "No speech was detected" never reached the user.
+@Test("No speech detected says so and points at the microphone, not at re-importing (F561)")
+func emptyTranscriptIsReportedAsNoSpeech() {
+    for error in [LocalWhisperError.emptyTranscript as Error, QwenASRError.emptyTranscript as Error] {
+        let category = TranscriptionFailureClassifier.classify(error)
+        #expect(category.action != .reimport)
+        #expect(category.action != .retry) // the same audio will come back empty again
+        #expect(category.explanation.contains("No speech was detected"))
+        #expect(category.explanation.contains("microphone"))
+        #expect(category.explanation.contains("unchanged"))
+        #expect(!category.explanation.contains("Re-import"))
+    }
+    // A missing recording still gets the re-import advice.
+    let missing = TranscriptionFailureClassifier.classify(LocalWhisperError.recordingNotFound)
+    #expect(missing.explanation.contains("Re-import"))
 }
