@@ -28,7 +28,11 @@ func htmlExportDeclaresTheTranscriptLanguage() {
 func htmlExportOmitsAnUnknownLanguage() {
     #expect(html(languageCode: nil, text: "Hello.").contains("<html>\n"))
     #expect(html(languageCode: "", text: "Hello.").contains("<html>\n"))
-    let hostile = html(languageCode: "en\" onload=\"alert(1)", text: "Hello.")
-    #expect(hostile.contains("<html>\n"))
-    #expect(!hostile.contains("onload"))
+    // A stored value that is not shaped like a language subtag is dropped by that shape check, so
+    // the page carries no `lang` attribute at all — it never reaches the escaping.
+    for malformed in ["en\" onload=\"alert(1)", "English (US)", "e", "zh_CN"] {
+        let page = html(languageCode: malformed, text: "Hello.")
+        #expect(page.contains("<html>\n"), "\(malformed)")
+        #expect(!page.contains(" lang="), "\(malformed)")
+    }
 }
