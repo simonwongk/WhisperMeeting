@@ -7,6 +7,15 @@ public enum MeetingTags {
     public static let maxCount = 12
     public static let maxLength = 32
 
+    /// Separators that split typed list input into entries: ASCII comma, semicolon and newline,
+    /// plus the punctuation a Chinese input method types in their place — full-width comma '，'
+    /// (U+FF0C), enumeration comma '、' (U+3001), and full-width semicolon '；' (U+FF1B). One
+    /// shared set so a list typed with a Chinese IME splits the same way everywhere it is entered:
+    /// `liveSplit` below, the vocabulary Add box, and the tag chip editor's commit (F569) — before
+    /// this, '项目，预算' became a single tag and '张三，李四，王五' a single vocabulary term
+    /// because only ASCII ',' and '\n' were recognized.
+    public static let listSeparators = CharacterSet(charactersIn: ",;\n，、；")
+
     public enum MatchMode: Sendable, Equatable {
         case all // AND — the meeting must carry every selected tag
         case any // OR  — the meeting must carry at least one
@@ -29,15 +38,15 @@ public enum MeetingTags {
         return result
     }
 
-    /// Split live-typed editor input at commas/newlines: every part before the last separator is
+    /// Split live-typed editor input at `listSeparators`: every part before the last separator is
     /// ready to commit; the text after it stays in the field as the in-progress tag (F171). Ready
     /// parts are trimmed and empties dropped; the remainder only loses leading whitespace so the
     /// user's in-flight typing is preserved.
     public static func liveSplit(_ draft: String) -> (ready: [String], remainder: String) {
-        guard draft.contains(where: { $0 == "," || $0 == "\n" }) else {
+        guard draft.rangeOfCharacter(from: listSeparators) != nil else {
             return ([], draft)
         }
-        var parts = draft.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+        var parts = draft.components(separatedBy: listSeparators)
         let tail = parts.removeLast()
         let ready = parts
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

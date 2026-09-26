@@ -32,6 +32,23 @@ func liveSplitEmptiesAndNewlines() {
     #expect(split.remainder == "")
 }
 
+// F569 — a Chinese input method types '，' (U+FF0C) for a comma and commonly joins short lists
+// with '、' (U+3001); a full-width '；' (U+FF1B) stands in for ';'. Before the fix these were not
+// recognized as separators at all, so '项目，预算' committed as a single tag.
+@Test("Live split recognizes the full-width comma a Chinese IME types")
+func liveSplitFullWidthComma() {
+    let split = MeetingTags.liveSplit("项目，预算，")
+    #expect(split.ready == ["项目", "预算"])
+    #expect(split.remainder == "")
+}
+
+@Test("Live split recognizes the Chinese enumeration comma and full-width semicolon")
+func liveSplitEnumerationCommaAndFullWidthSemicolon() {
+    let split = MeetingTags.liveSplit("张三、李四；王五、")
+    #expect(split.ready == ["张三", "李四", "王五"])
+    #expect(split.remainder == "")
+}
+
 @Test("Reuse suggestions offer unapplied library tags, first-seen spelling, in order, capped")
 func reuseSuggestionsBasics() {
     let library = [["Budget", "Hiring"], ["budget", "Q3"], ["Roadmap"]]

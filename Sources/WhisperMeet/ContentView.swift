@@ -2676,7 +2676,10 @@ private struct VocabularyView: View {
     }
 
     private func addManualTerms() {
-        let terms = manualTerms.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+        // F569: shared with the tag editor and `MeetingTags.liveSplit` so a Chinese-IME comma
+        // ('，'), enumeration comma ('、') or semicolon ('；') splits terms the same way a typed
+        // ASCII ',' does, instead of merging a pasted list into one term.
+        let terms = manualTerms.components(separatedBy: MeetingTags.listSeparators)
         let before = Set(store.vocabulary)
         withAnimation(reduceMotion ? nil : .uiSpring) {
             store.addVocabulary(terms)
@@ -4085,8 +4088,10 @@ private struct TagChipsEditor: View {
     }
 
     private func commit(_ text: String) {
+        // F569: shared separator set (see `MeetingTags.listSeparators`) so Chinese-IME punctuation
+        // splits tags the same way an ASCII comma does.
         let parts = text
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .components(separatedBy: MeetingTags.listSeparators)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !parts.isEmpty else { return }
