@@ -174,17 +174,27 @@ func recordingHoldsTheCaptureLock() async throws {
 
 // MARK: - F188: the rival that quit
 
-@Test("A relaunch-free recovery rebuilds once the other copy has quit (F188)")
+@Test("The lease refresh lets a second sweep rebuild once the rival has quit — driven by a test-only reset, not a production caller (F188, F407)")
 @MainActor
 func recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching() async throws {
-    // The end-to-end shape of the lease refresh, through the surface a user actually reaches.
-    // A folder with no capture lock is decided by the lease alone (F297's `.noLockFile` rung), so
-    // this test is about the lease and nothing else.
+    // What this tests, precisely: `store.refreshWriterLease()` re-asks the kernel rather than
+    // trusting the lease `MeetingStore.init` sampled, so a SECOND `performStartupRecovery()` sweep
+    // sees a rival that has since quit. The second sweep here is produced by
+    // `resetStartupRecoveryForTesting()`, a `DEBUG`-only seam.
     //
-    // Sequence: A holds the library, B launches and sweeps — refused, and told to quit A. The user
-    // quits A. B sweeps again, which is exactly what `recoverLibrary`/`rebuildLibraryFromFolders`
-    // make happen without a relaunch. Before F188 the second sweep gave the same answer as the
-    // first, forever, because `writerLease` was read once in `MeetingStore.init`.
+    // What this does NOT test, and what an earlier version of this comment claimed it did: that a
+    // user reaches a second sweep over a HEALTHY library like this one without relaunching. They
+    // do not. The only two production callers that reset `didPerformStartupRecovery` are
+    // `recoverLibrary` and `rebuildLibraryFromFolders`, and both are reached only through
+    // `requestLibraryRecovery()`'s `guard store.isDegraded` — refused outright for a library this
+    // fixture never damages. So an instance that launches healthy, is told to quit a rival, and
+    // whose rival then quits, has no in-session way back to a second sweep; relaunching is still
+    // the only remedy for exactly this case. F407 was filed because this comment used to say the
+    // opposite ("does NOT relaunch… which this change makes unnecessary").
+    //
+    // The sequence that IS reachable in production — a DEGRADED launch, the rival's lease, then
+    // Restore — is `degradedLaunchThenRestoreRebuildsAfterTheRivalQuits` below, driven entirely
+    // through `rebuildLibraryFromFolders(confirmed: true)` with no test-only reset at all.
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("RivalQuitThenRecover-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -200,17 +210,94 @@ func recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching() async throws {
     #expect(b.store.meetings.isEmpty)
     #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") == true)
 
-    // The user does what the notice asked — and does NOT relaunch, which the notice also asked for
-    // and which this change makes unnecessary.
+    // The DEBUG-only seam standing in for whatever would reset the flag in production — which, for
+    // a healthy library, is nothing (see above).
     instanceA.release()
     b.resetStartupRecoveryForTesting()
     b.alertMessage = nil
     await b.performStartupRecovery()
 
     #expect(b.store.writerLease == .held(realm: "shared"))
-    #expect(b.store.meetings.count == 1, "the recording should be back without a relaunch")
+    #expect(b.store.meetings.count == 1, "the recording should be back once the lease is re-asked")
     #expect(FileManager.default.fileExists(
         atPath: folder.appendingPathComponent("meeting-recovered.wav").path
     ))
+    #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true, "\(b.alertMessage ?? "")")
+}
+
+/// A degraded library — broken `meetings.json`/`meetings.backup.json`, no retained generation, so
+/// `FolderRebuild` (F252's dead end) is the only in-app way back — with one finalized recording
+/// folder for the rebuild to offer, and one dead-looking, unindexed folder for the recovery sweep
+/// the rebuild re-triggers to find. Reuses `makeDeadLookingFolder` for the second folder.
+@MainActor
+private func makeDeadEndLibraryWithInterruption(in root: URL) throws -> URL {
+    try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
+    try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
+    let finalizedID = UUID()
+    let finalizedFolder = root
+        .appendingPathComponent("Recordings", isDirectory: true)
+        .appendingPathComponent(finalizedID.uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: finalizedFolder, withIntermediateDirectories: true)
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 48_000), sampleRate: 48_000)
+        .write(to: finalizedFolder.appendingPathComponent("meeting.wav"))
+    try Data("# Standup\n\nbody\n".utf8).write(to: finalizedFolder.appendingPathComponent("notes.md"))
+    return try makeDeadLookingFolder(in: root)
+}
+
+@Test("The reachable rival sequence: a degraded launch, the rival quits, then Restore rebuilds without the notice (F407)")
+@MainActor
+func degradedLaunchThenRestoreRebuildsAfterTheRivalQuits() async throws {
+    // F407 part 2: the sequence production actually allows — a degraded launch with a live rival,
+    // the rival quitting, then the user pressing Restore — had no test. This drives it entirely
+    // through real callers: `requestLibraryRecovery()` and `rebuildLibraryFromFolders(confirmed:)`,
+    // never `resetStartupRecoveryForTesting()`.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeadEndUnderRival-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let interrupted = try makeDeadEndLibraryWithInterruption(in: root)
+    let suite = "WhisperMeet.DeadEndUnderRival.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+    // The rival holds the lease BEFORE B is constructed, exactly as the F297 fixtures require.
+    let instanceA = LibraryWriterLock.acquire(root: root)
+    let b = makeModel(root: root, suite: suite)
+    try #require(b.store.isDegraded, "the fixture must be the read-only dead end")
+    try #require(try b.store.indexGenerations().isEmpty, "the fixture must have nothing to restore")
+    #expect(b.store.writerLease == .heldElsewhere(realm: "shared"))
+
+    // Launch #1: degraded, so `performStartupRecovery` takes the early return BEFORE the lease or
+    // the orphan sweep is even reached (AppModel.swift's `if store.isDegraded { …; return }`) — the
+    // read-only notice appears, and the rival notice, which lives past that return, does not.
+    await b.performStartupRecovery()
+    #expect(b.alertMessage?.contains("read-only mode") == true, "\(b.alertMessage ?? "")")
+    #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true, "\(b.alertMessage ?? "")")
+
+    // The user does what F289 offers: with nothing to restore, Recover Library proposes the folder
+    // rebuild instead of the dead end.
+    b.requestLibraryRecovery()
+    let proposal = try #require(b.pendingFolderRebuild, "the rebuild offer should have appeared")
+    #expect(proposal.isWorthApplying)
+    #expect(proposal.deferredToRecovery == 1, "the interrupted folder must be deferred, not indexed as a stub meeting")
+
+    // The rival quits before the user presses Restore.
+    instanceA.release()
+
+    // Restore. `rebuildLibraryFromFolders` is the one production caller that resets
+    // `didPerformStartupRecovery` and queues a second sweep — no test-only seam anywhere above.
+    b.rebuildLibraryFromFolders(confirmed: true)
+    #expect(!b.store.isDegraded, "the rebuild must return the library to a writable state")
+
+    // The second sweep the rebuild just queued as a fire-and-forget `Task`. Calling it here
+    // directly is deterministic rather than a race with that Task: `didPerformStartupRecovery` was
+    // reset synchronously above and nothing has suspended yet to let the queued Task run first, so
+    // this call is the one whose body executes; the queued Task later finds the flag already set
+    // and no-ops, which is the idempotence `recoverLibrary`'s doc comment already relies on.
+    await b.performStartupRecovery()
+
+    #expect(b.store.writerLease == .held(realm: "shared"), "the lease should have been re-asked, not left stale")
+    #expect(FileManager.default.fileExists(
+        atPath: interrupted.appendingPathComponent("meeting-recovered.wav").path
+    ), "the interrupted folder should be rebuilt now that nothing refuses it")
     #expect(b.alertMessage?.contains("Another copy of WhisperMeet is open") != true, "\(b.alertMessage ?? "")")
 }
