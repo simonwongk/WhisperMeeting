@@ -19,8 +19,8 @@ struct DictationTapChunk: Sendable {
 /// 24000 Hz stale, which is what proves no pinned value is the right one.
 ///
 /// So the format is read from each buffer as it arrives and the converter rebuilt only when it
-/// changes — the same rule `AudioCaptureEngine.append` already follows for meeting capture
-/// (`AudioCaptureEngine.swift:866`), which is why the meeting path was never exposed to this.
+/// changes — the same rule `AudioCaptureEngine.append` already follows for meeting capture, which
+/// is why the meeting path was never exposed to this.
 ///
 /// Within one capture the rebuild is defence in depth, for a buffer whose format differs from the
 /// first one. It does not carry a capture through a device change: on a mid-capture sample-rate or
