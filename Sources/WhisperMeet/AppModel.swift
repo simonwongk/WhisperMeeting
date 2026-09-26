@@ -568,6 +568,12 @@ final class AppModel: ObservableObject {
     /// The record as last written to defaults, so an unchanged folder is not rewritten every look.
     private var lastWrittenWatchedFolderRecord: WatchedFolderInbox.Snapshot?
 
+    /// The import refusal last surfaced to the user, so a cause that is still true on the next
+    /// 3-second look is held silently instead of re-posting the "Importing…" notification and
+    /// re-opening the alert the user just dismissed (F454). Reset to nil the moment the cause
+    /// clears, so a later recurrence — even of the same wording — is treated as new again.
+    private var lastWatchedFolderRefusalMessage: String?
+
     /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
     /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
     func restartWatchedFolder() {
@@ -632,6 +638,19 @@ final class AppModel: ObservableObject {
     private func deliverWatchedFiles() {
         guard watchedFolderDelivery == nil, !pendingWatchedFiles.isEmpty, recordingState == .idle,
               !isImporting, !isPreflightTestActive, !isInstallingRecognitionRuntime else { return }
+        // A degraded library or insufficient storage refuses every file in the batch the same way
+        // `importOne` would, but checking here — before the notification and the attempt — is what
+        // lets a persisting cause be held silently instead of repeating both every three seconds
+        // (F454). Only a cause this obvious is worth precomputing; anything else the batch can hit
+        // (busy app, a truncated file) is already excluded above or reported per file as before.
+        if let refusal = watchedFolderImportRefusalMessage() {
+            if refusal != lastWatchedFolderRefusalMessage {
+                alertMessage = refusal
+            }
+            lastWatchedFolderRefusalMessage = refusal
+            return
+        }
+        lastWatchedFolderRefusalMessage = nil
         let batch = pendingWatchedFiles
         pendingWatchedFiles.removeAll()
         inFlightWatchedFiles = batch
@@ -652,6 +671,26 @@ final class AppModel: ObservableObject {
             self.pendingWatchedFiles.insert(contentsOf: outcome.notImported, at: 0)
             self.watchedFolderDelivery = nil
         }
+    }
+
+    /// Why the whole waiting batch would be refused right now, or nil when it would not — the same
+    /// two causes `importOne` checks per file (F454): a read-only library, and insufficient storage
+    /// headroom for what is queued. Checked before the notification/attempt so a persisting cause is
+    /// held rather than re-surfaced on every look; the message text matches what `importOne` would
+    /// have said, so the user sees the same explanation either way.
+    private func watchedFolderImportRefusalMessage() -> String? {
+        if store.isDegraded {
+            return ReadOnlyLibraryNotice.actionRefused("Import")
+        }
+        refreshRecordingPreflight()
+        guard let available = recordingPreflight.availableStorageBytes else { return nil }
+        let batchSize = pendingWatchedFiles.reduce(Int64(0)) { total, url in
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return total + Int64(size)
+        }
+        let needed = batchSize + 500_000_000
+        guard available < needed else { return nil }
+        return "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
     }
 
     /// Above this, a link download asks for explicit confirmation before starting.

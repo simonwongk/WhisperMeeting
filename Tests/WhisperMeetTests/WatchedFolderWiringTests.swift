@@ -143,6 +143,29 @@ func refusedBatchStaysOnTheQueue() async throws {
 }
 
 @MainActor
+@Test("A refusal that persists across looks alerts once, not on every three-second look (F454)")
+func persistingRefusalAlertsOnlyOnce() async throws {
+    let (model, root) = try makeDegradedModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = try makeRecordingFile()
+    defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+    model.watchedFolderLooked(snapshot: nil, ready: [file])
+    await model.watchedFolderDelivery?.value
+    #expect(model.alertMessage != nil, "the first look must still explain the refusal")
+    #expect(model.pendingWatchedFiles == [file], "held on the queue, not dropped")
+    // The user dismisses the alert — exactly what ContentView's OK button does.
+    model.alertMessage = nil
+
+    // The next 3-second look finds the same still-degraded library. Nothing about the cause has
+    // changed, so it must not alert again.
+    model.watchedFolderLooked(snapshot: nil, ready: [])
+    await model.watchedFolderDelivery?.value
+    #expect(model.alertMessage == nil, "the cause has not changed, so this look must not re-alert")
+    #expect(model.pendingWatchedFiles == [file], "still held, not lost while quiet")
+}
+
+@MainActor
 @Test("A file the queue accepted becomes exactly one meeting and leaves the queue (F321)")
 func acceptedBatchBecomesAMeeting() async throws {
     let (model, _) = try makeModel()
