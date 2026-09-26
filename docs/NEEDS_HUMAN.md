@@ -41,11 +41,12 @@ The letters below still stand for what needs your hands (F355, F294, F201, F230,
 
 ## Where to start
 
-Six entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Seven entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
+| 1 | **F464** | one word | Yes or no to one sentence in the product spec. The fix is built and tested; it waits only on this. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
@@ -211,6 +212,39 @@ tell me what the paste gave you. I will read the log line myself.
   the Mac's clipboard before the paste, which no paste-based dictation app can work around).
 - **A macOS prompt** asking whether WhisperMeet may read the clipboard — Allow keeps the restore
   working; Don't Allow turns it off and dictation still pastes.
+
+---
+
+## F464 — May a damaged vocabulary file stop locking the whole library?
+
+**Status:** `blocked` on one sentence of [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md). The fix is written,
+reviewed and tested on a branch (`8194f33`, 605 lines, 9 files); it is not merged because it
+contradicts the spec as it stands, and the spec is yours, not mine.
+
+Today, if `vocabulary.json` or `replacement-rules.json` is damaged — a hand edit, a half-written
+file — the app opens the *whole* library read-only: no recording, no import, no transcription, no
+meeting edits, and the only recovery offered (retained meeting-index generations) cannot clear it,
+because the damage is not in the meeting index. The spec says exactly that: *"When any index copy
+is damaged, open the library read-only and block every mutation, including recording, import and
+transcription."*
+
+The fix makes the damage local: the broken list is quarantined (never overwritten), *that list* is
+read-only, its own notice offers to keep the loaded copy or start a new list — and recording,
+import, transcription and meeting edits carry on. The meeting index keeps today's rule unchanged.
+
+**What I need from you:** say **yes** or **no** to changing that sentence to: *"When the meeting
+index cannot be fully read, open the library read-only and block every mutation, including
+recording, import and transcription. A damaged vocabulary or replacement-rules file is quarantined
+and makes only that list read-only: recording, import, transcription and meeting edits continue,
+and the list's own notice offers to keep the loaded copy or start a new list."* (The same paragraph
+also still says the app "does not offer an in-app recovery action", which has been false since
+Settings ▸ Recover Library… shipped; I would correct that at the same time.)
+
+- **Yes** — I merge the branch, amend the spec in the same commit, and F464 closes.
+- **No** — the branch is kept for the record, F464 closes `wontfix`, and the whole-library lock stays
+  as the spec intends.
+
+I recommend yes: a typo in a word list should not stop a lecture from being recorded.
 
 ---
 
