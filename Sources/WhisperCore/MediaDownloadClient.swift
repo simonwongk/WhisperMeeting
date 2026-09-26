@@ -203,6 +203,13 @@ public struct MediaDownloadClient: Sendable {
               let payload = try? JSONDecoder().decode(YtDlpProbeOutput.self, from: data) else {
             throw MediaDownloadError.unreadableProbe
         }
+        // What yt-dlp resolved the link to, for any host (F495). A profile, channel or playlist
+        // comes back as one of these with no duration or size, so the long-media confirmation and
+        // the storage guard would have nothing to check, and `--no-playlist` does not help: it
+        // applies only to a URL that names both a video and a playlist.
+        if let type = payload.type, ["playlist", "multi_video"].contains(type) {
+            throw MediaDownloadError.playlistNotSupported
+        }
         return MediaProbe(
             title: payload.title,
             durationSeconds: payload.duration,
@@ -254,6 +261,8 @@ private final class ParserBox: @unchecked Sendable {
 
 /// The subset of `yt-dlp --dump-single-json` this app reads.
 struct YtDlpProbeOutput: Decodable {
+    /// `video`, `playlist` or `multi_video` in yt-dlp's own output, which always sets it.
+    let type: String?
     let title: String?
     let duration: Double?
     let uploader: String?
@@ -266,6 +275,7 @@ struct YtDlpProbeOutput: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case title, duration, uploader, channel, language, filesize
+        case type = "_type"
         case uploadDate = "upload_date"
         case filesizeApprox = "filesize_approx"
         case isLive = "is_live"

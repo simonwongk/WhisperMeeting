@@ -6,7 +6,9 @@ import Foundation
 ///
 /// - **`--` precedes the URL** in every vector (defense in depth against flag injection from a pasted
 ///   string, alongside `MediaSourceURL`'s leading-`-` rejection).
-/// - **`--no-playlist`** in every vector (v1 imports a single item, never a playlist/channel).
+/// - **`--no-playlist`** in every vector, so a URL that names both a video and a playlist fetches the
+///   video. It does nothing for a URL that names only a playlist or channel; the probe refuses those
+///   (`MediaDownloadClient.parseProbe`, F495), because v1 imports a single item.
 /// - **Audio is forced to 16 kHz mono 16-bit WAV named `recording`** — required so the interrupted-
 ///   recovery basename match and per-segment re-run (canonical RIFF/WAVE) keep working (Traps 1–2), and
 ///   so a Qwen-only user isn't handed an Opus/WebM file AudioToolbox can't decode.
