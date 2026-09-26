@@ -247,36 +247,51 @@ class MainEndToEndTests(unittest.TestCase):
 class LoadHeartbeatTests(unittest.TestCase):
     """F512 review: `load()` blocks with no output, and the Swift side stops a helper that is silent
     for its stall timeout — so a slow cold load under swap would have read as a wedge. A thread
-    speaks for the load while it runs."""
+    speaks for the load while it runs.
+
+    No clock. The first version slept 80 ms and expected two 10 ms beats; the CI runner produced
+    one (2026-09-26, run 36217649615) where this Mac produced several. The fake load below returns
+    when it has SEEN two beats, so the wait's subject is the assertion's subject, and a heartbeat
+    that never comes fails on the wait, not on a count."""
+
+    def setUp(self):
+        self.beats = []
+        self._report = summ.report_progress
+        summ.report_progress = lambda message: self.beats.append(message)
+
+    def tearDown(self):
+        summ.report_progress = self._report
+
+    def _heartbeat_thread_is_alive(self):
+        return any(thread.name == "load-heartbeat" and thread.is_alive() for thread in threading.enumerate())
 
     def test_a_slow_load_keeps_reporting_until_it_returns(self):
-        def slow_load(path, **kwargs):
-            time.sleep(0.08)
+        def load_until_two_beats(path, **kwargs):
+            deadline = time.monotonic() + 30
+            while len(self.beats) < 2:
+                self.assertLess(time.monotonic(), deadline, f"no second heartbeat within 30 s: {self.beats}")
+                time.sleep(0.001)
             return ("model", "tokenizer")
 
-        captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
-            result = summ.load_with_heartbeat(slow_load, "/models/x", interval=0.01)
+        result = summ.load_with_heartbeat(load_until_two_beats, "/models/x", interval=0.001)
         self.assertEqual(result, ("model", "tokenizer"))
-        beats = [line for line in captured.getvalue().splitlines() if "still loading model" in line]
-        self.assertGreaterEqual(len(beats), 2, captured.getvalue())
+        self.assertGreaterEqual(len(self.beats), 2)
+        self.assertTrue(all(beat.startswith("still loading model (") for beat in self.beats), self.beats)
 
     def test_the_heartbeat_stops_when_the_load_returns(self):
-        captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
-            summ.load_with_heartbeat(lambda path, **kwargs: "m", "/models/x", interval=0.01)
-            before = captured.getvalue()
-            time.sleep(0.05)
-        self.assertEqual(captured.getvalue(), before, "the heartbeat outlived the load")
+        summ.load_with_heartbeat(lambda path, **kwargs: "m", "/models/x", interval=0.001)
+        self.assertFalse(self._heartbeat_thread_is_alive(), "the heartbeat thread outlived the load")
+        count = len(self.beats)
+        time.sleep(0.02)  # a beat landing here could only make this fail, never pass falsely
+        self.assertEqual(len(self.beats), count, "a heartbeat arrived after the load had returned")
 
     def test_a_failing_load_still_stops_the_heartbeat_and_raises(self):
         def broken_load(path, **kwargs):
             raise RuntimeError("no such model")
 
-        captured = io.StringIO()
-        with contextlib.redirect_stderr(captured), self.assertRaises(RuntimeError):
-            summ.load_with_heartbeat(broken_load, "/models/x", interval=0.01)
-        self.assertEqual(threading.active_count(), 1, "the heartbeat thread is still running")
+        with self.assertRaises(RuntimeError):
+            summ.load_with_heartbeat(broken_load, "/models/x", interval=0.001)
+        self.assertFalse(self._heartbeat_thread_is_alive(), "the heartbeat thread is still running")
 
 
 if __name__ == "__main__":
