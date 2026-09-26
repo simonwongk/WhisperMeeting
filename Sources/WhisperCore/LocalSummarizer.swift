@@ -175,7 +175,9 @@ public struct LocalSummarizer: MeetingSummarizer {
         let inputURL = workingDirectory.appendingPathComponent("request.json")
         let outputURL = workingDirectory.appendingPathComponent("summary.json")
         let requestBody: [String: String] = [
-            "systemPrompt": Self.systemPrompt(language: language, style: style, template: template),
+            "systemPrompt": Self.systemPrompt(
+                language: language, style: style, template: template, script: ScriptDrift.form(of: trimmed)
+            ),
             "transcript": trimmed,
         ]
         try JSONSerialization.data(withJSONObject: requestBody).write(to: inputURL)
@@ -294,9 +296,11 @@ public struct LocalSummarizer: MeetingSummarizer {
     static func systemPrompt(
         language: String?,
         style: SummaryStyle,
-        template: MeetingTemplate = .general
+        template: MeetingTemplate = .general,
+        script: ChineseScriptForm? = nil
     ) -> String {
-        ClaudeSummarizer.systemPrompt(language: language, style: style, template: template) + "\n" + jsonFormatInstruction
+        ClaudeSummarizer.systemPrompt(language: language, style: style, template: template, script: script)
+            + "\n" + jsonFormatInstruction
     }
 
     static let jsonFormatInstruction = """

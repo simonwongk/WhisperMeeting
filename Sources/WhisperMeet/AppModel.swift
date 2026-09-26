@@ -4613,6 +4613,13 @@ final class AppModel: ObservableObject {
                     from: meeting.summary?.actionItems ?? [], onto: resolved.actionItems
                 )
                 meeting.summary = merged
+                // "Original language only" advisory for summaries (F467 Part 2), the same
+                // structural net F32's `languageWarning` is for transcripts. Always recomputed
+                // against THIS summary, never left over from a previous one — a re-summarize that
+                // now agrees with the transcript must clear a warning an earlier attempt set.
+                meeting.summaryLanguageWarning = LanguageConsistency.summaryMismatchWarning(
+                    transcript: transcript, summary: merged
+                )
             }
         } catch is CancellationError {
             // The user cancelled (or the app is tearing down); leave the meeting unchanged, no alert.

@@ -222,4 +222,43 @@ func summaryStyleControls() async throws {
     #expect(brief.system != detailed.system) // system prompt did change
 }
 
+// F467 Part 2 — the summary prompt used to say only "same language as the transcript. Do not
+// translate", unlike dictation refinement's prompt (`DictationRefinePrompt`), which additionally
+// NAMES the transcript's Chinese script so the model has something concrete to hold onto rather
+// than a general instruction it can silently drift from. Naming the script here is what stops the
+// conversion in the first place, the same way it does for dictation refinement.
+@Test("The system prompt names the transcript's Chinese script when it is unambiguous (F467)")
+func systemPromptNamesTheChineseScript() {
+    // Each side's copy names the OTHER script too — "never convert them to Simplified" — so the
+    // assertion is which script the prompt asks the model to WRITE IN, not raw word presence.
+    #expect(ClaudeSummarizer.systemPrompt(language: "zh", script: .traditional)
+        .contains("written in Traditional Chinese characters"))
+    #expect(ClaudeSummarizer.systemPrompt(language: "zh", script: .simplified)
+        .contains("written in Simplified Chinese characters"))
+    #expect(!ClaudeSummarizer.systemPrompt(language: "zh", script: .traditional)
+        .contains("written in Simplified Chinese characters"))
+    #expect(!ClaudeSummarizer.systemPrompt(language: "zh", script: .simplified)
+        .contains("written in Traditional Chinese characters"))
+    // Nil names nothing — the same "no guess" rule DictationRefinePrompt documents.
+    #expect(!ClaudeSummarizer.systemPrompt(language: "zh", script: nil).contains("Traditional"))
+    #expect(!ClaudeSummarizer.systemPrompt(language: "zh", script: nil).contains("Simplified"))
+    // The do-not-translate clause and schema-shaping guidance are unaffected by naming the script.
+    #expect(ClaudeSummarizer.systemPrompt(language: "zh", script: .traditional).contains("Do not translate"))
+}
+
+@Test("The request's system prompt names the actual transcript's Chinese script (F467)")
+func requestSystemPromptCarriesTheTranscriptsScript() async throws {
+    StubURLProtocol.statusCode = 200
+    StubURLProtocol.failWithErrorCode = nil
+    StubURLProtocol.responseBody = successResponse(#"{"summary":"s","keyPoints":[],"actionItems":[]}"#)
+    StubURLProtocol.requestBody = nil
+
+    _ = try await makeSummarizer().summarize(transcript: "我們決定這個價格給客戶優惠。", language: "zh")
+
+    let body = try #require(StubURLProtocol.requestBody)
+    let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let system = try #require(object["system"] as? String)
+    #expect(system.contains("Traditional Chinese"))
+}
+
 }

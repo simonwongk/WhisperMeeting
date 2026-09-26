@@ -153,3 +153,65 @@ func onlyTheConfirmationButtonPassesCloudUploadConfirmed() throws {
         "the confirmation dialog's button must pass cloudUploadConfirmed: true — the one user action that satisfies the F499 gate"
     )
 }
+
+// F467 Part 2 — a summary that comes back in a different language or Chinese script than its
+// transcript must carry an advisory, recomputed on every summarize (never left stale from an
+// earlier attempt). Reachable through the real `performSummarization` path, over a real
+// `MeetingStore`, exactly like `engineReachesMakeSummarizer` above — the only substitution is the
+// summarizer itself, through the existing `makeSummarizer` seam.
+
+private final class FixedOutputSummarizer: MeetingSummarizer, @unchecked Sendable {
+    let output: MeetingSummary
+    init(_ output: MeetingSummary) { self.output = output }
+    func summarize(transcript: String, language: String?, style: SummaryStyle, template: MeetingTemplate) async throws -> MeetingSummary {
+        output
+    }
+}
+
+@MainActor
+@Test("A summary that translates a Chinese meeting into English is flagged, reachable through performSummarization (F467)")
+func summarizeFlagsATranslatedSummary() async throws {
+    let model = try makeModel()
+    let translated = MeetingSummary(
+        summary: "We decided to release the new version on October 15.", keyPoints: [], actionItems: []
+    )
+    model.makeSummarizer = { _, _ in FixedOutputSummarizer(translated) }
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: "我們決定新版本在十月十五號發佈，前提是測試全部通過。"
+    ))
+
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "",
+        transcript: "我們決定新版本在十月十五號發佈，前提是測試全部通過。",
+        language: "zh", style: .balanced
+    )
+
+    let warning = try #require(model.store.meeting(id: id)?.summaryLanguageWarning)
+    #expect(warning.contains("English"))
+}
+
+@MainActor
+@Test("A same-language re-summarize clears an earlier summary's language warning (F467)")
+func resummarizeClearsAStaleLanguageWarning() async throws {
+    let model = try makeModel()
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: "我們決定新版本在十月十五號發佈。",
+        summary: MeetingSummary(summary: "old", keyPoints: [], actionItems: []),
+        summaryLanguageWarning: "a stale warning from an earlier, mistranslated summary"
+    ))
+
+    model.makeSummarizer = { _, _ in
+        FixedOutputSummarizer(MeetingSummary(summary: "我們決定發佈新版本。", keyPoints: [], actionItems: []))
+    }
+    await model.performSummarization(
+        id: id, engine: .local, apiKey: "",
+        transcript: "我們決定新版本在十月十五號發佈。", language: "zh", style: .balanced
+    )
+
+    #expect(model.store.meeting(id: id)?.summaryLanguageWarning == nil)
+}

@@ -63,6 +63,7 @@ private func fullyPopulatedRecord() -> MeetingRecord {
         staleTranscriptWarning: "stale",
         recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
         languageWarning: "language",
+        summaryLanguageWarning: "summary language",
         repeatsRemoved: 15,
         transcriptionEngine: .qwenBalanced,
         requestedLanguage: WhisperLanguage.chinese.rawValue,
@@ -121,6 +122,7 @@ func provenanceSurvivesARoundTrip() throws {
 
     #expect(restored.recoverySource == RecoveredRecording.Source.rebuiltSourceTracks.rawValue)
     #expect(restored.staleTranscriptWarning == "stale")
+    #expect(restored.summaryLanguageWarning == "summary language")
     let caveats = MeetingStore.recoveryCaveats(for: restored)
     #expect(caveats.contains { $0.contains("rebuilt from its raw microphone") })
     #expect(caveats.contains("stale"))
@@ -139,5 +141,6 @@ func olderIndexStillDecodes() throws {
     )
     #expect(restored.recoverySource == nil)
     #expect(restored.staleTranscriptWarning == nil)
+    #expect(restored.summaryLanguageWarning == nil)
     #expect(MeetingStore.recoveryCaveats(for: restored).isEmpty)
 }

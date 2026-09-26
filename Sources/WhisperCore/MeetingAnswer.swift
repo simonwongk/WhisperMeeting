@@ -55,6 +55,11 @@ public enum MeetingAnswerPolicy {
         case introducesTerm(String)
         /// The passages are in one Chinese script and the answer is in the other (F244).
         case scriptChanged
+        /// The answer's dominant language differs from the passages' — a translation, not an
+        /// answer "in the passages' language" as the system prompt asks for (F467). Distinct from
+        /// `scriptChanged`: `TranscriptLanguage.dominant` calls Traditional and Simplified both
+        /// "chinese", so a same-language script conversion is still reported as `scriptChanged`.
+        case languageChanged
     }
 
     public enum Outcome: Sendable, Equatable {
@@ -84,6 +89,15 @@ public enum MeetingAnswerPolicy {
         }
 
         let passageText = passages.map(\.snippet).joined(separator: "\n")
+        // The system prompt asks the model to "keep the passages' language and script" — checked
+        // here as two separate guards, because they answer different questions. The script guard
+        // below only ever fires within Chinese (ScriptDrift.form is nil for English), which is why
+        // a full translation into English previously passed unnoticed (F467).
+        if let expectedLanguage = TranscriptLanguage.dominant(of: passageText),
+           let actualLanguage = TranscriptLanguage.dominant(of: text),
+           expectedLanguage != actualLanguage {
+            return .refused(.languageChanged)
+        }
         if let expected = ScriptDrift.form(of: passageText), let actual = ScriptDrift.form(of: text),
            expected != actual {
             return .refused(.scriptChanged)

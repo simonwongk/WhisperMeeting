@@ -151,6 +151,12 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// user explicitly selected — the "original language only" net (F32). Optional so old indexes
     /// decode; nil under automatic detection or when the language matches.
     var languageWarning: String?
+    /// A plain-language note when a summary's language or Chinese script disagrees with its
+    /// transcript's (F467 Part 2) — `LanguageConsistency.summaryMismatchWarning`. Optional so old
+    /// indexes decode; nil when there is no summary yet or the two agree. Recomputed on every
+    /// summarize (including a re-summarize), never left over from a previous summary — a stale
+    /// warning about text the user can no longer see is worse than none.
+    var summaryLanguageWarning: String?
     /// How many echoes of a stuck decode were removed from this transcript: whole repeated lines plus
     /// in-line copies of a looping unit (F422). Nil when nothing was removed, and on every index
     /// written before this field existed.
@@ -250,6 +256,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         staleTranscriptWarning: String? = nil,
         recoveryInterruption: String? = nil,
         languageWarning: String? = nil,
+        summaryLanguageWarning: String? = nil,
         repeatsRemoved: Int? = nil,
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         requestedLanguage: String? = nil,
@@ -280,6 +287,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.staleTranscriptWarning = staleTranscriptWarning
         self.recoveryInterruption = recoveryInterruption
         self.languageWarning = languageWarning
+        self.summaryLanguageWarning = summaryLanguageWarning
         self.repeatsRemoved = repeatsRemoved
         self.transcriptionEngineRawValue = transcriptionEngine?.rawValue
         self.requestedLanguage = requestedLanguage
@@ -298,6 +306,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         case languageCode, confidence, segments, errorMessage, summary, transcriptNormalized
         case markers, pinned, notes, tags, healthReport, alignmentWarning, recoveryWarning
         case languageWarning, source, referenceSegments
+        // F467 Part 2: a summary-vs-transcript language/script mismatch note, added after the
+        // `MeetingRecordWireFormatTests` guard existed — that test is what makes listing it here
+        // non-optional rather than a step somebody could forget.
+        case summaryLanguageWarning
         // F304: these two were missing, so they were encoded and decoded by nothing — in-memory
         // only. `recoverySource` IS F273's fix: that ticket exists because provenance lived in a
         // field another path cleared, and the fix moved it into a field nothing persisted, so it

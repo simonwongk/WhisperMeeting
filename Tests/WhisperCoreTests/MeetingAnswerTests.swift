@@ -74,6 +74,44 @@ func scriptConversionIsRefused() {
     #expect(outcome == .refused(.scriptChanged))
 }
 
+// F467 Part 1 — the system prompt already says "keep the passages' language and script", but
+// `evaluate` only ever checked the script half (`ScriptDrift.form`, which answers nil for any text
+// without Traditional-only or Simplified-only characters — so it is silent on English entirely). A
+// full translation into English was never refused. `TranscriptLanguage.dominant` is the check
+// already used elsewhere in this file (`LanguageConsistency`) for exactly "did the language
+// change", so this is the same guarantee the script check gives Chinese, extended to language.
+@Test("A Chinese meeting is not answered with a full English translation (F182, F467)")
+func languageTranslationIsRefused() {
+    let passages = [passage(0, "我們決定新版本在十月十五號發佈，前提是測試全部通過。")]
+    let outcome = MeetingAnswerPolicy.evaluate(
+        "We decided to release the new version on October 15, provided all tests pass [1].",
+        question: "When do we release?", passages: passages, protectedTerms: []
+    )
+    #expect(outcome == .refused(.languageChanged))
+}
+
+/// The inverse translation direction, so the guard is not a one-way Chinese-only check.
+@Test("An English meeting is not answered with a full Mandarin translation (F182, F467)")
+func reverseLanguageTranslationIsRefused() {
+    let passages = [passage(0, "We decided to release the new version on October 15.")]
+    let outcome = MeetingAnswerPolicy.evaluate(
+        "我们决定十月十五号发布新版本 [1]。", question: "何时发布？", passages: passages, protectedTerms: []
+    )
+    #expect(outcome == .refused(.languageChanged))
+}
+
+/// The existing script guard and the new language guard answer different questions and must not
+/// collide: same-language Traditional passages answered in Simplified is `.scriptChanged`, not
+/// `.languageChanged` — `TranscriptLanguage.dominant` calls both scripts "chinese".
+@Test("A same-language script conversion is still reported as scriptChanged, not languageChanged (F467)")
+func scriptChangeIsNotMisreportedAsLanguageChange() {
+    let passages = [passage(0, "我們決定這個價格給客戶優惠。")]
+    let outcome = MeetingAnswerPolicy.evaluate(
+        "我们决定这个价格给客户优惠 [1]。", question: "價格?", passages: passages, protectedTerms: []
+    )
+    #expect(outcome == .refused(.scriptChanged))
+}
+
 @Test("The model saying the passages do not answer it is a result, not an error (F182)")
 func notFoundIsAResult() {
     let outcome = MeetingAnswerPolicy.evaluate(

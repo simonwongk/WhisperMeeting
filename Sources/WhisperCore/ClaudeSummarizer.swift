@@ -77,7 +77,10 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
-            "system": Self.systemPrompt(language: language, style: style, template: template),
+            "system": Self.systemPrompt(
+                language: language, style: style, template: template,
+                script: ScriptDrift.form(of: transcript)
+            ),
             "messages": [
                 ["role": "user", "content": transcript]
             ],
@@ -92,10 +95,18 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         return request
     }
 
+    /// - Parameter script: The transcript's Chinese script, when `ScriptDrift.form(of: transcript)`
+    ///   is unambiguous (F467 Part 2). Unlike `DictationRefinePrompt.system(languageCode:script:)`,
+    ///   which reads `languageCode == "zh"` off a stored field, this is named regardless of
+    ///   `language` — a summary's `language` is the engine's detected code, which can itself be
+    ///   wrong or nil, and the script comes straight from the transcript text either way. Silent
+    ///   (as before) when the transcript says nothing unambiguous, matching `DictationRefinePrompt`'s
+    ///   own "nil names nothing" rule.
     static func systemPrompt(
         language: String?,
         style: SummaryStyle = .balanced,
-        template: MeetingTemplate = .general
+        template: MeetingTemplate = .general,
+        script: ChineseScriptForm? = nil
     ) -> String {
         var prompt = """
         You summarize meeting transcripts. Read the transcript and produce:
@@ -115,6 +126,20 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         }
         if let language, !language.isEmpty {
             prompt += "\nThe transcript's detected language code is \"\(language)\"."
+        }
+        // F467 Part 2: naming the script is what stops the model converting in the first place —
+        // the same reason DictationRefinePrompt names it for dictation refinement.
+        if let script {
+            switch script {
+            case .traditional:
+                prompt += " The transcript is written in Traditional Chinese characters; write your "
+                    + "summary, key points, and action items in Traditional Chinese characters, and "
+                    + "never convert them to Simplified."
+            case .simplified:
+                prompt += " The transcript is written in Simplified Chinese characters; write your "
+                    + "summary, key points, and action items in Simplified Chinese characters, and "
+                    + "never convert them to Traditional."
+            }
         }
         return prompt
     }

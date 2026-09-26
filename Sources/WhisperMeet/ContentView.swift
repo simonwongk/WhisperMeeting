@@ -3124,7 +3124,7 @@ private struct TranscriptDetailView: View {
                 }
                 .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
-                summaryBody(summary, transcript: meeting.transcriptText)
+                summaryBody(summary, transcript: meeting.transcriptText, languageWarning: meeting.summaryLanguageWarning)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if model.summarizationEngine == .local, !model.isSummarizerInstalled, SummarizerRuntime.isSupportedOnCurrentMac {
                 Text("Install the local summarization model in Settings to turn this transcript into a summary, key points, and action items — privately, on this Mac.")
@@ -3142,9 +3142,22 @@ private struct TranscriptDetailView: View {
     }
 
     @ViewBuilder
-    private func summaryBody(_ summary: MeetingSummary, transcript: String) -> some View {
+    private func summaryBody(_ summary: MeetingSummary, transcript: String, languageWarning: String?) -> some View {
         let coverageInput = SummaryCoverageInput(summary: summary, transcript: transcript, terms: store.vocabulary)
         VStack(alignment: .leading, spacing: 14) {
+            // F467 Part 2: the same "original language only" net F32's `languageWarning` is for
+            // transcripts, applied to summaries. Beside the summary text it describes, never inside
+            // it (F306's rule) — there is no button here, but nesting is still what would make a
+            // future one deletable.
+            if let languageWarning {
+                Label(languageWarning, systemImage: "character.bubble.badge.exclamationmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .bannerSurface(.red)
+                    .accessibilityElement(children: .combine)
+            }
             Text(summary.summary)
                 .textSelection(.enabled)
             // F245: a summary omits by design and a dropped claim leaves no trace. This is the

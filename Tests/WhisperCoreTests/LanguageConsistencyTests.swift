@@ -195,3 +195,42 @@ func segmentRerunAdvisoryNamesTheMeetingsLanguage() throws {
     #expect(LanguageConsistency.segmentRerunWarning(meetingLanguage: .automatic, replacementText: "Hello.") == nil)
     #expect(LanguageConsistency.segmentRerunWarning(meetingLanguage: .english, replacementText: "  ") == nil)
 }
+
+// MARK: - Summary language/script advisory (F467 Part 2)
+
+@Test("A summary that translates a Chinese transcript into English is flagged (F467)")
+func summaryTranslationIsFlagged() {
+    let transcript = "我們決定新版本在十月十五號發佈，前提是測試全部通過。"
+    let summary = MeetingSummary(
+        summary: "We decided to release the new version on October 15, provided all tests pass.",
+        keyPoints: [], actionItems: []
+    )
+    let warning = LanguageConsistency.summaryMismatchWarning(transcript: transcript, summary: summary)
+    #expect(warning?.contains("English") == true)
+    #expect(warning?.contains("transcript is unchanged") == true)
+}
+
+@Test("A summary that returns Simplified for a Traditional transcript is flagged (F467)")
+func summaryScriptConversionIsFlagged() {
+    let transcript = "我們決定這個價格給客戶優惠。"
+    let summary = MeetingSummary(summary: "我们决定这个价格给客户优惠。", keyPoints: [], actionItems: [])
+    let warning = LanguageConsistency.summaryMismatchWarning(transcript: transcript, summary: summary)
+    #expect(warning?.contains("Simplified") == true)
+    #expect(warning?.contains("Traditional") == true)
+}
+
+@Test("A summary in the transcript's own language and script is not flagged (F467)")
+func matchingSummaryIsNotFlagged() {
+    #expect(LanguageConsistency.summaryMismatchWarning(
+        transcript: "We should ship on Friday.",
+        summary: MeetingSummary(summary: "The team agreed to ship on Friday.", keyPoints: ["Ship Friday"], actionItems: [])
+    ) == nil)
+    #expect(LanguageConsistency.summaryMismatchWarning(
+        transcript: "我們決定這個價格給客戶優惠。",
+        summary: MeetingSummary(summary: "我們決定給客戶優惠。", keyPoints: [], actionItems: [])
+    ) == nil)
+    // Neither side has scorable text — nothing to compare.
+    #expect(LanguageConsistency.summaryMismatchWarning(
+        transcript: "", summary: MeetingSummary(summary: "", keyPoints: [], actionItems: [])
+    ) == nil)
+}

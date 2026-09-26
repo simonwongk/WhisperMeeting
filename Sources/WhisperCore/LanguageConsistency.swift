@@ -161,4 +161,38 @@ public enum LanguageConsistency {
             + "The recording is unchanged — re-transcribe with the correct language if the audio was "
             + "\(requestedName)."
     }
+
+    /// An advisory when a summary's language or Chinese script disagrees with its transcript's
+    /// (F467 Part 2). Unlike a re-transcription, a summary has no raw fallback the user can already
+    /// see beside it, so this is a warning, not the answer/passages refusal `MeetingAnswerPolicy`
+    /// can afford — the summary is still shown, with the caveat that it may not be trustworthy.
+    ///
+    /// Checks language first (a full translation), then script within Chinese (Traditional read
+    /// back as Simplified or vice versa) — the same two-question split `MeetingAnswerPolicy.evaluate`
+    /// makes for Ask answers, for the same reason: `TranscriptLanguage.dominant` calls both Chinese
+    /// scripts "chinese", so a script-only drift would never trip the language check, and
+    /// `ScriptDrift.form` answers nil for English, so it would never catch a translation either.
+    /// Nil when the transcript has no scorable text, the summary is empty, or the two agree.
+    public static func summaryMismatchWarning(transcript: String, summary: MeetingSummary) -> String? {
+        let summaryText = ([summary.summary] + summary.keyPoints + summary.actionItems.map(\.text))
+            .joined(separator: "\n")
+        if let transcriptLanguage = TranscriptLanguage.dominant(of: transcript),
+           let summaryLanguage = TranscriptLanguage.dominant(of: summaryText),
+           transcriptLanguage != summaryLanguage {
+            return "This summary reads as \(displayName(summaryLanguage)), but the transcript reads as "
+                + "\(displayName(transcriptLanguage)). Check it against the transcript — the transcript "
+                + "is unchanged."
+        }
+        if let transcriptScript = ScriptDrift.form(of: transcript),
+           let summaryScript = ScriptDrift.form(of: summaryText),
+           transcriptScript != summaryScript {
+            func scriptName(_ form: ChineseScriptForm) -> String {
+                form == .traditional ? "Traditional" : "Simplified"
+            }
+            return "This summary is in \(scriptName(summaryScript)) Chinese characters, but the "
+                + "transcript is in \(scriptName(transcriptScript)). Check it against the transcript "
+                + "— the transcript is unchanged."
+        }
+        return nil
+    }
 }
