@@ -129,6 +129,108 @@ enum VocabularyExtractor {
         }
     }
 
+    // MARK: - F593: single-word technical jargon on the transcript path
+
+    /// Calendar names are the one common, closed-vocabulary class of English word that is
+    /// capitalized by rule regardless of sentence position ("we meet every Monday") rather than by
+    /// being a genuine proper noun or technical term — measured directly as the dominant false
+    /// positive of the mid-sentence-capitalization signal below on a plain-prose transcript (see
+    /// F593's `docs/TICKET_LOG.md` entry for the count). A closed set of 19 names that will never
+    /// need another entry, unlike an open-ended "common words" list this codebase deliberately
+    /// avoids maintaining by hand.
+    private static let calendarWords: Set<String> = [
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+    ]
+
+    /// Whether an NLTagger `.otherWord` occurrence, found only in a TRANSCRIPT (never a document —
+    /// see the call site), still looks like a technical term rather than an ordinary word, using
+    /// shape signals a common word does not share (F593):
+    ///
+    /// 1. Contains a digit ("GPT4", "K8s", "Web3") — no ordinary English word does.
+    /// 2. Internal mixed case ("gRPC", "GitHub", "iPhone") — an uppercase letter after the first
+    ///    character, alongside a lowercase one (so a plain ALL-CAPS acronym, already caught by the
+    ///    regex above, does not also take this path).
+    /// 3. Capitalized and **mid-sentence**: an ordinary word is capitalized only because it opens a
+    ///    sentence; a word capitalized in the middle of one ("Our Kestrel service…") was capitalized
+    ///    on purpose. Calendar names are excluded (see `calendarWords`) since English capitalizes
+    ///    them by rule, not because they are notable.
+    /// 4. Capitalized and **repeats across two or more distinct lines**, even sentence-initially —
+    ///    for a term whose position in this transcript always happens to open a sentence. Gated on
+    ///    `lexicalClass` being `.noun`, not merely capitalization: this is the one signal that could
+    ///    otherwise resurrect a determiner/pronoun/conjunction that recurs at the start of many
+    ///    sentences ("The", "We"), which is exactly the F518 regression this ticket must not reopen.
+    ///
+    /// The `lexicalClass` gate is deliberately scoped to signal 4 only, not signal 3 too. Signal 4
+    /// is the one that can resurrect a determiner/pronoun/conjunction, because those words genuinely
+    /// do recur at the start of many sentences ("The", "We") — signal 3 has no matching failure mode
+    /// in practice, since a function word capitalized *mid*-sentence is not an English usage this
+    /// codebase needs to defend against. Measured directly against the jargon-heavy fixture: two
+    /// genuine terms ("Ansible", "Elasticsearch") are mis-tagged `.adjective`/`.adverb` by the
+    /// installed model rather than `.noun`, so gating signal 3 on `.noun` too would have cost real
+    /// recall for no corresponding precision gain.
+    private static func looksLikeTranscriptJargon(
+        _ word: String,
+        at range: Range<String.Index>,
+        in text: String,
+        lineOccurrences: [String: Int],
+        lexicalTagger: NLTagger?
+    ) -> Bool {
+        if word.contains(where: \.isNumber) { return true }
+        if isMixedCaseWord(word) { return true }
+        guard let first = word.first, first.isUppercase else { return false }
+        guard !calendarWords.contains(word.lowercased()) else { return false }
+        if isMidSentence(range, in: text) { return true }
+        guard (lineOccurrences[word.lowercased()] ?? 0) >= 2, let lexicalTagger else { return false }
+        return lexicalTagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass).0 == .noun
+    }
+
+    /// An uppercase letter after the word's first character, alongside a lowercase letter somewhere
+    /// in the word — "gRPC", "GitHub", "iPhone". Requiring a lowercase letter too excludes a plain
+    /// ALL-CAPS run ("CCPA"), which the dedicated all-caps regex above already handles.
+    private static func isMixedCaseWord(_ word: String) -> Bool {
+        guard word.contains(where: \.isLowercase) else { return false }
+        return word.dropFirst().contains(where: \.isUppercase)
+    }
+
+    /// Whether `range` opens mid-sentence rather than at the very start of `text` or immediately
+    /// after a sentence-ending mark (reusing `sentenceEndingPunctuation`, the same marks the
+    /// document line heuristic treats as ending a clause). Walks backward over whitespace only, so
+    /// it costs nothing beyond the immediately preceding run of spaces/newlines.
+    private static func isMidSentence(_ range: Range<String.Index>, in text: String) -> Bool {
+        var index = range.lowerBound
+        while index > text.startIndex {
+            let previousIndex = text.index(before: index)
+            let character = text[previousIndex]
+            if character.isWhitespace {
+                index = previousIndex
+                continue
+            }
+            return String(character).rangeOfCharacter(from: sentenceEndingPunctuation) == nil
+        }
+        return false
+    }
+
+    /// How many distinct lines of `text` contain `word` (case-insensitive, whole word), for signal 4
+    /// above. Computed once per `candidates` call over the whole transcript, not once per candidate
+    /// word, so a transcript with many candidates still costs one pass.
+    private static func lineOccurrenceCounts(in text: String) -> [String: Int] {
+        guard let wordPattern = try? NSRegularExpression(pattern: #"[A-Za-z][A-Za-z0-9]*"#) else {
+            return [:]
+        }
+        var linesByWord: [String: Set<Int>] = [:]
+        for (lineIndex, line) in text.components(separatedBy: .newlines).enumerated() {
+            let nsLine = line as NSString
+            let matches = wordPattern.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
+            for match in matches {
+                let word = nsLine.substring(with: match.range).lowercased()
+                linesByWord[word, default: []].insert(lineIndex)
+            }
+        }
+        return linesByWord.mapValues(\.count)
+    }
+
     /// Reads a plain-text document, tolerating non-UTF-8 encodings. Excel CSVs (Windows-1252),
     /// UTF-16, and Latin-1 `.txt` files are common and must not throw (F49); GB18030/GBK and Big5
     /// `.txt`/`.csv` files, with no BOM, are just as common on a Chinese-locale workflow and must
@@ -221,6 +323,29 @@ enum VocabularyExtractor {
 
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text
+
+        // F593: after F518 scoped the name finder to person/place/organisation tags, a single-word
+        // technical term in running prose — "Kubernetes", "Grafana", "Kestrel" — is tagged
+        // `.otherWord` just like a common word, so it stopped being suggested at all. F518's own
+        // property (no ordinary word suggested) must hold on the DOCUMENT path, where the line
+        // heuristic below already recovers short jargon lines a name-type tag misses. The transcript
+        // path (`includeLineHeuristic: false`) has no such fallback, so `.otherWord` there gets one
+        // more chance under shape signals a common word does not share (`looksLikeTranscriptJargon`).
+        // Never applied to Chinese: the tagger's Chinese catch-all is a different tag, `.other`, and
+        // none of these shape signals (Latin case, digits) mean anything for Chinese text anyway —
+        // `ordinaryChineseWordsAreNotCandidates` below stays exactly as strict as F518 left it.
+        let lexicalTagger: NLTagger?
+        let lineOccurrences: [String: Int]
+        if includeLineHeuristic {
+            lexicalTagger = nil
+            lineOccurrences = [:]
+        } else {
+            let posTagger = NLTagger(tagSchemes: [.lexicalClass])
+            posTagger.string = text
+            lexicalTagger = posTagger
+            lineOccurrences = lineOccurrenceCounts(in: text)
+        }
+
         tagger.enumerateTags(
             in: text.startIndex..<text.endIndex,
             unit: .word,
@@ -232,6 +357,15 @@ enum VocabularyExtractor {
             // document became a candidate: the, and, of, we, will, 我们, 明天. Only a name the
             // tagger actually classified as a person, place, or organisation belongs in Vocabulary.
             if tag == .personalName || tag == .placeName || tag == .organizationName {
+                terms.insert(String(text[range]))
+            } else if !includeLineHeuristic, tag == .otherWord,
+                      looksLikeTranscriptJargon(
+                          String(text[range]),
+                          at: range,
+                          in: text,
+                          lineOccurrences: lineOccurrences,
+                          lexicalTagger: lexicalTagger
+                      ) {
                 terms.insert(String(text[range]))
             }
             return true
