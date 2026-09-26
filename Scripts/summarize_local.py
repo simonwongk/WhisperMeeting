@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -137,9 +138,35 @@ def report_progress(message: str) -> None:
     """One heartbeat line on stderr; stdout and --output stay pure (F24).
 
     The Swift side stops a helper that prints nothing for LocalSummarizer.defaultStallTimeout (F512),
-    so every phase that can take a while says so: loading the model, each prompt chunk, and
-    generation (see should_report_generation). Silence then means stuck, not slow."""
+    so every phase that can take a while says so: the model load (load_with_heartbeat), each prompt
+    chunk, and generation (see should_report_generation). Silence then means stuck, not slow."""
     print(f"[summarize] {message}", file=sys.stderr, flush=True)
+
+
+LOAD_REPORT_SECONDS = 15.0
+
+
+def load_with_heartbeat(load, model_path, interval=LOAD_REPORT_SECONDS):
+    """Run mlx_lm's load() while a thread reports every `interval` seconds that it is still going.
+
+    load() blocks with no output for as long as a cold 4.5 GB model takes to page in, and on a
+    swapping Mac nobody has measured that (F512 review); rather than trust it to finish inside the
+    stall timeout, the load speaks for itself. The thread is joined on every exit, so no line can
+    arrive after the load has returned or raised."""
+    finished = threading.Event()
+    started = time.monotonic()
+
+    def beat():
+        while not finished.wait(interval):
+            report_progress(f"still loading model ({int(time.monotonic() - started)} s)")
+
+    thread = threading.Thread(target=beat, name="load-heartbeat", daemon=True)
+    thread.start()
+    try:
+        return load(model_path)
+    finally:
+        finished.set()
+        thread.join()
 
 
 GENERATION_REPORT_TOKENS = 32
@@ -192,7 +219,7 @@ def main() -> int:
     from mlx_lm.sample_utils import make_sampler
 
     report_progress("loading model")
-    model, tokenizer = load(args.model)
+    model, tokenizer = load_with_heartbeat(load, args.model)
     report_progress("model loaded")
     prompt = apply_chat_template(tokenizer, build_chat_messages(system_prompt, transcript))
     sampler = make_sampler(temp=0.0)  # greedy: a summary should be reproducible, not sampled.

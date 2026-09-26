@@ -15,6 +15,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from types import ModuleType, SimpleNamespace
 
@@ -245,3 +247,38 @@ class MainEndToEndTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LoadHeartbeatTests(unittest.TestCase):
+    """F512 review: `load()` blocks with no output, and the Swift side stops a helper that is silent
+    for its stall timeout — so a slow cold load under swap would have read as a wedge. A thread
+    speaks for the load while it runs."""
+
+    def test_a_slow_load_keeps_reporting_until_it_returns(self):
+        def slow_load(path, **kwargs):
+            time.sleep(0.08)
+            return ("model", "tokenizer")
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            result = summ.load_with_heartbeat(slow_load, "/models/x", interval=0.01)
+        self.assertEqual(result, ("model", "tokenizer"))
+        beats = [line for line in captured.getvalue().splitlines() if "still loading model" in line]
+        self.assertGreaterEqual(len(beats), 2, captured.getvalue())
+
+    def test_the_heartbeat_stops_when_the_load_returns(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            summ.load_with_heartbeat(lambda path, **kwargs: "m", "/models/x", interval=0.01)
+            before = captured.getvalue()
+            time.sleep(0.05)
+        self.assertEqual(captured.getvalue(), before, "the heartbeat outlived the load")
+
+    def test_a_failing_load_still_stops_the_heartbeat_and_raises(self):
+        def broken_load(path, **kwargs):
+            raise RuntimeError("no such model")
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured), self.assertRaises(RuntimeError):
+            summ.load_with_heartbeat(broken_load, "/models/x", interval=0.01)
+        self.assertEqual(threading.active_count(), 1, "the heartbeat thread is still running")

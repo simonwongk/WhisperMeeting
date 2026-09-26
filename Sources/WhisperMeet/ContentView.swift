@@ -3592,8 +3592,9 @@ private struct TranscriptDetailView: View {
             }
             Divider()
             Button {
-                model.secondOpinionSpans = nil
                 // F512: only a run that started has a sheet to show; a refusal is its alert alone.
+                // `requestSecondOpinion` clears the previous comparison itself, after its guards,
+                // so a refusal leaves it in place.
                 if model.requestSecondOpinion(id: meetingID) {
                     showSecondOpinion = true
                 }
