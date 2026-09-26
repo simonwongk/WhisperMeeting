@@ -132,6 +132,34 @@ func restoreRefusedWhileTranscribing() async throws {
     try await drain(model, latch)
 }
 
+@Test("A restore is not offered while a transcription is queued, not only while one runs (F583)")
+@MainActor
+func restoreRefusedWhileATranscriptionIsQueued() async throws {
+    // F583: `hasActiveTranscription` is the running job only. A job queued behind Quick Dictation
+    // (F470) has no running job, no auxiliary run and no summary, so F506's busy reason let the
+    // restore start — and when dictation ended the queue pumped, the engine ran for its minutes,
+    // and every write it made was refused by the restore hold, in silence.
+    let latch = Latch()
+    let (root, model, generation, id) = try makeFixture("queued", latch: latch)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var dictating = true
+    model.configureDictationGuard { dictating }
+    model.beginTranscription(id: id)
+    try #require(model.isQueuedForTranscription(id))
+    try #require(!model.hasActiveTranscription, "the queue was not held: dictation is not holding it")
+
+    await model.requestLibraryRestore(from: generation)
+
+    #expect(model.pendingLibraryRestore == nil, "a restore was offered over a queued transcription")
+    #expect(model.alertMessage?.contains("queued") == true, "\(model.alertMessage ?? "no message")")
+    #expect(model.alertMessage?.contains("remove") == true,
+            "the message does not name the queued card's own control: \(model.alertMessage ?? "no message")")
+
+    dictating = false
+    model.resumeTranscriptionQueue()
+    try await drain(model, latch)
+}
+
 @Test("A restore confirmed after a transcription started is refused, and changes nothing (F506)")
 @MainActor
 func restoreRefusedAtConfirmationWhenATranscriptionStarted() async throws {

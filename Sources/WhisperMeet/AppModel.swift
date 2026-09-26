@@ -928,6 +928,12 @@ final class AppModel: ObservableObject {
         transcription.activeID != nil
     }
 
+    /// Whether any meeting is waiting in the queue. Distinct from `hasActiveTranscription`, which is
+    /// the running job only: a job queued behind Quick Dictation has no running job at all (F583).
+    var hasQueuedTranscriptions: Bool {
+        transcription.pendingCount > 0
+    }
+
     func isQueuedForTranscription(_ id: UUID) -> Bool {
         transcription.isPending(id)
     }
@@ -2125,6 +2131,12 @@ final class AppModel: ObservableObject {
         if hasActiveTranscription || isRunningAuxiliaryEngine || isSummarizing {
             return "Wait for the running transcription or summary to finish, or cancel it, before restoring the library. Its result would be written into the meeting you are restoring."
         }
+        // F583: a queued job writes into its meeting when it finishes exactly as a running one does,
+        // and a job queued behind Quick Dictation (F470) has no running job to be caught above. The
+        // card's own control is "Remove", so that is the word.
+        if hasQueuedTranscriptions {
+            return "Wait for the queued transcription to finish, or remove it from the queue, before restoring the library. Its result would be written into the meeting you are restoring."
+        }
         return nil
     }
 
@@ -2184,10 +2196,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Ends the hold `performLibraryRestore` began (F506), on both of the restore's paths.
+    /// Ends the hold `performLibraryRestore` began (F506), on both of the restore's paths, and
+    /// starts anything the hold kept waiting (F583) — normally nothing, since the busy reason
+    /// refuses a restore over a queued job; this is what makes the pump's refusal a deferral.
     private func endLibraryRestore() {
         objectWillChange.send()
         store.endLibraryRestore()
+        pumpTranscriptionQueue()
     }
 
     /// One retained index generation, described for the user to choose between (F193).
@@ -4373,7 +4388,11 @@ final class AppModel: ObservableObject {
     /// run is what F140 forbids, and during dictation `executeEngine` would refuse it with
     /// `EngineAdmissionError.dictationActive`, which fails the meeting instead of leaving it queued.
     private func pumpTranscriptionQueue() {
-        guard !isRunningAuxiliaryEngine, !isDictationActive() else { return }
+        // The restore check is an additional refusal beside `libraryRestoreBlockedReason`, which
+        // should already have kept the queue empty (F583): if that reason is ever wrong somewhere,
+        // the job waits for `endLibraryRestore()` instead of running into a hold that refuses its
+        // every write.
+        guard !isRunningAuxiliaryEngine, !isDictationActive(), !store.isRestoringLibrary else { return }
         guard let next = transcription.startNext() else { return }
         // A pending id never has a live task (tasks exist only for the active job and are cleared
         // before finishActive), so this holds by construction — asserted rather than guarded, so a
