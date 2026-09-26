@@ -92,6 +92,76 @@ func clearAllConfirmationIsReachableFromTheButton() throws {
     #expect(stripped.contains("log.clear()"))
 }
 
+/// A rival writer over the same files, committing a real F190 generation — mirrors
+/// `MeetingStoreGenerationTests.foreignWriterCommits`, the established way this codebase produces a
+/// genuine (not mocked) `generationConflict` for a store holding a now-stale token.
+@MainActor
+private func rivalDictationWriterCommits(_ log: DictationLog, in root: URL) throws {
+    let rival = BackupJSONStore<DictationLog>(
+        primaryURL: root.appendingPathComponent("dictation-log.json"),
+        backupURL: root.appendingPathComponent("dictation-log.backup.json"),
+        writer: "ffff9999",
+        retention: .dictationLog
+    )
+    let existing = try rival.load()
+    _ = try rival.save(log, expecting: existing?.token)
+}
+
+@Test("Clear All must not run forgetHistory() when its second save fails — a failure defers, it does not destroy (F456)")
+@MainActor
+func clearKeepsHistoryWhenItsSecondSaveFails() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F456-second-save-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secret = "a dictation nobody else should be able to read back"
+
+    let store = DictationLogStore(directory: root)
+    store.record(text: secret, outcome: .pasted)
+    #expect(store.saveErrorMessage == nil)
+
+    let historyDirectory = root.appendingPathComponent("dictation-log.history")
+    let generationsBeforeClear = try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path)
+    #expect(!generationsBeforeClear.isEmpty, "sanity: something is actually retained before Clear All runs")
+
+    // Fires between clear()'s two internal saves. The first save (clearing the log) has already
+    // succeeded and updated `store`'s in-memory token by this point; a rival now commits a
+    // DIFFERENT value under that exact token, so `store`'s own second save — still expecting its
+    // now-stale token — collides with a real, on-disk generation conflict. This is not a
+    // permission-based failure (the existing F195 tests already cover that shape); it is the
+    // transient, everyone-did-everything-right race `forgetHistory()` must still survive.
+    var hookCallCount = 0
+    store.betweenClearSavesForTesting = {
+        hookCallCount += 1
+        try? rivalDictationWriterCommits(
+            DictationLog().adding(DictationLogEntry(
+                id: UUID(), date: Date(), text: "a rival's own entry", outcome: .pasted,
+                rawText: nil, refinement: nil
+            )),
+            in: root
+        )
+    }
+
+    let erased = store.clear()
+
+    #expect(hookCallCount == 1)
+    #expect(store.saveErrorMessage != nil, "the second save must have actually failed")
+    #expect(!erased, "a save failure must never be reported as a successful erase")
+    #expect(store.historyEraseFailureMessage != nil)
+    // Not a superset check: `.dictationLog`'s own retention policy (`recentCount: 2`) legitimately
+    // rotates older generations out on every ordinary save, including the rival's — that happens
+    // whether or not this bug is present, and is not what is under test. `forgetHistory()` is
+    // categorically different: it wipes EVERY retained generation and conflict branch
+    // unconditionally (`StoreHistory.forgetAll()`), which is the one way this directory ends up
+    // completely empty. So an empty directory here can only mean `forgetHistory()` ran despite the
+    // second save's failure.
+    let generationsAfterClear = try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path)
+    #expect(
+        !generationsAfterClear.isEmpty,
+        "forgetHistory() ran and wiped every retained generation over a save failure that leaves the backup still holding the full pre-clear text with nothing left to recover it from"
+    )
+}
+
 // MARK: - F195: load errors and save errors are different channels
 
 @Test("The read-only notice is derived from health, so nothing can erase it (F195)")

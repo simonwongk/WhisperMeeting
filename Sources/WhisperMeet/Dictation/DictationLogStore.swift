@@ -69,6 +69,12 @@ import WhisperCore
     /// verdict and a lost race says nothing about whether the bytes on disk were readable, so a
     /// conflict is reported through `saveErrorMessage` and changes nothing else.
     private var token: GenerationToken?
+    /// Test-only seam (nil in production): called between `clear()`'s two saves. A real
+    /// `BackupJSONStore.save` failure (a `generationConflict` from a rival writer, an EIO, a
+    /// permission hiccup) can land on either save, and this is the only way to make it land on
+    /// *just* the second one while the first still succeeds normally — which is exactly the case
+    /// `forgetHistory()` must not run through (F456).
+    var betweenClearSavesForTesting: (() -> Void)?
 
     init(directory: URL? = nil) {
         let dir = directory ?? WhisperMeetLibrary.root()   // F312
@@ -121,24 +127,34 @@ import WhisperCore
     /// cleared), so it rotates THAT into the backup, overwriting the stale full copy.
     /// `forgetHistory()` then discards every retained generation — full and cleared alike; it does
     /// not touch the backup, which is exactly why the second save had to run first.
+    ///
+    /// `forgetHistory()` runs ONLY once both saves are confirmed to have succeeded (F456 follow-up
+    /// review). It used to run unconditionally, straight after the two `persist()` calls: if the
+    /// first save succeeded (primary cleared, backup rotated to the full pre-clear text — the
+    /// honest, still-recoverable state at that point) and the second then failed on anything
+    /// transient (`generationConflict`, an EIO, a permission hiccup), `forgetHistory()` still ran
+    /// and destroyed every retained generation — including generations from BEFORE this clear —
+    /// while the backup still held the full pre-clear text with no history left to fall back to.
+    /// A save failure must defer, never destroy: keep history, say so, and let the user retry.
     @discardableResult
     func clear() -> Bool {
         guard health.allowsMutation else { return false }
         log = log.cleared()
         persist()
         let firstSaveFailed = saveErrorMessage != nil
+        betweenClearSavesForTesting?()
         persist()
         let secondSaveFailed = saveErrorMessage != nil
+        guard !firstSaveFailed, !secondSaveFailed else {
+            historyEraseFailureMessage =
+                "Dictations were cleared, but an earlier copy may still be on disk because a save failed. Try Clear All again."
+            return false
+        }
         do {
             try store.forgetHistory()
         } catch {
             historyEraseFailureMessage =
                 "Dictations were cleared, but their saved history copies could not be fully removed: \(error.localizedDescription)"
-            return false
-        }
-        guard !firstSaveFailed, !secondSaveFailed else {
-            historyEraseFailureMessage =
-                "Dictations were cleared, but an earlier copy may still be on disk because a save failed. Try Clear All again."
             return false
         }
         historyEraseFailureMessage = nil
