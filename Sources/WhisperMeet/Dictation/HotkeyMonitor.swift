@@ -164,9 +164,11 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// trigger on that key's own key-down, so the key is usually held when it is adopted, and a held
     /// key can repeat its key-down. Read as up, the first repeat is a press nobody made: in toggle
     /// mode it turns off the dictation the old key turned on, and in hold mode it is a start. The
-    /// read also keeps a release: when Change re-arms the same key while its press is still on the
-    /// way to the controller, a reset made that key's release look like a duplicate "up", dropped
-    /// with the microphone on (F446).
+    /// read also keeps a release when the key is still held at the re-arm: when Change re-arms the
+    /// same key while its press is still on the way to the controller, a reset made that key's
+    /// release look like a duplicate "up", dropped with the microphone on (F446). It cannot keep one
+    /// that happened before the re-arm, while the old tap was being replaced: the key reads as up and
+    /// no end is sent for the start still queued (F636).
     ///
     /// A key already down whose press this monitor did not take as the trigger's started no
     /// dictation, so it must not cancel one (F584): with Left ⌘ chosen while a toggle dictation is on,
