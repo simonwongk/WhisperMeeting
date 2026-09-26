@@ -47,14 +47,52 @@ enum WhisperMeetLauncher {
 }
 
 struct WhisperMeetApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
     @StateObject private var dictation = DictationController()
     /// App-level, not window-level (F257). The two `onReceive` modifiers that used to carry the
     /// F138 flush, and the `.task` that ran startup recovery, were both on `ContentView` inside the
     /// `WindowGroup` — so with the window closed, quitting from the menu bar lost the last
     /// debounced edit and a launch without a window never recovered anything.
-    @StateObject private var lifecycle = AppLifecycle()
+    @StateObject private var lifecycle: AppLifecycle
     @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var lifecycleDelegate
+
+    /// F465: the F257 wiring below used to happen inside the WindowGroup ContentView's `.task`,
+    /// which never runs at all if no window ever appears — a login item (the app offers "Launch at
+    /// login" via `SMAppService`), or a window closed before the task ran. `AppLifecycleDelegate`'s
+    /// own `applicationDidFinishLaunching` guards on `Self.lifecycle` being non-nil and returns
+    /// early otherwise, so that path was dead code in exactly the launches it exists for: it always
+    /// found the window's `.task` hadn't run yet.
+    ///
+    /// This initializer runs to completion before `NSApp` starts and dispatches
+    /// `applicationDidFinishLaunching` — the delegate object itself is a property of this struct,
+    /// so building it is part of constructing `self`. Wiring the handlers and setting
+    /// `AppLifecycleDelegate.lifecycle` here, rather than in the window's `.task`, means the
+    /// delegate always finds a handler: whether or not any window ever opens. It also means the
+    /// `Task { await lifecycle.runStartupRecoveryOnce() }` that fires recovery is the delegate's own
+    /// free-standing one, never one scoped to a SwiftUI `.task` — so closing the window mid-recovery
+    /// no longer cancels it out from under `performStartupRecovery` (the F279 growth probe included).
+    init() {
+        let model = AppModel()
+        let lifecycle = AppLifecycle()
+        _model = StateObject(wrappedValue: model)
+        _lifecycle = StateObject(wrappedValue: lifecycle)
+
+        lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
+        lifecycle.onStartupRecovery = { [weak model] in
+            await model?.performStartupRecovery()
+        }
+        // F181: files from Finder, the Dock, Shortcuts or the Finder service.
+        lifecycle.onOpenFiles = { [weak model] urls in
+            await model?.importExternalFiles(urls)
+        }
+        lifecycle.onRejectedFiles = { [weak model] urls in
+            let what = urls.count == 1 ? urls[0].lastPathComponent : "those files"
+            model?.report("WhisperMeet can only transcribe audio and video: \(what) was not imported.")
+        }
+        AppLifecycleDelegate.lifecycle = lifecycle
+        AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
+        lifecycle.begin()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -90,30 +128,12 @@ struct WhisperMeetApp: App {
                     model.configureIdleDictationRecognitionWarmUp { [weak dictation] in
                         dictation?.warmRecognitionEngineIfNeeded()
                     }
-                    // F257: the window still wires the two controllers together, because that is
-                    // view work and both objects outlive it. What it no longer does is own the
-                    // lifecycle — `AppLifecycle` runs startup recovery once per launch from
-                    // `applicationDidFinishLaunching`, so it happens whether or not this ever runs.
-                    lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
-                    lifecycle.onStartupRecovery = { [weak model] in
-                        await model?.performStartupRecovery()
-                    }
-                    // F181: files from Finder, the Dock, Shortcuts or the Finder service.
-                    lifecycle.onOpenFiles = { [weak model] urls in
-                        await model?.importExternalFiles(urls)
-                    }
-                    lifecycle.onRejectedFiles = { [weak model] urls in
-                        let what = urls.count == 1 ? urls[0].lastPathComponent : "those files"
-                        model?.report("WhisperMeet can only transcribe audio and video: \(what) was not imported.")
-                    }
-                    AppLifecycleDelegate.lifecycle = lifecycle
-                    AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
-                    lifecycle.begin()
-                    // Covers the ordering where the window's task runs AFTER launch (the ordinary
-                    // case, since the delegate fires before any scene appears): the delegate's own
-                    // call found no handler, and `runStartupRecoveryOnce` is idempotent, so exactly
-                    // one of these two does the work.
-                    await lifecycle.runStartupRecoveryOnce()
+                    // F257/F465: the window still wires the two controllers together above, because
+                    // that is view work and both objects outlive it. What it no longer does is any
+                    // part of the app-lifecycle wiring — `init()` above sets up `AppLifecycle` and
+                    // hands it to `AppLifecycleDelegate` before this `.task` can even run, so startup
+                    // recovery, the quit flush and opened files are already live whether or not this
+                    // window ever appears.
                 }
         }
         .defaultSize(width: 1_100, height: 760)
