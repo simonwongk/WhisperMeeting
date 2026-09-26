@@ -19,6 +19,26 @@ func latinTermsMatchWholeWords() {
     #expect(!ProtectedTerms.contains("the CCPA statute", term: "CCP"))
 }
 
+// F534 — a Latin term with no separating space against Han characters on either side (code-switched
+// Mandarin, as Whisper and Qwen routinely write it) must still count as "contained": ICU's regex
+// word boundary treats a Han ideograph as a word character, so the old `\b…\b` pattern found no
+// boundary between it and the Latin term and never matched.
+@Test("A Latin term written with no space against Chinese characters on either side is contained (F534)")
+func latinTermAdjacentToCJKIsContained() {
+    #expect(ProtectedTerms.contains("这个Kubernetes集群要升级", term: "Kubernetes"))
+    // Both sides adjacent, not just one.
+    #expect(ProtectedTerms.contains("升级Kubernetes了", term: "Kubernetes"))
+    // The consumer this guards: a refinement that drops the term from code-switched Mandarin.
+    let terms = ["Kubernetes"]
+    #expect(ProtectedTerms.missing(
+        from: "这个集群要升级", comparedTo: "这个Kubernetes集群要升级", terms: terms
+    ) == ["Kubernetes"])
+    // Whole-word behaviour for pure Latin text is unchanged: a longer Latin run beside the term
+    // still does not count.
+    #expect(!ProtectedTerms.contains("Kubernetes2 集群", term: "Kubernetes"))
+    #expect(!ProtectedTerms.contains("升级Kubernetes2了", term: "Kubernetes"))
+}
+
 @Test("CJK terms match as substrings, and composition does not matter (F245)")
 func cjkTermsMatchAsSubstrings() {
     #expect(ProtectedTerms.contains("中共自1999年迫害法輪功學員", term: "法輪功"))
