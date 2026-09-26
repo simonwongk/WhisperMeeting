@@ -100,9 +100,31 @@ public enum DictationRefinePolicy {
         guard !ScriptDrift.isSimplifyingConversion(source: cleanedInput, output: candidate) else {
             return nil
         }
+        // F589: a code-switched dictation's dominant script never changes when a cleanup
+        // TRANSLATES the embedded minority-script word into the majority language instead of
+        // preserving it — "Please send the 会议纪要 to the whole team before 周五." and "Please
+        // send the meeting minutes to the whole team before Friday." are both majority-English, so
+        // the dominant-script guard above cannot see this crossing at all. Reject whenever the
+        // input used a script (CJK or Latin) that the output has erased entirely; a cleanup that
+        // keeps every embedded word — in either script — still passes.
+        guard !droppedEmbeddedScript(source: cleanedInput, output: candidate) else { return nil }
         guard ProtectedTerms.missing(from: candidate, comparedTo: cleanedInput, terms: protectedTerms).isEmpty
         else { return nil }
         return candidate
+    }
+
+    /// Whether `output` has entirely lost a script `source` used, even in passing (F589). Scoped to
+    /// this app's two supported languages: any CJK ideograph (`U+3400…U+9FFF`, the same range
+    /// `TranscriptLanguage.dominant` scores) counts as Mandarin; any other letter counts as Latin.
+    private static func droppedEmbeddedScript(source: String, output: String) -> Bool {
+        func isCJK(_ scalar: Unicode.Scalar) -> Bool { scalar.value >= 0x3400 && scalar.value <= 0x9FFF }
+        func hasCJK(_ text: String) -> Bool { text.unicodeScalars.contains(where: isCJK) }
+        func hasLatinLetter(_ text: String) -> Bool {
+            text.unicodeScalars.contains { CharacterSet.letters.contains($0) && !isCJK($0) }
+        }
+        if hasCJK(source), !hasCJK(output) { return true }
+        if hasLatinLetter(source), !hasLatinLetter(output) { return true }
+        return false
     }
 
     private static func strippingCodeFence(_ text: String) -> String {

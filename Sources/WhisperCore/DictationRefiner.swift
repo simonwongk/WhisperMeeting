@@ -129,10 +129,20 @@ public actor DictationRefiner: DictationTextRefining {
         // F244: the script comes from the text, never from a preference. A dictation that reads as
         // Chinese by its script is Chinese even before language detection has settled.
         let script = ScriptDrift.form(of: text)
+        // F589: "reads as Chinese" means the text's DOMINANT script is Chinese
+        // (`TranscriptLanguage.dominant`, the same majority-CJK rule `acceptedOutput`'s own script
+        // guard and `DictationRefinePolicy.effectiveWordCount` already use) — not merely that
+        // `script` answered non-nil, which `ScriptDrift.form(of:)` does for ANY text containing a
+        // simplified- or traditional-only character, including an English sentence that embeds one
+        // or two Mandarin words. Before this, an automatic-mode Qwen dictation of "Please send the
+        // 会议纪要 to the whole team before 周五." (languageCode nil, script .simplified from the two
+        // Mandarin words) was told "The input is Mandarin Chinese; reply only in Mandarin Chinese"
+        // — the wrong instruction for content that is overwhelmingly English.
+        let isDominantlyChinese = TranscriptLanguage.dominant(of: text) == .chinese
         let request = RefineRequest(
             text: text,
             systemPrompt: DictationRefinePrompt.system(
-                languageCode: languageCode ?? (script == nil ? nil : "zh"), script: script
+                languageCode: languageCode ?? (isDominantlyChinese ? "zh" : nil), script: script
             ),
             maxTokens: DictationRefinePolicy.maxOutputTokens
         )

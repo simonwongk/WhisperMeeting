@@ -78,3 +78,32 @@ func stillStripsAWrapperTheModelAdded() {
     #expect(DictationRefinePolicy.acceptedOutput("\"She said \"no.\"\"", input: "she said \"no\"")
         == "She said \"no.\"")
 }
+
+@Test("An output that translates away an embedded script entirely is rejected even when the overall dominant script is unchanged (F589)")
+func rejectsDroppingAnEmbeddedScript() {
+    // Real, reproduced output: refine_server.py's installed Qwen3-8B-4bit refiner, driven with the
+    // app's actual prime-then-request sequence, on Scripts/bench/clips/encs1's raw ASR text. It
+    // translated the two embedded Mandarin words into English instead of preserving them. Both
+    // input and output are majority-English by `TranscriptLanguage.dominant`, so `rejectsTranslation`
+    // above's dominant-script guard never fires on this pair — this is the gap it cannot see, and
+    // it is exactly the failure F589's ticket reports: the app would have pasted this over the
+    // user's words as "refined" text.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Please send the meeting minutes to the whole team before Friday.",
+        input: "Please send the会议纪要to the whole team before周五."
+    ) == nil)
+
+    // The symmetric direction, also a real reproduced reply: Scripts/bench/clips/cs2's embedded
+    // Latin words ("schedule", "meeting") translated away from an otherwise Mandarin-dominant
+    // dictation.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "帮我安排一个会议，明天下午。", input: "帮我 schedule 一个 meeting，明天下午。"
+    ) == nil)
+
+    // A cleanup that keeps every embedded word verbatim is still accepted — the guard must not
+    // reject code-switched text outright, only a reply that erases one side of it.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Please send the 会议纪要 to the whole team before 周五.",
+        input: "please send the 会议纪要 to the whole team before 周五"
+    ) != nil)
+}

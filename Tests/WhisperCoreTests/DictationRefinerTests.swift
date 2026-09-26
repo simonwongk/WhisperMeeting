@@ -242,3 +242,42 @@ func refinerWithoutTermsIsUnchanged() async {
     let attempt = await refiner.attempt(text: "um we shipped the Kestrel release", languageCode: "en")
     #expect(attempt.outcome == .refined)
 }
+
+// MARK: - F589: an English-dominant, Mandarin-word-embedded dictation is not told to answer only
+// in Mandarin
+
+@Test("An English-dominant dictation with an embedded Mandarin word is not pinned to Mandarin-only (F589)")
+func refinerLeavesEnglishDominantCodeSwitchAlone() async {
+    // Qwen automatic mode reports no languageCode (nil) for every dictation — F589's own bench
+    // measured this directly. Before F589, `ScriptDrift.form(of:)` answering non-nil for ANY text
+    // that contains simplified- or traditional-only characters (a "which CJK script" check, built
+    // for whole-Chinese dictations) was reused as "is this text Mandarin", so an English sentence
+    // that merely contains two Mandarin words was told "The input is Mandarin Chinese; reply only
+    // in Mandarin Chinese" — the wrong instruction for content that is overwhelmingly English.
+    let engine = RecordingRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
+    _ = await refiner.attempt(
+        text: "Please send the 会议纪要 to the whole team before 周五.", languageCode: nil
+    )
+    let sent = engine.requests.first?.systemPrompt ?? ""
+    #expect(sent == DictationRefinePrompt.system(languageCode: nil), Comment(rawValue: sent))
+}
+
+@Test("A dominantly-Chinese dictation still gets the Mandarin-only prompt without a languageCode (F589)")
+func refinerStillNamesMandarinForADominantlyChineseDictation() async {
+    // The F589 fix narrows the fallback from "contains any script-decisive character" to
+    // "the text's DOMINANT script is Chinese" (TranscriptLanguage.dominant, the same majority-CJK
+    // rule DictationRefinePolicy.effectiveWordCount and the acceptedOutput guard already use) — it
+    // must not regress the F244/F245 cases this text was already covering. This sentence keeps one
+    // embedded Latin word (as cs1-3 do) but stays majority-Chinese by that rule — unlike cs1-3
+    // themselves, which the F589 bench measured as majority-ENGLISH by this exact rule once their
+    // Latin words and ASCII punctuation are counted, so they are not a regression case for this
+    // fallback (see the F589 log entry).
+    let engine = RecordingRefineEngine()
+    let refiner = DictationRefiner(engine: engine, sleep: neverSleep)
+    _ = await refiner.attempt(
+        text: "我们下周二上线新的产品版本，请大家在会议前确认好 deadline。", languageCode: nil
+    )
+    let sent = engine.requests.first?.systemPrompt ?? ""
+    #expect(sent == DictationRefinePrompt.system(languageCode: "zh", script: .simplified), Comment(rawValue: sent))
+}
