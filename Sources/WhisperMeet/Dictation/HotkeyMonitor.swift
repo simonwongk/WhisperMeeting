@@ -37,9 +37,12 @@ final class HotkeyMonitor: HotkeyMonitoring {
     private var hotkey: DictationHotkey = .rightOption
     private var keyDown = false       // physical down-state of the configured hotkey key
     private var toggledOn = false     // (toggle mode) whether dictation is currently on
-    /// Whether this hold of a modifier trigger has already been cancelled as part of a shortcut, so
-    /// ⌘-Tab-Tab-Tab reports one cancel, not three.
+    /// Whether this hold of a modifier trigger can no longer cancel a dictation: it already has, so
+    /// ⌘-Tab-Tab-Tab reports one cancel, not three — or it was already down, and not by a press this
+    /// monitor took as the trigger's, when adopted (F584).
     private var cancelledThisHold = false
+    /// Counts toggle presses, so a dropped start can tell whether the on-state is still its own.
+    private var togglePresses = 0
     private let currentKeyState: (CGKeyCode) -> Bool
 
     init(
@@ -157,17 +160,29 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// real event tap, which needs Accessibility and would hear the keyboard of whoever runs the
     /// suite.
     ///
-    /// Nothing here is assumed. The key's state is read, not reset to "up": Settings' "Change" hears
-    /// the trigger itself, so the tap is routinely rebuilt while the key that started a dictation is
-    /// still held, and a reset made that key's release look like a duplicate "up" — dropped, with the
-    /// microphone on. And toggle mode's on-state belongs to the dictation, not to the key: switching
-    /// to another toggle key while dictation is on leaves it on, so the new key's next press turns it
-    /// off. Only a change of mode clears it, since it means nothing in hold mode. (`stop()` still
-    /// clears everything: nothing can be in flight once dictation is off.)
+    /// Nothing here is assumed. The key's state is read, not reset to "up": Settings' "Change" sets a
+    /// trigger on that key's own key-down, so the key is usually held when it is adopted, and a held
+    /// key can repeat its key-down. Read as up, the first repeat is a press nobody made: in toggle
+    /// mode it turns off the dictation the old key turned on, and in hold mode it is a start. The
+    /// read also keeps a release: when Change re-arms the same key while its press is still on the
+    /// way to the controller, a reset made that key's release look like a duplicate "up", dropped
+    /// with the microphone on (F446).
+    ///
+    /// A key already down whose press this monitor did not take as the trigger's started no
+    /// dictation, so it must not cancel one (F584): with Left ⌘ chosen while a toggle dictation is on,
+    /// ⌘-Tab was F448's shortcut cancel and dropped that dictation unheard. Its next press is a fresh
+    /// hold and can cancel again.
+    ///
+    /// Toggle mode's on-state belongs to the dictation, not to the key: switching to another toggle
+    /// key while dictation is on leaves it on, so the new key's next press turns it off. Only a
+    /// change of mode clears it, since it means nothing in hold mode. (`stop()` still clears
+    /// everything: nothing can be in flight once dictation is off.)
     func adopt(_ newHotkey: DictationHotkey) {
+        let heardItsPress = keyDown && newHotkey.keyCode == hotkey.keyCode
         if newHotkey.mode != hotkey.mode { toggledOn = false }
         hotkey = newHotkey
         keyDown = currentKeyState(CGKeyCode(newHotkey.keyCode))
+        if !heardItsPress { cancelledThisHold = keyDown }
     }
 
     /// One tapped event. Internal so a test can feed it real `CGEvent`s without a live tap.
@@ -255,18 +270,40 @@ final class HotkeyMonitor: HotkeyMonitoring {
         }
     }
 
+    /// A start is delivered only if the trigger it was heard for is still the trigger, compared by
+    /// value (F584). An edge reaches the controller one main-queue turn after the tap heard it, and
+    /// the controller can arm another trigger in between. A start delivered after that began a
+    /// dictation nobody pressed the new trigger for. Under hold, its own release came from a key the
+    /// monitor no longer hears, so it ran until the new key's next release delivered it; under a
+    /// toggle whose on-state the change of mode had cleared, every press was a refused start and
+    /// only the watchdog ended it.
+    ///
+    /// An end is always delivered: it ends a dictation the old key started, which is what it was
+    /// pressed for, and a dropped toggle end would leave the dictation on with its on-state already
+    /// off. A dropped toggle start undoes the on-state its press set, unless a later press has
+    /// toggled it since: that press's edge is queued behind this one, and the on-state is its.
     private func dispatch(pressed: Bool) {
+        let heardFor = hotkey
         switch hotkey.mode {
         case .hold:
             DispatchQueue.main.async {
-                pressed ? self.onPressStart?() : self.onPressEnd?()
+                guard pressed else { self.onPressEnd?(); return }
+                guard self.hotkey == heardFor else { return }
+                self.onPressStart?()
             }
         case .toggle:
             guard pressed else { return } // act on the down edge only
             toggledOn.toggle()
+            togglePresses &+= 1
             let starting = toggledOn
+            let press = togglePresses
             DispatchQueue.main.async {
-                starting ? self.onPressStart?() : self.onPressEnd?()
+                guard starting else { self.onPressEnd?(); return }
+                guard self.hotkey == heardFor else {
+                    if self.togglePresses == press { self.toggledOn = false }
+                    return
+                }
+                self.onPressStart?()
             }
         }
     }

@@ -31,11 +31,8 @@ final class DictationController: ObservableObject {
     @Published var hotkey: DictationHotkey {
         didSet {
             if hotkey != oldValue { persistHotkey() }
-            // Settings' "Change" hears the trigger key itself, so re-choosing the key a dictation is
-            // being held on is routine. Nothing changed; rebuilding the tap under that dictation is
-            // the one thing that can lose its release (F446). Idle, a re-apply still re-taps.
-            guard enabled, hotkey != oldValue || session.state == .idle else { return }
-            applyHotkeyStart()
+            guard enabled else { return }
+            armChangedHotkey()
         }
     }
     @Published var language: WhisperLanguage { didSet { persist() } }
@@ -96,6 +93,10 @@ final class DictationController: ObservableObject {
     private var pressTarget: FocusedTextField.Probe?
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
+    /// The trigger `applyHotkeyStart` last handed the monitor, and before that the stored hotkey: in
+    /// the app nothing can start a dictation before the first arm, and a test built with
+    /// `activateOnInit: false` supplies a monitor already running the stored hotkey.
+    private var armedHotkey: DictationHotkey = .rightOption
     /// Both warm-up tasks are cancellable and generation-guarded. A meeting release must prevent a
     /// task that was queued while idle from launching a model after that meeting has claimed memory.
     private var engineWarmTask: Task<Void, Never>?
@@ -189,6 +190,7 @@ final class DictationController: ObservableObject {
         autoPaste = defaults.object(forKey: Self.autoPasteKey) as? Bool ?? true
         useVocabulary = defaults.object(forKey: Self.useVocabularyKey) as? Bool ?? true
         refineEnabled = defaults.object(forKey: Self.refineEnabledKey) as? Bool ?? false
+        armedHotkey = hotkey
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
@@ -480,13 +482,15 @@ final class DictationController: ObservableObject {
     // MARK: - Enable / disable
 
     /// Start (or restart) the global hotkey tap and reflect the result in `hotkeyActive`/`status`.
-    /// Shared by `apply()` and the `hotkey` didSet so changing the trigger key can never leave a
-    /// stale `.error`/`.idle` verdict or a stale `hotkeyActive` behind (F39).
+    /// Shared by `apply()` and `armChangedHotkey()` so changing the trigger key can never leave a
+    /// stale `.error`/`.idle` verdict or a stale `hotkeyActive` behind (F39). The one caller of the
+    /// monitor's `start`, so `armedHotkey` is set here and nowhere else after `init`.
     ///
     /// A dictation in flight owns `status` until it settles (F446). Writing `.idle` over a live
     /// `.listening` made `isActive` false with the microphone on — so the meeting guard stopped
     /// guarding — and disarmed the capture watchdog, which finalizes only a `.listening` status.
     private func applyHotkeyStart() {
+        armedHotkey = hotkey
         let started = hotkeyMonitor.start(hotkey: hotkey)
         hotkeyActive = started
         if !started {
@@ -496,6 +500,40 @@ final class DictationController: ObservableObject {
         status = started
             ? .idle
             : .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
+    }
+
+    /// A trigger chosen while dictation is enabled (F584). Nothing waits: a trigger chosen but not
+    /// armed is one the monitor does not hear, and both attempts that deferred one left a dictation
+    /// on that no key shown in Settings could end.
+    ///
+    /// - The armed trigger chosen again is left alone mid-dictation (F446): Settings' "Change" hears
+    ///   the trigger key itself, and rebuilding the tap under the dictation that key is holding is
+    ///   what can lose its release. Idle, a re-apply still re-taps.
+    /// - With no capture live — idle, transcribing, or showing a result — the new trigger is armed
+    ///   now. A press over the result pill starts the next dictation (F443), and that should be the
+    ///   new trigger's.
+    /// - Listening, toggle to toggle takes over now: the on-state carries across
+    ///   (`HotkeyMonitor.adopt`), so the new key's next press turns the dictation off.
+    /// - Listening, any other change — hold on either side, which every change of mode has — first
+    ///   ends the dictation through the same finish its own release or toggle-off takes, so it is
+    ///   transcribed and delivered like any other (F445 leaves it on the clipboard if the app in
+    ///   front is not the one its key was pressed in), and then arms. Adopted under the capture instead, a key chosen on its key-down ended the
+    ///   dictation on that key's release, and a hold switched to toggle ignored the release and
+    ///   left the capture to the 120 s watchdog.
+    private func armChangedHotkey() {
+        if hotkey == armedHotkey {
+            if session.state == .idle { applyHotkeyStart() }
+            return
+        }
+        let takesOver = armedHotkey.mode == .toggle && hotkey.mode == .toggle
+        if session.state == .listening, !takesOver {
+            log.notice("dictation trigger changed while listening; finishing that dictation first")
+            _ = beginTranscriptionIfNeeded()
+            // Ended without the monitor's own end edge, so its toggle on-state is cleared here, as
+            // the watchdog clears it (F78), rather than left to `adopt`'s mode rule.
+            hotkeyMonitor.resetToggleState()
+        }
+        applyHotkeyStart()
     }
 
     private func apply() {

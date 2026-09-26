@@ -109,8 +109,59 @@ func changingAToggleTriggerKeepsDictationOn() async {
 
     monitor.handleKeyStateChange(true)
     monitor.handleKeyStateChange(false)
+    // Delivered before the change, so dictation is on when F6 is chosen. A start still in flight
+    // across the change is dropped instead (F584, below).
+    await drainMainQueue()
     monitor.adopt(DictationHotkey(keyCode: 97, mode: .toggle))
     monitor.handleKeyStateChange(true)
+    await drainMainQueue()
+
+    #expect(edges.startCount == 1)
+    #expect(edges.endCount == 1)
+}
+
+@MainActor
+@Test("A toggle press whose trigger is replaced before it is delivered starts nothing (F584)")
+func aTogglePressForAReplacedTriggerStartsNothing() async {
+    let edges = EdgeCounter()
+    let monitor = HotkeyMonitor(
+        hotkey: DictationHotkey(keyCode: 96, mode: .toggle),
+        currentKeyState: { _ in false }
+    )
+    monitor.onPressStart = edges.start
+    monitor.onPressEnd = edges.end
+
+    monitor.handleKeyStateChange(true)                         // F5: a start is on its way
+    monitor.adopt(DictationHotkey(keyCode: 97, mode: .toggle)) // ...and F6 is armed before it lands
+    await drainMainQueue()
+    #expect(edges.startCount == 0)
+
+    // Nothing started, so F6's first press starts rather than ending a dictation that is not on.
+    monitor.handleKeyStateChange(true)
+    await drainMainQueue()
+    #expect(edges.startCount == 1)
+    #expect(edges.endCount == 0)
+}
+
+/// The other half of the rule above: an end is delivered even when the trigger was replaced before
+/// it landed. It ends a dictation the old key started, which is what the user pressed it for;
+/// dropped, a toggle dictation would stay on with its on-state already turned off.
+@MainActor
+@Test("A toggle press that ends dictation is delivered even if the trigger is replaced first (F584)")
+func aTogglePressThatEndsIsDeliveredAcrossAReplacement() async {
+    let edges = EdgeCounter()
+    let monitor = HotkeyMonitor(
+        hotkey: DictationHotkey(keyCode: 96, mode: .toggle),
+        currentKeyState: { _ in false }
+    )
+    monitor.onPressStart = edges.start
+    monitor.onPressEnd = edges.end
+
+    monitor.handleKeyStateChange(true)
+    monitor.handleKeyStateChange(false)
+    await drainMainQueue()
+    monitor.handleKeyStateChange(true)                         // F5 again: an end is on its way
+    monitor.adopt(DictationHotkey(keyCode: 97, mode: .toggle))
     await drainMainQueue()
 
     #expect(edges.startCount == 1)

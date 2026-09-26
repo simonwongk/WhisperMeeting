@@ -74,6 +74,10 @@ private final class WatchdogGate: @unchecked Sendable {
 /// re-applies the hotkey in the middle of the dictation that press started. That used to rebuild the
 /// tap (forgetting the held key) and set `status = .idle` with the microphone still running, which
 /// also disarmed the one backstop left: the capture watchdog finalizes only a `.listening` status.
+///
+/// In toggle mode since F584, because toggle to toggle is the one change that still re-taps under a
+/// live capture; any change involving hold now ends the capture first, which
+/// `HotkeyChangeMidDictationTests` covers through the real monitor.
 @MainActor
 @Test("Re-choosing the trigger mid-dictation leaves the capture listening and watched (F446)")
 func rechoosingTheTriggerMidDictationKeepsTheCaptureWatched() async throws {
@@ -86,6 +90,7 @@ func rechoosingTheTriggerMidDictationKeepsTheCaptureWatched() async throws {
     defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
     defaults.set(true, forKey: "dictationEnabled")
     defaults.set(false, forKey: "dictationAutoPaste")
+    defaults.set(try JSONEncoder().encode(DictationHotkey(keyCode: 61, mode: .toggle)), forKey: "dictationHotkey")
 
     let monitor = FakeHotkeyMonitor()
     let recorder = FakeDictationRecorder(outputURL: temporaryDirectory.appendingPathComponent("c.wav"))
@@ -106,14 +111,14 @@ func rechoosingTheTriggerMidDictationKeepsTheCaptureWatched() async throws {
     try #require(controller.status == .listening)
     let tapsBefore = monitor.startCount
 
-    // The same key again: nothing about the trigger changed, so the tap under the held key stays.
+    // The same key again: nothing about the trigger changed, so the tap under the dictation stays.
     controller.hotkey = controller.hotkey
     #expect(monitor.startCount == tapsBefore)
     #expect(controller.status == .listening)
     #expect(controller.isActive)
 
     // A different key does need a new tap, but the dictation in flight still owns `status`.
-    controller.hotkey = DictationHotkey(keyCode: 100, mode: .hold)
+    controller.hotkey = DictationHotkey(keyCode: 100, mode: .toggle)
     #expect(monitor.startCount == tapsBefore + 1)
     #expect(controller.status == .listening)
     #expect(controller.isActive)
