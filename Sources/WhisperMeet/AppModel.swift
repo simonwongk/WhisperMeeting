@@ -931,6 +931,27 @@ final class AppModel: ObservableObject {
         isInstallingRecognitionRuntime || isInstallingSummarizer || isInstallingDiarizationRuntime
     }
 
+    /// Why "Install / Repair Local Whisper" or "Install / Repair Qwen3-ASR" cannot run right now, or
+    /// nil when it can (F514). `installLocalWhisper`/`installQwenASR` refuse on exactly these six
+    /// conditions; this is the same list, asked once. Before this, Settings' two buttons listed all
+    /// six by hand and the Dictation tab's copy had quietly drifted to checking only its own
+    /// `isInstalling…Runtime` flag — so a press there while, say, a transcription was running did
+    /// nothing, with no progress and no message, the exact shape `isInstallingAnyRuntime` above
+    /// already fixed once for the guards themselves. One property rather than a second hand-written
+    /// list: a condition added to the guard in future is wrong in one place, not three.
+    ///
+    /// Read from whatever is actually holding the engine, exactly as `queuedTranscriptionWaitMessage`
+    /// is, so a footnote built from this never claims the wrong thing is running.
+    var recognitionRuntimeInstallBlockedReason: String? {
+        if isInstallingAnyRuntime { return "Another install is already running." }
+        if hasActiveTranscription { return "Wait for the current transcription to finish." }
+        if isRunningAuxiliaryEngine { return "Wait for the second opinion or segment re-run to finish." }
+        if isDictationActive() { return "Wait for Quick Dictation to finish." }
+        if isMicrophoneBusy { return "Wait for the current recording to finish." }
+        if isImporting { return "Wait for the import to finish." }
+        return nil
+    }
+
     /// Wires the reverse of dictation's own meeting-active guard: lets `startRecording()` refuse to
     /// start while dictation currently owns the microphone. See `AppEntry`'s `.task` for the call site.
     func configureDictationGuard(_ isActive: @escaping () -> Bool) {
@@ -2855,16 +2876,11 @@ final class AppModel: ObservableObject {
     }
 
     func installLocalWhisper() {
-        guard !isInstallingAnyRuntime,
-              !isMicrophoneBusy,
-              !isImporting,
-              !hasActiveTranscription,
-              !isRunningAuxiliaryEngine, // F510: a second opinion or segment re-run may be running
-              // Whisper's own CLI right now — installing atop it can move or delete the venv a live
-              // process is using (F140's guarantee, which `installQwenASR` already carried).
-              !isDictationActive() else {
-            return
-        }
+        // F510/F514: `recognitionRuntimeInstallBlockedReason` is this same six-condition guard,
+        // asked once — a second opinion or segment re-run may be running Whisper's own CLI right
+        // now, and installing atop it can move or delete the venv a live process is using (F140's
+        // guarantee, which `installQwenASR` already carried).
+        guard recognitionRuntimeInstallBlockedReason == nil else { return }
         guard let scriptURL = Bundle.main.url(
             forResource: "setup-local-whisper",
             withExtension: "sh"
@@ -2896,14 +2912,8 @@ final class AppModel: ObservableObject {
     }
 
     func installQwenASR() {
-        guard !isInstallingAnyRuntime,
-              !isMicrophoneBusy,
-              !isImporting,
-              !hasActiveTranscription,
-              !isRunningAuxiliaryEngine, // don't install atop a second-opinion / segment re-run (F140)
-              !isDictationActive() else {
-            return
-        }
+        // F514: see `installLocalWhisper`'s identical guard — one property for both.
+        guard recognitionRuntimeInstallBlockedReason == nil else { return }
         guard MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac else {
             alertMessage = "Qwen3-ASR requires an Apple-silicon Mac. Whisper remains available on Intel Macs."
             return

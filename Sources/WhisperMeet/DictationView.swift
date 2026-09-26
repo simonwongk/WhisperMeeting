@@ -59,13 +59,25 @@ struct DictationView: View {
                             if !diag.runtimeInstalled || !diag.helperInstalled || !diag.modelReady {
                                 if dictation.selectedEngine == .qwenBalanced {
                                     Button("Install / Repair Qwen3-ASR") { model.installQwenASR() }
-                                        .disabled(model.isInstallingQwenRuntime)
+                                        .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
                                 } else {
                                     Button("Install / Repair Local Whisper") { model.installLocalWhisper() }
-                                        .disabled(model.isInstallingRuntime)
+                                        .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
                                 }
                             }
                             Spacer()
+                        }
+                        // F514: the buttons above used to stay enabled and silently do nothing
+                        // while a transcription, an auxiliary engine pass, a recording, an import
+                        // or another install held the engine — named here, beside the buttons it
+                        // explains rather than inside either one (the F306 lesson: a control or its
+                        // message nested inside something else is what a later restructuring deletes
+                        // without meaning to).
+                        if !diag.runtimeInstalled || !diag.helperInstalled || !diag.modelReady,
+                           let reason = model.recognitionRuntimeInstallBlockedReason {
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         if let result = dictation.selfTestResult {
                             // The multi-second self-test payoff fades in instead of snapping the

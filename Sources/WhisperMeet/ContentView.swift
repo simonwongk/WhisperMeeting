@@ -1423,16 +1423,13 @@ struct SettingsView: View {
                         model.installLocalWhisper()
                     }
                     .buttonStyle(.bordered)
-                    .disabled(
-                        model.isInstallingRuntime
-                            || model.isInstallingQwenRuntime
-                            || model.isInstallingDiarizationRuntime
-                            || model.hasActiveTranscription
-                            || model.isRunningAuxiliaryEngine
-                            || model.isMicrophoneBusy
-                            || model.isImporting
-                            || dictation.isActive
-                    )
+                    // F514: one property, shared with the Dictation tab's own copy of this button,
+                    // instead of the six conditions listed by hand here and independently in
+                    // `installLocalWhisper`'s own guard — which is exactly how the Dictation tab's
+                    // copy drifted to checking only `isInstallingRuntime` and went unnoticed.
+                    // `isInstallingAnyRuntime` (inside the shared reason) already covers a running
+                    // speaker-analysis install.
+                    .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
                 }
                 // The install → result swap after a minutes-long wait fades in as a readable
                 // payoff instead of snapping (F161, the F116 vocabulary).
@@ -1458,16 +1455,8 @@ struct SettingsView: View {
                             model.installQwenASR()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(
-                            model.isInstallingRuntime
-                                || model.isInstallingQwenRuntime
-                                || model.isInstallingDiarizationRuntime
-                                || model.hasActiveTranscription
-                                || model.isRunningAuxiliaryEngine
-                                || model.isMicrophoneBusy
-                                || model.isImporting
-                                || dictation.isActive
-                        )
+                        // F514: see the Whisper button above — the same shared property.
+                        .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
                     }
                     if model.isInstallingQwenRuntime {
                         ProgressView("Installing about 4.5 GB. This can take several minutes…")
