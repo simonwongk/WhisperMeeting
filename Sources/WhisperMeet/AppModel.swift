@@ -853,6 +853,11 @@ final class AppModel: ObservableObject {
         summarizationEngine = SummarizationEngine(
             rawValue: defaults.string(forKey: Self.summarizationEngineKey) ?? ""
         ) ?? .local
+        // `integer(forKey:)` returns 0 for a missing key, which is not in the offered set either,
+        // so "absent" and "invalid" both fall back to 5 the same way (F461).
+        let storedBackupRetention = defaults.integer(forKey: Self.backupRetentionKey)
+        backupRetention = Self.offeredBackupRetentions.contains(storedBackupRetention)
+            ? storedBackupRetention : 5
         // Off unless the user has explicitly turned it on (F183).
         linkImportEnabled = defaults.bool(forKey: Self.linkImportEnabledKey)
         watchedFolderEnabled = defaults.bool(forKey: Self.watchedFolderEnabledKey)
@@ -2119,7 +2124,18 @@ final class AppModel: ObservableObject {
         try BackupCoordinator.backUp(source: $0, destination: $1, now: $2, retain: $3)
     }
     /// Newest N backup generations to keep at the destination (Settings-controlled, F90).
-    @Published var backupRetention = 5
+    ///
+    /// Persisted like `selectedEngine`/`linkImportEnabled` above (F461): it used to have no
+    /// `UserDefaults` backing at all, so every relaunch silently reset it to 5 regardless of what
+    /// the Settings picker showed last, and the next "Back up library…" pruned generations the
+    /// user had chosen to keep. A stored value outside the picker's offered set (3/5/10/20) —
+    /// hand-edited, or a future build offering a different set — falls back to 5 rather than being
+    /// trusted, the same way `selectedLanguage` falls back to `.automatic` on an unrecognised value.
+    @Published var backupRetention: Int {
+        didSet { defaults.set(backupRetention, forKey: Self.backupRetentionKey) }
+    }
+    static let backupRetentionKey = "backupRetention"
+    static let offeredBackupRetentions = [3, 5, 10, 20]
 
     /// One reviewed restore awaiting the user's answer (F191 slice E3). Nil when none is pending.
     @Published var pendingLibraryRestore: PendingLibraryRestore?
