@@ -53,3 +53,25 @@ func collapsesNewlines() {
         "Hello there.\nHow are you?", input: "hello there how are you")
         == "Hello there. How are you?")
 }
+
+// F488 — the wrapping-quote strip is for a model that wraps its whole answer in quotes. It never
+// looked at the input, so a dictation that itself began and ended with quotes lost them, and
+// `"Ship it tomorrow," she said, "not today."` was pasted with unbalanced quotes.
+@Test("A dictation's own outer quotes survive refinement (F488)")
+func keepsTheDictationsOwnWrappingQuotes() {
+    let quoted = "\"Ship it tomorrow,\" she said, \"not today.\""
+    #expect(DictationRefinePolicy.acceptedOutput(quoted, input: quoted) == quoted)
+    #expect(DictationRefinePolicy.acceptedOutput("\"Hello.\"", input: "\"hello\"") == "\"Hello.\"")
+    #expect(DictationRefinePolicy.acceptedOutput("「你好。」", input: "「你好」") == "「你好。」")
+    // A model that only restyles the user's quotes has not added a wrapper either.
+    #expect(DictationRefinePolicy.acceptedOutput("“Hello.”", input: "\"hello\"") == "“Hello.”")
+}
+
+@Test("A wrapper the model added around an unquoted dictation is still stripped (F488 control)")
+func stillStripsAWrapperTheModelAdded() {
+    #expect(DictationRefinePolicy.acceptedOutput("\"Ship it tomorrow.\"", input: "ship it tomorrow")
+        == "Ship it tomorrow.")
+    // Quotes inside the dictation do not count as wrapping it.
+    #expect(DictationRefinePolicy.acceptedOutput("\"She said \"no.\"\"", input: "she said \"no\"")
+        == "She said \"no.\"")
+}

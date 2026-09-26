@@ -67,13 +67,17 @@ public enum DictationRefinePolicy {
     public static func acceptedOutput(
         _ output: String, input: String, protectedTerms: [String]
     ) -> String? {
+        let cleanedInput = DictationTextCleanup.clean(input)
         var candidate = output.trimmingCharacters(in: .whitespacesAndNewlines)
         candidate = strippingCodeFence(candidate)
-        candidate = strippingWrappingQuotes(candidate)
+        // F488: quotes around the whole dictation are the user's, not a wrapper the model added —
+        // whichever pair the output keeps them in, since a model may restyle `"…"` as `“…”`.
+        if wrappingQuotes(of: cleanedInput) == nil {
+            candidate = strippingWrappingQuotes(candidate)
+        }
         candidate = DictationTextCleanup.clean(candidate)
         guard !candidate.isEmpty else { return nil }
 
-        let cleanedInput = DictationTextCleanup.clean(input)
         let inputCount = cleanedInput.count
         // Light-touch edits barely move length; filler removal shrinks a little. The +4 absolute
         // slack keeps one-word dictations ("hi" → "Hi.") from tripping the ratio.
@@ -109,16 +113,18 @@ public enum DictationRefinePolicy {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static let quotePairs: [(open: Character, close: Character)] = [
+        ("\"", "\""), ("“", "”"), ("'", "'"), ("‘", "’"), ("「", "」"), ("『", "』"),
+    ]
+
+    /// The quote pair `text` begins and ends with, if any.
+    private static func wrappingQuotes(of text: String) -> (open: Character, close: Character)? {
+        guard text.count >= 2 else { return nil }
+        return quotePairs.first { text.first == $0.open && text.last == $0.close }
+    }
+
     private static func strippingWrappingQuotes(_ text: String) -> String {
-        let pairs: [(Character, Character)] = [
-            ("\"", "\""), ("“", "”"), ("'", "'"), ("‘", "’"), ("「", "」"), ("『", "』"),
-        ]
-        for (open, close) in pairs where text.count >= 2 {
-            if text.first == open, text.last == close {
-                return String(text.dropFirst().dropLast())
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-        return text
+        guard wrappingQuotes(of: text) != nil else { return text }
+        return String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
