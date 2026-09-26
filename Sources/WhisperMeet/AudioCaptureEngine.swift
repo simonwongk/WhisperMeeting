@@ -348,7 +348,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 outputURL: mixedURL
             )
         }
-        try mapMixError {
+        do {
             try SourceTrackManifest.write(
                 system: systemTrack,
                 microphone: microphoneTrack,
@@ -364,6 +364,18 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                     microphone: microphoneWriter?.droppedFrames ?? 0
                 ),
                 to: directory.appendingPathComponent("source-tracks.json")
+            )
+        } catch {
+            // Best-effort once the mix has succeeded (F502): `meeting.wav` above is already
+            // complete and durable — this only describes the raw tracks beside it, and
+            // `InterruptedRecordingRecovery` already treats a missing manifest as a normal state
+            // (`writeRecoveryManifestIfNeeded` fills one in later from the session sidecar).
+            // Rethrowing here used to send an otherwise-successful Stop down `stopRecording`'s
+            // "recovered after a finishing error" path, which drops `healthReport` entirely (a
+            // `RecoveredRecording` carries none) and skips automatic transcription — for a
+            // recording that lost nothing but a sidecar description of its own raw tracks.
+            Self.logger.error(
+                "source-tracks.json write failed after meeting.wav was already complete: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)"
             )
         }
         // Capture the health rollup before `reset()` (deferred) nils the monitor.

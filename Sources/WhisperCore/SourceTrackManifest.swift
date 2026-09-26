@@ -136,6 +136,13 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         guard !paddedGaps.isEmpty else { return base }
         switch base {
         case rebuiltAlignment: return rebuiltPaddedAlignment
+        // F502: an already-finished capture whose OWN manifest write failed (so `meeting.wav` is
+        // complete but `source-tracks.json` never landed) reaches this through the SAME fallback,
+        // with `"captured-timeline"` as its base — and until this case existed, that base had no
+        // padded counterpart registered here, so a padded capture's recovered manifest kept the
+        // clean-capture label even though `paddedGaps` (read from the session sidecar) was
+        // non-empty right beside it.
+        case capturedAlignment: return paddedAlignment
         // An unrecognised base means a caller introduced an alignment without adding its padded
         // counterpart here. Returning the base unchanged loses the padding from the LABEL, which is
         // the lesser harm: `paddedGaps` still carries the positions, and those are what a consumer

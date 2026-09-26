@@ -219,6 +219,50 @@ func rebuildWithoutPaddingIsUnchanged() throws {
     #expect(manifest.recoveryAlignment == "zero-aligned-after-interruption")
 }
 
+@Test("A finished capture whose manifest never landed still reports its padding, not a clean-capture label (F502)")
+func finishedCaptureRecoveryReportsPaddingFromTheSidecar() throws {
+    // The case F502 is about: `AudioCaptureEngine.stop()`'s mix succeeded — `meeting.wav` is a
+    // complete, valid recording — but its OWN `source-tracks.json` write failed, so the folder
+    // looks exactly like a finished capture with no manifest at all.
+    // `InterruptedRecordingRecovery.recover(in:)` takes the `finalizedRecording` branch for a
+    // folder like this and calls `writeRecoveryManifestIfNeeded` with `"captured-timeline"` as its
+    // base — and until F502, `alignment(forRebuildWith:paddedGaps:)` had no padded counterpart
+    // registered for that base, so a padded capture's recovered manifest kept the clean-capture
+    // label even with non-empty `paddedGaps`, read correctly from the sidecar, sitting right
+    // beside it.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F502-finished-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 48_000), sampleRate: 48_000)
+        .write(to: directory.appendingPathComponent("meeting.wav"))
+    var samples = Data(capacity: 480 * 4)
+    for _ in 0..<480 {
+        var bits = Float(0.4).bitPattern.littleEndian
+        withUnsafeBytes(of: &bits) { samples.append(contentsOf: $0) }
+    }
+    try samples.write(to: directory.appendingPathComponent("system-audio.f32"))
+    try Data().write(to: directory.appendingPathComponent("microphone-audio.f32"))
+
+    var session = RecordingSession(
+        id: UUID(), startedAt: Date(timeIntervalSince1970: 1_757_000_000), title: "", markers: []
+    )
+    session.paddedGaps = [
+        RecordingSession.PaddedGap(seconds: 12, resumedAt: Date(timeIntervalSince1970: 1_757_000_050)),
+    ]
+    try RecordingSessionSidecar.write(session, in: directory)
+
+    _ = try InterruptedRecordingRecovery.recover(in: directory, sampleRate: 48_000)
+
+    let manifest = try JSONDecoder().decode(
+        SourceTrackManifest.self,
+        from: try Data(contentsOf: directory.appendingPathComponent("source-tracks.recovered.json"))
+    )
+    #expect(manifest.paddedGaps.count == 1)
+    #expect(manifest.recoveryAlignment == SourceTrackManifest.paddedAlignment)
+}
+
 // MARK: - F151: a track that had buffers dropped says how many frames are silence
 
 @Test("A track records the frames it padded for dropped buffers (F151)")
