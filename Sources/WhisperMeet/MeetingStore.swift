@@ -1151,9 +1151,70 @@ final class MeetingStore: ObservableObject {
         task.cancel()
         // Re-arm when the write did not land. Clearing `pendingIndexFlush` before persisting left
         // nothing to re-attempt, so a failed flush silently dropped the user's edit (F190).
-        if !persistMeetings() {
+        guard !persistMeetings() else { return }
+        // A lost race (F433) is not the retryable kind: `meetingsToken` stays stale until something
+        // re-reads the library, so re-arming with the SAME token would fail the SAME way every
+        // 0.5 s forever — one keystroke became an endless write-and-alert loop. The bound is the
+        // debounce cycle that already ran: exactly one attempt fails, then this defers to a person
+        // instead of scheduling another. An ordinary failure (full disk, permissions) is not a race
+        // and keeps the existing unconditional retry, unchanged.
+        guard writeConflict?.isRace == true else {
             scheduleDebouncedPersist()
+            return
         }
+        beginConflictRecovery()
+    }
+
+    /// What a lost race lost, kept so it can be offered back rather than dropped (F433).
+    ///
+    /// `losingMeetings` is this instance's `meetings` from the instant the race was detected —
+    /// before `reloadForConflictRecovery()` replaces it with the winner. Neither copy is destroyed:
+    /// the winner is what the app shows and would save next; the loser sits here until
+    /// `keepConflictedEdit()` or `discardConflictedEdit()` says what to do with it. Reapplying it
+    /// automatically would be exactly the harm the notice exists to prevent — silently overwriting
+    /// whatever the other copy just committed — so nothing here does that without the user asking.
+    struct ConflictOffer: Equatable {
+        let losingMeetings: [MeetingRecord]
+        let message: String
+    }
+
+    /// Set once a lost race's edit is retained for the user to resolve (F433). `nil` the rest of
+    /// the time, including while an ordinary (non-race) save failure is being retried.
+    @Published private(set) var conflictOffer: ConflictOffer?
+
+    /// Re-reads the library after a lost race instead of leaving the token stale forever, and keeps
+    /// the edit that lost so `conflictOffer` can offer it back (F433). Wires
+    /// `reloadForConflictRecovery()` into a real caller for the first time — until this, the only
+    /// caller was a test, and every later save in this session failed the same compare-and-swap.
+    ///
+    /// Guarded so a second race arriving while an offer is already outstanding does not overwrite
+    /// the first one's retained snapshot with a smaller, more recent edit — see the ticket's Gaps.
+    private func beginConflictRecovery() {
+        guard conflictOffer == nil, let report = writeConflict else { return }
+        let losing = meetings
+        // Clears `writeConflict`/`unsavedChanges`/`storageErrorMessage` as part of the reload, all
+        // within this same synchronous call — SwiftUI observes only the state after this function
+        // returns, so the generic "could not be saved" alert never flashes on its way to the banner
+        // below, which is the one surface this conflict is meant to be resolved from.
+        reloadForConflictRecovery()
+        conflictOffer = ConflictOffer(losingMeetings: losing, message: report.message)
+    }
+
+    /// Restores the edit that lost the race and saves it against the generation just reloaded
+    /// (F433). An explicit, user-driven retry only — never automatic — because the whole point of
+    /// keeping `conflictOffer` around is that reapplying it is a choice, not a default.
+    func keepConflictedEdit() {
+        guard let offer = conflictOffer else { return }
+        conflictOffer = nil
+        meetings = MeetingOrdering.sorted(offer.losingMeetings)
+        persistMeetings()
+    }
+
+    /// Keeps the reloaded copy and discards the retained edit (F433). `meetings` already holds the
+    /// winner — set by `reloadForConflictRecovery()` inside `beginConflictRecovery()` — so this only
+    /// has to stop offering the alternative.
+    func discardConflictedEdit() {
+        conflictOffer = nil
     }
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
@@ -1855,9 +1916,13 @@ final class MeetingStore: ObservableObject {
     /// Re-reads the library after a lost race, so the next save can succeed.
     ///
     /// A conflict is a transient race, not a damaged library: nothing was made read-only, and the
-    /// refused body is on disk as a `conflict-` branch. This discards the in-memory edit in favour
-    /// of what is actually on disk — the caller is expected to have shown the user their choice
-    /// first, which is what `writeConflict` is for.
+    /// refused body is on disk as a `conflict-` branch. This replaces the in-memory `meetings` with
+    /// what is actually on disk — the losing edit is not destroyed by that, only no longer what
+    /// `meetings` holds. `beginConflictRecovery()` (F433) is the production caller: it retains the
+    /// pre-reload snapshot in `conflictOffer` before calling this, so the choice this comment used
+    /// to require in advance is instead offered afterward, from that snapshot. A caller with no such
+    /// snapshot — today, only the test below — does discard the in-memory edit outright, exactly as
+    /// this used to describe for every caller.
     func reloadForConflictRecovery() {
         loadMeetings()
         writeConflict = nil

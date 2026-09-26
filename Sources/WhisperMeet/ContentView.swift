@@ -179,7 +179,10 @@ struct ContentView: View {
             // on top of the column and cannot move anything underneath it.
             detail
                 .overlay(alignment: .top) {
-                    ReadOnlyLibraryBanner(model: model)
+                    VStack(spacing: 0) {
+                        ReadOnlyLibraryBanner(model: model)
+                        WriteConflictBanner(store: store)
+                    }
                 }
         }
         // Attached to the split view, not the sidebar list: on the list, even .toolbar placement
@@ -5502,6 +5505,35 @@ struct ReadOnlyLibraryBanner: View {
             .frame(maxWidth: .infinity)
             .background(.bar)
             .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+/// The lost-race notice (F433). Rendered once — replacing the endless "could not be saved" modal
+/// that used to retry every debounce interval — and stays until the user picks a side, with the
+/// two controls beside the message they resolve rather than nested inside a generic OK-only alert
+/// (the F267 lesson: a control nested inside something else is a control that can vanish with it).
+struct WriteConflictBanner: View {
+    @ObservedObject var store: MeetingStore
+
+    var body: some View {
+        if let offer = store.conflictOffer {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
+                Text(offer.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Keep My Edit") { store.keepConflictedEdit() }
+                Button("Use the Other Copy") { store.discardConflictedEdit() }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+            .accessibilityElement(children: .contain)
         }
     }
 }
