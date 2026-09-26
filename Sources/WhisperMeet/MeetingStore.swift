@@ -1625,7 +1625,11 @@ final class MeetingStore: ObservableObject {
             .map { $0 }
     }
 
-    private static let maxStoredVocabularyTerms = 5_000
+    /// Not `private` (F492): the Vocabulary screen's header and its Add-result message both quote
+    /// this number, and a hand-copied literal in either one is exactly how they drifted apart —
+    /// the header claimed 100 (the prompt's cap, `VocabularyPrompt.maxTerms`) while this constant,
+    /// what storage actually enforces, was 5,000 the whole time.
+    static let maxStoredVocabularyTerms = 5_000
 
     /// The prompt budget: at most 100 terms AND at most 1,000 characters once joined. Applied only when
     /// a prompt is built (`promptVocabulary`) — never to what is stored (F187).

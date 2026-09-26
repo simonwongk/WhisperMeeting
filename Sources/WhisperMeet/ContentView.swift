@@ -2551,7 +2551,11 @@ private struct VocabularyView: View {
                 // F272: this used to claim "Every term shown below … is included in Whisper's local
                 // prompt". F265 made that false — the prompt is budgeted in tokens now, so a long
                 // list is trimmed. Say what is true, and show the real numbers when it bites.
-                Text("Every term shown below stays on this Mac. Up to 100 reviewed terms are kept, and as many as fit the model’s prompt budget are sent to the recognizer.")
+                // F492: this used to say "Up to 100 reviewed terms are kept", which is the PROMPT's
+                // cap, not storage's — 100 terms were quietly being deleted by users who believed a
+                // limit that was never being enforced. Quote MeetingStore's actual storage constant
+                // so the header and the Add-result message below cannot drift apart again.
+                Text("Every term shown below stays on this Mac. Up to \(MeetingStore.maxStoredVocabularyTerms.formatted()) reviewed terms are kept, and as many as fit the model’s prompt budget are sent to the recognizer.")
                     .foregroundStyle(.secondary)
                 // The starred count too (F333): once more terms are starred than fit, "star the
                 // terms that matter most" asks for something already done and every star is filled.
@@ -2695,7 +2699,7 @@ private struct VocabularyView: View {
             // already sets `storageErrorMessage` to `ReadOnlyLibraryNotice.mutationRefused` for
             // that case, and saying it twice in two different wordings is how two explanations
             // start to disagree.
-            ? "Nothing new was added. Those terms are already saved, or the list is at its 5,000-term limit."
+            ? "Nothing new was added. Those terms are already saved, or the list is at its \(MeetingStore.maxStoredVocabularyTerms.formatted())-term limit."
             : "Saved \(added) term\(added == 1 ? "" : "s")."
         manualTerms = ""
     }
