@@ -4490,7 +4490,17 @@ final class AppModel: ObservableObject {
         store.delete(ids: ids)
     }
 
-    func summarize(id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general) {
+    /// - Parameter cloudUploadConfirmed: The product spec's "an explicit, confirmed Summarize
+    ///   press" for the `.claude` engine (F499). Until now that confirmation lived only in
+    ///   `ContentView`'s `confirmSummarize` alert — a `switch` inside one button closure — so
+    ///   `AppModel.summarize` itself would upload to Claude whenever a key existed, with no
+    ///   confirmation parameter of its own. Defaults to `false`, so any caller that does not
+    ///   explicitly thread the user's confirmation through is refused for `.claude` rather than
+    ///   silently uploading; it is never consulted for `.local`, which uploads nothing.
+    func summarize(
+        id: UUID, style: SummaryStyle = .balanced, template: MeetingTemplate = .general,
+        cloudUploadConfirmed: Bool = false
+    ) {
         guard summarizationTasks[id] == nil else { return }
         // Ahead of the per-engine preconditions, so a read-only library is reported as the real
         // blocker rather than a missing model or key — and, for Claude, before an API call is spent
@@ -4498,7 +4508,8 @@ final class AppModel: ObservableObject {
         guard libraryAcceptsChanges("Summarization") else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
-        // than fail); Claude needs a saved key. Neither uploads anything for `.local` (F164).
+        // than fail); Claude needs a confirmed upload and a saved key. Neither uploads anything for
+        // `.local` (F164).
         let apiKey: String
         switch engine {
         case .local:
@@ -4508,6 +4519,14 @@ final class AppModel: ObservableObject {
             }
             apiKey = ""
         case .claude:
+            // F499: the gate itself, ahead of the (pre-existing, already-tested) key check — a
+            // future caller (batch summarize, a menu command, auto-summarize) cannot upload a
+            // transcript just by reaching this method with a key already saved.
+            guard cloudUploadConfirmed else {
+                alertMessage = "Summarizing with Claude sends the transcript to Anthropic and needs "
+                    + "confirmation first. Nothing was sent."
+                return
+            }
             guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
                 alertMessage = SummarizerError.missingAPIKey.localizedDescription
                 return

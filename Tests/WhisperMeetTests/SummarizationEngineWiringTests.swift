@@ -104,3 +104,52 @@ func localSummarizeRequiresInstalledModel() throws {
     #expect(model.activeSummarizationID == nil)
     #expect(model.store.meeting(id: id)?.summary == nil)
 }
+
+// F499 — the "Send to Claude?" confirmation used to live only in ContentView's button switch, so
+// AppModel.summarize(id:) itself would send to Claude whenever the engine was `.claude` and a key
+// existed, with no confirmation parameter of its own. These pin the gate headlessly, without ever
+// touching the real Keychain: the refusal fires from the confirmation check alone, before
+// `KeychainStore.string(for:)` is reached at all, so it cannot depend on — or be defeated by —
+// whatever the developer's own login keychain happens to hold.
+
+@MainActor
+@Test("Claude summarization refuses without AppModel's own confirmation, before it even checks for a key (F499)")
+func claudeSummarizeRefusesWithoutConfirmation() throws {
+    let model = try makeModel()
+    model.summarizationEngine = .claude
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+    model.summarize(id: id, style: .balanced, template: .general)   // cloudUploadConfirmed defaults to false
+
+    #expect(model.alertMessage?.contains("confirmation") == true)
+    #expect(model.alertMessage != SummarizerError.missingAPIKey.localizedDescription)
+    #expect(model.activeSummarizationID == nil)
+    #expect(model.store.meeting(id: id)?.summary == nil)
+}
+
+// Deliberately no "confirmed → proceeds" AppModel test: `summarize(id:)`'s `.claude` branch reads
+// the REAL system Keychain (`KeychainStore.string(for:)`, no injection seam) with no way to fake a
+// key. A confirmed call on a machine that happens to have a real Claude key saved would start an
+// actual background Task against the real Claude API with real credentials — unbounded by this
+// test's own lifetime. `claudeSummarizeRefusesWithoutConfirmation` above proves the gate refuses
+// before that lookup ever runs; the source assertion below proves the one call site that can pass
+// `cloudUploadConfirmed: true` is gated behind the user's own confirmation press. Between the two,
+// the pre-existing (and unrelated) key check needs no new test of its own here.
+
+@Test("The confirmation dialog's own button is the one call site that passes AppModel's confirmation (F499)")
+func onlyTheConfirmationButtonPassesCloudUploadConfirmed() throws {
+    // F306's precedent: a control's reachability is checkable only as source text here (F174's
+    // standing reason — the WhisperMeet target has no view-render harness). Comments stripped, so
+    // a mention of the parameter name in prose cannot satisfy this the way F285's false positive did.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    let anchor = try #require(
+        source.range(of: #"Button("Send to Claude")"#),
+        "the confirmation alert's own button must exist"
+    )
+    let after = source[anchor.upperBound...].prefix(200)
+    #expect(
+        after.contains("cloudUploadConfirmed: true"),
+        "the confirmation dialog's button must pass cloudUploadConfirmed: true — the one user action that satisfies the F499 gate"
+    )
+}

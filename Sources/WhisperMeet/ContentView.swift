@@ -2954,7 +2954,9 @@ private struct TranscriptDetailView: View {
             }
             .alert("Summarize with Claude?", isPresented: $confirmSummarize) {
                 Button("Cancel", role: .cancel) {}
-                Button("Send to Claude") { model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate) }
+                Button("Send to Claude") {
+                    model.summarize(id: meetingID, style: summaryStyle, template: summaryTemplate, cloudUploadConfirmed: true)
+                }
             } message: {
                 Text("This sends the meeting transcript to Anthropic's Claude API using your saved key. It's the only feature that leaves this Mac.")
             }
