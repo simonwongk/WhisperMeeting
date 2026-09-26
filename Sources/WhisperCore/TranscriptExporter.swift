@@ -548,10 +548,11 @@ public enum TranscriptExporter {
             }
         }
         parts.append("</section>")
+        let lang = htmlLanguageTag(request).map { " lang=\"\(htmlEscape($0))\"" } ?? ""
 
         return """
         <!DOCTYPE html>
-        <html>
+        <html\(lang)>
         <head>
         <meta charset="utf-8">
         <title>\(title)</title>
@@ -569,6 +570,23 @@ public enum TranscriptExporter {
         </body>
         </html>
         """
+    }
+
+    /// The page's BCP 47 `lang`, or nil to omit it — a screen reader picks its voice from it, and a
+    /// browser picks Han glyph shapes from it rather than from the reader's locale (F563). A stored
+    /// name and code map alike; Mandarin adds its script only when the text says which one it is.
+    /// Any other detected code is passed on only if it is shaped like a language subtag.
+    private static func htmlLanguageTag(_ request: TranscriptExportRequest) -> String? {
+        switch WhisperLanguage(storedLanguageCode: request.languageCode) {
+        case .english:
+            return "en"
+        case .chinese:
+            return ScriptDrift.form(of: request.transcriptText)?.rawValue ?? "zh"
+        case .automatic:
+            guard let code = request.languageCode?.lowercased(), (2...3).contains(code.count),
+                  code.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) }) else { return nil }
+            return code
+        }
     }
 
     private static func htmlEscape(_ text: String) -> String {
