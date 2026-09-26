@@ -37,7 +37,7 @@ What that settles, so no one asks again:
 - **F419** — measure clipping per input channel before the downmix.
 - **F439 · F440** — an agent may run the local-summarizer installer once for real, after both fixes.
 
-The letters below still stand for what needs your hands (F355, F294, F201, F230, F428, F353's check).
+The letters below still stand for what needs your hands (F294, F201, F230, F428, F353's check).
 
 ## Where to start
 
