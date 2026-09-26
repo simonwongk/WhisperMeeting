@@ -2,18 +2,19 @@ import Foundation
 
 /// The single definition of "still the same Latin/alphanumeric token" shared by every place that
 /// must recognise a term, or a replacement rule's `heard` phrase, as a *whole* occurrence rather
-/// than a fragment of a larger word: `ProtectedTerms.contains` (F245/F534) and `ReplacementBoundary`
-/// (F444).
+/// than a fragment of a larger word: `ProtectedTerms.contains` (F245/F534, main `03247a1`) and
+/// `ReplacementBoundary` (F444, main `f969c1a`).
 ///
 /// Before F592 these were two independently written character predicates — `ProtectedTerms`'s
 /// `NSRegularExpression` class `[A-Za-z0-9_]` and `ReplacementBoundary`'s
 /// `character.isLetter || character.isNumber` (CJK exempted) — and they disagreed on two inputs a
 /// review found (an underscore neighbour; a non-Han Unicode letter neighbour such as Cyrillic,
 /// Greek, Hangul or Kana), plus more this ticket pinned down explicitly (full-width Latin). This
-/// type is the merge: `ProtectedTerms`'s regex class, kept as the source of truth because it was
-/// the one written with a documented reason for exactly which characters it contains (its own
-/// comment: "a Latin letter, digit, or underscore"), while `ReplacementBoundary` was "written
-/// without sight of F534's regex" (F592's own filing) and is the one brought into line.
+/// type is the merge: `ProtectedTerms`'s regex class (`03247a1`), kept as the source of truth
+/// because it was the one written with a documented reason for exactly which characters it
+/// contains (its own comment: "a Latin letter, digit, or underscore"), while `ReplacementBoundary`
+/// (`f969c1a`) was "written without sight of F534's regex" (F592's own filing) and is the one
+/// brought into line.
 ///
 /// The class is deliberately **ASCII-only**. WhisperMeet transcribes English or Mandarin only
 /// (`docs/PRODUCT_SPEC.md`); Cyrillic/Greek/Hangul/Kana never appear glued to a Latin term in a
