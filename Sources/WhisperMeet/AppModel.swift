@@ -1140,6 +1140,34 @@ final class AppModel: ObservableObject {
     /// keeping the 4 Hz playback tick off the sidecar read and the turn/segment walk (the F160 rule).
     private var speakerOverlayCache: (meetingID: UUID, fingerprint: String, presentation: SpeakerOverlayPresentation?)?
 
+    /// Starts the process-wide idle-sleep assertion held for the life of one heavy engine pass — a
+    /// transcription, Second Opinion, a segment re-run, or speaker analysis (F560). Before this, the
+    /// only `beginActivity` in the app was the capture's own
+    /// (`AudioCaptureEngine.beginRecordingActivity`), so a multi-hour Whisper Large pass run after
+    /// Stop, on a laptop whose lid stayed open past the display's idle-sleep timer, was suspended
+    /// partway through.
+    ///
+    /// Injectable, in the same `@Sendable` style as `recoverInterruptedRecording` and
+    /// `runSpeakerDiarization`, so a test can watch begin/end without touching real OS power state.
+    var beginEngineActivity: @Sendable (String) -> NSObjectProtocol? = { reason in
+        ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: reason)
+    }
+    /// Ends an assertion `beginEngineActivity` started. A no-op on `nil` — the real `beginActivity`
+    /// can decline and return one, exactly as `AudioCaptureEngine`'s own comment on `recordingActivity`
+    /// notes — so this never force-unwraps it.
+    var endEngineActivity: @Sendable (NSObjectProtocol?) -> Void = { activity in
+        guard let activity else { return }
+        ProcessInfo.processInfo.endActivity(activity)
+    }
+
+    /// Runs `body` with the idle-sleep assertion held for its whole lifetime, released on every exit —
+    /// success, cancellation, or a thrown error — via `defer` (F560).
+    func withEngineActivityHeld<T>(reason: String, _ body: () async -> T) async -> T {
+        let activity = beginEngineActivity(reason)
+        defer { endEngineActivity(activity) }
+        return await body()
+    }
+
     /// Runs the given engine selection on a recording (or clip) and returns the result without touching
     /// the store. Extracted from `performTranscription` so second-opinion/segment-rerun share one code
     /// path; the override seam lets tests substitute a stub.
@@ -1272,18 +1300,22 @@ final class AppModel: ObservableObject {
         let other: MeetingTranscriptionEngine = producedBy == .qwenBalanced ? .whisperLarge : .qwenBalanced
         secondOpinionEngine = other
         let selection = MeetingTranscriptionSelection(engine: other, language: selectedLanguage)
-        do {
-            // Surface the other engine's live progress so the sheet shows real feedback, not a bare
-            // spinner, while it re-transcribes (F88 UX).
-            let result = try await executeEngine(selection, on: store.recordingURL(for: meeting)) { progress in
-                await self.apply(secondOpinionProgress: progress)
+        // F560: a whole second ASR pass over the entire recording, so the Mac must not idle-sleep
+        // partway through it.
+        await withEngineActivityHeld(reason: "Comparing transcription engines (Second Opinion)") {
+            do {
+                // Surface the other engine's live progress so the sheet shows real feedback, not a bare
+                // spinner, while it re-transcribes (F88 UX).
+                let result = try await executeEngine(selection, on: store.recordingURL(for: meeting)) { progress in
+                    await self.apply(secondOpinionProgress: progress)
+                }
+                secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
+            } catch is CancellationError {
+                // The user cancelled, or deleted the meeting (F512): no comparison, and nothing to say.
+            } catch {
+                secondOpinionFailed = true
+                alertMessage = error.localizedDescription
             }
-            secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
-        } catch is CancellationError {
-            // The user cancelled, or deleted the meeting (F512): no comparison, and nothing to say.
-        } catch {
-            secondOpinionFailed = true
-            alertMessage = error.localizedDescription
         }
     }
 
@@ -1555,50 +1587,54 @@ final class AppModel: ObservableObject {
         // `MeetingStore` reference, so nothing below this line would refuse to write a sidecar into a
         // read-only library — the F187 backstop, placed where inspection cannot miss it.
         guard libraryAcceptsChanges("Speaker analysis") else { return }
-        do {
-            let result = try await runSpeakerDiarization(request) { fraction in
-                await self.apply(diarizationProgress: fraction)
+        // F560: FluidAudio's in-process analysis can run for minutes on a long recording, so the Mac
+        // must not idle-sleep partway through it.
+        await withEngineActivityHeld(reason: "Analyzing speaker turns") {
+            do {
+                let result = try await runSpeakerDiarization(request) { fraction in
+                    await self.apply(diarizationProgress: fraction)
+                }
+                try Task.checkCancellation()
+                // Re-read rather than reuse: the meeting may have been edited or deleted while the
+                // runtime worked, and the fingerprint has to describe the transcript this result will
+                // be shown against, not the one it started from.
+                guard let meeting = store.meeting(id: request.meetingID) else { return }
+                let recordingURL = store.recordingURL(for: meeting)
+                // A meeting recording is routinely hundreds of megabytes and can be gigabytes; hashing
+                // it on the main actor would freeze the window for as long as the read takes.
+                let sha256 = try await Task.detached(priority: .utility) {
+                    try RecordingFingerprint.sha256(of: recordingURL)
+                }.value
+                try Task.checkCancellation()
+                let artifact = DiarizationArtifactV1(
+                    meetingID: request.meetingID,
+                    recording: DiarizationRecordingReference(
+                        relativePath: meeting.recordingPath,
+                        sha256: sha256,
+                        durationSeconds: max(result.audioSeconds, request.durationSeconds)
+                    ),
+                    transcriptTimingFingerprint: TranscriptTimingFingerprint.compute(meeting.segments),
+                    producer: Self.diarizationProducer,
+                    createdAt: Date(),
+                    turns: result.turns,
+                    // A rerun deliberately starts with no aliases: cluster ids permute between runs, so
+                    // carrying a typed label across would quietly attribute it to a different voice.
+                    aliases: [:]
+                )
+                let quarantined = try DiarizationArtifactStore.save(
+                    artifact, for: request.meetingID, in: store.rootDirectory
+                )
+                invalidateSpeakerOverlayCache()
+                if let quarantined {
+                    // A rerun landed on a damaged previous result. The new analysis was saved, but a
+                    // file the user never made is now beside their recording, so it is named.
+                    alertMessage = "Speaker analysis finished. The previous result was damaged, so a copy of it was kept beside the recording as \(quarantined)."
+                }
+            } catch is CancellationError {
+                // Nothing written and nothing said: the user asked for this.
+            } catch {
+                alertMessage = error.localizedDescription
             }
-            try Task.checkCancellation()
-            // Re-read rather than reuse: the meeting may have been edited or deleted while the runtime
-            // worked, and the fingerprint has to describe the transcript this result will be shown
-            // against, not the one it started from.
-            guard let meeting = store.meeting(id: request.meetingID) else { return }
-            let recordingURL = store.recordingURL(for: meeting)
-            // A meeting recording is routinely hundreds of megabytes and can be gigabytes; hashing it
-            // on the main actor would freeze the window for as long as the read takes.
-            let sha256 = try await Task.detached(priority: .utility) {
-                try RecordingFingerprint.sha256(of: recordingURL)
-            }.value
-            try Task.checkCancellation()
-            let artifact = DiarizationArtifactV1(
-                meetingID: request.meetingID,
-                recording: DiarizationRecordingReference(
-                    relativePath: meeting.recordingPath,
-                    sha256: sha256,
-                    durationSeconds: max(result.audioSeconds, request.durationSeconds)
-                ),
-                transcriptTimingFingerprint: TranscriptTimingFingerprint.compute(meeting.segments),
-                producer: Self.diarizationProducer,
-                createdAt: Date(),
-                turns: result.turns,
-                // A rerun deliberately starts with no aliases: cluster ids permute between runs, so
-                // carrying a typed label across would quietly attribute it to a different voice.
-                aliases: [:]
-            )
-            let quarantined = try DiarizationArtifactStore.save(
-                artifact, for: request.meetingID, in: store.rootDirectory
-            )
-            invalidateSpeakerOverlayCache()
-            if let quarantined {
-                // A rerun landed on a damaged previous result. The new analysis was saved, but a
-                // file the user never made is now beside their recording, so it is named.
-                alertMessage = "Speaker analysis finished. The previous result was damaged, so a copy of it was kept beside the recording as \(quarantined)."
-            }
-        } catch is CancellationError {
-            // Nothing written and nothing said: the user asked for this.
-        } catch {
-            alertMessage = error.localizedDescription
         }
     }
 
@@ -1883,61 +1919,66 @@ final class AppModel: ObservableObject {
         let selection = MeetingTranscriptionSelection(
             engine: meeting.transcriptionEngine ?? selectedEngine, language: pin
         )
-        do {
-            let clipURL = try Self.makeSegmentClip(
-                from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
-            )
-            defer { try? FileManager.default.removeItem(at: clipURL) }
-            let result = try await executeEngine(selection, on: clipURL)
-            // A re-run can validly return text with no timestamped segments (alignment failure). Splicing
-            // an empty array would DELETE the segment's text — keep the original instead (F92 audit fix).
-            guard !result.segments.isEmpty else {
-                alertMessage = "Re-transcribing that segment produced no timestamped text, so the original was kept."
-                return
-            }
-            // F422: a re-run can loop like any transcription, so its echoes go the same way before
-            // it is spliced in, and are added to the meeting's count rather than replacing it — the
-            // rest of the transcript's earlier removals still happened.
-            let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
-            var spliced = false
-            var editedMeanwhile = false
-            store.update(id: id) { meeting in
-                guard meeting.segments.indices.contains(index) else { return }
-                // F436: re-checked on the record being written, not the one read before the engine
-                // ran. The engine takes seconds to minutes, and an edit made in that time wins.
-                guard !store.isTranscriptEdited(meeting) else {
-                    editedMeanwhile = true
+        // F560: a single-segment re-run is still a real engine pass (seconds to minutes), so the Mac
+        // must not idle-sleep partway through it.
+        await withEngineActivityHeld(reason: "Re-transcribing a segment") {
+            do {
+                let clipURL = try Self.makeSegmentClip(
+                    from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
+                )
+                defer { try? FileManager.default.removeItem(at: clipURL) }
+                let result = try await executeEngine(selection, on: clipURL)
+                // A re-run can validly return text with no timestamped segments (alignment failure).
+                // Splicing an empty array would DELETE the segment's text — keep the original instead
+                // (F92 audit fix).
+                guard !result.segments.isEmpty else {
+                    alertMessage = "Re-transcribing that segment produced no timestamped text, so the original was kept."
                     return
                 }
-                spliced = true
-                let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
-                meeting.segments = merged
-                meeting.transcriptText = TranscriptFormatter.timestamped(merged)
-                if cleaned.removedCount > 0 {
-                    meeting.repeatsRemoved = Self.adding(cleaned.removedCount, to: meeting.repeatsRemoved)
+                // F422: a re-run can loop like any transcription, so its echoes go the same way before
+                // it is spliced in, and are added to the meeting's count rather than replacing it — the
+                // rest of the transcript's earlier removals still happened.
+                let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
+                var spliced = false
+                var editedMeanwhile = false
+                store.update(id: id) { meeting in
+                    guard meeting.segments.indices.contains(index) else { return }
+                    // F436: re-checked on the record being written, not the one read before the engine
+                    // ran. The engine takes seconds to minutes, and an edit made in that time wins.
+                    guard !store.isTranscriptEdited(meeting) else {
+                        editedMeanwhile = true
+                        return
+                    }
+                    spliced = true
+                    let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
+                    meeting.segments = merged
+                    meeting.transcriptText = TranscriptFormatter.timestamped(merged)
+                    if cleaned.removedCount > 0 {
+                        meeting.repeatsRemoved = Self.adding(cleaned.removedCount, to: meeting.repeatsRemoved)
+                    }
+                    // The header confidence re-derived from the lines as they now are, the way
+                    // `apply(result:)` and a line removal derive it (F471): the splice keeps the re-run's
+                    // metrics, so a flagged replacement has to be able to lower it.
+                    let quality = TranscriptQuality.review(merged)
+                    meeting.confidence = quality.isUnscored ? nil : quality.confidence
                 }
-                // The header confidence re-derived from the lines as they now are, the way
-                // `apply(result:)` and a line removal derive it (F471): the splice keeps the re-run's
-                // metrics, so a flagged replacement has to be able to lower it.
-                let quality = TranscriptQuality.review(merged)
-                meeting.confidence = quality.isUnscored ? nil : quality.confidence
+                if editedMeanwhile {
+                    alertMessage = Self.segmentReRunDiscardedForEdits
+                }
+                // Said rather than refused: see `segmentRerunWarning` for why a line in the other
+                // script is more likely the faithful one (F471). Keyed on the language the transcript
+                // came back in, not on the pin, so a switch is reported under Automatic too.
+                if spliced, let warning = LanguageConsistency.segmentRerunWarning(
+                    meetingLanguage: WhisperLanguage(storedLanguageCode: meeting.languageCode),
+                    replacementText: cleaned.segments.map(\.text).joined(separator: " ")
+                ) {
+                    alertMessage = warning
+                }
+            } catch is CancellationError {
+                // Cancelled, or the meeting was deleted (F512): the original line stays, and nothing to say.
+            } catch {
+                alertMessage = error.localizedDescription
             }
-            if editedMeanwhile {
-                alertMessage = Self.segmentReRunDiscardedForEdits
-            }
-            // Said rather than refused: see `segmentRerunWarning` for why a line in the other
-            // script is more likely the faithful one (F471). Keyed on the language the transcript
-            // came back in, not on the pin, so a switch is reported under Automatic too.
-            if spliced, let warning = LanguageConsistency.segmentRerunWarning(
-                meetingLanguage: WhisperLanguage(storedLanguageCode: meeting.languageCode),
-                replacementText: cleaned.segments.map(\.text).joined(separator: " ")
-            ) {
-                alertMessage = warning
-            }
-        } catch is CancellationError {
-            // Cancelled, or the meeting was deleted (F512): the original line stays, and nothing to say.
-        } catch {
-            alertMessage = error.localizedDescription
         }
     }
 
@@ -5127,16 +5168,20 @@ final class AppModel: ObservableObject {
             $0.errorMessage = nil
         }
 
-        do {
-            let recordingURL = store.recordingURL(for: meeting)
-            let result = try await executeEngine(settings, on: recordingURL) { progress in
-                await self.apply(progress: progress, to: id)
+        // F560: a Whisper Large pass over a multi-hour meeting can run for hours on CPU, so the Mac
+        // must not idle-sleep partway through it.
+        await withEngineActivityHeld(reason: "Transcribing a meeting") {
+            do {
+                let recordingURL = store.recordingURL(for: meeting)
+                let result = try await executeEngine(settings, on: recordingURL) { progress in
+                    await self.apply(progress: progress, to: id)
+                }
+                apply(result: result, to: id, requestedLanguage: settings.language, engine: settings.engine)
+            } catch is CancellationError {
+                handleCancellation(id: id)
+            } catch {
+                handle(error: error, id: id)
             }
-            apply(result: result, to: id, requestedLanguage: settings.language, engine: settings.engine)
-        } catch is CancellationError {
-            handleCancellation(id: id)
-        } catch {
-            handle(error: error, id: id)
         }
     }
 
