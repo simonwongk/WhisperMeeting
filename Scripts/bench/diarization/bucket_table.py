@@ -78,9 +78,11 @@ def tally(reference, hypothesis, mapping, gate):
 
 def run(rttm_dir, hypothesis_dir, gate):
     totals = {name: [0, 0, 0] for name, _, _, _ in BUCKETS}
+    read = 0
     for entry in sorted(os.listdir(hypothesis_dir)):
         if not entry.endswith(".json"):
             continue
+        read += 1
         stem = entry[:-5]
         reference = sd.read_rttm(os.path.join(rttm_dir, stem + ".rttm"))
         with open(os.path.join(hypothesis_dir, entry), encoding="utf-8") as handle:
@@ -91,7 +93,20 @@ def run(rttm_dir, hypothesis_dir, gate):
         for name, counts in tally(reference, hypothesis, mapping, gate).items():
             for index in range(3):
                 totals[name][index] += counts[index]
+    # Counted in files, not inferred from the totals: an empty or wrong directory used to print a
+    # clean all-zero table and exit 0, which reads as data rather than as a mistake (F409).
+    if not read:
+        raise SystemExit(
+            f"no hypothesis .json files in {hypothesis_dir!r} — --hypotheses is ONE threshold "
+            "directory from `sweep` (e.g. <sweep out>/0.60), and nothing was scored"
+        )
     return totals
+
+
+def precision(right, shown):
+    """A dash when nothing was named: `displayed_label_metrics` calls that case 1.0, and this used
+    to print 0.0 % for the same rows — two definitions where F343 asks for one (F409)."""
+    return "%.1f %%" % (100.0 * right / shown) if shown else "—"
 
 
 def render(totals):
@@ -102,12 +117,12 @@ def render(totals):
         rows += count
         named += shown
         correct += right
-        lines.append("| %s | %d | %.1f %% | %.1f %% |" % (
-            name, count, 100.0 * shown / max(1, count), 100.0 * right / max(1, shown)
+        lines.append("| %s | %d | %.1f %% | %s |" % (
+            name, count, 100.0 * shown / max(1, count), precision(right, shown)
         ))
     lines.append("")
-    lines.append("displayed precision %.1f %% over %d named rows; coverage %.1f %% of %d rows" % (
-        100.0 * correct / max(1, named), named, 100.0 * named / max(1, rows), rows
+    lines.append("displayed precision %s over %d named rows; coverage %.1f %% of %d rows" % (
+        precision(correct, named), named, 100.0 * named / max(1, rows), rows
     ))
     return "\n".join(lines)
 

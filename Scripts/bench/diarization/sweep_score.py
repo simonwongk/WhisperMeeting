@@ -32,7 +32,6 @@ def main(argv):
         folder = os.path.join(sweep_dir, threshold)
         if not os.path.isdir(folder):
             continue
-        scored_any = True
         reports, shown, correct, segments = [], 0, 0, 0
         for name in sorted(os.listdir(folder)):
             # Only the sweep's own output. `name[:-5]` on every entry turned a stray `.DS_Store`
@@ -48,6 +47,13 @@ def main(argv):
             shown += labels["labelled"]
             correct += labels["labelled_correct"]
             segments += labels["segments"]
+        # Files scored, not directories seen (F409): an empty threshold folder used to count as
+        # scored and then divide by its zero total below — a ZeroDivisionError, not a refusal.
+        if not reports:
+            raise SystemExit(
+                f"no .json hypotheses in {folder!r} — nothing was scored for threshold {threshold}"
+            )
+        scored_any = True
         # `displayed_label_metrics` calls the no-rows case 1.0 — "it was never wrong" — and this
         # printed 0.0 for the same input. One definition, not two (F343).
         precision = (correct / shown) if shown else 1.0
