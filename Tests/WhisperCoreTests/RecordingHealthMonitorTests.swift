@@ -28,15 +28,56 @@ func warnsWhenCapturedAudioClips() {
     #expect(snapshot.warnings.contains(.systemAudioClipping))
 }
 
+// F530: the threshold is derived from RecordingSizeEstimator (what Stop will need to write
+// meeting.wav for the elapsed duration, plus a margin for the still-growing raw tracks), not a flat
+// number — so a 2-second-old recording's threshold is a couple hundred MB, not 2 GB.
 @Test("A recording warns before local storage becomes critically low")
 func warnsWhenStorageIsLow() {
     let monitor = RecordingHealthMonitor(startedAt: 100)
     monitor.receive(.microphone, level: .silent, at: 101)
     monitor.receive(.systemAudio, level: .silent, at: 101)
 
-    let snapshot = monitor.snapshot(at: 102, availableStorageBytes: 1_500_000_000)
+    // 2 seconds in, Stop would need ~192 KB for meeting.wav; the default margin (10 minutes of the
+    // two raw tracks' own growth, ~384 KB/s) is ~230 MB. 200 MB free is below that.
+    let snapshot = monitor.snapshot(at: 102, availableStorageBytes: 200_000_000)
 
     #expect(snapshot.warnings.contains(.lowStorage))
+}
+
+@Test("A recording does not cry wolf early on: plenty of free space for a brand-new recording is not 'low' (F530)")
+func doesNotWarnEarlyWhenStorageIsAmple() {
+    let monitor = RecordingHealthMonitor(startedAt: 100)
+    monitor.receive(.microphone, level: .silent, at: 101)
+    monitor.receive(.systemAudio, level: .silent, at: 101)
+
+    // The OLD flat 2 GB threshold would have warned here even 2 seconds into a recording. The
+    // derived threshold at 2 seconds is ~230 MB, so 1.5 GB free is genuinely fine.
+    let snapshot = monitor.snapshot(at: 102, availableStorageBytes: 1_500_000_000)
+
+    #expect(!snapshot.warnings.contains(.lowStorage))
+}
+
+// F530's headline scenario: past ~5.8 hours, meeting.wav alone needs more than a flat 2 GB, so the
+// old threshold could never fire before Stop's write was already impossible.
+@Test("A long recording warns well before Stop's write becomes impossible, past where a flat 2 GB threshold would have stayed silent (F530)")
+func warnsOnALongRecordingPastTheOldFlatThreshold() {
+    let monitor = RecordingHealthMonitor(startedAt: 0)
+    let sixHours: TimeInterval = 6 * 3_600
+    monitor.receive(.microphone, level: .silent, at: sixHours - 1)
+    monitor.receive(.systemAudio, level: .silent, at: sixHours - 1)
+
+    // At 6h, Stop needs 96,000 B/s * 21,600s ≈ 2.074 GB for meeting.wav alone, plus the ~230 MB
+    // margin ≈ 2.304 GB total. 2.2 GB free is short of that — but is ABOVE the old flat 2 GB
+    // threshold, so the old code would have reported this recording as fine.
+    let stillShort = monitor.snapshot(at: sixHours, availableStorageBytes: 2_200_000_000)
+    #expect(stillShort.warnings.contains(.lowStorage), "2.2 GB free at 6h is short of what Stop needs, even though it clears the old flat 2 GB bar")
+
+    // Comfortably above the derived threshold: no warning.
+    let plenty = RecordingHealthMonitor(startedAt: 0)
+    plenty.receive(.microphone, level: .silent, at: sixHours - 1)
+    plenty.receive(.systemAudio, level: .silent, at: sixHours - 1)
+    let ample = plenty.snapshot(at: sixHours, availableStorageBytes: 10_000_000_000)
+    #expect(!ample.warnings.contains(.lowStorage))
 }
 
 @Test("A silent start does not falsely claim that system capture stopped")

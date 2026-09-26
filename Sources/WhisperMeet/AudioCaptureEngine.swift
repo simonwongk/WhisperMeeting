@@ -232,7 +232,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             // capture queue never reads or writes them concurrently with this setup. No sample
             // buffers are delivered until startCapture() returns.
             healthMonitor = RecordingHealthMonitor(
-                startedAt: ProcessInfo.processInfo.systemUptime
+                startedAt: ProcessInfo.processInfo.systemUptime,
+                sampleRate: Self.targetSampleRate
             )
             healthUpdate = onHealthUpdate
             levelsUpdate = onLevels
@@ -775,7 +776,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate
         )
         sessionDirectory = directory
-        healthMonitor = RecordingHealthMonitor(startedAt: ProcessInfo.processInfo.systemUptime)
+        healthMonitor = RecordingHealthMonitor(
+            startedAt: ProcessInfo.processInfo.systemUptime,
+            sampleRate: Self.targetSampleRate
+        )
     }
 
     func writeTestFrames(system: Int64, microphone: Int64, systemStart: Double, microphoneStart: Double) throws {

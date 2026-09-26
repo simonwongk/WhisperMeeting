@@ -329,7 +329,13 @@ public final class RecordingHealthMonitor {
     private let staleAfter: TimeInterval
     private let systemDetectionGracePeriod: TimeInterval
     private let clippingHoldPeriod: TimeInterval
-    private let lowStorageThresholdBytes: Int64
+    /// The capture's sample rate, so the low-storage threshold below can be derived from the same
+    /// arithmetic `RecordingSizeEstimator` uses for the rest of the app (F530).
+    private let sampleRate: Double
+    /// Headroom kept ABOVE what Stop will need to write `meeting.wav` for the recording so far
+    /// (F530's fix). Not a timeout on anything — it sizes how much the two still-growing raw source
+    /// tracks can consume in the time it might take a user to notice the warning and press Stop.
+    private let lowStorageMarginBytes: Int64
     /// How many consecutive failed appends mean the pipeline is broken rather than blipping.
     ///
     /// **Three is a judgement, not a measurement, and F386 asked for a measurement.** Producing
@@ -358,6 +364,21 @@ public final class RecordingHealthMonitor {
     private var systemAudioStaleSeconds: TimeInterval = 0
     private var lastSnapshotTime: TimeInterval?
 
+    /// How long a user might reasonably take to notice the low-storage warning and press Stop. Not
+    /// a timeout anything waits on — it sizes `defaultLowStorageMarginBytes` below: how much the raw
+    /// source tracks, which keep growing right up to Stop, can consume in that window (F530).
+    public static let lowStorageReactionWindow: TimeInterval = 600  // 10 minutes
+
+    /// The default margin above what Stop needs to write `meeting.wav`: the two raw source tracks'
+    /// own combined growth rate, over `lowStorageReactionWindow` (F530). Derived from
+    /// `RecordingSizeEstimator`, the same arithmetic the rest of the app uses for this capture
+    /// format, rather than a flat guess.
+    public static func defaultLowStorageMarginBytes(sampleRate: Double = RecordingSizeEstimator.defaultSampleRate) -> Int64 {
+        let (product, overflowed) = RecordingSizeEstimator.sourceBytesPerSecond(sampleRate: sampleRate)
+            .multipliedReportingOverflow(by: Int64(saturating: lowStorageReactionWindow))
+        return overflowed ? Int64.max : product
+    }
+
     public init(
         startedAt: TimeInterval,
         initialGracePeriod: TimeInterval = 4,
@@ -365,7 +386,8 @@ public final class RecordingHealthMonitor {
         systemDetectionGracePeriod: TimeInterval = 15,
         clippingHoldPeriod: TimeInterval = 3,
         writeFailureThreshold: Int = 3,
-        lowStorageThresholdBytes: Int64 = 2_000_000_000
+        sampleRate: Double = RecordingSizeEstimator.defaultSampleRate,
+        lowStorageMarginBytes: Int64? = nil
     ) {
         self.startedAt = startedAt
         self.initialGracePeriod = initialGracePeriod
@@ -373,7 +395,9 @@ public final class RecordingHealthMonitor {
         self.systemDetectionGracePeriod = systemDetectionGracePeriod
         self.clippingHoldPeriod = clippingHoldPeriod
         self.writeFailureThreshold = max(1, writeFailureThreshold)
-        self.lowStorageThresholdBytes = lowStorageThresholdBytes
+        self.sampleRate = sampleRate
+        self.lowStorageMarginBytes = lowStorageMarginBytes
+            ?? Self.defaultLowStorageMarginBytes(sampleRate: sampleRate)
     }
 
     public func receive(
@@ -420,9 +444,20 @@ public final class RecordingHealthMonitor {
         // is now written as RF64 and stays readable, so "stop soon so the whole file stays
         // readable" would be asking the user to act on something that is no longer true. The case
         // and its copy remain because saved health reports from older recordings still decode it.
-        if let availableStorageBytes,
-           availableStorageBytes < lowStorageThresholdBytes {
-            warnings.append(.lowStorage)
+        //
+        // F530: a flat threshold cannot warn before Stop becomes impossible on a long recording — at
+        // 96,000 B/s, `meeting.wav` alone needs more than a flat 2 GB past ~5.8 hours. The threshold
+        // is instead what Stop will actually need to write `meeting.wav` for the recording SO FAR
+        // (`RecordingSizeEstimator.mixedBytes`, growing with elapsed time) plus a margin for the
+        // still-growing raw tracks. `addingReportingOverflow` because a bound must not itself be the
+        // overflow it exists to guard against (AGENTS.md).
+        if let availableStorageBytes {
+            let elapsed = max(0, time - startedAt)
+            let neededToStopNow = RecordingSizeEstimator.mixedBytes(forDuration: elapsed, sampleRate: sampleRate)
+            let (threshold, overflowed) = neededToStopNow.addingReportingOverflow(lowStorageMarginBytes)
+            if availableStorageBytes < (overflowed ? Int64.max : threshold) {
+                warnings.append(.lowStorage)
+            }
         }
         let snapshot = RecordingHealthSnapshot(
             microphoneLevel: microphone.level,
