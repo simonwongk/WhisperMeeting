@@ -56,14 +56,17 @@ Contributors and coding agents should start with [AGENTS.md](AGENTS.md).
 ## Build and run
 
 ```bash
-Scripts/build-app.sh
-open .build/WhisperMeet.app
+Scripts/install-app.sh
+open /Applications/WhisperMeet.app
 ```
 
-The build script signs `.build/WhisperMeet.app` with a local **WhisperMeet Dev** code-signing
-certificate when one exists in your keychain, and falls back to an ad-hoc signature otherwise. On
-first recording, macOS asks for Microphone and Screen & System Audio Recording permissions. If
-system audio is silent after granting permission, quit and reopen the app.
+`Scripts/install-app.sh` builds a signed release and installs it to `/Applications` — the bundle you
+actually run day to day — with a guarded, atomic replace of any previous install (it refuses to run
+while WhisperMeet is open, and restores the previous app if anything fails partway through). It signs
+with a local **WhisperMeet Dev** code-signing certificate when one exists in your keychain, and falls
+back to an ad-hoc signature otherwise. On first recording, macOS asks for Microphone and Screen &
+System Audio Recording permissions. If system audio is silent after granting permission, quit and
+reopen the app.
 
 A stable signing identity keeps your permission grants across rebuilds. With only an ad-hoc
 signature, each rebuild changes the app’s code identity, so macOS may leave the old **Screen &
@@ -71,7 +74,13 @@ System Audio Recording** switch visibly enabled even though it belongs to the pr
 such a rebuild, switch WhisperMeet **off and back on**, quit with **⌘Q**, and reopen it. To create
 the stable certificate once: Keychain Access → Certificate Assistant → Create a Certificate, name it
 `WhisperMeet Dev`, Identity Type Self-Signed Root, Certificate Type Code Signing — then rebuild, and
-`build-app.sh` signs with it automatically.
+`install-app.sh` (which calls `build-app.sh` internally) signs with it automatically.
+
+`Scripts/build-app.sh` alone only packages a release build into `.build/WhisperMeet.app`, for
+inspecting the bundle without installing it. **Never run that bundle while an installed copy
+exists** — two bundles built from different commits can hold incompatible library schemas against
+the same `~/Library/Application Support/WhisperMeet/` library, which is what caused the 2026-08-14
+library wipe (see `docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md`).
 
 ## First-time setup
 
@@ -128,12 +137,13 @@ engine is optional — install only what you use.
 | Local Whisper (default engine) | first transcription | ~1.2 GB Python environment + a Whisper model (Turbo ≈ 1.5 GB or Large ≈ 2.9 GB); also uses Homebrew FFmpeg and Python 3.11 |
 | Qwen3-ASR (opt-in, Apple silicon) | Settings → Install Qwen3-ASR | ≈ 4.2 GB (ASR + forced-aligner models ≈ 2.3 GB, MLX Python environment ≈ 0.7 GB) |
 | Local summaries + AI correction (opt-in, Apple silicon) | Settings → Install Local Model | ≈ 4.7 GB (Qwen3-8B-4bit ≈ 4.3 GB + Python environment ≈ 0.4 GB; a smaller 4B model on Macs under 16 GB of RAM). Summaries and correction share this one runtime. |
-| Your recordings | grows with use | 48 kHz mono audio ≈ 1 GB per ~11 hours |
+| Your recordings | grows with use | ≈ 1.7 GB per recorded hour: `meeting.wav` (48 kHz, 16-bit mono) ≈ 0.35 GB, plus the two raw microphone/system-audio source tracks (48 kHz, float32) ≈ 0.69 GB each, all kept |
 
 Rules of thumb: a minimal setup (default Whisper only) is about **3–4 GB**; installing everything —
 both ASR engines plus local summaries and AI correction — is roughly **12–16 GB** of models and
 runtimes, on top of your recordings. Enabling AI correction adds no download once local summaries
-are installed. Recordings are never auto-deleted and dominate long-term use, so keep an eye on
+are installed. Recordings are never auto-deleted and dominate long-term use — an hour of meetings a
+day is roughly 50 GB a month — so keep an eye on
 `~/Library/Application Support/WhisperMeet/Recordings`.
 
 ## Workflow
