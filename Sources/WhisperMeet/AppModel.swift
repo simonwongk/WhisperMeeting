@@ -1160,8 +1160,13 @@ final class AppModel: ObservableObject {
         ProcessInfo.processInfo.endActivity(activity)
     }
 
-    /// Runs `body` with the idle-sleep assertion held for its whole lifetime, released on every exit —
-    /// success, cancellation, or a thrown error — via `defer` (F560).
+    /// Runs `body` with the idle-sleep assertion held for its whole lifetime, released via `defer`
+    /// when `body` returns (F560).
+    ///
+    /// `body` is `() async -> T`, not `throws` — every call site's own `do`/`catch` already swallows
+    /// cancellation and errors before returning, so the only exit this ever sees is an ordinary
+    /// return, including one that followed a caught cancellation or a caught error inside `body`.
+    /// `defer` covers that uniformly; there is no thrown-error exit for it to additionally guard.
     func withEngineActivityHeld<T>(reason: String, _ body: () async -> T) async -> T {
         let activity = beginEngineActivity(reason)
         defer { endEngineActivity(activity) }
