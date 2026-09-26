@@ -57,11 +57,13 @@ public enum ProtectedTerms {
             // Latin term written against Chinese characters with no separating space — Whisper and
             // Qwen routinely write code-switched Mandarin this way, e.g. "这个Kubernetes集群" —
             // never "contained" a term at all. Assert directly on what must NOT be adjacent (a
-            // Latin letter, digit or underscore) instead of asking ICU what counts as a boundary.
+            // Latin letter, digit or underscore — `LatinTokenBoundary`, shared with
+            // `ReplacementBoundary` since F592) instead of asking ICU what counts as a boundary.
             // A Han character fails that assertion just like a space would, so it now counts as a
             // boundary; two adjacent Latin terms ("Kubernetes2", "CCPA") still do not, which is
             // exactly the whole-word behaviour the older pattern gave for pure Latin text.
-            let pattern = "(?<![A-Za-z0-9_])" + NSRegularExpression.escapedPattern(for: term) + "(?![A-Za-z0-9_])"
+            let boundaryClass = LatinTokenBoundary.regexCharacterClass
+            let pattern = "(?<![\(boundaryClass)])" + NSRegularExpression.escapedPattern(for: term) + "(?![\(boundaryClass)])"
             return bridged.range(of: pattern, options: [.regularExpression, .caseInsensitive]).location != NSNotFound
         }
     }

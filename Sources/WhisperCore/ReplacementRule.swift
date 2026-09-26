@@ -51,12 +51,12 @@ public enum ReplacementRuleMatcher {
 /// token — not immediately flanked by another Latin letter or digit (kills failure 2).
 ///
 /// CJK terms are deliberately exempted from the whole-token check, mirroring `ProtectedTerms`
-/// (`Sources/WhisperCore/ProtectedTerms.swift`, F245 — read for the rationale, not imported: F534 is
-/// changing that file's containment rule in parallel, so this is a separate, small check kept local
-/// to the rules matcher). Chinese has no space between words, so nothing short of a segmenter can
-/// tell whether a CJK character next to `heard` starts a new word or continues the same one, and
-/// treating every CJK neighbour as "still the same token" would make a CJK rule impossible to ever
-/// apply. Failure 1's fix still protects a CJK rule whose `preferred` contains its `heard`.
+/// (`Sources/WhisperCore/ProtectedTerms.swift`, F245). Chinese has no space between words, so
+/// nothing short of a segmenter can tell whether a CJK character next to `heard` starts a new word
+/// or continues the same one, and treating every CJK neighbour as "still the same token" would make
+/// a CJK rule impossible to ever apply. Failure 1's fix still protects a CJK rule whose `preferred`
+/// contains its `heard`. The CJK-detection helper (`hasCJK` below) stays a separate, local copy of
+/// `ProtectedTerms`'s (it is `private` there); the *connector* check is shared, see below.
 ///
 /// A CJK neighbour also does not block a LATIN `heard`, and deliberately does not use the classic
 /// `\b` regex boundary for that: `\b` treats Han ideographs as word characters (confirmed against
@@ -64,7 +64,10 @@ public enum ReplacementRuleMatcher {
 /// Latin term glued directly to CJK text with no space — common in Chinese meetings — would never
 /// be recognised as a whole word at all. Here, a neighbour blocks the match only when the neighbour
 /// is ITSELF a Latin letter or digit, so a CJK neighbour (or punctuation, space, or the string's
-/// edge) always counts as a boundary.
+/// edge) always counts as a boundary — via `LatinTokenBoundary`, shared with `ProtectedTerms` since
+/// F592 (this file's own connector check used to be a second, independently-written predicate that
+/// disagreed with `ProtectedTerms`'s on an underscore neighbour and on a non-Han Unicode letter
+/// neighbour; see `LatinTokenBoundary`'s doc comment for which definition won and why).
 enum ReplacementBoundary {
     /// Whether `heard` genuinely occurs in `text` (see the type's documentation).
     static func occurs(_ heard: String, notCoveredBy preferred: String, in text: String) -> Bool {
@@ -105,26 +108,20 @@ enum ReplacementBoundary {
     /// CJK occurrences are exempt — see the type's documentation.
     private static func isWholeToken(_ range: Range<String.Index>, in text: String) -> Bool {
         guard !hasCJK(text[range]) else { return true }
-        if range.lowerBound > text.startIndex, isLatinConnector(text[text.index(before: range.lowerBound)]) {
+        if range.lowerBound > text.startIndex, LatinTokenBoundary.isConnector(text[text.index(before: range.lowerBound)]) {
             return false
         }
-        if range.upperBound < text.endIndex, isLatinConnector(text[range.upperBound]) {
+        if range.upperBound < text.endIndex, LatinTokenBoundary.isConnector(text[range.upperBound]) {
             return false
         }
         return true
     }
 
-    /// A neighbour that would extend a Latin/alphanumeric run: a letter or digit that is not itself
-    /// CJK. Punctuation, whitespace, the string's edge, and any CJK character all count as a
-    /// boundary instead.
-    private static func isLatinConnector(_ character: Character) -> Bool {
-        guard character.isLetter || character.isNumber else { return false }
-        return !hasCJK(String(character))
-    }
-
     /// Same ranges `ProtectedTerms.hasCJK` checks (F245) — duplicated rather than shared, because
-    /// that one is `private` to its own file and F534 is changing its containment rule concurrently;
-    /// this is a plain Unicode CJK-ideograph range check, unlikely to need to change independently.
+    /// that one is `private` to its own file; this is a plain Unicode CJK-ideograph range check,
+    /// unlikely to need to change independently. (The *connector* check this file used to keep
+    /// alongside it, `isLatinConnector`, is no longer a second copy — F592 moved it to
+    /// `LatinTokenBoundary`, shared with `ProtectedTerms`.)
     private static func hasCJK(_ text: some StringProtocol) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
