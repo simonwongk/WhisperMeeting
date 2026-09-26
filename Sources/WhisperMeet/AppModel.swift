@@ -224,6 +224,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSummarizationID: UUID?
     @Published private(set) var hasClaudeAPIKey: Bool = false
     @Published private(set) var runtimeExecutableURL: URL?
+    /// Whether `runtimeExecutableURL` accepts `--carry_initial_prompt` (F509). True whenever no
+    /// executable is installed at all — there is nothing to warn about yet, and the "not installed"
+    /// state already says what to do. Recomputed alongside `runtimeExecutableURL` in `init` and
+    /// `refreshRuntime()`, never on every transcription, so an old fallback `whisper` is probed once
+    /// per discovery rather than once per meeting.
+    @Published private(set) var runtimeSupportsVocabularyPrompt = true
     @Published private(set) var isInstallingRuntime = false
     @Published private(set) var installationMessage: String?
     @Published private(set) var isQwenInstalled = false
@@ -885,6 +891,9 @@ final class AppModel: ObservableObject {
         didLoadWatchedFolderSettings = true
         // Reuse the probes already run above rather than hitting the filesystem twice.
         runtimeExecutableURL = whisperURL
+        runtimeSupportsVocabularyPrompt = Self.vocabularyPromptIsSupported(
+            for: whisperURL, probe: checkCarryInitialPromptSupport
+        )
         isQwenInstalled = qwenIsInstalled
         isSummarizerInstalled = isSummarizerModelInstalled()
         isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
@@ -895,6 +904,30 @@ final class AppModel: ObservableObject {
 
     var isRuntimeInstalled: Bool {
         runtimeExecutableURL != nil
+    }
+
+    /// `true` when there is nothing installed to probe — the "not installed" state already says
+    /// what to do, so this never reports a false capability gap on top of that one. Static (and
+    /// taking the probe as a parameter) so `init` can call it before `self` has a
+    /// `checkCarryInitialPromptSupport` it would otherwise need to read through `self` (F509).
+    static func vocabularyPromptIsSupported(
+        for executableURL: URL?, probe: (URL) -> Bool
+    ) -> Bool {
+        guard let executableURL else { return true }
+        return probe(executableURL)
+    }
+
+    /// A clear, one-line explanation for Settings whenever the installed `whisper` predates
+    /// `--carry_initial_prompt` (F509) — shown only when it would otherwise matter: vocabulary is
+    /// silently NOT sent to a meeting transcription rather than crashing every one of them, and a
+    /// user with no vocabulary terms has nothing to be told.
+    var vocabularyPromptUnsupportedNotice: String? {
+        guard isRuntimeInstalled, !runtimeSupportsVocabularyPrompt, !store.vocabulary.isEmpty else {
+            return nil
+        }
+        return "This installed Whisper predates vocabulary support (needs openai-whisper 20250625"
+            + " or newer), so Business Vocabulary is not sent to meeting transcriptions. Install"
+            + " Local Whisper above to get a supported version."
     }
 
     var isSelectedEngineInstalled: Bool {
@@ -1024,6 +1057,9 @@ final class AppModel: ObservableObject {
 
     func refreshRuntime() {
         runtimeExecutableURL = findWhisperExecutable()
+        runtimeSupportsVocabularyPrompt = Self.vocabularyPromptIsSupported(
+            for: runtimeExecutableURL, probe: checkCarryInitialPromptSupport
+        )
         isQwenInstalled = checkQwenInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
         isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
@@ -1174,6 +1210,12 @@ final class AppModel: ObservableObject {
     /// engine and re-probes the filesystem itself, which left every "refuse while transcribing" guard
     /// unreachable from a test (F219). Defaults to the real probe, so behaviour is unchanged.
     var findWhisperExecutable: @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() }
+    /// The `--carry_initial_prompt` capability probe, as a seam for the same reason
+    /// `findWhisperExecutable` is one: a headless test drives an incapable-fallback stub through
+    /// this rather than shelling out to a real `whisper --help` (F509).
+    var checkCarryInitialPromptSupport: @Sendable (URL) -> Bool = {
+        LocalWhisperRuntime.supportsCarryInitialPrompt(at: $0)
+    }
     /// The Qwen install probe, as a seam for the same reason `findWhisperExecutable` is one (F262).
     ///
     /// `refreshRuntime()` must go through both seams, not just this one's Whisper sibling. Until it
@@ -1318,11 +1360,17 @@ final class AppModel: ObservableObject {
                 executableURL: executableURL,
                 modelDirectory: LocalWhisperRuntime.modelDirectory()
             )
+            // F509: an older Homebrew/pipx `whisper` predates `--carry_initial_prompt`, which
+            // `commandArguments` adds unconditionally the moment `keyterms` is non-empty — that
+            // flag exits argparse with status 2 on every such meeting. Omitting the vocabulary
+            // there keeps the meeting transcribing instead of failing it every time; the gap is
+            // named in Settings via `vocabularyPromptUnsupportedNotice`.
+            let keyterms = runtimeSupportsVocabularyPrompt ? store.promptVocabulary : []
             return try await client.transcribe(
                 recordingAt: url,
                 // The engine's `initial_prompt` is budgeted, so it takes the capped view — the stored
                 // list is no longer trimmed to fit it (F187).
-                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: store.promptVocabulary),
+                options: .accuracyFirst(model: whisperModel, language: selection.language, keyterms: keyterms),
                 onProgress: onProgress
             )
         }

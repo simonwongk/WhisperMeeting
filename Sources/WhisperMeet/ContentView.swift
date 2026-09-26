@@ -1441,6 +1441,13 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .transition(.gentleFade(reduceMotion: reduceMotion))
                 }
+                // F509: beside the status it explains, per the repo's own rule that a control (or
+                // here, a caveat) belongs beside the message it relates to, never nested where a
+                // later edit could delete it unnoticed.
+                if let notice = model.vocabularyPromptUnsupportedNotice {
+                    Text(notice)
+                        .foregroundStyle(.secondary)
+                }
                 if MeetingTranscriptionEngine.qwenBalanced.isSupportedOnCurrentMac {
                     HStack {
                         Label(
