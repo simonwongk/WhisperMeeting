@@ -224,12 +224,29 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSummarizationID: UUID?
     @Published private(set) var hasClaudeAPIKey: Bool = false
     @Published private(set) var runtimeExecutableURL: URL?
-    /// Whether `runtimeExecutableURL` accepts `--carry_initial_prompt` (F509). True whenever no
+    /// Whether `runtimeExecutableURL` accepts `--carry_initial_prompt` (F509). `true` whenever no
     /// executable is installed at all — there is nothing to warn about yet, and the "not installed"
-    /// state already says what to do. Recomputed alongside `runtimeExecutableURL` in `init` and
-    /// `refreshRuntime()`, never on every transcription, so an old fallback `whisper` is probed once
-    /// per discovery rather than once per meeting.
-    @Published private(set) var runtimeSupportsVocabularyPrompt = true
+    /// state already says what to do. `nil` means "not yet known": `supportsCarryInitialPrompt(at:)`
+    /// spawns `whisper --help` and blocks on it for roughly a second (measured against the real
+    /// installed executable — see that function's doc comment), so the first probe against a given
+    /// executable never runs on the main actor. Until it lands, this is `nil` and every reader
+    /// treats that exactly like `false` — omit the vocabulary, show no caveat — never blocking to
+    /// find out. `updateVocabularyPromptSupport(for:)` recomputes this from a per-executable cache
+    /// (keyed on path + modification date) in `init` and every `refreshRuntime()`, so a discovered
+    /// executable is probed once — not once per queued meeting, which is what made
+    /// `beginTranscriptionForAllReady()` spawn one blocking subprocess per meeting before this fix.
+    @Published private(set) var runtimeSupportsVocabularyPrompt: Bool? = true
+    /// Per-executable memo for `runtimeSupportsVocabularyPrompt`, keyed so a replaced binary at the
+    /// same path (a "Repair or Update") is re-probed rather than trusting a stale answer forever.
+    private struct CarryInitialPromptCacheKey: Hashable {
+        let path: String
+        let modificationDate: Date?
+    }
+    private var carryInitialPromptCache: [CarryInitialPromptCacheKey: Bool] = [:]
+    /// Keys with a probe already in flight, so N calls to `refreshRuntime()` for the same
+    /// executable (e.g. `beginTranscriptionForAllReady()` over many queued meetings) start exactly
+    /// one detached probe rather than one per call.
+    private var carryInitialPromptProbesInFlight: Set<CarryInitialPromptCacheKey> = []
     @Published private(set) var isInstallingRuntime = false
     @Published private(set) var installationMessage: String?
     @Published private(set) var isQwenInstalled = false
@@ -846,7 +863,16 @@ final class AppModel: ObservableObject {
         recorder: AudioCaptureEngine,
         defaults: UserDefaults,
         whisperExecutable: @escaping @Sendable () -> URL? = { LocalWhisperRuntime.findExecutable() },
-        qwenInstalled: @escaping @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
+        qwenInstalled: @escaping @Sendable () -> Bool = { QwenASRRuntime.isInstalled() },
+        // F509: also an init parameter, for the same reason as the two above — `init` fires the
+        // FIRST `updateVocabularyPromptSupport(for:)` probe itself (below), before a test would get
+        // a chance to overwrite the `checkCarryInitialPromptSupport` stored property. A test that
+        // set the seam only after construction raced the default real probe (which `init` had
+        // already spawned against whatever fake executable path the test injected) and sometimes
+        // lost — this is exactly the bug that shape of injection caused.
+        carryInitialPromptSupport: @escaping @Sendable (URL) -> Bool = {
+            LocalWhisperRuntime.supportsCarryInitialPrompt(at: $0)
+        }
     ) {
         self.store = store
         self.recorder = recorder
@@ -855,6 +881,7 @@ final class AppModel: ObservableObject {
         // re-reading the real filesystem and discarding whatever was pinned here (F262).
         self.findWhisperExecutable = whisperExecutable
         self.checkQwenInstalled = qwenInstalled
+        self.checkCarryInitialPromptSupport = carryInitialPromptSupport
         let storedEngine = MeetingTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.modelKey) ?? ""
         )
@@ -891,9 +918,7 @@ final class AppModel: ObservableObject {
         didLoadWatchedFolderSettings = true
         // Reuse the probes already run above rather than hitting the filesystem twice.
         runtimeExecutableURL = whisperURL
-        runtimeSupportsVocabularyPrompt = Self.vocabularyPromptIsSupported(
-            for: whisperURL, probe: checkCarryInitialPromptSupport
-        )
+        updateVocabularyPromptSupport(for: whisperURL)
         isQwenInstalled = qwenIsInstalled
         isSummarizerInstalled = isSummarizerModelInstalled()
         isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
@@ -906,23 +931,68 @@ final class AppModel: ObservableObject {
         runtimeExecutableURL != nil
     }
 
-    /// `true` when there is nothing installed to probe — the "not installed" state already says
-    /// what to do, so this never reports a false capability gap on top of that one. Static (and
-    /// taking the probe as a parameter) so `init` can call it before `self` has a
-    /// `checkCarryInitialPromptSupport` it would otherwise need to read through `self` (F509).
-    static func vocabularyPromptIsSupported(
-        for executableURL: URL?, probe: (URL) -> Bool
-    ) -> Bool {
-        guard let executableURL else { return true }
-        return probe(executableURL)
+    /// Recomputes `runtimeSupportsVocabularyPrompt` for `executableURL`, never blocking (F509).
+    ///
+    /// Three cases:
+    ///   - no executable at all → `true` (nothing to warn about, nothing to probe);
+    ///   - a cache hit (same path + modification date already probed) → the cached answer,
+    ///     synchronously, no subprocess spawned;
+    ///   - a cache miss → `nil` ("not yet known": every reader treats this like `false`, so
+    ///     vocabulary is omitted and no caveat shown) and, unless a probe for this exact key is
+    ///     already in flight, one `Task.detached` that runs the real (slow) probe off the main
+    ///     actor and reports back through `recordCarryInitialPromptProbeResult`.
+    ///
+    /// Called from `init` and every `refreshRuntime()` — including the one inside
+    /// `beginTranscription(id:)`, so `beginTranscriptionForAllReady()` over N queued meetings calls
+    /// this N times but starts at most one subprocess, because the second call onward sees either a
+    /// cache entry or an in-flight probe and returns immediately.
+    private func updateVocabularyPromptSupport(for executableURL: URL?) {
+        guard let executableURL else {
+            runtimeSupportsVocabularyPrompt = true
+            return
+        }
+        let key = Self.carryInitialPromptCacheKey(for: executableURL)
+        if let cached = carryInitialPromptCache[key] {
+            runtimeSupportsVocabularyPrompt = cached
+            return
+        }
+        runtimeSupportsVocabularyPrompt = nil
+        guard !carryInitialPromptProbesInFlight.contains(key) else { return }
+        carryInitialPromptProbesInFlight.insert(key)
+        let probe = checkCarryInitialPromptSupport
+        Task.detached(priority: .utility) { [weak self] in
+            let result = probe(executableURL)
+            await self?.recordCarryInitialPromptProbeResult(key: key, executableURL: executableURL, result: result)
+        }
+    }
+
+    /// The main-actor half of `updateVocabularyPromptSupport`: stores the landed probe result and,
+    /// only if `executableURL` is still the current runtime (a repair/reinstall mid-probe must not
+    /// apply a stale answer to the new binary), publishes it.
+    private func recordCarryInitialPromptProbeResult(
+        key: CarryInitialPromptCacheKey, executableURL: URL, result: Bool
+    ) {
+        carryInitialPromptCache[key] = result
+        carryInitialPromptProbesInFlight.remove(key)
+        if runtimeExecutableURL == executableURL {
+            runtimeSupportsVocabularyPrompt = result
+        }
+    }
+
+    private static func carryInitialPromptCacheKey(for executableURL: URL) -> CarryInitialPromptCacheKey {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: executableURL.path)
+        let modificationDate = attributes?[.modificationDate] as? Date
+        return CarryInitialPromptCacheKey(path: executableURL.path, modificationDate: modificationDate)
     }
 
     /// A clear, one-line explanation for Settings whenever the installed `whisper` predates
     /// `--carry_initial_prompt` (F509) — shown only when it would otherwise matter: vocabulary is
     /// silently NOT sent to a meeting transcription rather than crashing every one of them, and a
-    /// user with no vocabulary terms has nothing to be told.
+    /// user with no vocabulary terms has nothing to be told. Also says nothing while the probe is
+    /// still in flight (`runtimeSupportsVocabularyPrompt == nil`) — a transient "not yet known" is
+    /// not a caveat worth showing.
     var vocabularyPromptUnsupportedNotice: String? {
-        guard isRuntimeInstalled, !runtimeSupportsVocabularyPrompt, !store.vocabulary.isEmpty else {
+        guard isRuntimeInstalled, runtimeSupportsVocabularyPrompt == false, !store.vocabulary.isEmpty else {
             return nil
         }
         return "This installed Whisper predates vocabulary support (needs openai-whisper 20250625"
@@ -1065,9 +1135,7 @@ final class AppModel: ObservableObject {
 
     func refreshRuntime() {
         runtimeExecutableURL = findWhisperExecutable()
-        runtimeSupportsVocabularyPrompt = Self.vocabularyPromptIsSupported(
-            for: runtimeExecutableURL, probe: checkCarryInitialPromptSupport
-        )
+        updateVocabularyPromptSupport(for: runtimeExecutableURL)
         isQwenInstalled = checkQwenInstalled()
         isSummarizerInstalled = isSummarizerModelInstalled()
         isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
@@ -1372,8 +1440,9 @@ final class AppModel: ObservableObject {
             // `commandArguments` adds unconditionally the moment `keyterms` is non-empty — that
             // flag exits argparse with status 2 on every such meeting. Omitting the vocabulary
             // there keeps the meeting transcribing instead of failing it every time; the gap is
-            // named in Settings via `vocabularyPromptUnsupportedNotice`.
-            let keyterms = runtimeSupportsVocabularyPrompt ? store.promptVocabulary : []
+            // named in Settings via `vocabularyPromptUnsupportedNotice`. `nil` (probe still in
+            // flight) omits it too — `== true` is the only case that sends it.
+            let keyterms = runtimeSupportsVocabularyPrompt == true ? store.promptVocabulary : []
             return try await client.transcribe(
                 recordingAt: url,
                 // The engine's `initial_prompt` is budgeted, so it takes the capped view — the stored

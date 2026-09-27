@@ -78,11 +78,21 @@ public struct LocalWhisperRuntime: Sendable {
     /// term — so an older Homebrew or pipx install exits 2 on argparse for every such meeting, and
     /// the failure classifies as "retry", which can never succeed.
     ///
-    /// Probed with `--help` rather than a version string: openai-whisper's CLI has no `--version`,
-    /// and a `--help` process a caller runs once per runtime-discovery pass costs a few tens of
-    /// milliseconds, which is the same order of cost `venv_works` already pays synchronously in
-    /// `setup-local-whisper.sh`. Returns `false` — never throws — for a missing, non-executable, or
-    /// unresponsive binary, so a caller can use it as a plain capability gate.
+    /// Probed with `--help` rather than a version string: openai-whisper's CLI has no `--version`.
+    ///
+    /// **This is not cheap — measure before calling it on the main actor.** An earlier version of
+    /// this comment said a `--help` run "costs a few tens of milliseconds," which was a guess and
+    /// was wrong by an order of magnitude: `--help` still starts a full Python interpreter and
+    /// imports `whisper.transcribe`, which transitively imports torch. Measured directly against
+    /// the installed `openai-whisper==20250625` in a throwaway venv (`/usr/bin/time -p whisper
+    /// --help >/dev/null`, warm runs after the first cold one): **~1.0–1.1 s wall-clock**, not tens
+    /// of milliseconds — consistent with an independent reviewer's measurement of the app's own
+    /// installed executable at 0.859 s. `AppModel` therefore never calls this synchronously on the
+    /// main actor: it memoizes the result per executable and runs the first probe off-actor (see
+    /// `AppModel.updateVocabularyPromptSupport`).
+    ///
+    /// Returns `false` — never throws — for a missing, non-executable, or unresponsive binary, so a
+    /// caller can use it as a plain capability gate.
     public static func supportsCarryInitialPrompt(at executableURL: URL) -> Bool {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else { return false }
         let process = Process()
