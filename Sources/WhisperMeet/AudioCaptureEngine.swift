@@ -1093,11 +1093,13 @@ private final class FloatTrackWriter {
         // (F376). An inconsistency between two copies of one function is how the next reader
         // learns the wrong rule.
         let capacity = AVAudioFrameCount(saturating: ceil(Double(inputBuffer.frameLength) * ratio) + 32)
-        // Not inside the bridge (F385): `targetFormat` is built once in `init` from
-        // `commonFormat: .pcmFormatFloat32`, which is PCM by construction — nothing external can
-        // make this raise "the format is not PCM", so there is nothing here for the bridge to
-        // guard against. The only documented failure mode left (a capacity too large for a
-        // `UInt32` byte count) already returns nil, which the `guard` below handles.
+        // Not inside the bridge (F385): `AVAudioBuffer.h` documents the SAME exception for this
+        // initializer as for the bridged one above — "An exception is raised if the format is not
+        // PCM" — so the header does not distinguish them; what does is `targetFormat`, built once
+        // in `init` from `commonFormat: .pcmFormatFloat32` and never reassigned (PCM by
+        // construction), so nothing external can make this raise and there is nothing here for
+        // the bridge to guard against. The only documented failure mode left (a capacity too
+        // large for a `UInt32` byte count) already returns nil, which the `guard` below handles.
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: capacity
