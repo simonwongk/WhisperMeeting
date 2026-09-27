@@ -10,13 +10,29 @@ import Testing
 // unconditionally (`if !persistMeetings() { scheduleDebouncedPersist() }`), turning one keystroke
 // into a write-and-alert loop that repeated every debounce interval forever.
 //
-// F433 follow-up (a code review of the first cut) — three more findings, all fixed in the same
-// area: (1) `keepConflictedEdit()` restored the WHOLE pre-race snapshot, silently erasing any record
-// the reload found that was not in it (`ConflictOffer` now carries only the delta, reapplied one
-// record at a time through the normal mutators); (2) nothing cleared a stale offer when a restore or
-// rebuild replaced the library underneath it; (3) reapplying a kept edit that itself lost a NEW race
-// finished silently instead of re-offering. A fourth change (F619) refuses a brand-new edit while an
-// offer is outstanding, so there is no second race to lose in the first place.
+// F433 first follow-up (a code review of the first cut) — three findings: (1) `keepConflictedEdit()`
+// restored the WHOLE pre-race snapshot, silently erasing any record the reload found that was not in
+// it; (2) nothing cleared a stale offer when a restore or rebuild replaced the library underneath it;
+// (3) reapplying a kept edit that itself lost a NEW race finished silently instead of re-offering. A
+// fourth change (F619) refuses a brand-new edit while an offer is outstanding, so there is no second
+// race to lose in the first place.
+//
+// F433 second follow-up (a second review, tracing the delta design from the first follow-up) — three
+// MORE findings, all from the same root cause: the delta was computed as "the losing snapshot diffed
+// against the RIVAL's commit", which is the wrong definition of "the user's edit". (1) A record the
+// rival deleted, that this session had NOT touched, still differed from the (now id-less) winner, so
+// it was offered and `keepConflictedEdit()` resurrected it — a ghost meeting whose folder the rival
+// may already have removed. (2) A record only the RIVAL changed — this session never touched it —
+// also differed from the winner and so was ALSO offered, and Keep reapplied this session's STALE
+// copy over the rival's legitimately newer one. (3) The reapply loop persisted one record at a time
+// and returned on the first failure, so records after it in the loop silently never got applied and
+// vanished from the re-offer. The fix: `ConflictOffer.delta` is now diffed against
+// `lastPersistedMeetings` — this session's OWN last successful save — never against the rival, so it
+// is exactly "what this session created or modified since it last saved", nothing more and nothing
+// less; a delta record whose id the rival's commit no longer has goes to `deletedByOther` and is
+// never reapplied, named in the offer's message instead; and `keepConflictedEdit()` applies the whole
+// batch to `meetings` in memory and persists it ONCE, so a race on that save re-offers every record
+// in the batch together.
 //
 // These tests drive `MeetingStore` directly (headless), over a temp root — never a user's library.
 
@@ -31,11 +47,19 @@ private func meeting(_ title: String, id: UUID = UUID()) -> MeetingRecord {
     MeetingRecord(id: id, title: title, recordingPath: "none", status: .recorded)
 }
 
-/// A rival writer over the same files, committing a full F190 generation — an old bundle, a second
-/// app instance, or a hand-restore that went through the store. Same shape as
-/// `MeetingStoreGenerationTests.foreignWriterCommits`, kept local so this file stays self-contained.
+/// A rival writer over the same files, committing a full F190 generation from plain titles (each a
+/// brand-new id) — an entirely unrelated generation, the shape that now means "everything this
+/// session had is gone as far as the rival's commit is concerned".
 @MainActor
 private func foreignWriterCommits(_ titles: [String], in root: URL) throws {
+    try foreignWriterCommits(titles.map { meeting($0) }, in: root)
+}
+
+/// A rival writer committing an explicit set of records, preserving whatever ids the caller gives
+/// them — the shape a real race usually is: the rival's copy independently touching (or deliberately
+/// omitting) the SAME meetings this session already knows about.
+@MainActor
+private func foreignWriterCommits(_ records: [MeetingRecord], in root: URL) throws {
     let rival = BackupJSONStore<[MeetingRecord]>(
         primaryURL: root.appendingPathComponent("meetings.json"),
         backupURL: root.appendingPathComponent("meetings.backup.json"),
@@ -43,7 +67,7 @@ private func foreignWriterCommits(_ titles: [String], in root: URL) throws {
         recordCount: { $0.count }
     )
     let existing = try rival.load()
-    _ = try rival.save(titles.map { meeting($0) }, expecting: existing?.token)
+    _ = try rival.save(records, expecting: existing?.token)
 }
 
 @Test("A lost race during a debounced flush reloads and offers the losing edit back, instead of retrying forever (F433)")
@@ -59,7 +83,10 @@ func lostRaceDuringDebouncedFlushOffersRatherThanRetries() throws {
     // A large debounce so only the explicit `flushPendingEdits()` calls below write — the point of
     // this test is what happens ACROSS those calls, not the coalescing itself (that's F40/F133's).
     let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60)
-    try foreignWriterCommits(["rival wins"], in: root)
+    // The rival independently commits its OWN change to the SAME meeting, preserving its id — the
+    // ordinary shape of a real race. (An unrelated generation that happens to lack the id entirely
+    // now means "deleted by the other copy" — see `keepingConflictedEditSkipsARecordDeletedByTheOtherCopy`.)
+    try foreignWriterCommits([meeting("base, rival's title", id: id)], in: root)
 
     store.editNotes(id: id, text: "my unsaved note")
     let attemptsBefore = store.persistCount
@@ -74,11 +101,9 @@ func lostRaceDuringDebouncedFlushOffersRatherThanRetries() throws {
         offer.delta.first { $0.id == id }?.notes == "my unsaved note",
         "the edit that lost the race was dropped instead of kept"
     )
-    // The reload replaced `meetings` with the winner — the rival's commit REPLACED the whole array
-    // (a fresh generation, not a merge), so the original id is simply gone and the loser is not
-    // what's shown, only what's offered.
-    #expect(store.meeting(id: id) == nil, "the reload did not adopt the rival's generation")
-    #expect(store.meetings.contains { $0.title == "rival wins" })
+    #expect(offer.deletedByOther.isEmpty, "the rival's commit still has this id — nothing was deleted")
+    // The reload adopted the rival's own value for the same id — not our edit, and not gone either.
+    #expect(store.meeting(id: id)?.title == "base, rival's title")
 
     // The retry storm: in production the debounce timer would fire again here. Nothing re-armed
     // it, so calling the same flush entry point again — exactly what the timer would have done —
@@ -103,7 +128,7 @@ func keepingConflictedEditReappliesAndSaves() throws {
     seed.upsert(meeting("base", id: id))
 
     let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60)
-    try foreignWriterCommits(["rival wins"], in: root)
+    try foreignWriterCommits([meeting("base, rival's title", id: id)], in: root)
     store.editNotes(id: id, text: "keep me")
     store.flushPendingEdits()
     #expect(store.conflictOffer != nil)
@@ -113,44 +138,99 @@ func keepingConflictedEditReappliesAndSaves() throws {
     #expect(store.conflictOffer == nil)
     #expect(store.meeting(id: id)?.notes == "keep me", "the kept edit was not re-applied")
     #expect(store.writeConflict == nil, "the retry against the freshly reloaded generation should succeed")
-    // The rival's own record must survive a Keep — a wholesale-snapshot Keep (the review finding
-    // this follow-up fixes) would have erased it, since it never existed in the losing snapshot.
-    #expect(store.meetings.contains { $0.title == "rival wins" })
-    #expect(store.meetings.count == 2)
 
     let reopened = MeetingStore(rootDirectory: root)
     #expect(reopened.meeting(id: id)?.notes == "keep me", "the kept edit did not reach disk")
-    #expect(reopened.meetings.contains { $0.title == "rival wins" }, "the kept edit's save overwrote an unrelated record on disk")
 }
 
-@Test("Keeping a conflicted edit reapplies only the record that raced, never the rival's own record (F433 follow-up)")
+@Test("A record only the rival changed is excluded from the delta and keeps the rival's value after Keep (F433 second follow-up)")
 @MainActor
-func keepingConflictedEditDoesNotOverwriteUnrelatedRecords() throws {
-    // The review finding this fixes, reproduced directly: the first cut's `keepConflictedEdit()`
-    // did `meetings = offer.losingMeetings` — the WHOLE pre-race snapshot — so anything the winner
-    // had that was not in that snapshot (here, the rival's own "rival wins" record) was silently
-    // erased the moment the user pressed Keep. No second race or interleaved edit is needed to see
-    // it: the rival's record is already there the moment the offer is created.
+func recordOnlyTheRivalChangedIsNotInTheDeltaAndSurvivesKeep() throws {
+    // The second review finding this fixes: the first follow-up's delta was "losing snapshot diffed
+    // against the winner", so a record this session never touched — but that the rival's commit
+    // legitimately changed — differed from the winner just as much as this session's own edit did,
+    // and `keepConflictedEdit()` reapplied this session's STALE copy over the rival's newer one.
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let id = UUID()
+    let editedID = UUID()
+    let untouchedID = UUID()
     let seed = MeetingStore(rootDirectory: root)
-    seed.upsert(meeting("base", id: id))
+    seed.upsert(meeting("edited", id: editedID))
+    seed.upsert(meeting("untouched, original", id: untouchedID))
 
     let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60)
-    try foreignWriterCommits(["rival wins"], in: root)
-    store.editNotes(id: id, text: "keep me")
+    // The rival's commit: "edited" unchanged from what we last saw (its own race is not what this
+    // test is about), and "untouched" retitled — a change this session never made or asked for, and
+    // did not even know about until the reload.
+    try foreignWriterCommits([
+        meeting("edited", id: editedID),
+        meeting("untouched, rival's title", id: untouchedID),
+    ], in: root)
+
+    store.editNotes(id: editedID, text: "my edit")
     store.flushPendingEdits()
+
     let offer = try #require(store.conflictOffer)
-    #expect(offer.delta.count == 1, "only the record that actually raced belongs in the offer")
-    #expect(store.meetings.contains { $0.title == "rival wins" }, "the premise: the rival's record is already present before Keep is even pressed")
+    #expect(
+        Set(offer.delta.map(\.id)) == Set([editedID]),
+        "a record this session never touched must not be in the delta"
+    )
+    #expect(offer.deletedByOther.isEmpty)
 
     store.keepConflictedEdit()
 
-    #expect(store.meeting(id: id)?.notes == "keep me", "the kept edit was not re-applied")
-    #expect(store.meetings.contains { $0.title == "rival wins" }, "an unrelated record the rival committed was overwritten by the stale snapshot")
-    #expect(store.meetings.count == 2, "both the kept edit and the rival's own record must survive")
+    #expect(store.meeting(id: editedID)?.notes == "my edit")
+    #expect(
+        store.meeting(id: untouchedID)?.title == "untouched, rival's title",
+        "the rival's own edit to a record we never touched was overwritten by our stale copy"
+    )
+
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meeting(id: untouchedID)?.title == "untouched, rival's title", "the rival's edit did not survive on disk")
+}
+
+@Test("Keeping a conflicted edit skips a record the rival deleted, names it in the offer's message, and still re-applies the rest (F433 second follow-up)")
+@MainActor
+func keepingConflictedEditSkipsARecordDeletedByTheOtherCopy() throws {
+    // The second review finding this fixes: a record the RIVAL deleted, that this session had also
+    // edited, differed from the (now id-less) winner and so was offered — and `keepConflictedEdit()`
+    // resurrected it: a ghost meeting whose recording folder the rival's delete may have already
+    // removed. Deferred, never destructive: the deletion wins, and the user is told, not left
+    // guessing why their edit to it silently disappeared.
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let deletedID = UUID()
+    let keptID = UUID()
+    let seed = MeetingStore(rootDirectory: root)
+    seed.upsert(meeting("will be deleted", id: deletedID))
+    seed.upsert(meeting("will be kept", id: keptID))
+
+    let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60)
+    // The rival's commit removes "will be deleted" entirely and leaves "will be kept" untouched.
+    try foreignWriterCommits([meeting("will be kept", id: keptID)], in: root)
+
+    // Both edits are pending in the SAME debounce window — editing a second meeting reschedules the
+    // one flush timer, so both are attempted, and lost, together.
+    store.editNotes(id: deletedID, text: "an edit the rival's deletion outraces")
+    store.editNotes(id: keptID, text: "an edit that should survive")
+    store.flushPendingEdits()
+
+    let offer = try #require(store.conflictOffer)
+    #expect(Set(offer.delta.map(\.id)) == Set([keptID]), "the deleted record must not be offered for reapplication")
+    #expect(Set(offer.deletedByOther.map(\.id)) == Set([deletedID]))
+    #expect(offer.message.contains("will be deleted"), "the banner's message must name what was deleted")
+
+    store.keepConflictedEdit()
+
+    #expect(store.meeting(id: keptID)?.notes == "an edit that should survive", "the surviving record's edit was not re-applied")
+    #expect(store.meeting(id: deletedID) == nil, "a meeting the rival deleted was resurrected")
+    #expect(store.conflictOffer == nil)
+
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meeting(id: keptID)?.notes == "an edit that should survive")
+    #expect(reopened.meeting(id: deletedID) == nil, "the resurrected ghost reached disk")
 }
 
 @Test("A restored or rebuilt index clears any outstanding conflict offer (F433 follow-up)")
@@ -175,33 +255,55 @@ func restoringOrRebuildingClearsTheConflictOffer() throws {
     #expect(store.conflictOffer == nil, "a stale conflict snapshot survived a rebuilt library")
 }
 
-@Test("If reapplying a kept edit itself loses a new race, the app re-offers rather than finishing silently (F433 follow-up)")
+@Test("If reapplying a kept edit itself loses a new race, every record in the batch is re-offered together (F433 second follow-up)")
 @MainActor
-func keepingConflictedEditReOffersOnASecondRace() throws {
+func keepingConflictedEditReOffersTheWholeBatchOnASecondRace() throws {
+    // The second review finding this fixes: the old reapply loop persisted one record at a time and
+    // returned to `beginConflictRecovery()` on the FIRST failure, so any record after it in the loop
+    // was never even attempted and simply vanished from the re-offer. Applying the whole batch to
+    // `meetings` in memory and persisting it once means a race on that single save re-offers every
+    // record in the batch together — none of them has been marked persisted, so none is missing.
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let id = UUID()
+
+    let firstID = UUID()
+    let secondID = UUID()
     let seed = MeetingStore(rootDirectory: root)
-    seed.upsert(meeting("base", id: id))
+    seed.upsert(meeting("first", id: firstID))
+    seed.upsert(meeting("second", id: secondID))
 
     let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60)
-    try foreignWriterCommits(["rival wins"], in: root)
-    store.editNotes(id: id, text: "keep me")
-    store.flushPendingEdits()
-    #expect(store.conflictOffer != nil)
+    try foreignWriterCommits([
+        meeting("first, rival's title", id: firstID),
+        meeting("second, rival's title", id: secondID),
+    ], in: root)
 
-    // A second rival commits before Keep is pressed — Keep's own reapply-save will lose this race.
-    try foreignWriterCommits(["second rival wins"], in: root)
+    store.editNotes(id: firstID, text: "edit one")
+    store.editNotes(id: secondID, text: "edit two")
+    store.flushPendingEdits()
+
+    let offer = try #require(store.conflictOffer)
+    #expect(
+        Set(offer.delta.map(\.id)) == Set([firstID, secondID]),
+        "both records that raced together must be in the same offer"
+    )
+
+    // A second rival commits before Keep is pressed — Keep's own single persist for the whole batch
+    // will lose this race.
+    try foreignWriterCommits([
+        meeting("first, second rival's title", id: firstID),
+        meeting("second, second rival's title", id: secondID),
+    ], in: root)
 
     store.keepConflictedEdit()
 
-    // Never silent: a fresh offer, not a dangling `writeConflict` with nothing left to act on.
     let secondOffer = try #require(store.conflictOffer, "the second lost race was not re-offered")
     #expect(
-        secondOffer.delta.first { $0.id == id }?.notes == "keep me",
-        "the edit being kept was dropped instead of re-offered"
+        Set(secondOffer.delta.map(\.id)) == Set([firstID, secondID]),
+        "one of the two records silently vanished from the re-offer instead of both surviving together"
     )
-    #expect(store.meetings.contains { $0.title == "second rival wins" })
+    #expect(secondOffer.delta.first { $0.id == firstID }?.notes == "edit one")
+    #expect(secondOffer.delta.first { $0.id == secondID }?.notes == "edit two")
 }
 
 @Test("A new edit is refused while a conflict offer is outstanding, so there is no second race to lose or a second alert (F433 follow-up, F619)")

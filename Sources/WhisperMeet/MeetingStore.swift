@@ -654,6 +654,17 @@ final class MeetingStore: ObservableObject {
     /// own meetings.
     @Published private(set) var writerLease: StoreWriterLease = .unmanaged
 
+    /// `meetings` as of this session's own last successful load or persist (F433 follow-up).
+    ///
+    /// This is what makes `beginConflictRecovery()`'s delta *this session's own unsaved edit*
+    /// rather than "everything that differs from the rival" — a record this session never touched
+    /// is not this session's business, whatever the rival did to it. Set on every `loadMeetings()`
+    /// (a fresh load IS what is persisted, as far as this session knows) and on every successful
+    /// `persistMeetings()`. Deliberately never touched by `keepConflictedEdit()` itself except
+    /// through the `persistMeetings()` it calls — reapplying an edit does not count as "saved" until
+    /// the write actually lands.
+    private var lastPersistedMeetings: [MeetingRecord] = []
+
     /// The generation each store last read or wrote, threaded into the next `save(expecting:)`.
     /// Without these the compare-and-swap never fires.
     private var meetingsToken: GenerationToken?
@@ -1186,25 +1197,26 @@ final class MeetingStore: ObservableObject {
         beginConflictRecovery()
     }
 
-    /// What a lost race lost, kept so it can be offered back rather than dropped (F433).
+    /// What this session's own unsaved edit was, kept so it can be offered back rather than dropped
+    /// (F433).
     ///
-    /// **Carries a DELTA, never the whole array** (follow-up fix to a review finding: the first cut
-    /// stored the full `meetings` snapshot, and `keepConflictedEdit()` restored it wholesale —
-    /// silently erasing any record the reload found that was not in that snapshot, including a
-    /// completely unrelated edit the user made and successfully saved AFTER the reload but before
-    /// pressing Keep). `delta` is only the records that actually differ from what the reload found,
-    /// so reapplying them one at a time through `upsert` — a per-record merge — cannot touch
-    /// anything else in the current library.
+    /// **Defined against `lastPersistedMeetings`, never against the rival's commit** (second
+    /// follow-up fix to a review finding: diffing the losing snapshot against the reloaded WINNER —
+    /// the first follow-up's approach — pulled in any record the rival's commit merely happened to
+    /// disagree with, including one this session never touched, and reapplying that overwrote the
+    /// rival's own newer data with this session's stale copy). Diffing against
+    /// `lastPersistedMeetings` instead means `delta` is exactly what this session created or
+    /// modified since ITS OWN last successful save — never a record only the rival changed.
     struct ConflictOffer: Equatable {
-        /// The records from the losing edit that differ from what the reload found. Never the whole
-        /// `meetings` array.
+        /// Records this session created or modified since its own last successful persist, that the
+        /// rival's commit still has under the same id. Reapplied one at a time through `upsert` — a
+        /// per-record merge, never a wholesale array replacement.
         let delta: [MeetingRecord]
-        /// Each delta record's id mapped to what the reload found for that same id — absent when
-        /// the id did not exist in the reloaded (winning) copy. `keepConflictedEdit()` compares this
-        /// against the CURRENT record before reapplying: equal means nothing has touched it since
-        /// the reload, so reapplying is safe; different means something already has, and reapplying
-        /// would silently overwrite that instead of the rival's commit.
-        let reloadedByID: [UUID: MeetingRecord]
+        /// Records this session created or modified since its own last successful persist, whose id
+        /// the rival's commit no longer has at all — the rival deleted them. Never reapplied: doing
+        /// so would resurrect a meeting whose recording folder the rival may already have removed.
+        /// Kept only so the banner can name what was not re-applied and why.
+        let deletedByOther: [MeetingRecord]
         let message: String
     }
 
@@ -1212,10 +1224,16 @@ final class MeetingStore: ObservableObject {
     /// the time, including while an ordinary (non-race) save failure is being retried.
     @Published private(set) var conflictOffer: ConflictOffer?
 
-    /// Re-reads the library after a lost race instead of leaving the token stale forever, and keeps
-    /// what the loser and winner disagree on so `conflictOffer` can offer it back (F433). Wires
+    /// Re-reads the library after a lost race instead of leaving the token stale forever, and works
+    /// out what THIS SESSION had not yet saved so `conflictOffer` can offer it back (F433). Wires
     /// `reloadForConflictRecovery()` into a real caller for the first time — until this, the only
     /// caller was a test, and every later save in this session failed the same compare-and-swap.
+    ///
+    /// `lastPersistedByID` is captured BEFORE the reload runs, deliberately: `reloadForConflictRecovery()`
+    /// calls `loadMeetings()`, which advances `lastPersistedMeetings` to the just-reloaded (rival's)
+    /// state — the right thing for the NEXT race, but exactly the wrong thing to diff THIS one
+    /// against, which would collapse back into "diff against the rival" (the bug the delta redesign
+    /// fixes).
     ///
     /// Guarded so a second race arriving while an offer is already outstanding does not overwrite
     /// the first one's retained snapshot with a smaller, more recent edit — see the ticket's Gaps.
@@ -1224,64 +1242,72 @@ final class MeetingStore: ObservableObject {
     private func beginConflictRecovery() {
         guard conflictOffer == nil, let report = writeConflict else { return }
         let losing = meetings
+        let lastPersistedByID = Dictionary(uniqueKeysWithValues: lastPersistedMeetings.map { ($0.id, $0) })
         // Clears `writeConflict`/`unsavedChanges`/`storageErrorMessage` as part of the reload, all
         // within this same synchronous call — SwiftUI observes only the state after this function
         // returns, so the generic "could not be saved" alert never flashes on its way to the banner
         // below, which is the one surface this conflict is meant to be resolved from.
         reloadForConflictRecovery()
+        // This session's own edits since its last save — a record it never touched, whatever the
+        // rival did to it, is excluded here regardless.
+        let ownEdits = losing.filter { lastPersistedByID[$0.id] != $0 }
+        guard !ownEdits.isEmpty else { return }
         let winnerByID = Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
-        let delta = losing.filter { winnerByID[$0.id] != $0 }
-        // The two sides may have genuinely agreed (a benign false conflict) — nothing was lost, so
-        // there is nothing to offer.
-        guard !delta.isEmpty else { return }
-        var reloadedByID: [UUID: MeetingRecord] = [:]
-        for record in delta {
-            if let winner = winnerByID[record.id] { reloadedByID[record.id] = winner }
+        var delta: [MeetingRecord] = []
+        var deletedByOther: [MeetingRecord] = []
+        for record in ownEdits {
+            if winnerByID[record.id] != nil {
+                delta.append(record)
+            } else {
+                deletedByOther.append(record)
+            }
         }
-        conflictOffer = ConflictOffer(delta: delta, reloadedByID: reloadedByID, message: report.message)
+        var message = report.message
+        if !deletedByOther.isEmpty {
+            let names = deletedByOther.map { "\"\($0.title)\"" }.joined(separator: ", ")
+            message += deletedByOther.count == 1
+                ? " \(names) was deleted by the other copy; your edit to it was not re-applied."
+                : " \(names) were deleted by the other copy; your edits to them were not re-applied."
+        }
+        conflictOffer = ConflictOffer(delta: delta, deletedByOther: deletedByOther, message: message)
     }
 
-    /// Re-applies each record in the offer through its normal mutator (`upsert`) — never by
-    /// replacing `meetings` wholesale — and only when nothing has touched that record since the
-    /// reload (F433 follow-up). A record whose current copy no longer matches what the reload found
-    /// is left in a narrowed offer instead of being silently overwritten: deferred, never destroyed.
+    /// Re-applies every record in the offer's `delta` — never `deletedByOther` — to `meetings` in
+    /// memory, then persists ONCE for the whole batch (F433 follow-up). Never a wholesale array
+    /// replacement, and never a record-at-a-time save: applying the batch and saving it as one
+    /// write means a race on THIS save re-offers every record in the batch together, rather than
+    /// silently dropping whichever one had not been attempted yet when an earlier one in the same
+    /// loop failed (the bug the single-persist redesign fixes).
     ///
-    /// If reapplying itself loses a NEW race (another write landed while we were reapplying), this
-    /// never finishes silently: it re-runs `beginConflictRecovery()`, the same path a debounced
-    /// flush's own race takes, so the failure is re-offered rather than swallowed.
+    /// If this save itself loses a NEW race, this never finishes silently: it re-runs
+    /// `beginConflictRecovery()`, the same path a debounced flush's own race takes, so the failure
+    /// is re-offered rather than swallowed. Because nothing has been marked persisted yet
+    /// (`lastPersistedMeetings` only advances on a SUCCESSFUL save), that re-offer's own diff finds
+    /// every one of these records still unsaved and re-offers them all together.
     func keepConflictedEdit() {
         guard mutationIsAllowed() else { return }
         guard let offer = conflictOffer else { return }
-        let currentByID = Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
-        var stillSafe: [MeetingRecord] = []
-        var movedSinceReload: [MeetingRecord] = []
-        for record in offer.delta {
-            if currentByID[record.id] == offer.reloadedByID[record.id] {
-                stillSafe.append(record)
-            } else {
-                movedSinceReload.append(record)
-            }
-        }
-        // Cleared before reapplying: `upsert` below routes through `editMutationIsAllowed()`, which
-        // refuses while an offer is outstanding, and this IS how the outstanding offer is resolved.
         conflictOffer = nil
-        for record in stillSafe {
-            upsert(record)
-            guard writeConflict?.isRace != true else {
-                beginConflictRecovery()
-                return
+        guard !offer.delta.isEmpty else { return }
+        for record in offer.delta {
+            if let index = meetings.firstIndex(where: { $0.id == record.id }) {
+                meetings[index] = record
+            } else {
+                meetings.append(record)
             }
         }
-        guard !movedSinceReload.isEmpty else { return }
-        let narrowedReloadedByID = offer.reloadedByID.filter { id, _ in
-            movedSinceReload.contains { $0.id == id }
+        meetings = MeetingOrdering.sorted(meetings)
+        // As `upsert` stamps a record it just wrote (F188, "Mark it") — the content just changed.
+        let deltaIDs = Set(offer.delta.map(\.id))
+        for index in meetings.indices where deltaIDs.contains(meetings[index].id) {
+            meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
         }
-        let count = movedSinceReload.count
-        conflictOffer = ConflictOffer(
-            delta: movedSinceReload,
-            reloadedByID: narrowedReloadedByID,
-            message: "\(count == 1 ? "One meeting" : "\(count) meetings") changed after the copies were compared, so keeping \(count == 1 ? "it" : "them") would have overwritten that newer change. \(offer.message)"
-        )
+        persistMeetings()
+        for record in offer.delta {
+            scheduleNotesSidecarWrite(for: record.id)
+        }
+        guard writeConflict?.isRace == true else { return }
+        beginConflictRecovery()
     }
 
     /// Keeps the reloaded copy and discards the retained edit (F433). `meetings` already holds the
@@ -1819,6 +1845,9 @@ final class MeetingStore: ObservableObject {
             unsavedChanges = false
             writeConflict = nil
             storageErrorMessage = nil
+            // What actually reached disk (F433 follow-up) — a lost race's delta is diffed against
+            // this, not against whatever any other writer happens to hold.
+            lastPersistedMeetings = meetings
             return true
         } catch {
             unsavedChanges = true
@@ -2150,6 +2179,9 @@ final class MeetingStore: ObservableObject {
         do {
             guard let result = try meetingFiles.load() else { return }
             meetings = MeetingOrdering.sorted(result.value.map(Self.withLanguageCodeNormalized))
+            // What this session now believes is persisted (F433 follow-up) — a load establishes a
+            // fresh baseline, whether at launch or after a conflict's reload.
+            lastPersistedMeetings = meetings
             // A reload replaces every record, so no memo can describe one (F541): a meeting a
             // restore removed would otherwise keep its transcript copy in memory until quit.
             transcriptEditMemos.removeAll()
