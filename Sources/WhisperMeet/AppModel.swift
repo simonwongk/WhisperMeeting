@@ -5640,7 +5640,13 @@ final class AppModel: ObservableObject {
         var message = category.explanation
         // Keep the underlying detail (e.g. a subprocess message) for transient/subprocess failures.
         if category.action == .retry {
-            let detail = error.localizedDescription
+            // F511: `SubprocessLogSummary.summarize` already caps a raw subprocess log at its
+            // throw site inside LocalWhisperClient/QwenASRClient — but `handle` is the one place
+            // every transcription failure funnels through before it is persisted, and re-applying
+            // the same cap here means a future engine or error path that forgets to summarize its
+            // own log still cannot write an oversized errorMessage into meetings.json. Idempotent
+            // on an already-capped detail (a short string is returned unchanged).
+            let detail = SubprocessLogSummary.summarize(error.localizedDescription)
             if !detail.isEmpty { message += " (\(detail))" }
             let recordingIsSafe = store.meeting(id: id).map {
                 FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
