@@ -90,14 +90,18 @@ private func twoClusterResult() -> SpeakerDiarizationResult {
     )
 }
 
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): 200,000
+/// `Task.yield()`s expired in a full run on a busy Mac while the detached work it waited for was
+/// starved of turns, and the same test passed alone in 0.14 s. A genuine hang still fails — on the
+/// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
-private func spin(_ label: String, until condition: @MainActor () -> Bool) async {
+private func spin(_ label: String, until condition: @MainActor () -> Bool) async throws {
     var ticks = 0
-    while !condition(), ticks < 200_000 {
-        await Task.yield()
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
-    #expect(condition(), "timed out waiting for \(label)")
+    try #require(condition(), "timed out waiting for \(label)")
 }
 
 @MainActor
@@ -156,12 +160,12 @@ func speakerAnalysisEntryNamesTheRunningAnalysis() async throws {
         return twoClusterResult()
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the seam to start") { gate.started }
+    try await spin("the seam to start") { gate.started }
 
     #expect(fixture.model.speakerAnalysisUnavailability(for: fixture.meeting) == .analyzing)
 
     gate.release = true
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     #expect(fixture.model.speakerAnalysisUnavailability(for: fixture.meeting) == nil)
 }
 
@@ -190,7 +194,7 @@ func labeledExportIsOfferedOnlyOnceAnOverlayExists() async throws {
 
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     fixture.model.renameSpeaker(clusterID: 0, to: "Nadia", in: fixture.id)
 
     let request = try #require(fixture.model.speakerLabeledExportRequest(for: fixture.id))
@@ -224,7 +228,7 @@ func labeledExportIsWithheldForASingleCluster() async throws {
         )
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     // Labelling every row "Speaker 1" is worthless for a monologue and misleading for a failed
     // separation, so there is nothing to export — the same rule that suppresses the row labels.
