@@ -99,6 +99,12 @@ private final class TaplessHotkeyMonitor: HotkeyMonitoring {
         monitor.handle(type: .flagsChanged, event: event)
     }
 
+    /// A key coming up that the tap never delivers: the release was still queued on the old tap's
+    /// port when a re-arm invalidated it (F636).
+    func releaseUnheard(_ code: CGKeyCode) {
+        keyboard.set(code, down: false)
+    }
+
     func click() throws {
         let event = try #require(CGEvent(
             mouseEventSource: nil, mouseType: .leftMouseDown,
@@ -624,5 +630,59 @@ func triggerChosenWhileOffIsJudgedAfterEnabling() async throws {
     try monitor.key(f6, down: true)
     await drainMainQueue()
     #expect(!recorder.isRecording, "F6's press did not end the dictation")
+    #expect(recorder.stopCount == 1)
+}
+
+// MARK: - The same trigger re-armed while idle (F636, F446)
+
+/// F636, the reviewer's trace: hold mode, idle, Settings ▸ Change, then a quick tap of the trigger
+/// while the main thread is busy. The old tap hears the key go down and queues a start; Change
+/// re-arms the same trigger before that start is delivered, and invalidating the old tap loses its
+/// release. The start was still delivered, so the dictation listened until the key was pressed and
+/// released again or the watchdog.
+@MainActor
+@Test("A quick tap whose release is lost while Change re-arms the same trigger does not leave the mic on (F636)")
+func aReleaseLostWhileTheSameTriggerIsRearmedEndsTheDictation() async throws {
+    let harness = try Harness(hotkey: f5Hold)
+    defer { harness.cleanUp() }
+    let (controller, monitor, recorder) = (harness.controller, harness.monitor, harness.recorder)
+
+    try monitor.key(f5, down: true)   // heard; its start is still on the main queue
+    monitor.releaseUnheard(f5)        // released while the old tap is being replaced
+    controller.hotkey = f5Hold        // Change heard F5 and chose it again
+    #expect(monitor.armed.last == f5Hold, "an idle re-choice did not re-arm")
+    await drainMainQueue()
+
+    #expect(!recorder.isRecording, "the dictation the quick tap started is still listening")
+    #expect(recorder.stopCount == 1)
+    #expect(controller.status != .listening)
+}
+
+/// F446's hold-mode case at the controller, through the real monitor (F636 part 2; F584 left only
+/// the toggle version). Settings' Change hears the trigger key itself, so re-choosing the key you
+/// are holding happens mid-press — before the start is delivered, and after.
+@MainActor
+@Test("Re-choosing the hold trigger you are holding keeps its dictation until you let go (F636, F446)")
+func rechoosingTheHeldHoldTriggerKeepsItsDictation() async throws {
+    let harness = try Harness(hotkey: f5Hold)
+    defer { harness.cleanUp() }
+    let (controller, monitor, recorder) = (harness.controller, harness.monitor, harness.recorder)
+
+    // Chosen while its start is still queued: idle, so it re-arms, and the held key is kept.
+    try monitor.key(f5, down: true)
+    controller.hotkey = f5Hold
+    await drainMainQueue()
+    try #require(controller.status == .listening, "re-arming under the queued start lost it")
+    let armsWhileListening = monitor.armed.count
+
+    // Chosen again while that dictation listens: nothing is re-armed under it.
+    try monitor.repeatKey(f5)
+    controller.hotkey = f5Hold
+    #expect(monitor.armed.count == armsWhileListening, "the tap was rebuilt under a live dictation")
+    #expect(controller.status == .listening)
+
+    try monitor.key(f5, down: false)
+    await drainMainQueue()
+    #expect(!recorder.isRecording, "letting go of F5 did not end the dictation")
     #expect(recorder.stopCount == 1)
 }

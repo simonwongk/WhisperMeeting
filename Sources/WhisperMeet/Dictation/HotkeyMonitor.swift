@@ -283,9 +283,12 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// mode it turns off the dictation the old key turned on, and in hold mode it is a start. The
     /// read also keeps a release when the key is still held at the re-arm: when Change re-arms the
     /// same key while its press is still on the way to the controller, a reset made that key's
-    /// release look like a duplicate "up", dropped with the microphone on (F446). It cannot keep one
-    /// that happened before the re-arm, while the old tap was being replaced: the key reads as up and
-    /// no end is sent for the start still queued (F636).
+    /// release look like a duplicate "up", dropped with the microphone on (F446). A release made
+    /// before the re-arm, while the old tap was being replaced, went with that tap: the key reads as
+    /// up. If this monitor heard the press, that release is dispatched here, as
+    /// `recoverFromDisabledTap` dispatches an edge the tap missed (F636); only resynchronising let the
+    /// start still queued open a hold capture that nothing but the watchdog closed. Toggle mode
+    /// ignores the release as it always does.
     ///
     /// A key already down whose press this monitor did not take as the trigger's started no
     /// dictation, so it must not cancel one (F584): with Left ⌘ chosen while a toggle dictation is on,
@@ -300,7 +303,12 @@ final class HotkeyMonitor: HotkeyMonitoring {
         let heardItsPress = keyDown && newHotkey.keyCode == hotkey.keyCode
         if newHotkey.mode != hotkey.mode { toggledOn = false }
         hotkey = newHotkey
-        keyDown = currentKeyState(CGKeyCode(newHotkey.keyCode))
+        let isDown = currentKeyState(CGKeyCode(newHotkey.keyCode))
+        if heardItsPress, !isDown {
+            handleKeyStateChange(false)
+        } else {
+            keyDown = isDown
+        }
         if !heardItsPress { cancelledThisHold = keyDown }
     }
 

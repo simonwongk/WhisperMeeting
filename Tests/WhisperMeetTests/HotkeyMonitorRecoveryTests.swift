@@ -96,6 +96,43 @@ func rearmingAHeldTriggerKeepsItsRelease() async {
     #expect(edges.endCount == 1)
 }
 
+/// F636 — the other half of the test above. When Change re-taps the same key while its press is
+/// still on the way, the old tap is invalidated together with a release it had not delivered yet;
+/// the key then reads as up at the re-arm. Setting `keyDown = false` without an end left the start
+/// that was still queued to open a hold-mode capture nothing would close but the watchdog.
+@MainActor
+@Test("A release lost while the same trigger is re-armed is delivered, so the queued start is closed (F636)")
+func rearmingTheSameTriggerDeliversAReleaseItLost() async {
+    let edges = EdgeCounter()
+    let monitor = HotkeyMonitor(hotkey: DictationHotkey(keyCode: 96, mode: .hold), currentKeyState: { _ in false })
+    monitor.onPressStart = edges.start
+    monitor.onPressEnd = edges.end
+
+    monitor.handleKeyStateChange(true)                     // the old tap heard F5 go down
+    monitor.adopt(DictationHotkey(keyCode: 96, mode: .hold)) // re-armed; the release went with the old tap
+    await drainMainQueue()
+
+    #expect(edges.startCount == 1)
+    #expect(edges.endCount == 1, "the start was delivered with no end to close it")
+}
+
+/// Not a lost edge: a key that is up and was never heard down has nothing to end.
+@MainActor
+@Test("Re-arming a trigger nobody pressed delivers nothing (F636)")
+func rearmingAnUnpressedTriggerDeliversNothing() async {
+    let edges = EdgeCounter()
+    let monitor = HotkeyMonitor(hotkey: DictationHotkey(keyCode: 96, mode: .hold), currentKeyState: { _ in false })
+    monitor.onPressStart = edges.start
+    monitor.onPressEnd = edges.end
+
+    monitor.adopt(DictationHotkey(keyCode: 96, mode: .hold))
+    monitor.adopt(DictationHotkey(keyCode: 97, mode: .hold))
+    await drainMainQueue()
+
+    #expect(edges.startCount == 0)
+    #expect(edges.endCount == 0)
+}
+
 @MainActor
 @Test("Changing a toggle trigger while dictation is on keeps it on, so the new key turns it off (F446)")
 func changingAToggleTriggerKeepsDictationOn() async {
