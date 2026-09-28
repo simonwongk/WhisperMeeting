@@ -288,8 +288,8 @@ public struct StoreHistory: Sendable {
             .count
     }
 
-    /// Removes **every** retained generation and conflict branch, and returns the names removed
-    /// (F239).
+    /// Removes **every** retained generation and — unless `includingConflictBranches` is false —
+    /// every conflict branch, and returns the names removed (F239, F457).
     ///
     /// **Why this exists.** F190's retained generations hold meeting titles, transcripts, notes and
     /// summaries, so deleting a meeting removes its recording folder and leaves its *text* in every
@@ -314,14 +314,21 @@ public struct StoreHistory: Sendable {
     /// Throws if a file resists removal, so a caller cannot report erasure it did not achieve —
     /// the one guarantee a privacy command has to keep. Names removed before the failure are lost
     /// to the caller, which is why the error matters more than the list.
+    ///
+    /// `includingConflictBranches: false` keeps the branches (F457): the app's Forget History does
+    /// that unless the user, shown how many there are, chooses to remove them too — a command run
+    /// for privacy should not be the thing that silently deletes the only copy of someone's work.
     @discardableResult
-    public func forgetAll() throws -> [String] {
+    public func forgetAll(includingConflictBranches: Bool = true) throws -> [String] {
         guard io.isDirectory(directoryURL) == true else { return [] }
         let names = (try? io.contentsOfDirectory(directoryURL, .listHistory)) ?? []
-        // Everything this directory holds: content-addressed generations AND conflict branches.
+        // Everything this directory holds: content-addressed generations AND, unless kept,
+        // conflict branches.
         // Filtered by the two shapes rather than removing whatever is present, so an unrelated file
         // someone put here is not deleted by a command that promised to clear history.
-        let ours = names.filter { Self.parse($0) != nil || $0.hasPrefix("conflict-") }
+        let ours = names.filter {
+            Self.parse($0) != nil || (includingConflictBranches && $0.hasPrefix("conflict-"))
+        }
         for name in ours {
             try io.remove(directoryURL.appendingPathComponent(name), .prune)
         }

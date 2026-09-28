@@ -128,8 +128,10 @@ counts and dates, which is the distinction that matters: *"42 · 0 meetings · 3
 Restoring is **append-only**. The chosen generation is written as a *new* save, so the generation it
 replaced is still on disk and the restore itself can be undone.
 
-If the library is open read-only, restoring still works — it is not refused, because it reads the
-bytes off disk and verifies them rather than trusting anything in memory. **You
+WhisperMeet offers this, as *Recover Library…*, only while the library is open read-only: on a library
+it can read, putting an older index back would discard every newer meeting, so it is refused there and
+the manual steps below are the way (F457). On a read-only library restoring is not refused, because it
+reads the bytes off disk and verifies them rather than trusting anything in memory. **You
 will need to quit and reopen WhisperMeet afterwards** to get back to a writable library.
 
 ### Rebuilding the index from the recording folders
@@ -235,13 +237,20 @@ Copy the recording folder first if either action should remain reversible.
 **A deleted meeting's text is erased from the saved history a week later (F295).** Deleting a
 meeting removes its recording folder straight away. Its title, transcript, notes and summary stay in
 the backup copy and the index generations under `meetings.history/` for one week — the same window
-the recovery list covers — so a mistaken or runaway delete can still be undone by restoring an
-earlier generation. After that week (checked at each launch and after each delete) every generation
+the recovery list covers — so if the library is lost or damaged in that week, an earlier generation
+can still bring it back. That is protection for the library, not an undo button: WhisperMeet offers
+*Recover Library…* only while the library cannot be read (F457). To bring back one meeting you
+deleted on purpose, restore a generation by hand as above, which also undoes every change saved
+since that generation. After that week (checked at each launch and after each delete) every generation
 that held the meeting is re-recorded without it under a new name, and the backup copy is rotated if
 it still holds the meeting; generations that never held it are not touched, so the ability to undo a
 bad save is kept for every other meeting. The rewrite removes only that meeting's entry: everything
 else in each generation stays as it was written, including anything a newer version of WhisperMeet
-added that this one does not understand (F552). The queue of pending deletions is `meetings.pending-shred.json`.
+added that this one does not understand (F552). The same removal reaches the index's other copies
+(F457): quarantined copies (`meetings.unreadable-*.json`, `meetings.backup.unreadable-*.json`) and the
+index files in a restore's `.pre-restore-*/` folder lose that meeting's entry and keep the rest. Audio
+a restore set aside in that folder is not touched. The queue of pending deletions is
+`meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never
@@ -252,5 +261,10 @@ it that way instead, so its week starts then rather than never; once the clock i
 the date is no longer impossible, the recorded date applies.
 
 If the shred cannot complete (a permission error on the history directory, say), the meeting is still
-deleted and the app says so; *Forget History* in Settings → Meeting library removes the whole saved
+deleted and the app says so; *Forget History* in Settings → Meeting library removes the saved
 history at once, and quitting WhisperMeet and deleting `meetings.history/` by hand does the same.
+Forget History is unavailable while the library is read-only, because the history is then what
+*Recover Library…* restores from. It keeps conflict copies (`meetings.history/conflict-*.json`, a save
+another copy of WhisperMeet made at the same moment) unless you choose to remove them too, and it
+never removes quarantined copies or `.pre-restore-*/` folders; its dialog and result name what it kept
+(F457).

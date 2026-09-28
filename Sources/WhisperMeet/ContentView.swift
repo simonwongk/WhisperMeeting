@@ -1411,6 +1411,8 @@ struct SettingsView: View {
     /// asks — and the dialog names what is lost rather than asking "are you sure".
     @State private var confirmForgetHistory = false
     @State private var forgetHistoryResult: String?
+    /// What the Forget History dialog describes, read from disk when it opens (F457).
+    @State private var forgetHistoryInventory: MeetingStore.ForgetHistoryInventory?
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1714,10 +1716,22 @@ struct SettingsView: View {
                 HStack {
                     Label("Forget saved index history", systemImage: "clock.badge.xmark")
                     Spacer()
-                    Button("Forget History…", role: .destructive) { confirmForgetHistory = true }
-                        .buttonStyle(.bordered)
+                    // F457: the dialog is built from what is on disk when it opens.
+                    Button("Forget History…", role: .destructive) {
+                        forgetHistoryInventory = model.store.forgetHistoryInventory()
+                        confirmForgetHistory = true
+                    }
+                    .buttonStyle(.bordered)
+                    // F457: on a read-only library the history is what Recover Library restores
+                    // from, so this is refused there — and says why, beside the button.
+                    .disabled(model.libraryReadOnlyFootnote != nil)
                 }
-                Text("Deleting a meeting removes its recording at once; its title, transcript and notes are removed from the saved index history a week later, so a mistaken delete can still be undone in between. This removes that whole history now — every past copy of the index — without waiting. Your meetings and recordings are not touched.")
+                if model.libraryReadOnlyFootnote != nil {
+                    Text(ReadOnlyLibraryNotice.forgetHistoryUnavailable)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(ForgetHistoryNotice.caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let forgotten = forgetHistoryResult {
@@ -1985,23 +1999,26 @@ struct SettingsView: View {
             isPresented: $confirmForgetHistory,
             titleVisibility: .visible
         ) {
+            // Reports what happened rather than claiming success (F239), and what was kept (F457).
             Button("Forget History", role: .destructive) {
-                if let count = model.store.forgetIndexHistory() {
-                    // Reports what happened rather than claiming success. "Nothing to forget" is a
-                    // real and reassuring outcome, and conflating it with "removed 7" would be the
-                    // kind of small lie that makes a privacy command untrustworthy.
-                    forgetHistoryResult = count == 0
-                        ? "There was no saved history to remove."
-                        : "Removed \(count) saved \(count == 1 ? "generation" : "generations")."
-                } else {
-                    forgetHistoryResult = nil
+                forgetHistoryResult = model.store.forgetIndexHistory().map(ForgetHistoryNotice.result)
+            }
+            // Offered only once the dialog has said how many there are, and never the default: a
+            // conflict copy is a losing save's work and exists nowhere else (F457).
+            if (forgetHistoryInventory?.conflictCopies ?? 0) > 0 {
+                Button("Forget History and Conflict Copies", role: .destructive) {
+                    forgetHistoryResult = model.store.forgetIndexHistory(includingConflictCopies: true)
+                        .map(ForgetHistoryNotice.result)
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             // Names what is LOST, not just what is removed. This is the only command in Settings
-            // that gives up a protection, so the dialog has to say which one (F239/F190).
-            Text("This removes the saved copies of your meeting index that let WhisperMeet undo a bad save — including any deleted meeting's title, transcript and notes that are still in them. Your meetings, recordings and current index are not touched, but until the next save there will be nothing to roll back to.")
+            // that gives up a protection, so the dialog has to say which one (F239/F190) — and what
+            // it keeps, counted from disk when the dialog opened (F457).
+            if let inventory = forgetHistoryInventory {
+                Text(ForgetHistoryNotice.dialogMessage(inventory))
+            }
         }
         .onDisappear { endKeyCapture() }
     }

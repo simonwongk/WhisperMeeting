@@ -782,7 +782,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         history.retained(ledger: StoreLedger.read(at: ledgerURL, using: io))
     }
 
-    /// Forgets every retained generation and conflict branch (F239).
+    /// Forgets every retained generation and, unless `includingConflictBranches` is false, every
+    /// conflict branch (F239, F457).
     ///
     /// The privacy counterpart to `restore`, and the trade is explicit: this **discards the undo
     /// protection** F190 exists to provide. Retained generations hold meeting titles, transcripts,
@@ -795,8 +796,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// A caller must therefore present this as losing the ability to undo a bad save, not as
     /// housekeeping. Nothing here decides when to call it.
     @discardableResult
-    public func forgetHistory() throws -> [String] {
-        try history.forgetAll()
+    public func forgetHistory(includingConflictBranches: Bool = true) throws -> [String] {
+        try history.forgetAll(includingConflictBranches: includingConflictBranches)
     }
 
     /// The verified bytes of a retained generation (F295's tests read them back; `restore` uses
@@ -849,19 +850,6 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// this and `forgetHistory`.
     @discardableResult
     public func shredHistory(removingElementsWithIDs ids: Set<String>) throws -> HistoryShred {
-        let doomed = Set(ids.map { $0.lowercased() })
-        // The elements of `bytes` without the doomed ones, or nil when `bytes` is not a JSON array
-        // or holds none of them.
-        func without(_ bytes: Data) -> [Any]? {
-            guard !doomed.isEmpty,
-                  let elements = (try? JSONSerialization.jsonObject(with: bytes)) as? [Any]
-            else { return nil }
-            let kept = elements.filter { element in
-                guard let id = (element as? [String: Any])?["id"] as? String else { return true }
-                return !doomed.contains(id.lowercased())
-            }
-            return kept.count == elements.count ? nil : kept
-        }
         let directory = history.directoryURL
         guard io.isDirectory(directory) == true else { return HistoryShred(rewritten: [], rotation: nil) }
         let names = (try? io.contentsOfDirectory(directory, .listHistory)) ?? []
@@ -885,13 +873,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             let url = directory.appendingPathComponent(name)
             guard let bytes = try? io.read(url, .readHistoryEntry),
                   io.fingerprint(bytes) == oldFingerprint,
-                  let replacement = without(bytes)
+                  let replacement = JSONArrayShred.removingElements(withIDs: ids, from: bytes)
             else { continue }
-            // The same formatting options this type's encoder uses, so a rewritten generation reads
-            // like any other.
-            let newData = try JSONSerialization.data(
-                withJSONObject: replacement, options: [.prettyPrinted, .sortedKeys]
-            )
+            let newData = replacement.data
             let newFingerprint = io.fingerprint(newData)
             let newName = renamed(newFingerprint)
             // `.shred-` never parses as a generation, so a process death here leaves something
@@ -922,7 +906,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             // never the rewrite itself, which is already on disk.
             _ = try? StoreLedger.write(ledger, to: ledgerURL, using: io)
         }
-        guard let backup = try? io.read(backupURL, .readBackup), without(backup) != nil,
+        guard let backup = try? io.read(backupURL, .readBackup),
+              JSONArrayShred.removingElements(withIDs: ids, from: backup) != nil,
               let current = try? load()
         else { return HistoryShred(rewritten: rewritten, rotation: nil) }
         let rotation = try save(current.value, expecting: current.token)

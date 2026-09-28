@@ -420,10 +420,78 @@ enum ReadOnlyLibraryNotice {
     static let integrityCheckDeclined =
         "\(lead) The library check cannot report on an index it could not read, so nothing was checked. Your recordings are untouched."
 
+    /// Beside the disabled Forget History button (F457). The saved history is what Recover Library
+    /// restores from, which is the one moment it must not be forgotten.
+    static let forgetHistoryUnavailable =
+        "Forget History is unavailable while the library is read-only: the saved history is what Recover Library restores from."
+
     /// The one sentence shape every pre-action refusal shares. Private so the surfaces above stay the
     /// only vocabulary callers see.
     private static func refused(_ action: String, resolution: String) -> String {
         "\(action) cannot start because \(lead) Your existing recordings are untouched — resolve recovery \(resolution)."
+    }
+}
+
+/// Forget History's caption, dialog and result, generated from what is on disk (F457).
+///
+/// The caption used to promise that "a mistaken delete can still be undone" during the week a
+/// deleted meeting stays in the history. Nothing in a healthy library offers that undo: Recover
+/// Library, which restores from the history, appears only while the library cannot be read, and
+/// refuses otherwise. Corrected to what the week is for — the user's answer of 2026-09-24 to F457
+/// was to correct the caption rather than add a "Recently deleted" restore. The dialog said nothing
+/// was lost while deleting the only copy of a conflict's losing save, and did not mention the
+/// index's other copies; both are now counted from disk rather than asserted.
+enum ForgetHistoryNotice {
+    static let caption = "Deleting a meeting removes its recording at once. Its title, transcript and notes stay in the saved index history for a week and are then removed. That history is what Recover Library restores from if the library can no longer be read; there is no undo in WhisperMeet for deleting a meeting. Forget History removes the saved history now, without waiting. Your meetings and recordings are not touched."
+
+    static func dialogMessage(_ inventory: MeetingStore.ForgetHistoryInventory) -> String {
+        var text = "This deletes the earlier copies of your meeting index that Recover Library restores from, including any deleted meeting's title, transcript and notes still in them. Your meetings, recordings and current index are not touched, and the index's backup copy stays until your next save replaces it."
+        var kept: [String] = []
+        if inventory.conflictCopies > 0 {
+            kept.append("\(copies(inventory.conflictCopies, "conflict copy", "conflict copies")) — changes another copy of WhisperMeet saved at the same moment, which exist nowhere else")
+        }
+        if !inventory.quarantineCopies.isEmpty {
+            kept.append("\(copies(inventory.quarantineCopies.count, "copy set aside", "copies set aside")) when the index could not be read")
+        }
+        if !inventory.preRestoreSnapshots.isEmpty {
+            kept.append("\(copies(inventory.preRestoreSnapshots.count, "copy kept by a restore", "copies kept by restores"))")
+        }
+        if !kept.isEmpty {
+            text += " It keeps what you may still need to recover from: \(kept.joined(separator: "; ")). They also hold meeting text, and stay in the library folder until you remove them."
+        }
+        if inventory.conflictCopies > 0 {
+            text += " Choose Forget History and Conflict Copies to remove the conflict copies too."
+        }
+        return text
+    }
+
+    static func result(_ outcome: MeetingStore.ForgetHistoryOutcome) -> String {
+        var text: String
+        if outcome.removedGenerations == 0 && outcome.removedConflictCopies == 0 {
+            // "Nothing to forget" is a real and reassuring outcome, and conflating it with "removed
+            // 7" would be the kind of small lie that makes a privacy command untrustworthy.
+            text = "There was no saved history to remove."
+        } else {
+            text = "Removed \(copies(outcome.removedGenerations, "saved generation", "saved generations"))"
+            if outcome.removedConflictCopies > 0 {
+                text += " and \(copies(outcome.removedConflictCopies, "conflict copy", "conflict copies"))"
+            }
+            text += "."
+        }
+        var kept: [String] = []
+        if outcome.keptConflictCopies > 0 {
+            kept.append("\(copies(outcome.keptConflictCopies, "conflict copy", "conflict copies")) in meetings.history")
+        }
+        kept += outcome.keptQuarantineCopies
+        kept += outcome.keptPreRestoreSnapshots
+        if !kept.isEmpty {
+            text += " Kept in the library folder: \(kept.joined(separator: ", "))."
+        }
+        return text
+    }
+
+    private static func copies(_ count: Int, _ one: String, _ many: String) -> String {
+        count == 1 ? "1 \(one)" : "\(count) \(many)"
     }
 }
 
@@ -1553,6 +1621,11 @@ final class MeetingStore: ObservableObject {
     /// it, and after that the text is gone rather than pinned forever. *Forget History* remains the
     /// immediate option. Decided 2026-09-17 under the user's delegation; the immediate variant was
     /// tried first and `restoringAGenerationBringsTheLibraryBack` showed what it gave up.
+    ///
+    /// What that protection is, stated because the Settings caption once overstated it (F457): the
+    /// app offers the history (Recover Library) only while the library cannot be read, as after the
+    /// wipe. A delete on a healthy library — one meeting, or all of them — has no in-app undo; the
+    /// week keeps a hand restore (`docs/RECOVERY.md`) possible, and nothing more.
     static let shredGracePeriod: TimeInterval = 604_800
 
     private var pendingShredURL: URL {
@@ -1644,9 +1717,10 @@ final class MeetingStore: ObservableObject {
     /// nothing is:
     ///
     /// - **A queued id that is a live meeting again is cancelled, not shredded.** The grace window
-    ///   exists so a mistaken delete can be undone, and every undo — restoring a generation from
-    ///   the recovery list, restoring a backup (which does not carry this queue, so the live one
-    ///   survives it), or a rebuild or recovery that finds the meeting's folder still on disk —
+    ///   exists so a lost or damaged library can be brought back (F457: that is its purpose, not an
+    ///   in-app undo for one delete), and every route back — restoring a generation from the
+    ///   recovery list or by hand, restoring a backup (which does not carry this queue, so the live
+    ///   one survives it), or a rebuild or recovery that finds the meeting's folder still on disk —
     ///   brings the meeting back under its old id without touching this file.
     ///   Shredding it anyway stripped a live meeting from every generation that held it, which is
     ///   the undo protection taken away from exactly the meeting the user had just rescued. Checked
@@ -1719,9 +1793,15 @@ final class MeetingStore: ObservableObject {
                 remaining.firstSeenFutureAt.removeValue(forKey: id)
             }
             pendingShredQueue = remaining
+            // The index's copies outside the history too (F457). Reported rather than retried: the
+            // history is done, and a copy this pass could not rewrite is named so it can be found.
+            let stuck = shredSideCopies(Set(due))
+            if !stuck.isEmpty {
+                storageErrorMessage = "A deleted meeting's text could not be removed from \(stuck.joined(separator: ", ")) in the library folder. Everything else was removed."
+            }
             return due
         } catch {
-            storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes all of it."
+            storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes the saved history at once."
             return []
         }
     }
@@ -1842,34 +1922,141 @@ final class MeetingStore: ObservableObject {
             : "\(count) meetings had a recording path that did not point to their own recording folder, so no files were deleted from disk for them; they were removed from the list."
     }
 
+    /// What is on disk that Forget History concerns (F457): the conflict copies it keeps unless
+    /// asked, and the index's other copies it never removes — quarantined copies and restore
+    /// snapshots, which exist so someone can recover from them.
+    struct ForgetHistoryInventory: Equatable {
+        let conflictCopies: Int
+        /// `meetings.unreadable-*` and `meetings.backup.unreadable-*`, by file name.
+        let quarantineCopies: [String]
+        /// `.pre-restore-*` folders, by name.
+        let preRestoreSnapshots: [String]
+    }
+
+    /// What Forget History did, and what it left, so the UI reports exactly that (F239, F457).
+    struct ForgetHistoryOutcome: Equatable {
+        let removedGenerations: Int
+        let removedConflictCopies: Int
+        let keptConflictCopies: Int
+        let keptQuarantineCopies: [String]
+        let keptPreRestoreSnapshots: [String]
+    }
+
+    private var meetingHistory: StoreHistory {
+        StoreHistory(primaryURL: rootDirectory.appendingPathComponent("meetings.json"))
+    }
+
+    /// The index's copies outside its history (F457), sorted by name. Reads a directory listing only.
+    private func sideCopiesOfTheIndex() -> (quarantine: [String], snapshots: [String]) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: rootDirectory.path)) ?? []
+        let quarantine = names.filter {
+            $0.hasPrefix("meetings.unreadable-") || $0.hasPrefix("meetings.backup.unreadable-")
+        }
+        let snapshots = names.filter { name in
+            var isDirectory: ObjCBool = false
+            return name.hasPrefix(".pre-restore-")
+                && FileManager.default.fileExists(
+                    atPath: rootDirectory.appendingPathComponent(name).path, isDirectory: &isDirectory
+                )
+                && isDirectory.boolValue
+        }
+        return (quarantine.sorted(), snapshots.sorted())
+    }
+
+    /// For the Forget History dialog, read when it opens. Reads directory listings only.
+    func forgetHistoryInventory() -> ForgetHistoryInventory {
+        let side = sideCopiesOfTheIndex()
+        return ForgetHistoryInventory(
+            conflictCopies: meetingHistory.conflictBranchCount(),
+            quarantineCopies: side.quarantine,
+            preRestoreSnapshots: side.snapshots
+        )
+    }
+
     /// Forgets the retained index history now — the immediate counterpart to the automatic shred
     /// (F239, F295).
     ///
     /// Deleting a meeting removes its recording folder at once; its title, transcript, notes and
     /// summary stay in the retained generations under `meetings.history/` and in the backup copy for
-    /// `shredGracePeriod` (a week), so a mistaken delete can be undone, and `processPendingShreds`
-    /// then removes them from every generation automatically. This command does not wait: it removes
-    /// every generation and conflict branch at once, for every meeting. It does not rewrite
+    /// `shredGracePeriod` (a week), and `processPendingShreds` then removes them from every
+    /// generation automatically. That week is protection against losing the library, not an undo
+    /// for one delete: Recover Library, which restores from these generations, is offered only while
+    /// the library cannot be read (F457, the user's answer of 2026-09-24). This command does not
+    /// wait: it removes every generation at once, for every meeting. It does not rewrite
     /// `meetings.backup.json`, the previous generation, so a meeting deleted by the most recent save
     /// is still there until the next save rotates it out.
+    ///
+    /// **Refused while the library is read-only (F457).** Those generations are exactly what Recover
+    /// Library restores from then, and this used to delete them under a dialog that said nothing was
+    /// lost. The refusal is `mutationIsAllowed()`'s, so it reads like every other.
+    ///
+    /// **Keeps what exists nowhere else unless asked (F457).** Conflict branches — a losing writer's
+    /// work — are removed only with `includingConflictCopies`, which the dialog offers after naming
+    /// how many there are. Quarantined copies and restore snapshots are never removed here; the
+    /// outcome names them so the user knows where the text still is. The week-later shred removes a
+    /// deleted meeting from them too (`shredSideCopies`).
     ///
     /// **It discards F190's undo protection for the whole library**, not just for deleted meetings,
     /// which is why it is a separate command the caller must describe as such. (This comment used to
     /// say a deleted meeting's text could stay in the history for good unless this ran; F295 made
-    /// the per-meeting removal automatic, and F450 corrected the comment.) Returns how many
-    /// generations were removed, so the UI can report what happened
-    /// rather than claim success; a failure sets `storageErrorMessage` and returns nil, because a
-    /// privacy command that reports erasure it did not achieve is worse than one that fails loudly.
+    /// the per-meeting removal automatic, and F450 corrected the comment.) Returns what was removed
+    /// and kept, so the UI can report what happened rather than claim success; a refusal or failure
+    /// sets `storageErrorMessage` and returns nil, because a privacy command that reports erasure it
+    /// did not achieve is worse than one that fails loudly.
     @discardableResult
-    func forgetIndexHistory() -> Int? {
+    func forgetIndexHistory(includingConflictCopies: Bool = false) -> ForgetHistoryOutcome? {
+        guard mutationIsAllowed() else { return nil }
         do {
-            let forgotten = try meetingFiles.forgetHistory()
+            let forgotten = try meetingFiles.forgetHistory(includingConflictBranches: includingConflictCopies)
             storageErrorMessage = nil
-            return forgotten.count
+            let removedConflicts = forgotten.filter { $0.hasPrefix("conflict-") }.count
+            let left = forgetHistoryInventory()
+            return ForgetHistoryOutcome(
+                removedGenerations: forgotten.count - removedConflicts,
+                removedConflictCopies: removedConflicts,
+                keptConflictCopies: left.conflictCopies,
+                keptQuarantineCopies: left.quarantineCopies,
+                keptPreRestoreSnapshots: left.preRestoreSnapshots
+            )
         } catch {
             storageErrorMessage = "The saved history could not be removed: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    /// Removes deleted meetings from the index's copies outside its history — quarantined copies and
+    /// the index files in a restore's snapshot — once their week is over (F457), the same way the
+    /// history is shredded (`JSONArrayShred`, F552): only those meetings' entries go, and everything
+    /// else in each copy stays readable, because these copies exist so someone can recover from
+    /// them. A copy that is not a JSON array is left as it is. Audio in a snapshot is not touched.
+    ///
+    /// Returns the names of copies that could not be read or rewritten, so the caller can say which
+    /// still hold the text rather than report a removal that did not happen.
+    private func shredSideCopies(_ ids: Set<UUID>) -> [String] {
+        let side = sideCopiesOfTheIndex()
+        var files = side.quarantine.map { rootDirectory.appendingPathComponent($0) }
+        for snapshot in side.snapshots {
+            let folder = rootDirectory.appendingPathComponent(snapshot, isDirectory: true)
+            for name in ["meetings.json", "meetings.backup.json"] {
+                let url = folder.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { files.append(url) }
+            }
+        }
+        let doomed = Set(ids.map(\.uuidString))
+        var failed: [String] = []
+        for url in files {
+            guard let data = try? Data(contentsOf: url) else {
+                failed.append(url.lastPathComponent)
+                continue
+            }
+            guard let shredded = JSONArrayShred.removingElements(withIDs: doomed, from: data) else { continue }
+            do {
+                try shredded.data.write(to: url, options: .atomic)
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        return failed
     }
 
     func addVocabulary(_ terms: [String]) {
