@@ -407,21 +407,65 @@ final class AppModel: ObservableObject {
     private func postWindowlessAlert(_ message: String) {
         windowlessAlertCount += 1
         lastWindowlessMessage = message
-        // `NSApp` is nil in a headless test process, the same reason
+        // Nil when there is no `NSApp` — a headless test process, the same reason
         // `postTranscriptionNotification` binds rather than force-unwraps. A test asserting `report`
         // cannot and should not post to the user's Notification Centre.
-        guard let app = NSApp else { return }
-        let hasVisibleWindow = app.windows.contains {
+        guard let presence = windowPresence() else { return }
+        guard WindowlessAlert.shouldPost(hasVisibleWindow: presence != .noReadableWindow, message: message) else {
+            return
+        }
+        let content = WindowlessAlert.content(for: message)
+        deliverUserNotification(content.title, content.body)
+    }
+
+    /// Where WhisperMeet's windows stand for the user right now, or nil with no `NSApp` (F528).
+    /// A seam so a test can put a window behind another app without either existing.
+    var windowPresence: @MainActor () -> WindowlessAlert.WindowPresence? = { AppModel.liveWindowPresence() }
+
+    /// Posts one notification. A seam so a test sees a post without touching Notification Centre,
+    /// which a process with no app bundle cannot even open (F528).
+    var deliverUserNotification: @MainActor (_ title: String, _ body: String) -> Void = { title, body in
+        AppModel.deliverNotification(title: title, body: body)
+    }
+
+    private static func liveWindowPresence() -> WindowlessAlert.WindowPresence? {
+        guard let app = NSApp else { return nil }
+        let hasReadableWindow = app.windows.contains {
             WindowlessAlert.isReadable(
                 isVisible: $0.isVisible, canBecomeMain: $0.canBecomeMain,
                 isMiniaturized: $0.isMiniaturized, isOnActiveSpace: $0.isOnActiveSpace
             )
         }
-        guard WindowlessAlert.shouldPost(hasVisibleWindow: hasVisibleWindow, message: message) else {
-            return
-        }
-        let content = WindowlessAlert.content(for: message)
-        Self.deliverNotification(title: content.title, body: content.body)
+        return WindowlessAlert.presence(hasReadableWindow: hasReadableWindow, appIsActive: app.isActive)
+    }
+
+    /// Says a recording is at risk, once per problem (F294), where the user can see it (F528).
+    ///
+    /// This used to go through `postWindowlessAlert`, which holds back whenever a readable window
+    /// exists on the premise that the window's alert shows the message — but an announcement was
+    /// never put on the alert, and the only in-window sign was the health panel on the New Meeting
+    /// pane. So the warning reached nobody with Zoom in front of the window, or with the window
+    /// showing notes or Settings. Now: a window in front shows `recordingRiskBannerLine` on every
+    /// pane, and anything else gets the notification. Never both, never twice: the banner is live
+    /// state rather than a post, and the announcer still says each problem once.
+    func announceRecordingRisk(from snapshot: RecordingHealthSnapshot) {
+        guard let announcement = riskAnnouncer.announcement(for: snapshot) else { return }
+        windowlessAlertCount += 1
+        lastWindowlessMessage = announcement
+        guard let presence = windowPresence(),
+              WindowlessAlert.shouldAnnounceRecordingRisk(presence: presence) else { return }
+        let content = WindowlessAlert.content(for: announcement)
+        deliverUserNotification(content.title, content.body)
+    }
+
+    /// The at-risk line every pane of a window shows while a recording is at risk (F528). Live:
+    /// it clears when the problem does, and when the recording stops being live.
+    var recordingRiskBannerLine: String? {
+        MenuBarRecording.riskBannerLine(
+            isRecording: isRecordingActive,
+            isStopping: recordingState == .stopping,
+            health: recordingHealth
+        )
     }
 
     /// Posts one user-facing notification, sequencing the post **after** the authorization result.
@@ -3489,10 +3533,8 @@ final class AppModel: ObservableObject {
                         return
                     }
                     self.recordingHealth = snapshot
-                    // F294: the banner is in the window; with no window, say it once where they are.
-                    if let announcement = self.riskAnnouncer.announcement(for: snapshot) {
-                        self.postWindowlessAlert(announcement)
-                    }
+                    // F294/F528: said once per problem, wherever the user is looking.
+                    self.announceRecordingRisk(from: snapshot)
                     // F275: this 1 Hz tick is the only trigger that catches the case with no power
                     // event — a docked lid close, where the display-bound stream dies and the Mac
                     // never sleeps. Before this the banner appeared here and nothing else happened.

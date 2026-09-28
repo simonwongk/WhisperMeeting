@@ -30,6 +30,31 @@ public enum WindowlessAlert {
         isVisible && canBecomeMain && !isMiniaturized && isOnActiveSpace
     }
 
+    /// Where the app's windows stand for someone who has to be told something now (F528).
+    public enum WindowPresence: Sendable, Equatable {
+        /// No window the user could read: none open, or every one minimised or on another Space.
+        case noReadableWindow
+        /// A readable window exists, but another app is in front of WhisperMeet.
+        case behindOtherApps
+        /// A readable window, and WhisperMeet is the active app.
+        case inFront
+    }
+
+    public static func presence(hasReadableWindow: Bool, appIsActive: Bool) -> WindowPresence {
+        guard hasReadableWindow else { return .noReadableWindow }
+        return appIsActive ? .inFront : .behindOtherApps
+    }
+
+    /// Whether a recording-risk announcement is posted as a notification (F528).
+    ///
+    /// Not `shouldPost`'s rule, which holds back whenever a readable window exists because that
+    /// window's `.alert` shows the message. An announcement is never on the alert: in a window it is
+    /// a banner. So the only question is whether the user is looking at WhisperMeet at all, and a
+    /// window behind the call app they are in does not count — which is the meeting's normal shape.
+    public static func shouldAnnounceRecordingRisk(presence: WindowPresence) -> Bool {
+        presence != .inFront
+    }
+
     /// Whether to post a notification for `message`.
     ///
     /// Only with no window: with one, the `.alert` host already renders it, and posting as well

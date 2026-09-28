@@ -17,8 +17,10 @@ func menuBarMenuReceivesRecordingHealth() throws {
 @Test("The health tick feeds the announcer, and each recording starts with a fresh one (F294)")
 func healthTickFeedsTheAnnouncer() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
-    #expect(source.contains("self.riskAnnouncer.announcement(for: snapshot)"))
-    #expect(source.contains("self.postWindowlessAlert(announcement)"))
+    // F528 moved the tick's two lines into `announceRecordingRisk(from:)`, so a test can drive the
+    // path the tick drives; `RecordingRiskWindowTests` covers where the announcement goes.
+    #expect(source.contains("self.announceRecordingRisk(from: snapshot)"))
+    #expect(source.contains("riskAnnouncer.announcement(for: snapshot)"))
     #expect(source.contains("riskAnnouncer = RecordingRiskAnnouncer()"))
 }
 

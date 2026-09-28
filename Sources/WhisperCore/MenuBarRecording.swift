@@ -62,6 +62,25 @@ public enum MenuBarRecording {
         isRecording && !isStopping && health?.overallStatus == .atRisk
     }
 
+    /// The line a window shows on every pane while a recording is at risk, or nil (F528).
+    ///
+    /// Worded like `RecordingRiskAnnouncer`'s notification, so the banner and the notification a
+    /// user behind another app got say the same thing, and named from the at-risk warnings only —
+    /// the worst warning overall can be a caution ranked beside one (a long recording beside low
+    /// storage), and a caution is not what the banner is for.
+    public static func riskBannerLine(
+        isRecording: Bool,
+        isStopping: Bool,
+        health: RecordingHealthSnapshot?
+    ) -> String? {
+        guard isAtRisk(isRecording: isRecording, isStopping: isStopping, health: health),
+              let worst = health?.warnings.filter(\.isAtRisk)
+                  .min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else {
+            return nil
+        }
+        return "Recording needs attention: \(RecordingHUD.message(worst))."
+    }
+
     /// - Parameter canStartRecording: `RecordingStartRule`'s answer, computed by the caller from the
     ///   same state the record screen's Start button reads (F543). The menu used to derive Start from
     ///   inputs of its own, including a running transcription, and so disagreed with it.

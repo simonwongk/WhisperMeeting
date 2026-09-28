@@ -107,6 +107,12 @@ struct ContentView: View {
         selection.count == 1 ? selection.first : nil
     }
 
+    /// Whether `detail` is showing the New Meeting pane, whose health panel already names a
+    /// recording's problem (F528). Mirrors `detail` and `singleDetail`'s own choice.
+    private var showsRecordingHealthPanel: Bool {
+        selectedMeetingIDs.count <= 1 && (singleSelection ?? .record) == .record
+    }
+
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
@@ -180,6 +186,7 @@ struct ContentView: View {
             detail
                 .overlay(alignment: .top) {
                     VStack(spacing: 0) {
+                        RecordingRiskBanner(model: model, isHealthPanelShowing: showsRecordingHealthPanel)
                         ReadOnlyLibraryBanner(model: model)
                         WriteConflictBanner(store: store)
                     }
