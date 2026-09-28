@@ -471,9 +471,6 @@ final class AppModel: ObservableObject {
             }
     }
 
-    /// Presents the Keyboard Shortcuts reference sheet, toggled by the ⌘/ command (F85).
-    @Published var showsShortcutsSheet = false
-
     /// A request to open a meeting (and optionally seek it) from another view — the "Ask Meetings"
     /// cited results (F180). It lives on the model, not on a view, because the detail view is recreated
     /// per selection (`.id(meetingID)`), so a view-local seek would be wiped by the navigation itself.
@@ -1108,6 +1105,16 @@ final class AppModel: ObservableObject {
         case .idle: return false
         default: return true
         }
+    }
+
+    /// Whether Start Recording is offered — by the record screen, the menu bar and ⌘R alike (F543).
+    var canStartRecording: Bool {
+        RecordingStartRule.isEnabled(
+            isIdle: recordingState == .idle,
+            isImporting: isImporting,
+            isMicrophoneBusy: isMicrophoneBusy,
+            isInstallingRecognitionRuntime: isInstallingRecognitionRuntime
+        )
     }
 
     var isPreflightTestActive: Bool {
@@ -3424,12 +3431,17 @@ final class AppModel: ObservableObject {
 
     func startRecording() async {
         guard recordingState == .idle, !isImporting, !isMicrophoneBusy else { return }
+        // F543: the refusals this function words go through `report`, not onto `alertMessage` alone.
+        // The menu bar's Start Recording has no window behind it, and a refusal set only on the
+        // window's alert reached nobody there — so a refused Start looked exactly like one that
+        // worked. (The restore guard's message is `libraryIsNotBeingRestored`'s, shared with other
+        // actions, and is left as it is.)
         guard !isInstallingRecognitionRuntime else {
-            alertMessage = "Wait for the local recognition model installation to finish before recording."
+            report("Wait for the local recognition model installation to finish before recording.")
             return
         }
         guard !isDictationActive() else {
-            alertMessage = "Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time."
+            report("Finish Quick Dictation before recording a meeting — they can't share the microphone at the same time.")
             return
         }
         // Must precede every side effect below, including the recording folder: while the library is
@@ -3437,7 +3449,7 @@ final class AppModel: ObservableObject {
         // to disk and then never indexed — and `orphanedRecordings()` reports nothing while degraded,
         // so the user would lose a whole meeting with no error shown (F187).
         guard !store.isDegraded else {
-            alertMessage = ReadOnlyLibraryNotice.recordingRefused
+            report(ReadOnlyLibraryNotice.recordingRefused)
             return
         }
         // F506: the same hole as the read-only one above — `stopRecording`'s `upsert` would be
@@ -3445,12 +3457,12 @@ final class AppModel: ObservableObject {
         guard libraryIsNotBeingRestored("Recording") else { return }
         refreshRecordingPreflight()
         if recordingPreflight.microphoneAccess == .unavailable {
-            alertMessage = "Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again."
+            report("Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again.")
             return
         }
         if let available = recordingPreflight.availableStorageBytes,
            available < 500_000_000 {
-            alertMessage = "Recording cannot start because this Mac has less than 500 MB available. Free some storage so the meeting audio is not put at risk."
+            report("Recording cannot start because this Mac has less than 500 MB available. Free some storage so the meeting audio is not put at risk.")
             return
         }
         recordingState = .starting
@@ -3531,7 +3543,7 @@ final class AppModel: ObservableObject {
             // The lock file first, or `removeIfEmpty` would find the folder non-empty (F297).
             releaseCaptureLock(removingFile: true)
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
-            alertMessage = error.localizedDescription
+            report(error.localizedDescription)
         }
     }
 

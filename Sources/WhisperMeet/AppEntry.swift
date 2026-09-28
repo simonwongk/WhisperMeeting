@@ -160,15 +160,42 @@ struct WhisperMeetApp: App {
                 .frame(width: 520)
                 .padding(24)
         }
+
+        // F543: a window of its own rather than a sheet on the library window. The sheet needed a
+        // window to hang from, so ⌘/ with none open did nothing and left a flag set that popped the
+        // sheet over the next window — in every window — hours later. One scene, opened on demand:
+        // it works windowless, cannot latch, and appears once however many library windows exist.
+        Window(KeyboardShortcutsView.windowTitle, id: KeyboardShortcutsView.windowID) {
+            KeyboardShortcutsView()
+        }
+        .windowResizability(.contentSize)
+        // Help ▸ Keyboard Shortcuts is the way in: not also a Window-menu item, and not a window
+        // state restoration brings back by itself at the next launch.
+        .commandsRemoved()
+        .restorationBehavior(.disabled)
     }
 
     private var menuBarSymbol: String {
+        Self.menuBarSymbol(for: model, dictationStatus: dictation.status)
+    }
+
+    /// The menu-bar icon. A function of the model so a test asks it what the icon would be (F543).
+    static func menuBarSymbol(for model: AppModel, dictationStatus: DictationController.Status) -> String {
         // F294: a recording losing audio outranks dictation state — it is the one thing in the menu
         // bar that cannot wait, and with no window open the icon is all the user can see.
         if model.isRecordingAtRisk {
             return "exclamationmark.triangle.fill"
         }
-        switch dictation.status {
+        // F543: then the recording itself. The icon used to show dictation state only, so a healthy
+        // recording and no recording at all were the same "mic" — and with no window open a refused
+        // Start looked exactly like one that worked. Starting and finishing count: from the click to
+        // the saved meeting, the recording is what the app is doing. (Neither can start while the
+        // other is active — they share the microphone — so what this replaces is at most
+        // dictation's idle or error icon.)
+        if model.isRecordingActive {
+            return "record.circle.fill"
+        }
+        switch dictationStatus {
         case .listening: return "mic.fill"
         case .transcribing, .delivering: return "waveform"
         case .error: return "mic.slash"
@@ -180,26 +207,29 @@ struct WhisperMeetApp: App {
 /// The menu-bar menu: live recording status + controls (Start / Stop & Transcribe / Add Marker /
 /// Cancel) rendered from the tested `MenuBarRecording` presentation core, above the dictation and app
 /// items (F80, delivers F62).
-private struct RecordingMenu: View {
+struct RecordingMenu: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: DictationController
 
-    private func elapsedSeconds() -> TimeInterval {
+    /// What the menu shows, read from the model exactly as `body` reads it — a function so a test
+    /// can ask the menu bar's own question rather than restating it (F543).
+    static func presentation(for model: AppModel, now: Date = Date()) -> MenuBarRecordingPresentation {
+        var elapsed: TimeInterval = 0
         if case let .recording(startedAt) = model.recordingState {
-            return Date().timeIntervalSince(startedAt)
+            elapsed = now.timeIntervalSince(startedAt)
         }
-        return 0
-    }
-
-    var body: some View {
-        let presentation = MenuBarRecording.make(
+        return MenuBarRecording.make(
             isRecording: model.isRecordingActive,
             isStopping: model.recordingState == .stopping,
-            elapsedSeconds: elapsedSeconds(),
-            isMicrophoneBusy: model.isMicrophoneBusy,
+            elapsedSeconds: elapsed,
+            canStartRecording: model.canStartRecording,
             hasActiveTranscription: model.hasActiveTranscription,
             health: model.recordingHealth
         )
+    }
+
+    var body: some View {
+        let presentation = Self.presentation(for: model)
         Text(presentation.statusTitle)
         if let healthLine = presentation.healthLine {
             Text(healthLine)
@@ -232,11 +262,19 @@ private struct RecordingMenu: View {
 
 /// The app's global keyboard commands (a Recording menu + Help ▸ Keyboard Shortcuts), rendered from the
 /// tested `CommandCatalog` so shortcuts have a single source and can't silently collide (F85, F69).
-private struct RecordingCommands: Commands {
+struct RecordingCommands: Commands {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
-    private var state: AppCommandState {
-        AppCommandState(isRecording: model.isRecordingActive, isTranscribing: model.hasActiveTranscription)
+    private var state: AppCommandState { Self.state(for: model) }
+
+    /// The state the Recording menu's enablement reads — a function so a test asks it (F543).
+    static func state(for model: AppModel) -> AppCommandState {
+        AppCommandState(
+            isRecording: model.isRecordingActive,
+            isTranscribing: model.hasActiveTranscription,
+            canStartRecording: model.canStartRecording
+        )
     }
 
     var body: some Commands {
@@ -278,7 +316,7 @@ private struct RecordingCommands: Commands {
             // outright, and never prompt when there's nothing to cancel.
             model.requestCancelConfirmation()
         case "keyboardShortcuts":
-            model.showsShortcutsSheet = true
+            openWindow(id: KeyboardShortcutsView.windowID)
         default:
             break
         }
@@ -294,10 +332,13 @@ private struct RecordingCommands: Commands {
     }
 }
 
-/// A read-only reference sheet listing every command and its shortcut, from the single
-/// `CommandCatalog` source (F85).
+/// A read-only reference listing every command and its shortcut, from the single `CommandCatalog`
+/// source (F85). Shown in a window of its own (F543).
 struct KeyboardShortcutsView: View {
-    @Environment(\.dismiss) private var dismiss
+    static let windowID = "keyboard-shortcuts"
+    static let windowTitle = "Keyboard Shortcuts"
+
+    @Environment(\.dismissWindow) private var dismissWindow
 
     private var sections: [String] {
         var seen: [String] = []
@@ -325,7 +366,7 @@ struct KeyboardShortcutsView: View {
             }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { dismissWindow(id: Self.windowID) }.keyboardShortcut(.defaultAction)
             }
             .padding()
         }

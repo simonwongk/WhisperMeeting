@@ -19,7 +19,7 @@ private func snapshot(_ warnings: [RecordingHealthWarning]) -> RecordingHealthSn
 private func menu(_ health: RecordingHealthSnapshot?, recording: Bool = true) -> MenuBarRecordingPresentation {
     MenuBarRecording.make(
         isRecording: recording, isStopping: false, elapsedSeconds: 10,
-        isMicrophoneBusy: false, hasActiveTranscription: false, health: health
+        canStartRecording: !recording, hasActiveTranscription: false, health: health
     )
 }
 

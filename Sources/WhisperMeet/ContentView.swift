@@ -195,7 +195,6 @@ struct ContentView: View {
             guard let request else { return }
             selection = [.meeting(request.meetingID)]
         }
-        .sheet(isPresented: $model.showsShortcutsSheet) { KeyboardShortcutsView() }
         .alert(
             "WhisperMeet",
             isPresented: Binding(
@@ -549,10 +548,12 @@ private struct RecordMeetingView: View {
     }
 
     private var isPrimaryActionBusy: Bool {
-        model.recordingState == .starting
-            || model.recordingState == .stopping
-            || model.isImporting
-            || model.isInstallingRecognitionRuntime
+        switch model.recordingState {
+        // F543: Start is greyed by the one rule the menu bar's Start and ⌘R also read.
+        case .idle: return !model.canStartRecording
+        case .recording: return model.isImporting || model.isInstallingRecognitionRuntime
+        case .starting, .stopping: return true
+        }
     }
 
     /// The tinted orb behind the state icon — the screen's visual anchor. Pulses only while

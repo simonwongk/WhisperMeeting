@@ -24,6 +24,30 @@ public struct MenuBarRecordingPresentation: Sendable, Equatable {
     public let cancelNeedsConfirmation: Bool
 }
 
+/// When a Start Recording control is enabled — the one rule the record screen's Start button, the
+/// menu bar's Start Recording and ⌘R all read (F543).
+///
+/// Before this each surface had its own: the menu bar greyed Start for the whole of every
+/// transcription, which `startRecording()` does not refuse (the record screen and ⌘R both start
+/// one then), while ⌘R stayed live through an import, where `startRecording()` returns without a
+/// word. Two surfaces for the same action, disagreeing in both directions.
+///
+/// The inputs are exactly `startRecording()`'s *silent* refusals — not idle, importing, the
+/// microphone owned by a preflight test — where an enabled control would be a click that does
+/// nothing, plus a recognition-model install, which the record screen already greyed. Refusals that
+/// explain themselves (Quick Dictation, a read-only library, low storage, no microphone) leave the
+/// control enabled, so the click is answered with the reason rather than a grey item with none.
+public enum RecordingStartRule {
+    public static func isEnabled(
+        isIdle: Bool,
+        isImporting: Bool,
+        isMicrophoneBusy: Bool,
+        isInstallingRecognitionRuntime: Bool
+    ) -> Bool {
+        isIdle && !isImporting && !isMicrophoneBusy && !isInstallingRecognitionRuntime
+    }
+}
+
 public enum MenuBarRecording {
     /// Whether a recording's health should change the menu-bar icon (F337).
     ///
@@ -38,11 +62,14 @@ public enum MenuBarRecording {
         isRecording && !isStopping && health?.overallStatus == .atRisk
     }
 
+    /// - Parameter canStartRecording: `RecordingStartRule`'s answer, computed by the caller from the
+    ///   same state the record screen's Start button reads (F543). The menu used to derive Start from
+    ///   inputs of its own, including a running transcription, and so disagreed with it.
     public static func make(
         isRecording: Bool,
         isStopping: Bool,
         elapsedSeconds: TimeInterval,
-        isMicrophoneBusy: Bool,
+        canStartRecording: Bool,
         hasActiveTranscription: Bool,
         health: RecordingHealthSnapshot? = nil
     ) -> MenuBarRecordingPresentation {
@@ -68,7 +95,9 @@ public enum MenuBarRecording {
             statusTitle: statusTitle,
             healthLine: healthLine,
             startTitle: "Start Recording",
-            startEnabled: !isRecording && !isStopping && !isMicrophoneBusy && !hasActiveTranscription,
+            // `hasActiveTranscription` still titles the menu "Transcribing…"; it no longer greys
+            // Start, which is the status line saying what is happening, not a refusal.
+            startEnabled: canStartRecording,
             stopTitle: "Stop & Transcribe",
             stopEnabled: recording,
             addMarkerEnabled: recording,

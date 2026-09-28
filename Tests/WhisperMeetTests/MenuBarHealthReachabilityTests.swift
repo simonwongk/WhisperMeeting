@@ -52,7 +52,7 @@ func menuBarIconIsNotAtRiskWhileStopping() throws {
     // The menu's own health line already agreed; the icon did not.
     let presentation = MenuBarRecording.make(
         isRecording: model.isRecordingActive, isStopping: model.recordingState == .stopping,
-        elapsedSeconds: 1, isMicrophoneBusy: false, hasActiveTranscription: false, health: dying
+        elapsedSeconds: 1, canStartRecording: model.canStartRecording, hasActiveTranscription: false, health: dying
     )
     #expect(presentation.healthLine == nil)
 }

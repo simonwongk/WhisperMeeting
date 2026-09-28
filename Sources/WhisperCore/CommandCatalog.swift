@@ -5,10 +5,13 @@ import Foundation
 public struct AppCommandState: Sendable, Equatable {
     public let isRecording: Bool
     public let isTranscribing: Bool
+    /// `RecordingStartRule`'s answer: whether Start is offered right now (F543).
+    public let canStartRecording: Bool
 
-    public init(isRecording: Bool, isTranscribing: Bool = false) {
+    public init(isRecording: Bool, isTranscribing: Bool = false, canStartRecording: Bool = true) {
         self.isRecording = isRecording
         self.isTranscribing = isTranscribing
+        self.canStartRecording = canStartRecording
     }
 }
 
@@ -26,12 +29,17 @@ public enum CommandEnablement: Sendable, Equatable {
     case always
     case whileRecording
     case whileIdle // not recording and not transcribing
+    /// A start/stop toggle: live while there is a recording to stop, and otherwise under the one
+    /// start rule every Start control shares (F543). It was `.always`, so ⌘R stayed live through an
+    /// import, where `startRecording()` returns without a word.
+    case whileRecordingOrStartable
 
     public func isEnabled(_ state: AppCommandState) -> Bool {
         switch self {
         case .always: return true
         case .whileRecording: return state.isRecording
         case .whileIdle: return !state.isRecording && !state.isTranscribing
+        case .whileRecordingOrStartable: return state.isRecording || state.canStartRecording
         }
     }
 }
@@ -62,7 +70,7 @@ public struct AppCommand: Sendable, Equatable, Identifiable {
 public enum CommandCatalog {
     public static let all: [AppCommand] = [
         AppCommand(id: "toggleRecording", title: "Start / Stop Recording", section: "Recording",
-                   keyEquivalent: "r", modifiers: [.command], enablement: .always),
+                   keyEquivalent: "r", modifiers: [.command], enablement: .whileRecordingOrStartable),
         AppCommand(id: "addMarker", title: "Add Marker", section: "Recording",
                    keyEquivalent: "m", modifiers: [.shift, .command], enablement: .whileRecording),
         AppCommand(id: "cancelRecording", title: "Cancel Recording…", section: "Recording",
