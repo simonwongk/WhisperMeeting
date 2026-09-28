@@ -89,3 +89,35 @@ func secondOpinionReplaceWritesTheMatchingLine() async throws {
         "We should ship on Friday.", "Then we review the numbers.",
     ])
 }
+
+// F572 — the other engine split this line in two. Pairing with its larger piece offered only the
+// second sentence, and Replace wrote it over the line: the first sentence, which both engines heard,
+// was deleted from the transcript.
+@MainActor
+@Test("Replace writes the whole of the other engine's reading when it split the line in two (F572)")
+func secondOpinionReplaceKeepsEverySentenceOfASplitLine() async throws {
+    let (model, _) = try makeModel()
+    let id = UUID()
+    let stored = [seg("We ship on Friday. Then we review the numbrs.", 10.0, 18.0)]
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M",
+        recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+        status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(stored),
+        segments: stored
+    ))
+    model.runTranscriptionEngineOverride = { _, _ in
+        TranscriptionResult(
+            id: "x", text: "We ship on Friday. Then we review the numbers.", languageCode: "en",
+            audioDuration: 18, confidence: nil,
+            segments: [seg("We ship on Friday.", 10.0, 13.0), seg("Then we review the numbers.", 13.0, 18.0)]
+        )
+    }
+
+    await model.computeSecondOpinion(id: id)
+    let diverging = try #require(model.secondOpinionSpans?.first { $0.kind == .diverge })
+    model.applySecondOpinionSpan(diverging, to: id)
+
+    let expected: [String] = ["We ship on Friday. Then we review the numbers."]
+    #expect(model.store.meeting(id: id)?.segments.map(\.text) == expected)
+}

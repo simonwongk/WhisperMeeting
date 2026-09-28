@@ -33,51 +33,132 @@ public enum TranscriptComparison {
         let secondaryTexts = secondary.map { normalize($0.text) }
         return primary.map { segment in
             let text = normalize(segment.text)
-            guard let match = counterpart(of: segment, normalized: text, in: secondary, secondaryTexts) else {
-                return TranscriptComparisonSpan(
-                    kind: .nonOverlapping, start: segment.start,
-                    primaryText: segment.text, secondaryText: nil
-                )
-            }
-            return TranscriptComparisonSpan(
-                kind: match.same ? .agree : .diverge, start: segment.start,
-                primaryText: segment.text, secondaryText: match.segment.text
-            )
+            let found = counterpart(of: segment, normalized: text, in: secondary, secondaryTexts)
+            return span(for: segment, normalized: text, found, in: secondary)
         }
     }
 
-    /// The other engine's reading of `segment`, and whether it says the same thing (F472).
+    /// What one line was matched with: the index of a segment that says the same thing, or else the
+    /// indices of every segment that covers it (F572). Both are indices into the other transcript.
+    enum Counterpart: Equatable {
+        case agreeing(Int)
+        case covering([Int])
+    }
+
+    /// A counterpart must share at least this fraction of the SHORTER of the two spans (F572).
+    ///
+    /// Engines' boundaries routinely disagree by a fraction of a second, so the other engine's
+    /// neighbouring sentence overlaps most lines by a sliver. Counting that sliver joined the
+    /// neighbour's words into the offered text, and where the other engine had dropped the line
+    /// entirely it was the WHOLE offered text — Replace then wrote a neighbour's sentence over a
+    /// line nobody else transcribed. Measured against the shorter span so that a short segment the
+    /// line fully contains, and a long one that fully contains a short line, both count.
+    static let minimumOverlapFraction = 0.25
+
+    /// The other engine's reading of `segment` (F472, F572).
     ///
     /// Two segments align when their time spans overlap; if a side lacks timestamps, a
     /// normalized-text match stands in, so a timestamp-less (e.g. unaligned Qwen) passage can still
     /// compare. Of everything that aligns:
     ///
-    /// - one that says the same thing wins — both engines did say it here, so the row agrees and
-    ///   Replace is not offered;
-    /// - otherwise the timed segment that overlaps it for the LONGEST time.
+    /// - the first one that says the same thing wins — both engines did say it here, so the row
+    ///   agrees and Replace is not offered (F472);
+    /// - otherwise EVERY timed segment that shares at least `minimumOverlapFraction` of the shorter
+    ///   span, joined in time order (F572).
     ///
-    /// This used to take the first segment that aligned at all. Two engines' boundaries routinely
-    /// overlap by a fraction of a second, so that was usually the other engine's previous sentence,
-    /// and Replace then wrote it over the line: the same sentence twice and the real line gone.
-    /// Preferring agreement over overlap is the same caution — when in doubt, offer nothing to
-    /// replace rather than a neighbour's words.
-    private static func counterpart(
+    /// F472 took the one segment with the longest overlap. When the engines split sentences
+    /// differently that is still one piece of the other engine's reading: this line's "A. B." over
+    /// the other engine's "A." and "B." offered "B.", and Replace wrote "B." over "A. B." — "A.",
+    /// which both engines heard, deleted. Before F472 it took the first overlap, which dropped "B."
+    /// instead. Preferring agreement over overlap is the same caution as ever — when in doubt, offer
+    /// nothing to replace rather than a neighbour's words.
+    ///
+    /// This is the simple scan: every line against every segment, O(n·m) over the two transcripts.
+    static func counterpart(
         of segment: TranscriptSegment,
         normalized text: String,
         in secondary: [TranscriptSegment],
         _ secondaryTexts: [String]
-    ) -> (segment: TranscriptSegment, same: Bool)? {
-        var longest: (segment: TranscriptSegment, overlap: Double)?
-        for (candidate, candidateText) in zip(secondary, secondaryTexts) {
+    ) -> Counterpart? {
+        var covering: [Int] = []
+        for (index, candidate) in secondary.enumerated() {
             if let overlap = sharedSeconds(segment, candidate) {
                 guard overlap > 0 else { continue }
-                if candidateText == text { return (candidate, true) }
-                if longest.map({ overlap > $0.overlap }) ?? true { longest = (candidate, overlap) }
-            } else if candidateText == text {
-                return (candidate, true)
+                if secondaryTexts[index] == text { return .agreeing(index) }
+                if covers(segment, candidate, sharing: overlap) { covering.append(index) }
+            } else if secondaryTexts[index] == text {
+                return .agreeing(index)
             }
         }
-        return longest.map { ($0.segment, false) }
+        return covering.isEmpty ? nil : .covering(covering)
+    }
+
+    /// The row for one line, given what it was matched with.
+    static func span(
+        for segment: TranscriptSegment,
+        normalized text: String,
+        _ counterpart: Counterpart?,
+        in secondary: [TranscriptSegment]
+    ) -> TranscriptComparisonSpan {
+        switch counterpart {
+        case nil:
+            return TranscriptComparisonSpan(
+                kind: .nonOverlapping, start: segment.start, primaryText: segment.text, secondaryText: nil
+            )
+        case let .agreeing(index):
+            return TranscriptComparisonSpan(
+                kind: .agree, start: segment.start, primaryText: segment.text, secondaryText: secondary[index].text
+            )
+        case let .covering(indices):
+            let joined = joinedInTimeOrder(indices.map { ($0, secondary[$0]) })
+            // Several pieces can say, together, exactly what this line says — the same words split
+            // at a different place. That is agreement, and nothing is offered to replace.
+            return TranscriptComparisonSpan(
+                kind: normalize(joined) == text ? .agree : .diverge, start: segment.start,
+                primaryText: segment.text, secondaryText: joined
+            )
+        }
+    }
+
+    /// Whether `candidate`, which shares `overlap` seconds with `segment`, is part of its reading
+    /// rather than a neighbour that brushes it (F572). A zero-length segment inside the other's span
+    /// has a zero shorter span, so it counts, as it always has (`sharedSeconds`).
+    static func covers(_ segment: TranscriptSegment, _ candidate: TranscriptSegment, sharing overlap: Double) -> Bool {
+        guard let aStart = segment.start, let aEnd = segment.end,
+              let bStart = candidate.start, let bEnd = candidate.end else { return false }
+        return overlap >= minimumOverlapFraction * min(aEnd - aStart, bEnd - bStart)
+    }
+
+    /// The texts of `pieces` in the order they were said: by start time, then by their place in the
+    /// other transcript. Joined with a space, except between two characters of a script that has
+    /// none — the rule `qwen_transcribe.joined_text` applies at a chunk boundary (F562) — so two
+    /// Mandarin sentences are not written back into the line with a space between them.
+    static func joinedInTimeOrder(_ pieces: [(index: Int, segment: TranscriptSegment)]) -> String {
+        let ordered = pieces.sorted { lhs, rhs in
+            let (l, r) = (lhs.segment.start ?? 0, rhs.segment.start ?? 0)
+            return l == r ? lhs.index < rhs.index : l < r
+        }
+        var result = ""
+        for piece in ordered {
+            let text = piece.segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            if let last = result.unicodeScalars.last, let first = text.unicodeScalars.first,
+               !(isUnspaced(last) && isUnspaced(first)) {
+                result.append(" ")
+            }
+            result.append(text)
+        }
+        return result
+    }
+
+    /// A CJK ideograph, or CJK / full-width punctuation such as '。' and '，' — `_is_cjk_or_fullwidth`
+    /// in `Scripts/qwen_transcribe.py`, plus the ideograph blocks `normalize` already treats so.
+    private static func isUnspaced(_ scalar: Unicode.Scalar) -> Bool {
+        if ActionItemEvidence.isCJKIdeograph(scalar) { return true }
+        switch scalar.value {
+        case 0x3000...0x303F, 0xFF00...0xFFEF: return true
+        default: return false
+        }
     }
 
     /// Seconds two timed segments share — zero when they do not overlap — or nil when either lacks

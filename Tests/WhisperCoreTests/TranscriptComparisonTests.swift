@@ -107,3 +107,68 @@ func comparisonStillSeesARealDifference() {
     let english = TranscriptComparison.compare([seg(0, 2, "ice cream")], [seg(0, 2, "icecream")])
     #expect(english.map(\.kind) == [.diverge])
 }
+
+// F572 — F472 paired each line with the ONE segment of the other transcript it overlapped most. When
+// the two engines split sentences differently that is still one-to-one: this transcript's "A. B." over
+// the other engine's "A." and "B." offered only "B.", and Replace wrote "B." over "A. B." — a sentence
+// both engines heard, deleted. Every segment that overlaps the line by a real share of the shorter
+// span is joined, in time order; a sliver is no counterpart at all.
+@Test("A line the other engine split in two is offered the whole of its reading, not the larger piece (F572)")
+func comparisonJoinsEverySegmentTheLineCovers() {
+    // The ticket's exhibit: the same words, split differently — the engines agree.
+    let same = TranscriptComparison.compare(
+        [seg(10, 18, "We ship on Friday. Then we review the numbers.")],
+        [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbers.")]
+    )
+    #expect(same.map(\.kind) == [.agree])
+
+    // A real difference in the second half: the row offers BOTH halves, so Replace keeps the first.
+    let different = TranscriptComparison.compare(
+        [seg(10, 18, "We ship on Friday. Then we review the numbrs.")],
+        [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbers.")]
+    )
+    #expect(different.map(\.kind) == [.diverge])
+    #expect(different.first?.secondaryText == "We ship on Friday. Then we review the numbers.")
+}
+
+@Test("The other engine's pieces are joined in time order, and without a space between Chinese sentences (F572)")
+func comparisonJoinsInTimeOrderAndRespectsChineseSpacing() {
+    // Out of order in the list — the join follows the clock, not the array.
+    let english = TranscriptComparison.compare(
+        [seg(0, 6, "One two three four.")],
+        [seg(3, 6, "Three for."), seg(0, 3, "One two.")]
+    )
+    #expect(english.first?.secondaryText == "One two. Three for.")
+
+    // Mandarin has no word spaces: a space between the two pieces would be written into the line.
+    let chinese = TranscriptComparison.compare(
+        [seg(0, 4, "我们明天开会然后讨论预算")],
+        [seg(0, 2, "我们后天开会。"), seg(2, 4, "然后讨论预算。")]
+    )
+    #expect(chinese.map(\.kind) == [.diverge])
+    #expect(chinese.first?.secondaryText == "我们后天开会。然后讨论预算。")
+}
+
+@Test("A sliver of overlap is no counterpart: a line the other engine dropped is offered nothing to replace (F572)")
+func comparisonTreatsASliverAsNoCounterpart() {
+    // The other engine heard nothing at 5.0–5.5; its previous sentence runs 50 ms into the line.
+    let spans = TranscriptComparison.compare(
+        [seg(5.0, 5.5, "Yes.")],
+        [seg(3.0, 5.05, "so anyway we are done"), seg(6.0, 7.0, "Next item.")]
+    )
+    #expect(spans.map(\.kind) == [.nonOverlapping])
+    #expect(spans.first?.secondaryText == nil)
+}
+
+@Test("Two lines the other engine heard as one are each still offered its complete reading (F572 control)")
+func comparisonOffersTheWholeSegmentToEachLineItCovers() {
+    let spans = TranscriptComparison.compare(
+        [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbrs.")],
+        [seg(10, 18, "We ship on Friday. Then we review the numbers.")]
+    )
+    #expect(spans.map(\.kind) == [.diverge, .diverge])
+    let expected: [String?] = [
+        "We ship on Friday. Then we review the numbers.", "We ship on Friday. Then we review the numbers.",
+    ]
+    #expect(spans.map(\.secondaryText) == expected)
+}
