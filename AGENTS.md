@@ -759,22 +759,38 @@ It is a dependency of the **`WhisperMeet` target only**; `WhisperCore` gets noth
 Do not read that as the purity rule being manifest-enforced in general. SwiftPM only refuses the
 import because `WhisperCore` declares no dependency on that package — the same manifest says nothing
 about `AppKit`, `SwiftUI`, `os` or any other system framework, every one of which `WhisperCore`
-would happily import. The rule below is still upheld by review and by the grep in the definition of
-done, not by the build system.
+would happily import. The rule below is upheld by `whisperCoreImportsNothingUnexpected` (F372), not
+by the build system. It is **not** upheld by "the grep in the definition of done", which this
+sentence claimed until F413 and which never existed — that claim is named in F372's own log entry
+as the reason the rule went unenforced for months.
 
 ## WhisperCore purity rule
 
-`Sources/WhisperCore/` is pure, `Sendable`, framework-free logic: every file imports only
-`Foundation`, with a **single sanctioned exception** — `WarmWhisperDictationEngine.swift` imports
-`Darwin` solely for `SIGKILL` to force-stop a wedged helper process, for which there is no
-Foundation equivalent. Do not add AppKit/SwiftUI/`os`/other framework imports; surface diagnostics
-through return values instead, as `TranscriptionResult.alignmentWarning` does.
+`Sources/WhisperCore/` is pure, `Sendable`, framework-free logic. Do not add AppKit/SwiftUI/`os`/
+other framework imports; surface diagnostics through return values instead, as
+`TranscriptionResult.alignmentWarning` does.
 
-Verified current state (`grep -rn '^import' Sources/WhisperCore`): every source imports `Foundation`
-only, plus the one `import Darwin` in `WarmWhisperDictationEngine.swift`. The earlier `import os` in
-`QwenASRClient.swift` was the F28 deviation; it was removed when F28 shipped (commit `2cea357`), so
-there is **no open purity defect today**. If you reintroduce a framework import, that is a new
-defect — file a ticket per the rules above.
+**The rule is enforced by a test, and the test is the authority — not this paragraph (F372, F413).**
+`whisperCoreImportsNothingUnexpected` in `Tests/WhisperMeetTests/SourceContractGuardTests.swift`
+is a fail-closed allowlist, and the allowlist is four names:
+
+| module | where, and why |
+|---|---|
+| `Foundation` | the default — every file that imports anything |
+| `Darwin` | `WarmWhisperDictationEngine.swift`, for `SIGKILL` to force-stop a wedged helper — no Foundation equivalent |
+| `UniformTypeIdentifiers` | `ExternalFileIntake.swift` |
+| `CryptoKit` | `SemanticSearch.swift` |
+
+The allowlist is per-module rather than per-file, so the table's "where" column is documentation
+and not a constraint the gate checks. Adding a fifth name is a deliberate decision, made in that
+file with a ticket that says why.
+
+This paragraph used to claim that every file imported only `Foundation` with `Darwin` sanctioned in
+one file, that this was the "verified current state", and that there was "no open purity defect
+today". Two of those three had been false since `UniformTypeIdentifiers` and `CryptoKit` arrived
+(F413). A restated list goes stale exactly this way, which is the argument the **Derive the list**
+paragraph above makes — so the numbers here are the ones the guard enforces, and when they
+disagree, the guard is right.
 
 See `README.md` for the end-user workflow and `docs/RECOVERY.md` for exact recovery file locations.
 

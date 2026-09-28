@@ -66,16 +66,62 @@ private let whisperCoreAllowedImports: Set<String> = [
     "Foundation", "UniformTypeIdentifiers", "Darwin", "CryptoKit",
 ]
 
+/// A decorated or access-modified import, which the first version of this guard could not see
+/// (F413). `@preconcurrency import AVFoundation` is the idiomatic way to bring AVFoundation into
+/// Swift 5 mode, so it is the likeliest shape of the next violation — and `hasPrefix("import ")`
+/// skipped it silently, which makes a fail-closed allowlist fail open.
+private func importedModule(in line: String) -> String? {
+    var rest = line.trimmingCharacters(in: .whitespaces)
+    // Leading attributes: `@preconcurrency`, `@_exported`, `@_implementationOnly(...)`, …
+    while rest.hasPrefix("@") {
+        guard let end = rest.firstIndex(where: { $0 == " " || $0 == "(" }) else { return nil }
+        if rest[end] == "(" {
+            guard let close = rest[end...].firstIndex(of: ")") else { return nil }
+            rest = String(rest[rest.index(after: close)...])
+        } else {
+            rest = String(rest[end...])
+        }
+        rest = rest.trimmingCharacters(in: .whitespaces)
+    }
+    for modifier in ["public ", "package ", "internal ", "fileprivate ", "private "] where rest.hasPrefix(modifier) {
+        rest = String(rest.dropFirst(modifier.count)).trimmingCharacters(in: .whitespaces)
+        break
+    }
+    guard rest.hasPrefix("import ") else { return nil }
+    var module = String(rest.dropFirst("import ".count)).trimmingCharacters(in: .whitespaces)
+    // `import func Darwin.kill` and `import Darwin.POSIX` both name Darwin.
+    for kind in ["struct ", "class ", "enum ", "protocol ", "typealias ", "func ", "let ", "var "]
+    where module.hasPrefix(kind) {
+        module = String(module.dropFirst(kind.count)).trimmingCharacters(in: .whitespaces)
+        break
+    }
+    let name = module.split(separator: ".").first.map(String.init) ?? ""
+    return name.isEmpty ? nil : name
+}
+
+@Test("The import parser sees through attributes and access modifiers (F413)")
+func importParserSeesDecoratedImports() {
+    #expect(importedModule(in: "import Foundation") == "Foundation")
+    #expect(importedModule(in: "@preconcurrency import AVFoundation") == "AVFoundation")
+    #expect(importedModule(in: "public import SwiftUI") == "SwiftUI")
+    #expect(importedModule(in: "internal import os") == "os")
+    #expect(importedModule(in: "@_exported import UIKit") == "UIKit")
+    #expect(importedModule(in: "@_implementationOnly import Secret") == "Secret")
+    #expect(importedModule(in: "import Darwin.POSIX") == "Darwin")
+    #expect(importedModule(in: "import func Darwin.kill") == "Darwin")
+    #expect(importedModule(in: "  @preconcurrency  public  import  AppKit  ") == "AppKit")
+    // Not imports at all.
+    #expect(importedModule(in: "// import AVFoundation") == nil)
+    #expect(importedModule(in: "let importable = 1") == nil)
+    #expect(importedModule(in: "importantThing()") == nil)
+}
+
 @Test("WhisperCore stays framework-free (F372)")
 func whisperCoreImportsNothingUnexpected() throws {
     var offenders: [String] = []
     for file in try sourceFiles(under: "Sources/WhisperCore") {
         for line in file.lines {
-            let text = line.text.trimmingCharacters(in: .whitespaces)
-            guard text.hasPrefix("import ") else { continue }
-            let module = String(text.dropFirst("import ".count))
-                .split(separator: ".").first.map(String.init) ?? ""
-            let name = module.trimmingCharacters(in: .whitespaces)
+            guard let name = importedModule(in: line.text) else { continue }
             if !whisperCoreAllowedImports.contains(name) {
                 offenders.append("\(file.path):\(line.number) — import \(name)")
             }
