@@ -104,17 +104,34 @@ interface and recovery documentation must state that boundary clearly.
 If two copies of WhisperMeet open the same library, **both may write it.** The app does not, and
 will not, make a library read-only because another copy holds the single-writer lease.
 
-What it guarantees instead is that a lost race is **detected, reported and recoverable**: each save
-is a compare-and-swap against the generation it read, a refused commit raises a visible message
-rather than failing silently, the refused body is kept on disk as a branch, and the pre-existing
-generations remain restorable. Nothing is overwritten unseen.
+What it guarantees instead is that a lost race is **detected, reported and recoverable** (F433,
+F642):
+
+- Every edit, new meeting or delete a copy saves to the meeting index is a compare-and-swap against
+  the generation that copy last read or wrote.
+- A refused save is kept on disk as a `conflict-` branch in `meetings.history/`, or the message says
+  it could not be.
+- The copy that lost re-reads the library at once, so its next save is compared against what the
+  other copy saved rather than refused for the same reason.
+- Whatever that copy had changed since its own last successful save is offered back beside the
+  message. *Keep My Edit* re-applies those meetings over the reloaded library and saves them in one
+  write; *Use the Other Copy* keeps the reloaded library as it is. A change to a meeting the other
+  copy deleted is named and never re-applied.
+- A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
+  again works.
+- Until the offer is answered, that copy refuses further changes to its meetings — edits, new
+  meetings and deletes — without a message of its own; the offer is the explanation.
+- The pre-existing generations remain restorable — in the app while the library cannot be read, and
+  by hand at any time (`docs/RECOVERY.md`).
+
+Nothing is overwritten unseen.
 
 This is a trade made deliberately and it can be re-opened, so the reasoning belongs here rather
 than in a commit message. Preventing the lost update means refusing writes on a lease, and a lease
 that can make a library read-only is a new way to lock somebody out of their own meetings — which
 is the harm this whole family of protections exists to prevent. The failure it would prevent is
 recoverable; the failure it would introduce is not. A false refusal costs a user their app for as
-long as it lasts, and a lost update costs them a re-save.
+long as it lasts; a lost update costs them one answer to that offer, or for a delete, deleting again.
 
 One reading that would weaken this has to be closed off, because an earlier draft of this section
 got it backwards. F188 added a lease *refresh*, which looks as though it retires the classic
