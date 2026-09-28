@@ -26,6 +26,7 @@ model downloads and curl are stood in for), in its own process group, signalled 
 """
 
 import os
+import shutil
 import unittest
 
 import installer_harness as harness
@@ -66,6 +67,20 @@ class WhisperCancelTests(unittest.TestCase):
             FAKE_WHISPER_COUNT=os.path.join(self.sandbox.root, "whisper-calls"),
         )
         self.assert_restored(returncode, stderr)
+
+    def test_a_cancelled_first_install_leaves_no_unverified_venv(self):
+        """Nothing to put back on a first install: the unverified venv is removed, so the app
+        reports "not installed" rather than a runtime nobody checked."""
+        shutil.rmtree(self.venv)
+        returncode, stderr = self.sandbox.run_and_terminate_group(
+            self.runtime,
+            "whisper-post-swap",
+            FAKE_WHISPER_BLOCK_CALL=2,
+            FAKE_WHISPER_COUNT=os.path.join(self.sandbox.root, "whisper-calls"),
+        )
+        self.assertEqual(returncode, 130, stderr)
+        self.assertFalse(os.path.exists(self.venv), "the unverified venv was left live")
+        self.assertEqual(harness.hidden_entries(self.runtime, ".venv-"), [])
 
     def test_recovery_only_restores_an_orphaned_backup_without_installing(self):
         """What the launch reclaim runs: an interrupted install left the working venv in a backup

@@ -17,6 +17,8 @@ staging_venv="$runtime_directory/.venv-install-$$"
 backup_venv="$runtime_directory/.venv-backup-$$"
 lock_file="$runtime_directory/.venv-install.lock"
 activation_complete=0
+# F520: set only while the new venv sits at the live path unverified — see cleanup_and_restore.
+new_venv_swapped_in=0
 lock_acquired=0
 
 mkdir -p "$runtime_directory"
@@ -38,17 +40,20 @@ venv_works() {
 cleanup_and_restore() {
   exit_status=$?
   trap - EXIT HUP INT TERM
-  # If activation never completed and the live venv had been moved aside, put it back.
-  #
-  # F520: whatever is at the live path by then is NOT the previous venv — the swap only ever moves
-  # that one into $backup_venv — but the unverified new one, swapped in and still being checked by
-  # the relocated `whisper --help` below. That check takes seconds with real torch, so it is where a
-  # Cancel (SIGTERM to the process group) can land, and this used to restore only when the live
-  # path was missing: the unverified venv stayed live and the previous one was stranded in a hidden
-  # backup. Replace it. Nothing else creates $backup_venv (a same-PID leftover is removed before
-  # the swap), so this never discards anything but this run's own unverified install.
-  if [[ "$activation_complete" -eq 0 && -e "$backup_venv" ]]; then
+  # F520: an exit while the new venv sits at the live path unverified — the relocated
+  # `whisper --help` below takes seconds with real torch, so that is where a Cancel (SIGTERM to the
+  # process group) lands — removes it, so the restore below can put the previous venv back. Before
+  # this the restore ran only when the live path was already missing, so a cancel there left the
+  # unverified venv live and the previous one stranded in a hidden backup. Gated on this run's own
+  # flag rather than on a backup existing: a same-PID leftover backup can exist until the swap
+  # removes it, and an early exit must never trade the live venv for that.
+  if [[ "$activation_complete" -eq 0 && "$new_venv_swapped_in" -eq 1 ]]; then
     rm -rf "$venv_target"
+  fi
+  # If activation never completed and the live venv had been moved aside, put it back.
+  if [[ "$activation_complete" -eq 0
+        && ! -e "$venv_target"
+        && -e "$backup_venv" ]]; then
     mv "$backup_venv" "$venv_target"
   fi
   [[ -d "$staging_venv" ]] && rm -rf "$staging_venv"
@@ -312,8 +317,11 @@ if ! mv "$staging_venv" "$venv_target"; then
   print -u2 "The new Local Whisper runtime could not be activated; the previous runtime was restored."
   exit 1
 fi
+new_venv_swapped_in=1
 # Re-verify at the LIVE path — the relocated shebangs must actually run — and roll back if not.
 if ! "$venv_target/bin/whisper" --help >/dev/null 2>&1; then
+  # This branch does its own rollback; the trap must not remove what it restores.
+  new_venv_swapped_in=0
   rm -rf "$venv_target"
   if [[ -e "$backup_venv" ]]; then
     mv "$backup_venv" "$venv_target"
@@ -324,6 +332,7 @@ if ! "$venv_target/bin/whisper" --help >/dev/null 2>&1; then
   exit 1
 fi
 activation_complete=1
+new_venv_swapped_in=0
 if [[ -e "$backup_venv" ]]; then
   if ! rm -rf "$backup_venv"; then
     print -u2 "Local Whisper was activated, but its prior-runtime backup could not be removed."
