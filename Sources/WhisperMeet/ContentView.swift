@@ -1510,16 +1510,9 @@ struct SettingsView: View {
                             model.installSpeakerDiarization()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(
-                            model.isInstallingRuntime
-                                || model.isInstallingQwenRuntime
-                                || model.isInstallingDiarizationRuntime
-                                || model.hasActiveTranscription
-                                || model.isRunningAuxiliaryEngine
-                                || model.isMicrophoneBusy
-                                || model.isImporting
-                                || dictation.isActive
-                        )
+                        // F567: the check `installSpeakerDiarization` itself asks. The hand-written
+                        // list here missed a running summarizer or search-model install.
+                        .disabled(!model.canInstall(.diarization))
                     }
                     if model.isInstallingDiarizationRuntime {
                         ProgressView(SpeakerAnalysisCopy.installProgressLabel)
@@ -1843,19 +1836,11 @@ struct SettingsView: View {
                                 model.installSummarizer()
                             }
                             .buttonStyle(.bordered)
-                            .disabled(
-                                model.isInstallingSummarizer
-                                    || model.isInstallingRuntime
-                                    || model.isInstallingQwenRuntime
-                                    || model.isInstallingDiarizationRuntime
-                                    // F440: installSummarizer() now refuses while Ask's embedding
-                                    // model is downloading into the same directory it swaps.
-                                    || model.isInstallingAskEmbeddings
-                                    || model.hasActiveTranscription
-                                    || model.isMicrophoneBusy
-                                    || model.isImporting
-                                    || dictation.isActive
-                            )
+                            // F567: the check `installSummarizer` itself asks (which covers F440's
+                            // search-model download through `isInstallingAnyRuntime`). The
+                            // hand-written list here missed a running second opinion or segment
+                            // re-run, which the model has always refused.
+                            .disabled(!model.canInstall(.summarizer))
                         }
                         if model.isInstallingSummarizer {
                             ProgressView("Downloading the local summarization model. This can take several minutes…")

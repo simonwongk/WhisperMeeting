@@ -852,7 +852,9 @@ final class AppModel: ObservableObject {
     /// library-wide lease — is how it tells a recording in progress from one that crashed.
     /// Advisory: nil when the lock could not be taken, and recording proceeds regardless.
     private var captureLock: RecordingCaptureLock.Handle?
-    private var isDictationActive: () -> Bool = { false }
+    /// Readable outside this file for `installBlockedReason(for:)` (F567); set only through
+    /// `configureDictationGuard`.
+    private(set) var isDictationActive: () -> Bool = { false }
     /// AppEntry wires this to `DictationController.releaseIdleModelsForMeetingTranscription`.
     /// Kept as a headless seam so tests can prove the release completes before an engine starts.
     var releaseIdleDictationModels: @Sendable () async -> Void = {}
@@ -1077,14 +1079,11 @@ final class AppModel: ObservableObject {
     ///
     /// Read from whatever is actually holding the engine, exactly as `queuedTranscriptionWaitMessage`
     /// is, so a footnote built from this never claims the wrong thing is running.
+    ///
+    /// F567: the list itself moved into `installBlockedReason(for:)`, which every installer and its
+    /// button now share; Whisper and Qwen have identical conditions, so this is that check for both.
     var recognitionRuntimeInstallBlockedReason: String? {
-        if isInstallingAnyRuntime { return "Another install is already running." }
-        if hasActiveTranscription { return "Wait for the current transcription to finish." }
-        if isRunningAuxiliaryEngine { return "Wait for the second opinion or segment re-run to finish." }
-        if isDictationActive() { return "Wait for Quick Dictation to finish." }
-        if isMicrophoneBusy { return "Wait for the current recording to finish." }
-        if isImporting { return "Wait for the import to finish." }
-        return nil
+        installBlockedReason(for: .whisper)
     }
 
     /// Wires the reverse of dictation's own meeting-active guard: lets `startRecording()` refuse to
@@ -1289,6 +1288,22 @@ final class AppModel: ObservableObject {
         try await AppModel.spawnDiarizationInstaller(
             scriptURL: scriptURL, runtimeDirectory: runtimeDirectory
         )
+    }
+
+    /// Finds a bundled installer script by resource name (F567). A seam so a headless test can hand
+    /// an install a stub script. The default deliberately has no checkout fallback: in a test binary
+    /// that fallback would find the REAL installers and run them against the real Application
+    /// Support runtime.
+    var installerScriptURL: @Sendable (String) -> URL? = {
+        Bundle.main.url(forResource: $0, withExtension: "sh")
+    }
+
+    /// Runs one installer job for Local Whisper, Qwen3-ASR or the local summarizer (F567). Defaults
+    /// to the real runner; a test rewrites the job onto a temp runtime and runs that for real.
+    /// Speaker analysis keeps its own `runDiarizationInstaller` seam (F219), whose default calls the
+    /// same runner.
+    var runInstallerJob: @Sendable (InstallerJob) async throws -> Void = { job in
+        try await AppModel.runInstallerScript(job)
     }
 
     /// Runs the speaker-analysis installer's recovery-only reclaim over a runtime directory (restores
@@ -3046,30 +3061,30 @@ final class AppModel: ObservableObject {
         // now, and installing atop it can move or delete the venv a live process is using (F140's
         // guarantee, which `installQwenASR` already carried).
         guard recognitionRuntimeInstallBlockedReason == nil else { return }
-        guard let scriptURL = Bundle.main.url(
-            forResource: "setup-local-whisper",
-            withExtension: "sh"
-        ) else {
+        guard let scriptURL = installerScriptURL("setup-local-whisper") else {
             alertMessage = "The local Whisper installer is missing. Rebuild the app and try again."
             return
         }
         isInstallingRuntime = true
         installationMessage = "Installing FFmpeg and local Whisper…"
         let runtimeDirectory = LocalWhisperRuntime.managedDirectory()
+        let job = InstallerJob(
+            component: .whisper,
+            scriptURL: scriptURL,
+            arguments: [runtimeDirectory.path],
+            logURL: runtimeDirectory.appendingPathComponent("install.log")
+        )
+        let run = runInstallerJob
+        let wasInstalled = isRuntimeInstalled
         Task {
-            do {
-                try await runInstaller(
-                    scriptURL: scriptURL,
-                    runtimeDirectory: runtimeDirectory
-                )
-                refreshRuntime()
-                if isRuntimeInstalled {
-                    installationMessage = "Local Whisper is ready. The selected model downloads once, when first used."
-                } else {
-                    throw LocalWhisperError.runtimeNotInstalled
-                }
-            } catch {
-                installationMessage = "Installation failed."
+            let outcome = await performInstall(.whisper, wasInstalled: wasInstalled, isInstalled: { $0.isRuntimeInstalled }) {
+                try await run(job)
+            }
+            switch outcome {
+            case .installed:
+                installationMessage = "Local Whisper is ready. The selected model downloads once, when first used."
+            case let .failed(error):
+                installationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
             }
             isInstallingRuntime = false
@@ -3083,29 +3098,30 @@ final class AppModel: ObservableObject {
             alertMessage = "Qwen3-ASR requires an Apple-silicon Mac. Whisper remains available on Intel Macs."
             return
         }
-        guard let scriptURL = Bundle.main.url(
-            forResource: "setup-qwen-asr",
-            withExtension: "sh"
-        ) else {
+        guard let scriptURL = installerScriptURL("setup-qwen-asr") else {
             alertMessage = "The Qwen3-ASR installer is missing. Rebuild the app and try again."
             return
         }
         isInstallingQwenRuntime = true
         qwenInstallationMessage = "Installing Qwen3-ASR and its timestamp model…"
+        let runtimeDirectory = QwenASRRuntime.managedDirectory()
+        let job = InstallerJob(
+            component: .qwen,
+            scriptURL: scriptURL,
+            arguments: [runtimeDirectory.path],
+            logURL: runtimeDirectory.deletingLastPathComponent().appendingPathComponent("qwen-install.log")
+        )
+        let run = runInstallerJob
+        let wasInstalled = isQwenInstalled
         Task {
-            do {
-                try await runQwenInstaller(
-                    scriptURL: scriptURL,
-                    runtimeDirectory: QwenASRRuntime.managedDirectory()
-                )
-                refreshRuntime()
-                if isQwenInstalled {
-                    qwenInstallationMessage = "Qwen3-ASR is ready for local transcription."
-                } else {
-                    throw QwenASRError.runtimeNotInstalled
-                }
-            } catch {
-                qwenInstallationMessage = "Installation failed. The previous runtime was preserved."
+            let outcome = await performInstall(.qwen, wasInstalled: wasInstalled, isInstalled: { $0.isQwenInstalled }) {
+                try await run(job)
+            }
+            switch outcome {
+            case .installed:
+                qwenInstallationMessage = "Qwen3-ASR is ready for local transcription."
+            case let .failed(error):
+                qwenInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
             }
             isInstallingQwenRuntime = false
@@ -3116,43 +3132,41 @@ final class AppModel: ObservableObject {
     /// `installQwenASR`: resolve the bundled installer, run it off-actor exporting the chosen model
     /// repository, then refresh and report. The previous model is preserved on failure.
     func installSummarizer() {
-        guard !isInstallingAnyRuntime,
-              !isMicrophoneBusy,
-              !isImporting,
-              !hasActiveTranscription,
-              !isRunningAuxiliaryEngine,
-              !isDictationActive() else {
-            return
-        }
+        // F567: the same check the Settings button is disabled on — the button used to ignore a
+        // running second opinion, which this guard has always refused, so pressing it did nothing.
+        guard canInstall(.summarizer) else { return }
         guard SummarizerRuntime.isSupportedOnCurrentMac else {
             alertMessage = "Local summaries require an Apple-silicon Mac. Use Claude summaries on Intel Macs."
             return
         }
-        guard let scriptURL = Bundle.main.url(
-            forResource: "setup-local-summarizer",
-            withExtension: "sh"
-        ) else {
+        guard let scriptURL = installerScriptURL("setup-local-summarizer") else {
             alertMessage = "The local-summarizer installer is missing. Rebuild the app and try again."
             return
         }
         let repository = SummarizerRuntime.recommendedRepository()
         isInstallingSummarizer = true
         summarizerInstallationMessage = "Installing the local summarization model…"
+        let runtimeDirectory = SummarizerRuntime.managedDirectory()
+        var environment = ProcessInfo.processInfo.environment
+        environment["SUMMARIZER_REPOSITORY"] = repository
+        let job = InstallerJob(
+            component: .summarizer,
+            scriptURL: scriptURL,
+            arguments: [runtimeDirectory.path],
+            environment: environment,
+            logURL: runtimeDirectory.deletingLastPathComponent().appendingPathComponent("summarizer-install.log")
+        )
+        let run = runInstallerJob
+        let wasInstalled = isSummarizerInstalled
         Task {
-            do {
-                try await runSummarizerInstaller(
-                    scriptURL: scriptURL,
-                    runtimeDirectory: SummarizerRuntime.managedDirectory(),
-                    repository: repository
-                )
-                refreshRuntime()
-                if isSummarizerInstalled {
-                    summarizerInstallationMessage = "Local summaries are ready — private and offline."
-                } else {
-                    throw SummarizerError.modelNotInstalled
-                }
-            } catch {
-                summarizerInstallationMessage = "Installation failed. The previous model was preserved."
+            let outcome = await performInstall(.summarizer, wasInstalled: wasInstalled, isInstalled: { $0.isSummarizerInstalled }) {
+                try await run(job)
+            }
+            switch outcome {
+            case .installed:
+                summarizerInstallationMessage = "Local summaries are ready — private and offline."
+            case let .failed(error):
+                summarizerInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
             }
             isInstallingSummarizer = false
@@ -3173,15 +3187,11 @@ final class AppModel: ObservableObject {
     /// The guard also refuses while an analysis is running: the installer swaps the very binary that
     /// run is executing.
     func installSpeakerDiarization() {
-        guard !isInstallingAnyRuntime,
-              diarizationRunningID == nil, // never swap the runtime under a running analysis
-              !isMicrophoneBusy,
-              !isImporting,
-              !hasActiveTranscription,
-              !isRunningAuxiliaryEngine,
-              !isDictationActive() else {
-            return
-        }
+        // F567: the one check its Settings button shares. It includes a running analysis (never
+        // swap the runtime under one), which the button already covered through
+        // `isRunningAuxiliaryEngine`; what the button missed was a summarizer or search-model
+        // install, which this guard refuses through `isInstallingAnyRuntime`.
+        guard canInstall(.diarization) else { return }
         guard Self.diarizationIsSupportedOnCurrentMac else {
             alertMessage = "Speaker analysis requires an Apple-silicon Mac. Everything else in WhisperMeet is unchanged on Intel Macs."
             return
@@ -3195,20 +3205,19 @@ final class AppModel: ObservableObject {
         }
         let runtimeDirectory = diarizationRuntimeDirectory
         let install = runDiarizationInstaller
+        let wasInstalled = isDiarizationInstalled
         isInstallingDiarizationRuntime = true
         diarizationInstallationMessage = "Installing the speaker-analysis model…"
         Task {
-            do {
+            // Exit status is not evidence: `performInstall` asks the filesystem.
+            let outcome = await performInstall(.diarization, wasInstalled: wasInstalled, isInstalled: { $0.isDiarizationInstalled }) {
                 try await install(scriptURL, runtimeDirectory)
-                // Exit status is not evidence. Ask the filesystem.
-                refreshRuntime()
-                if isDiarizationInstalled {
-                    diarizationInstallationMessage = "Speaker analysis is ready — it runs entirely on this Mac."
-                } else {
-                    throw LocalDiarizationError.runtimeNotInstalled
-                }
-            } catch {
-                diarizationInstallationMessage = "Installation failed. The previous model was preserved."
+            }
+            switch outcome {
+            case .installed:
+                diarizationInstallationMessage = "Speaker analysis is ready — it runs entirely on this Mac."
+            case let .failed(error):
+                diarizationInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
             }
             isInstallingDiarizationRuntime = false
@@ -5717,141 +5726,21 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func runInstaller(scriptURL: URL, runtimeDirectory: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            try FileManager.default.createDirectory(
-                at: runtimeDirectory,
-                withIntermediateDirectories: true
-            )
-            let logURL = runtimeDirectory.appendingPathComponent("install.log")
-            try Data().write(to: logURL, options: .atomic)
-            let handle = try FileHandle(forWritingTo: logURL)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            try? handle.close()
-            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-            guard process.terminationStatus == 0 else {
-                let tail = String(log.suffix(2_000))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw LocalWhisperError.processFailed(
-                    tail.isEmpty ? "The installer exited with status \(process.terminationStatus)." : tail
-                )
-            }
-        }.value
-    }
-
-    private func runQwenInstaller(scriptURL: URL, runtimeDirectory: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let parent = runtimeDirectory.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parent,
-                withIntermediateDirectories: true
-            )
-            let logURL = parent.appendingPathComponent("qwen-install.log")
-            try Data().write(to: logURL, options: .atomic)
-            let handle = try FileHandle(forWritingTo: logURL)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            try? handle.close()
-            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-            guard process.terminationStatus == 0 else {
-                let tail = String(log.suffix(2_000))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw QwenASRError.processFailed(
-                    tail.isEmpty
-                        ? "The installer exited with status \(process.terminationStatus)."
-                        : tail
-                )
-            }
-        }.value
-    }
-
-    /// Runs the bundled `setup-local-summarizer.sh`, exporting the RAM-chosen model repository so the
-    /// script downloads the matching pinned model. Mirrors `runQwenInstaller` (F164).
-    private func runSummarizerInstaller(
-        scriptURL: URL,
-        runtimeDirectory: URL,
-        repository: String
-    ) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let parent = runtimeDirectory.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parent,
-                withIntermediateDirectories: true
-            )
-            let logURL = parent.appendingPathComponent("summarizer-install.log")
-            try Data().write(to: logURL, options: .atomic)
-            let handle = try FileHandle(forWritingTo: logURL)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            var environment = ProcessInfo.processInfo.environment
-            environment["SUMMARIZER_REPOSITORY"] = repository
-            process.environment = environment
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            try? handle.close()
-            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-            guard process.terminationStatus == 0 else {
-                let tail = String(log.suffix(2_000))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw SummarizerError.helperFailed(
-                    tail.isEmpty
-                        ? "The installer exited with status \(process.terminationStatus)."
-                        : tail
-                )
-            }
-        }.value
-    }
-
     /// Runs the bundled `setup-speaker-diarization.sh` over the runtime directory, logging to
-    /// `diarization-install.log` beside the other runtimes' logs. Mirrors `runQwenInstaller` (F219);
-    /// a non-zero exit carries the log tail so the alert says what actually went wrong. Note that a
-    /// clean exit is still not proof of an install — `installSpeakerDiarization` re-probes the disk.
+    /// `diarization-install.log` beside the other runtimes' logs (F219). Since F567 this is the same
+    /// runner every installer uses, so a failure carries the script's own last line rather than a
+    /// fixed speaker-analysis message. A clean exit is still not proof of an install —
+    /// `installSpeakerDiarization` re-probes the disk.
     nonisolated static func spawnDiarizationInstaller(
         scriptURL: URL,
         runtimeDirectory: URL
     ) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let parent = runtimeDirectory.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parent,
-                withIntermediateDirectories: true
-            )
-            let logURL = parent.appendingPathComponent("diarization-install.log")
-            try Data().write(to: logURL, options: .atomic)
-            let handle = try FileHandle(forWritingTo: logURL)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            try? handle.close()
-            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-            guard process.terminationStatus == 0 else {
-                let tail = String(log.suffix(2_000))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw LocalDiarizationError.processFailed(
-                    tail.isEmpty
-                        ? "The installer exited with status \(process.terminationStatus)."
-                        : tail
-                )
-            }
-        }.value
+        try await runInstallerScript(InstallerJob(
+            component: .diarization,
+            scriptURL: scriptURL,
+            arguments: [runtimeDirectory.path],
+            logURL: runtimeDirectory.deletingLastPathComponent().appendingPathComponent("diarization-install.log")
+        ))
     }
 }
 
