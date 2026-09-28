@@ -55,9 +55,13 @@ func unknownHotkeyModeDecodesAsHoldOnTheSameKey() throws {
 @Test("The hotkey's bytes are unchanged for known modes, and the previous build reads them (F548)")
 func hotkeyWireShapeIsUnchangedForKnownModes() throws {
     let modes: [(DictationHotkey.Mode, PreF548Hotkey.Mode)] = [(.hold, .hold), (.toggle, .toggle)]
+    // `JSONEncoder` does not fix key order across encodes, so unsorted bytes differ run to run with
+    // nothing changed (F644: 3 failures in 8 runs). Sorting both makes the comparison about content.
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
     for (mode, previousMode) in modes {
-        let written = try JSONEncoder().encode(DictationHotkey(keyCode: 97, mode: mode))
-        let previouslyWritten = try JSONEncoder().encode(PreF548Hotkey(keyCode: 97, mode: previousMode))
+        let written = try encoder.encode(DictationHotkey(keyCode: 97, mode: mode))
+        let previouslyWritten = try encoder.encode(PreF548Hotkey(keyCode: 97, mode: previousMode))
         #expect(written == previouslyWritten)
         // The previous build reads what this one writes, and this one reads what it wrote.
         #expect(try JSONDecoder().decode(PreF548Hotkey.self, from: written) == PreF548Hotkey(keyCode: 97, mode: previousMode))
