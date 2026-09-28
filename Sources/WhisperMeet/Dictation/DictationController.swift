@@ -791,8 +791,8 @@ final class DictationController: ObservableObject {
             captureWatchdog.arm()
             // Where the key was pressed, which the paste is checked against (F445). Taken after the
             // microphone started: it asks the focused app over Accessibility, and a slow app must
-            // not clip the first word.
-            pressTarget = textInjector.target()
+            // not clip the first word. It also starts the off-main copy of the clipboard (F601).
+            pressTarget = textInjector.captureWillStart(autoPaste: autoPaste)
             log.notice("listening")
             return true
         } catch {
@@ -1045,6 +1045,8 @@ final class DictationController: ObservableObject {
     private func hideOverlay() {
         shownPhase = nil
         overlay.hide()
+        // A dictation that ended without a paste leaves its clipboard copy unused (F601).
+        textInjector.discardClipboardPrefetch()
     }
 
     private func fail(_ message: String) {

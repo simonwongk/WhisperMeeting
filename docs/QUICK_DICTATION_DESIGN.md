@@ -201,11 +201,16 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
   after setting the clipboard.
 - If `!AXIsProcessTrusted` → skip ⌘V, post a `UNUserNotification` ("Transcript copied — press ⌘V").
 - v1 left the transcript on the clipboard (matches "…or go to clipboard"). Since F425, rebuilt by
-  F516 on 2026-09-24: when a text field has focus, an auto-paste copies the user's clipboard at
-  paste time, writes the transcript marked transient (nspasteboard.org), pastes, and puts the copy
-  back 1.5 s later unless something else has written the clipboard. When no text field has focus
-  the transcript is still pasted but left on the clipboard as an ordinary copy — the user's rule:
-  only a dictation that went into no text field stays on the clipboard. Clipboard-only delivery
+  F516 on 2026-09-24: when a text field has focus, an auto-paste copies the user's clipboard,
+  writes the transcript marked transient (nspasteboard.org), pastes, and puts the copy back 1.5 s
+  later unless something else has written the clipboard. The copy is the clipboard as it was at
+  paste time: since F601 it is read off the main thread when the dictation starts, capped at
+  32 MiB, and used only if the clipboard's `changeCount` has not moved; otherwise it is read again
+  at paste time. (A lazily provided 12 MP image took 2.5 s to read, measured 2026-09-28.) A focused
+  element Accessibility reports as read-only — value and selected text both unsettable — is not a
+  text field (F601). When no text field has focus the transcript is still pasted but left on the
+  clipboard as an ordinary copy — the user's rule: only a dictation that went into no text field
+  stays on the clipboard. Clipboard-only delivery
   leaves it there because that is the delivery. Why paste rather than an Accessibility write or
   synthesized typing (both clipboard-free) is in `TextInjector`'s doc comment: the first fails
   silently in Chromium/Electron, the second collides with the Pinyin input method, and Wispr Flow,
