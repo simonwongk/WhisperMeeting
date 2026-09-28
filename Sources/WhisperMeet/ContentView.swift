@@ -1763,9 +1763,17 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Button(capturingKey ? "Press a key…" : "Change") { toggleKeyCapture() }
                 }
-                Text("Hold this key to talk. A Command/Control key or an F-key works best — they don't type text while held.")
+                Text(triggerKeyHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let shortcut = DictationKeyName.systemShortcut(for: dictation.hotkey.keyCode) {
+                    Label(
+                        "macOS uses \(DictationKeyName.display(for: dictation.hotkey.keyCode)) to \(shortcut), and may still do that when you dictate with it. Choose another key, or turn that shortcut off in System Settings › Keyboard › Keyboard Shortcuts.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
                 if let keyCaptureHint {
                     Text(keyCaptureHint).font(.caption).foregroundStyle(.orange)
                 }
@@ -2043,6 +2051,19 @@ struct SettingsView: View {
         panel.message = "Choose one dated backup folder inside “\(BackupCoordinator.managedSubfolder)”. Nothing is written until you review what the restore would do."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.requestLibraryRestore(from: url) }
+    }
+
+    /// The trigger row's caption (F547). It used to say an F-key or ⌘/⌃ "don't type text while
+    /// held", which was true of text and false of the app in front: an F-key reached it with every
+    /// autorepeat. What reaches the app now depends on the kind of key.
+    private var triggerKeyHint: String {
+        let use = dictation.hotkey.mode == .hold
+            ? "Hold this key to talk."
+            : "Press this key to start dictating, and again to stop."
+        if DictationKeyName.functionKeyCodes.contains(dictation.hotkey.keyCode) {
+            return use + " While Quick Dictation is on, the app you are typing in does not receive it, unless ⌘ ⌃ ⌥ or ⇧ is held with it."
+        }
+        return use + " A modifier key still reaches the app you are typing in; using it in a shortcut cancels the dictation. An F-key is kept from that app instead."
     }
 
     /// "Change": the next key pressed in this window becomes the trigger, by

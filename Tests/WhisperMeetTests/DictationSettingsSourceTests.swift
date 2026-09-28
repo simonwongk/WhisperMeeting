@@ -42,6 +42,20 @@ func triggerCaptureIsScopedAndCancellable() throws {
     #expect(capture.contains("return event"), "the capture swallows every key")
 }
 
+@Test("The trigger row no longer promises F-keys type nothing, and warns about keys macOS uses (F547)")
+func triggerRowDescribesWhatTheKeyReallyDoes() throws {
+    // Literals kept: the claim being removed is copy.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(
+        !source.contains("they don’t type text while held") && !source.contains("they don't type text while held"),
+        "Settings still says an F-key does not reach the app in front"
+    )
+    #expect(
+        source.contains("DictationKeyName.systemShortcut(for: dictation.hotkey.keyCode)"),
+        "the trigger row does not warn about an F-key macOS already uses"
+    )
+}
+
 @Test("Settings' Grant… reaches the controller's retrying request, not the bare system prompt (F523)")
 func grantButtonReachesTheRetryingRequest() throws {
     let source = try contentViewSource()

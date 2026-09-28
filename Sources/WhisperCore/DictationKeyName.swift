@@ -31,9 +31,12 @@ public enum DictationKeyName {
         122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113
     ]
 
-    /// Keycodes suitable as a push-to-talk trigger — modifiers and function keys, which don't emit
-    /// text and are recognized by HotkeyMonitor. (Typing keys would both type and trigger; other
-    /// modifiers like Caps Lock aren't detected.)
+    /// Keycodes suitable as a push-to-talk trigger: keys that insert no text of their own, which
+    /// HotkeyMonitor recognizes. (Typing keys would both type and trigger; other modifiers like Caps
+    /// Lock aren't detected.) Inserting no text is not the same as the app in front ignoring them: a
+    /// modifier trigger still reaches it, and an F-key trigger is kept from it only because
+    /// HotkeyMonitor holds it back while Quick Dictation is on (F547). Before that, an F-key held to
+    /// talk in Terminal typed an escape sequence per autorepeat.
     public static let triggerCandidates: Set<UInt16> = modifierKeyCodes.union(functionKeyCodes)
     public static func isTriggerCandidate(_ keyCode: UInt16) -> Bool { triggerCandidates.contains(keyCode) }
 
@@ -62,6 +65,19 @@ public enum DictationKeyName {
         case 58, 61: (0x0008_0000, 0x0000_0060)  // Option
         case 54, 55: (0x0010_0000, 0x0000_0018)  // Command
         default: (0, 0)
+        }
+    }
+
+    /// What macOS does with an F-key it binds without a modifier by default, as System Settings ›
+    /// Keyboard › Keyboard Shortcuts names it; nil for every other key (F547). A trigger on one of
+    /// these may do that as well, depending on whether the system acts on the key before the
+    /// trigger's tap does, which is not documented; Settings says so rather than promise either way.
+    public static func systemShortcut(for keyCode: UInt16) -> String? {
+        switch keyCode {
+        case 103: "Show Desktop"                 // F11, Mission Control
+        case 107: "decrease display brightness"  // F14, Display
+        case 113: "increase display brightness"  // F15, Display
+        default: nil
         }
     }
 }

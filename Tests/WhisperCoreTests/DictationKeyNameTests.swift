@@ -26,6 +26,16 @@ func keyNameUnmapped() {
     #expect(DictationKeyName.display(for: 0) == "Key #0")
 }
 
+@Test("F11, F14 and F15 are named as keys macOS binds by default; F5 and modifiers are not (F547)")
+func systemBoundFKeysAreNamed() {
+    for key: UInt16 in [103, 107, 113] {
+        #expect(DictationKeyName.systemShortcut(for: key) != nil, "F-key \(key) is not flagged")
+    }
+    for key: UInt16 in [96, 97, 61, 55] {
+        #expect(DictationKeyName.systemShortcut(for: key) == nil)
+    }
+}
+
 @Test("trigger candidates accept modifiers and F-keys, reject letters and Caps Lock")
 func keyNameTriggerCandidates() {
     #expect(DictationKeyName.isTriggerCandidate(61) == true)
