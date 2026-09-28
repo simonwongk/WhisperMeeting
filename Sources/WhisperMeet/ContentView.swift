@@ -991,9 +991,10 @@ private struct RecordMeetingView: View {
             Task { await model.startRecording() }
         case .recording:
             Task {
+                // `stopRecording` clears the typed title itself once it saves (F477). Clearing it
+                // here as well would hide a save path there that forgot to (F641).
                 if let id = await model.stopRecording(title: model.recordingTitle) {
                     onMeetingSaved(id)
-                    model.recordingTitle = ""
                 }
             }
         case .starting, .stopping:
