@@ -56,6 +56,38 @@ func triggerRowDescribesWhatTheKeyReallyDoes() throws {
     )
 }
 
+// F537 part 2 — the review sheets had no Return or Escape: no `.cancelAction` anywhere in the app, and
+// no `.defaultAction` on these sheets' primary buttons, so without Full Keyboard Access a keyboard
+// user could neither confirm nor leave them.
+
+@Test("Suggested Vocabulary and Correct toward Vocabulary answer Return and Escape (F537)")
+func reviewSheetsAnswerReturnAndEscape() throws {
+    let source = try contentViewSource()
+    for sheet in ["VocabularySuggestionSheet", "GlossarySuggestionSheet"] {
+        let sheetBody = body(following: "private struct \(sheet): View", in: source)
+        #expect(sheetBody.contains(".keyboardShortcut(.cancelAction)"), "\(sheet): Escape does not cancel")
+        #expect(sheetBody.contains(".keyboardShortcut(.defaultAction)"), "\(sheet): Return does not confirm")
+    }
+}
+
+@Test("Remove Lines answers Escape, and Return never removes lines (F537)")
+func lineRemovalSheetCancelsButNeverDefaultsToRemoving() throws {
+    let sheetBody = body(following: "private struct LanguageLineRemovalSheet: View", in: try contentViewSource())
+    #expect(sheetBody.contains(".keyboardShortcut(.cancelAction)"), "Escape does not cancel")
+    // Its primary action is destructive, and the HIG keeps a destructive action off Return.
+    #expect(!sheetBody.contains(".defaultAction"), "Return removes lines")
+}
+
+@Test("Add from a Link: Escape stops or cancels, and Return in the link field is the field's own submit (F537)")
+func linkImportSheetAnswersReturnAndEscape() throws {
+    let sheetBody = body(following: "private struct LinkImportSheet: View", in: try contentViewSource())
+    #expect(sheetBody.contains(".keyboardShortcut(.cancelAction)"), "Escape neither stops the download nor cancels")
+    // A default button would also take the Return typed in the link field, so it is the default
+    // only while that field does not have focus.
+    #expect(sheetBody.contains("@FocusState"), "the sheet cannot tell when the link field has focus")
+    #expect(sheetBody.contains("? nil : .defaultAction)"), "Return fires Download while typing in the field")
+}
+
 @Test("Settings' Grant… reaches the controller's retrying request, not the bare system prompt (F523)")
 func grantButtonReachesTheRetryingRequest() throws {
     let source = try contentViewSource()

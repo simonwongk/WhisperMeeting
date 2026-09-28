@@ -120,6 +120,9 @@ final class DictationController: ObservableObject {
     private var vocabularyProvider: () -> [String] = { [] }
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
+    /// A busy flash is showing and has been announced (F537): its hide is still pending. Derived,
+    /// so every path that cancels the flash also ends it.
+    private var isFlashingBusy: Bool { busyHideWorkItem.map { !$0.isCancelled } ?? false }
     /// What the pill is saying, apart from a busy flash; nil while it is hidden. The flash puts this
     /// back when it ends, so refusing a press never hides a dictation that is still in flight (F443).
     private var shownPhase: DictationOverlay.Phase?
@@ -1108,22 +1111,32 @@ final class DictationController: ObservableObject {
     /// nothing was showing — so a press during "Transcribing…" cannot leave that dictation without
     /// its pill. It uses its OWN work item so it can never cancel a pending session-resetting
     /// dismiss (which would leave the session wedged outside .idle).
+    ///
+    /// Announced once per flash (F537): more presses while it shows extend it silently. Putting the
+    /// pill back afterwards is `overlay.show`, not `showPhase`, so whatever it restores is not
+    /// announced a second time.
     private func flashBusy() {
+        if !isFlashingBusy, let text = Self.announcement(for: .busy) { announce(text) }
         overlay.show(.busy)
         busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            // Only the current flash's item runs: the next flash cancels this one before it can.
+            self.busyHideWorkItem = nil
             if let phase = self.shownPhase { self.overlay.show(phase) } else { self.overlay.hide() }
         }
         busyHideWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
     }
 
-    private func showPhase(_ phase: DictationOverlay.Phase) {
+    /// Shows a phase in the pill and, when it is an outcome, announces it (F537): the pill is a
+    /// panel that never becomes key and hides within two seconds, which VoiceOver does not read.
+    private func showPhase(_ phase: DictationOverlay.Phase, detail: String? = nil) {
         // The held text lives exactly as long as a pill that offers Copy (F586).
         if !phase.offersCopy { heldSecureDictation = nil }
         shownPhase = phase
         overlay.show(phase)
+        if let text = Self.announcement(for: phase, detail: detail) { announce(text) }
     }
 
     private func showSecureCopyPill(_ phase: DictationOverlay.Phase, holding text: String) {
@@ -1152,7 +1165,7 @@ final class DictationController: ObservableObject {
 
     private func fail(_ message: String) {
         status = .error(message)
-        showPhase(.error)
+        showPhase(.error, detail: message)
         logStore.record(text: "", outcome: .failed(message))
         scheduleDismiss(after: 1.6)
     }
@@ -1193,6 +1206,45 @@ final class DictationController: ObservableObject {
     /// raises an NSException in headless test processes — the F200 wiring tests are the first to
     /// drive a clipboard delivery to completion and hit exactly that.
     var clipboardNotifier: () -> Void = DictationController.postClipboardNotification
+
+    /// Speaks a dictation outcome to VoiceOver and other assistive apps (F537). Injectable, as
+    /// `clipboardNotifier` is: tests record what would be said.
+    var announce: (String) -> Void = DictationController.postAccessibilityAnnouncement
+
+    /// NSAccessibilityConstants.h: the announcement notification "should be posted for the
+    /// application element" and should carry a priority. High, because an outcome is only worth
+    /// hearing as it happens. No application object (a headless process), nothing to post to.
+    private static func postAccessibilityAnnouncement(_ text: String) {
+        guard let app = NSApp else { return }
+        NSAccessibility.post(
+            element: app,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: text,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
+    }
+
+    /// What is announced for a pill phase (F537), or nil for progress: "Listening…" would be
+    /// spoken into the microphone it names, and "Transcribing…" is followed within seconds by an
+    /// outcome that is. `detail` is a failure's reason, which the pill itself never shows.
+    static func announcement(for phase: DictationOverlay.Phase, detail: String? = nil) -> String? {
+        switch phase {
+        case .busy: "Dictation is busy. That press was not used."
+        case .error: ["Dictation failed.", detail].compactMap { $0 }.joined(separator: " ")
+        case .empty: "Dictation didn’t catch that."
+        case .done: "Dictation pasted."
+        case .pastedUnconfirmed: "Dictation pasted. It is also on the clipboard."
+        case .copied: "Dictation copied to the clipboard."
+        case .appChanged: "Dictation copied to the clipboard, because the app in front changed."
+        // Not on the clipboard since F586: the pill offers Copy instead.
+        case .secureInput: "Dictation not pasted, because a secure field has focus. Use Copy to copy it."
+        case let .secureKeyboardEntry(app):
+            "Dictation not pasted, because Secure Keyboard Entry is on in \(app). Use Copy to copy it."
+        case .listening, .transcribing, .refining: nil
+        }
+    }
 
     private static func postClipboardNotification() {
         let content = UNMutableNotificationContent()

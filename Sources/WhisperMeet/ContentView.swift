@@ -2122,6 +2122,9 @@ private struct LinkImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var link = ""
     @State private var isWorking = false
+    /// While the link field has focus its own submit answers Return; the Download button is the
+    /// default only otherwise, so a Return typed in the field is not also a click (F537).
+    @FocusState private var linkFieldFocused: Bool
     /// The in-flight import, held so Cancel actually stops the download instead of only closing the
     /// sheet and leaving the fetch (and the isImporting latch) running invisibly.
     @State private var importTask: Task<Void, Never>?
@@ -2144,6 +2147,7 @@ private struct LinkImportSheet: View {
                 TextField("https://…", text: $link)
                     .textFieldStyle(.roundedBorder)
                     .disabled(isWorking)
+                    .focused($linkFieldFocused)
                     .onSubmit { start(confirmed: false) }
 
                 if let progress = model.mediaDownloadProgress {
@@ -2177,9 +2181,12 @@ private struct LinkImportSheet: View {
 
             HStack {
                 Spacer()
+                // F537: Escape stops a download in progress, through the same `cancel()`.
                 Button(isWorking ? "Stop" : "Cancel") { cancel() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Download and Transcribe") { start(confirmed: false) }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(linkFieldFocused ? nil : .defaultAction)
                     .disabled(trimmedLink.isEmpty || isWorking)
             }
             .padding()
@@ -4264,12 +4271,15 @@ private struct VocabularySuggestionSheet: View {
                     selected = selected.count == suggestions.count ? [] : Set(suggestions)
                 }
                 Spacer()
+                // F537: Escape and Return, which these sheets had neither of.
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Add \(selected.count) Term\(selected.count == 1 ? "" : "s")") {
                     onAdd(suggestions.filter(selected.contains))
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
                 .disabled(selected.isEmpty)
             }
             .padding()
@@ -4461,7 +4471,10 @@ private struct LanguageLineRemovalSheet: View {
                     selected = selected.count == offer.lines.count ? [] : Set(offer.lines.map(\.index))
                 }
                 Spacer()
+                // F537: Escape cancels. No Return: the action is destructive, and the HIG keeps a
+                // destructive button from being the default.
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Remove \(selected.count) Line\(selected.count == 1 ? "" : "s")", role: .destructive) {
                     onRemove(selected.sorted())
                     dismiss()
@@ -4535,12 +4548,15 @@ private struct GlossarySuggestionSheet: View {
                     selected = selected.count == proposals.count ? [] : Set(proposals.indices)
                 }
                 Spacer()
+                // F537: Escape and Return.
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Apply \(selected.count) Correction\(selected.count == 1 ? "" : "s")") {
                     onApply(selected.sorted().map { proposals[$0] })
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
                 .disabled(selected.isEmpty)
             }
             .padding()
