@@ -2886,8 +2886,12 @@ private struct TranscriptDetailView: View {
     // F424: the lines Remove Lines in Another Language offers, while its confirmation sheet is up.
     @State private var languageRemovalOffer: LanguageRemovalOffer?
     @Environment(\.undoManager) private var undoManager
-    @State private var notesDraft = ""
+    /// F564: this window's notes, and whether the user typed them — so a second window on the same
+    /// meeting follows notes typed in the first instead of writing its stale copy over them.
+    @State private var notesDraft = SharedFieldDraft(stored: "")
     @State private var notesLoadedFor: UUID?
+    @FocusState private var notesFocused: Bool
+    @Environment(\.appearsActive) private var windowIsActive
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
 
     /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
@@ -2895,15 +2899,21 @@ private struct TranscriptDetailView: View {
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Notes").font(.headline)
-            TextEditor(text: $notesDraft)
+            TextEditor(text: Binding(
+                get: { notesDraft.text },
+                // Debounced write (F133): coalesce the per-keystroke whole-index write. Only
+                // typing reaches this setter, so only typing is written (F564).
+                set: { MeetingFieldSync.typeNotes($0, into: &notesDraft, store: store, meetingID: meetingID) }
+            ))
                 .font(.body)
                 .frame(minHeight: 72)
                 .padding(6)
+                .focused($notesFocused)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
                 // An empty scratchpad says what it is for (F171): the hint sits where typed text
                 // will land and never intercepts clicks.
                 .overlay(alignment: .topLeading) {
-                    if notesDraft.isEmpty {
+                    if notesDraft.text.isEmpty {
                         Text("Add agenda, attendees, or follow-ups — notes stay on this Mac.")
                             .font(.body)
                             .foregroundStyle(.tertiary)
@@ -2912,9 +2922,15 @@ private struct TranscriptDetailView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                // Debounced write (F133): coalesce the per-keystroke whole-index write.
-                .onChange(of: notesDraft) { _, newValue in
-                    store.editNotes(id: meetingID, text: newValue)
+                // Notes typed in another window on this meeting: followed unless the user is
+                // typing here, and caught up when they stop.
+                .onChange(of: store.meeting(id: meetingID)?.notes) { _, notes in
+                    notesDraft.libraryChanged(to: notes ?? "", isEditingHere: notesFocused && windowIsActive)
+                }
+                .onChange(of: notesFocused && windowIsActive) { _, isEditing in
+                    if !isEditing {
+                        notesDraft.libraryChanged(to: store.meeting(id: meetingID)?.notes ?? "", isEditingHere: false)
+                    }
                 }
         }
         .confirmationDialog(
@@ -2937,7 +2953,7 @@ private struct TranscriptDetailView: View {
         }
         .onAppear {
             if notesLoadedFor != meetingID {
-                notesDraft = store.meeting(id: meetingID)?.notes ?? ""
+                notesDraft = SharedFieldDraft(stored: store.meeting(id: meetingID)?.notes ?? "")
                 notesLoadedFor = meetingID
             }
         }
@@ -4745,36 +4761,42 @@ private struct SecondOpinionSheet: View {
 private struct EditableMeetingTitle: View {
     @ObservedObject var store: MeetingStore
     let meetingID: UUID
-    @State private var text = ""
-    @State private var seeded = false
+    /// F564: what this window's field holds, and whether the user typed it. The commit used to write
+    /// whenever the text differed from the library, which is also true of an untouched field in a
+    /// second window after a rename in the first — so closing that window undid the rename.
+    @State private var draft = SharedFieldDraft(stored: "")
     @FocusState private var focused: Bool
+    /// A field focused in a window that is not the key one is not being typed in.
+    @Environment(\.appearsActive) private var windowIsActive
 
     var body: some View {
-        TextField("Meeting title", text: $text)
+        TextField("Meeting title", text: Binding(
+            get: { draft.text },
+            // Only typing reaches the setter, so only typing counts as an edit.
+            set: { draft.userTyped($0) }
+        ))
             .font(.largeTitle.bold())
             .textFieldStyle(.plain)
             .focused($focused)
             .onAppear {
-                text = store.meeting(id: meetingID)?.title ?? ""
-                seeded = true
+                draft = SharedFieldDraft(stored: store.meeting(id: meetingID)?.title ?? "")
             }
             .onSubmit(commit)
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commit() }
             }
+            // A rename in another window: follow it unless this field holds typing of its own.
+            .onChange(of: store.meeting(id: meetingID)?.title) { _, title in
+                draft.libraryChanged(to: title ?? "", isEditingHere: focused && windowIsActive)
+            }
             .onDisappear(perform: commit)
     }
 
     private func commit() {
-        guard seeded else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            text = store.meeting(id: meetingID)?.title ?? ""
-            return
-        }
-        if trimmed != store.meeting(id: meetingID)?.title {
-            store.update(id: meetingID) { $0.title = trimmed }
-        }
+        MeetingFieldSync.commitTitle(&draft, store: store, meetingID: meetingID)
+        // The commit ends this field's edit, so a rename that arrived while the user was in the
+        // field is shown now — unless the write was refused, which keeps their typing instead.
+        draft.libraryChanged(to: store.meeting(id: meetingID)?.title ?? "", isEditingHere: false)
     }
 }
 
