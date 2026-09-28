@@ -81,6 +81,23 @@ else
 fi
 for abandoned_staging in "$runtime_directory"/.venv-install-*(N); do rm -rf "$abandoned_staging"; done
 
+# F545: which optional tools the WORKING install has, recorded before anything is staged. mlx-whisper
+# and yt-dlp are installed best-effort below, so on a flaky connection a repair used to build a venv
+# without them, swap it in over the one that had them, delete that one, and report "ready" — a
+# repair that removed Quick Dictation and link import. Only a working install is protected: keeping
+# a venv whose `whisper` does not run, to save an optional tool, would trade the meetings runtime for
+# it. (Neither probe joins venv_works — see the yt-dlp note below for why that would be wrong.)
+live_has_mlx_whisper=0
+live_has_yt_dlp=0
+if venv_works "$venv_target"; then
+  if "$venv_target/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
+    live_has_mlx_whisper=1
+  fi
+  if [[ -x "$venv_target/bin/yt-dlp" ]] && "$venv_target/bin/yt-dlp" --version >/dev/null 2>&1; then
+    live_has_yt_dlp=1
+  fi
+fi
+
 if [[ -x /opt/homebrew/bin/brew ]]; then
   brew_executable=/opt/homebrew/bin/brew
 elif [[ -x /usr/local/bin/brew ]]; then
@@ -217,6 +234,24 @@ fi
 # trigger a rollback to a backup that also lacks it.
 if ! "$staging_venv/bin/python" -m pip install --upgrade yt-dlp; then
   print -u2 "Note: yt-dlp install failed — importing audio from a link is unavailable (meetings unaffected)."
+fi
+
+# F545: never swap a working optional tool away. If the live install had one and the staging venv
+# could not get it, stop here: the live venv has not been touched yet, the EXIT trap removes the
+# staging venv, and the app reports this line — the script's last — as the reason, not "ready".
+# Checked at the staging path, before the shebang rewrite below points bin/yt-dlp at the live one.
+lost_tools=()
+if (( live_has_mlx_whisper )) \
+   && ! "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
+  lost_tools+=("Quick Dictation (mlx-whisper)")
+fi
+if (( live_has_yt_dlp )) \
+   && ! { [[ -x "$staging_venv/bin/yt-dlp" ]] && "$staging_venv/bin/yt-dlp" --version >/dev/null 2>&1; }; then
+  lost_tools+=("import from a link (yt-dlp)")
+fi
+if (( ${#lost_tools} > 0 )); then
+  print -u2 "Local Whisper was not updated because ${(j: and :)lost_tools} could not be reinstalled; the working installation was kept unchanged. Check your connection and try Repair or Update again."
+  exit 1
 fi
 
 # A Python venv is NOT relocatable: its console-script shebangs (e.g. `venv/bin/whisper` — the exact
