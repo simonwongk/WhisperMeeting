@@ -85,10 +85,13 @@ func aRivalCommitIsRefusedAndTheBodyPreserved() throws {
     store.upsert(meeting("our edit"))
 
     // Refused, and SAID SO. Today the most destructive save failure in the app produces no
-    // user-visible message at all.
-    #expect(store.writeConflict != nil, "a lost race was not reported to the user")
-    #expect(store.unsavedChanges, "the user's unsaved edit was not flagged")
-    #expect(store.storageErrorMessage != nil)
+    // user-visible message at all. Since F642 a lost race on this synchronous save is said the way
+    // F433 says one on the debounced path: the library is re-read and the edit is offered back
+    // beside the message, rather than left in a generic alert over a session that can no longer
+    // save.
+    let offer = try #require(store.conflictOffer, "a lost race was not reported to the user")
+    #expect(offer.message.contains("Another copy of WhisperMeet"))
+    #expect(offer.delta.contains { $0.title == "our edit" }, "the user's unsaved edit was not kept")
 
     // Health is UNTOUCHED. This is the load-bearing part: a mid-session degrade would make
     // `stopRecording`'s upsert silently return and lose a finished meeting.
@@ -123,11 +126,12 @@ func aRecoveredSaveClearsTheConflictReport() throws {
     let store = MeetingStore(rootDirectory: root)
     try foreignWriterCommits(["rival"], in: root)
     store.upsert(meeting("refused"))
-    #expect(store.writeConflict != nil)
+    // Since F642 the store re-reads the library itself on a lost race and offers the edit back.
+    #expect(store.conflictOffer != nil)
 
-    // The store re-reads the library and tries again. A conflict is a transient race, not a
-    // terminal state — nothing here is read-only, so the next save must be able to succeed.
-    store.reloadForConflictRecovery()
+    // The user settles the offer and tries again. A conflict is a transient race, not a terminal
+    // state — nothing here is read-only, so the next save must be able to succeed.
+    store.discardConflictedEdit()
     store.upsert(meeting("accepted"))
 
     #expect(store.writeConflict == nil, "the conflict report outlived the conflict")
@@ -170,16 +174,17 @@ func aSaveFailureMessageSurvivesTheNextStep() throws {
     try foreignWriterCommits(["rival"], in: root)
 
     // `delete` used to end with an unconditional `storageErrorMessage = nil`, so the most
-    // destructive save failure in the app cleared its own explanation on the way out.
+    // destructive save failure in the app cleared its own explanation on the way out. Since F642 a
+    // lost race's explanation is the conflict offer's message rather than the alert's, and the
+    // property is the same: the next step must not erase it.
     store.upsert(meeting("will be refused"))
-    let message = try #require(store.storageErrorMessage)
+    let message = try #require(store.conflictOffer?.message)
     #expect(store.meetings.isEmpty == false)
 
-    // A second refused mutation must not clear it either.
+    // A second mutation — refused while the offer stands (F619) — must not clear it either.
     store.upsert(meeting("also refused"))
-    #expect(store.storageErrorMessage != nil, "the failure explanation was cleared")
-    #expect(store.storageErrorMessage?.isEmpty == false)
-    _ = message
+    #expect(store.conflictOffer?.message == message, "the failure explanation was cleared")
+    #expect(!message.isEmpty)
 }
 
 // F190 Task 11 — the app-level restore. This is the one call standing between "the bytes survive on
