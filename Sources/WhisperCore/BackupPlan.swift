@@ -34,6 +34,27 @@ public enum BackupPlan {
             return BackupItem(file: file, action: .copy)
         }
     }
+
+    /// How many bytes this plan will actually need to WRITE, given whether the destination volume
+    /// supports hard links (F532).
+    ///
+    /// A `.copy` item always costs its full size — it is new or changed, so it is always written.
+    /// A `.skip` item costs nothing when hard links are supported: it becomes a link sharing the
+    /// previous generation's inode, using no additional space. But exFAT, FAT32, and most SMB
+    /// mounts refuse hard links outright, and on those volumes every `.skip` item falls back to an
+    /// independent verified copy — the same bytes on disk as a `.copy` item. A free-space check
+    /// that only ever counted `.copy` bytes would pass a run that then runs out of room midway
+    /// through what it thought were "free" skips.
+    public static func bytesNeeded(for plan: [BackupItem], hardLinksSupported: Bool) -> Int64 {
+        plan.reduce(Int64(0)) { partial, item in
+            switch item.action {
+            case .copy:
+                return partial + item.file.size
+            case .skip:
+                return partial + (hardLinksSupported ? 0 : item.file.size)
+            }
+        }
+    }
 }
 
 public struct BackupGeneration: Sendable, Equatable {

@@ -41,3 +41,21 @@ func backupVerification() {
     #expect(BackupVerification.succeeded(expectedHash: "abc", actualHash: "abc"))
     #expect(!BackupVerification.succeeded(expectedHash: "abc", actualHash: "xyz"))
 }
+
+// F532 — a `.skip` item costs 0 bytes only when hard links actually work at the destination.
+// exFAT/FAT/most SMB mounts refuse them, so every `.skip` there falls back to a full copy, and the
+// free-space check must budget for that BEFORE the run starts, not discover it mid-copy.
+@Test("bytesNeeded counts skip items as free only when hard links are supported (F532)")
+func bytesNeededAccountsForHardLinkFallback() {
+    let plan = [
+        BackupItem(file: BackupFile(relativePath: "a", size: 100, contentHash: "h-a"), action: .copy),
+        BackupItem(file: BackupFile(relativePath: "b", size: 200, contentHash: "h-b"), action: .skip),
+        BackupItem(file: BackupFile(relativePath: "c", size: 300, contentHash: "h-c"), action: .skip),
+    ]
+
+    // Hard links work (the ordinary case, e.g. APFS): skips are free.
+    #expect(BackupPlan.bytesNeeded(for: plan, hardLinksSupported: true) == 100)
+    // Hard links do not work (exFAT/FAT/most SMB): skips fall back to a real copy and cost their
+    // full size too.
+    #expect(BackupPlan.bytesNeeded(for: plan, hardLinksSupported: false) == 600)
+}
