@@ -78,9 +78,14 @@ Fallback / edge branches:
   ("Transcript copied — press ⌘V"). Pill shows "Copied to clipboard".
 - **Another app in front at delivery** than the one the key was pressed in → not pasted; text left on
   the clipboard, pill "Copied — app changed" (F445).
-- **Secure input** (a password field has focus, or secure keyboard entry is on) at the press or at
-  delivery → never pasted and never written to the dictation history; left on the clipboard marked
-  concealed, pill "Copied — secure input" (F445).
+- **Secure input** at the press or at delivery → never pasted and never written to the dictation
+  history; left on the clipboard marked concealed, pill "Copied — secure input" (F445). Secure means
+  a focused password field, or secure event input on with nothing to show the paste is safe. That
+  flag is system-wide, so since F585 it is weighed: the app in front when secure input came on (as
+  the window server names it) is never pasted into, and the pill says "Secure Keyboard Entry is on
+  in <app>"; another app is pasted into when Accessibility shows an ordinary text field focused
+  there, and otherwise not. So Terminal's Secure Keyboard Entry no longer stops dictation into
+  TextEdit.
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.

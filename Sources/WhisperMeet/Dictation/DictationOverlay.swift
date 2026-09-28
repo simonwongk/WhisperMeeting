@@ -18,6 +18,8 @@ final class DictationOverlay {
         case listening, transcribing, refining, done, copied, empty, error, busy
         /// Copied rather than pasted, and why (F445).
         case appChanged, secureInput
+        /// Not pasted because secure keyboard entry is on, naming the app it is on in (F585).
+        case secureKeyboardEntry(app: String)
     }
 
     private let model = PillModel()
@@ -121,7 +123,10 @@ private struct DictationPill: View {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white)
-                .lineLimit(1)
+                // Two lines, for a label that names an app (F585): "Secure Keyboard Entry is on in
+                // Terminal" measures 246 pt at this font against the 160 pt left beside the icon,
+                // and two 15.3 pt lines fit the 44 pt pill. Every other label is one line.
+                .lineLimit(2)
                 .contentTransition(.opacity)
             Spacer(minLength: 0)
             if model.phase == .listening {
@@ -151,7 +156,7 @@ private struct DictationPill: View {
         case .transcribing, .refining: ProgressView().controlSize(.small).tint(.white)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .copied, .appChanged: Image(systemName: "doc.on.clipboard").foregroundStyle(.white)
-        case .secureInput: Image(systemName: "lock.fill").foregroundStyle(.white)
+        case .secureInput, .secureKeyboardEntry: Image(systemName: "lock.fill").foregroundStyle(.white)
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
         case .error: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .busy: Image(systemName: "hourglass").foregroundStyle(.white)
@@ -167,6 +172,7 @@ private struct DictationPill: View {
         case .copied: "Copied to clipboard"
         case .appChanged: "Copied — app changed"
         case .secureInput: "Copied — secure input"
+        case let .secureKeyboardEntry(app): "Secure Keyboard Entry is on in \(app)"
         case .empty: "Didn’t catch that"
         case .error: "Dictation failed"
         case .busy: "Busy…"

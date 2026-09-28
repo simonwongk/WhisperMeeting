@@ -994,10 +994,11 @@ final class DictationController: ObservableObject {
             case .clipboard: showPhase(.copied); clipboardNotifier()
             case .appChanged: showPhase(.appChanged); clipboardNotifier()
             case .secureInput: showPhase(.secureInput); clipboardNotifier()
+            case let .secureKeyboardEntry(app): showPhase(.secureKeyboardEntry(app: app)); clipboardNotifier()
             }
             log.notice("delivered via \(String(describing: delivery), privacy: .public)")
             // Secure input means the words may be a password: kept out of the history file (F445).
-            if delivery != .secureInput {
+            if !delivery.isSecure {
                 logStore.record(
                     text: payload,
                     outcome: delivery == .pasted ? .pasted : .clipboard,

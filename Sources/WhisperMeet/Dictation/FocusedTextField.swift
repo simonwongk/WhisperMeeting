@@ -2,59 +2,170 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import CoreGraphics
 
 /// What has focus where a dictation is about to be pasted: taken when the key is pressed and again
 /// at delivery.
 ///
-/// `isTextField` (F516) decides one thing only: whether the paste's borrowed clipboard is given
-/// back. A dictation that went into a text field restores the user's clipboard; one that went
-/// nowhere is left on it, where the user will look for it. It never decides whether to paste — an
-/// app can hide its field from Accessibility, and a paste into nothing is harmless.
+/// `isTextField` (F516) decides whether the paste's borrowed clipboard is given back. A dictation
+/// that went into a text field restores the user's clipboard; one that went nowhere is left on it,
+/// where the user will look for it. It also decides, today, whether the delivery is reported as a
+/// paste or as a copy — pill, notification and history — which is wrong for a paste that was sent
+/// (F600). It does not decide whether to paste — an app can hide its field from Accessibility, and
+/// a paste into nothing is harmless — except as evidence about secure input: a focused ordinary
+/// text field is what lets a paste through while another app holds secure keyboard entry (F585).
 ///
 /// The app and the secure-input state (F445) do decide whether to paste, because pasting into a
 /// different app than the one the key was pressed in, or into a password field, is not harmless.
 enum FocusedTextField {
+    /// Why a dictation must not be pasted where the probe looked (F445, F585).
+    enum SecureInput: Equatable {
+        /// The focused element is a password field: its subrole is `AXSecureTextField`.
+        case passwordField
+        /// Secure event input is on and nothing showed it was safe to paste. `app` is the app the
+        /// window server names for it, when it names one.
+        case keyboardEntry(app: String?)
+    }
+
     struct Probe: Equatable {
         let isTextField: Bool
-        /// App and role, for the diagnostic log only ("com.apple.TextEdit AXTextArea").
+        /// App and role, and the secure-input reading when it is on, for the diagnostic log only
+        /// ("com.apple.TextEdit AXTextArea; secure input on, session names pid 412").
         let summary: String
         /// The frontmost app's process (F445), nil when there is none.
         var processIdentifier: pid_t? = nil
-        /// A password field has focus, or some process has secure keyboard entry on (F445).
-        var isSecure = false
+        /// Why pasting here is not safe, or nil when it is (F445, F585).
+        var secureInput: SecureInput? = nil
+
+        var isSecure: Bool { secureInput != nil }
     }
 
-    /// The standard text roles, plus anything exposing a text selection — which is how a web or
-    /// Electron editor (a contenteditable) presents itself once its accessibility tree exists.
-    ///
-    /// Secure (F445) is either signal, because each misses cases the other sees: the focused
-    /// element's `AXSecureTextField` subrole, which native, WebKit and Chromium password fields
-    /// report but an app hiding its tree does not; and `IsSecureEventInputEnabled()`, which a
-    /// password field turns on however it is drawn — and which any process can leave on (Terminal's
-    /// Secure Keyboard Entry). A false positive costs a paste — the text is still on the clipboard —
-    /// where a false negative types someone's words into a password prompt.
-    static func probe() -> Probe {
-        let app = NSWorkspace.shared.frontmostApplication
-        let name = app?.bundleIdentifier ?? "unknown app"
-        let pid = app?.processIdentifier
-        let secureEntry = IsSecureEventInputEnabled()
-        guard let focused = focusedElement(in: app) else {
-            return Probe(
-                isTextField: false, summary: "\(name): no focused element visible",
-                processIdentifier: pid, isSecure: secureEntry
-            )
+    /// Everything `probe()` reads from the system, before any judgement is made about it: the seam
+    /// the judgement is tested through, since the reads themselves need a real focused app.
+    struct Reading: Equatable {
+        struct Element: Equatable {
+            var role: String?
+            var subrole: String?
+            /// The element answers `kAXSelectedTextRangeAttribute`.
+            var hasSelectedTextRange = false
         }
-        let role = string(focused, kAXRoleAttribute) ?? "no role"
-        let isPasswordField = string(focused, kAXSubroleAttribute) == kAXSecureTextFieldSubrole
-        let textRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"]
-        var selection: AnyObject?
-        let hasSelection = AXUIElementCopyAttributeValue(
-            focused, kAXSelectedTextRangeAttribute as CFString, &selection
-        ) == .success
+
+        /// The frontmost app.
+        var bundleIdentifier: String?
+        var processIdentifier: pid_t?
+        /// The focused element, nil when Accessibility shows none.
+        var focused: Element?
+        /// `IsSecureEventInputEnabled()`: some process, any process, has secure event input on.
+        var secureEventInput = false
+        /// The process the window-server session dictionary names under
+        /// `kCGSSessionSecureInputPID`, and that process's name — see `secureInputProcess()`.
+        var secureInputProcessIdentifier: pid_t?
+        var secureInputAppName: String?
+    }
+
+    static func probe() -> Probe {
+        probe(reading: read())
+    }
+
+    /// A text field is one of the standard text roles, or anything exposing a text selection —
+    /// which is how a web or Electron editor (a contenteditable) presents itself once its
+    /// accessibility tree exists.
+    static func probe(reading: Reading) -> Probe {
+        let name = reading.bundleIdentifier ?? "unknown app"
+        var summary = "\(name): no focused element visible"
+        var isTextField = false
+        var isPasswordField = false
+        if let focused = reading.focused {
+            let role = focused.role ?? "no role"
+            let textRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"]
+            summary = "\(name) \(role)"
+            isTextField = textRoles.contains(role) || focused.hasSelectedTextRange
+            isPasswordField = focused.subrole == kAXSecureTextFieldSubrole
+        }
+        if reading.secureEventInput {
+            let holder = reading.secureInputProcessIdentifier.map { "\($0)" } ?? "none"
+            summary += "; secure input on, session names pid \(holder)"
+        }
         return Probe(
-            isTextField: textRoles.contains(role) || hasSelection, summary: "\(name) \(role)",
-            processIdentifier: pid, isSecure: secureEntry || isPasswordField
+            isTextField: isTextField, summary: summary,
+            processIdentifier: reading.processIdentifier,
+            secureInput: secureInput(reading, isPasswordField: isPasswordField, isTextField: isTextField)
         )
+    }
+
+    /// Whether pasting is unsafe here, and why (F445, F585).
+    ///
+    /// A password field — the focused element's `AXSecureTextField` subrole, which native, WebKit
+    /// and Chromium password fields report — is never pasted into.
+    ///
+    /// `IsSecureEventInputEnabled()` is the other signal, and on its own it cannot say where:
+    /// CarbonEventsCore.h, "whether secure event input is enabled by any process, not just the
+    /// current process". F445 read it alone, so Terminal's Secure Keyboard Entry stopped every
+    /// paste in every app (F585). The OS does not say which process turned it on (see
+    /// `secureInputProcess()`), so it is weighed against what else can be seen:
+    ///
+    /// 1. The app in front is the one the session names — read as the app that was in front when
+    ///    secure input came on, as it is for a password prompt or Terminal's own setting. Not
+    ///    pasted, whatever Accessibility shows: a sudo prompt in Terminal is an ordinary
+    ///    `AXTextArea`.
+    /// 2. Otherwise, a focused ordinary text field: Accessibility vouches that the app in front has
+    ///    no password field focused, so the paste goes ahead.
+    /// 3. Otherwise — no element visible, or not a text field — nothing vouches, and the flag
+    ///    stands. Named after the app the session names, when it names one.
+    ///
+    /// Every doubt resolves to "not pasted": a false positive costs a paste, with the text still
+    /// there to paste by hand, where a false negative types someone's words into a password
+    /// prompt. If the session key turns out to name something else — the app in front at the time
+    /// of the read rather than when secure input came on — rule 1 refuses every paste, which is
+    /// F445's behaviour and never worse.
+    static func secureInput(_ reading: Reading, isPasswordField: Bool, isTextField: Bool) -> SecureInput? {
+        if isPasswordField { return .passwordField }
+        guard reading.secureEventInput else { return nil }
+        if let holder = reading.secureInputProcessIdentifier, holder == reading.processIdentifier {
+            return .keyboardEntry(app: reading.secureInputAppName)
+        }
+        if isTextField { return nil }
+        return .keyboardEntry(app: reading.secureInputAppName)
+    }
+
+    /// The live reads behind `probe()`.
+    static func read() -> Reading {
+        let app = NSWorkspace.shared.frontmostApplication
+        var reading = Reading(
+            bundleIdentifier: app?.bundleIdentifier,
+            processIdentifier: app?.processIdentifier,
+            secureEventInput: IsSecureEventInputEnabled()
+        )
+        if reading.secureEventInput, let holder = secureInputProcess() {
+            reading.secureInputProcessIdentifier = holder
+            reading.secureInputAppName = NSRunningApplication(processIdentifier: holder)?.localizedName
+        }
+        guard let focused = focusedElement(in: app) else { return reading }
+        var selection: AnyObject?
+        reading.focused = Reading.Element(
+            role: string(focused, kAXRoleAttribute),
+            subrole: string(focused, kAXSubroleAttribute),
+            hasSelectedTextRange: AXUIElementCopyAttributeValue(
+                focused, kAXSelectedTextRangeAttribute as CFString, &selection
+            ) == .success
+        )
+        return reading
+    }
+
+    /// The process the window server names while secure event input is on, or nil.
+    ///
+    /// Undocumented: CGSession.h documents five keys of `CGSessionCopyCurrentDictionary()` and this
+    /// is not one of them. It appears only while secure input is on. And it is not the process
+    /// that turned secure input on — measured 2026-09-28 (F585): a background process with no
+    /// window called `EnableSecureEventInput()` while Chrome was frontmost, and the key named
+    /// Chrome. So it is read as "the app that was in front when secure input came on", never as
+    /// the owner. That reading is the likelier one, not a measured one: in that run Chrome was
+    /// in front both when secure input came on and when the key was read.
+    static func secureInputProcess() -> pid_t? {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let number = session["kCGSSessionSecureInputPID"] as? NSNumber else { return nil }
+        let pid = number.int32Value
+        return pid > 0 ? pid : nil
     }
 
     private static func focusedElement(in app: NSRunningApplication?) -> AXUIElement? {

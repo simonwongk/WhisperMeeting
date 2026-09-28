@@ -10,8 +10,8 @@ import WhisperCore
 /// 1. The app in front is not the app the dictation was started in (the user ⌘-Tabbed while it was
 ///    transcribing). The text is left on the clipboard and the pill says why, instead of landing in
 ///    another conversation or a terminal.
-/// 2. Secure input — a password field has focus, or a process has secure keyboard entry on — at the
-///    press or at delivery. The text is never pasted (a password prompt that grabbed focus would
+/// 2. Secure input — a password field has focus, or secure keyboard entry is on and nothing shows
+///    the paste is safe (F585, weighed in `SecureKeyboardEntryTests`) — at the press or at delivery. The text is never pasted (a password prompt that grabbed focus would
 ///    otherwise receive a sentence as a password) and never written to dictation-log.json. It is
 ///    left on the clipboard marked concealed and transient, the nspasteboard.org markers that tell
 ///    clipboard-history tools not to record it, so a dictation meant for somewhere else is not lost.
@@ -85,7 +85,7 @@ func secureInputAtDeliveryIsNeverPasted() throws {
     let harness = try TargetHarness()
     let injector = harness.makeInjector()
     let pressedIn = injector.target()
-    harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, isSecure: true)
+    harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, secureInput: .passwordField)
 
     #expect(injector.deliver("not a password", autoPaste: true, pressedIn: pressedIn) == .secureInput)
     #expect(harness.pasteCount == 0)
@@ -99,7 +99,7 @@ func secureInputAtDeliveryIsNeverPasted() throws {
 func secureInputAtThePressIsNeverPastedOrKept() throws {
     let harness = try TargetHarness()
     let injector = harness.makeInjector()
-    harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, isSecure: true)
+    harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, secureInput: .passwordField)
     let pressedIn = injector.target()
     harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100)
 
@@ -193,7 +193,7 @@ func controllerLeavesAMovedDictationOnTheClipboard() async throws {
 func controllerKeepsSecureDictationOutOfTheLog() async throws {
     let harness = try DeliveryHarness()
     defer { harness.cleanup() }
-    harness.targets.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, isSecure: true)
+    harness.targets.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, secureInput: .passwordField)
 
     try await harness.dictate {}
 

@@ -33,12 +33,23 @@ import os
 /// clipboard, and it is in the dictation history either way.
 @MainActor
 final class TextInjector {
-    enum Delivery {
+    enum Delivery: Equatable {
         case pasted, clipboard
         /// Left on the clipboard: the app the dictation was started in is no longer in front (F445).
         case appChanged
         /// Left on the clipboard, concealed, and never pasted or logged: secure input (F445).
         case secureInput
+        /// As `secureInput`, when the reason is secure keyboard entry and there is an app to name
+        /// for it — so the pill can say where to turn it off (F585).
+        case secureKeyboardEntry(app: String)
+
+        /// Secure input, for any reason: never pasted, never written to the history.
+        var isSecure: Bool {
+            switch self {
+            case .secureInput, .secureKeyboardEntry: true
+            case .pasted, .clipboard, .appChanged: false
+            }
+        }
     }
 
     /// How long after ⌘V the clipboard is put back. Nothing tells us the target app has consumed
@@ -96,14 +107,18 @@ final class TextInjector {
         let carried = pending.flatMap { pasteboard.changeCount == $0.written ? $0.snapshot : nil }
         pending = nil
         let target = focusedTextField()
+        // What was judged, so a real app's secure-input and text-field reading can be checked
+        // against what the user saw (F585; the probe's reads have no test that can see a real app).
+        log.notice("delivery target: \(target.summary, privacy: .public)")
 
         // Secure input at the press or now: the words may be a password, or a password prompt has
         // taken focus and would receive a sentence as one. Never pasted, whatever auto-paste says.
         // Left concealed — clipboard-history tools skip it — so a dictation meant for somewhere else
         // is not lost; the controller keeps it out of the history file.
-        if target.isSecure || pressed?.isSecure == true {
+        if let secure = target.secureInput ?? pressed?.secureInput {
             write(text, markers: Self.transientMarkers + [Self.concealedMarker])
-            log.notice("secure input: dictation not pasted, left concealed on the clipboard")
+            log.notice("secure input (\(String(describing: secure), privacy: .public)): dictation not pasted, left concealed on the clipboard")
+            if case let .keyboardEntry(app?) = secure { return .secureKeyboardEntry(app: app) }
             return .secureInput
         }
         guard autoPaste, canSynthesizePaste() else {
