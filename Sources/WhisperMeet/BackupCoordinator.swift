@@ -11,8 +11,14 @@ struct BackupSummary: Sendable, Equatable {
     let prunedGenerations: [String]
 }
 
-enum BackupCoordinatorError: LocalizedError {
+enum BackupCoordinatorError: LocalizedError, Equatable {
     case anotherBackupIsRunning
+    /// The backup lock could not even be attempted or held, for a reason that is NOT another
+    /// backup running (F559): a read-only remount, a permissions change, a directory sitting where
+    /// the lock file goes, too many open files. Carries the destination and `strerror(errno)` so
+    /// the message names the actual reason instead of telling the user to wait out contention that
+    /// was never happening.
+    case lockUnavailable(destination: String, reason: String)
     case insufficientSpace(needed: Int64, available: Int64)
     case verificationFailed(String)
     case destinationOverlapsSource
@@ -25,6 +31,8 @@ enum BackupCoordinatorError: LocalizedError {
             return "A backed-up file failed verification: \(path). The backup was not completed."
         case .anotherBackupIsRunning:
             return "Another backup to this destination is already running. Nothing was changed; try again when it finishes."
+        case let .lockUnavailable(destination, reason):
+            return "This backup location can't be locked for writing (\(reason)): \(destination). Nothing was changed."
         case .destinationOverlapsSource:
             return "Choose a backup folder outside your meeting library — the backup location can't be the library or a folder inside it."
         }
@@ -36,8 +44,10 @@ enum BackupCoordinatorError: LocalizedError {
 /// generations live only under a dedicated managed subfolder so pruning can never touch the user's other
 /// folders; each generation is marked `.complete` and only marked ones are counted/pruned (partials are
 /// cleaned up); the destination may not overlap the source; and only the meeting library — not installed
-/// models/runtimes — is copied. A file unchanged since the previous generation is hardlinked; a
-/// changed/new file is copied and hash-verified. The source is only ever read.
+/// models/runtimes — is copied. A file unchanged since the previous generation is hardlinked when the
+/// destination volume supports it, and falls back to a hash-verified copy otherwise — exFAT, FAT32, and
+/// most SMB mounts refuse hard links outright (F532). A changed/new file is always copied and
+/// hash-verified. The source is only ever read.
 enum BackupCoordinator {
     /// Managed subfolder (inside the user's chosen destination) that holds all backup generations. Only
     /// this subtree is ever scanned or pruned — never the chosen folder's other contents (F137).
@@ -104,7 +114,11 @@ enum BackupCoordinator {
     /// being copied" with no clock and no real concurrent writer.
     static func backUp(
         source: URL, destination: URL, now: Int, retain: Int,
-        beforeProcessingForTesting: ((String) -> Void)? = nil
+        beforeProcessingForTesting: ((String) -> Void)? = nil,
+        // Test-only seam (real `FileManager.linkItem` in production): F532's tests cannot mount a
+        // real exFAT/FAT/SMB destination, so this lets a test make hard-linking fail exactly the
+        // way it does there — `linkItem` throwing ENOTSUP/EPERM/EXDEV — without one.
+        linkItem: (URL, URL) throws -> Void = { try FileManager.default.linkItem(at: $0, to: $1) }
     ) throws -> BackupSummary {
         let fileManager = FileManager.default
         guard !pathsOverlap(source, destination) else { throw BackupCoordinatorError.destinationOverlapsSource }
@@ -122,7 +136,19 @@ enum BackupCoordinator {
         // difference is which way the fallback is destructive: refusing recovery would brick a
         // library permanently, while refusing a backup costs one retry.
         let lock = BackupLock.acquire(backupRoot: backupRoot)
-        guard lock.isHeld else { throw BackupCoordinatorError.anotherBackupIsRunning }
+        guard lock.isHeld else {
+            // Only real contention (EWOULDBLOCK) is "another backup is already running" (F559).
+            // Every other reason `acquire` could not hold the lock — the path blocked by a
+            // directory, a read-only remount, a permissions change — gets its own error naming
+            // what actually happened, because telling the user to wait out a backup that was never
+            // running just wastes their time.
+            switch lock.unavailableReason {
+            case .contended, nil:
+                throw BackupCoordinatorError.anotherBackupIsRunning
+            case let .unavailable(_, message):
+                throw BackupCoordinatorError.lockUnavailable(destination: backupRoot.path, reason: message)
+            }
+        }
         defer { lock.release() }
 
         let sourceFiles = try descriptors(of: source, includingTopLevel: backedUpEntries)
@@ -134,9 +160,16 @@ enum BackupCoordinator {
         let previousFiles = previousDir.map { (try? descriptors(of: $0, includingTopLevel: nil)) ?? [] } ?? []
         let plan = BackupPlan.compute(source: sourceFiles, destination: previousFiles)
 
-        // Pre-copy free-space check for the bytes that will actually be copied. Only reject on a
+        // Probed once per run rather than discovered file-by-file (F532): exFAT, FAT32, and most
+        // SMB mounts refuse hard links outright, in which case every `.skip` item below falls back
+        // to a real, space-costing copy. The free-space check has to know that BEFORE the run
+        // starts — a check that only ever counted `.copy` bytes would pass a run that then runs
+        // out of room partway through what it thought were free skips.
+        let hardLinksSupported = probeHardLinkSupport(in: backupRoot, fileManager: fileManager)
+
+        // Pre-copy free-space check for the bytes that will actually be written. Only reject on a
         // credible positive reading below the need — see `shouldRejectForSpace` (F90 audit fix).
-        let bytesToCopy = plan.filter { $0.action == .copy }.reduce(Int64(0)) { $0 + $1.file.size }
+        let bytesToCopy = BackupPlan.bytesNeeded(for: plan, hardLinksSupported: hardLinksSupported)
         let available = availableCapacity(at: backupRoot)
         if shouldRejectForSpace(available: available, needed: bytesToCopy) {
             throw BackupCoordinatorError.insufficientSpace(needed: bytesToCopy, available: available ?? 0)
@@ -174,7 +207,23 @@ enum BackupCoordinator {
             switch item.action {
             case .skip:
                 if let previousDir {
-                    try fileManager.linkItem(at: previousDir.appendingPathComponent(item.file.relativePath), to: destURL)
+                    do {
+                        try linkItem(previousDir.appendingPathComponent(item.file.relativePath), destURL)
+                    } catch {
+                        // Hard links are unavailable on this destination (exFAT, FAT32, most SMB
+                        // mounts) or this one link failed for some other reason (F532). Either
+                        // way, the file still has to land, so fall back to the same verified copy
+                        // a `.copy` item gets — from SOURCE, not from the previous generation, so
+                        // the post-copy re-hash-against-source in `copyAndVerify` guards this
+                        // fallback against the very same mid-run write race F504 fixed for
+                        // `.copy` items. `linkItem` can leave nothing or a partial file behind
+                        // depending on where it failed; clear the target first so the copy always
+                        // starts from empty.
+                        try? fileManager.removeItem(at: destURL)
+                        rehashedContent[item.file.relativePath] = try Self.copyAndVerify(
+                            from: sourceURL, to: destURL, relativePath: item.file.relativePath, fileManager: fileManager
+                        )
+                    }
                 } else {
                     try fileManager.copyItem(at: sourceURL, to: destURL)
                 }
@@ -449,5 +498,35 @@ enum BackupCoordinator {
         let probe = FileManager.default.fileExists(atPath: url.path) ? url : url.deletingLastPathComponent()
         return (try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage
+    }
+
+    /// Whether the volume backing `backupRoot` supports hard links, checked once per run rather
+    /// than discovered file-by-file (F532). Writes two throwaway files under `backupRoot` — always
+    /// present by this point, since `backUp` already created it — and tries to link one to the
+    /// other.
+    ///
+    /// Defaults to `true` (the ordinary case: APFS, HFS+, most local volumes) when the probe
+    /// itself cannot even run, e.g. `backupRoot` is unwritable for some unrelated reason. That
+    /// failure surfaces on its own moments later, at the real copy/link inside the run, with a
+    /// precise error; guessing "unsupported" here would only misreport it as a space problem.
+    ///
+    /// Internal rather than private so `hardLinkProbeReportsTrueOnLocalVolume` (F532) can call it
+    /// directly: a real exFAT/FAT/SMB destination cannot be mounted in this sandbox
+    /// (`hdiutil create -fs ExFAT` fails with "Operation not permitted" here), so the false branch
+    /// is exercised only through `BackupPlan.bytesNeeded`'s own pure unit test.
+    static func probeHardLinkSupport(in backupRoot: URL, fileManager: FileManager) -> Bool {
+        let probeA = backupRoot.appendingPathComponent(".hardlink-probe-\(UUID().uuidString)")
+        let probeB = backupRoot.appendingPathComponent(".hardlink-probe-\(UUID().uuidString)")
+        defer {
+            try? fileManager.removeItem(at: probeA)
+            try? fileManager.removeItem(at: probeB)
+        }
+        guard (try? Data([0]).write(to: probeA)) != nil else { return true }
+        do {
+            try fileManager.linkItem(at: probeA, to: probeB)
+            return true
+        } catch {
+            return false
+        }
     }
 }

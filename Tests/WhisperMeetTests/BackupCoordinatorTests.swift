@@ -278,3 +278,143 @@ private final class Captured: @unchecked Sendable {
     var destination: URL?
     var retain: Int?
 }
+
+// F559 — `BackupLock.acquire` failing for any reason used to become
+// `BackupCoordinatorError.anotherBackupIsRunning`. Real contention (a live holder) IS reported that
+// way still; a lock path blocked by something else entirely — here, a directory sitting where the
+// 0-byte lock file goes — must not be, because "try again when it finishes" is false when nothing
+// is running at all.
+@Test("A backup lock blocked by something other than a real holder is not reported as contention (F559)")
+func lockBlockedByNonContentionIsNotReportedAsAnotherBackupRunning() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F559-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meetings v1", to: source.appendingPathComponent("meetings.json"))
+    let root = backupRoot(dest)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // A directory where BackupLock's 0-byte lock file goes: open(O_CREAT|O_RDWR) on it fails
+    // (EISDIR) before flock is ever reached — not contention.
+    try FileManager.default.createDirectory(
+        at: root.appendingPathComponent(BackupLock.fileName), withIntermediateDirectories: true
+    )
+
+    do {
+        _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 900, retain: 2)
+        Issue.record("expected the backup to refuse")
+    } catch BackupCoordinatorError.anotherBackupIsRunning {
+        Issue.record("misreported as contention — nothing was actually running")
+    } catch BackupCoordinatorError.lockUnavailable(let destinationPath, let reason) {
+        #expect(destinationPath == root.path)
+        #expect(!reason.isEmpty)
+    }
+}
+
+// The counterpart: genuine contention (F191 slice C's own scenario) must still read exactly as it
+// did before — this is the one case `anotherBackupIsRunning` is actually true for.
+@Test("Real lock contention is still reported as 'another backup is already running' (F559)")
+func realContentionIsStillAnotherBackupRunning() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F559-contended-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meetings v1", to: source.appendingPathComponent("meetings.json"))
+    let root = backupRoot(dest)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let holder = BackupLock.acquire(backupRoot: root)
+    try #require(holder.isHeld)
+    defer { holder.release() }
+
+    var refused = false
+    do {
+        _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 901, retain: 2)
+    } catch BackupCoordinatorError.anotherBackupIsRunning {
+        refused = true
+    }
+    withExtendedLifetime(holder) {}
+    #expect(refused)
+}
+
+// F532 — a file unchanged since the previous generation is normally hardlinked, which costs no
+// extra space and no extra I/O. exFAT, FAT32, and most SMB mounts refuse hard links outright, so
+// every backup after the first used to fail there in full. The fix falls back to a verified copy
+// exactly like a changed file gets, and a real exFAT/FAT/SMB destination cannot be mounted in this
+// sandbox (`hdiutil create -fs ExFAT` was tried and failed with "Operation not permitted" — see the
+// closure draft's Gaps), so the seam is an injected `linkItem` that fails the same way `linkItem`
+// does there (ENOTSUP/EPERM/EXDEV).
+
+@Test("An unchanged file falls back to a verified copy when hard-linking fails, as on exFAT/FAT/SMB (F532)")
+func backupFallsBackToVerifiedCopyWhenHardLinkFails() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F532-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meeting index v1", to: source.appendingPathComponent("meetings.json"))
+    try write("audio-A", to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+
+    let g1 = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 2)
+    #expect(g1.copied == 2)
+    #expect(g1.skipped == 0)
+
+    // Second run: nothing changed, so the plan marks every file `.skip` — the exact scenario a
+    // real exFAT/FAT/SMB backup drive hits on its second run. `linkItem` always fails, simulating
+    // that destination without needing to mount one.
+    var linkAttempts = 0
+    let g2 = try BackupCoordinator.backUp(
+        source: source, destination: dest, now: 2_000, retain: 2,
+        linkItem: { _, _ in
+            linkAttempts += 1
+            throw CocoaError(.fileWriteUnsupportedScheme) // stands in for ENOTSUP on exFAT/FAT
+        }
+    )
+
+    #expect(linkAttempts == 2, "both unchanged files attempted a hardlink before falling back")
+    #expect(g2.copied == 0, "the plan itself still calls these .skip — unchanged since last time")
+    #expect(g2.skipped == 2)
+    #expect(g2.verified)
+
+    let root = backupRoot(dest)
+    let restoredIndex = try String(
+        decoding: Data(contentsOf: root.appendingPathComponent("2000/meetings.json")), as: UTF8.self
+    )
+    #expect(restoredIndex == "meeting index v1")
+    let restoredWav = try String(
+        decoding: Data(contentsOf: root.appendingPathComponent("2000/Recordings/A/meeting.wav")), as: UTF8.self
+    )
+    #expect(restoredWav == "audio-A")
+
+    // Not a hardlink to the previous generation — an independent copy, since a real link failed
+    // (or would have, on a linkless volume).
+    let g1Inode = try FileManager.default.attributesOfItem(
+        atPath: root.appendingPathComponent("1000/Recordings/A/meeting.wav").path
+    )[.systemFileNumber] as? UInt64
+    let g2Inode = try FileManager.default.attributesOfItem(
+        atPath: root.appendingPathComponent("2000/Recordings/A/meeting.wav").path
+    )[.systemFileNumber] as? UInt64
+    #expect(g1Inode != nil && g2Inode != nil && g1Inode != g2Inode)
+
+    // The fallback copy is still hash-verified: its manifest entry matches what is really there.
+    let manifest = try #require(BackupManifest.read(in: root.appendingPathComponent("2000")))
+    #expect(try BackupManifest.verify(in: root.appendingPathComponent("2000"), deep: true).isIntact)
+    #expect(manifest.files.count == 2)
+}
+
+// F532 — the free-space check must budget for the fallback copy too: on a linkless destination a
+// `.skip` item is not free, so a check that only ever counted `.copy` bytes could pass a run that
+// then runs out of room midway through what it thought were free skips. The arithmetic itself
+// (`BackupPlan.bytesNeeded`) has its own pure unit coverage in `Tests/WhisperCoreTests/BackupPlanTests.swift`;
+// this exercises the coordinator's own probe of the destination volume, which decides which side of
+// that arithmetic a real run uses.
+@Test("probeHardLinkSupport reports true on an ordinary local volume, which is what a real run's space check budgets from (F532)")
+func hardLinkProbeReportsTrueOnLocalVolume() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F532-probe-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    #expect(BackupCoordinator.probeHardLinkSupport(in: tmp, fileManager: .default))
+    // The probe cleans up after itself — it must never leave its throwaway files behind for a
+    // real generation's directory listing to trip over.
+    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
+    #expect(leftovers.isEmpty)
+}
