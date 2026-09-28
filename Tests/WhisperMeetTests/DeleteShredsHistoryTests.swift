@@ -250,6 +250,36 @@ func futureDeletionTimeIsClampedToNow() throws {
     #expect(!(try historyHolds("confidential-kestrel", in: root)))
 }
 
+// MARK: - F552: the shred's rotation adopts only this session's own lineage
+
+/// The shred used to end by re-saving whatever the primary held and then adopting that generation's
+/// token unconditionally. When another copy of the app had committed since this session's last
+/// save, that told this session it had read the other copy's commit — it had not — and its next save
+/// passed the compare-and-swap and overwrote the other copy's work unseen.
+@MainActor
+@Test("A shred does not let this session's next save overwrite another copy's commit (F552)")
+func shredDoesNotAdoptAnotherCopysCommit() throws {
+    let (store, root, secret) = try makeMistakenDelete("rival")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    // Another copy of the app, having read this session's delete, adds a meeting of its own.
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999",
+        recordCount: { $0.count }
+    )
+    let seen = try #require(try rival.load())
+    let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", status: .completed)
+    try rival.save(seen.value + [theirs], expecting: seen.token)
+
+    try #require(store.processPendingShreds(now: deletedAt + week) == [secret])
+    store.upsert(MeetingRecord(id: UUID(), title: "This session's next meeting", status: .completed))
+
+    #expect(MeetingStore(rootDirectory: root).meeting(id: theirs.id) != nil,
+            "this session's next save overwrote the other copy's commit without a conflict")
+}
+
 // MARK: - F603: a clock that is behind at one launch must not shorten the week
 
 /// F498 wrote `min(deletedAt, now)` back to disk at every launch, so one launch with the clock

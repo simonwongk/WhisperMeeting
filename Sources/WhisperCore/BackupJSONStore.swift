@@ -788,7 +788,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// protection** F190 exists to provide. Retained generations hold meeting titles, transcripts,
     /// notes and summaries, so deleting a meeting leaves its text in every generation that predates
     /// the deletion until something removes it: the retention policy's oldest age anchor, except
-    /// for the high-water generation, which is pinned indefinitely — or `rewriteHistory`, which is
+    /// for the high-water generation, which is pinned indefinitely — or `shredHistory`, which is
     /// how `MeetingStore` shreds a deleted meeting from every generation a week after the delete
     /// (F295). This is the immediate, all-records version, and it does not touch the backup copy.
     ///
@@ -805,29 +805,65 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         try history.data(of: generation)
     }
 
-    /// Re-records every retained generation and conflict branch whose value `transform` changes
-    /// (F295): delete means delete, per meeting.
+    /// What `shredHistory` did (F295, F552).
+    public struct HistoryShred: Sendable, Equatable {
+        /// The retained generations and conflict branches re-recorded without the elements, by
+        /// their names before the rewrite.
+        public let rewritten: [String]
+        /// The one ordinary save that rotated the backup copy, when the backup still held one of
+        /// the elements; nil when no rotation was needed. Its `parent` is the generation it
+        /// re-saved, so a caller can tell whether that was its own last commit (F552).
+        public let rotation: SaveOutcome?
+    }
+
+    /// Removes the top-level array elements whose `"id"` is one of `ids` (compared
+    /// case-insensitively) from every retained generation and conflict branch (F295): delete
+    /// means delete, per meeting.
     ///
-    /// `transform` returns nil for a generation to leave alone and the replacement value
-    /// otherwise. A changed generation is written under a NEW content-addressed name with the
-    /// SAME sequence — the name is the fingerprint, so editing in place would make every file a
-    /// liar — through a temp name and a rename, and the old file is removed only after the new one
-    /// is in place. The ledger's records follow (fingerprint, byte count, record count, name), so
-    /// the recovery list keeps its counts and dates. A generation that cannot be read or whose
-    /// bytes do not match its name is left for the user, as F236 leaves it in the list.
+    /// **At the JSON level, never through `Value` (F552).** This used to decode each generation as
+    /// this build's `Value` and encode it again. For anything a newer build wrote that is lossy — a
+    /// field this build does not know is dropped, a lenient enum is rewritten as its fallback — and
+    /// those generations are the copies F188 relies on to undo a downgrade. A generation this
+    /// build could not decode at all was skipped, so the deleted element's text stayed in it. Here
+    /// each file is parsed as a JSON array, the matching elements are removed, and the rest is
+    /// serialized again: formatting may change, meaning does not. A file that is not a JSON array,
+    /// or holds no matching element, is left byte-for-byte alone.
     ///
-    /// The backup copy is the previous generation and holds the same text, so when anything was
-    /// rewritten the live value is saved once more: that rotates the post-deletion primary into
-    /// the backup through the ordinary algorithm, never by writing the backup directly.
+    /// A changed generation is written under a NEW content-addressed name with the SAME sequence —
+    /// the name is the fingerprint, so editing in place would make every file a liar — through a
+    /// temp name and a rename, and the old file is removed only after the new one is in place. The
+    /// ledger's records follow (fingerprint, byte count, record count, name), so the recovery list
+    /// keeps its counts and dates. A generation that cannot be read or whose bytes do not match its
+    /// name is left for the user, as F236 leaves it in the list.
+    ///
+    /// The backup copy is the previous generation, so when it still holds one of the elements — in
+    /// practice, when the delete was the last save — the live value is saved once more: that
+    /// rotates the post-deletion primary into the backup through the ordinary algorithm, never by
+    /// writing the backup directly. That save goes through `Value`, as every save does. When the
+    /// backup holds none of them nothing is saved, so the shred does not re-encode the live index
+    /// (F552).
     ///
     /// **What this costs**, stated because F239 refused to decide it silently: for the deleted
     /// record only, the undo protection is gone — restoring an older generation no longer brings
     /// it back. For every other record every generation is intact, which is the difference between
     /// this and `forgetHistory`.
     @discardableResult
-    public func rewriteHistory(_ transform: (Value) -> Value?) throws -> [String] {
+    public func shredHistory(removingElementsWithIDs ids: Set<String>) throws -> HistoryShred {
+        let doomed = Set(ids.map { $0.lowercased() })
+        // The elements of `bytes` without the doomed ones, or nil when `bytes` is not a JSON array
+        // or holds none of them.
+        func without(_ bytes: Data) -> [Any]? {
+            guard !doomed.isEmpty,
+                  let elements = (try? JSONSerialization.jsonObject(with: bytes)) as? [Any]
+            else { return nil }
+            let kept = elements.filter { element in
+                guard let id = (element as? [String: Any])?["id"] as? String else { return true }
+                return !doomed.contains(id.lowercased())
+            }
+            return kept.count == elements.count ? nil : kept
+        }
         let directory = history.directoryURL
-        guard io.isDirectory(directory) == true else { return [] }
+        guard io.isDirectory(directory) == true else { return HistoryShred(rewritten: [], rotation: nil) }
         let names = (try? io.contentsOfDirectory(directory, .listHistory)) ?? []
         var ledger = StoreLedger.read(at: ledgerURL, using: io)
         var rewritten: [String] = []
@@ -849,10 +885,13 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             let url = directory.appendingPathComponent(name)
             guard let bytes = try? io.read(url, .readHistoryEntry),
                   io.fingerprint(bytes) == oldFingerprint,
-                  let value = try? decoder.decode(Value.self, from: bytes),
-                  let replacement = transform(value)
+                  let replacement = without(bytes)
             else { continue }
-            let newData = try encoder.encode(replacement)
+            // The same formatting options this type's encoder uses, so a rewritten generation reads
+            // like any other.
+            let newData = try JSONSerialization.data(
+                withJSONObject: replacement, options: [.prettyPrinted, .sortedKeys]
+            )
             let newFingerprint = io.fingerprint(newData)
             let newName = renamed(newFingerprint)
             // `.shred-` never parses as a generation, so a process death here leaves something
@@ -866,7 +905,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                     guard record.fingerprint == oldFingerprint else { return }
                     record.fingerprint = newFingerprint
                     record.byteCount = newData.count
-                    record.recordCount = recordCount?(replacement)
+                    // The element count, which is what `recordCount` is for every array store;
+                    // a store that keeps no count keeps none here either.
+                    record.recordCount = recordCount == nil ? nil : replacement.count
                     if record.historyName == name { record.historyName = newName }
                 }
                 follow(&updated.current)
@@ -876,16 +917,16 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             }
             rewritten.append(name)
         }
-        guard !rewritten.isEmpty else { return [] }
-        if let ledger {
+        if !rewritten.isEmpty, let ledger {
             // Advisory metadata: a failure to update it costs the counts in the recovery list,
             // never the rewrite itself, which is already on disk.
             _ = try? StoreLedger.write(ledger, to: ledgerURL, using: io)
         }
-        if let current = try? load() {
-            try save(current.value, expecting: current.token)
-        }
-        return rewritten
+        guard let backup = try? io.read(backupURL, .readBackup), without(backup) != nil,
+              let current = try? load()
+        else { return HistoryShred(rewritten: rewritten, rotation: nil) }
+        let rotation = try save(current.value, expecting: current.token)
+        return HistoryShred(rewritten: rewritten, rotation: rotation)
     }
 
     /// Brings a retained generation back as the current one (F190).

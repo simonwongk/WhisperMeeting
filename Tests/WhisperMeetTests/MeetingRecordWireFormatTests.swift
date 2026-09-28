@@ -95,9 +95,13 @@ func everyStoredFieldIsEncoded() throws {
     #expect(!stored.isEmpty, "Mirror found no properties, so this test would pass vacuously")
     #expect(!stored.contains("transcriptionEngine"), "a computed property should not be reflected")
 
-    // The one documented remap (F250): the property is `transcriptionEngineRawValue`, the key is
-    // `transcriptionEngine`, so the property name is not the key name for this one field.
-    let remapped = ["transcriptionEngineRawValue": "transcriptionEngine"]
+    // The documented remaps: the property is `transcriptionEngineRawValue`, the key is
+    // `transcriptionEngine` (F250); the property is `schemaMarker`, the key is `schemaVersion`
+    // (F552). For these two the property name is not the key name.
+    let remapped = [
+        "transcriptionEngineRawValue": "transcriptionEngine",
+        "schemaMarker": "schemaVersion",
+    ]
 
     var missing: [String] = []
     for property in stored {

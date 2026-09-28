@@ -68,10 +68,45 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// untouched since the old schema genuinely has old-schema content; marking it current would
     /// make a future migration **skip exactly the records that need migrating**. That is worse than
     /// having no marker — no marker means "check everything", a wrong marker means "check nothing"
-    /// with a confident-looking reason. `rewriteHistory` does not stamp either, for the same rule
+    /// with a confident-looking reason. `shredHistory` does not stamp either, for the same rule
     /// aimed at evidence: it rewrites *retained generations*, and restamping one would make a
-    /// snapshot claim a version it was never written under.
-    var schemaVersion: Int? = MeetingRecord.currentSchemaVersion
+    /// snapshot claim a version it was never written under — and since F552 it never re-encodes
+    /// one, so a newer build's marker stays beside the fields it describes.
+    ///
+    /// **Except the one direction a save does change the content (F552).** A record a NEWER build
+    /// wrote reaches this build's encoder without the fields this build does not know, so what
+    /// lands on disk is at most this build's schema. Keeping the newer number there is the wrong
+    /// marker this comment calls worse than none, so `SchemaMarker` writes the smaller of the two.
+    /// Memory keeps what was read — the marker is data, not a gate — and a record at or below this
+    /// build's version is written exactly as it was.
+    var schemaVersion: Int? {
+        get { schemaMarker?.version }
+        set { schemaMarker = newValue.map(SchemaMarker.init) }
+    }
+
+    /// The stored form of `schemaVersion`, under the same on-disk key (F552). A type of its own
+    /// only so its encoding can lower a newer build's marker without a hand-written encoder for the
+    /// whole record — a second list of every field is exactly what F304 showed goes stale.
+    private var schemaMarker: SchemaMarker? = SchemaMarker(MeetingRecord.currentSchemaVersion)
+
+    struct SchemaMarker: Codable, Equatable, Sendable {
+        let version: Int
+
+        init(_ version: Int) {
+            self.version = version
+        }
+
+        init(from decoder: Decoder) throws {
+            version = try decoder.singleValueContainer().decode(Int.self)
+        }
+
+        /// The only place the marker's value decides anything, and what it decides is what this
+        /// writer vouches for, never how a reader treats the record (`markerIsNeverReadToMakeADecision`).
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(min(version, MeetingRecord.currentSchemaVersion))
+        }
+    }
 
     let id: UUID
     var title: String
@@ -301,7 +336,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// `theWireKeySetIsPinned` asserts the full set, because a case missing from this enum is
     /// exactly that silent loss.
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion
+        // F552: stored as `schemaMarker`, written under the key every build has always used.
+        case schemaMarker = "schemaVersion"
         case id, title, createdAt, duration, recordingPath, status, transcriptText
         case languageCode, confidence, segments, errorMessage, summary, transcriptNormalized
         case markers, pinned, notes, tags, healthReport, alignmentWarning, recoveryWarning
@@ -1622,17 +1658,19 @@ final class MeetingStore: ObservableObject {
             (queue.firstSeenFutureAt[id] ?? deletedAt) <= cutoff ? id : nil
         }
         guard !due.isEmpty else { return [] }
-        let gone = Set(due)
         do {
-            let rewritten = try meetingFiles.rewriteHistory { records in
-                let kept = records.filter { !gone.contains($0.id) }
-                return kept.count == records.count ? nil : kept
-            }
-            if !rewritten.isEmpty {
-                // `rewriteHistory` ended with an ordinary save of the live value to rotate the
-                // backup; adopt its generation so the next save's compare-and-swap sees it.
-                if let current = try? meetingFiles.load() { meetingsToken = current.token }
+            // At the JSON level, so what a newer build wrote into the history survives (F552).
+            let shred = try meetingFiles.shredHistory(removingElementsWithIDs: Set(due.map(\.uuidString)))
+            if let rotation = shred.rotation {
                 persistCommitCount += 1
+                // The rotation re-saved whatever the primary held. Adopt its generation only when
+                // that was this session's own last commit: the content is then unchanged, and the
+                // next save's compare-and-swap must see the new generation. If another copy had
+                // committed in between, adopting would let the next save overwrite that commit
+                // unseen, so the token is left stale and that save loses the race visibly instead.
+                if let own = meetingsToken, let parent = rotation.parent, parent.hasSameBody(as: own) {
+                    meetingsToken = rotation.token
+                }
             }
             var remaining = queue
             for id in due {

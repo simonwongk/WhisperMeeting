@@ -128,6 +128,7 @@ func markerIsNeverReadToMakeADecision() throws {
     // already-shipped reader refuse. If production code ever branches on this value, the ticket's
     // claim of "marked, not fenced" silently becomes false. This is the assertion that fails first.
     var offenders: [String] = []
+    var lowerings: [String] = []
     for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
         // `DiarizationArtifact` has its own, unrelated `schemaVersion`, and it genuinely **is** a
         // fence: it throws `malformed` on a mismatch. It can be, and this cannot, for a reason
@@ -138,17 +139,30 @@ func markerIsNeverReadToMakeADecision() throws {
         let text = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8))
         for (number, line) in SourceAssertion.numbered(text) {
             let code = line.trimmingCharacters(in: .whitespaces)
+            // F552's lowering: the one place the value decides anything, and what it decides is
+            // what the WRITER vouches for, never how a reader treats the record. Counted, so a
+            // second site is a decision somebody has to make here rather than slip in.
+            if code.contains("min(version, MeetingRecord.currentSchemaVersion)") {
+                lowerings.append("\(url.lastPathComponent):\(number)")
+                continue
+            }
             // A comment line is already blank, so the `contains` below skips it — the two
             // `hasPrefix` guards this replaced said the same thing one layer later (F375).
-            guard code.contains("schemaVersion") else { continue }
-            // Declaring it, and stamping it, are the only permitted uses.
+            // `schemaMarker` is the stored form since F552; a read of it is a read of the marker.
+            guard code.contains("schemaVersion") || code.contains("schemaMarker") else { continue }
+            // Declaring it, and stamping it, are the only permitted uses — plus, since F552, the
+            // stored form's declaration and the two accessors that are `schemaVersion` itself.
             let declares = code.contains("var schemaVersion") || code.contains("currentSchemaVersion =")
+                || code.hasPrefix("private var schemaMarker: SchemaMarker?")
             let stamps = code.contains("schemaVersion = MeetingRecord.currentSchemaVersion")
             let names = code.contains("case ") && code.contains("schemaVersion")
-            if !(declares || stamps || names) {
+            let accessor = code == "get { schemaMarker?.version }"
+                || code == "set { schemaMarker = newValue.map(SchemaMarker.init) }"
+            if !(declares || stamps || names || accessor) {
                 offenders.append("\(url.lastPathComponent):\(number): \(code)")
             }
         }
     }
     #expect(offenders.isEmpty, "the marker is being read, so it is no longer only a marker:\n\(offenders.joined(separator: "\n"))")
+    #expect(lowerings.count == 1, "the encoder's lowering is the one sanctioned use (F552): \(lowerings)")
 }

@@ -46,12 +46,10 @@ func shredRemovesTheRecordFromEveryGeneration() throws {
     try store.save([keep, Note(id: "m", title: "Planning")], now: 4)
     #expect(try everyHistoryFile(root).values.contains { $0.contains("confidential") })
 
-    let rewritten = try store.rewriteHistory { notes in
-        let kept = notes.filter { $0.id != "s" }
-        return kept.count == notes.count ? nil : kept
-    }
+    let shred = try store.shredHistory(removingElementsWithIDs: ["s"])
 
-    #expect(rewritten.count == 2, "exactly the two generations that held the record: \(rewritten)")
+    #expect(shred.rewritten.count == 2, "exactly the two generations that held the record: \(shred.rewritten)")
+    #expect(shred.rotation != nil, "the delete was the last save, so the backup held the record")
     let after = try everyHistoryFile(root)
     #expect(!after.values.contains { $0.contains("confidential") })
     // And the backup copy, which is the previous generation, no longer holds it either.
@@ -68,13 +66,12 @@ func shredLeavesUntouchedGenerationsAlone() throws {
     try store.save([Note(id: "k", title: "Standup")], now: 3)
     let before = try everyHistoryFile(root)
 
-    let rewritten = try store.rewriteHistory { notes in
-        let kept = notes.filter { $0.id != "s" }
-        return kept.count == notes.count ? nil : kept
-    }
+    let shred = try store.shredHistory(removingElementsWithIDs: ["s"])
 
     let after = try everyHistoryFile(root)
-    #expect(rewritten.count == 1)
+    #expect(shred.rewritten.count == 1)
+    // The backup is the second save, which held the secret, so it was rotated out once.
+    #expect(shred.rotation != nil)
     // Every file that did not hold the secret is still there under its old name with its old bytes.
     for (name, bytes) in before where !bytes.contains("Secret") {
         #expect(after[name] == bytes, "\(name) should be untouched")
@@ -90,10 +87,7 @@ func shredKeepsGenerationsRestorable() throws {
     try store.save([Note(id: "k", title: "Standup"), Note(id: "m", title: "More")], now: 3)
     let sequencesBefore = try store.retainedGenerations().map(\.sequence).sorted()
 
-    _ = try store.rewriteHistory { notes in
-        let kept = notes.filter { $0.id != "s" }
-        return kept.count == notes.count ? nil : kept
-    }
+    _ = try store.shredHistory(removingElementsWithIDs: ["s"])
 
     let generations = try store.retainedGenerations()
     #expect(Set(generations.map(\.sequence)).isSuperset(of: Set(sequencesBefore)))
@@ -108,4 +102,24 @@ func shredKeepsGenerationsRestorable() throws {
     #expect(oldest.recordCount == 1, "the ledger's count for the rewritten generation follows: \(String(describing: oldest.recordCount))")
     _ = try store.restore(generation: oldest)
     #expect(try store.load()?.value == [Note(id: "k", title: "Standup")])
+}
+
+@Test("A shred matches ids in either case and never re-saves the live value when the backup holds none of them (F552)")
+func shredMatchesCaseInsensitivelyAndRotatesOnlyWhenNeeded() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try store.save([Note(id: "k", title: "Standup"), Note(id: "ab-CD", title: "Secret")], now: 1)
+    try store.save([Note(id: "k", title: "Standup")], now: 2)
+    try store.save([Note(id: "k", title: "Standup, later")], now: 3)
+    let primary = root.appendingPathComponent("meetings.json")
+    let primaryBefore = try Data(contentsOf: primary)
+    let generationsBefore = try store.retainedGenerations().count
+
+    let shred = try store.shredHistory(removingElementsWithIDs: ["AB-cd"])
+
+    #expect(shred.rewritten.count == 1)
+    #expect(!(try everyHistoryFile(root).values.contains { $0.contains("Secret") }))
+    #expect(shred.rotation == nil, "the backup never held the secret, so nothing needed rotating")
+    #expect(try Data(contentsOf: primary) == primaryBefore, "the live value was saved again for no reason")
+    #expect(try store.retainedGenerations().count == generationsBefore)
 }

@@ -237,9 +237,11 @@ meeting removes its recording folder straight away. Its title, transcript, notes
 the backup copy and the index generations under `meetings.history/` for one week — the same window
 the recovery list covers — so a mistaken or runaway delete can still be undone by restoring an
 earlier generation. After that week (checked at each launch and after each delete) every generation
-that held the meeting is re-recorded without it under a new name, and the backup copy is rotated;
-generations that never held it are not touched, so the ability to undo a bad save is kept for every
-other meeting. The queue of pending deletions is `meetings.pending-shred.json`.
+that held the meeting is re-recorded without it under a new name, and the backup copy is rotated if
+it still holds the meeting; generations that never held it are not touched, so the ability to undo a
+bad save is kept for every other meeting. The rewrite removes only that meeting's entry: everything
+else in each generation stays as it was written, including anything a newer version of WhisperMeet
+added that this one does not understand (F552). The queue of pending deletions is `meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never
