@@ -29,7 +29,11 @@ public struct RetentionPolicy: Sendable, Equatable {
     /// Keep the newest generation older than each of these ages, in seconds.
     public var ageAnchors: [Int]
     public var pinHighWaterRecordCount: Bool
+    /// The byte budget's FLOOR (F527). The budget a save prunes against is
+    /// `effectiveByteBudget(forIndexBytes:)`, which never goes below this.
     public var byteBudget: Int
+    /// Where the budget stops scaling with the index (F527). Never lowers `byteBudget`.
+    public var byteBudgetCeiling: Int
     public var maxConflictBranches: Int
 
     public init(
@@ -37,16 +41,49 @@ public struct RetentionPolicy: Sendable, Equatable {
         ageAnchors: [Int] = [3_600, 86_400, 604_800],
         pinHighWaterRecordCount: Bool = true,
         byteBudget: Int = 256 * 1024 * 1024,
-        maxConflictBranches: Int = 20
+        maxConflictBranches: Int = 20,
+        byteBudgetCeiling: Int = 2 * 1024 * 1024 * 1024
     ) {
         self.recentCount = recentCount
         self.ageAnchors = ageAnchors
         self.pinHighWaterRecordCount = pinHighWaterRecordCount
         self.byteBudget = byteBudget
+        self.byteBudgetCeiling = byteBudgetCeiling
         self.maxConflictBranches = maxConflictBranches
     }
 
     public static let dictationLog = RetentionPolicy(recentCount: 2, ageAnchors: [86_400])
+
+    /// The most generations these rules keep at once in the ordinary case: the newest
+    /// `recentCount`, one per age anchor, the high-water pin, and the live primary and backup that
+    /// rule 4 keeps even when they are not among the newest (F527). Derived from the rules rather
+    /// than chosen, so a policy with more anchors gets a proportionally larger budget.
+    public var maximumKeptGenerations: Int {
+        max(0, recentCount) + ageAnchors.count + (pinHighWaterRecordCount ? 1 : 0) + 2
+    }
+
+    /// The byte budget for an index whose current body is `indexBytes` long (F527).
+    ///
+    /// **Why it scales.** The budget may trim only age anchors, and it trims whenever what the
+    /// rules kept is over it. A fixed 256 MiB is passed by the three newest generations alone once
+    /// the index reaches ~85 MB — about 570 meetings at F211's measured ~15 MB per hundred — and
+    /// from then on every save pruned the hour, day and week anchors, leaving three saves of undo.
+    /// Room for `maximumKeptGenerations` copies of the current index means the budget does nothing
+    /// in the steady state at any size, which is what design §7.2 always said it should do.
+    ///
+    /// **Why the ceiling.** It is still a ceiling on disk use, so the scaling stops somewhere. The
+    /// default, 2 GiB, is eight times the old fixed budget; with the default rules' nine slots it
+    /// binds only once the index itself passes ~238 MB, about 1,590 meetings at the same density —
+    /// nearly three times the ~570 at which the fixed budget began pruning every anchor. Past it,
+    /// the budget trims the anchors oldest-first exactly as before, and never rules 1, 3 or 4.
+    ///
+    /// Saturating: the multiply cannot trap on a pathological size, and a negative size is treated
+    /// as zero. The floor `byteBudget` always applies, even above the ceiling, so a configured
+    /// policy is never made stricter than it asked for.
+    public func effectiveByteBudget(forIndexBytes indexBytes: Int) -> Int {
+        let (scaled, overflow) = max(0, indexBytes).multipliedReportingOverflow(by: maximumKeptGenerations)
+        return max(byteBudget, min(byteBudgetCeiling, overflow ? Int.max : scaled))
+    }
 }
 
 /// One generation on disk, as the directory scan sees it.

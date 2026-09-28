@@ -518,6 +518,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         let pruned = pruneHistory(
             ledger: StoreLedger.read(at: ledgerURL, using: io),
             liveFingerprints: [newFingerprint, primaryFingerprint].compactMap { $0 },
+            indexBytes: newData.count,
             now: now
         )
         if !pruned.isEmpty { phases.append(.prune) }
@@ -721,6 +722,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     private func pruneHistory(
         ledger: StoreLedger?,
         liveFingerprints: [String],
+        indexBytes: Int,
         now: Int
     ) -> [String] {
         var counts: [String: Int] = [:]
@@ -730,8 +732,12 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             if let count = record.recordCount { counts[name] = count }
             times[name] = record.wroteAtEpochSeconds
         }
+        // The budget follows the index this save just wrote (F527); everything else in the policy
+        // is passed through unchanged, so `prune` itself stays a pure function of what it is given.
+        var policy = retention
+        policy.byteBudget = retention.effectiveByteBudget(forIndexBytes: indexBytes)
         return history.prune(
-            policy: retention, now: now, recordCounts: counts, writtenAt: times,
+            policy: policy, now: now, recordCounts: counts, writtenAt: times,
             liveFingerprints: liveFingerprints
         )
     }
