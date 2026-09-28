@@ -2180,6 +2180,9 @@ final class AppModel: ObservableObject {
     /// Why a finished segment re-run was not put in: the transcript was edited while it ran (F436).
     static let segmentReRunDiscardedForEdits = "The transcript was edited while that segment was being "
         + "re-transcribed, so the new line was not put in — it would have replaced your edits."
+    /// Why a finished segment re-run was not put in: its line was removed or changed while it ran (F573).
+    static let segmentReRunDiscardedLineGone = "That line was removed or changed while it was being "
+        + "re-transcribed, so the new text was not put in. Nothing else in the transcript was changed."
     /// Why Second Opinion's Replace was refused: the transcript was edited by hand (F436).
     static let secondOpinionReplaceRefusedForEdits = "This transcript was edited by hand, so a line can't "
         + "be replaced with the other engine's reading — that rebuilds the text from the original lines "
@@ -2195,6 +2198,8 @@ final class AppModel: ObservableObject {
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
               let end = meeting.segments[index].end else { return }
+        // The line this run is for, remembered by what it is rather than where it was (F573).
+        let target = meeting.segments[index]
         // F436: the splice rebuilds the text from the lines, which is every hand edit gone. Refused
         // here, before any engine time, and again at the write below.
         guard !store.isTranscriptEdited(meeting) else {
@@ -2236,16 +2241,23 @@ final class AppModel: ObservableObject {
                 let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
                 var spliced = false
                 var editedMeanwhile = false
+                var lineGone = false
                 store.update(id: id) { meeting in
-                    guard meeting.segments.indices.contains(index) else { return }
                     // F436: re-checked on the record being written, not the one read before the engine
                     // ran. The engine takes seconds to minutes, and an edit made in that time wins.
                     guard !store.isTranscriptEdited(meeting) else {
                         editedMeanwhile = true
                         return
                     }
+                    // F573: found again, not trusted to be where it was. Line removals and their Undo
+                    // are not blocked while an engine runs, so the index captured before it can now
+                    // hold a neighbouring line, and splicing there overwrote a line nobody chose.
+                    guard let current = Self.currentIndex(of: target, in: meeting.segments, wasAt: index) else {
+                        lineGone = true
+                        return
+                    }
                     spliced = true
-                    let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: index, with: cleaned.segments)
+                    let merged = TranscriptSegmentSplice.splice(meeting.segments, replacingIndex: current, with: cleaned.segments)
                     meeting.segments = merged
                     meeting.transcriptText = TranscriptFormatter.timestamped(merged)
                     if cleaned.removedCount > 0 {
@@ -2259,6 +2271,8 @@ final class AppModel: ObservableObject {
                 }
                 if editedMeanwhile {
                     alertMessage = Self.segmentReRunDiscardedForEdits
+                } else if lineGone {
+                    alertMessage = Self.segmentReRunDiscardedLineGone
                 }
                 // Said rather than refused: see `segmentRerunWarning` for why a line in the other
                 // script is more likely the faithful one (F471). Keyed on the language the transcript
@@ -2275,6 +2289,17 @@ final class AppModel: ObservableObject {
                 alertMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Where `line` is in `segments` now (F573): still at `index` if it is there, otherwise the first
+    /// line with its start and text — the identity Second Opinion's Replace uses — or nil when no
+    /// line has both, because it was removed or rewritten.
+    static func currentIndex(of line: TranscriptSegment, in segments: [TranscriptSegment], wasAt index: Int) -> Int? {
+        func isLine(_ candidate: TranscriptSegment) -> Bool {
+            candidate.start == line.start && candidate.text == line.text
+        }
+        if segments.indices.contains(index), isLine(segments[index]) { return index }
+        return segments.firstIndex(where: isLine)
     }
 
     func requestSegmentReTranscription(id: UUID, index: Int) {
