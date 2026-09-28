@@ -41,10 +41,10 @@ private func riffChunk(_ identifier: String, _ body: Data) -> Data {
 
 /// A RIFF/WAVE file: `fmt `, then any `extra` chunks, then `data` holding `pcm`.
 private func wavFile(
-    channels: UInt16, sampleRate: UInt32, bitsPerSample: UInt16, extra: [Data] = [], pcm: Data
+    channels: UInt16, sampleRate: UInt32, bitsPerSample: UInt16, formatTag: UInt16 = 1, extra: [Data] = [], pcm: Data
 ) -> Data {
     let blockAlign = channels * bitsPerSample / 8
-    let format = le16(1) + le16(channels) + le32(sampleRate)
+    let format = le16(formatTag) + le16(channels) + le32(sampleRate)
         + le32(sampleRate * UInt32(blockAlign)) + le16(blockAlign) + le16(bitsPerSample)
     let payload = ([riffChunk("fmt ", format)] + extra + [riffChunk("data", pcm)]).reduce(Data("WAVE".utf8), +)
     return Data("RIFF".utf8) + le32(UInt32(payload.count)) + payload
@@ -116,31 +116,93 @@ func segmentReRunSlicesPastAListChunk() async throws {
     #expect(Set(samples(in: clip.dropFirst(44))) == [2_000])
 }
 
+// F581 — F471 stopped slicing a stereo, 24-bit or float import as if it were 16-bit mono (wrong
+// audio, spliced in silently) by refusing it: "Re-transcribe this segment" was unavailable on those
+// meetings. The segment's span is now decoded and written as 16-bit mono at the recording's own rate,
+// and the engine runs on that. The fixtures put the audio in the SECOND second only, and for stereo in
+// the RIGHT channel only: a clip cut from the wrong place is silent, and a conversion that keeps
+// channel 0 instead of mixing (F398's trap) is silent too.
+
+/// One frame of `channels` channels, the last one carrying `value` and the others silent, encoded as
+/// `bits`-bit integer PCM or (formatTag 3) 32-bit float.
+private func frame(_ value: Double, channels: UInt16, bits: UInt16, float: Bool) -> Data {
+    (0..<Int(channels)).map { channel -> Data in
+        let sample = channel == Int(channels) - 1 ? value : 0
+        if float { return withUnsafeBytes(of: Float(sample).bitPattern.littleEndian) { Data($0) } }
+        let scaled = Int32(sample * Double(1 << (Int(bits) - 1)))
+        return withUnsafeBytes(of: scaled.littleEndian) { Data($0.prefix(Int(bits) / 8)) }
+    }.reduce(Data(), +)
+}
+
 @MainActor
-@Test("A re-run refuses a WAV it cannot slice as 16-bit mono, and the engine never runs (F471)")
-func segmentReRunRefusesLayoutsItCannotSlice() async throws {
-    for (channels, bits) in [(UInt16(2), UInt16(16)), (1, 24)] {
-        let bytesPerSecond = 16_000 * Int(channels) * Int(bits) / 8
-        let segments = [seg("first", 0, 1), seg("second", 1, 2)]
-        let (model, id, root) = try meetingWithRecording(
-            wavFile(channels: channels, sampleRate: 16_000, bitsPerSample: bits, pcm: Data(count: 2 * bytesPerSecond)),
-            fileName: "recording.wav", segments: segments
-        )
+@Test("A re-run of a stereo, 24-bit or float WAV decodes the segment to 16-bit mono instead of refusing it (F581)")
+func segmentReRunTranscodesLayoutsItCannotSlice() async throws {
+    let layouts: [(channels: UInt16, bits: UInt16, float: Bool)] = [
+        (2, 16, false), (1, 24, false), (2, 24, false), (1, 32, true), (2, 32, true),
+    ]
+    for layout in layouts {
+        let label = Comment(rawValue: "\(layout.channels) ch, \(layout.bits)-bit\(layout.float ? " float" : "")")
+        let silence = frame(0, channels: layout.channels, bits: layout.bits, float: layout.float)
+        let tone = frame(0.25, channels: layout.channels, bits: layout.bits, float: layout.float)
+        let oneSecond = { (frame: Data) in (0..<16_000).reduce(into: Data()) { data, _ in data.append(frame) } }
+        let pcm = oneSecond(silence) + oneSecond(tone) + oneSecond(silence)
+        let recording = wavFile(channels: layout.channels, sampleRate: 16_000, bitsPerSample: layout.bits,
+                                formatTag: layout.float ? 3 : 1, pcm: pcm)
+        let segments = [seg("first", 0, 1), seg("second wrong", 1, 2), seg("third", 2, 3)]
+        let (model, id, root) = try meetingWithRecording(recording, fileName: "recording.wav", segments: segments)
         defer { try? FileManager.default.removeItem(at: root) }
         let call = EngineCall()
-        model.runTranscriptionEngineOverride = { _, _ in
+        model.runTranscriptionEngineOverride = { _, clipURL in
             call.ran = true
-            return TranscriptionResult(id: "x", text: "junk", languageCode: "en", audioDuration: 1,
-                                       confidence: nil, segments: [seg("junk", 0, 1)])
+            call.clip = try Data(contentsOf: clipURL)
+            return TranscriptionResult(id: "x", text: "second right", languageCode: "en", audioDuration: 1,
+                                       confidence: nil, segments: [seg("second right", 0, 1)])
         }
 
         await model.reTranscribeSegment(id: id, index: 1)
 
-        #expect(call.ran == false, "\(channels) ch, \(bits)-bit")
-        #expect(model.store.meeting(id: id)?.segments[1].text == "second", "\(channels) ch, \(bits)-bit")
-        #expect(model.alertMessage == SegmentReRunError.unsupportedAudioLayout.errorDescription,
-                "\(channels) ch, \(bits)-bit")
+        #expect(call.ran, label)
+        #expect(model.alertMessage == nil, label)
+        let texts: [String]? = model.store.meeting(id: id)?.segments.map(\.text)
+        #expect(texts == ["first", "second right", "third"], label)
+        let recordingURL = root.appendingPathComponent("Recordings/\(id.uuidString)/recording.wav")
+        #expect(try Data(contentsOf: recordingURL) == recording, "the recording is untouched — \(label)")
+
+        let clip = try #require(call.clip, label)
+        let clipURL = root.appendingPathComponent("clip.wav")
+        try clip.write(to: clipURL)
+        let header = try #require(WAVInspection.header(at: clipURL), label)
+        #expect(header.formatTag == 1 && header.channels == 1 && header.bitsPerSample == 16, label)
+        #expect(header.sampleRate == 16_000, "the recording's own rate — \(label)")
+        let clipSamples = samples(in: clip.dropFirst(Int(header.dataOffset)))
+        #expect(clipSamples.count == 16_000, "exactly the one second of the segment — \(label)")
+        // Every sample from the tone, none from the silence either side; and for stereo, the right
+        // channel mixed in rather than dropped with channel 0's silence.
+        #expect(clipSamples.allSatisfy { $0 > 0 }, label)
+        #expect(Set(clipSamples).count == 1, label)
     }
+}
+
+@MainActor
+@Test("A re-run still refuses a WAV whose codec cannot be decoded, and the engine never runs (F471, F581)")
+func segmentReRunRefusesAWAVItCannotDecode() async throws {
+    // A format tag no decoder knows. Byte-slicing it would be garbage; decoding it is impossible.
+    let recording = wavFile(channels: 1, sampleRate: 16_000, bitsPerSample: 16, formatTag: 0x1234, pcm: Data(count: 64_000))
+    let segments = [seg("first", 0, 1), seg("second", 1, 2)]
+    let (model, id, root) = try meetingWithRecording(recording, fileName: "recording.wav", segments: segments)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let call = EngineCall()
+    model.runTranscriptionEngineOverride = { _, _ in
+        call.ran = true
+        return TranscriptionResult(id: "x", text: "junk", languageCode: "en", audioDuration: 1,
+                                   confidence: nil, segments: [seg("junk", 0, 1)])
+    }
+
+    await model.reTranscribeSegment(id: id, index: 1)
+
+    #expect(call.ran == false)
+    #expect(model.store.meeting(id: id)?.segments[1].text == "second")
+    #expect(model.alertMessage == SegmentReRunError.unsupportedAudioLayout.errorDescription)
 }
 
 @MainActor

@@ -70,6 +70,26 @@ public enum SegmentAudioRange {
         return boundedStart..<max(boundedStart, boundedEnd)
     }
 
+    /// The same span as a range of sample FRAMES, for audio that is decoded rather than byte-sliced
+    /// (F581): a stereo, 24-bit or float import, which `AppModel.makeSegmentClip` hands to a decoder
+    /// instead of cutting its bytes. It is `byteRange` over a 16-bit mono layout of `availableFrames`
+    /// frames, so the rounding, the end tolerance and the refusal of a span past the end (F416) are
+    /// the same ones, not a second copy that could drift from them.
+    public static func frameRange(
+        startSeconds: Double,
+        endSeconds: Double,
+        sampleRate: Int,
+        availableFrames: Int64
+    ) throws -> Range<Int> {
+        // Saturating: `availableFrames` comes from a file's own header, and `* 2` can overflow.
+        let (bytes, overflowed) = Int(clamping: max(0, availableFrames)).multipliedReportingOverflow(by: bytesPerSample)
+        let range = try byteRange(
+            startSeconds: startSeconds, endSeconds: endSeconds, sampleRate: sampleRate,
+            availableBytes: overflowed ? .max : bytes, dataOffset: 0
+        )
+        return (range.lowerBound / bytesPerSample)..<(range.upperBound / bytesPerSample)
+    }
+
     /// F362. `Int(Double)` **traps** rather than saturating, and both halves of the usual mistake were
     /// present here: the conversion was unguarded, and the caller's clamp — which exists — ran *after*
     /// it, where it can never help. `isFinite` alone is not the fix either, because `1e30` is perfectly

@@ -81,7 +81,7 @@ enum SegmentReRunError: LocalizedError {
         case .unsupportedRecordingFormat:
             return "This recording isn't a native WAV, so a single segment can't be re-transcribed in place. Re-transcribe the whole meeting instead."
         case .unsupportedAudioLayout:
-            return "This recording isn't 16-bit mono PCM, so a single segment can't be cut from it without re-encoding. Re-transcribe the whole meeting instead."
+            return "This recording's audio format couldn't be decoded, so a single segment can't be cut from it. Re-transcribe the whole meeting instead."
         case .unreadableRecording:
             return "The recording could not be read for re-transcription."
         }
@@ -2385,7 +2385,8 @@ final class AppModel: ObservableObject {
     /// Only 16-bit mono integer PCM can be sliced this way, because the fresh header says exactly
     /// that. The app's own recordings are always it; an import is copied verbatim and can be
     /// anything, and a stereo or 24-bit file used to be re-wrapped as mono — audio at the wrong time
-    /// and the wrong speed, transcribed and spliced in with nothing said (F471). Those are refused.
+    /// and the wrong speed, transcribed and spliced in with nothing said (F471). Anything else is
+    /// decoded instead, span only, by `decodedSegmentClip` (F581).
     static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
         let handle = try FileHandle(forReadingFrom: wavURL)
         defer { try? handle.close() }
@@ -2405,7 +2406,7 @@ final class AppModel: ObservableObject {
             throw SegmentReRunError.unreadableRecording
         }
         guard header.formatTag == 1, header.channels == 1, header.bitsPerSample == 16, header.sampleRate > 0 else {
-            throw SegmentReRunError.unsupportedAudioLayout
+            return try decodedSegmentClip(from: wavURL, startSeconds: startSeconds, endSeconds: endSeconds)
         }
         let dataOffset = Int(header.dataOffset)
         let fileSize = (try? wavURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? dataOffset
@@ -2424,6 +2425,79 @@ final class AppModel: ObservableObject {
         // The 64-bit form: `UInt32(pcm.count)` traps past 4 GiB rather than saturating, and it
         // writes the same classic 44-byte header below that (F302).
         var clip = WAVWriter.header(sampleRate: header.sampleRate, dataByteCount64: UInt64(pcm.count))
+        clip.append(pcm)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")
+        try clip.write(to: url)
+        return url
+    }
+
+    /// A segment clip from a WAV that cannot be byte-sliced — stereo, 24- or 32-bit, float, or the
+    /// WAVE_FORMAT_EXTENSIBLE wrapper (F581). Decodes just the segment's frames with AVFoundation,
+    /// mixes every channel into one (`MonoDownmixConverter`: a plain converter would keep channel 0
+    /// and drop the rest, F398), and writes 16-bit mono at the recording's own rate — the layout
+    /// `makeSegmentClip` writes for a native recording, which every engine already takes. The
+    /// recording is opened for reading only; the clip goes to a fresh temp file, as before.
+    ///
+    /// Refused, as F471 refused every such file, only when AVFoundation cannot decode the format at
+    /// all. The span is bounded exactly as a byte slice is (`SegmentAudioRange.frameRange`), so a
+    /// timestamp past the end is refused here too rather than decoded to the end of the file (F416).
+    ///
+    /// The one raise the SDK headers name on this path is `AVAudioPCMBuffer`'s initializer, for a
+    /// non-PCM format (`AVAudioBuffer.h`); both formats here are PCM — a file's processing format is
+    /// always deinterleaved float, and the target is built as Int16 below.
+    static func decodedSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: wavURL)
+        } catch {
+            throw SegmentReRunError.unsupportedAudioLayout
+        }
+        let source = file.processingFormat
+        guard source.sampleRate > 0, source.channelCount > 0,
+              let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: source.sampleRate,
+                                         channels: 1, interleaved: true) else {
+            throw SegmentReRunError.unsupportedAudioLayout
+        }
+        let frames = try SegmentAudioRange.frameRange(
+            startSeconds: startSeconds, endSeconds: endSeconds,
+            sampleRate: Int(saturating: source.sampleRate), availableFrames: file.length
+        )
+        // `AVAudioFrameCount` is 32-bit: a span past `UInt32.max` frames (about a day at 48 kHz) is
+        // refused rather than truncated.
+        guard let count = AVAudioFrameCount(exactly: frames.count),
+              let converter = MonoDownmixConverter.make(from: source, to: target) else {
+            throw SegmentReRunError.unsupportedAudioLayout
+        }
+        var pcm = Data()
+        var remaining = count
+        do {
+            file.framePosition = AVAudioFramePosition(frames.lowerBound)
+            // In a loop: a read "attempts to fill the buffer" and reports what it managed
+            // (`AVAudioFile.h`), and one read of a mono float file came back 267 frames short of a
+            // second in this ticket's test. At most 64 Ki frames a pass, so a long span is never one
+            // float buffer the size of the whole passage. Stops at the span's end, or the file's.
+            while remaining > 0 {
+                let pass = min(remaining, 65_536)
+                guard let decoded = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: pass) else {
+                    throw SegmentReRunError.unsupportedAudioLayout
+                }
+                try file.read(into: decoded, frameCount: pass)
+                guard decoded.frameLength > 0,
+                      let mono = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: decoded.frameLength) else { break }
+                // Same rate on both sides, so the simple conversion applies (`AVAudioConverter.h`:
+                // no codec, no sample-rate conversion).
+                try converter.convert(to: mono, from: decoded)
+                guard let samples = mono.int16ChannelData else { throw SegmentReRunError.unreadableRecording }
+                pcm.append(Data(bytes: samples[0], count: Int(mono.frameLength) * MemoryLayout<Int16>.size))
+                remaining -= min(remaining, decoded.frameLength)
+            }
+        } catch let error as SegmentReRunError {
+            throw error
+        } catch {
+            throw SegmentReRunError.unreadableRecording
+        }
+        var clip = WAVWriter.header(sampleRate: UInt32(saturating: source.sampleRate), dataByteCount64: UInt64(pcm.count))
         clip.append(pcm)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")

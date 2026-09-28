@@ -155,3 +155,22 @@ func segmentAudioByteRangeStartsAtTheDataChunk() throws {
     #expect(range.lowerBound == 78 + 1 * 16_000 * 2)
     #expect(range.upperBound == 78 + 2 * 16_000 * 2)
 }
+
+// F581 — a stereo, 24-bit or float import is decoded rather than byte-sliced, so its span is needed in
+// frames. `frameRange` is `byteRange` over a 16-bit mono layout, so it keeps F416's refusal and
+// F362's saturation instead of restating them.
+@Test("A span in frames is bounded exactly as a span in bytes is (F581)")
+func segmentAudioFrameRangeMatchesTheByteRange() throws {
+    let range = try SegmentAudioRange.frameRange(startSeconds: 1, endSeconds: 2, sampleRate: 16_000, availableFrames: 48_000)
+    #expect(range == 16_000..<32_000)
+    // The rounding tolerance at the end, bounded by the file.
+    let last = try SegmentAudioRange.frameRange(startSeconds: 2, endSeconds: 3.4, sampleRate: 16_000, availableFrames: 48_000)
+    #expect(last == 32_000..<48_000)
+    // Past the end by more than rounding: refused, never decoded to the end of the file (F416).
+    #expect(throws: SegmentAudioRangeError.segmentOutsideRecording) {
+        try SegmentAudioRange.frameRange(startSeconds: 1, endSeconds: 1e30, sampleRate: 16_000, availableFrames: 48_000)
+    }
+    // A file length no real file has does not trap in the `* 2`.
+    let huge = try SegmentAudioRange.frameRange(startSeconds: 1, endSeconds: 2, sampleRate: 48_000, availableFrames: .max)
+    #expect(huge == 48_000..<96_000)
+}
