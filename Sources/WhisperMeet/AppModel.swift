@@ -1215,6 +1215,32 @@ final class AppModel: ObservableObject {
         recordingPreflight = .inspect(storageDirectory: store.rootDirectory)
     }
 
+    /// Asks macOS for screen and system audio recording access (F565). Seams, so a test presses
+    /// "Allow…" without a TCC prompt or System Settings opening on the machine running it.
+    var requestScreenCaptureAccess: @MainActor () -> Bool = { CGRequestScreenCaptureAccess() }
+    var openScreenCaptureSettings: @MainActor () -> Void = {
+        NSWorkspace.shared.open(AppModel.screenCaptureSettingsURL)
+    }
+    /// System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording.
+    nonisolated static let screenCaptureSettingsURL =
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+
+    /// The preflight row's "Allow…" (F565).
+    ///
+    /// On a fresh Mac `CGPreflightScreenCaptureAccess()` is false because nothing has asked yet, and
+    /// WhisperMeet is listed in System Settings only once something has — which used to be Start or
+    /// Test Recording alone. So the row's "Enable, then quit with ⌘Q" sent a new user to a list with
+    /// nothing in it to enable. Asking here puts it there; when that does not grant access outright,
+    /// the pane is opened at the switch the user now needs. The very first ask also shows macOS's
+    /// own prompt, which offers the same pane: a second route to one place, never a click that
+    /// does nothing.
+    func requestSystemAudioAccess() {
+        if !requestScreenCaptureAccess() {
+            openScreenCaptureSettings()
+        }
+        refreshRecordingPreflight()
+    }
+
     /// Whether a library-changing action may proceed, explaining the refusal through `alertMessage`
     /// — the channel these entry points already use. Mirrors `MeetingStore.mutationIsAllowed()`, which
     /// covers the write itself; this covers the work that leads up to one (F187).

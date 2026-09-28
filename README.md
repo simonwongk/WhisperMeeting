@@ -65,8 +65,9 @@ actually run day to day — with a guarded, atomic replace of any previous insta
 while WhisperMeet is open, and restores the previous app if anything fails partway through). It signs
 with a local **WhisperMeet Dev** code-signing certificate when one exists in your keychain, and falls
 back to an ad-hoc signature otherwise. On first recording, macOS asks for Microphone and Screen &
-System Audio Recording permissions. If system audio is silent after granting permission, quit and
-reopen the app.
+System Audio Recording permissions; to grant the second beforehand, press **Allow…** beside Mac
+system audio under Before recording, which adds WhisperMeet to that System Settings list and opens
+it. If system audio is silent after granting permission, quit and reopen the app.
 
 A stable signing identity keeps your permission grants across rebuilds. With only an ad-hoc
 signature, each rebuild changes the app’s code identity, so macOS may leave the old **Screen &

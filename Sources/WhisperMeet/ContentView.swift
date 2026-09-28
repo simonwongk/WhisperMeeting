@@ -887,6 +887,12 @@ private struct RecordMeetingView: View {
             case .notGranted:
                 Label("Enable, then quit with ⌘Q", systemImage: "exclamationmark.circle.fill")
                     .foregroundStyle(.orange)
+                // F565: only a request lists WhisperMeet in System Settings ▸ Screen & System Audio
+                // Recording, and only Start and Test Recording made one — so on a fresh Mac the
+                // label above pointed at a list with nothing to enable. This makes the request.
+                Button("Allow…") { model.requestSystemAudioAccess() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             case .denied:
                 Label("Permission denied", systemImage: "xmark.circle.fill")
                     .foregroundStyle(.red)

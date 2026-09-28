@@ -60,17 +60,20 @@ public enum TranscriptionEngineAvailability {
             ? (isWhisperInstalled ? .whisperLarge : nil)
             : (isQwenInstalled ? .qwenBalanced : nil)
 
+        // F565: the install buttons are under Settings ▸ Local recognition; Settings ▸ Transcription
+        // holds only the model and language pickers. The first message used to send a user with
+        // nothing installed to the section with nothing to install.
         guard let alternative else {
             return """
             No transcription model is installed yet, so this recording is saved but not transcribed. \
-            Open Settings ▸ Transcription to install one, then choose Transcribe.
+            Open Settings ▸ Local recognition to install one, then choose Transcribe.
             """
         }
         return """
         \(selected.shortDisplayName) is selected but not installed, and \
         \(alternative.shortDisplayName) is. The recording is saved. Open Settings ▸ Transcription, \
         choose \(alternative.shortDisplayName) as the model, then choose Transcribe — or install \
-        \(selected.shortDisplayName) to keep using it.
+        \(selected.shortDisplayName) in Settings ▸ Local recognition to keep using it.
         """
     }
 
