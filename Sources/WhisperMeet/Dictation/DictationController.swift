@@ -558,11 +558,29 @@ final class DictationController: ObservableObject {
         hotkeyTapFailed = !started
         if !started {
             log.error("event tap could not be created — Accessibility/Input Monitoring off")
+            if session.state == .listening {
+                // F633: `start` removed the old tap before failing to make the new one, so no key
+                // can end this capture now; only the 120 s watchdog would have. End it the way its
+                // own release or toggle-off would, so it is transcribed and delivered, and clear
+                // toggle's on-state as the watchdog does (F78).
+                log.notice("dictation trigger lost under a live capture; finishing that dictation")
+                _ = beginTranscriptionIfNeeded()
+                hotkeyMonitor.resetToggleState()
+            }
         }
         guard session.state == .idle else { return }
-        status = started
-            ? .idle
-            : .error("Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security.")
+        status = settledStatus
+    }
+
+    /// What `status` says while the trigger's tap cannot be created.
+    static let tapFailureMessage = "Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security."
+
+    /// What `status` settles to when no dictation is in flight (F633): idle, or the tap failure while
+    /// the trigger is dead. Every path that ends a dictation writes this rather than `.idle`: the
+    /// pill's dismiss runs up to 1.6 s after its dictation, and a trigger that failed to re-arm in
+    /// that window was reported as working.
+    private var settledStatus: Status {
+        hotkeyTapFailed ? .error(Self.tapFailureMessage) : .idle
     }
 
     /// A trigger chosen while dictation is enabled (F584). Nothing waits: a trigger chosen but not
@@ -844,7 +862,7 @@ final class DictationController: ObservableObject {
         captureWatchdog.cancel()
         recorder.cancel()
         _ = session.handle(.dismiss)
-        status = .idle
+        status = settledStatus
         hideOverlay()
         // Toggle mode latched "on" at this press; the next press must start a dictation, not end one.
         hotkeyMonitor.resetToggleState()
@@ -927,7 +945,7 @@ final class DictationController: ObservableObject {
             log.notice("dictation capture yielded no audio")
             recorder.cancel()
             _ = session.handle(.dismiss)
-            status = .idle
+            status = settledStatus
             scheduleIdleEviction()
             showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
@@ -956,7 +974,7 @@ final class DictationController: ObservableObject {
         switch action {
         case .discard:
             try? FileManager.default.removeItem(at: clip.url)
-            status = .idle
+            status = settledStatus
             scheduleIdleEviction() // a too-short tap still leaves the model warm — re-arm eviction
             hideOverlay()
             return true
@@ -1098,10 +1116,10 @@ final class DictationController: ObservableObject {
             showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.3)
-            status = .idle
+            status = settledStatus
         default:
             scheduleDismiss(after: 1.0)
-            status = .idle
+            status = settledStatus
         }
     }
 
@@ -1174,11 +1192,12 @@ final class DictationController: ObservableObject {
         dismissWorkItem?.cancel()
         busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.hideOverlay()
-            _ = self?.session.handle(.dismiss)
-            self?.status = .idle
-            self?.prewarmRefinerWhenSafe()
-            self?.scheduleIdleEviction()
+            guard let self else { return }
+            self.hideOverlay()
+            _ = self.session.handle(.dismiss)
+            self.status = self.settledStatus
+            self.prewarmRefinerWhenSafe()
+            self.scheduleIdleEviction()
         }
         dismissWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
