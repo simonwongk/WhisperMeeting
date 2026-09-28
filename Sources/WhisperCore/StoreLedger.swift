@@ -43,7 +43,9 @@ public struct StoreLedger: Codable, Sendable, Equatable {
         public var parentFingerprint: String?
         /// Top-level element count; nil when unknown.
         public var recordCount: Int?
-        /// File name under `<stem>.history/`; nil once pruned.
+        /// File name under `<stem>.history/`; nil when the save could not retain one. NOT cleared
+        /// when the file is pruned (this used to say it was, and nothing ever did): a record whose
+        /// file is gone is dropped from `history` once it is older than the newest 64 (F517).
         public var historyName: String?
 
         public init(
