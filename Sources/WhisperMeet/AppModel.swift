@@ -1631,28 +1631,65 @@ final class AppModel: ObservableObject {
         secondOpinionProgress = progress
     }
 
+    /// What Second Opinion's Replace did (F605). The sheet marks a row "Replaced" only for
+    /// `.replaced`, and says a refusal's reason itself.
+    enum SecondOpinionReplacement: Equatable {
+        case replaced
+        case refused(String)
+    }
+
     /// Replace one diverging segment's text with the other engine's reading (F88), on explicit apply.
     ///
     /// Refused on a hand-edited transcript (F436): the text is rebuilt from the lines, which would
     /// replace every edit. Checked on the record being written. The menu item that starts Second
     /// Opinion is greyed for an edited transcript, but that held when the comparison began, not
     /// when Replace is pressed.
-    func applySecondOpinionSpan(_ span: TranscriptComparisonSpan, to id: UUID) {
-        guard let secondary = span.secondaryText else { return }
-        var refusedForEdits = false
+    ///
+    /// **Returns what happened, and raises no alert (F605).** It used to return nothing, so the
+    /// sheet marked every row "Replaced" whether or not a line was written, and the refusals went to
+    /// the window's alert — which is behind the sheet this is called from, so none was seen. The
+    /// read-only and restoring refusals are therefore checked here, before the store is asked: the
+    /// store's own refusal is a `storageErrorMessage`, said by that same root alert.
+    @discardableResult
+    func applySecondOpinionSpan(_ span: TranscriptComparisonSpan, to id: UUID) -> SecondOpinionReplacement {
+        guard let secondary = span.secondaryText else { return .refused(Self.secondOpinionReplaceLineGone) }
+        if store.isRestoringLibrary {
+            return .refused(Self.libraryRestoringMessage(Self.secondOpinionReplaceAction))
+        }
+        if store.isDegraded {
+            return .refused(ReadOnlyLibraryNotice.actionRefused(Self.secondOpinionReplaceAction))
+        }
+        guard store.meeting(id: id) != nil else { return .refused(Self.secondOpinionReplaceMeetingGone) }
+        // What `store.update` leaves it as if it declines to run the change at all — while a lost
+        // save's conflict offer is unresolved, which that banner explains (F619).
+        var outcome = SecondOpinionReplacement.refused(Self.secondOpinionReplaceNotSaved)
         store.update(id: id) { meeting in
             guard !store.isTranscriptEdited(meeting) else {
-                refusedForEdits = true
+                outcome = .refused(Self.secondOpinionReplaceRefusedForEdits)
                 return
             }
-            guard let index = meeting.segments.firstIndex(where: { $0.start == span.start && $0.text == span.primaryText }) else { return }
+            guard let index = meeting.segments.firstIndex(where: { $0.start == span.start && $0.text == span.primaryText }) else {
+                outcome = .refused(Self.secondOpinionReplaceLineGone)
+                return
+            }
             meeting.segments[index].text = secondary
             meeting.transcriptText = TranscriptFormatter.timestamped(meeting.segments)
+            outcome = .replaced
         }
-        if refusedForEdits {
-            alertMessage = Self.secondOpinionReplaceRefusedForEdits
-        }
+        return outcome
     }
+
+    /// The action a read-only or restoring library refuses, named in its message (F605).
+    static let secondOpinionReplaceAction = "Replacing a line"
+    /// Why Replace wrote nothing: the line is no longer in the transcript as compared (F605).
+    static let secondOpinionReplaceLineGone = "That line is no longer in the transcript as it was compared — "
+        + "it was removed or changed since — so nothing was replaced. Run Second Opinion again to compare "
+        + "the transcript as it is now."
+    /// Why Replace wrote nothing: the meeting was deleted while the sheet was open (F605).
+    static let secondOpinionReplaceMeetingGone = "This meeting no longer exists, so nothing was replaced."
+    /// Why Replace wrote nothing when the library declined the change without a reason of its own (F605).
+    static let secondOpinionReplaceNotSaved = "The library isn't accepting changes right now, so nothing "
+        + "was replaced. Resolve the notice in the main window, then try again."
 
     // MARK: - Speaker analysis (F219)
 

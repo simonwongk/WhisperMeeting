@@ -119,12 +119,13 @@ func secondOpinionReplaceRefusesAHandEditedTranscript() async throws {
     // The comparison was made; then the user edited before pressing Replace.
     model.store.editTranscript(id: id, text: handEdited)
 
-    model.applySecondOpinionSpan(diverging, to: id)
+    let outcome = model.applySecondOpinionSpan(diverging, to: id)
 
     let meeting = try #require(model.store.meeting(id: id))
     #expect(meeting.transcriptText == handEdited)
     #expect(meeting.segments == lines)
-    #expect(model.alertMessage == AppModel.secondOpinionReplaceRefusedForEdits)
+    // Reported to the sheet that asked, since F605 — the window's alert is behind that sheet.
+    #expect(outcome == .refused(AppModel.secondOpinionReplaceRefusedForEdits))
 }
 
 @MainActor

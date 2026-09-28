@@ -4515,10 +4515,13 @@ private struct SecondOpinionSheet: View {
     /// Said instead of the engine-failure line when the comparison could not be made for another
     /// reason, such as a transcript with no timestamped lines (F512).
     let failureReason: String?
-    let onReplace: (TranscriptComparisonSpan) -> Void
+    let onReplace: (TranscriptComparisonSpan) -> AppModel.SecondOpinionReplacement
     let onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var replaced: Set<Int> = []
+    /// Why the last Replace wrote nothing (F605). Said by this sheet's own alert: the window's alert
+    /// is behind the sheet, so a refusal sent there was never seen while the sheet was open.
+    @State private var replaceRefusal: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -4585,6 +4588,14 @@ private struct SecondOpinionSheet: View {
             .padding()
         }
         .frame(width: 520, height: 560)
+        .alert(
+            "Line not replaced",
+            isPresented: Binding(get: { replaceRefusal != nil }, set: { if !$0 { replaceRefusal = nil } })
+        ) {
+            Button("OK") { replaceRefusal = nil }
+        } message: {
+            Text(replaceRefusal ?? "")
+        }
     }
 
     @ViewBuilder
@@ -4594,9 +4605,13 @@ private struct SecondOpinionSheet: View {
                 Text(label(span.kind)).font(.caption).foregroundStyle(color(span.kind))
                 Spacer()
                 if span.kind == .diverge, span.secondaryText != nil {
+                    // F605: marked only when a line was written. A refused row stays pressable — a
+                    // read-only library, for one, can be recovered and Replace tried again.
                     Button(replaced.contains(index) ? "Replaced" : "Replace") {
-                        onReplace(span)
-                        replaced.insert(index)
+                        switch onReplace(span) {
+                        case .replaced: replaced.insert(index)
+                        case let .refused(reason): replaceRefusal = reason
+                        }
                     }
                     .disabled(replaced.contains(index))
                     .controlSize(.small)
