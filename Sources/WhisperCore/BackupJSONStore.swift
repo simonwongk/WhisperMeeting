@@ -429,7 +429,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         if decision.adoptedForeignRotation, let fingerprint = primaryFingerprint {
             repairs.append(.adoptedForeignRotation(fingerprint: fingerprint))
         }
-        let sequence = (decision.parent?.sequence ?? ledger?.current.sequence ?? 0) + 1
+        // Numbered above every generation already on disk, not merely above the ledger (F604).
+        // History is ordered by this number and retention's rule 1 keeps "the newest" by it, so a
+        // ledger that was lost or rewound — set aside by a backup restore (F463), restored from an
+        // older backup, deleted as RECOVERY.md's manual exit, or behind after a lagged commit —
+        // used to number the next saves BELOW the history: the old generations kept the newest
+        // slots, the new saves were pruned, and the recovery list offered the old copies first.
+        // The number only orders and names; the compare-and-swap never reads it, so seeding it
+        // from the directory cannot change what a save is allowed to overwrite.
+        let newestArchived = archivedNames.compactMap { StoreHistory.parse($0)?.sequence }.max() ?? 0
+        let sequence = Self.sequence(
+            after: max(decision.parent?.sequence ?? ledger?.current.sequence ?? 0, newestArchived)
+        )
 
         // 6. stage — the ONLY payload-sized write in the whole save (there were two before). Same
         //    directory, therefore same volume, therefore the later rename is atomic.
@@ -614,7 +625,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             writer: ledger.current.writer,
             verified: true
         )
-        let name = "conflict-\(String(format: "%09llu", expecting.sequence + 1))-\(writer)-\(newFingerprint).json"
+        let name = "conflict-\(String(format: "%09llu", Self.sequence(after: expecting.sequence)))-\(writer)-\(newFingerprint).json"
         do {
             try io.createDirectory(history.directoryURL, .createHistoryDirectory)
             try io.writeAtomically(newData, history.directoryURL.appendingPathComponent(name),
@@ -653,6 +664,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// How many of the newest ledger records are kept whether or not their generation is still on
     /// disk (F517). Computed, because a generic type cannot hold a static stored property.
     private static var recentLedgerRecords: Int { 64 }
+
+    /// The number after `previous`, saturating at `UInt64.max` instead of trapping (F604).
+    ///
+    /// Every input here comes off disk: the advisory ledger, or a history file NAME, which
+    /// `StoreHistory.parse` accepts up to twenty digits. `+ 1` traps on `.max` in Swift, so one
+    /// hand-edited ledger already crashed every save — every debounced keystroke — with no way to
+    /// recover in the app, and seeding from the history's names added a stray file as a second
+    /// way to do it. At the rail the number simply repeats; names stay distinct because they carry
+    /// the fingerprint, and the compare-and-swap never compares sequences.
+    private static func sequence(after previous: UInt64) -> UInt64 {
+        previous == .max ? .max : previous + 1
+    }
 
     /// Writes the new ledger unless someone else moved it since `classify`. Returns whether the
     /// commit lagged. **Never throws** — the body is already durable.
