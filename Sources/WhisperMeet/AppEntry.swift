@@ -91,6 +91,13 @@ struct WhisperMeetApp: App {
             let what = urls.count == 1 ? urls[0].lastPathComponent : "those files"
             model?.report("WhisperMeet can only transcribe audio and video: \(what) was not imported.")
         }
+        // F529: a quit during a live recording asks first, and Stop & Quit saves the meeting through
+        // the ordinary stop before the process ends.
+        lifecycle.isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
+        lifecycle.confirmQuitDuringRecording = { QuitDuringRecordingAlert.ask() }
+        lifecycle.onStopRecordingForQuit = { [weak model] in
+            await model?.stopRecordingBeforeQuit() ?? true
+        }
         AppLifecycleDelegate.lifecycle = lifecycle
         AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
         lifecycle.begin()

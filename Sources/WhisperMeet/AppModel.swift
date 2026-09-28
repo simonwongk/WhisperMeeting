@@ -3687,6 +3687,28 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Stops the live recording because the user chose Stop & Quit (F529). Returns whether the app
+    /// may quit now: `true` once the meeting is saved, or when the recording already ended on its own
+    /// while the question was on screen; `false` when the stop could not save it, so the quit is
+    /// cancelled and the failure `stopRecording` reported stays on screen instead of vanishing with
+    /// the process. The folder is kept either way, so a later quit loses nothing a launch cannot
+    /// rebuild.
+    func stopRecordingBeforeQuit() async -> Bool {
+        switch recordingState {
+        case .idle:
+            return true
+        case .recording:
+            // "" is the windowless stop — the title typed on the record screen is used (F298).
+            return await stopRecording(title: "") != nil
+        case .starting, .stopping:
+            // Another start or stop owns the capture (the capture-loss finalize can begin while the
+            // question is on screen); quitting under it would interrupt it. Said, so a Stop & Quit
+            // that did not quit is not a click that did nothing.
+            report("WhisperMeet is still finishing the recording. Quit again once it has been saved.")
+            return false
+        }
+    }
+
     /// What a user is told when Stop saved a capture that had died and never came back (F292).
     nonisolated static func captureStoppedEarlyMessage(audioDuration: TimeInterval, start: TranscriptionStart) -> String {
         let tail: String

@@ -133,6 +133,95 @@ public final class AppLifecycle: ObservableObject {
         didFinishStartupRecovery = true
         await deliverPendingFiles()
     }
+
+    // MARK: - Quitting during a recording (F529)
+
+    /// The user's answer to "Stop and save the recording before quitting?".
+    public enum QuitDuringRecordingChoice: Sendable, Equatable {
+        case stopAndQuit
+        case keepRecording
+    }
+
+    /// Whether a capture is running right now, so that quitting would cut a meeting short.
+    public var isRecordingLive: (() -> Bool)?
+
+    /// Asks the user what to do about the live recording. Called only while `isRecordingLive`.
+    public var confirmQuitDuringRecording: (() -> QuitDuringRecordingChoice)?
+
+    /// Stops the live recording and saves it as a meeting. Returns whether the app may quit now.
+    public var onStopRecordingForQuit: (() async -> Bool)?
+
+    /// True from a "Stop & Quit" until its one reply has been sent.
+    public private(set) var isStoppingForQuit = false
+    /// True while the question is on screen.
+    private var isAskingAboutQuit = false
+
+    /// Decides a quit (⌘Q, the menu bar's Quit, Dock ▸ Quit, a logout): the answer
+    /// `applicationShouldTerminate` gives AppKit. `reply` is `NSApp.reply(toApplicationShouldTerminate:)`.
+    ///
+    /// There was no such hook before F529, so every quit ended a live recording on the spot — no
+    /// question, no `stopRecording`, the meeting left for the next launch to rebuild as an
+    /// interrupted folder — while Cancel, which also cuts a meeting short, is confirmed twice.
+    ///
+    /// **Every `.terminateLater` gets exactly one `reply`, and nothing else gets one.** AppKit
+    /// waits for that reply with the run loop in modal-panel mode, so a path that forgets it leaves
+    /// an app that neither quits nor behaves normally. Hence the shape: the question is answered
+    /// synchronously, so "Keep Recording" is a plain `.terminateCancel`; only "Stop & Quit" goes
+    /// asynchronous, and its task replies once, after the stop, whatever the stop returned. A quit
+    /// that arrives while the question is up, or while that stop is still saving, is refused
+    /// outright rather than asked or answered twice.
+    public func shouldTerminate(reply: @escaping (Bool) -> Void) -> NSApplication.TerminateReply {
+        // The pending decision already answers for this quit; a second `reply` would answer a
+        // question AppKit is no longer asking.
+        // Likewise while the question is still on screen: the alert runs modally inside this call,
+        // and a second quit reaching it would stack a second alert on the first.
+        guard !isStoppingForQuit, !isAskingAboutQuit else { return .terminateCancel }
+        guard isRecordingLive?() == true else { return .terminateNow }
+        isAskingAboutQuit = true
+        // Unwired means a wiring bug, not a user who wants to keep recording: saving and quitting is
+        // the answer that neither loses the meeting nor traps the user in an app that will not quit.
+        let choice = confirmQuitDuringRecording?() ?? .stopAndQuit
+        isAskingAboutQuit = false
+        guard choice == .stopAndQuit else { return .terminateCancel }
+        isStoppingForQuit = true
+        Task { @MainActor [weak self] in
+            // No `onStopRecordingForQuit` means nothing to wait for. A `false` cancels the quit: the
+            // stop could not save the meeting, and its message must outlive this process. The folder
+            // is kept, so the next quit loses nothing a launch cannot rebuild.
+            let mayQuit = await self?.onStopRecordingForQuit?() ?? true
+            self?.isStoppingForQuit = false
+            reply(mayQuit)
+        }
+        return .terminateLater
+    }
+}
+
+/// The question F529 asks before a quit ends a live recording.
+///
+/// AppKit, so it is not part of the tested `AppLifecycle`: the choice it returns is the seam, and
+/// `QuitDuringRecordingTests` drives every answer through `AppLifecycle.shouldTerminate`.
+@MainActor
+enum QuitDuringRecordingAlert {
+    static let message = "Stop and save the recording before quitting?"
+    static let information = "WhisperMeet is recording. Stop & Quit saves what has been recorded so far as a meeting, then quits. Keep Recording leaves WhisperMeet open and recording."
+    static let stopAndQuitTitle = "Stop & Quit"
+    static let keepRecordingTitle = "Keep Recording"
+
+    /// Asks, modally. Keep Recording is the default button: the case F529 exists for is a ⌘Q
+    /// pressed by mistake mid-call, and a Return pressed by the same reflex must not end the meeting.
+    static func ask() -> AppLifecycle.QuitDuringRecordingChoice {
+        // A Dock or menu-bar Quit arrives while another app is frontmost; the question has to be
+        // where the user is looking.
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = information
+        // The first button added is the rightmost and the default (Return).
+        alert.addButton(withTitle: keepRecordingTitle)
+        alert.addButton(withTitle: stopAndQuitTitle)
+        return alert.runModal() == .alertSecondButtonReturn ? .stopAndQuit : .keepRecording
+    }
 }
 
 /// Bridges `NSApplication`'s launch to `AppLifecycle`, because SwiftUI offers no scene-independent
@@ -153,6 +242,17 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
         }
         // F181: publishes "Transcribe with WhisperMeet" (declared under NSServices in Info.plist).
         NSApp.servicesProvider = self
+    }
+
+    /// ⌘Q, the menu bar's "Quit WhisperMeet", Dock ▸ Quit and a logout all arrive here (F529).
+    /// Without a lifecycle there is no recording to protect, so the quit goes ahead as it always did.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let lifecycle = Self.lifecycle else { return .terminateNow }
+            return lifecycle.shouldTerminate { quit in
+                NSApp.reply(toApplicationShouldTerminate: quit)
+            }
+        }
     }
 
     /// Finder "Open With", a drop on the Dock icon, and Shortcuts' "Open File" all arrive here (F181).
