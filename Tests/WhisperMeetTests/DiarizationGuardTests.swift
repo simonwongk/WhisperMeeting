@@ -27,10 +27,26 @@ private func writeSilentWav(seconds: Double, to url: URL) throws {
 }
 
 /// Gives any task the request might have spawned a real chance to reach the seam, so a
-/// "the seam was never called" assertion is about the guard rather than about scheduling luck.
+/// "the seam was never called" assertion is about the guard rather than about scheduling luck. A
+/// real sleep, not a yield count (F639): a `Task.yield()` budget is scheduler turns, and turns can
+/// be starved under load; wall-clock time cannot.
 @MainActor
-private func settle() async {
-    for _ in 0..<50 { await Task.yield() }
+private func settle() async throws {
+    for _ in 0..<50 { try await Task.sleep(nanoseconds: 1_000_000) }
+}
+
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): a fixed
+/// budget of `Task.yield()`s expires under a starved scheduler before the condition it is waiting
+/// for becomes true, failing a claim that was never false. A genuine hang still fails — on the
+/// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
+@MainActor
+private func waitUntil(_ what: String, _ condition: @MainActor () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
 }
 
 @MainActor
@@ -102,18 +118,16 @@ func diarizationRefusesWhileAlreadyRunning() async throws {
         return SpeakerDiarizationResult(turns: [], speakerCount: 0, audioSeconds: 4)
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    var ticks = 0
-    while counter.calls == 0, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the seam to be called") { counter.calls != 0 }
     #expect(counter.calls == 1)
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await settle()
+    try await settle()
 
     #expect(counter.calls == 1)                                   // the second request started nothing
     #expect(fixture.model.alertMessage?.contains("already") == true)
     gate.calls = 1
-    ticks = 0
-    while fixture.model.diarizationRunningID != nil, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the running analysis to clear") { fixture.model.diarizationRunningID == nil }
 }
 
 @MainActor
@@ -135,7 +149,7 @@ func diarizationRefusesDuringTranscription() async throws {
     fixture.model.requestSpeakerDiarization(for: fixture.id)
     #expect(fixture.model.diarizationRunningID == nil)
     #expect(fixture.model.alertMessage?.contains("transcription") == true)
-    await settle()
+    try await settle()
     #expect(fixture.counter.calls == 0)
 }
 
@@ -152,10 +166,9 @@ func diarizationRefusesDuringAuxiliaryEngineRun() async throws {
     fixture.model.requestSpeakerDiarization(for: fixture.id)
     #expect(fixture.model.diarizationRunningID == nil)
     #expect(fixture.model.alertMessage != nil)
-    await settle()
+    try await settle()
     #expect(fixture.counter.calls == 0)
-    var ticks = 0
-    while fixture.model.isRunningAuxiliaryEngine, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the auxiliary engine run to clear") { !fixture.model.isRunningAuxiliaryEngine }
 }
 
 @MainActor
@@ -165,7 +178,7 @@ func diarizationRefusesDuringDictation() async throws {
     fixture.model.configureDictationGuard { true }
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await settle()
+    try await settle()
 
     #expect(fixture.counter.calls == 0)
     #expect(fixture.model.diarizationRunningID == nil)
@@ -178,7 +191,7 @@ func diarizationRefusesWhileLibraryIsReadOnly() async throws {
     let fixture = try makeGuardFixture(degraded: true)
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await settle()
+    try await settle()
 
     #expect(fixture.counter.calls == 0)   // minutes of analysis are never spent on a refused save
     #expect(fixture.model.diarizationRunningID == nil)
@@ -195,7 +208,7 @@ func diarizationRefusesWhenTheModelIsNotInstalled() async throws {
     fixture.model.isDiarizationModelInstalled = { false }
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await settle()
+    try await settle()
 
     #expect(fixture.counter.calls == 0)
     #expect(fixture.model.alertMessage?.contains("not installed") == true)
@@ -208,7 +221,7 @@ func diarizationRefusesWithoutUsableTimings() async throws {
     let fixture = try makeGuardFixture(segments: [TranscriptSegment(speaker: nil, start: nil, end: nil, text: "one two")])
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await settle()
+    try await settle()
 
     #expect(fixture.counter.calls == 0)
     #expect(fixture.model.alertMessage?.contains("timestamp") == true)
@@ -219,7 +232,7 @@ func diarizationRefusesWithoutUsableTimings() async throws {
 func diarizationRefusesNonNativeOrUnfinishedMeetings() async throws {
     let unfinished = try makeGuardFixture(status: .recorded)
     unfinished.model.requestSpeakerDiarization(for: unfinished.id)
-    await settle()
+    try await settle()
     #expect(unfinished.counter.calls == 0)
     #expect(unfinished.model.alertMessage != nil)
 
@@ -229,7 +242,7 @@ func diarizationRefusesNonNativeOrUnfinishedMeetings() async throws {
         source: MediaSource(kind: MediaSource.youTubeKind, pageURL: "https://example.com/v", host: "example.com", fetchedAt: Date())
     )
     imported.model.requestSpeakerDiarization(for: imported.id)
-    await settle()
+    try await settle()
     #expect(imported.counter.calls == 0)
     #expect(imported.model.alertMessage != nil)
 }

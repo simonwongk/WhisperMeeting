@@ -98,13 +98,17 @@ private func makeFixture(_ label: String, latch: Latch) throws -> (root: URL, mo
 
 /// Lets every latched run finish and waits for the model to say so. The wait is a precondition of
 /// nothing the tests assert about the restore; it only keeps one test's work out of the next.
+///
+/// Polls under a wall-clock cap, never a yield count (F639): a fixed budget of `Task.yield()`s
+/// expires under a starved scheduler before the condition it is waiting for becomes true, failing
+/// a claim that was never false. A genuine hang still fails — on the `#require` below.
 @MainActor
 private func drain(_ model: AppModel, _ latch: Latch) async throws {
     await latch.open()
     var ticks = 0
     while model.hasActiveTranscription || model.isRunningAuxiliaryEngine || model.isSummarizing,
-          ticks < 200_000 {
-        await Task.yield()
+          ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
     try #require(!model.hasActiveTranscription && !model.isRunningAuxiliaryEngine && !model.isSummarizing,

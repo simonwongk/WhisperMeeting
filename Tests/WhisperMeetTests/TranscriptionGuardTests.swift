@@ -88,11 +88,14 @@ func beginTranscriptionNeverStartsDuringAuxiliaryRun() async throws {
     #expect(model.isQueuedForTranscription(id2))       // …and nothing was lost either
     #expect(model.alertMessage == nil)
 
-    // Drain the auxiliary run, then the queued job it was holding.
+    // Drain the auxiliary run, then the queued job it was holding. Polls under a wall-clock cap,
+    // never a yield count (F639): a fixed budget of `Task.yield()`s expires under a starved
+    // scheduler before the condition it is waiting for becomes true, failing a claim that was
+    // never false.
     var ticks = 0
     while model.isRunningAuxiliaryEngine || model.hasActiveTranscription || model.isQueuedForTranscription(id2),
-          ticks < 200_000 {
-        await Task.yield()
+          ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
     try #require(!model.hasActiveTranscription && !model.isQueuedForTranscription(id2), "the queue never drained")

@@ -37,10 +37,14 @@ private func completedMeeting(
 
 /// The run's outcome is the subject, so waiting for the queue to drain is the assertion's own
 /// precondition and is required, never assumed (AGENTS.md: a timeout must fail as a timeout).
+///
+/// Polls under a wall-clock cap, never a yield count (F639): a fixed budget of `Task.yield()`s
+/// expires under a starved scheduler before the condition it is waiting for becomes true, failing
+/// a claim that was never false.
 @MainActor
 private func waitForTheRunToEnd(_ model: AppModel) async throws {
     var ticks = 0
-    while model.hasActiveTranscription, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    while model.hasActiveTranscription, ticks < 6_000 { try await Task.sleep(nanoseconds: 5_000_000); ticks += 1 }
     try #require(!model.hasActiveTranscription, "the transcription never finished")
 }
 
@@ -146,10 +150,13 @@ private actor Latch {
     }
 }
 
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): a fixed
+/// budget of `Task.yield()`s expires under a starved scheduler before the condition it is waiting
+/// for becomes true, failing a claim that was never false.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async throws {
     var ticks = 0
-    while !condition(), ticks < 200_000 { await Task.yield(); ticks += 1 }
+    while !condition(), ticks < 6_000 { try await Task.sleep(nanoseconds: 5_000_000); ticks += 1 }
     try #require(condition(), "timed out waiting for the condition")
 }
 

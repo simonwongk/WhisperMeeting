@@ -39,21 +39,26 @@ private final class InstallSpy: @unchecked Sendable {
 }
 
 /// Gives the install `Task` a real chance to run to completion, so an assertion is about behaviour
-/// rather than scheduling luck. Returns once the condition holds or the budget is spent.
+/// rather than scheduling luck. Polls the caller's own subject under a wall-clock cap, never a
+/// yield count (F639): a fixed budget of `Task.yield()`s expires under a starved scheduler before
+/// the condition it is waiting for becomes true, failing a claim that was never false. A genuine
+/// hang still fails — on the wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
-private func settle(until condition: () -> Bool) async {
+private func settle(until condition: () -> Bool) async throws {
     var ticks = 0
-    while !condition(), ticks < 200_000 {
-        await Task.yield()
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
+    try #require(condition(), "timed out waiting for the condition")
 }
 
 /// Gives any task a refused request might have spawned a real chance to reach a seam, so a "nothing
-/// ran" assertion is about the guard rather than about scheduling luck.
+/// ran" assertion is about the guard rather than about scheduling luck. A real sleep, not a yield
+/// count (F639): wall-clock time cannot be starved the way scheduler turns can.
 @MainActor
-private func settle() async {
-    for _ in 0..<200 { await Task.yield() }
+private func settle() async throws {
+    for _ in 0..<200 { try await Task.sleep(nanoseconds: 1_000_000) }
 }
 
 @MainActor
@@ -104,7 +109,7 @@ func diarizationInstallVerifiesByReprobingTheFilesystem() async throws {
 
     model.installSpeakerDiarization()
     #expect(model.isInstallingDiarizationRuntime) // set optimistically, before any work
-    await settle { !model.isInstallingDiarizationRuntime }
+    try await settle { !model.isInstallingDiarizationRuntime }
 
     #expect(spy.calls.count == 1)
     #expect(spy.calls.first?.script.lastPathComponent == "setup-speaker-diarization.sh")
@@ -132,7 +137,7 @@ func diarizationInstallReportsReadyWhenTheProbeFindsTheRuntime() async throws {
     model.isDiarizationModelInstalled = { spy.isInstalled }
 
     model.installSpeakerDiarization()
-    await settle { !model.isInstallingDiarizationRuntime }
+    try await settle { !model.isInstallingDiarizationRuntime }
 
     #expect(spy.calls.count == 1)
     #expect(model.isDiarizationInstalled)
@@ -161,22 +166,22 @@ func diarizationInstallRefusesWhileBusy() async throws {
     // 1. Quick Dictation owns the microphone: nothing starts, and no busy flag is left behind.
     model.configureDictationGuard { true }
     model.installSpeakerDiarization()
-    await settle() // a refusal must still have started nothing, given every chance to run
+    try await settle() // a refusal must still have started nothing, given every chance to run
     #expect(spy.calls.isEmpty)
     #expect(!model.isInstallingDiarizationRuntime)
 
     // 2. An install already running: the second request is refused, not queued behind the first.
     model.configureDictationGuard { false }
     model.installSpeakerDiarization()
-    await settle { spy.calls.count == 1 }
+    try await settle { spy.calls.count == 1 }
     #expect(spy.calls.count == 1)
 
     model.installSpeakerDiarization()
-    await settle()
+    try await settle()
     #expect(spy.calls.count == 1) // still one: the second request started nothing
 
     gate.markInstalled()
-    await settle { !model.isInstallingDiarizationRuntime }
+    try await settle { !model.isInstallingDiarizationRuntime }
 }
 
 /// Only installer-owned orphans count. A live runtime directory is not an orphan.
@@ -312,34 +317,34 @@ func otherInstallersRefuseWhileTheDiarizationInstallIsRunning() async throws {
     }
 
     model.installSpeakerDiarization()
-    await settle { spy.calls.count == 1 }
+    try await settle { spy.calls.count == 1 }
     #expect(model.isInstallingDiarizationRuntime)
 
     model.installLocalWhisper()
-    await settle()
+    try await settle()
     #expect(model.alertMessage == nil, "installLocalWhisper ran while speaker analysis was installing")
     #expect(!model.isInstallingRuntime)
 
     model.installQwenASR()
-    await settle()
+    try await settle()
     #expect(model.alertMessage == nil, "installQwenASR ran while speaker analysis was installing")
     #expect(!model.isInstallingQwenRuntime)
 
     model.installSummarizer()
-    await settle()
+    try await settle()
     #expect(model.alertMessage == nil, "installSummarizer ran while speaker analysis was installing")
     #expect(!model.isInstallingSummarizer)
 
     #expect(spy.calls.count == 1) // and none of them disturbed the install that was already running
 
     gate.markInstalled()
-    await settle { !model.isInstallingDiarizationRuntime }
+    try await settle { !model.isInstallingDiarizationRuntime }
 
     // The control. With nothing in flight the same call goes through and reaches the missing-script
     // branch, so the three assertions above were about the guard and not about a call that could
     // never have done anything.
     model.installLocalWhisper()
-    await settle()
+    try await settle()
     #expect(model.alertMessage?.contains("installer is missing") == true)
 }
 
@@ -361,11 +366,11 @@ func installingAnyRuntimeCoversEveryInstallFlag() async throws {
     let gate = InstallSpy()
     model.runDiarizationInstaller = { _, _ in while !gate.isInstalled { await Task.yield() } }
     model.installSpeakerDiarization()
-    await settle { model.isInstallingDiarizationRuntime }
+    try await settle { model.isInstallingDiarizationRuntime }
     #expect(model.isInstallingAnyRuntime, "a speaker-analysis install is a runtime install")
 
     gate.markInstalled()
-    await settle { !model.isInstallingDiarizationRuntime }
+    try await settle { !model.isInstallingDiarizationRuntime }
     #expect(!model.isInstallingAnyRuntime)
 
     // The recognition pair is already covered by `isInstallingRecognitionRuntime`; the property must

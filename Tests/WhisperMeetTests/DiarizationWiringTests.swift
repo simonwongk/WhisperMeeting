@@ -74,15 +74,18 @@ private func makeFixture(
     return Fixture(model: model, id: id, root: root, wavURL: wavURL)
 }
 
-/// Bounded cooperative wait — a spin that can never wedge the suite the way an unbounded one would.
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): a fixed
+/// budget of `Task.yield()`s expires under a starved scheduler before the condition it is waiting
+/// for becomes true, failing a claim that was never false. A genuine hang still fails — on the
+/// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
-private func spin(_ label: String, until condition: @MainActor () -> Bool) async {
+private func spin(_ label: String, until condition: @MainActor () -> Bool) async throws {
     var ticks = 0
-    while !condition(), ticks < 200_000 {
-        await Task.yield()
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
-    #expect(condition(), "timed out waiting for \(label)")
+    try #require(condition(), "timed out waiting for \(label)")
 }
 
 private func twoClusterResult() -> SpeakerDiarizationResult {
@@ -114,7 +117,7 @@ func diarizationRunWritesSidecarAndPublishesOverlay() async throws {
     fixture.model.requestSpeakerDiarization(for: fixture.id)
     #expect(fixture.model.diarizationRunningID == fixture.id)   // scoped to this meeting only
     #expect(fixture.model.isRunningAuxiliaryEngine == true)     // transcription refuses to start
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     // The seam got a path and a duration — never the transcript, the title, or the record.
     #expect(box.calls == 1)
@@ -155,11 +158,11 @@ func diarizationPublishesProgressWhileRunning() async throws {
     }
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the seam to report progress") { box.started }
+    try await spin("the seam to report progress") { box.started }
     #expect(fixture.model.diarizationProgress == 0.25)
 
     box.release = true
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     #expect(fixture.model.diarizationProgress == nil)
 }
 
@@ -183,9 +186,9 @@ func diarizationCancellationWritesNothing() async throws {
     let segmentsBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.segments)
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the seam to start") { box.started }
+    try await spin("the seam to start") { box.started }
     fixture.model.cancelSpeakerDiarization()
-    await spin("the cancelled run to clear") { fixture.model.diarizationRunningID == nil }
+    try await spin("the cancelled run to clear") { fixture.model.diarizationRunningID == nil }
 
     #expect(box.neverCancelled == false)                                        // cancellation really propagated
     #expect(!FileManager.default.fileExists(atPath: fixture.sidecarURL.path))   // nothing persisted
@@ -209,7 +212,7 @@ func diarizationFailureLeavesTranscriptAndWritesNothing() async throws {
     let transcriptBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.transcriptText)
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the failed run to clear") { fixture.model.diarizationRunningID == nil }
+    try await spin("the failed run to clear") { fixture.model.diarizationRunningID == nil }
 
     #expect(fixture.model.alertMessage?.contains("Your transcript is unchanged") == true)
     #expect(!FileManager.default.fileExists(atPath: fixture.sidecarURL.path))
@@ -224,7 +227,7 @@ func diarizationRenameChangesOnlyTheAlias() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     let wavBefore = try Data(contentsOf: fixture.wavURL)
     let transcriptBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.transcriptText)
@@ -247,7 +250,7 @@ func diarizationClearRemovesOnlyTheSidecar() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     let wavBefore = try Data(contentsOf: fixture.wavURL)
     let transcriptBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.transcriptText)
 
@@ -266,7 +269,7 @@ func diarizationRerunDropsPreviousAliases() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the first analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the first analysis to finish") { fixture.model.diarizationRunningID == nil }
     fixture.model.renameSpeaker(clusterID: 0, to: "Ada", in: fixture.id)
     #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases == ["0": "Ada"])
 
@@ -281,7 +284,7 @@ func diarizationRerunDropsPreviousAliases() async throws {
         )
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the second analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the second analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     let stored = try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL))
     #expect(stored.aliases.isEmpty)
@@ -297,7 +300,7 @@ func diarizationOverlayIsWithheldWhenTimingsChange() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     #expect(fixture.model.speakerOverlay(for: fixture.id) != nil)
 
     // A re-aligned segment: same text, different timings.
@@ -324,7 +327,7 @@ func diarizationSingleClusterSuppressesLabels() async throws {
         )
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     let overlay = try #require(fixture.model.speakerOverlay(for: fixture.id))
     #expect(overlay.isSingleCluster == true)
@@ -347,7 +350,7 @@ func diarizationRenameExplainsWhyTheSidecarCouldNotBeRead() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     // The overlay must stay renameable, so replace the bytes only after it has been computed and
     // cached: the rename's own guard reads the cache, and the message under test is the next step.
     _ = fixture.model.speakerOverlay(for: fixture.id)
@@ -386,7 +389,7 @@ func diarizationRenameClampsAliasToTheCodecByteBound() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     let wavBefore = try Data(contentsOf: fixture.wavURL)
     let transcriptBefore = try #require(fixture.model.store.meeting(id: fixture.id)?.transcriptText)
@@ -426,7 +429,7 @@ func diarizationRenameRefusesAnAliasNoPrefixCanFit() async throws {
     let fixture = try makeFixture()
     fixture.model.runSpeakerDiarization = { _, _ in twoClusterResult() }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
     fixture.model.renameSpeaker(clusterID: 1, to: "Ada", in: fixture.id)
     #expect(try DiarizationArtifactCodec.decode(Data(contentsOf: fixture.sidecarURL)).aliases == ["1": "Ada"])
 

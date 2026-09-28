@@ -77,21 +77,25 @@ private func turn(_ start: Double, _ end: Double, _ cluster: Int) -> SpeakerTurn
     SpeakerTurn(startSeconds: start, endSeconds: end, clusterID: cluster, kind: .speech)
 }
 
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): 200,000
+/// `Task.yield()`s expired in a full run on a busy Mac while the detached work it waited for was
+/// starved of turns, and the same test passed alone in 0.14 s. A genuine hang still fails — on the
+/// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
-private func spin(_ label: String, until condition: @MainActor () -> Bool) async {
+private func spin(_ label: String, until condition: @MainActor () -> Bool) async throws {
     var ticks = 0
-    while !condition(), ticks < 200_000 {
-        await Task.yield()
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
         ticks += 1
     }
-    #expect(condition(), "timed out waiting for \(label)")
+    try #require(condition(), "timed out waiting for \(label)")
 }
 
 @MainActor
-private func analyze(_ fixture: ReviewFixture, _ turns: [SpeakerTurn], speakers: Int) async {
+private func analyze(_ fixture: ReviewFixture, _ turns: [SpeakerTurn], speakers: Int) async throws {
     fixture.model.runSpeakerDiarization = { _, _ in result(turns, speakers: speakers) }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 }
 
 @MainActor
@@ -106,7 +110,7 @@ func reviewStateIsNotAnalyzedBeforeAnyRun() throws {
 @Test("Two distinguished voices produce a labeled state and one precomputed label per segment (F220)")
 func reviewStateIsLabeledForTwoVoices() async throws {
     let fixture = try makeReviewFixture()
-    await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
+    try await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
 
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .labeled)
     let labels = fixture.model.speakerRowLabels(for: fixture.id)
@@ -121,7 +125,7 @@ func reviewStateIsLabeledForTwoVoices() async throws {
 @Test("One distinguished voice suppresses every label and says so as a normal outcome (F220)")
 func reviewStateIsSingleVoiceForOneCluster() async throws {
     let fixture = try makeReviewFixture()
-    await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 0)], speakers: 1)
+    try await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 0)], speakers: 1)
 
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .singleVoice)
     #expect(fixture.model.speakerRowLabels(for: fixture.id).isEmpty)
@@ -131,7 +135,7 @@ func reviewStateIsSingleVoiceForOneCluster() async throws {
 @Test("An analysis that found no speech reports no turns rather than one voice (F220)")
 func reviewStateIsNoTurnsFoundForAnEmptyResult() async throws {
     let fixture = try makeReviewFixture()
-    await analyze(fixture, [], speakers: 0)
+    try await analyze(fixture, [], speakers: 0)
 
     // Distinct from `.singleVoice`: nothing was told apart because nothing was found, and the
     // single-voice wording ("a single speaker") would be a claim about a recording with no speech.
@@ -146,7 +150,7 @@ func reviewStateIsNoConfidentLabelsWhenTheOverlayAbstains() async throws {
     // Two clusters, split evenly inside each segment: the overlay's coverage floor and margin both
     // fail, so every row is uncertain and no cluster is shown. Saying "only one voice" here would be
     // false — two were told apart.
-    await analyze(fixture, [turn(0, 2, 0), turn(2, 4, 1), turn(4, 6, 0), turn(6, 8, 1)], speakers: 2)
+    try await analyze(fixture, [turn(0, 2, 0), turn(2, 4, 1), turn(4, 6, 0), turn(6, 8, 1)], speakers: 2)
 
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .noConfidentLabels)
     #expect(fixture.model.speakerRowLabels(for: fixture.id).isEmpty)
@@ -156,7 +160,7 @@ func reviewStateIsNoConfidentLabelsWhenTheOverlayAbstains() async throws {
 @Test("Re-timed segments make a stored analysis stale, and the labels are withheld (F220)")
 func reviewStateIsStaleAfterTheTimingsChange() async throws {
     let fixture = try makeReviewFixture()
-    await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
+    try await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
     try #require(fixture.model.speakerReviewState(for: fixture.id) == .labeled)
 
     var meeting = fixture.meeting
@@ -193,13 +197,13 @@ func reviewStateIsAnalyzingWhileTheRuntimeWorks() async throws {
         return result([turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
     }
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    await spin("the seam to start") { gate.started }
+    try await spin("the seam to start") { gate.started }
 
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .analyzing)
 
     fixture.model.cancelSpeakerDiarization()
     gate.release = true
-    await spin("the analysis to stop") { fixture.model.diarizationRunningID == nil }
+    try await spin("the analysis to stop") { fixture.model.diarizationRunningID == nil }
     // Cancel writes nothing, so the meeting is exactly where it started.
     #expect(fixture.model.speakerReviewState(for: fixture.id) == .notAnalyzed)
     #expect(!FileManager.default.fileExists(atPath: fixture.sidecar.path))
@@ -211,7 +215,7 @@ func speakerOverlayRevisionMovesOnEveryStoredChange() async throws {
     let fixture = try makeReviewFixture()
     let atStart = fixture.model.speakerOverlayRevision
 
-    await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
+    try await analyze(fixture, [turn(0, 4, 0), turn(4, 8, 1)], speakers: 2)
     let afterAnalysis = fixture.model.speakerOverlayRevision
     #expect(afterAnalysis > atStart, "a finished analysis did not invalidate the precomputed labels")
 
@@ -239,7 +243,7 @@ func subSecondClusterDoesNotStripTheMeeting() async throws {
         seg("another long turn", 4, 7.4),
         seg("mm", 7.5, 7.9)          // 0.4 s — under F317's one-second floor
     ])
-    await analyze(fixture, [turn(0, 7.4, 0), turn(7.5, 7.9, 1)], speakers: 2)
+    try await analyze(fixture, [turn(0, 7.4, 0), turn(7.5, 7.9, 1)], speakers: 2)
 
     let presentation = try #require(fixture.model.speakerOverlay(for: fixture.id))
     #expect(!presentation.isSingleCluster, "the analysis distinguished two voices; the display rule hid one")
@@ -255,7 +259,7 @@ func subSecondClusterDoesNotStripTheMeeting() async throws {
 @Test("A meeting the analysis really found one voice in is still reported as one voice (F339)")
 func genuinelySingleClusterIsStillSingle() async throws {
     let fixture = try makeReviewFixture(segments: [seg("one", 0, 4), seg("two", 4, 8)])
-    await analyze(fixture, [turn(0, 8, 0)], speakers: 1)
+    try await analyze(fixture, [turn(0, 8, 0)], speakers: 1)
 
     let presentation = try #require(fixture.model.speakerOverlay(for: fixture.id))
     #expect(presentation.isSingleCluster)

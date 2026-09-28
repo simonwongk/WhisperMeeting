@@ -43,6 +43,20 @@ private func temporaryDirectory(_ label: String) throws -> URL {
     return url
 }
 
+/// Polls the caller's own subject under a wall-clock cap, never a yield count (F639): a fixed
+/// budget of `Task.yield()`s expires under a starved scheduler before the condition it is waiting
+/// for becomes true, failing a claim that was never false. A genuine hang still fails — on the
+/// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
+@MainActor
+private func waitUntil(_ what: String, _ condition: @MainActor () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 @Test("FluidAudio's cluster ids are remapped to dense 0..<n in first-appearance order (F216)")
 func fluidAudioAdapterDensifiesClusterIDsInFirstAppearanceOrder() async throws {
     // FluidAudio numbers clusters "S1", "S2", … and the numbering is neither dense nor ordered by
@@ -285,8 +299,7 @@ func diarizationSidecarNamesTheFluidAudioRuntime() async throws {
     }
 
     fixture.model.requestSpeakerDiarization(for: fixture.id)
-    var ticks = 0
-    while fixture.model.diarizationRunningID != nil, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the analysis to finish") { fixture.model.diarizationRunningID == nil }
 
     guard case let .ready(artifact) = DiarizationArtifactStore.load(
         meetingID: fixture.id, in: fixture.root
@@ -338,12 +351,10 @@ func cancellingTheFluidAudioAdapterThroughAppModelWritesNoSidecar() async throws
     let transcriptBefore = try #require(model.store.meeting(id: id)?.transcriptText)
 
     model.requestSpeakerDiarization(for: id)
-    var ticks = 0
-    while !box.started, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the seam to start") { box.started }
     #expect(box.started)
     model.cancelSpeakerDiarization()
-    ticks = 0
-    while model.diarizationRunningID != nil, ticks < 200_000 { await Task.yield(); ticks += 1 }
+    try await waitUntil("the cancelled run to clear") { model.diarizationRunningID == nil }
 
     #expect(box.ignoredCancellation == false)
     let sidecar = DiarizationArtifactStore.fileURL(meetingID: id, in: root)
