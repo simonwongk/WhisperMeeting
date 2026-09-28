@@ -68,7 +68,9 @@ func savesAfterALostLedgerAreNumberedAboveTheHistory() throws {
     }
 
     let sequences: [UInt64] = after.map(\.sequence)
-    #expect(sequences == [7, 8, 9], "post-loss saves were numbered \(sequences)")
+    // Annotated, not inferred: the CI runner's Swift 6.1 types a bare `[7, 8, 9]` as `[Int]`.
+    let expectedSequences: [UInt64] = [7, 8, 9]
+    #expect(sequences == expectedSequences, "post-loss saves were numbered \(sequences)")
     let listed = try store.retainedGenerations()
     let newestThree = listed.prefix(3).map(\.name)
     let afterNames = after.compactMap(\.name).reversed()
