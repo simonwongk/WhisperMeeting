@@ -243,9 +243,11 @@ other meeting. The queue of pending deletions is `meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never
-removed from the history (F498). A deletion recorded
-with a date in the future, from a clock that was set wrong, is treated as happening when WhisperMeet
-next checks, so its week starts then rather than never.
+removed from the history (F498). A deletion's recorded date is never rewritten from a later clock
+(F603), so a launch with the clock set behind cannot shorten the week. A deletion recorded more than
+a week in the future — a date no deletion can have — waits a week from when WhisperMeet first sees
+it that way instead, so its week starts then rather than never; once the clock is right again and
+the date is no longer impossible, the recorded date applies.
 
 If the shred cannot complete (a permission error on the history directory, say), the meeting is still
 deleted and the app says so; *Forget History* in Settings → Meeting library removes the whole saved

@@ -1482,26 +1482,56 @@ final class MeetingStore: ObservableObject {
         rootDirectory.appendingPathComponent("meetings.pending-shred.json")
     }
 
-    /// Deleted ids awaiting their shred, keyed by the epoch second of the deletion.
+    /// The queue file's two kinds of entry (F603).
     ///
+    /// `deletedAt` is the epoch second each deletion happened, as the clock read at the delete.
+    /// `firstSeenFutureAt` is, for a deletion dated beyond `now + shredGracePeriod` — a date no
+    /// deletion can have — the `now` at which this build first saw it that way. The deletion's
+    /// own date is never rewritten from a later clock; see `processPendingShreds`.
+    private struct PendingShredQueue: Equatable {
+        var deletedAt: [UUID: Int] = [:]
+        var firstSeenFutureAt: [UUID: Int] = [:]
+    }
+
+    /// The key prefix a `firstSeenFutureAt` entry is stored under, in the same `[String: Int]` file
+    /// as the deletions (F603). One file, so the two cannot disagree after a crash; the shape every
+    /// earlier build reads is unchanged, and an earlier build's reader drops a key that is not a UUID
+    /// — so it ignores these, and its next write of the queue simply leaves them out.
+    private static let firstSeenFuturePrefix = "first-seen-future:"
+
     /// Read leniently (F498). `UUID(uuidString:)` accepts either case, so a file naming one meeting
     /// in two spellings — hand-edited, or written by something other than this build — holds two
     /// keys for one id, and `Dictionary(uniqueKeysWithValues:)` trapped on it. This getter runs at
     /// every launch, so that file took the app down before any window could say why. The later
-    /// deletion time wins: the shred then waits for the later of the two, and waiting loses nothing
-    /// where shredding early cannot be taken back.
-    private(set) var pendingShreds: [UUID: Int] {
+    /// time wins, for both kinds of entry: the shred then waits for the later of the two, and
+    /// waiting loses nothing where shredding early cannot be taken back.
+    private var pendingShredQueue: PendingShredQueue {
         get {
             guard let data = try? Data(contentsOf: pendingShredURL),
                   let raw = try? JSONDecoder().decode([String: Int].self, from: data)
-            else { return [:] }
-            return Dictionary(
-                raw.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } },
-                uniquingKeysWith: max
-            )
+            else { return PendingShredQueue() }
+            var deletions: [(UUID, Int)] = []
+            var sightings: [(UUID, Int)] = []
+            for (key, value) in raw {
+                if key.hasPrefix(Self.firstSeenFuturePrefix) {
+                    if let id = UUID(uuidString: String(key.dropFirst(Self.firstSeenFuturePrefix.count))) {
+                        sightings.append((id, value))
+                    }
+                } else if let id = UUID(uuidString: key) {
+                    deletions.append((id, value))
+                }
+            }
+            let deletedAt = Dictionary(deletions, uniquingKeysWith: max)
+            // A sighting without its deletion describes nothing, and is dropped on the next write.
+            let firstSeen = Dictionary(sightings, uniquingKeysWith: max).filter { deletedAt[$0.key] != nil }
+            return PendingShredQueue(deletedAt: deletedAt, firstSeenFutureAt: firstSeen)
         }
         set {
-            let raw = Dictionary(uniqueKeysWithValues: newValue.map { ($0.key.uuidString, $0.value) })
+            var raw: [String: Int] = [:]
+            for (id, value) in newValue.deletedAt { raw[id.uuidString] = value }
+            for (id, value) in newValue.firstSeenFutureAt where newValue.deletedAt[id] != nil {
+                raw[Self.firstSeenFuturePrefix + id.uuidString] = value
+            }
             if raw.isEmpty {
                 try? FileManager.default.removeItem(at: pendingShredURL)
             } else if let data = try? JSONEncoder().encode(raw) {
@@ -1510,6 +1540,9 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// Deleted ids awaiting their shred, keyed by the epoch second of the deletion.
+    var pendingShreds: [UUID: Int] { pendingShredQueue.deletedAt }
+
     /// Queues the ids for their shred. Never undoes the deletion, and never fails it: the queue file
     /// is best-effort, and a deletion whose queue write is lost is a deletion whose text ages out as
     /// it did before F295, which is the state we are improving on, not a regression from it.
@@ -1517,9 +1550,13 @@ final class MeetingStore: ObservableObject {
         // The edited-check memo holds a copy of each transcript it answered for (F541). Every path
         // that deletes a meeting comes through here, so its copy goes at once rather than at quit.
         for id in ids { transcriptEditMemos[id] = nil }
-        var pending = pendingShreds
-        for id in ids { pending[id] = now }
-        pendingShreds = pending
+        var queue = pendingShredQueue
+        for id in ids {
+            queue.deletedAt[id] = now
+            // A new deletion of the same id has its own date; an old sighting does not describe it.
+            queue.firstSeenFutureAt[id] = nil
+        }
+        pendingShredQueue = queue
     }
 
     /// Shreds every queued deletion older than the grace window from the retained history and the
@@ -1538,26 +1575,52 @@ final class MeetingStore: ObservableObject {
     ///   the undo protection taken away from exactly the meeting the user had just rescued. Checked
     ///   here rather than in each restore path because this is the only place a shred happens, so
     ///   no future route back can miss it.
-    /// - **A deletion dated in the future is re-dated to now.** A wrong clock or a foreign file
-    ///   would otherwise defer the shred until that date — for `Int.max`, forever — and deferring
-    ///   forever is its own failure: the text stays in the history the user was told it would
-    ///   leave. Re-dating bounds the wait at one grace period from when it is first seen.
+    /// - **A deletion dated beyond a week from now waits a week from when it is first seen that
+    ///   way.** A wrong clock or a foreign file would otherwise defer the shred until that date —
+    ///   for `Int.max`, forever — and deferring forever is its own failure: the text stays in the
+    ///   history the user was told it would leave.
+    ///
+    /// **The deletion's own date is never rewritten from `now` (F603).** F498 first re-dated every
+    /// future entry to `min(deletedAt, now)` and saved it, so a single launch with the clock behind
+    /// moved a real, recent deletion into the past for good — and once the clock was right the
+    /// shred fired early, inside the undo window, the one direction that cannot be taken back.
+    /// Neither half of that survives here. An entry dated up to a week ahead is a clock that was a
+    /// little ahead at the delete, and its own date still rules: at most a week's extra wait. An
+    /// entry dated beyond that is kept as dated, and `firstSeenFutureAt` records the `now` it was
+    /// first seen at; the wait runs from there while the date stays impossible, and the sighting is
+    /// dropped the moment the date stops being impossible — which is what a clock that was behind
+    /// looks like once it is corrected, so the real deletion date takes over again. A sighting
+    /// dated beyond a week from now is itself not believed and is taken again, so a clock that was
+    /// ahead at the sighting cannot defer the shred either. Nothing derived from `now` is written
+    /// for an entry that is not beyond it.
     ///
     /// Due is decided against a cutoff rather than as `now - deletedAt`, which trapped on a deletion
     /// time near `Int.min` — at every launch, like the getter's duplicate keys.
     @discardableResult
     func processPendingShreds(now: Int = Int(Date().timeIntervalSince1970)) -> [UUID] {
         guard !isDegraded else { return [] }   // F187: no rewrite of a library we could not read
-        let stored = pendingShreds
+        let stored = pendingShredQueue
         let live = Set(meetings.map(\.id))
-        var pending: [UUID: Int] = [:]
-        for (id, deletedAt) in stored where !live.contains(id) {
-            pending[id] = min(deletedAt, now)
+        let grace = Int(Self.shredGracePeriod)
+        // Past this, a date is one no deletion can have. An overflowed horizon (a `now` near
+        // `Int.max`) makes nothing impossible, so every entry keeps its own date — which defers.
+        let (horizon, horizonOverflowed) = now.addingReportingOverflow(grace)
+        var queue = PendingShredQueue()
+        for (id, deletedAt) in stored.deletedAt where !live.contains(id) {
+            queue.deletedAt[id] = deletedAt
+            guard !horizonOverflowed, deletedAt > horizon else { continue }
+            if let seen = stored.firstSeenFutureAt[id], seen <= horizon {
+                queue.firstSeenFutureAt[id] = seen
+            } else {
+                queue.firstSeenFutureAt[id] = now
+            }
         }
-        if pending != stored { pendingShreds = pending }
-        let (cutoff, overflowed) = now.subtractingReportingOverflow(Int(Self.shredGracePeriod))
+        if queue != stored { pendingShredQueue = queue }
+        let (cutoff, overflowed) = now.subtractingReportingOverflow(grace)
         // An overflowed cutoff means a `now` near `Int.min`; nothing is due then, which defers.
-        let due = pending.filter { !overflowed && $0.value <= cutoff }.map(\.key)
+        let due = overflowed ? [] : queue.deletedAt.compactMap { id, deletedAt -> UUID? in
+            (queue.firstSeenFutureAt[id] ?? deletedAt) <= cutoff ? id : nil
+        }
         guard !due.isEmpty else { return [] }
         let gone = Set(due)
         do {
@@ -1571,9 +1634,12 @@ final class MeetingStore: ObservableObject {
                 if let current = try? meetingFiles.load() { meetingsToken = current.token }
                 persistCommitCount += 1
             }
-            var remaining = pending
-            for id in due { remaining.removeValue(forKey: id) }
-            pendingShreds = remaining
+            var remaining = queue
+            for id in due {
+                remaining.deletedAt.removeValue(forKey: id)
+                remaining.firstSeenFutureAt.removeValue(forKey: id)
+            }
+            pendingShredQueue = remaining
             return due
         } catch {
             storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes all of it."

@@ -232,7 +232,7 @@ func deletionTimeAtIntMinIsDueWithoutTrapping() throws {
 /// defer its shred until then, which for `Int.max` is forever. Deferring forever is itself the
 /// failure: the text stays in the history the user was told it would leave.
 @MainActor
-@Test("A deletion dated in the future is re-dated to now, so its shred still comes (F498)")
+@Test("A deletion dated in the future still comes due, a week after it is first seen (F498, F603)")
 func futureDeletionTimeIsClampedToNow() throws {
     let (store, root, secret) = try makeMistakenDelete("future")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -241,7 +241,84 @@ func futureDeletionTimeIsClampedToNow() throws {
     let now = Int(Date().timeIntervalSince1970)
 
     #expect(store.processPendingShreds(now: now).isEmpty, "not due yet: the window starts now")
-    #expect(store.pendingShreds == [secret: now], "and it starts now, on disk")
+    // F603: the deletion's own date is never rewritten from `now` — only when it was first seen
+    // dated beyond the week is recorded, beside it — so a clock that is wrong at this launch
+    // cannot move a real deletion into the past.
+    #expect(store.pendingShreds == [secret: Int.max], "the recorded deletion date was rewritten")
+    #expect(store.processPendingShreds(now: now + week - 1).isEmpty, "a second early")
+    #expect(store.processPendingShreds(now: now + week) == [secret])
+    #expect(!(try historyHolds("confidential-kestrel", in: root)))
+}
+
+// MARK: - F603: a clock that is behind at one launch must not shorten the week
+
+/// F498 wrote `min(deletedAt, now)` back to disk at every launch, so one launch with the clock
+/// behind — unsynced after an SMC reset, set back by hand — permanently re-dated a recent deletion
+/// into the past, and once the clock was right again the shred fired early. Early is the direction
+/// that cannot be taken back: the week is the undo window. Three days behind is a clock nobody
+/// notices; thirty is one that makes the real deletion date look "beyond now + a week", which is
+/// the case the ticket's own proposed rule still re-dated.
+@MainActor
+@Test("A launch with the clock behind does not make a later shred fire early (F603)",
+      arguments: [3, 30])
+func clockBehindAtOneLaunchDoesNotShortenTheWeek(daysBehind: Int) throws {
+    let (store, root, secret) = try makeMistakenDelete("behind-\(daysBehind)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    let day = 86_400
+
+    // One launch with the clock behind: nothing is due — and nothing about the deletion may be
+    // rewritten from that clock.
+    #expect(store.processPendingShreds(now: deletedAt - daysBehind * day).isEmpty)
+    #expect(store.pendingShreds[secret] == deletedAt,
+            "the deletion was re-dated from a clock that was behind")
+
+    // The clock syncs. Four days after the delete the week is not over, whatever that launch saw.
+    #expect(store.processPendingShreds(now: deletedAt + 4 * day).isEmpty,
+            "shredded four days after the delete, inside the undo window")
+    #expect(try historyHolds("confidential-kestrel", in: root))
+
+    // A week after the delete it goes, on the deletion's own date.
+    #expect(store.processPendingShreds(now: deletedAt + week) == [secret])
+    #expect(!(try historyHolds("confidential-kestrel", in: root)))
+}
+
+/// The queue file is read by every build a user might launch, so the sighting F603 adds must not
+/// change what an earlier build reads from it (the F188 rule, applied to a sidecar). This is the
+/// F498 reader, verbatim: it keeps the UUID keys and drops anything else.
+@MainActor
+@Test("An earlier build reads the same deletions from a queue that now carries a sighting (F603)")
+func earlierBuildReadsTheQueueUnchanged() throws {
+    let (store, root, secret) = try makeMistakenDelete("wire")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    // Thirty days behind: the real deletion date is beyond the week, so a sighting is written.
+    _ = store.processPendingShreds(now: deletedAt - 30 * 86_400)
+
+    let data = try Data(contentsOf: root.appendingPathComponent("meetings.pending-shred.json"))
+    let raw = try JSONDecoder().decode([String: Int].self, from: data)
+    try #require(raw.count == 2, "the fixture must carry a sighting beside the deletion: \(raw)")
+    let earlierBuild = Dictionary(
+        raw.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } },
+        uniquingKeysWith: max
+    )
+    #expect(earlierBuild == [secret: deletedAt])
+}
+
+/// The bound F498 exists for survives F603, including a first sighting from a clock that was
+/// itself ahead: a wait dated beyond the week is believed no more than a deletion dated there.
+@MainActor
+@Test("A future deletion first seen by a clock that was ahead is still due within a week of the clock being right (F603)")
+func futureDeletionFirstSeenByAClockAheadIsStillBounded() throws {
+    let (store, root, secret) = try makeMistakenDelete("ahead")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data(#"{"\#(secret.uuidString)":\#(Int.max)}"#.utf8)
+        .write(to: root.appendingPathComponent("meetings.pending-shred.json"))
+    let now = Int(Date().timeIntervalSince1970)
+    let year = 365 * 86_400
+
+    #expect(store.processPendingShreds(now: now + year).isEmpty, "seen first by a clock a year ahead")
+    #expect(store.processPendingShreds(now: now).isEmpty, "the clock is right again; the week starts now")
     #expect(store.processPendingShreds(now: now + week) == [secret])
     #expect(!(try historyHolds("confidential-kestrel", in: root)))
 }
