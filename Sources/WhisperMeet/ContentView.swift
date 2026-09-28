@@ -1419,6 +1419,8 @@ struct SettingsView: View {
     @State private var capturingKey = false
     @State private var keyMonitor: Any?
     @State private var keyCaptureHint: String?
+    /// What the keys pressed so far in this capture add up to (F521).
+    @State private var keyCapture = DictationTriggerCapture()
 
     var body: some View {
         Form {
@@ -2043,24 +2045,47 @@ struct SettingsView: View {
         Task { await model.requestLibraryRestore(from: url) }
     }
 
+    /// "Change": the next key pressed in this window becomes the trigger, by
+    /// `DictationTriggerCapture`'s rules (F521). Only this window's keys are heard — the monitor is
+    /// app-wide, and in the main window's Settings pane the toolbar search shares the window, which
+    /// the capture's own rules cover. Keys the rules pass on reach the app as usual, so ⌘W still
+    /// closes the window, and Escape cancels.
     private func toggleKeyCapture() {
         if capturingKey { endKeyCapture(); return }
+        // The click (or Space) that pressed Change made its window key.
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
         capturingKey = true
         keyCaptureHint = nil
+        keyCapture = DictationTriggerCapture()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            let code = UInt16(event.keyCode)
-            if DictationKeyName.isTriggerCandidate(code) {
+            guard event.window === window else { return event }
+            let input: DictationTriggerCapture.Input = event.type == .flagsChanged
+                ? .modifiersChanged(keyCode: event.keyCode, flags: UInt64(event.modifierFlags.rawValue))
+                : .keyDown(
+                    keyCode: event.keyCode,
+                    isShortcut: !event.modifierFlags.intersection([.command, .control]).isEmpty
+                )
+            switch keyCapture.handle(input) {
+            case let .choose(code):
                 dictation.hotkey = DictationHotkey(keyCode: code, mode: dictation.hotkey.mode)
                 endKeyCapture()
-            } else {
-                keyCaptureHint = "That key can’t be a trigger — pick a modifier (⌘ ⌃ ⌥ ⇧) or an F-key."
+                // A modifier's release is let through, so the app's modifier state stays true.
+                return event.type == .flagsChanged ? event : nil
+            case .cancel:
+                endKeyCapture()
+                return nil
+            case .refuse:
+                keyCaptureHint = DictationTriggerCapture.refusalHint
+                return nil
+            case .pass:
+                return event
             }
-            return nil // swallow so nothing types while capturing
         }
     }
     private func endKeyCapture() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         capturingKey = false
+        keyCaptureHint = nil
     }
 }
 

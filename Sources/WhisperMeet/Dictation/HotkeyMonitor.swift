@@ -258,18 +258,9 @@ final class HotkeyMonitor: HotkeyMonitoring {
     }
 
     /// The device-dependent flag bit for one side's modifier key; 0 for a key that is no modifier.
+    /// One table, shared with Settings' trigger capture (F521).
     private static func modifierDeviceMask(for keyCode: UInt16) -> UInt64 {
-        switch keyCode {
-        case 58: 0x0000_0020 // left Option
-        case 61: 0x0000_0040 // right Option
-        case 59: 0x0000_0001 // left Control
-        case 62: 0x0000_2000 // right Control
-        case 56: 0x0000_0002 // left Shift
-        case 60: 0x0000_0004 // right Shift
-        case 55: 0x0000_0008 // left Command
-        case 54: 0x0000_0010 // right Command
-        default: 0
-        }
+        DictationKeyName.modifierDeviceMask(for: keyCode)
     }
 
     /// A start is delivered only if the trigger it was heard for is still the trigger, compared by
