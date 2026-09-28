@@ -2478,7 +2478,7 @@ final class AppModel: ObservableObject {
             // second in this ticket's test. At most 64 Ki frames a pass, so a long span is never one
             // float buffer the size of the whole passage. Stops at the span's end, or the file's.
             while remaining > 0 {
-                let pass = min(remaining, 65_536)
+                let pass = min(65_536, remaining)
                 guard let decoded = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: pass) else {
                     throw SegmentReRunError.unsupportedAudioLayout
                 }

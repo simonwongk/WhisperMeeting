@@ -39,13 +39,21 @@ private func riffChunk(_ identifier: String, _ body: Data) -> Data {
     Data(identifier.utf8) + le32(UInt32(body.count)) + body + (body.count % 2 == 1 ? Data([0]) : Data())
 }
 
-/// A RIFF/WAVE file: `fmt `, then any `extra` chunks, then `data` holding `pcm`.
+/// A RIFF/WAVE file: `fmt `, then any `extra` chunks, then `data` holding `pcm`. With `extensible`,
+/// `fmt ` is the WAVE_FORMAT_EXTENSIBLE form (tag 0xFFFE), whose real format — `formatTag` — is the
+/// first two bytes of the SubFormat GUID (KSDATAFORMAT_SUBTYPE_PCM / _IEEE_FLOAT).
 private func wavFile(
-    channels: UInt16, sampleRate: UInt32, bitsPerSample: UInt16, formatTag: UInt16 = 1, extra: [Data] = [], pcm: Data
+    channels: UInt16, sampleRate: UInt32, bitsPerSample: UInt16, formatTag: UInt16 = 1, extensible: Bool = false,
+    extra: [Data] = [], pcm: Data
 ) -> Data {
     let blockAlign = channels * bitsPerSample / 8
-    let format = le16(formatTag) + le16(channels) + le32(sampleRate)
+    var format = le16(extensible ? 0xFFFE : formatTag) + le16(channels) + le32(sampleRate)
         + le32(sampleRate * UInt32(blockAlign)) + le16(blockAlign) + le16(bitsPerSample)
+    if extensible {
+        let channelMask: UInt32 = channels == 1 ? 0x4 : 0x3   // front centre; front left + right
+        let guidTail = Data([0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71])
+        format += le16(22) + le16(bitsPerSample) + le32(channelMask) + le16(formatTag) + guidTail
+    }
     let payload = ([riffChunk("fmt ", format)] + extra + [riffChunk("data", pcm)]).reduce(Data("WAVE".utf8), +)
     return Data("RIFF".utf8) + le32(UInt32(payload.count)) + payload
 }
@@ -137,17 +145,21 @@ private func frame(_ value: Double, channels: UInt16, bits: UInt16, float: Bool)
 @MainActor
 @Test("A re-run of a stereo, 24-bit or float WAV decodes the segment to 16-bit mono instead of refusing it (F581)")
 func segmentReRunTranscodesLayoutsItCannotSlice() async throws {
-    let layouts: [(channels: UInt16, bits: UInt16, float: Bool)] = [
-        (2, 16, false), (1, 24, false), (2, 24, false), (1, 32, true), (2, 32, true),
+    let layouts: [(channels: UInt16, bits: UInt16, float: Bool, extensible: Bool)] = [
+        (2, 16, false, false), (1, 24, false, false), (2, 24, false, false), (1, 32, true, false), (2, 32, true, false),
+        // The WAVE_FORMAT_EXTENSIBLE wrapper, which ffmpeg and many recorders write past 16 bits or
+        // two channels, and which F471's ticket names.
+        (2, 24, false, true), (2, 32, true, true),
     ]
     for layout in layouts {
-        let label = Comment(rawValue: "\(layout.channels) ch, \(layout.bits)-bit\(layout.float ? " float" : "")")
+        let label = Comment(rawValue: "\(layout.channels) ch, \(layout.bits)-bit\(layout.float ? " float" : "")"
+            + (layout.extensible ? ", extensible" : ""))
         let silence = frame(0, channels: layout.channels, bits: layout.bits, float: layout.float)
         let tone = frame(0.25, channels: layout.channels, bits: layout.bits, float: layout.float)
         let oneSecond = { (frame: Data) in (0..<16_000).reduce(into: Data()) { data, _ in data.append(frame) } }
         let pcm = oneSecond(silence) + oneSecond(tone) + oneSecond(silence)
         let recording = wavFile(channels: layout.channels, sampleRate: 16_000, bitsPerSample: layout.bits,
-                                formatTag: layout.float ? 3 : 1, pcm: pcm)
+                                formatTag: layout.float ? 3 : 1, extensible: layout.extensible, pcm: pcm)
         let segments = [seg("first", 0, 1), seg("second wrong", 1, 2), seg("third", 2, 3)]
         let (model, id, root) = try meetingWithRecording(recording, fileName: "recording.wav", segments: segments)
         defer { try? FileManager.default.removeItem(at: root) }
