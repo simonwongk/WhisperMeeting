@@ -150,6 +150,48 @@ func tamperedManifestIsCaught() throws {
     #expect(result.problems.contains { $0.lowercased().contains("manifest") })
 }
 
+// F557 — `read` returning nil for both "absent" and "present but undecodable" was fine for `read`
+// itself (a fallback to a directory walk works either way), but `verify` reused that same nil and
+// reported BOTH as `isUnverifiable: true, "made by an earlier version"` — which is true for the
+// first and false, misleadingly reassuring, for the second. A truncated or garbage manifest is
+// evidence of damage to THIS generation, not a marker of its age.
+@Test("A truncated manifest is reported as damaged, not as 'made by an earlier version' (F557)")
+func truncatedManifestIsDamagedNotUnverifiable() throws {
+    let (root, source, destination) = try makeLibrary("manifest-truncated")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let summary = try BackupCoordinator.backUp(source: source, destination: destination, now: 8, retain: 3)
+    let generation = generationURL(destination, summary.generation)
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    let original = try Data(contentsOf: manifestURL)
+    try #require(original.count > 10)
+    try original.prefix(original.count / 2).write(to: manifestURL) // cut off mid-JSON
+
+    #expect(BackupManifest.read(in: generation) == nil, "still nil — read() cannot distinguish, only readOutcome/verify can")
+    #expect(BackupManifest.readOutcome(in: generation) == .corrupt)
+
+    let result = try BackupManifest.verify(in: generation, deep: false)
+    #expect(!result.isIntact)
+    #expect(!result.isUnverifiable, "damaged must not read as merely unverifiable/legacy")
+    #expect(result.problems.contains { $0.lowercased().contains("damaged") })
+    #expect(!result.problems.contains { $0.contains("earlier version") })
+}
+
+@Test("A manifest that is garbage bytes is reported as damaged the same way (F557)")
+func garbageManifestIsDamagedNotUnverifiable() throws {
+    let (root, source, destination) = try makeLibrary("manifest-garbage")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let summary = try BackupCoordinator.backUp(source: source, destination: destination, now: 9, retain: 3)
+    let generation = generationURL(destination, summary.generation)
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    try Data("\u{0}\u{1}garbage, not json\u{0}".utf8).write(to: manifestURL)
+
+    #expect(BackupManifest.readOutcome(in: generation) == .corrupt)
+    let result = try BackupManifest.verify(in: generation, deep: false)
+    #expect(!result.isIntact)
+    #expect(!result.isUnverifiable)
+    #expect(result.problems.contains { $0.lowercased().contains("damaged") })
+}
+
 @Test("A generation from a build with no manifest still reads as complete")
 func preManifestGenerationIsStillUsable() throws {
     // The append-only rule, one directory over. A generation written before slice D has a

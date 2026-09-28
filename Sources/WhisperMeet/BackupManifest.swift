@@ -76,11 +76,38 @@ struct BackupManifest: Codable, Equatable, Sendable {
 
     /// The manifest a generation carries, or nil when it has none — which is the ordinary state of
     /// a generation written before this existed, not an error.
+    ///
+    /// Collapses two very different situations to the same `nil` (F557): "no file at all" (an
+    /// older backup, nothing wrong) and "a file is there but truncated or otherwise undecodable"
+    /// (this generation's own evidence is damaged). `verify` below must NOT make the same
+    /// collapse — it needs `readOutcome` to tell those apart.
     static func read(in generationDirectory: URL) -> BackupManifest? {
-        guard let data = try? Data(
-            contentsOf: generationDirectory.appendingPathComponent(fileName)
-        ) else { return nil }
-        return try? JSONDecoder().decode(BackupManifest.self, from: data)
+        if case let .present(manifest) = readOutcome(in: generationDirectory) { return manifest }
+        return nil
+    }
+
+    /// Whether `.backup-manifest.json` is absent, present and readable, or present and damaged
+    /// (F557). The distinction `read` cannot make: an absent manifest means an older backup, which
+    /// stays restorable through the "Restore Anyway" override; a damaged one means this
+    /// generation's own integrity evidence cannot be trusted, which "Restore Anyway" must NOT
+    /// override — those are different questions to ask the user and this is the tri-state that
+    /// keeps them different all the way to `BackupRestorePlan`.
+    enum ReadOutcome: Equatable {
+        case absent
+        case present(BackupManifest)
+        /// The file exists but did not decode — truncated JSON, garbage bytes, or any other
+        /// corruption. Distinct from `.absent`: this generation is not "from an earlier version",
+        /// it is damaged.
+        case corrupt
+    }
+
+    static func readOutcome(in generationDirectory: URL) -> ReadOutcome {
+        let url = generationDirectory.appendingPathComponent(fileName)
+        guard let data = try? Data(contentsOf: url) else { return .absent }
+        guard let manifest = try? JSONDecoder().decode(BackupManifest.self, from: data) else {
+            return .corrupt
+        }
+        return .present(manifest)
     }
 
     /// What a verification found.
@@ -109,12 +136,30 @@ struct BackupManifest: Codable, Equatable, Sendable {
     /// omitting it would let silent corruption through. The caller chooses and the result says
     /// which was done.
     static func verify(in generationDirectory: URL, deep: Bool) throws -> VerificationResult {
-        guard let manifest = read(in: generationDirectory) else {
+        let manifest: BackupManifest
+        switch readOutcome(in: generationDirectory) {
+        case .absent:
+            // No manifest at all — an older backup, not a defect. Stays restorable through the
+            // explicit "Restore Anyway" override (F557).
             return VerificationResult(
                 isIntact: false,
                 isUnverifiable: true,
                 problems: ["This backup has no manifest, so its contents cannot be checked. It was made by an earlier version of WhisperMeet."]
             )
+        case .corrupt:
+            // A manifest file IS there but does not decode — truncated JSON from an interrupted
+            // copy, garbage from a failing disk, or a sync client that wrote half of it (F557).
+            // This is damage, not "an earlier version": `isUnverifiable: false` here is what keeps
+            // "Restore Anyway" from appearing for it (`BackupRestorePlan.requiresExplicitOverride`
+            // is exactly `isUnverifiable`), because there is no override that makes trusting a
+            // provably-damaged file list correct.
+            return VerificationResult(
+                isIntact: false,
+                isUnverifiable: false,
+                problems: ["This backup's manifest is damaged and could not be read, so this generation's contents cannot be trusted. This backup may be corrupted or incomplete."]
+            )
+        case let .present(found):
+            manifest = found
         }
         var problems: [String] = []
         if digest(of: manifest.files) != manifest.digest {

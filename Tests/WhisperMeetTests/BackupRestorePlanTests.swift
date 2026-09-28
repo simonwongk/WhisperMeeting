@@ -122,6 +122,44 @@ func unverifiableGenerationIsNotSafe() throws {
     #expect(!plan.wouldOverwrite.isEmpty)
 }
 
+// F557 — a damaged manifest used to collapse to the SAME state as a missing one: `isUnverifiable:
+// true`, offered "Restore Anyway". That is wrong for a reason `unverifiableGenerationIsNotSafe`
+// above does not cover: "no manifest" means an older backup, nothing is known to be wrong, and the
+// override exists precisely so that generation is not stranded. "The manifest is here and does not
+// decode" means THIS generation's own integrity evidence is damaged, and there is no reading of
+// "restore anyway" that makes trusting known-damaged evidence correct — it must refuse outright,
+// with no override button at all (`ContentView`'s confirmation dialog only offers one when
+// `requiresExplicitOverride` is true; see `Sources/WhisperMeet/ContentView.swift` around the
+// "Restore Anyway" button).
+@Test("A damaged (truncated) manifest is refused outright, never offered the unverifiable override (F557)")
+func truncatedManifestIsNotOfferedTheOverride() throws {
+    let (root, library, generation) = try makeFixture("truncated-manifest")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    let original = try Data(contentsOf: manifestURL)
+    try original.prefix(original.count / 3).write(to: manifestURL) // cut off mid-JSON
+
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: false)
+    #expect(!plan.verification.isIntact)
+    #expect(!plan.verification.isUnverifiable, "damaged is not the same thing as unverifiable")
+    #expect(!plan.isSafeToApply)
+    #expect(!plan.requiresExplicitOverride, "a damaged manifest must not be offered Restore Anyway")
+}
+
+@Test("A manifest that is garbage bytes (not JSON at all) is refused outright the same way (F557)")
+func garbageManifestIsNotOfferedTheOverride() throws {
+    let (root, library, generation) = try makeFixture("garbage-manifest")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    try Data("not json at all, just noise \u{0}\u{1}\u{2}".utf8).write(to: manifestURL)
+
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: false)
+    #expect(!plan.verification.isIntact)
+    #expect(!plan.verification.isUnverifiable)
+    #expect(!plan.isSafeToApply)
+    #expect(!plan.requiresExplicitOverride, "a damaged manifest must not be offered Restore Anyway")
+}
+
 @Test("A plan totals the bytes it would write")
 func planTotalsBytes() throws {
     let (root, library, generation) = try makeFixture("bytes")
