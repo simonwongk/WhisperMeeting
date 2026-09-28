@@ -90,6 +90,46 @@ func secondOpinionReplaceWritesTheMatchingLine() async throws {
     ])
 }
 
+// F574 — Second Opinion ran the other engine in whatever language Settings held when it was asked,
+// not the one the meeting was transcribed in. Settings are for the next meeting: a meeting pinned to
+// Mandarin got its second opinion under an English pin, and a pinned engine can come back with a
+// translation, which the sheet then offers to Replace the Mandarin line with. The meeting's own
+// request decides, as it does for a segment re-run (F471): its pin if it had one, else Automatic.
+@MainActor
+@Test("Second Opinion runs the other engine in the language the meeting asked for, never Settings' (F574)")
+func secondOpinionRunsInTheMeetingsRequestedLanguage() async throws {
+    final class SeenSelection: @unchecked Sendable { var value: MeetingTranscriptionSelection? }
+    // nil is a meeting transcribed before the request was recorded: nothing is known about a pin.
+    let cases: [(requested: String?, expected: WhisperLanguage)] = [
+        (WhisperLanguage.chinese.rawValue, .chinese),
+        (WhisperLanguage.automatic.rawValue, .automatic),
+        (nil, .automatic),
+    ]
+    for (requested, expected) in cases {
+        let label = Comment(rawValue: "requestedLanguage \(requested ?? "nil")")
+        let (model, root) = try makeModel()
+        defer { try? FileManager.default.removeItem(at: root) }
+        model.selectedLanguage = .english   // chosen since, for the next meeting
+        let id = UUID()
+        let stored = [seg("我们明天开会", 0, 2)]
+        model.store.upsert(MeetingRecord(
+            id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed,
+            transcriptText: TranscriptFormatter.timestamped(stored), languageCode: "zh", segments: stored,
+            transcriptionEngine: .whisperLarge, requestedLanguage: requested
+        ))
+        let seen = SeenSelection()
+        model.runTranscriptionEngineOverride = { selection, _ in
+            seen.value = selection
+            return TranscriptionResult(id: "x", text: "我们明天开会", languageCode: "zh", audioDuration: 2,
+                                       confidence: nil, segments: [seg("我们明天开会", 0, 2)])
+        }
+
+        await model.computeSecondOpinion(id: id)
+
+        #expect(seen.value == MeetingTranscriptionSelection(engine: .qwenBalanced, language: expected), label)
+    }
+}
+
 // F572 — the other engine split this line in two. Pairing with its larger piece offered only the
 // second sentence, and Replace wrote it over the line: the first sentence, which both engines heard,
 // was deleted from the transcript.

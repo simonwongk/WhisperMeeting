@@ -1585,7 +1585,13 @@ final class AppModel: ObservableObject {
         let producedBy = meeting.transcriptionEngine ?? selectedEngine
         let other: MeetingTranscriptionEngine = producedBy == .qwenBalanced ? .whisperLarge : .qwenBalanced
         secondOpinionEngine = other
-        let selection = MeetingTranscriptionSelection(engine: other, language: selectedLanguage)
+        // The language the meeting's own run asked for, not Settings' (F574) — the rule a segment
+        // re-run follows (F471): a pin only when that run was pinned, else Automatic. Settings are
+        // for the next meeting, and a pinned engine can return a translation, which the sheet would
+        // then offer to Replace the line with.
+        let selection = MeetingTranscriptionSelection(
+            engine: other, language: WhisperLanguage(storedRequestedLanguage: meeting.requestedLanguage)
+        )
         // F560: a whole second ASR pass over the entire recording, so the Mac must not idle-sleep
         // partway through it.
         await withEngineActivityHeld(reason: "Comparing transcription engines (Second Opinion)") {
