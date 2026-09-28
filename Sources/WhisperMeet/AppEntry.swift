@@ -78,6 +78,8 @@ struct WhisperMeetApp: App {
         _lifecycle = StateObject(wrappedValue: lifecycle)
 
         lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
+        // F520: Quit stops a running model install; its script restores what it was replacing.
+        lifecycle.onTerminate = { [weak model] in model?.cancelAllInstalls() }
         lifecycle.onStartupRecovery = { [weak model] in
             await model?.performStartupRecovery()
         }

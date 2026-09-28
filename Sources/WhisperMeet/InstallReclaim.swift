@@ -21,7 +21,21 @@ struct InstallReclaim: Sendable {
     let recoveryEnvironmentKey: String
     /// The bundled script's resource name, without its `.sh` extension.
     let scriptResource: String
+    /// Whether the script takes the runtime's PARENT directory as its argument rather than the
+    /// runtime itself (F520). Local Whisper's installer takes `Runtime/` and keeps its venv at
+    /// `Runtime/venv`; the other three take their own `Runtime/<Name>` target. The artifacts are
+    /// siblings of the runtime either way, so the scan is the same.
+    var scriptTakesParentDirectory = false
 
+    /// The meetings-critical default runtime, the one F33/F219/F167 never covered (F520). Its
+    /// runtime is `Runtime/venv`, so its artifacts are `Runtime/.venv-backup-*` and
+    /// `Runtime/.venv-install-*`; the `.venv-install.lock` beside them does not match either prefix.
+    static let whisper = InstallReclaim(
+        artifactPrefix: ".venv",
+        recoveryEnvironmentKey: "WHISPER_INSTALL_RECOVERY_ONLY",
+        scriptResource: "setup-local-whisper",
+        scriptTakesParentDirectory: true
+    )
     static let qwen = InstallReclaim(
         artifactPrefix: ".Qwen3ASR",
         recoveryEnvironmentKey: "QWEN_INSTALL_RECOVERY_ONLY",
@@ -37,6 +51,11 @@ struct InstallReclaim: Sendable {
         recoveryEnvironmentKey: "DIARIZATION_INSTALL_RECOVERY_ONLY",
         scriptResource: "setup-speaker-diarization"
     )
+
+    /// What the recovery run is given on its command line for the runtime at `runtimeDirectory`.
+    func scriptArgument(for runtimeDirectory: URL) -> URL {
+        scriptTakesParentDirectory ? runtimeDirectory.deletingLastPathComponent() : runtimeDirectory
+    }
 
     /// A completed install's displaced predecessor.
     var backupPrefix: String { "\(artifactPrefix)-backup-" }
@@ -85,10 +104,11 @@ extension AppModel {
         ) ?? developmentScriptURL("\(reclaim.scriptResource).sh") else {
             return -1
         }
+        let argument = reclaim.scriptArgument(for: runtimeDirectory)
         return await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [scriptURL.path, runtimeDirectory.path]
+            process.arguments = [scriptURL.path, argument.path]
             var environment = ProcessInfo.processInfo.environment
             environment[reclaim.recoveryEnvironmentKey] = "1"
             process.environment = environment
@@ -102,5 +122,36 @@ extension AppModel {
                 return -1
             }
         }.value
+    }
+}
+
+// MARK: - Interrupted Local Whisper install reclaim (F520 — the fourth reclaim)
+
+extension AppModel {
+    /// Reclaims an interrupted Local Whisper install at launch, only when installer-owned orphans
+    /// exist beside the venv — so a clean launch, or a Mac using a Homebrew `whisper`, spawns
+    /// nothing. Returns whether the reclaim ran.
+    ///
+    /// A battery that dies during "Repair or Update", or a force quit, can leave the only working
+    /// venv in `Runtime/.venv-backup-<pid>` with `Runtime/venv` gone, or a multi-GB staging venv
+    /// behind. Qwen, speaker analysis and the summarizer have reclaimed exactly this at launch since
+    /// F33/F219/F167; the meetings-critical runtime did not, and showed "Whisper not installed" (or
+    /// a stale Homebrew fallback) until the user happened to reinstall.
+    ///
+    /// **Starts from the venv, not from `Runtime/`.** The artifacts are the venv's siblings, so the
+    /// scan is in the venv's parent — `Runtime/`. Handing this `Runtime/` would scan the library
+    /// root instead and never find anything. The script itself takes `Runtime/`
+    /// (`InstallReclaim.whisper.scriptArgument(for:)`).
+    ///
+    /// `venvDirectory` defaults to `whisperVenvDirectory` (a default argument cannot read an
+    /// instance property, hence the optional).
+    @discardableResult
+    func reclaimInterruptedWhisperInstall(venvDirectory: URL? = nil) async -> Bool {
+        let venv = venvDirectory ?? whisperVenvDirectory
+        guard Self.hasOrphanedInstallArtifacts(in: venv.deletingLastPathComponent(), for: .whisper) else {
+            return false
+        }
+        _ = await runWhisperInstallRecovery(venv)
+        return true
     }
 }

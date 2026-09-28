@@ -55,6 +55,8 @@ func recoveryOnlyModeSkipsThePreconditions() throws {
         ("setup-qwen-asr.sh", "QWEN_INSTALL_RECOVERY_ONLY"),
         ("setup-local-summarizer.sh", "SUMMARIZER_INSTALL_RECOVERY_ONLY"),
         ("setup-speaker-diarization.sh", "DIARIZATION_INSTALL_RECOVERY_ONLY"),
+        // F520: the fourth reclaim.
+        ("setup-local-whisper.sh", "WHISPER_INSTALL_RECOVERY_ONLY"),
     ]
     // Anything that would refuse to proceed on a machine that is merely recovering.
     let preconditions = ["brew", "available_kib", "8388608", "Homebrew"]

@@ -1447,8 +1447,13 @@ struct SettingsView: View {
                 // The install → result swap after a minutes-long wait fades in as a readable
                 // payoff instead of snapping (F161, the F116 vocabulary).
                 if model.isInstallingRuntime {
-                    ProgressView("Installing. This can take several minutes…")
-                        .transition(.gentleFade(reduceMotion: reduceMotion))
+                    // F520: Cancel beside the progress it stops, never inside the message below.
+                    HStack {
+                        ProgressView("Installing. This can take several minutes…")
+                        Spacer()
+                        InstallCancelButton(model: model, component: .whisper)
+                    }
+                    .transition(.gentleFade(reduceMotion: reduceMotion))
                 } else if let message = model.installationMessage {
                     Text(message)
                         .foregroundStyle(.secondary)
@@ -1479,8 +1484,12 @@ struct SettingsView: View {
                         .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
                     }
                     if model.isInstallingQwenRuntime {
-                        ProgressView("Installing about 4.5 GB. This can take several minutes…")
-                            .transition(.gentleFade(reduceMotion: reduceMotion))
+                        HStack {
+                            ProgressView("Installing about 4.5 GB. This can take several minutes…")
+                            Spacer()
+                            InstallCancelButton(model: model, component: .qwen)
+                        }
+                        .transition(.gentleFade(reduceMotion: reduceMotion))
                     } else if let message = model.qwenInstallationMessage {
                         Text(message)
                             .foregroundStyle(.secondary)
@@ -1515,8 +1524,12 @@ struct SettingsView: View {
                         .disabled(!model.canInstall(.diarization))
                     }
                     if model.isInstallingDiarizationRuntime {
-                        ProgressView(SpeakerAnalysisCopy.installProgressLabel)
-                            .transition(.gentleFade(reduceMotion: reduceMotion))
+                        HStack {
+                            ProgressView(SpeakerAnalysisCopy.installProgressLabel)
+                            Spacer()
+                            InstallCancelButton(model: model, component: .diarization)
+                        }
+                        .transition(.gentleFade(reduceMotion: reduceMotion))
                     } else if let message = model.diarizationInstallationMessage {
                         Text(message)
                             .foregroundStyle(.secondary)
@@ -1843,7 +1856,11 @@ struct SettingsView: View {
                             .disabled(!model.canInstall(.summarizer))
                         }
                         if model.isInstallingSummarizer {
-                            ProgressView("Downloading the local summarization model. This can take several minutes…")
+                            HStack {
+                                ProgressView("Downloading the local summarization model. This can take several minutes…")
+                                Spacer()
+                                InstallCancelButton(model: model, component: .summarizer)
+                            }
                         } else if let message = model.summarizerInstallationMessage {
                             Text(message).foregroundStyle(.secondary)
                         }
@@ -2329,6 +2346,7 @@ private struct AskMeetingsView: View {
                 } else if model.isInstallingAskEmbeddings {
                     ProgressView().controlSize(.small)
                     Text("Downloading the search model…").font(.caption).foregroundStyle(.secondary)
+                    InstallCancelButton(model: model, component: .askEmbeddings).controlSize(.small)
                 } else {
                     Text("Keyword search only — it misses a question worded differently from what was said.")
                         .font(.caption).foregroundStyle(.secondary)

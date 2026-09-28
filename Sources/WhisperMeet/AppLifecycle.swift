@@ -23,6 +23,10 @@ public final class AppLifecycle: ObservableObject {
     /// Flush pending debounced writes. Called on resign-active and on terminate (F138).
     public var onFlush: (() -> Void)?
 
+    /// Called once on terminate only, before `onFlush` (F520): stop running model installs, which
+    /// would otherwise keep downloading headless after the app is gone.
+    public var onTerminate: (() -> Void)?
+
     /// Run startup recovery. Called once per launch, whatever the window state.
     public var onStartupRecovery: (() async -> Void)?
 
@@ -96,11 +100,15 @@ public final class AppLifecycle: ObservableObject {
                     forName: name,
                     object: nil,
                     queue: .main
-                ) { [weak self] _ in
+                ) { [weak self] notification in
                     // `assumeIsolated` rather than a `Task`, for the reason F253 documents: on
                     // `willTerminate` the process is going away and a hop would return before the
                     // flush ran. `queue: .main` makes the assumption true.
-                    MainActor.assumeIsolated { self?.onFlush?() }
+                    let isTerminating = notification.name == NSApplication.willTerminateNotification
+                    MainActor.assumeIsolated {
+                        if isTerminating { self?.onTerminate?() }
+                        self?.onFlush?()
+                    }
                 }
             )
         }

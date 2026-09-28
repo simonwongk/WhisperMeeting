@@ -39,9 +39,16 @@ cleanup_and_restore() {
   exit_status=$?
   trap - EXIT HUP INT TERM
   # If activation never completed and the live venv had been moved aside, put it back.
-  if [[ "$activation_complete" -eq 0
-        && ! -e "$venv_target"
-        && -e "$backup_venv" ]]; then
+  #
+  # F520: whatever is at the live path by then is NOT the previous venv — the swap only ever moves
+  # that one into $backup_venv — but the unverified new one, swapped in and still being checked by
+  # the relocated `whisper --help` below. That check takes seconds with real torch, so it is where a
+  # Cancel (SIGTERM to the process group) can land, and this used to restore only when the live
+  # path was missing: the unverified venv stayed live and the previous one was stranded in a hidden
+  # backup. Replace it. Nothing else creates $backup_venv (a same-PID leftover is removed before
+  # the swap), so this never discards anything but this run's own unverified install.
+  if [[ "$activation_complete" -eq 0 && -e "$backup_venv" ]]; then
+    rm -rf "$venv_target"
     mv "$backup_venv" "$venv_target"
   fi
   [[ -d "$staging_venv" ]] && rm -rf "$staging_venv"
@@ -80,6 +87,16 @@ else
   done
 fi
 for abandoned_staging in "$runtime_directory"/.venv-install-*(N); do rm -rf "$abandoned_staging"; done
+
+# Recovery-only mode (F520): reclaim and stop, as QWEN_/SUMMARIZER_/DIARIZATION_INSTALL_RECOVERY_ONLY
+# do for their runtimes (F33, F167, F219). The app runs this at launch, before it probes the runtime,
+# when an interrupted install left `.venv-backup-*` or `.venv-install-*` behind — a battery that died
+# mid-repair, or a force quit. It needs the block above and none of what follows: a Mac recovering
+# an install already has its runtime, and requiring Homebrew would fail the reclaim on exactly the
+# machines that need it. Placed after the reclaim and before the first precondition.
+if [[ "${WHISPER_INSTALL_RECOVERY_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
 
 # F545: which optional tools the WORKING install has, recorded before anything is staged. mlx-whisper
 # and yt-dlp are installed best-effort below, so on a flaky connection a repair used to build a venv

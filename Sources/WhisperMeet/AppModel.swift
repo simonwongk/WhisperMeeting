@@ -1315,6 +1315,24 @@ final class AppModel: ObservableObject {
         await AppModel.spawnDiarizationInstallRecovery(runtimeDirectory: runtimeDirectory)
     }
 
+    /// Runs Local Whisper's recovery-only reclaim for the venv at the given URL (F520). The same
+    /// injectable arrangement as the three reclaims above; the default runs the bundled
+    /// `setup-local-whisper.sh` with `WHISPER_INSTALL_RECOVERY_ONLY=1` over the venv's parent.
+    var runWhisperInstallRecovery: @Sendable (URL) async -> Int32 = { venvDirectory in
+        await AppModel.spawnInstallRecovery(runtimeDirectory: venvDirectory, for: .whisper)
+    }
+
+    /// Where the launch reclaim looks for Local Whisper's venv (F520) — a property, like
+    /// `diarizationRuntimeDirectory`, so a test can point `performStartupRecovery` at a temp one.
+    var whisperVenvDirectory: URL = LocalWhisperRuntime.managedDirectory()
+        .appendingPathComponent("venv", isDirectory: true)
+
+    /// The running install of each runtime, so its Cancel button and Quit can stop it (F520).
+    /// Written only by `launchInstall`/`cancelInstall` in ModelInstalls.swift.
+    var installTasks: [ModelInstallComponent: Task<Void, Never>] = [:]
+    /// Installs whose Cancel has been pressed and whose script is still restoring (F520).
+    @Published var cancellingInstalls: Set<ModelInstallComponent> = []
+
     /// Locates the installed local-Whisper executable. Injectable so a headless test can put the app
     /// into the "a transcription is running" state: `beginTranscription` refuses without an installed
     /// engine and re-probes the filesystem itself, which left every "refuse while transcribing" guard
@@ -2645,6 +2663,10 @@ final class AppModel: ObservableObject {
         if let crashNotice = reportCrashesSinceLastLaunch() {
             messages.append(crashNotice)
         }
+        // F520: the meetings-critical Whisper venv first, for the reason all four share — an install
+        // interrupted mid-swap leaves the working runtime in a hidden backup, and the probe below
+        // must see it restored.
+        await reclaimInterruptedWhisperInstall()
         // Self-heal an interrupted Qwen install *before* refreshing runtime state, so a runtime that a
         // force-quit mid-install stranded in a backup dir is restored and shows as installed rather
         // than "not installed" (F33 wires the tested `setup-qwen-asr.sh` recovery branch to launch).
@@ -3076,7 +3098,7 @@ final class AppModel: ObservableObject {
         )
         let run = runInstallerJob
         let wasInstalled = isRuntimeInstalled
-        Task {
+        launchInstall(.whisper) { [self] in
             let outcome = await performInstall(.whisper, wasInstalled: wasInstalled, isInstalled: { $0.isRuntimeInstalled }) {
                 try await run(job)
             }
@@ -3086,6 +3108,8 @@ final class AppModel: ObservableObject {
             case let .failed(error):
                 installationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
+            case let .cancelled(previousKept):
+                installationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
             isInstallingRuntime = false
         }
@@ -3113,7 +3137,7 @@ final class AppModel: ObservableObject {
         )
         let run = runInstallerJob
         let wasInstalled = isQwenInstalled
-        Task {
+        launchInstall(.qwen) { [self] in
             let outcome = await performInstall(.qwen, wasInstalled: wasInstalled, isInstalled: { $0.isQwenInstalled }) {
                 try await run(job)
             }
@@ -3123,6 +3147,8 @@ final class AppModel: ObservableObject {
             case let .failed(error):
                 qwenInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
+            case let .cancelled(previousKept):
+                qwenInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
             isInstallingQwenRuntime = false
         }
@@ -3158,7 +3184,7 @@ final class AppModel: ObservableObject {
         )
         let run = runInstallerJob
         let wasInstalled = isSummarizerInstalled
-        Task {
+        launchInstall(.summarizer) { [self] in
             let outcome = await performInstall(.summarizer, wasInstalled: wasInstalled, isInstalled: { $0.isSummarizerInstalled }) {
                 try await run(job)
             }
@@ -3168,6 +3194,8 @@ final class AppModel: ObservableObject {
             case let .failed(error):
                 summarizerInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
+            case let .cancelled(previousKept):
+                summarizerInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
             isInstallingSummarizer = false
         }
@@ -3208,7 +3236,7 @@ final class AppModel: ObservableObject {
         let wasInstalled = isDiarizationInstalled
         isInstallingDiarizationRuntime = true
         diarizationInstallationMessage = "Installing the speaker-analysis model…"
-        Task {
+        launchInstall(.diarization) { [self] in
             // Exit status is not evidence: `performInstall` asks the filesystem.
             let outcome = await performInstall(.diarization, wasInstalled: wasInstalled, isInstalled: { $0.isDiarizationInstalled }) {
                 try await install(scriptURL, runtimeDirectory)
@@ -3219,6 +3247,8 @@ final class AppModel: ObservableObject {
             case let .failed(error):
                 diarizationInstallationMessage = error.statusMessage
                 alertMessage = error.localizedDescription
+            case let .cancelled(previousKept):
+                diarizationInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
             isInstallingDiarizationRuntime = false
         }
@@ -5033,17 +5063,30 @@ final class AppModel: ObservableObject {
         }
         isInstallingAskEmbeddings = true
         askEmbeddingInstallMessage = nil
-        Task {
-            let outcome = try? await ProcessGroupRunner().run(
-                executableURL: URL(fileURLWithPath: "/bin/zsh"),
-                arguments: [script.path, LocalWhisperRuntime.managedDirectory().path],
-                environment: MediaDownloadClient.makeEnvironment(),
-                stallTimeout: 600
-            )
+        // F520: through the shared runner and `launchInstall`, so its Cancel (and Quit) stop it.
+        // It already ran under ProcessGroupRunner, whose cancel() nothing called; its stall timeout
+        // and environment are unchanged, and it still keeps no log file.
+        let job = InstallerJob(
+            component: .askEmbeddings,
+            scriptURL: script,
+            arguments: [LocalWhisperRuntime.managedDirectory().path],
+            environment: MediaDownloadClient.makeEnvironment(),
+            logURL: nil,
+            stallTimeout: 600
+        )
+        let wasInstalled = isAskEmbeddingInstalled
+        launchInstall(.askEmbeddings) { [self] in
+            let outcome = await performInstall(.askEmbeddings, wasInstalled: wasInstalled, isInstalled: { $0.isAskEmbeddingInstalled }) {
+                try await AppModel.runInstallerScript(job)
+            }
             isInstallingAskEmbeddings = false
-            isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
-            if !isAskEmbeddingInstalled {
-                askEmbeddingInstallMessage = "The search model could not be installed. \(String((outcome?.output ?? "").suffix(200)))"
+            switch outcome {
+            case .installed:
+                askEmbeddingInstallMessage = nil
+            case let .failed(error):
+                askEmbeddingInstallMessage = error.localizedDescription
+            case .cancelled:
+                askEmbeddingInstallMessage = "The search model download was cancelled."
             }
         }
     }
