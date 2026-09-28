@@ -10,6 +10,12 @@ private final class NonActivatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// The pill's view host, taking the first click: the panel never becomes key, and without this the
+/// click on Copy would be spent trying to make it so (F586).
+private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// A borderless, non-activating panel pinned near the bottom-center of the active screen. It never
 /// becomes key, so it never steals focus from the app you are dictating into.
 @MainActor
@@ -18,14 +24,34 @@ final class DictationOverlay {
         case listening, transcribing, refining, done, copied, empty, error, busy
         /// Pasted, but no text field could be seen to take it, so it is on the clipboard too (F600).
         case pastedUnconfirmed
-        /// Copied rather than pasted, and why (F445).
-        case appChanged, secureInput
-        /// Not pasted because secure keyboard entry is on, naming the app it is on in (F585).
+        /// Copied rather than pasted: the app in front is not the one the key was pressed in (F445).
+        case appChanged
+        /// Not pasted because of secure input (F445), and not on the clipboard either: the pill
+        /// offers Copy (F586).
+        case secureInput
+        /// As `secureInput`, naming the app secure keyboard entry is on in (F585).
         case secureKeyboardEntry(app: String)
+
+        /// The pill has a Copy button, the only way to a dictation made into secure input (F586).
+        var offersCopy: Bool {
+            switch self {
+            case .secureInput, .secureKeyboardEntry: true
+            default: false
+            }
+        }
+
+        /// Wider when it offers Copy: the button (48 pt measured) and a caption such as "Secure
+        /// Keyboard Entry is on in Terminal" (208 pt at 11 pt) then fit beside the icon.
+        var pillWidth: CGFloat { offersCopy ? 340 : 220 }
     }
 
     private let model = PillModel()
     private var panel: NSPanel?
+
+    /// The Copy button's action (F586), set by the controller.
+    var onCopy: (() -> Void)? {
+        didSet { model.onCopy = onCopy }
+    }
 
     func show(_ phase: Phase) {
         if phase == .listening {
@@ -36,6 +62,9 @@ final class DictationOverlay {
         }
         model.phase = phase
         ensurePanel()
+        // Clicks pass through the pill to whatever is under it, except while it has a button.
+        panel?.ignoresMouseEvents = !phase.offersCopy
+        panel?.setContentSize(NSSize(width: phase.pillWidth, height: 44))
         reposition()
         panel?.orderFrontRegardless()
     }
@@ -56,7 +85,7 @@ final class DictationOverlay {
 
     private func ensurePanel() {
         guard panel == nil else { return }
-        let hosting = NSHostingView(rootView: DictationPill(model: model))
+        let hosting = FirstClickHostingView(rootView: DictationPill(model: model))
         hosting.frame = NSRect(x: 0, y: 0, width: 220, height: 44)
         let panel = NonActivatingPanel(
             contentRect: hosting.frame,
@@ -93,6 +122,16 @@ protocol DictationOverlayPresenting: AnyObject {
     func show(_ phase: DictationOverlay.Phase)
     func update(level: Float)
     func hide()
+    /// What the pill's Copy button does (F586). The controller sets it once.
+    var onCopy: (() -> Void)? { get set }
+}
+
+extension DictationOverlayPresenting {
+    /// A presenter with no Copy button ignores the action.
+    var onCopy: (() -> Void)? {
+        get { nil }
+        set {}
+    }
 }
 
 extension DictationOverlay: DictationOverlayPresenting {}
@@ -112,6 +151,8 @@ private final class PillModel: ObservableObject {
     @Published var phase: DictationOverlay.Phase = .listening
     @Published var level: Float = 0
     var levelBucket: Int = -1
+    /// The Copy button's action (F586).
+    var onCopy: (() -> Void)?
 }
 
 private struct DictationPill: View {
@@ -122,22 +163,39 @@ private struct DictationPill: View {
         HStack(spacing: 10) {
             icon
                 .frame(width: 18)
-            Text(label)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
-                // Two lines, for the labels that need them: "Secure Keyboard Entry is on in
-                // Terminal" (F585) measures 246 pt at this font and "Pasted — also on the
-                // clipboard" (F600) 191 pt, against the 160 pt left beside the icon; two 15.3 pt
-                // lines fit the 44 pt pill. Every other label is one line.
-                .lineLimit(2)
-                .contentTransition(.opacity)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
+                    // Two lines, for the label that needs them: "Pasted — also on the clipboard"
+                    // (F600) measures 191 pt at this font against the 160 pt left beside the icon
+                    // in a 220 pt pill; two 15.3 pt lines fit the 44 pt height. Every other label
+                    // is one line.
+                    .lineLimit(2)
+                    .contentTransition(.opacity)
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
             Spacer(minLength: 0)
             if model.phase == .listening {
                 LevelBars(level: model.level)
             }
+            if model.phase.offersCopy {
+                // The only way to a dictation made into secure input: it is on no clipboard until
+                // this is pressed (F586).
+                Button("Copy") { model.onCopy?() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .environment(\.colorScheme, .dark)
+            }
         }
         .padding(.horizontal, 16)
-        .frame(width: 220, height: 44)
+        .frame(width: model.phase.pillWidth, height: 44)
         // A deliberate dark HUD (like the system dictation pill): readable over any app beneath,
         // in either appearance. The brighter top-edge stroke reads as light catching the surface.
         .background(.black.opacity(0.78), in: Capsule())
@@ -175,12 +233,18 @@ private struct DictationPill: View {
         case .pastedUnconfirmed: "Pasted — also on the clipboard"
         case .copied: "Copied to clipboard"
         case .appChanged: "Copied — app changed"
-        case .secureInput: "Copied — secure input"
-        case let .secureKeyboardEntry(app): "Secure Keyboard Entry is on in \(app)"
+        case .secureInput, .secureKeyboardEntry: "Not pasted — secure input"
         case .empty: "Didn’t catch that"
         case .error: "Dictation failed"
         case .busy: "Busy…"
         }
+    }
+
+    /// A second, smaller line: where secure keyboard entry is on, so the user knows where to turn
+    /// it off (F585).
+    private var caption: String? {
+        if case let .secureKeyboardEntry(app) = model.phase { return "Secure Keyboard Entry is on in \(app)" }
+        return nil
     }
 }
 

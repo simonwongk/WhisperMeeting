@@ -89,6 +89,13 @@ final class DictationController: ObservableObject {
     /// What the pill is saying, apart from a busy flash; nil while it is hidden. The flash puts this
     /// back when it ends, so refusing a press never hides a dictation that is still in flight (F443).
     private var shownPhase: DictationOverlay.Phase?
+    /// A dictation not pasted because of secure input, kept for the pill's Copy button and nowhere
+    /// else — not the clipboard, not the history — and dropped when that pill goes (F586).
+    private(set) var heldSecureDictation: String?
+    /// How long the pill offering Copy stays up, and so how long the text is held (F586): long
+    /// enough to move the pointer to it, where a result pill is gone in 1.1 s. A var so a test can
+    /// shorten it.
+    var secureCopyWindow: TimeInterval = 6
     /// What had focus when this dictation's key went down; the paste is checked against it (F445).
     private var pressTarget: FocusedTextField.Probe?
     private var idleEvictWorkItem: DispatchWorkItem?
@@ -191,6 +198,7 @@ final class DictationController: ObservableObject {
         useVocabulary = defaults.object(forKey: Self.useVocabularyKey) as? Bool ?? true
         refineEnabled = defaults.object(forKey: Self.refineEnabledKey) as? Bool ?? false
         armedHotkey = hotkey
+        self.overlay.onCopy = { [weak self] in self?.copyHeldSecureDictation() }
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
@@ -995,20 +1003,26 @@ final class DictationController: ObservableObject {
             case .pastedUnconfirmed: showPhase(.pastedUnconfirmed)
             case .clipboard: showPhase(.copied); clipboardNotifier()
             case .appChanged: showPhase(.appChanged); clipboardNotifier()
-            case .secureInput: showPhase(.secureInput); clipboardNotifier()
-            case let .secureKeyboardEntry(app): showPhase(.secureKeyboardEntry(app: app)); clipboardNotifier()
+            // Not on the clipboard, so no notice: the pill's Copy button is the only way to it (F586).
+            case .secureInput: showSecureCopyPill(.secureInput, holding: payload)
+            case let .secureKeyboardEntry(app): showSecureCopyPill(.secureKeyboardEntry(app: app), holding: payload)
             }
             log.notice("delivered via \(String(describing: delivery), privacy: .public)")
-            // Secure input means the words may be a password: kept out of the history file (F445).
-            if !delivery.isSecure {
+            if delivery.isSecure {
+                // Secure input means the words may be a password: kept out of the history file
+                // (F445). Nothing is in flight any more — only the pill and its Copy button remain,
+                // for longer than a result pill so there is time to reach it (F586).
+                status = .idle
+                scheduleDismiss(after: secureCopyWindow)
+            } else {
                 logStore.record(
                     text: payload,
                     outcome: delivery.wasPasted ? .pasted : .clipboard,
                     rawText: rawText,
                     refinement: refinement
                 )
+                scheduleDismiss(after: 1.1)
             }
-            scheduleDismiss(after: 1.1)
         case .none where session.state == .failed(.emptyTranscript):
             showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
@@ -1038,11 +1052,30 @@ final class DictationController: ObservableObject {
     }
 
     private func showPhase(_ phase: DictationOverlay.Phase) {
+        // The held text lives exactly as long as a pill that offers Copy (F586).
+        if !phase.offersCopy { heldSecureDictation = nil }
         shownPhase = phase
         overlay.show(phase)
     }
 
+    private func showSecureCopyPill(_ phase: DictationOverlay.Phase, holding text: String) {
+        showPhase(phase)
+        heldSecureDictation = text
+    }
+
+    /// The pill's Copy button, for a dictation that was not pasted because of secure input (F586).
+    /// The user's own act, so the text is written — concealed, by `copyConcealed` — and then no
+    /// longer held. Nothing once the pill has gone.
+    func copyHeldSecureDictation() {
+        guard let text = heldSecureDictation, shownPhase?.offersCopy == true else { return }
+        heldSecureDictation = nil
+        textInjector.copyConcealed(text)
+        showPhase(.copied)
+        scheduleDismiss(after: 1.1)
+    }
+
     private func hideOverlay() {
+        heldSecureDictation = nil
         shownPhase = nil
         overlay.hide()
         // A dictation that ended without a paste leaves its clipboard copy unused (F601).

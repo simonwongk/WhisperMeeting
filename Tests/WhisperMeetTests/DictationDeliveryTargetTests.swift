@@ -11,10 +11,10 @@ import WhisperCore
 ///    transcribing). The text is left on the clipboard and the pill says why, instead of landing in
 ///    another conversation or a terminal.
 /// 2. Secure input — a password field has focus, or secure keyboard entry is on and nothing shows
-///    the paste is safe (F585, weighed in `SecureKeyboardEntryTests`) — at the press or at delivery. The text is never pasted (a password prompt that grabbed focus would
-///    otherwise receive a sentence as a password) and never written to dictation-log.json. It is
-///    left on the clipboard marked concealed and transient, the nspasteboard.org markers that tell
-///    clipboard-history tools not to record it, so a dictation meant for somewhere else is not lost.
+///    the paste is safe (F585, weighed in `SecureKeyboardEntryTests`) — at the press or at
+///    delivery. The text is never pasted (a password prompt that grabbed focus would otherwise
+///    receive a sentence as a password) and never written to dictation-log.json. Since F586 it is
+///    not written to the clipboard either; the pill offers Copy (`DictationSecureCopyTests`).
 ///
 /// Private pasteboards and a closure standing in for ⌘V, as in `DictationClipboardRestoreTests`.
 
@@ -50,7 +50,6 @@ private final class TargetHarness {
     deinit { board.releaseGlobally() }
 }
 
-private let concealed = "org.nspasteboard.ConcealedType"
 private let transient = "org.nspasteboard.TransientType"
 
 @MainActor
@@ -80,34 +79,36 @@ func dictationForTheSameAppIsPasted() throws {
 }
 
 @MainActor
-@Test("Secure input at delivery: nothing is pasted, and the text is left concealed (F445)")
+@Test("Secure input at delivery: nothing is pasted, and nothing is written to the clipboard (F445, F586)")
 func secureInputAtDeliveryIsNeverPasted() throws {
     let harness = try TargetHarness()
     let injector = harness.makeInjector()
     let pressedIn = injector.target()
     harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, secureInput: .passwordField)
+    let before = harness.board.changeCount
 
     #expect(injector.deliver("not a password", autoPaste: true, pressedIn: pressedIn) == .secureInput)
     #expect(harness.pasteCount == 0)
-    #expect(harness.text == "not a password")
-    #expect(harness.types.contains(concealed))
-    #expect(harness.types.contains(transient))
+    #expect(harness.board.changeCount == before)
+    #expect(harness.text == "probe")
 }
 
 @MainActor
-@Test("Secure input at the press is honoured even with auto-paste off (F445)")
+@Test("Secure input at the press is honoured even with auto-paste off (F445, F586)")
 func secureInputAtThePressIsNeverPastedOrKept() throws {
     let harness = try TargetHarness()
     let injector = harness.makeInjector()
     harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100, secureInput: .passwordField)
     let pressedIn = injector.target()
     harness.probe = FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100)
+    let before = harness.board.changeCount
 
     #expect(injector.deliver("hunter2", autoPaste: true, pressedIn: pressedIn) == .secureInput)
     #expect(harness.pasteCount == 0)
-    // With auto-paste off the clipboard IS the delivery, but it is still a secure one.
+    // With auto-paste off the clipboard IS the delivery, but it is still a secure one: nothing is
+    // written until the user asks, from the pill (F586).
     #expect(injector.deliver("hunter2", autoPaste: false, pressedIn: pressedIn) == .secureInput)
-    #expect(harness.types.contains(concealed))
+    #expect(harness.board.changeCount == before)
 }
 
 // MARK: - Through the controller

@@ -82,13 +82,15 @@ Fallback / edge branches:
 - **Another app in front at delivery** than the one the key was pressed in → not pasted; text left on
   the clipboard, pill "Copied — app changed" (F445).
 - **Secure input** at the press or at delivery → never pasted and never written to the dictation
-  history; left on the clipboard marked concealed, pill "Copied — secure input" (F445). Secure means
-  a focused password field, or secure event input on with nothing to show the paste is safe. That
-  flag is system-wide, so since F585 it is weighed: the app in front when secure input came on (as
-  the window server names it) is never pasted into, and the pill says "Secure Keyboard Entry is on
-  in <app>"; another app is pasted into when Accessibility shows an ordinary text field focused
-  there, and otherwise not. So Terminal's Secure Keyboard Entry no longer stops dictation into
-  TextEdit.
+  history (F445), and not written to the clipboard either (F586, the user's decision of
+  2026-09-28): the pill says "Not pasted — secure input" with a **Copy** button for 6 s, the text
+  is held in memory only while that pill shows, and Copy writes it marked concealed and transient.
+  Secure means a focused password field, or secure event input on with nothing to show the paste
+  is safe. That flag is system-wide, so since F585 it is weighed: the app in front when secure
+  input came on (as the window server names it) is never pasted into, and the pill adds "Secure
+  Keyboard Entry is on in <app>"; another app is pasted into when Accessibility shows an ordinary
+  text field focused there, and otherwise not. So Terminal's Secure Keyboard Entry no longer stops
+  dictation into TextEdit.
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
@@ -193,7 +195,9 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
   bottom-center of the active screen. Hosts a small SwiftUI pill via `NSHostingView`.
 - Pill states: Listening (mic-level meter), Transcribing (spinner), Done ✓, Copied-to-clipboard,
   Didn't-catch-that, Error. Fade in/out. **Never becomes key — never steals focus from the target
-  app.**
+  app.** Clicks pass through it, except while it offers Copy for a secure-input dictation (F586):
+  then it is 340 pt wide, takes mouse events, and its host view accepts the first click so the
+  button works in a panel that cannot become key.
 
 ### `TextInjector`
 - `NSPasteboard.general` `clearContents` + `setString`; then synthesize ⌘V via `CGEvent` (keyCode
