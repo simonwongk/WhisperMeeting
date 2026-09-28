@@ -388,6 +388,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         let ledgerIdentityBeforeWrite = io.identity(ledgerURL)
         let ledger = StoreLedger.read(at: ledgerURL, using: io)
         if ledger == nil, io.fileExists(ledgerURL) { repairs.append(.ledgerUnreadable) }
+        // The retained generations on disk, by name only — one `readdir`, no reads, no stats. The
+        // ledger commit keeps a record for each of them (F517). An absent, squatted or unreadable
+        // directory lists as empty, which is exactly the behaviour before this listing existed.
+        let archivedNames = (try? io.contentsOfDirectory(history.directoryURL, .listHistory)) ?? []
 
         // 4. quarantine — F187, verbatim. Anything that exists and does not decode is copied aside
         //    before anything can replace it, and a preserve failure throws with nothing written.
@@ -491,6 +495,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             retainedName: retainedName,
             historyAvailable: historyAvailable,
             recordCount: recordCount?(value),
+            archivedNames: archivedNames,
             now: now,
             phases: &phases
         )
@@ -630,6 +635,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         decodableMemory.remember(path: backupURL.path, byteCount: byteCount)
     }
 
+    /// How many of the newest ledger records are kept whether or not their generation is still on
+    /// disk (F517). Computed, because a generic type cannot hold a static stored property.
+    private static var recentLedgerRecords: Int { 64 }
+
     /// Writes the new ledger unless someone else moved it since `classify`. Returns whether the
     /// commit lagged. **Never throws** — the body is already durable.
     private func commitLedger(
@@ -640,6 +649,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         retainedName: String?,
         historyAvailable: Bool,
         recordCount: Int?,
+        archivedNames: [String],
         now: Int,
         phases: inout [StoreWritePhase]
     ) -> Bool {
@@ -663,10 +673,27 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         entries.append(contentsOf: (previousLedger?.history ?? []).filter {
             $0.fingerprint != record.fingerprint
         })
+        // Which records survive (F517). The newest `recentLedgerRecords` stay, exactly as before —
+        // they are the fingerprints `isDivergent` recognises a hand-restore of a recently pruned
+        // generation by, so dropping them would turn a rollback into a false read-only library.
+        // Past that window a record stays for exactly as long as its generation is still on disk.
+        //
+        // It used to be the newest 64 and nothing else, which is a count of SAVES — the thing the
+        // retention policy is written never to count in. The high-water pin reads a generation's
+        // record count only from here (`entries()` reports nil for every file), so 64 saves after a
+        // wipe the pinned generation's count fell out of the window, the pin moved to a newer
+        // generation, and — unless an age anchor happened to hold it — the next prune deleted the
+        // one copy of the library the pin existed for. A record is about 230 bytes of JSON, and the
+        // retention rules bound how many generations are on disk, so this cannot grow into a log of
+        // every save.
+        let onDisk = Set(archivedNames)
+        let kept = entries.enumerated().filter { offset, entry in
+            offset < Self.recentLedgerRecords || entry.historyName.map(onDisk.contains) == true
+        }.map(\.element)
         let ledger = StoreLedger(
             current: record,
             previous: outgoing,
-            history: Array(entries.prefix(64)),
+            history: kept,
             historyAvailable: historyAvailable,
             writerRealm: "none"
         )

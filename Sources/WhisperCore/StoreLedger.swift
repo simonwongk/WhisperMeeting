@@ -70,7 +70,8 @@ public struct StoreLedger: Codable, Sendable, Equatable {
     public var formatVersion: Int
     public var current: Record
     public var previous: Record?
-    /// Newest first, includes `current`, bounded.
+    /// Newest first, includes `current`. Bounded: the newest 64 records, plus one for every older
+    /// generation whose file is still under `<stem>.history/` (F517) — never a log of every save.
     public var history: [Record]
     /// False when this writer could not create or use `<stem>.history/`. A load NEVER declares
     /// divergence while this is false — without history there is no evidence to be sure with.
