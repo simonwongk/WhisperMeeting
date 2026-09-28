@@ -97,8 +97,9 @@ extension AppModel {
     /// Stops every running install — what Quit does (F520). Before this an install kept
     /// downloading headless after the app quit, on a metered link as readily as any, and the next
     /// launch's Install then failed on the script's lock ("Another … installation is already
-    /// running"). `Task.cancel()` runs the runner's cancellation handler synchronously, so the
-    /// process group has its SIGTERM before `willTerminate` returns.
+    /// running"). While the installer is running, `Task.cancel()` runs the runner's cancellation
+    /// handler synchronously on this thread, so the process group has its SIGTERM before
+    /// `willTerminate` returns; an install cancelled before its script starts never spawns it.
     func cancelAllInstalls() {
         for component in installTasks.keys {
             cancelInstall(component)
@@ -122,7 +123,7 @@ extension AppModel {
     ///
     /// `wasInstalled` is read before the run; "the previous version was kept" is claimed only when
     /// it was installed then AND is still installed now — a first install that fails has nothing to
-    /// keep, which every row used to say it had.
+    /// keep, which the Qwen, summarizer and speaker-analysis rows used to say it had.
     func performInstall(
         _ component: ModelInstallComponent,
         wasInstalled: Bool,

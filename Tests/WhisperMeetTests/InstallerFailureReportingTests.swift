@@ -7,8 +7,9 @@ import Testing
 // installs. Speaker analysis was the worst: `LocalDiarizationError.processFailed` renders a fixed
 // "Speaker analysis did not finish. Your transcript is unchanged." and never its associated value,
 // so the one line saying what went wrong — the script's own "Could not download … Check your
-// connection" — was dropped, and the alert talked about a transcript nobody had touched. Each row
-// also said "The previous … was preserved" on a first install, where there was nothing to preserve.
+// connection" — was dropped, and the alert talked about a transcript nobody had touched. The Qwen,
+// summarizer and speaker-analysis rows also said "The previous … was preserved" on a first install,
+// where there was nothing to preserve.
 //
 // These run the REAL installer runner (`spawnDiarizationInstaller`, a real `/bin/zsh` process) over
 // a stub script in a temp directory — the runner is what builds the error, so stubbing it out would
