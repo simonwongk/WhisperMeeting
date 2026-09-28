@@ -4671,13 +4671,15 @@ final class AppModel: ObservableObject {
     }
 
     /// Requests transcription for a meeting. While another transcription, an auxiliary engine run
-    /// (second opinion, segment re-run, speaker analysis) or Quick Dictation holds the models, the
-    /// job waits in the queue and starts on its own when that work ends (F470).
+    /// (second opinion, segment re-run, speaker analysis), Quick Dictation or a Whisper/Qwen install
+    /// holds the models, the job waits in the queue and starts on its own when that work ends (F470,
+    /// F582).
     func beginTranscription(id: UUID) {
-        guard !isInstallingRecognitionRuntime else {
-            alertMessage = "Wait for the local recognition model installation to finish before transcribing."
-            return
-        }
+        // F582: a recognition install used to be refused here with an alert, and no installer's
+        // epilogue pumped the queue, so the meeting stayed `.recorded` until the user noticed. It
+        // queues now; `pumpTranscriptionQueue` holds it until the install ends, and every install's
+        // epilogue (`launchInstall`) pumps.
+        //
         // F470: Quick Dictation and an auxiliary engine run used to be refused here with an alert,
         // and every automatic caller — Stop & Transcribe, file, link and watched-folder imports —
         // then left the new meeting `.recorded` with nothing to retry it. They queue instead:
@@ -4694,9 +4696,12 @@ final class AppModel: ObservableObject {
             engine: selectedEngine,
             language: selectedLanguage
         )
+        // F582: the engine being installed right now counts — the job waits for that install
+        // rather than being told to install what is already installing. If the install then fails,
+        // `resumeTranscriptionQueueAfterInstall` hands the meeting back rather than running it.
         let engineIsInstalled = settings.engine == .qwenBalanced
-            ? isQwenInstalled
-            : isRuntimeInstalled
+            ? isQwenInstalled || isInstallingQwenRuntime
+            : isRuntimeInstalled || isInstallingRuntime
         guard engineIsInstalled else {
             // F262: one message for all three gates. The per-engine "install this runtime" strings
             // are still right when nothing else is installed, but they cannot say "…and the other
@@ -4736,11 +4741,28 @@ final class AppModel: ObservableObject {
         pumpTranscriptionQueue()
     }
 
+    /// The queue's half of every model install's epilogue — success, failure or cancel (F582),
+    /// called by `launchInstall` once the install's flag is cleared.
+    ///
+    /// A waiting job whose engine is still not installed goes back to Transcribe instead of
+    /// starting: it could only fail with "not installed", and that alert would replace the one
+    /// saying why the install failed. It waited because `beginTranscription` let it wait for an
+    /// install of its engine; this is where that promise is settled either way.
+    func resumeTranscriptionQueueAfterInstall() {
+        for id in transcription.pending {
+            guard let engine = transcriptionSettings.selection(for: id)?.engine else { continue }
+            let installed = engine == .qwenBalanced ? isQwenInstalled : isRuntimeInstalled
+            if !installed { cancelTranscription(id: id) }
+        }
+        pumpTranscriptionQueue()
+    }
+
     /// What a queued meeting is waiting for, for its status card (F470). Read from whatever is
     /// actually holding the queue, so a meeting queued behind a second opinion does not say it is
     /// waiting for a transcription that is not running.
     var queuedTranscriptionWaitMessage: String {
         if hasActiveTranscription { return "Waiting for the current transcription to finish." }
+        if isInstallingRecognitionRuntime { return "Waiting for the model installation to finish." }
         if secondOpinionRunningID != nil { return "Waiting for the second opinion to finish." }
         if diarizationRunningID != nil { return "Waiting for speaker analysis to finish." }
         // The third and last holder of the auxiliary flag.
@@ -4762,12 +4784,15 @@ final class AppModel: ObservableObject {
     /// auxiliary engine run or Quick Dictation holds the models (F470): starting it atop an auxiliary
     /// run is what F140 forbids, and during dictation `executeEngine` would refuse it with
     /// `EngineAdmissionError.dictationActive`, which fails the meeting instead of leaving it queued.
+    /// And while a Whisper or Qwen install runs (F582), whose script moves and deletes the very
+    /// runtime the job would execute; the install's epilogue pumps.
     private func pumpTranscriptionQueue() {
         // The restore check is an additional refusal beside `libraryRestoreBlockedReason`, which
         // should already have kept the queue empty (F583): if that reason is ever wrong somewhere,
         // the job waits for `endLibraryRestore()` instead of running into a hold that refuses its
         // every write.
-        guard !isRunningAuxiliaryEngine, !isDictationActive(), !store.isRestoringLibrary else { return }
+        guard !isRunningAuxiliaryEngine, !isDictationActive(), !store.isRestoringLibrary,
+              !isInstallingRecognitionRuntime else { return }
         guard let next = transcription.startNext() else { return }
         // A pending id never has a live task (tasks exist only for the active job and are cleared
         // before finishActive), so this holds by construction — asserted rather than guarded, so a

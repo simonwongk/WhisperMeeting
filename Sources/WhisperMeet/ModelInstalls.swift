@@ -73,11 +73,16 @@ extension AppModel {
     /// cancellation handler, which sends SIGTERM to the installer's whole process group — pip,
     /// curl and Homebrew included. Each script's `trap 'exit 130' HUP INT TERM` then runs its EXIT
     /// trap, which puts back the runtime it was replacing and removes its staging directory.
+    ///
+    /// It is also every install's epilogue, whatever `body` concluded — installed, failed or
+    /// cancelled: `body` clears its own `isInstalling…` flag last, and then whatever transcription
+    /// queued behind the install starts (F582).
     func launchInstall(_ component: ModelInstallComponent, _ body: @escaping @MainActor () async -> Void) {
         installTasks[component] = Task {
             await body()
             installTasks[component] = nil
             cancellingInstalls.remove(component)
+            resumeTranscriptionQueueAfterInstall()
         }
     }
 
