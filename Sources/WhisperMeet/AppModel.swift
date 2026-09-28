@@ -1358,6 +1358,12 @@ final class AppModel: ObservableObject {
     /// `executeEngine` performs the real Qwen/Whisper dispatch.
     var runTranscriptionEngineOverride: ((MeetingTranscriptionSelection, URL) async throws -> TranscriptionResult)?
 
+    /// Lines up the stored transcript with the other engine's (F542). Injectable so a test can see
+    /// where it runs; defaults to the real comparison.
+    var compareTranscripts: @Sendable ([TranscriptSegment], [TranscriptSegment]) -> [TranscriptComparisonSpan] = {
+        TranscriptComparison.compare($0, $1)
+    }
+
     /// Spans of the most recent cross-engine "second opinion", for the review sheet (F88).
     @Published var secondOpinionSpans: [TranscriptComparisonSpan]?
     /// True when the most recent second-opinion run failed to produce a comparison — so the sheet can
@@ -1589,7 +1595,16 @@ final class AppModel: ObservableObject {
                 let result = try await executeEngine(selection, on: store.recordingURL(for: meeting)) { progress in
                     await self.apply(secondOpinionProgress: progress)
                 }
-                secondOpinionSpans = TranscriptComparison.compare(meeting.segments, result.segments)
+                // Off the main actor (F542): a six-hour meeting is thousands of lines a side, and
+                // the window froze while they were lined up. The run's own task is what Cancel and
+                // Delete cancel, and a detached task does not inherit that, so it is checked again
+                // after the wait — the suspension is new, and "Cancel means no comparison" (F512)
+                // has to hold across it.
+                let compare = compareTranscripts
+                let (lines, otherLines) = (meeting.segments, result.segments)
+                let spans = await Task.detached(priority: .userInitiated) { compare(lines, otherLines) }.value
+                guard !Task.isCancelled else { return }
+                secondOpinionSpans = spans
             } catch is CancellationError {
                 // The user cancelled, or deleted the meeting (F512): no comparison, and nothing to say.
             } catch {

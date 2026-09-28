@@ -160,6 +160,84 @@ func comparisonTreatsASliverAsNoCounterpart() {
     #expect(spans.first?.secondaryText == nil)
 }
 
+// F542 — the comparison scanned every segment of the other transcript for every line: 36 million
+// pair checks for a six-hour meeting, on the main actor. `compare` now finds each line's counterpart
+// through an index in one pass; the plain scan stays as `referenceCompare`, and this holds the fast
+// path to it on random transcripts built to hit the awkward cases: ties and touching boundaries on a
+// coarse grid, zero-length and reversed spans, a missing start or end, NaN and infinite timestamps,
+// texts that normalise the same ("Yes." / "yes"), Chinese, empty text, and lists out of time order.
+
+/// A deterministic generator (SplitMix64), so a failure names a round that can be re-run.
+private struct SplitMix {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+    mutating func below(_ bound: Int) -> Int { Int(next() % UInt64(bound)) }
+}
+
+private let randomTexts = [
+    "Yes.", "yes", "YES!", "no", "We ship on Friday.", "we ship on friday", "Then we review.",
+    "我们明天开会。", "我们明天开会", "然后讨论预算。", "", "…", "Zoom 开会", "ok",
+]
+
+private func randomTime(_ rng: inout SplitMix, scale: Double) -> Double? {
+    switch rng.below(40) {
+    case 0: return nil
+    case 1: return .nan
+    case 2: return .infinity
+    case 3: return -.infinity
+    default: return Double(rng.below(25)) * scale   // a coarse grid, so ties and touching ends are common
+    }
+}
+
+private func randomTranscript(_ rng: inout SplitMix, count: Int, scale: Double) -> [TranscriptSegment] {
+    (0..<count).map { _ in
+        let start = randomTime(&rng, scale: scale)
+        // Mostly a real span after the start; sometimes zero-length, reversed, or independent.
+        let end: Double?
+        switch rng.below(6) {
+        case 0: end = start
+        case 1: end = randomTime(&rng, scale: scale)
+        default: end = start.map { $0 + Double(1 + rng.below(8)) * scale }
+        }
+        return TranscriptSegment(speaker: nil, start: start, end: end, text: randomTexts[rng.below(randomTexts.count)])
+    }
+}
+
+@Test("The one-pass comparison finds exactly what the simple scan finds, on thousands of random transcripts (F542)")
+func comparisonFastPathMatchesTheReference() {
+    var rng = SplitMix(state: 0x5EC0_4D0B)
+    var mismatches = 0
+    // Many small transcripts, where the edge cases collide often, then fewer large ones, where the
+    // tree is several levels deep.
+    let shapes: [(rounds: Int, maxCount: Int, scale: Double)] = [(4_000, 12, 0.5), (60, 400, 0.25)]
+    for shape in shapes {
+        for round in 0..<shape.rounds {
+            let primary = randomTranscript(&rng, count: rng.below(shape.maxCount + 1), scale: shape.scale)
+            let secondary = randomTranscript(&rng, count: rng.below(shape.maxCount + 1), scale: shape.scale)
+            let texts = primary.map { TranscriptComparison.normalize($0.text) }
+            let fast = TranscriptComparison.counterparts(primary, texts, secondary)
+            let reference = TranscriptComparison.referenceCounterparts(primary, texts, secondary)
+            // Rows, too: kind and offered text. (Whole spans cannot be compared with `==` when a
+            // start is NaN, which never equals itself.)
+            let fastRows = TranscriptComparison.compare(primary, secondary).map { "\($0.kind) \($0.secondaryText ?? "-")" }
+            let referenceRows = TranscriptComparison.referenceCompare(primary, secondary).map { "\($0.kind) \($0.secondaryText ?? "-")" }
+            if fast != reference || fastRows != referenceRows {
+                mismatches += 1
+                if mismatches <= 3 {
+                    Issue.record("round \(round) of \(shape.maxCount)-line transcripts: fast \(fast) vs reference \(reference)")
+                }
+            }
+        }
+    }
+    #expect(mismatches == 0)
+}
+
 @Test("Two lines the other engine heard as one are each still offered its complete reading (F572 control)")
 func comparisonOffersTheWholeSegmentToEachLineItCovers() {
     let spans = TranscriptComparison.compare(
