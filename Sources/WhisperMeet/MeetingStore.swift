@@ -1788,6 +1788,8 @@ final class MeetingStore: ObservableObject {
     /// that is not modal, the Settings library section and the Improve menu.
     func clearStorageError() {
         storageErrorMessage = nil
+        // The alert's OK is the acknowledgement the history notice waits for (F553).
+        historyNoticeAwaitingDismissal = nil
     }
 
     private static func normalizeTerm(_ value: String) -> String {
@@ -1830,6 +1832,39 @@ final class MeetingStore: ObservableObject {
         return result
     }
 
+    /// Whether this session has already told the user that the meeting index's past versions are
+    /// not being kept (F553). Once per session: the condition is usually lasting — a file squatting
+    /// `meetings.history`, a permissions change — and nearly every edit saves the index.
+    private var didNoticeHistoryUnavailable = false
+    /// That notice, while it waits for the alert's OK (`clearStorageError()`).
+    ///
+    /// Held apart from `storageErrorMessage` because every successful save used to clear that, and
+    /// the next save — as little as the transcript debounce later — would take the notice off
+    /// screen before anyone read it. Successful saves put THIS back instead of nil, so the notice
+    /// stays up and, being the same value, is not posted again to the windowless channel, whose
+    /// observer drops adjacent repeats.
+    private var historyNoticeAwaitingDismissal: String?
+
+    /// The user-facing words for `.historyUnavailable` (F553). Names no control: the recovery
+    /// list's button only appears while the library is read-only, which this library is not.
+    static func historyUnavailableNotice(reason: String) -> String {
+        "Your meetings are being saved, but WhisperMeet cannot keep earlier versions of the meeting index right now (\(reason)). Until that is fixed, a bad change to your meeting list cannot be undone from the saved history. Your recordings and the current index are not affected."
+    }
+
+    /// What `storageErrorMessage` should read after a successful save: nil, unless this save — or
+    /// an earlier one this session — found that no past version could be kept and the user has
+    /// not yet dismissed the notice.
+    private func historyNotice(after repairs: [BackupJSONStore<[MeetingRecord]>.StoreRepair]) -> String? {
+        if !didNoticeHistoryUnavailable {
+            for case let .historyUnavailable(reason) in repairs {
+                didNoticeHistoryUnavailable = true
+                historyNoticeAwaitingDismissal = Self.historyUnavailableNotice(reason: reason)
+                break
+            }
+        }
+        return historyNoticeAwaitingDismissal
+    }
+
     /// Returns whether the index actually reached disk, so a caller that is about to destroy
     /// something the index references can refuse to (F190). Callers that only mutate metadata can
     /// keep ignoring it.
@@ -1844,7 +1879,7 @@ final class MeetingStore: ObservableObject {
             persistCommitCount += 1
             unsavedChanges = false
             writeConflict = nil
-            storageErrorMessage = nil
+            storageErrorMessage = historyNotice(after: outcome.repairs)   // nil unless F553's notice is up
             // What actually reached disk (F433 follow-up) — a lost race's delta is diffed against
             // this, not against whatever any other writer happens to hold.
             lastPersistedMeetings = meetings
@@ -1862,7 +1897,7 @@ final class MeetingStore: ObservableObject {
         do {
             let outcome = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken)
             vocabularyToken = outcome.token
-            storageErrorMessage = nil
+            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
             return true
         } catch {
             unsavedChanges = true
@@ -1879,7 +1914,7 @@ final class MeetingStore: ObservableObject {
                 replacementRules, expecting: replacementRulesToken
             )
             replacementRulesToken = outcome.token
-            storageErrorMessage = nil
+            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
             return true
         } catch {
             unsavedChanges = true

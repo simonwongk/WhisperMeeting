@@ -197,6 +197,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         public let adoptedForeignRotation: Bool
         public let quarantined: [String]
         public let conflictBranchBacklog: Int
+        /// What this save worked around rather than failed on (F553) — an unreadable ledger, an
+        /// adopted primary, and `.historyUnavailable` when the retained-history step could not run.
+        /// Retention is never fatal, so a save that kept no past version returns normally; this,
+        /// beside `retainedName == nil`, is how a caller learns that happened, and why.
+        public let repairs: [StoreRepair]
     }
 
     private let primaryURL: URL
@@ -447,7 +452,15 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             )
             if retainedName == nil {
                 historyAvailable = false
-                repairs.append(.historyUnavailable(reason: "the history directory could not be used"))
+                // Named, because this reaches the user (F553), and a file squatting the name is a
+                // cause they can see and clear by moving it aside. `record` absorbs its own errors
+                // into nil, so these two are what can still be told apart here.
+                let folder = history.directoryURL.lastPathComponent
+                repairs.append(.historyUnavailable(
+                    reason: io.isDirectory(history.directoryURL) == false
+                        ? "\(folder) is a file, not a folder"
+                        : "\(folder) could not be created or written to"
+                ))
             } else {
                 phases.append(.retain)
             }
@@ -519,7 +532,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             adoptedUnrecordedPrimary: decision.adoptedUnrecordedPrimary,
             adoptedForeignRotation: decision.adoptedForeignRotation,
             quarantined: quarantined,
-            conflictBranchBacklog: history.conflictBranchCount()
+            conflictBranchBacklog: history.conflictBranchCount(),
+            repairs: repairs
         )
     }
 
