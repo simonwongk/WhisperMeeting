@@ -108,16 +108,16 @@ func pasteIntoATextFieldRestoresTheClipboard() throws {
 }
 
 @MainActor
-@Test("With no text field focused, the dictation is left on the clipboard for the user to paste (F516)")
+@Test("With no text field focused, the dictation is pasted and left on the clipboard too (F516, F600)")
 func noTextFieldLeavesTheDictationOnTheClipboard() throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
     harness.textFieldFocused = false
     harness.put("copied on my phone")
 
-    // Still pasted — the probe can be blind to a field in an app that hides it — but reported as a
-    // clipboard delivery, so the user is told the text is on the clipboard.
-    #expect(dictate("dictated words", with: injector) == .clipboard)
+    // Still pasted — the probe can be blind to a field in an app that hides it — and reported as a
+    // paste that is also on the clipboard, not as a copy: the ⌘V has already been sent (F600).
+    #expect(dictate("dictated words", with: injector) == .pastedUnconfirmed)
     #expect(harness.pasteCount == 1)
     #expect(harness.scheduler.pending.isEmpty)
     #expect(harness.text == "dictated words")
@@ -185,7 +185,7 @@ func theBorrowedItemIsMarkedTransient() throws {
 
     // Left on the clipboard for the user, it is an ordinary copy: they may want it in their history.
     harness.textFieldFocused = false
-    #expect(dictate("left for the user", with: injector) == .clipboard)
+    #expect(dictate("left for the user", with: injector) == .pastedUnconfirmed)
     #expect(!harness.contents.flatMap { $0.map(\.type) }.contains("org.nspasteboard.TransientType"))
 }
 

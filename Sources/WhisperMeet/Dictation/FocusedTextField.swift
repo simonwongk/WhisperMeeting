@@ -8,12 +8,13 @@ import CoreGraphics
 /// at delivery.
 ///
 /// `isTextField` (F516) decides whether the paste's borrowed clipboard is given back. A dictation
-/// that went into a text field restores the user's clipboard; one that went nowhere is left on it,
-/// where the user will look for it. It also decides, today, whether the delivery is reported as a
-/// paste or as a copy — pill, notification and history — which is wrong for a paste that was sent
-/// (F600). It does not decide whether to paste — an app can hide its field from Accessibility, and
-/// a paste into nothing is harmless — except as evidence about secure input: a focused ordinary
-/// text field is what lets a paste through while another app holds secure keyboard entry (F585).
+/// that went into a text field restores the user's clipboard; one that may have gone nowhere is
+/// left on it, where the user will look for it, and the pill says "Pasted — also on the clipboard"
+/// instead of "Pasted" (F600). Either way the delivery is a paste — history `.pasted`, no "press ⌘V"
+/// notice — because the ⌘V was sent. It does not decide whether to paste — an app can hide its
+/// field from Accessibility, and a paste into nothing is harmless — except as evidence about secure
+/// input: a focused ordinary text field is what lets a paste through while another app holds secure
+/// keyboard entry (F585).
 ///
 /// The app and the secure-input state (F445) do decide whether to paste, because pasting into a
 /// different app than the one the key was pressed in, or into a password field, is not harmless.

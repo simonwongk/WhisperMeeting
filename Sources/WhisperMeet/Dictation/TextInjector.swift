@@ -17,9 +17,10 @@ import os
 /// 2. The dictation is written, marked transient so clipboard-history tools skip it, and ⌘V is
 ///    posted.
 /// 3. If a text field had focus, the copy goes back `restoreDelay` later — unless something else
-///    has written the clipboard since, which then wins. If no text field had focus, the dictation
-///    stays on the clipboard as an ordinary copy: it went nowhere, and that is where the user will
-///    look for it.
+///    has written the clipboard since, which then wins. If no text field could be seen, the
+///    dictation stays on the clipboard as an ordinary copy: it may have gone nowhere, and that is
+///    where the user will look for it. It is still reported as pasted (F600), because the ⌘V was
+///    sent and an app can hide its field from Accessibility.
 ///
 /// **Clipboard only** — auto-paste off, or no ⌘V possible (no Accessibility): the text is written
 /// and left, because the clipboard is the delivery.
@@ -35,6 +36,10 @@ import os
 final class TextInjector {
     enum Delivery: Equatable {
         case pasted, clipboard
+        /// ⌘V was posted, but no text field could be seen to take it — an app can hide its field
+        /// from Accessibility — so the clipboard is not given back and the dictation is on it too
+        /// (F600). A paste, not a copy: telling the user to press ⌘V would paste it twice.
+        case pastedUnconfirmed
         /// Left on the clipboard: the app the dictation was started in is no longer in front (F445).
         case appChanged
         /// Left on the clipboard, concealed, and never pasted or logged: secure input (F445).
@@ -47,7 +52,18 @@ final class TextInjector {
         var isSecure: Bool {
             switch self {
             case .secureInput, .secureKeyboardEntry: true
-            case .pasted, .clipboard, .appChanged: false
+            case .pasted, .pastedUnconfirmed, .clipboard, .appChanged: false
+            }
+        }
+
+        /// ⌘V went to the app the dictation was made in, so the history records a paste (F600).
+        /// The history has no third value for "pasted, not seen to land": a new case would read as
+        /// "Recorded by a newer version" in the builds since F266, would make the whole log
+        /// unreadable in builds before F251, and the text was pasted.
+        var wasPasted: Bool {
+            switch self {
+            case .pasted, .pastedUnconfirmed: true
+            case .clipboard, .appChanged, .secureInput, .secureKeyboardEntry: false
             }
         }
     }
@@ -139,9 +155,12 @@ final class TextInjector {
         let written = pasteboard.changeCount
         guard synthesizePaste() else { return .clipboard }
 
+        // Sent, so reported as a paste (F600): the app may hide its field from Accessibility, and
+        // a "press ⌘V" notice would then paste it twice. The clipboard is not given back, so the
+        // dictation is also there.
         guard target.isTextField else {
-            log.notice("pasted into \(target.summary, privacy: .public), not a text field: dictation left on the clipboard")
-            return .clipboard
+            log.notice("pasted into \(target.summary, privacy: .public), not a text field: dictation left on the clipboard too")
+            return .pastedUnconfirmed
         }
         guard let snapshot else { return .pasted }
         pending = (snapshot, written)

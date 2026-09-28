@@ -991,6 +991,8 @@ final class DictationController: ObservableObject {
             _ = session.handle(.delivered)
             switch delivery {
             case .pasted: showPhase(.done)
+            // Pasted, and on the clipboard too: no "press ⌘V" notice, which would paste it twice (F600).
+            case .pastedUnconfirmed: showPhase(.pastedUnconfirmed)
             case .clipboard: showPhase(.copied); clipboardNotifier()
             case .appChanged: showPhase(.appChanged); clipboardNotifier()
             case .secureInput: showPhase(.secureInput); clipboardNotifier()
@@ -1001,7 +1003,7 @@ final class DictationController: ObservableObject {
             if !delivery.isSecure {
                 logStore.record(
                     text: payload,
-                    outcome: delivery == .pasted ? .pasted : .clipboard,
+                    outcome: delivery.wasPasted ? .pasted : .clipboard,
                     rawText: rawText,
                     refinement: refinement
                 )

@@ -74,8 +74,11 @@ in `WhisperCore`.
 ```
 
 Fallback / edge branches:
-- **No Accessibility permission or no focused field** → text left on clipboard + a user notification
+- **No Accessibility permission** (or auto-paste off) → text left on clipboard + a user notification
   ("Transcript copied — press ⌘V"). Pill shows "Copied to clipboard".
+- **No text field visible to Accessibility** → still pasted (an app can hide its field), and the
+  clipboard is not given back, so the text is on it too. Pill "Pasted — also on the clipboard"; no
+  notification, which would paste it twice; history records a paste (F600).
 - **Another app in front at delivery** than the one the key was pressed in → not pasted; text left on
   the clipboard, pill "Copied — app changed" (F445).
 - **Secure input** at the press or at delivery → never pasted and never written to the dictation

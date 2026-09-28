@@ -16,6 +16,8 @@ private final class NonActivatingPanel: NSPanel {
 final class DictationOverlay {
     enum Phase: Equatable {
         case listening, transcribing, refining, done, copied, empty, error, busy
+        /// Pasted, but no text field could be seen to take it, so it is on the clipboard too (F600).
+        case pastedUnconfirmed
         /// Copied rather than pasted, and why (F445).
         case appChanged, secureInput
         /// Not pasted because secure keyboard entry is on, naming the app it is on in (F585).
@@ -123,9 +125,10 @@ private struct DictationPill: View {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white)
-                // Two lines, for a label that names an app (F585): "Secure Keyboard Entry is on in
-                // Terminal" measures 246 pt at this font against the 160 pt left beside the icon,
-                // and two 15.3 pt lines fit the 44 pt pill. Every other label is one line.
+                // Two lines, for the labels that need them: "Secure Keyboard Entry is on in
+                // Terminal" (F585) measures 246 pt at this font and "Pasted — also on the
+                // clipboard" (F600) 191 pt, against the 160 pt left beside the icon; two 15.3 pt
+                // lines fit the 44 pt pill. Every other label is one line.
                 .lineLimit(2)
                 .contentTransition(.opacity)
             Spacer(minLength: 0)
@@ -154,7 +157,7 @@ private struct DictationPill: View {
         switch model.phase {
         case .listening: Circle().fill(.red).frame(width: 10, height: 10)
         case .transcribing, .refining: ProgressView().controlSize(.small).tint(.white)
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .done, .pastedUnconfirmed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .copied, .appChanged: Image(systemName: "doc.on.clipboard").foregroundStyle(.white)
         case .secureInput, .secureKeyboardEntry: Image(systemName: "lock.fill").foregroundStyle(.white)
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
@@ -169,6 +172,7 @@ private struct DictationPill: View {
         case .transcribing: "Transcribing…"
         case .refining: "Polishing…"
         case .done: "Pasted"
+        case .pastedUnconfirmed: "Pasted — also on the clipboard"
         case .copied: "Copied to clipboard"
         case .appChanged: "Copied — app changed"
         case .secureInput: "Copied — secure input"
