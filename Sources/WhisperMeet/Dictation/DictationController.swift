@@ -51,8 +51,42 @@ final class DictationController: ObservableObject {
     }
     var isRefineRuntimeInstalled: Bool { refineRuntimeAvailability() }
 
-    var isAccessibilityTrusted: Bool { HotkeyMonitor.isAccessibilityTrusted }
-    func requestAccessibility() { HotkeyMonitor.requestAccessibility() }
+    var isAccessibilityTrusted: Bool { accessibilityTrusted() }
+
+    /// Settings' "Grant…" (F523). The system prompt only opens System Settings; nothing tells the app
+    /// when the user switches WhisperMeet on there. So when the trigger's tap has failed, this also
+    /// checks once a second, for two minutes, and arms the trigger as soon as the process is trusted
+    /// — while the user is still in System Settings. Coming back to WhisperMeet retries as well
+    /// (`retryFailedHotkey`), so a grant after the two minutes is not lost either.
+    func requestAccessibility() {
+        promptForAccessibility()
+        accessibilityPoll?.cancel()
+        accessibilityPoll = nil
+        guard enabled, hotkeyTapFailed else { return }
+        accessibilityPoll = Task { @MainActor [weak self] in
+            for _ in 0..<Self.accessibilityPollChecks {
+                guard let pause = self?.accessibilityPollSleep else { return }
+                do { try await pause(Self.accessibilityPollInterval) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                if self.accessibilityTrusted() { self.retryFailedHotkey() }
+                guard self.enabled, self.hotkeyTapFailed else { break }
+            }
+            self?.accessibilityPoll = nil
+        }
+    }
+
+    /// Seams for F523, assigned by tests after construction: the process's Accessibility trust, the
+    /// system prompt that asks for it, and the pause between checks after that prompt.
+    var accessibilityTrusted: () -> Bool = { HotkeyMonitor.isAccessibilityTrusted }
+    var promptForAccessibility: () -> Void = { HotkeyMonitor.requestAccessibility() }
+    var accessibilityPollSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Whether the checks that follow "Grant…" are still running.
+    var isAwaitingAccessibility: Bool { accessibilityPoll != nil }
+    static let accessibilityPollChecks = 120
+    static let accessibilityPollInterval: Duration = .seconds(1)
+    private var accessibilityPoll: Task<Void, Never>?
+    private var activationObserver: NSObjectProtocol?
+    private let activationNotifications: NotificationCenter
 
     /// True while dictation owns the microphone/result path or is retiring a resident model. Used by
     /// `AppModel` to avoid microphone and large-model contention with meeting recording.
@@ -100,6 +134,10 @@ final class DictationController: ObservableObject {
     private var pressTarget: FocusedTextField.Probe?
     private var idleEvictWorkItem: DispatchWorkItem?
     private var hotkeyActive = false
+    /// The last attempt to arm the trigger failed: its event tap could not be created, which is
+    /// what a missing Accessibility grant looks like (F523). Kept apart from `hotkeyActive`, which
+    /// is also false before the first arm.
+    private var hotkeyTapFailed = false
     /// The trigger `applyHotkeyStart` last handed the monitor, and before that the stored hotkey: in
     /// the app nothing can start a dictation before the first arm, and a test built with
     /// `activateOnInit: false` supplies a monitor already running the stored hotkey.
@@ -160,6 +198,7 @@ final class DictationController: ObservableObject {
         refiner: (any DictationTextRefining)? = nil,
         textInjector: TextInjector? = nil,
         idleEvictSeconds: TimeInterval = 300,
+        activationNotifications: NotificationCenter = .default,
         activateOnInit: Bool = true
     ) {
         self.defaults = defaults
@@ -171,6 +210,7 @@ final class DictationController: ObservableObject {
         self.captureTimeout = captureTimeout
         self.captureSleep = captureSleep
         self.idleEvictSeconds = idleEvictSeconds
+        self.activationNotifications = activationNotifications
         self.refiner = refiner ?? DictationRefiner(
             engine: WarmRefineEngine(
                 python: SummarizerRuntime.pythonExecutable(),
@@ -203,6 +243,17 @@ final class DictationController: ObservableObject {
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
         hotkeyMonitor.onPressCancel = { [weak self] in self?.handlePressCancel() }
+        // F523. NSApplication posts this on the main thread, so the retry runs before `post`
+        // returns; the hop covers anything that posts it from elsewhere.
+        activationObserver = activationNotifications.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.retryFailedHotkey() }
+            } else {
+                Task { @MainActor in self?.retryFailedHotkey() }
+            }
+        }
         if activateOnInit {
             ensureHelperInstalled()
             apply()
@@ -501,6 +552,7 @@ final class DictationController: ObservableObject {
         armedHotkey = hotkey
         let started = hotkeyMonitor.start(hotkey: hotkey)
         hotkeyActive = started
+        hotkeyTapFailed = !started
         if !started {
             log.error("event tap could not be created — Accessibility/Input Monitoring off")
         }
@@ -544,6 +596,17 @@ final class DictationController: ObservableObject {
         applyHotkeyStart()
     }
 
+    /// Arms the trigger again if the last attempt failed (F523). The tap is created only when the
+    /// trigger is armed, and a missing Accessibility grant fails it; granting Accessibility later
+    /// tells the app nothing, so without a retry the key stayed dead while Settings showed the grant
+    /// in green. Called when WhisperMeet comes to the front and by `requestAccessibility`'s checks.
+    /// A trigger that is working is left alone.
+    func retryFailedHotkey() {
+        guard enabled, hotkeyTapFailed else { return }
+        log.notice("retrying the dictation trigger's event tap")
+        applyHotkeyStart()
+    }
+
     private func apply() {
         if enabled {
             ensureHelperInstalled()
@@ -554,6 +617,9 @@ final class DictationController: ObservableObject {
         } else {
             hotkeyMonitor.stop()
             hotkeyActive = false
+            hotkeyTapFailed = false
+            accessibilityPoll?.cancel()
+            accessibilityPoll = nil
             recorder.cancel()             // never leave the mic hot after the user disables dictation
             captureWatchdog.cancel()
             dismissWorkItem?.cancel()
@@ -707,6 +773,8 @@ final class DictationController: ObservableObject {
     }
 
     deinit {
+        if let activationObserver { activationNotifications.removeObserver(activationObserver) }
+        accessibilityPoll?.cancel()
         hotkeyMonitor.stop()
         engine.shutdown()
         refiner.shutdown()

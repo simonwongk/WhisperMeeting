@@ -41,3 +41,15 @@ func triggerCaptureIsScopedAndCancellable() throws {
     // Returning nil for every event is what swallowed ⌘W, Tab and Space.
     #expect(capture.contains("return event"), "the capture swallows every key")
 }
+
+@Test("Settings' Grant… reaches the controller's retrying request, not the bare system prompt (F523)")
+func grantButtonReachesTheRetryingRequest() throws {
+    let source = try contentViewSource()
+    // `requestAccessibility()` is what starts the checks that arm the trigger once trusted; calling
+    // `HotkeyMonitor.requestAccessibility()` from the view would only open System Settings.
+    #expect(source.contains("dictation.requestAccessibility()"), "Grant… no longer calls the controller")
+    #expect(
+        !source.contains("HotkeyMonitor.requestAccessibility()"),
+        "a view asks for Accessibility without arming the trigger afterwards"
+    )
+}
