@@ -17,6 +17,14 @@ protocol HotkeyMonitoring: AnyObject {
     /// controller calls this whenever it refuses a start, so a refused toggle press cannot leave the
     /// monitor believing dictation is "on" and invert the on/off edges (F38).
     func resetToggleState()
+    /// The trigger is armed, but with less than it needs (F547): an F-key trigger whose active tap
+    /// was refused — Accessibility missing, Input Monitoring granted — is heard by the listen-only
+    /// tap and still reaches the app in front. Worth arming again once Accessibility is granted.
+    var isArmedWithoutHoldingBack: Bool { get }
+}
+
+extension HotkeyMonitoring {
+    var isArmedWithoutHoldingBack: Bool { false }
 }
 
 /// Global push-to-talk listener backed by a CGEventTap. Detects the configured key's down/up
@@ -48,6 +56,8 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// there never reads a freed one.
     private var triggerTap: (port: CFMachPort, source: CFRunLoopSource, context: Unmanaged<TriggerTapContext>)?
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
+    /// An F-key trigger fell back to the listen-only tap (F547).
+    private(set) var isArmedWithoutHoldingBack = false
     private var hotkey: DictationHotkey = .rightOption
     private var keyDown = false       // physical down-state of the configured hotkey key
     private var toggledOn = false     // (toggle mode) whether dictation is currently on
@@ -100,6 +110,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
             // the app in front. Never a dead key because the better tap was refused.
             log.error("the F-key trigger's active tap could not be created; listening only")
         }
+        let fellBack = Self.tapKind(for: hotkey) == .holdsTriggerBack
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue) |
@@ -128,6 +139,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
             return false // not trusted / Input Monitoring off
         }
         self.tap = tap
+        isArmedWithoutHoldingBack = fellBack
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
@@ -247,6 +259,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
     }
 
     private func removeTap() {
+        isArmedWithoutHoldingBack = false
         if let triggerTap {
             let loop = TriggerTapThread.runLoop
             CFRunLoopRemoveSource(loop, triggerTap.source, .commonModes)

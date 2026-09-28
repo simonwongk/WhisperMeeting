@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
@@ -160,4 +161,81 @@ func aForwardedPressOfAReplacedTriggerStartsNothing() async throws {
     _ = try tap(staleContext, .keyDown, key: f5)
     await drainMainQueue()
     #expect(edges.startCount == 0)
+}
+
+// MARK: - Armed listen-only for want of Accessibility
+
+/// A monitor whose next `start` succeeds, holding the F-key back or not as the test says.
+private final class FallbackReportingMonitor: HotkeyMonitoring {
+    var onPressStart: (() -> Void)?
+    var onPressEnd: (() -> Void)?
+    var onPressCancel: (() -> Void)?
+    /// What the next `start` arms: listen-only (Accessibility missing) or holding back.
+    var nextStartHoldsBack = false
+    private(set) var isArmedWithoutHoldingBack = false
+    private(set) var startCount = 0
+
+    func start(hotkey: DictationHotkey) -> Bool {
+        startCount += 1
+        isArmedWithoutHoldingBack = !nextStartHoldsBack
+        return true
+    }
+    func stop() { isArmedWithoutHoldingBack = false }
+    func resetToggleState() {}
+}
+
+/// F547 × F523. With Input Monitoring granted and Accessibility not, the F-key trigger's active tap
+/// is refused and the listen-only one works, so the arm "succeeds" and F523's retry — which waits
+/// for a failed arm — never ran again: granting Accessibility afterwards left the key reaching the
+/// app in front until the next toggle, key change or relaunch.
+@MainActor
+@Test("An F-key armed listen-only for want of Accessibility is re-armed to hold back when WhisperMeet comes to the front (F547)")
+func aListenOnlyFKeyIsRearmedOnActivation() throws {
+    let suite = "WhisperMeet.HotkeyTriggerHoldBackTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("HotkeyTriggerHoldBackTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: directory)
+    }
+    defaults.set(true, forKey: "dictationEnabled")
+    defaults.set(try JSONEncoder().encode(DictationHotkey(keyCode: f5, mode: .hold)), forKey: "dictationHotkey")
+    let monitor = FallbackReportingMonitor()
+    let recorder = FakeDictationRecorder(outputURL: directory.appendingPathComponent("c.wav"))
+    recorder.stopDuration = 0.1 // a tap, discarded, so the dictation below ends idle
+    let notifications = NotificationCenter()
+    let controller = DictationController(
+        defaults: defaults,
+        engine: EmptyDictationEngine(),
+        recorder: recorder,
+        overlay: SilentDictationOverlay(),
+        hotkeyMonitor: monitor,
+        logStore: DictationLogStore(directory: directory),
+        captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+        textInjector: isolatedTextInjector(),
+        activationNotifications: notifications,
+        activateOnInit: true
+    )
+    try #require(monitor.startCount == 1)
+    try #require(controller.status == .idle, "a listen-only arm still works, and says so")
+
+    // A dictation is live: coming to the front must not rebuild the tap under it (F446).
+    monitor.onPressStart?()
+    try #require(controller.status == .listening)
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    #expect(monitor.startCount == 1, "the trigger was re-armed under a live dictation")
+    monitor.onPressEnd?()
+
+    // Accessibility granted; the user comes back to WhisperMeet with dictation idle.
+    try #require(!controller.isActive)
+    monitor.nextStartHoldsBack = true
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    #expect(monitor.startCount == 2, "the listen-only trigger was never re-armed")
+    #expect(!monitor.isArmedWithoutHoldingBack)
+
+    // Holding back now: later activations leave it alone.
+    notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+    #expect(monitor.startCount == 2)
 }

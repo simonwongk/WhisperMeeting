@@ -54,22 +54,24 @@ final class DictationController: ObservableObject {
     var isAccessibilityTrusted: Bool { accessibilityTrusted() }
 
     /// Settings' "Grant…" (F523). The system prompt only opens System Settings; nothing tells the app
-    /// when the user switches WhisperMeet on there. So when the trigger's tap has failed, this also
-    /// checks once a second, for two minutes, and arms the trigger as soon as the process is trusted
-    /// — while the user is still in System Settings. Coming back to WhisperMeet retries as well
-    /// (`retryFailedHotkey`), so a grant after the two minutes is not lost either.
+    /// when the user switches WhisperMeet on there. So when the trigger's tap has failed — or an
+    /// F-key trigger is armed listen-only for want of it (F547) — this also checks once a second,
+    /// for two minutes, and arms the trigger as soon as the process is trusted, while the user is
+    /// still in System Settings. Coming back to WhisperMeet retries as well (`retryFailedHotkey`),
+    /// so a grant after the two minutes is not lost either.
     func requestAccessibility() {
         promptForAccessibility()
         accessibilityPoll?.cancel()
         accessibilityPoll = nil
-        guard enabled, hotkeyTapFailed else { return }
+        guard enabled, hotkeyTapFailed || hotkeyMonitor.isArmedWithoutHoldingBack else { return }
         accessibilityPoll = Task { @MainActor [weak self] in
             for _ in 0..<Self.accessibilityPollChecks {
                 guard let pause = self?.accessibilityPollSleep else { return }
                 do { try await pause(Self.accessibilityPollInterval) } catch { return }
                 guard let self, !Task.isCancelled else { return }
                 if self.accessibilityTrusted() { self.retryFailedHotkey() }
-                guard self.enabled, self.hotkeyTapFailed else { break }
+                guard self.enabled,
+                      self.hotkeyTapFailed || self.hotkeyMonitor.isArmedWithoutHoldingBack else { break }
             }
             self?.accessibilityPoll = nil
         }
@@ -622,10 +624,20 @@ final class DictationController: ObservableObject {
     /// tells the app nothing, so without a retry the key stayed dead while Settings showed the grant
     /// in green. Called when WhisperMeet comes to the front and by `requestAccessibility`'s checks.
     /// A trigger that is working is left alone.
+    ///
+    /// So is an F-key trigger that is working listen-only because its active tap was refused
+    /// (F547) — but only while no dictation is in flight, because re-arming under one is what F446
+    /// found loses its release. Without this, granting Accessibility left the key reaching the app in
+    /// front until the next toggle, key change or relaunch: the arm had "succeeded".
     func retryFailedHotkey() {
-        guard enabled, hotkeyTapFailed else { return }
+        guard enabled, needsRearm else { return }
         log.notice("retrying the dictation trigger's event tap")
         applyHotkeyStart()
+    }
+
+    /// Whether `retryFailedHotkey` has anything to do.
+    private var needsRearm: Bool {
+        hotkeyTapFailed || (hotkeyMonitor.isArmedWithoutHoldingBack && session.state == .idle)
     }
 
     private func apply() {
