@@ -394,9 +394,14 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         let ledger = StoreLedger.read(at: ledgerURL, using: io)
         if ledger == nil, io.fileExists(ledgerURL) { repairs.append(.ledgerUnreadable) }
         // The retained generations on disk, by name only — one `readdir`, no reads, no stats. The
-        // ledger commit keeps a record for each of them (F517). An absent, squatted or unreadable
-        // directory lists as empty, which is exactly the behaviour before this listing existed.
-        let archivedNames = (try? io.contentsOfDirectory(history.directoryURL, .listHistory)) ?? []
+        // ledger commit keeps a record for each of them (F517).
+        //
+        // nil, NOT empty, when the listing fails — an absent, squatted or unreadable directory
+        // (F648). This used to be `?? []`, and "I could not look" then read as "there is nothing
+        // there": that save dropped every ledger record past the newest 64, the high-water pin lost
+        // its count, and the next save that could see the folder pruned the one generation the pin
+        // existed for. Missing information must defer a decision, never make it.
+        let archivedNames = try? io.contentsOfDirectory(history.directoryURL, .listHistory)
 
         // 4. quarantine — F187, verbatim. Anything that exists and does not decode is copied aside
         //    before anything can replace it, and a preserve failure throws with nothing written.
@@ -436,8 +441,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // used to number the next saves BELOW the history: the old generations kept the newest
         // slots, the new saves were pruned, and the recovery list offered the old copies first.
         // The number only orders and names; the compare-and-swap never reads it, so seeding it
-        // from the directory cannot change what a save is allowed to overwrite.
-        let newestArchived = archivedNames.compactMap { StoreHistory.parse($0)?.sequence }.max() ?? 0
+        // from the directory cannot change what a save is allowed to overwrite. With no listing
+        // (F648) the seed is the ledger's alone, which is how every save was numbered before F604.
+        let newestArchived = (archivedNames ?? []).compactMap { StoreHistory.parse($0)?.sequence }.max() ?? 0
         let sequence = Self.sequence(
             after: max(decision.parent?.sequence ?? ledger?.current.sequence ?? 0, newestArchived)
         )
@@ -687,7 +693,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         retainedName: String?,
         historyAvailable: Bool,
         recordCount: Int?,
-        archivedNames: [String],
+        archivedNames: [String]?,
         now: Int,
         phases: inout [StoreWritePhase]
     ) -> Bool {
@@ -714,7 +720,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // Which records survive (F517). The newest `recentLedgerRecords` stay, exactly as before —
         // they are the fingerprints `isDivergent` recognises a hand-restore of a recently pruned
         // generation by, so dropping them would turn a rollback into a false read-only library.
-        // Past that window a record stays for exactly as long as its generation is still on disk.
+        // Past that window a record stays while this save's listing shows its generation on disk.
         //
         // It used to be the newest 64 and nothing else, which is a count of SAVES — the thing the
         // retention policy is written never to count in. The high-water pin reads a generation's
@@ -724,9 +730,19 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // one copy of the library the pin existed for. A record is about 230 bytes of JSON, and the
         // retention rules bound how many generations are on disk, so this cannot grow into a log of
         // every save.
-        let onDisk = Set(archivedNames)
+        //
+        // When this save could not list the folder (F648), nothing is decided: every record that
+        // names a file is kept, as though its file were there. That is still bounded without a
+        // timeout. `prune` lists through the same seam, so while the listing fails nothing is pruned
+        // and every generation retained meanwhile is still on disk; the only other records kept are
+        // the at most 64 that cross the window during the outage. The first save that can list
+        // again trims back to the rule above.
+        let isOnDisk: (String) -> Bool = archivedNames.map { names in
+            let onDisk = Set(names)
+            return { onDisk.contains($0) }
+        } ?? { _ in true }
         let kept = entries.enumerated().filter { offset, entry in
-            offset < Self.recentLedgerRecords || entry.historyName.map(onDisk.contains) == true
+            offset < Self.recentLedgerRecords || entry.historyName.map(isOnDisk) == true
         }.map(\.element)
         let ledger = StoreLedger(
             current: record,
