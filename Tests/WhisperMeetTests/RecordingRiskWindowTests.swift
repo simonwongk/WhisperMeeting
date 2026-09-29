@@ -40,13 +40,19 @@ private func snapshot(_ warnings: [RecordingHealthWarning]) -> RecordingHealthSn
     )
 }
 
+// The window arrangements the tests use (F674: facts, not a verdict, so the verdict is tested too).
+private let libraryWindow = WindowlessAlert.WindowFacts(isLibraryWindow: true, isReadable: true, isKey: false)
+private let keyLibraryWindow = WindowlessAlert.WindowFacts(isLibraryWindow: true, isReadable: true, isKey: true)
+private let keySettingsWindow = WindowlessAlert.WindowFacts(isLibraryWindow: false, isReadable: true, isKey: true)
+private let keyShortcutsWindow = WindowlessAlert.WindowFacts(isLibraryWindow: false, isReadable: true, isKey: true)
+
 @MainActor
 @Test("An at-risk warning reaches a user whose WhisperMeet window is behind another app, once (F528)")
 func atRiskReachesAUserBehindAnotherApp() throws {
     let (model, root, posts) = try makeModel("behind")
     defer { try? FileManager.default.removeItem(at: root) }
     // Case (a): a call app in front of a readable WhisperMeet window on the same Space.
-    model.windowPresence = { .behindOtherApps }
+    model.windowFacts = { ([libraryWindow], false) }
     model.setRecordingStateForTesting(.recording(startedAt: Date()))
     let dying = snapshot([.microphoneCaptureStopped])
     model.setRecordingHealthForTesting(dying)
@@ -66,7 +72,7 @@ func atRiskWithTheWindowInFrontIsABannerNotAPost() throws {
     let (model, root, posts) = try makeModel("front")
     defer { try? FileManager.default.removeItem(at: root) }
     // Case (b): the user is in WhisperMeet, reading notes or Settings, away from the health panel.
-    model.windowPresence = { .inFront }
+    model.windowFacts = { ([keyLibraryWindow], true) }
     model.setRecordingStateForTesting(.recording(startedAt: Date()))
     let dying = snapshot([.captureWritesFailing])
     model.setRecordingHealthForTesting(dying)
@@ -107,7 +113,7 @@ func theBannerFollowsTheRecordingsHealth() throws {
 func atRiskWithNoWindowIsStillPosted() throws {
     let (model, root, posts) = try makeModel("none")
     defer { try? FileManager.default.removeItem(at: root) }
-    model.windowPresence = { .noReadableWindow }
+    model.windowFacts = { ([], true) }
     model.setRecordingStateForTesting(.recording(startedAt: Date()))
     let dying = snapshot([.lowStorage])
     model.setRecordingHealthForTesting(dying)
@@ -122,10 +128,65 @@ func atRiskWithNoWindowIsStillPosted() throws {
 func ordinaryMessagesAreNotPostedBehindOtherApps() throws {
     let (model, root, posts) = try makeModel("ordinary")
     defer { try? FileManager.default.removeItem(at: root) }
-    model.windowPresence = { .behindOtherApps }
+    model.windowFacts = { ([libraryWindow], false) }
     model.report("The recording could not be finalized automatically.")
     #expect(posts.withLock { $0 }.isEmpty, "a report has an alert in the window; posting too would say it twice")
     #expect(model.alertMessage != nil)
+}
+
+// MARK: - F674: only a library window can show the banner or the alert
+
+@MainActor
+@Test("With only Settings or Keyboard Shortcuts open, an at-risk warning is posted — no window can show it (F674)")
+func atRiskWithOnlyAnAuxiliaryWindowIsPosted() throws {
+    for (label, only) in [("settings", keySettingsWindow), ("shortcuts", keyShortcutsWindow)] {
+        let (model, root, posts) = try makeModel("aux-\(label)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        model.windowFacts = { ([only], true) }
+        model.setRecordingStateForTesting(.recording(startedAt: Date()))
+        let dying = snapshot([.microphoneCaptureStopped])
+        model.setRecordingHealthForTesting(dying)
+
+        model.announceRecordingRisk(from: dying)
+
+        #expect(posts.withLock { $0 }.count == 1, "\(label): WhisperMeet is in front, but nothing in it can show the warning")
+    }
+}
+
+@MainActor
+@Test("With Settings in front of a library window, the warning is posted too — the banner is behind it (F674)")
+func atRiskWithSettingsOverTheLibraryWindowIsPosted() throws {
+    let (model, root, posts) = try makeModel("aux-over-library")
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.windowFacts = { ([keySettingsWindow, libraryWindow], true) }
+    model.setRecordingStateForTesting(.recording(startedAt: Date()))
+    let dying = snapshot([.lowStorage])
+    model.setRecordingHealthForTesting(dying)
+
+    model.announceRecordingRisk(from: dying)
+
+    #expect(posts.withLock { $0 }.count == 1)
+}
+
+@MainActor
+@Test("A report with only Settings open is posted, instead of waiting on an alert no window hosts (F674)")
+func aReportWithOnlyAnAuxiliaryWindowIsPosted() throws {
+    let (model, root, posts) = try makeModel("aux-report")
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.windowFacts = { ([keySettingsWindow], true) }
+    model.report("The recording could not be finalized automatically.")
+    #expect(posts.withLock { $0 }.count == 1, "the alert host is ContentView, and none is open")
+}
+
+@Test("The library window registers itself, and presence reads the registry (F674)")
+func theLibraryWindowIsRegistered() throws {
+    let content = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    let root = try #require(content.range(of: "struct ContentView: View {"))
+    let rootEnd = try #require(content.range(of: "private struct MeetingRow: View {"))
+    #expect(content[root.upperBound..<rootEnd.lowerBound].contains("LibraryWindowMarker()"),
+            "only a window that says it shows the library counts as one")
+    let model = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
+    #expect(model.contains("isLibraryWindow: LibraryWindowRegistry.contains(window)"))
 }
 
 @Test("The window hosts the risk banner on its root, beside the other banners, off the New Meeting pane (F528)")

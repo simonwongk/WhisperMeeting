@@ -196,6 +196,9 @@ struct ContentView: View {
         // renders inside the sidebar and scrolls beneath the window controls (observed live,
         // F126); at this level it lands in the window toolbar like Finder/Mail.
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search — try lang:zh, min:30m, before:2026-06-01")
+        // F674: marks this window as a library window — the only kind with the alert host and the
+        // at-risk banner — so a notice is posted when none is in front instead of waiting unseen.
+        .background(LibraryWindowMarker())
         // F180: an "Ask Meetings" cited result drives the sidebar selection from the model (survives the
         // detail view's per-selection recreation). The detail view consumes the seek on appear.
         .onChange(of: model.pendingNavigation) { _, request in

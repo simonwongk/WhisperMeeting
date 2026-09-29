@@ -30,19 +30,43 @@ public enum WindowlessAlert {
         isVisible && canBecomeMain && !isMiniaturized && isOnActiveSpace
     }
 
-    /// Where the app's windows stand for someone who has to be told something now (F528).
+    /// Where the library windows stand for someone who has to be told something now (F528, F674).
+    /// Only a library window counts: it is the only one with an `.alert` host and the at-risk banner.
     public enum WindowPresence: Sendable, Equatable {
-        /// No window the user could read: none open, or every one minimised or on another Space.
+        /// No library window the user could read: none open (Settings or Keyboard Shortcuts alone
+        /// do not count), or every one minimised or on another Space.
         case noReadableWindow
-        /// A readable window exists, but another app is in front of WhisperMeet.
+        /// A readable library window exists, but something is in front of it — another app, or
+        /// WhisperMeet's own Settings or Keyboard Shortcuts window.
         case behindOtherApps
-        /// A readable window, and WhisperMeet is the active app.
+        /// A readable library window is the key window of the active app.
         case inFront
     }
 
-    public static func presence(hasReadableWindow: Bool, appIsActive: Bool) -> WindowPresence {
-        guard hasReadableWindow else { return .noReadableWindow }
-        return appIsActive ? .inFront : .behindOtherApps
+    /// One of the app's windows, as the presence decision needs it (F674).
+    public struct WindowFacts: Sendable, Equatable {
+        /// Whether it shows the meeting library (`ContentView`) — the only window with an `.alert`
+        /// host and the at-risk banner. Settings and Keyboard Shortcuts are not.
+        public let isLibraryWindow: Bool
+        /// `isReadable`'s answer for it.
+        public let isReadable: Bool
+        public let isKey: Bool
+
+        public init(isLibraryWindow: Bool, isReadable: Bool, isKey: Bool) {
+            self.isLibraryWindow = isLibraryWindow
+            self.isReadable = isReadable
+            self.isKey = isKey
+        }
+    }
+
+    /// F674: decided on library windows, not on "the app is active". F528 counted any readable
+    /// window and called the app "in front" whenever it was active, so with only Settings or
+    /// Keyboard Shortcuts open — or either in front of the library window — an at-risk warning was
+    /// neither posted nor bannered, and a `report` waited on an alert no open window hosts.
+    public static func presence(of windows: [WindowFacts], appIsActive: Bool) -> WindowPresence {
+        let library = windows.filter { $0.isLibraryWindow && $0.isReadable }
+        guard !library.isEmpty else { return .noReadableWindow }
+        return appIsActive && library.contains(where: \.isKey) ? .inFront : .behindOtherApps
     }
 
     /// Whether a recording-risk announcement is posted as a notification (F528).
