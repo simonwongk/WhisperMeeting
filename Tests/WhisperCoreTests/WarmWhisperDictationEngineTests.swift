@@ -23,6 +23,54 @@ private final class EvictionCompletion: @unchecked Sendable {
     }
 }
 
+// F645 — these tests used to assert `elapsed < 8` after the operation returned; the two in-flight
+// ones against a stand-in helper that exits by itself after 20 s. That made "slow" a property of the
+// host (with 11 CPU hogs running, the idle-helper tests below took 2.0 s around a helper trap that
+// sleeps 1 s) and made the in-flight discrimination a race between two durations. A wait now polls
+// the SUBJECT under a wall-clock cap that only a genuine hang reaches, and `#require`s it, so a hang
+// fails on the wait; and the in-flight helper cannot exit on its own until the test releases it, so
+// "the operation returned" can only mean the engine ended it.
+
+/// Polls `condition` under a 30 s cap and requires it, so a timeout fails as a timeout.
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
+/// Runs `operation` and reports whether it finished inside the 30 s cap. The operation itself may
+/// be parked in a blocking call that cancellation cannot reach, so it runs unstructured and is
+/// polled rather than awaited: a hang then fails the caller's `#require` instead of hanging the suite.
+private func finishesWithinCap(_ operation: @escaping @Sendable () async -> Void) async throws -> Bool {
+    let completion = EvictionCompletion()
+    Task {
+        await operation()
+        completion.markFinished()
+    }
+    var ticks = 0
+    while !completion.isFinished, ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    return completion.isFinished
+}
+
+/// A stand-in helper that records its pid and then stays alive and silent until `release` exists or
+/// its directory is gone. `exec sleep N` would exit on its own after N seconds, which is what the
+/// old `< 8` bound was racing; this one only ends when the engine ends it (or the test releases it).
+private func writeParkedHelper(in directory: URL, pidFile: URL, release: URL) throws -> URL {
+    let script = directory.appendingPathComponent("parked.sh")
+    let helper = """
+    printf '%s' "$$" > "\(pidFile.path)"
+    while [ -d "\(directory.path)" ] && [ ! -e "\(release.path)" ]; do sleep 0.05; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+    return script
+}
+
 @Test("shutdown() interrupts in-flight warm-up instead of waiting for the process to finish")
 func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
     let tmp = FileManager.default.temporaryDirectory
@@ -31,10 +79,15 @@ func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
     defer { try? FileManager.default.removeItem(at: tmp) }
 
     // A stand-in "helper" that stays alive and silent: warmUp() parks in readLine waiting for a
-    // {"ready":true} line that never comes. `exec` so the process we terminate is the one holding
-    // stdout — no orphaned child keeps the pipe open after termination.
-    let script = tmp.appendingPathComponent("stall.sh")
-    try "exec sleep 20\n".write(to: script, atomically: true, encoding: .utf8)
+    // {"ready":true} line that never comes, and the helper cannot exit until the test releases it,
+    // so "warmUp returned" can only mean shutdown() interrupted it. Its polling `sleep` children
+    // hold the pipe for at most 50 ms after the shell itself is terminated.
+    let pidFile = tmp.appendingPathComponent("helper.pid")
+    let release = tmp.appendingPathComponent("release")
+    let script = try writeParkedHelper(in: tmp, pidFile: pidFile, release: release)
+    // Declared after the directory's cleanup, so it runs first: a failing run must not leave the
+    // helper polling.
+    defer { try? Data().write(to: release) }
 
     let engine = WarmWhisperDictationEngine(
         python: URL(fileURLWithPath: "/bin/sh"),
@@ -42,17 +95,17 @@ func warmDictationEngineShutdownInterruptsInFlightWork() async throws {
         modelDirectory: tmp
     )
 
-    let started = Date()
     let warm = Task { try await engine.warmUp() }
-    // Let ensureRunning() spawn the process and block in readLine before we tear down.
-    try await Task.sleep(for: .milliseconds(400))
+    // Let ensureRunning() spawn the process before we tear down: the helper recording its pid is the
+    // fact that says so, where a fixed 400 ms sleep only guessed at it.
+    try await waitUntil("the helper to start") { recordedPID(pidFile) != nil }
     engine.shutdown()
-    _ = await warm.result // warmUp is expected to throw once the helper is torn down.
-    let elapsed = Date().timeIntervalSince(started)
 
     // Off-queue termination unblocks the parked read immediately. The bug (terminate queued behind
-    // the blocking operation) would not return until the stub exited on its own ~20s later.
-    #expect(elapsed < 8)
+    // the blocking operation) leaves warmUp parked until the read's own 1,800 s timeout, so it would
+    // never finish inside the cap. warmUp is expected to throw once the helper is torn down.
+    let interrupted = try await finishesWithinCap { _ = await warm.result }
+    try #require(interrupted, "shutdown() left the in-flight warm-up parked in its read")
 }
 
 @Test("retire() waits for an in-flight helper to exit before model replacement")
@@ -62,8 +115,10 @@ func warmDictationEngineRetirementDrainsProcessWork() async throws {
     try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    let script = tmp.appendingPathComponent("stall.sh")
-    try "exec sleep 20\n".write(to: script, atomically: true, encoding: .utf8)
+    let pidFile = tmp.appendingPathComponent("helper.pid")
+    let release = tmp.appendingPathComponent("release")
+    let script = try writeParkedHelper(in: tmp, pidFile: pidFile, release: release)
+    defer { try? Data().write(to: release) } // runs before the directory's cleanup above
     let engine = WarmWhisperDictationEngine(
         python: URL(fileURLWithPath: "/bin/sh"),
         script: script,
@@ -71,12 +126,15 @@ func warmDictationEngineRetirementDrainsProcessWork() async throws {
     )
 
     let warm = Task { try await engine.warmUp() }
-    try await Task.sleep(for: .milliseconds(400))
-    let startedRetiring = Date()
-    await engine.retire()
+    try await waitUntil("the helper to start") { recordedPID(pidFile) != nil }
+    let helperPID = try #require(recordedPID(pidFile))
+    let retired = try await finishesWithinCap { await engine.retire() }
+    try #require(retired, "retire() did not return while the helper was parked in an in-flight warm-up")
     _ = await warm.result
 
-    #expect(Date().timeIntervalSince(startedRetiring) < 8)
+    // The claim is that retire() WAITS for the exit: the helper it was asked to drain is gone — not
+    // merely signalled — by the time it returns.
+    #expect(Darwin.kill(helperPID, 0) != 0, "the helper was still alive when retire() returned")
 }
 
 @Test("retire() waits for an idle helper process to actually exit")
@@ -102,12 +160,15 @@ func warmDictationEngineRetirementWaitsForIdleProcessExit() async throws {
 
     try await engine.warmUp()
     let startedRetiring = Date()
-    await engine.retire()
+    let retired = try await finishesWithinCap { await engine.retire() }
     let elapsed = Date().timeIntervalSince(startedRetiring)
 
+    try #require(retired, "retire() did not return within the wait cap")
+    // The marker is the claim: the helper's TERM trap sleeps a second before it touches it, so it
+    // exists only if retire() waited for the exit. The lower bound is that same fact seen from the
+    // clock, and load can only lengthen `elapsed`, never shorten it.
     #expect(FileManager.default.fileExists(atPath: marker.path))
     #expect(elapsed >= 0.8)
-    #expect(elapsed < 8)
 }
 
 @Test("evict() waits for an idle helper to exit but permits a later rewarm (F206)")
@@ -133,12 +194,13 @@ func warmDictationEngineEvictionWaitsAndCanRewarm() async throws {
 
     try await engine.warmUp()
     let started = Date()
-    await engine.evict()
+    let evicted = try await finishesWithinCap { await engine.evict() }
     let elapsed = Date().timeIntervalSince(started)
 
+    try #require(evicted, "evict() did not return within the wait cap")
+    // The marker is the claim, as in the retire() test above; the lower bound cannot be failed by load.
     #expect(FileManager.default.fileExists(atPath: marker.path))
     #expect(elapsed >= 0.8)
-    #expect(elapsed < 8)
     // Unlike a model replacement, meeting preparation is temporary: the next hotkey can warm the
     // same engine instance again.
     try await engine.warmUp()
@@ -182,7 +244,10 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
     // Wait for a readable pid, not merely for the file: `> "$file"` creates it empty before printf
     // writes. Reading "" here would leave the emergency cleanup below with no pid to signal, and a
     // surviving TERM-ignoring descendant parks this suite on a read that never ends.
-    for _ in 0..<200 where recordedPID(pidFile) == nil || recordedPID(childPIDFile) == nil {
+    // F645: the cap is 30 s (it was 2 s), because this is a precondition and a shell spawn on a
+    // loaded machine can be slow; the loop leaves the moment both pids are readable, so a generous
+    // cap costs nothing when they are.
+    for _ in 0..<3_000 where recordedPID(pidFile) == nil || recordedPID(childPIDFile) == nil {
         try await Task.sleep(for: .milliseconds(10))
     }
     #expect(recordedPID(pidFile) != nil)
@@ -196,7 +261,11 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
 
     // The red proof intentionally cleans the test helper up itself if production has no
     // off-queue SIGKILL fallback yet. `#expect` records the failure but continues to this cleanup.
-    for _ in 0..<140 where !completion.isFinished {
+    // F645: 30 s, not 7. Production's own SIGKILL escalation fires 5 s after the eviction request
+    // (`requestHelperTermination`), so a 7 s cap left 2 s for a loaded machine to deliver the kill
+    // and unwind the eviction; it passed at 5.1–5.3 s with 11 CPU hogs running. Only the failing
+    // case waits the full cap.
+    for _ in 0..<600 where !completion.isFinished {
         try await Task.sleep(for: .milliseconds(50))
     }
     let finishedWithoutManualKill = completion.isFinished
