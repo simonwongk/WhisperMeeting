@@ -161,7 +161,8 @@ func aLongOutageKeepsTheLedgerBounded() throws {
         .filter { $0.hasPrefix("g-") }.count
 
     // Two hundred saves that can neither list nor retain. Deferring must not become a log of
-    // every save: the only records it adds past the window are the at most 64 that cross it.
+    // every save: the only records it adds past the window are the at most 64 that were inside
+    // the window when the outage began (the saves during it retain nothing, so name nothing).
     for index in 0..<200 {
         token = try store.save([Note(title: "outage \(index)")], expecting: token, now: now).token
     }

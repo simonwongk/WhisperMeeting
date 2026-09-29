@@ -735,8 +735,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // names a file is kept, as though its file were there. That is still bounded without a
         // timeout. `prune` lists through the same seam, so while the listing fails nothing is pruned
         // and every generation retained meanwhile is still on disk; the only other records kept are
-        // the at most 64 that cross the window during the outage. The first save that can list
-        // again trims back to the rule above.
+        // the at most 64 that were inside the window when the outage began. The first save that
+        // can list again trims back to the rule above.
         let isOnDisk: (String) -> Bool = archivedNames.map { names in
             let onDisk = Set(names)
             return { onDisk.contains($0) }

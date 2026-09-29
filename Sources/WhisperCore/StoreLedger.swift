@@ -45,7 +45,8 @@ public struct StoreLedger: Codable, Sendable, Equatable {
         public var recordCount: Int?
         /// File name under `<stem>.history/`; nil when the save could not retain one. NOT cleared
         /// when the file is pruned (this used to say it was, and nothing ever did): a record whose
-        /// file is gone is dropped from `history` once it is older than the newest 64 (F517).
+        /// file is gone is dropped from `history` once it is older than the newest 64 (F517) and a
+        /// save could list the folder to see that it is gone (F648).
         public var historyName: String?
 
         public init(
@@ -74,6 +75,9 @@ public struct StoreLedger: Codable, Sendable, Equatable {
     public var previous: Record?
     /// Newest first, includes `current`. Bounded: the newest 64 records, plus one for every older
     /// generation whose file is still under `<stem>.history/` (F517) — never a log of every save.
+    /// A save that cannot list that folder keeps every record naming a file rather than guess
+    /// (F648); beyond one per generation on disk, that adds at most the 64 records that were
+    /// inside the window when the listing began to fail.
     public var history: [Record]
     /// False when this writer could not create or use `<stem>.history/`. A load NEVER declares
     /// divergence while this is false — without history there is no evidence to be sure with.
