@@ -101,17 +101,41 @@ func aHiddenFieldIsNotPastedIntoWhileSecureEntryIsOn() throws {
     #expect(harness.pasteCount == 0)
 }
 
+/// The review's must-fix: the session key is undocumented, so it can be missing, 0 or malformed,
+/// and there can be no app in front. Then nothing says the app in front did not turn secure input
+/// on — a sudo prompt under Secure Keyboard Entry is an ordinary `AXTextArea` — so the flag stands,
+/// which is F445's behaviour. Pasting there was the destructive fallback.
 @MainActor
-@Test("With no process named for secure input, an ordinary field is pasted into and a hidden one is not (F585)")
-func withNoHolderTheFieldsOwnSubroleDecides() throws {
+@Test("With no process named for secure input, even an ordinary text field is not pasted into (F585)")
+func withNoHolderSecureInputRefuses() throws {
     let harness = try SecureEntryHarness()
     harness.reading.secureInputProcessIdentifier = nil
     harness.reading.secureInputAppName = nil
-    #expect(harness.dictate() == .pasted)
+    #expect(harness.dictate() == .secureInput)
 
     harness.reading.focused = nil
     #expect(harness.dictate() == .secureInput)
-    #expect(harness.pasteCount == 1)
+    #expect(harness.pasteCount == 0)
+}
+
+@MainActor
+@Test("With no app in front to compare, secure input is not weighed away (F585)")
+func withNoFrontAppSecureInputRefuses() throws {
+    let harness = try SecureEntryHarness()
+    harness.reading.processIdentifier = nil
+
+    #expect(harness.dictate() == .secureKeyboardEntry(app: "Terminal"))
+    #expect(harness.pasteCount == 0)
+}
+
+/// The caption names the app the session key names, and the F585 measurement showed that is not
+/// the process that turned secure input on — so it must not say the setting is "on in" that app.
+@Test("The secure pill's caption names the app only as the one in front when secure input came on (F585)")
+func theSecurePillsCaptionDoesNotClaimAnOwner() throws {
+    let caption = try #require(DictationOverlay.Phase.secureKeyboardEntry(app: "Terminal").caption)
+    #expect(caption == "It came on while Terminal was in front")
+    #expect(!caption.contains("is on in"))
+    #expect(DictationOverlay.Phase.secureInput.caption == nil)
 }
 
 @MainActor
@@ -193,7 +217,7 @@ private func dictateThroughTheController(_ harness: SecureEntryHarness) async th
 }
 
 @MainActor
-@Test("The pill names the app with Secure Keyboard Entry on, and the dictation stays out of the history (F585)")
+@Test("The pill names the app in front when secure input came on, and the dictation stays out of the history (F585)")
 func controllerNamesTheAppHoldingSecureEntry() async throws {
     let harness = try SecureEntryHarness()
     harness.reading.bundleIdentifier = "com.apple.Terminal"

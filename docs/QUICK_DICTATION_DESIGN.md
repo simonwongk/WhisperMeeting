@@ -86,11 +86,12 @@ Fallback / edge branches:
   2026-09-28): the pill says "Not pasted — secure input" with a **Copy** button for 6 s, the text
   is held in memory only while that pill shows, and Copy writes it marked concealed and transient.
   Secure means a focused password field, or secure event input on with nothing to show the paste
-  is safe. That flag is system-wide, so since F585 it is weighed: the app in front when secure
-  input came on (as the window server names it) is never pasted into, and the pill adds "Secure
-  Keyboard Entry is on in <app>"; another app is pasted into when Accessibility shows an ordinary
-  text field focused there, and otherwise not. So Terminal's Secure Keyboard Entry no longer stops
-  dictation into TextEdit.
+  is safe. That flag is system-wide, so since F585 it is weighed. A paste goes ahead only when the
+  window server names an app for secure input (the app in front when it came on — not necessarily
+  the one that turned it on), that app is not the one in front, and Accessibility shows an ordinary
+  text field focused in the one in front. Anything less — no app named, the named app in front, no
+  field visible — is not pasted, and the pill adds "It came on while <app> was in front" when an
+  app is named. So Terminal's Secure Keyboard Entry no longer stops dictation into TextEdit.
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.

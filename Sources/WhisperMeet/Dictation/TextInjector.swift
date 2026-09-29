@@ -47,8 +47,8 @@ final class TextInjector {
         case appChanged
         /// Secure input (F445): never pasted or logged, and not written to the clipboard (F586).
         case secureInput
-        /// As `secureInput`, when the reason is secure keyboard entry and there is an app to name
-        /// for it — so the pill can say where to turn it off (F585).
+        /// As `secureInput`, when the reason is secure event input and the window server names an
+        /// app for it — the app in front when it came on, a hint for the pill, not the owner (F585).
         case secureKeyboardEntry(app: String)
 
         /// Secure input, for any reason: never pasted, never written to the history.

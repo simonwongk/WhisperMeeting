@@ -24,7 +24,8 @@ enum FocusedTextField {
         /// The focused element is a password field: its subrole is `AXSecureTextField`.
         case passwordField
         /// Secure event input is on and nothing showed it was safe to paste. `app` is the app the
-        /// window server names for it, when it names one.
+        /// window server names for it, when it names one — the app in front when secure input came
+        /// on, not necessarily the one that turned it on (see `secureInputProcess()`).
         case keyboardEntry(app: String?)
     }
 
@@ -121,28 +122,34 @@ enum FocusedTextField {
     /// paste in every app (F585). The OS does not say which process turned it on (see
     /// `secureInputProcess()`), so it is weighed against what else can be seen:
     ///
-    /// 1. The app in front is the one the session names — read as the app that was in front when
+    /// 1. The session names no process, or there is no app in front to compare it with: nothing
+    ///    shows the app in front did not turn secure input on. Not pasted.
+    /// 2. The app in front is the one the session names — read as the app that was in front when
     ///    secure input came on, as it is for a password prompt or Terminal's own setting. Not
     ///    pasted, whatever Accessibility shows: a sudo prompt in Terminal is an ordinary
     ///    `AXTextArea`.
-    /// 2. Otherwise, a focused ordinary text field: Accessibility vouches that the app in front has
-    ///    no password field focused, so the paste goes ahead.
-    /// 3. Otherwise — no element visible, or not a text field — nothing vouches, and the flag
-    ///    stands. Named after the app the session names, when it names one.
+    /// 3. The session names another app, and a focused ordinary text field in the app in front
+    ///    vouches that no password field has focus there: pasted. This is the only way through.
+    /// 4. Otherwise — no element visible, or not a text field — nothing vouches: not pasted.
     ///
-    /// Every doubt resolves to "not pasted": a false positive costs a paste, with the text still
-    /// there to paste by hand, where a false negative types someone's words into a password
-    /// prompt. If the session key turns out to name something else — the app in front at the time
-    /// of the read rather than when secure input came on — rule 1 refuses every paste, which is
-    /// F445's behaviour and never worse.
+    /// So a paste goes ahead only on two positive readings, and every doubt about either is "not
+    /// pasted": a false positive costs a paste, with the text still offered by the pill's Copy,
+    /// where a false negative types someone's words into a password prompt. If the session key is
+    /// missing, rule 1 gives F445's behaviour; if it names the app in front at the time of the read
+    /// rather than when secure input came on, rule 2 does. Neither is worse than F445. Rule 3 is
+    /// wrong in two cases nothing here can see: a second process turning secure input on while the
+    /// named one still holds it, and an app that turned it on from the background and was brought
+    /// to the front afterwards — each with a password prompt Accessibility shows as ordinary text.
     static func secureInput(_ reading: Reading, isPasswordField: Bool, isTextField: Bool) -> SecureInput? {
         if isPasswordField { return .passwordField }
         guard reading.secureEventInput else { return nil }
-        if let holder = reading.secureInputProcessIdentifier, holder == reading.processIdentifier {
+        guard let holder = reading.secureInputProcessIdentifier,
+              let front = reading.processIdentifier,
+              holder != front,
+              isTextField else {
             return .keyboardEntry(app: reading.secureInputAppName)
         }
-        if isTextField { return nil }
-        return .keyboardEntry(app: reading.secureInputAppName)
+        return nil
     }
 
     /// The live reads behind `probe()`.

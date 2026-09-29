@@ -29,7 +29,8 @@ final class DictationOverlay {
         /// Not pasted because of secure input (F445), and not on the clipboard either: the pill
         /// offers Copy (F586).
         case secureInput
-        /// As `secureInput`, naming the app secure keyboard entry is on in (F585).
+        /// As `secureInput`, with the app the window server names for it (F585) — the app in front
+        /// when secure input came on, which is a hint and not the owner.
         case secureKeyboardEntry(app: String)
 
         /// The pill has a Copy button, the only way to a dictation made into secure input (F586).
@@ -40,9 +41,22 @@ final class DictationOverlay {
             }
         }
 
-        /// Wider when it offers Copy: the button (48 pt measured) and a caption such as "Secure
-        /// Keyboard Entry is on in Terminal" (208 pt at 11 pt) then fit beside the icon.
+        /// Wider when it offers Copy: the button (48 pt measured) and a caption such as "It came on
+        /// while Terminal was in front" (197 pt at 11 pt) then fit beside the icon, in the ~222 pt
+        /// left; the caption may scale to 0.75, so names up to ~296 pt of caption still fit.
         var pillWidth: CGFloat { offersCopy ? 340 : 220 }
+
+        /// A second, smaller line under the label, or nil (F585).
+        ///
+        /// Says only when secure input came on, not who holds it: the window server's key names
+        /// the app that was in front then, and a background process turning secure input on is
+        /// attributed to that app (measured 2026-09-28), so "Secure Keyboard Entry is on in Chrome"
+        /// would send the user looking for a setting Chrome does not have. The label above it
+        /// already says "Not pasted — secure input".
+        var caption: String? {
+            if case let .secureKeyboardEntry(app) = self { return "It came on while \(app) was in front" }
+            return nil
+        }
     }
 
     private let model = PillModel()
@@ -173,7 +187,7 @@ private struct DictationPill: View {
                     // is one line.
                     .lineLimit(2)
                     .contentTransition(.opacity)
-                if let caption {
+                if let caption = model.phase.caption {
                     Text(caption)
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.75))
@@ -238,13 +252,6 @@ private struct DictationPill: View {
         case .error: "Dictation failed"
         case .busy: "Busy…"
         }
-    }
-
-    /// A second, smaller line: where secure keyboard entry is on, so the user knows where to turn
-    /// it off (F585).
-    private var caption: String? {
-        if case let .secureKeyboardEntry(app) = model.phase { return "Secure Keyboard Entry is on in \(app)" }
-        return nil
     }
 }
 
