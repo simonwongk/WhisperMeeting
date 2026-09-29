@@ -5,6 +5,17 @@ import WhisperCore
 
 // Shared headless fakes live in DictationTestSupport.swift.
 
+/// Polls `condition` every 5 ms under a 30 s cap and requires it, so a timeout fails as a timeout (F639).
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 @MainActor
 @Test("A missed dictation release stops recording and recovers the controller to idle")
 func missedReleaseRecoversController() async throws {
@@ -37,8 +48,12 @@ func missedReleaseRecoversController() async throws {
     )
 
     controller.handlePressStart()
-    for _ in 0..<20 where controller.status != .idle {
-        await Task.yield()
+    // Polls the recovery itself under a wall-clock cap, never a 20-yield count (F639): the count
+    // expires under a starved scheduler before the watchdog task has run, and would then fail the
+    // three assertions below as claims about the controller. The stop is part of the wait's
+    // condition, so seeing `.idle` before the capture was stopped does not end it.
+    try await waitUntil("the controller to stop the capture and recover to idle") {
+        recorder.stopCount >= 1 && controller.status == .idle
     }
 
     #expect(recorder.stopCount == 1)

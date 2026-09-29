@@ -142,29 +142,41 @@ func policySkipNeverCallsEngine() async {
     #expect(engine.refineCount == 0)
 }
 
+/// Polls until the gated engine has been entered `count` times, every 5 ms under a 30 s cap, and
+/// requires it (F639). The old wait was `for _ in 0..<100 { … await Task.yield() }` with no check on
+/// the far side, so a starved scheduler could run the budget out and the test would go on to evict
+/// and re-attempt before the abandoned generation had started — a race with the runtime, not a
+/// behaviour (the trap F277 named for `FakeRefineEngine`).
+private func waitForEngineCalls(_ count: Int, _ engine: GatedRefineEngine) async throws {
+    var ticks = 0
+    while await engine.callCount < count, ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(await engine.callCount >= count, "timed out waiting for the engine to be entered \(count) time(s)")
+}
+
 @Test("An evicted request cannot clear the busy state of a newer request")
-func staleCompletionDoesNotClearNewerRequest() async {
+func staleCompletionDoesNotClearNewerRequest() async throws {
     let engine = GatedRefineEngine()
     let refiner = DictationRefiner(engine: engine, sleep: instantSleep)
 
     let first = await refiner.attempt(text: "first words", languageCode: "en")
     #expect(first.outcome == .rawTimeout)
-    for _ in 0..<100 {
-        if await engine.callCount >= 1 { break }
-        await Task.yield()
-    }
+    try await waitForEngineCalls(1, engine)
 
     await refiner.evict()
     let second = await refiner.attempt(text: "second words", languageCode: "en")
     #expect(second.outcome == .rawTimeout)
-    for _ in 0..<100 {
-        if await engine.callCount >= 2 { break }
-        await Task.yield()
-    }
+    try await waitForEngineCalls(2, engine)
 
     // The old request finishes after the new one has taken ownership of the busy flag.
     await engine.finishFirst()
-    for _ in 0..<10 { await Task.yield() }
+    // Nothing observable says the stale completion has run, and the claim below is that it changed
+    // nothing, so there is no condition to poll: this is a window of real time (10 x 5 ms) in place of
+    // the 10 scheduler turns it was (F639). Too short a window can only produce a false pass — the
+    // stale completion clearing the flag after the probe — never a false failure.
+    for _ in 0..<10 { try await Task.sleep(nanoseconds: 5_000_000) }
     let third = await refiner.attempt(text: "third words", languageCode: "en")
     #expect(third.outcome == .rawBusy)
 

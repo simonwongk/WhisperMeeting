@@ -19,6 +19,17 @@ private final class EngineBox: @unchecked Sendable {
     var apiKey: String?
 }
 
+/// Polls `condition` every 5 ms under a 30 s cap and requires it, so a timeout fails as a timeout (F639).
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 @MainActor
 private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory
@@ -79,11 +90,10 @@ func localSummarizePathStoresSummary() async throws {
     model.summarize(id: id)
     #expect(model.activeSummarizationID == id) // guards passed; a job started (no key required)
 
-    var spins = 0
-    while model.activeSummarizationID != nil, spins < 100_000 {
-        await Task.yield()
-        spins += 1
-    }
+    // Polls the job's own state under a wall-clock cap, never a yield count (F639), and requires it:
+    // a budget of `Task.yield()`s expires under a starved scheduler before the summary lands, and
+    // would then fail the three assertions below as claims about the store.
+    try await waitUntil("the summarization to finish") { model.activeSummarizationID == nil }
     #expect(box.engine == .local)
     #expect(model.store.meeting(id: id)?.summary == recorder.stub)
     #expect(model.alertMessage == nil)
