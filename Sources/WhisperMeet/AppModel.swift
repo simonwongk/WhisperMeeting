@@ -3827,12 +3827,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Stops the live recording because the user chose Stop & Quit (F529). Returns whether the app
-    /// may quit now: `true` once the meeting is saved, or when the recording already ended on its own
-    /// while the question was on screen; `false` when the stop could not save it, so the quit is
-    /// cancelled and the failure `stopRecording` reported stays on screen instead of vanishing with
-    /// the process. The folder is kept either way, so a later quit loses nothing a launch cannot
-    /// rebuild.
+    /// Ends the recording before a quit: stops it for Stop & Quit (F529), or waits for a stop already
+    /// saving it (F672). Returns whether the app may quit now: `true` once the meeting is saved, or
+    /// when the recording had already ended by the time this ran; `false` when the stop could not
+    /// save it, so the quit is cancelled and the failure `stopRecording` reported stays on screen
+    /// instead of vanishing with the process. The folder is kept either way, so a later quit loses
+    /// nothing a launch cannot rebuild.
     func stopRecordingBeforeQuit() async -> Bool {
         switch recordingState {
         case .idle:
@@ -3840,11 +3840,26 @@ final class AppModel: ObservableObject {
         case .recording:
             // "" is the windowless stop — the title typed on the record screen is used (F298).
             return await stopRecording(title: "") != nil
-        case .starting, .stopping:
-            // Another start or stop owns the capture (the capture-loss finalize can begin while the
-            // question is on screen); quitting under it would interrupt it. Said, so a Stop & Quit
-            // that did not quit is not a click that did nothing.
-            report("WhisperMeet is still finishing the recording. Quit again once it has been saved.")
+        case .stopping:
+            // F672: a stop already owns the capture — the user's Stop, or a sleep's or a lost
+            // capture's finalize, including one that began while the question was on screen.
+            // Starting a second would be refused (`isStopInFlight`), and quitting under it kills
+            // the save midway, so wait for it to finish. Polled: that stop is someone else's call
+            // and leaves no handle to await, and "finished" is two facts — out of `.stopping`, and
+            // `stopRecording` returned (its recovery path goes `.idle` BEFORE it rebuilds and saves).
+            let id = activeMeetingID
+            while recordingState != .idle || isStopInFlight {
+                guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return false }
+            }
+            guard let id else { return true }
+            // Quit when nothing is left unsaved: the meeting is indexed, or its folder is gone (a
+            // cancel). A folder left unindexed is a failed stop, whose report must stay on screen.
+            return store.meeting(id: id) != nil
+                || !FileManager.default.fileExists(atPath: store.recordingDirectoryURL(for: id).path)
+        case .starting:
+            // Not reached through `AppLifecycle.shouldTerminate`, which terminates at once during a
+            // start (nothing captured yet); kept correct for any other caller.
+            report("The recording is still starting. Quit again in a moment.")
             return false
         }
     }

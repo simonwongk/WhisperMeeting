@@ -16,22 +16,42 @@ import Testing
 
 private struct CaptureWouldNotStop: Error {}
 
+/// Holds something open until the test lets it go, so "a stop is still saving" is a state the test
+/// controls rather than a race it hopes to win (F672, F673).
+private actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 @MainActor
-private func makeModel(stopFails: Bool = false) throws -> (AppModel, () -> Void) {
+private func makeModel(stopFails: Bool = false, stopGate: Gate? = nil, engineInstalled: Bool = false) throws -> (AppModel, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F529-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let suite = "F529.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
-        stoppingCapture: { if stopFails { throw CaptureWouldNotStop() } },
+        stoppingCapture: {
+            if let stopGate { await stopGate.wait() }
+            if stopFails { throw CaptureWouldNotStop() }
+        },
         finishingTracks: {}, preservingPartialTracks: {},
         startingCapture: { _, _, _ in }, restartingCapture: { _ in }, directory: root
     )
-    // No engine installed, so a saved meeting does not start a transcription this test would then
-    // have to wait out; whether one starts is not what F529 is about.
+    // By default no engine is installed, so a saved meeting does not start a transcription a test
+    // would then have to wait out. F673's test installs a stub one, because that is its subject.
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: recorder, defaults: defaults,
-        whisperExecutable: { nil }, qwenInstalled: { false }
+        whisperExecutable: { engineInstalled ? URL(fileURLWithPath: "/tmp/whisper-stub") : nil },
+        qwenInstalled: { engineInstalled }
     )
     return (model, {
         defaults.removePersistentDomain(forName: suite)
@@ -56,6 +76,7 @@ private func makeLifecycle(for model: AppModel, answer: @escaping () -> AppLifec
     let asked = Locked(0)
     let lifecycle = AppLifecycle()
     lifecycle.isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
+    lifecycle.isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
     lifecycle.confirmQuitDuringRecording = {
         asked.withLock { $0 += 1 }
         return answer()
@@ -234,14 +255,16 @@ func aRecordingThatEndedDuringTheQuestionStillQuits() async throws {
 }
 
 @MainActor
-@Test("A Stop & Quit that finds another stop already finishing the recording cancels the quit rather than interrupting it, and says so (F529)")
-func aStopAlreadyInFlightCancelsTheQuitAndSaysSo() async throws {
+@Test("A Stop & Quit that finds a sleep's stop already saving the recording waits for it, then quits (F529, F672)")
+func aStopBegunUnderTheQuestionIsWaitedFor() async throws {
     let (model, cleanup) = try makeModel()
     defer { cleanup() }
-    _ = try await startRecordingWithTracks(model)
+    model.recordingTitle = "Standup"
+    let id = try await startRecordingWithTracks(model)
     let (lifecycle, _) = makeLifecycle(for: model) {
-        // The capture-loss finalize began while the alert was on screen.
-        model.setRecordingStateForTesting(.stopping)
+        // The Mac began to sleep while the alert was on screen: its stop takes the recording to
+        // `.stopping` synchronously and saves it asynchronously — the capture-loss finalize's shape too.
+        model.handleSystemWillSleep()
         return .stopAndQuit
     }
     let replies = Locked<[Bool]>([])
@@ -250,11 +273,75 @@ func aStopAlreadyInFlightCancelsTheQuitAndSaysSo() async throws {
 
     try #require(decision == .terminateLater)
     try await waitForReply(replies)
-    #expect(replies.withLock { $0 } == [false], "quitting now would interrupt the stop that is saving the meeting")
-    #expect(model.alertMessage?.contains("still finishing the recording") == true,
-            "a Stop & Quit that did not quit must say why")
-    model.setRecordingStateForTesting(.recording(startedAt: Date()))
-    await model.cancelRecording()
+    #expect(replies.withLock { $0 } == [true], "once that stop has saved the meeting, the quit goes ahead")
+    #expect(model.store.meeting(id: id)?.title == "Standup", "saved by the stop that was already under way")
+    #expect(model.recordingState == .idle)
+}
+
+// MARK: - F672: a quit while a stop is still saving
+
+/// Polls the recording's phase — the precondition's own subject — against the wall clock.
+@MainActor
+private func waitUntilStopping(_ model: AppModel) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while model.recordingState != .stopping, Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(model.recordingState == .stopping, "the stop never reached .stopping")
+}
+
+@MainActor
+@Test("A quit while Stop is still saving waits for that stop, asks nothing, and then quits (F672)")
+func aQuitWhileAStopIsSavingWaitsForIt() async throws {
+    let gate = Gate()
+    let (model, cleanup) = try makeModel(stopGate: gate)
+    defer { cleanup() }
+    defer { Task { await gate.open() } }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    // The in-window Stop & Transcribe (or the menu bar's), held mid-save.
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilStopping(model)
+
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+
+    try #require(decision == .terminateLater, "quitting now kills the save midway")
+    #expect(asked.withLock { $0 } == 0, "the user already chose to end this recording; there is nothing to ask")
+    #expect(model.store.meeting(id: id) == nil, "sanity: not yet saved")
+    #expect(lifecycle.shouldTerminate { _ in Issue.record("a second quit was replied to") } == .terminateCancel,
+            "a second ⌘Q while waiting owes no second reply")
+
+    await gate.open()
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true])
+    #expect(model.store.meeting(id: id)?.title == "Board call", "the meeting was saved before the app quit")
+    #expect(await stop.value == id)
+}
+
+@MainActor
+@Test("A quit while a failing Stop is saving keeps the app open, so the failure stays on screen (F672)")
+func aQuitWhileAFailingStopIsSavingStaysOpen() async throws {
+    let gate = Gate()
+    let (model, cleanup) = try makeModel(stopFails: true, stopGate: gate)
+    defer { cleanup() }
+    defer { Task { await gate.open() } }
+    model.recoverInterruptedRecording = { _ in nil }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "") }
+    try await waitUntilStopping(model)
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+    try #require(decision == .terminateLater)
+    await gate.open()
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [false], "quitting would take the failure message with it")
+    #expect(await stop.value == nil)
+    #expect(model.alertMessage?.contains(model.store.recordingDirectoryURL(for: id).path) == true)
 }
 
 // MARK: - The AppKit half, pinned by source (F174: no scene or AppKit harness in this target)
@@ -276,6 +363,7 @@ func theDelegateAndTheAppWireTheQuitDecision() throws {
         "lifecycle.isRecordingLive =",
         "lifecycle.confirmQuitDuringRecording =",
         "lifecycle.onStopRecordingForQuit =",
+        "lifecycle.isRecordingFinishing =",
         "model?.stopRecordingBeforeQuit()",
         "QuitDuringRecordingAlert.ask()",
     ] {

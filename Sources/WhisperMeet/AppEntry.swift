@@ -94,6 +94,8 @@ struct WhisperMeetApp: App {
         // F529: a quit during a live recording asks first, and Stop & Quit saves the meeting through
         // the ordinary stop before the process ends.
         lifecycle.isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
+        // F672: and a stop already saving it is waited for rather than killed.
+        lifecycle.isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
         lifecycle.confirmQuitDuringRecording = { QuitDuringRecordingAlert.ask() }
         lifecycle.onStopRecordingForQuit = { [weak model] in
             await model?.stopRecordingBeforeQuit() ?? true

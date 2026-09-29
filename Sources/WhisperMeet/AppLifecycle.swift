@@ -145,6 +145,10 @@ public final class AppLifecycle: ObservableObject {
     /// Whether a capture is running right now, so that quitting would cut a meeting short.
     public var isRecordingLive: (() -> Bool)?
 
+    /// Whether a stop is already saving the recording — the user's own Stop, or one the app began
+    /// for a sleep or a lost capture (F672).
+    public var isRecordingFinishing: (() -> Bool)?
+
     /// Asks the user what to do about the live recording. Called only while `isRecordingLive`.
     public var confirmQuitDuringRecording: (() -> QuitDuringRecordingChoice)?
 
@@ -166,16 +170,25 @@ public final class AppLifecycle: ObservableObject {
     /// **Every `.terminateLater` gets exactly one `reply`, and nothing else gets one.** AppKit
     /// waits for that reply with the run loop in modal-panel mode, so a path that forgets it leaves
     /// an app that neither quits nor behaves normally. Hence the shape: the question is answered
-    /// synchronously, so "Keep Recording" is a plain `.terminateCancel`; only "Stop & Quit" goes
-    /// asynchronous, and its task replies once, after the stop, whatever the stop returned. A quit
-    /// that arrives while the question is up, or while that stop is still saving, is refused
-    /// outright rather than asked or answered twice.
+    /// synchronously, so "Keep Recording" is a plain `.terminateCancel`; only "Stop & Quit" — and a
+    /// quit that finds a stop already saving (F672) — goes asynchronous, and its task replies once,
+    /// after the stop, whatever the stop returned. A quit that arrives while the question is up, or
+    /// while that stop is still saving, is refused outright rather than asked or answered twice.
+    ///
+    /// A quit during `.starting` still terminates at once: nothing has been captured yet, and
+    /// `stopRecording` itself refuses a stop until the capture is live.
     public func shouldTerminate(reply: @escaping (Bool) -> Void) -> NSApplication.TerminateReply {
         // The pending decision already answers for this quit; a second `reply` would answer a
         // question AppKit is no longer asking.
         // Likewise while the question is still on screen: the alert runs modally inside this call,
         // and a second quit reaching it would stack a second alert on the first.
         guard !isStoppingForQuit, !isAskingAboutQuit else { return .terminateCancel }
+        // F672: a stop is already saving the recording — the user pressed Stop, or the app began one
+        // for a sleep or a lost capture. There is nothing to ask, since the recording is already
+        // ending, but `.terminateNow` here killed that save midway and left the meeting for the next
+        // launch to rebuild. So it takes the same single-reply path as Stop & Quit, whose stop
+        // (`AppModel.stopRecordingBeforeQuit`) waits for the one under way instead of starting one.
+        if isRecordingFinishing?() == true { return stopThenReply(reply) }
         guard isRecordingLive?() == true else { return .terminateNow }
         isAskingAboutQuit = true
         // Unwired means a wiring bug, not a user who wants to keep recording: saving and quitting is
@@ -183,6 +196,11 @@ public final class AppLifecycle: ObservableObject {
         let choice = confirmQuitDuringRecording?() ?? .stopAndQuit
         isAskingAboutQuit = false
         guard choice == .stopAndQuit else { return .terminateCancel }
+        return stopThenReply(reply)
+    }
+
+    /// The one asynchronous path: stop (or wait for the stop under way), then reply exactly once.
+    private func stopThenReply(_ reply: @escaping (Bool) -> Void) -> NSApplication.TerminateReply {
         isStoppingForQuit = true
         Task { @MainActor [weak self] in
             // No `onStopRecordingForQuit` means nothing to wait for. A `false` cancels the quit: the
