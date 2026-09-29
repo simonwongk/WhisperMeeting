@@ -61,3 +61,48 @@ func previousVersionIsClaimedOnlyWhenKept() {
     #expect(InstallerError.notReady(.whisper).keepingPrevious(true) == .notReady(.whisper))
     #expect(!InstallerError.notReady(.whisper).localizedDescription.contains("previous"))
 }
+
+// Review of F520/F567, correction 5: most installers already end on "…the previous runtime was
+// restored." or "…was not changed.", and F545's line on "…was kept unchanged."; the app appended
+// " The previous version was kept." to each, so the alert said it twice.
+
+@Test("An installer line that already says the previous version is in place is not told so again (F567)")
+func previousKeptIsNotSaidTwice() {
+    let restored = InstallerError.scriptFailed(
+        .whisper,
+        reason: "The relocated Local Whisper runtime failed verification; the previous runtime was restored.",
+        previousKept: true
+    )
+    #expect(restored.statusMessage
+        == "Installation failed. The relocated Local Whisper runtime failed verification; the previous runtime was restored.")
+    let silent = InstallerError.scriptFailed(.qwen, reason: "No network", previousKept: true)
+    #expect(silent.statusMessage == "Installation failed. No network. The previous version was kept.")
+}
+
+@Test("No installer's own failure line is rendered with the previous version claimed twice (F567)")
+func noInstallerLineDoublesTheKeptClaim() throws {
+    // Every `print -u2 "…"` of every installer, so a new line is checked the day it is written.
+    let scripts = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Scripts")
+    let names = try FileManager.default.contentsOfDirectory(atPath: scripts.path)
+        .filter { $0.hasPrefix("setup-") && $0.hasSuffix(".sh") }
+    #expect(names.count >= 5)
+    let claim = try NSRegularExpression(
+        pattern: "(was kept|was restored|was not changed|nothing was changed)", options: [.caseInsensitive])
+    let printed = try NSRegularExpression(pattern: #"print -u2 "([^"]+)""#)
+    var lines = 0
+    for name in names {
+        let source = try String(contentsOf: scripts.appendingPathComponent(name), encoding: .utf8)
+        let whole = NSRange(source.startIndex..., in: source)
+        for match in printed.matches(in: source, range: whole) {
+            guard let range = Range(match.range(at: 1), in: source) else { continue }
+            lines += 1
+            let rendered = InstallerError.scriptFailed(.whisper, reason: String(source[range]), previousKept: true)
+                .statusMessage
+            let claims = claim.numberOfMatches(in: rendered, range: NSRange(rendered.startIndex..., in: rendered))
+            #expect(claims <= 1, "\(name): \(rendered)")
+        }
+    }
+    #expect(lines > 20, "found only \(lines) installer lines — did the pattern stop matching?")
+}

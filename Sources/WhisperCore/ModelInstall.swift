@@ -59,7 +59,10 @@ public enum InstallerError: LocalizedError, Equatable, Sendable {
     public var reason: String {
         switch self {
         case let .scriptFailed(_, reason, previousKept):
-            return Self.sentence(reason) + (previousKept ? " The previous version was kept." : "")
+            // Most installers already end on that claim ("…the previous runtime was restored.",
+            // "…the existing model was not changed."); saying it again read as "kept" twice.
+            let addsClaim = previousKept && !InstallerOutput.claimsPreviousKept(reason)
+            return Self.sentence(reason) + (addsClaim ? " The previous version was kept." : "")
         case .notReady:
             return "The installer finished, but the installed files could not be found. Try again."
         case let .couldNotStart(_, reason):
@@ -109,5 +112,16 @@ public enum InstallerOutput {
     /// `lastLine`, or a sentence naming the exit status when the installer printed nothing.
     public static func failureReason(output: String, exitStatus: Int32) -> String {
         lastLine(of: output) ?? "The installer stopped with status \(exitStatus) and printed no reason."
+    }
+
+    /// The phrasings the installers use to say the previous install is still in place. A line
+    /// worded some other way just gets the app's own sentence after it — a repeat, never a
+    /// missing claim. `InstallerErrorTests` checks every `print -u2` line of every installer.
+    static let previousKeptPhrases = ["was kept", "was restored", "was not changed", "nothing was changed"]
+
+    /// Whether an installer's line already says the previous install is still in place.
+    public static func claimsPreviousKept(_ line: String) -> Bool {
+        let lowered = line.lowercased()
+        return previousKeptPhrases.contains { lowered.contains($0) }
     }
 }

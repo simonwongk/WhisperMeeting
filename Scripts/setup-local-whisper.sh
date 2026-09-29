@@ -303,7 +303,7 @@ if (( live_has_yt_dlp )) \
   lost_tools+=("import from a link (yt-dlp)")
 fi
 if (( ${#lost_tools} > 0 )); then
-  print -u2 "Local Whisper was not updated because ${(j: and :)lost_tools} could not be reinstalled; the working installation was kept unchanged. Check your connection and try Repair or Update again."
+  print -u2 "Local Whisper was not updated because ${(j: and :)lost_tools} could not be reinstalled; the working installation was kept unchanged. pip's error is in install.log; try Repair or Update again."
   exit 1
 fi
 
