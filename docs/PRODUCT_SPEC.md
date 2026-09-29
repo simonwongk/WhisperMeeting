@@ -120,7 +120,10 @@ F642):
 - A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
   again works.
 - Until the offer is answered, that copy refuses further changes to its meetings — edits, new
-  meetings and deletes — without a message of its own; the offer is the explanation.
+  meetings and deletes — without a message of its own; the offer is the explanation. That includes
+  writes nobody typed: a recording stopped, or a transcript or summary finished, while the offer is
+  up is not saved to the list and nothing says so. That is a known defect, not the intended cost
+  (F662).
 - The pre-existing generations remain restorable — in the app while the library cannot be read, and
   by hand at any time (`docs/RECOVERY.md`).
 

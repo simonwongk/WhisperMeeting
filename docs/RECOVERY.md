@@ -248,14 +248,23 @@ bad save is kept for every other meeting. The rewrite removes only that meeting'
 else in each generation stays as it was written, including anything a newer version of WhisperMeet
 added that this one does not understand (F552). The same removal reaches the index's other copies
 (F457): quarantined copies (`meetings.unreadable-*.json`, `meetings.backup.unreadable-*.json`) and the
-index files in a restore's `.pre-restore-*/` folder lose that meeting's entry and keep the rest. Audio
-a restore set aside in that folder is not touched. The queue of pending deletions is
+index files in a restore's `.pre-restore-*/` folder lose that meeting's entry and keep the rest. Two
+kinds of copy cannot be cleaned that way, and both are named in a message by their path in the
+library folder rather than skipped (F668): a copy that cannot be rewritten (a permission error, say)
+stays queued and is tried again each time WhisperMeet checks; a copy that is not a readable index
+cannot have one meeting removed from it, so it is left as it is and named once each launch while it
+still contains the meeting — delete it yourself if you no longer need it. The recording folders a
+restore set aside in `.pre-restore-*/`, **including each meeting's `notes.md` with its transcript
+and summary**, are not touched by any of this (F664). The queue of pending deletions is
 `meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never
 removed from the history (F498). A deletion's recorded date is never rewritten from a later clock
-(F603), so a launch with the clock set behind cannot shorten the week. A deletion recorded more than
+(F603), so a launch with the clock set behind cannot shorten the week. A launch with the clock set
+ahead still can — the deletion then looks a week old early — and so can a clock that was behind
+when the meeting was deleted, since the date it recorded is already in the past; nothing on disk can
+tell either from a correct clock. A deletion recorded more than
 a week in the future — a date no deletion can have — waits a week from when WhisperMeet first sees
 it that way instead, so its week starts then rather than never; once the clock is right again and
 the date is no longer impossible, the recorded date applies.
