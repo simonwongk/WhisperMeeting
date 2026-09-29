@@ -21,6 +21,10 @@ struct InstallReclaim: Sendable {
     let recoveryEnvironmentKey: String
     /// The bundled script's resource name, without its `.sh` extension.
     let scriptResource: String
+    /// The runtime's directory name under `Runtime/` (F655) — the name each WhisperCore runtime
+    /// type appends to `LocalWhisperRuntime.managedDirectory`; `StartupReclaimScopeTests` pins the
+    /// two together.
+    let runtimeName: String
     /// Whether the script takes the runtime's PARENT directory as its argument rather than the
     /// runtime itself (F520). Local Whisper's installer takes `Runtime/` and keeps its venv at
     /// `Runtime/venv`; the other three take their own `Runtime/<Name>` target. The artifacts are
@@ -34,23 +38,30 @@ struct InstallReclaim: Sendable {
         artifactPrefix: ".venv",
         recoveryEnvironmentKey: "WHISPER_INSTALL_RECOVERY_ONLY",
         scriptResource: "setup-local-whisper",
+        runtimeName: "venv",
         scriptTakesParentDirectory: true
     )
     static let qwen = InstallReclaim(
         artifactPrefix: ".Qwen3ASR",
         recoveryEnvironmentKey: "QWEN_INSTALL_RECOVERY_ONLY",
-        scriptResource: "setup-qwen-asr"
+        scriptResource: "setup-qwen-asr",
+        runtimeName: "Qwen3ASR"
     )
     static let summarizer = InstallReclaim(
         artifactPrefix: ".Summarizer",
         recoveryEnvironmentKey: "SUMMARIZER_INSTALL_RECOVERY_ONLY",
-        scriptResource: "setup-local-summarizer"
+        scriptResource: "setup-local-summarizer",
+        runtimeName: "Summarizer"
     )
     static let diarization = InstallReclaim(
         artifactPrefix: ".Diarization",
         recoveryEnvironmentKey: "DIARIZATION_INSTALL_RECOVERY_ONLY",
-        scriptResource: "setup-speaker-diarization"
+        scriptResource: "setup-speaker-diarization",
+        runtimeName: "Diarization"
     )
+
+    /// Every runtime the launch reclaims (F655), in the order `performStartupRecovery` runs them.
+    static let all: [InstallReclaim] = [.whisper, .qwen, .diarization, .summarizer]
 
     /// What the recovery run is given on its command line for the runtime at `runtimeDirectory`.
     func scriptArgument(for runtimeDirectory: URL) -> URL {
@@ -64,6 +75,19 @@ struct InstallReclaim: Sendable {
 }
 
 extension AppModel {
+    /// The `Runtime/` of the library this model was opened on (F655). In the app that is the managed
+    /// runtime — `MeetingStore()` opens `WhisperMeetLibrary.root()`, which is where
+    /// `LocalWhisperRuntime.managedDirectory()` lives — and in a test it is the test's own temp
+    /// library, so no launch reclaim a test runs can reach the user's real runtime.
+    var libraryRuntimeDirectory: URL {
+        store.rootDirectory.appendingPathComponent("Runtime", isDirectory: true)
+    }
+
+    /// Where `reclaim`'s runtime lives in this model's library (F655).
+    func runtimeDirectory(for reclaim: InstallReclaim) -> URL {
+        libraryRuntimeDirectory.appendingPathComponent(reclaim.runtimeName, isDirectory: true)
+    }
+
     /// True when the runtime parent holds installer-owned orphan artifacts for `reclaim` (F285).
     ///
     /// Only the installer's own hidden names match, so this never fires on a clean runtime — the

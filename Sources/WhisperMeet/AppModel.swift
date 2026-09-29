@@ -1366,9 +1366,14 @@ final class AppModel: ObservableObject {
     var isDiarizationModelInstalled: @Sendable () -> Bool = { FluidAudioDiarizationRuntime.isInstalled() }
 
     /// Where the pinned speaker-analysis runtime lives. Held as a property rather than called at each
-    /// use site so a test can point the install and the launch reclaim at a temp directory; without
-    /// it both would work over the user's real `Runtime/Diarization` (F219).
-    var diarizationRuntimeDirectory: URL = DiarizationRuntime.managedDirectory()
+    /// use site so a test can point the install and the launch reclaim at a temp directory (F219).
+    /// Unset, it is this model's library's `Runtime/Diarization` (F655) — the managed runtime in the
+    /// app, and never the user's real one in a test.
+    var diarizationRuntimeDirectory: URL {
+        get { diarizationRuntimeDirectoryOverride ?? runtimeDirectory(for: .diarization) }
+        set { diarizationRuntimeDirectoryOverride = newValue }
+    }
+    private var diarizationRuntimeDirectoryOverride: URL?
 
     /// Runs the bundled `setup-speaker-diarization.sh` over a runtime directory. Injectable so the
     /// install wiring is testable without a 60 MB download or a spawned process; defaults to the real
@@ -1384,7 +1389,9 @@ final class AppModel: ObservableObject {
     /// Finds a bundled installer script by resource name (F567). A seam so a headless test can hand
     /// an install a stub script. The default deliberately has no checkout fallback: in a test binary
     /// that fallback would find the REAL installers and run them against the real Application
-    /// Support runtime.
+    /// Support runtime. (The launch reclaims do use that fallback, via `spawnInstallRecovery`; what
+    /// keeps a test's reclaim out of the real runtime is that they look only in the runtime of the
+    /// model's own library, `libraryRuntimeDirectory` — F655.)
     var installerScriptURL: @Sendable (String) -> URL? = {
         Bundle.main.url(forResource: $0, withExtension: "sh")
     }
@@ -1415,8 +1422,12 @@ final class AppModel: ObservableObject {
 
     /// Where the launch reclaim looks for Local Whisper's venv (F520) — a property, like
     /// `diarizationRuntimeDirectory`, so a test can point `performStartupRecovery` at a temp one.
-    var whisperVenvDirectory: URL = LocalWhisperRuntime.managedDirectory()
-        .appendingPathComponent("venv", isDirectory: true)
+    /// Unset, it is this model's library's `Runtime/venv` (F655).
+    var whisperVenvDirectory: URL {
+        get { whisperVenvDirectoryOverride ?? runtimeDirectory(for: .whisper) }
+        set { whisperVenvDirectoryOverride = newValue }
+    }
+    private var whisperVenvDirectoryOverride: URL?
 
     /// The running install of each runtime, so its Cancel button and Quit can stop it (F520).
     /// Written only by `launchInstall`/`cancelInstall` in ModelInstalls.swift.
@@ -6633,10 +6644,12 @@ extension AppModel {
     /// recovery-only reclaim restores it (or clears an incomplete one) without a manual reinstall
     /// (F33). Returns whether the reclaim was run. The reclaim itself is the injected
     /// `runQwenInstallRecovery` seam, so this hop is headless-testable without spawning a process.
+    ///
+    /// `runtimeDirectory` defaults to this model's library's `Runtime/Qwen3ASR` (F655) — the managed
+    /// runtime in the app; a default argument cannot read an instance, hence the optional.
     @discardableResult
-    func reclaimInterruptedQwenInstall(
-        runtimeDirectory: URL = QwenASRRuntime.managedDirectory()
-    ) async -> Bool {
+    func reclaimInterruptedQwenInstall(runtimeDirectory: URL? = nil) async -> Bool {
+        let runtimeDirectory = runtimeDirectory ?? self.runtimeDirectory(for: .qwen)
         let parent = runtimeDirectory.deletingLastPathComponent()
         guard Self.hasOrphanedQwenInstallArtifacts(in: parent) else { return false }
         _ = await runQwenInstallRecovery(runtimeDirectory)
@@ -6671,10 +6684,11 @@ extension AppModel {
     /// `.Summarizer-backup-*` directory and the feature reporting "not installed" until the user
     /// happened to open the installer again — which someone whose summaries had stopped working has
     /// no particular reason to do.
+    ///
+    /// `runtimeDirectory` defaults to this model's library's `Runtime/Summarizer` (F655).
     @discardableResult
-    func reclaimInterruptedSummarizerInstall(
-        runtimeDirectory: URL = SummarizerRuntime.managedDirectory()
-    ) async -> Bool {
+    func reclaimInterruptedSummarizerInstall(runtimeDirectory: URL? = nil) async -> Bool {
+        let runtimeDirectory = runtimeDirectory ?? self.runtimeDirectory(for: .summarizer)
         let parent = runtimeDirectory.deletingLastPathComponent()
         guard Self.hasOrphanedSummarizerInstallArtifacts(in: parent) else { return false }
         _ = await runSummarizerInstallRecovery(runtimeDirectory)

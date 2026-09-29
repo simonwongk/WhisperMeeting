@@ -51,7 +51,10 @@ private func makeDamagedLibrary(_ label: String) throws -> (root: URL, model: Ap
         recorder: AudioCaptureEngine(),
         defaults: UserDefaults(suiteName: "WhisperMeet.RestoreReadOnly.\(UUID().uuidString)")!
     )
-    // Startup recovery runs below; nothing in it may spawn an installer from a test.
+    // Startup recovery runs below; nothing in it may spawn an installer from a test. Since F655 the
+    // reclaims look only in this temp library's Runtime/, so they could not reach the real one
+    // anyway; all four are replaced as well (Whisper's was missing until the F520 review).
+    model.runWhisperInstallRecovery = { _ in 0 }
     model.runQwenInstallRecovery = { _ in 0 }
     model.runSummarizerInstallRecovery = { _ in 0 }
     model.runDiarizationInstallRecovery = { _ in 0 }

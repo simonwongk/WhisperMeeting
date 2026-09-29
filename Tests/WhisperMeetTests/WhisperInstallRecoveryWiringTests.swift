@@ -129,6 +129,11 @@ func whisperReclaimRunsAtStartupBeforeTheRuntimeProbe() async throws {
         spy.note("probe")
         return spy.isInstalled ? URL(fileURLWithPath: "/usr/bin/true") : nil
     }
+    // The other three reclaims run too; replaced so nothing is spawned (F655 — they could only look
+    // in this model's temp library anyway).
+    model.runQwenInstallRecovery = { _ in 0 }
+    model.runSummarizerInstallRecovery = { _ in 0 }
+    model.runDiarizationInstallRecovery = { _ in 0 }
 
     await model.performStartupRecovery()
 
