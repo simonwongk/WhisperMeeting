@@ -60,9 +60,10 @@ final class TextInjector {
         }
 
         /// ⌘V went to the app the dictation was made in, so the history records a paste (F600).
-        /// The history has no third value for "pasted, not seen to land": a new case would read as
-        /// "Recorded by a newer version" in the builds since F266, would make the whole log
-        /// unreadable in builds before F251, and the text was pasted.
+        /// The history has no third value for "pasted, not seen to land". A new case would have to
+        /// be written in F266's shape — its nearest known case, with `outcomeKind` beside it — to
+        /// stay readable before F251, and every build since F266 would then show that entry as
+        /// "Recorded by a newer version". The text was pasted, so `.pasted` is the true record.
         var wasPasted: Bool {
             switch self {
             case .pasted, .pastedUnconfirmed: true
