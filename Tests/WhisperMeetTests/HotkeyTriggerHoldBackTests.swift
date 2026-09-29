@@ -133,12 +133,20 @@ func onlyFKeyTriggersAreHeldBack() {
 }
 
 /// The recovery F446 added for the listen-only tap, through the held-back tap's callback: a release
-/// made while the system had disabled the tap is read from the key and dispatched.
+/// made while the system had disabled the tap is read from the key and dispatched — and then the
+/// loss is handed to the monitor's owner, which re-arms through `start` (F547 review). Nothing on the
+/// tap thread re-enables the tap.
 @MainActor
-@Test("A disabled trigger tap reports the release it missed when it recovers (F547, F446)")
+@Test("A disabled trigger tap reports the release it missed, then reports its loss to be re-armed (F547, F446)")
 func aDisabledTriggerTapRecoversTheMissedRelease() async throws {
     let edges = EdgeCounter()
     let monitor = monitor(DictationHotkey(keyCode: f5, mode: .hold), edges: edges)
+    var losses: [TriggerTapLoss] = []
+    var endsWhenLost = -1
+    monitor.onTriggerTapLost = { loss in
+        losses.append(loss)
+        endsWhenLost = edges.endCount
+    }
     let context = TriggerTapContext(keyCode: f5, monitor: monitor)
 
     #expect(try !tap(context, .keyDown, key: f5))
@@ -148,6 +156,51 @@ func aDisabledTriggerTapRecoversTheMissedRelease() async throws {
     #expect(try tap(context, .tapDisabledByTimeout, key: f5), "the disabled-tap notice must be passed on")
     await drainMainQueue()
     #expect(edges.endCount == 1, "the release made while the tap was disabled was lost")
+    #expect(losses == [.timeout], "the loss never reached the owner that re-arms the trigger")
+    #expect(endsWhenLost == 0, "the owner was told before the missed release was dispatched")
+
+    #expect(try tap(context, .tapDisabledByUserInput, key: f5))
+    await drainMainQueue()
+    #expect(losses == [.timeout, .userInput])
+}
+
+/// The loss of a tap the monitor has since replaced says nothing about the new one.
+@MainActor
+@Test("A replaced trigger tap's late loss is ignored (F547)")
+func aReplacedTriggerTapsLossIsIgnored() async throws {
+    let edges = EdgeCounter()
+    let monitor = monitor(DictationHotkey(keyCode: f5, mode: .hold), edges: edges)
+    var losses: [TriggerTapLoss] = []
+    monitor.onTriggerTapLost = { losses.append($0) }
+    let context = TriggerTapContext(keyCode: f5, monitor: monitor)
+    context.isCurrent = false
+
+    _ = try tap(context, .tapDisabledByTimeout, key: f5)
+    await drainMainQueue()
+    #expect(losses.isEmpty)
+}
+
+/// Re-enabling a disabled active tap from its own callback is the shape that froze the whole keyboard
+/// in other apps when Accessibility was revoked under it (deskflow #9562, slovo #73). Checked as
+/// source because a real disabled tap needs Accessibility to be revoked on the machine running the
+/// suite; comments are stripped first (F285).
+@Test("The trigger tap's callback never re-enables a tap the system disabled (F547)")
+func theTriggerTapCallbackNeverReEnablesItsTap() throws {
+    let source = SourceAssertion.stripComments(
+        try String(contentsOf: SourceAssertion.url("Sources/WhisperMeet/Dictation/HotkeyMonitor.swift"), encoding: .utf8),
+        blankStringLiterals: true
+    )
+    let marker = try #require(source.range(of: "static let triggerTapCallback"))
+    let openBrace = try #require(source.range(of: "{", range: marker.upperBound..<source.endIndex))
+    var depth = 1
+    var cursor = openBrace.upperBound
+    while cursor < source.endIndex, depth > 0 {
+        if source[cursor] == "{" { depth += 1 } else if source[cursor] == "}" { depth -= 1 }
+        cursor = source.index(after: cursor)
+    }
+    let callback = source[openBrace.upperBound..<cursor]
+    #expect(callback.contains("tapDisabledByTimeout"), "the callback no longer handles a disabled tap at all")
+    #expect(!callback.contains("tapEnable("), "the callback re-enables the active tap the system disabled")
 }
 
 /// A tap replaced since it heard the key can still have a forwarded press on the main queue.

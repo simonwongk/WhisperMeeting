@@ -90,6 +90,33 @@ final class DictationController: ObservableObject {
     private var activationObserver: NSObjectProtocol?
     private let activationNotifications: NotificationCenter
 
+    // MARK: - The F-key trigger's active tap and Accessibility (F547)
+    //
+    // An active tap holds every key-down and key-up in the session until it answers. Other apps with
+    // one froze the whole keyboard when Accessibility was revoked under it: the system disabled the
+    // tap, their callback re-enabled it, and nothing re-checked the grant (deskflow #9562 and its
+    // fix #9579, slovo #73; slovo #112 adds that the disable may not arrive at all). So here:
+    //
+    // - a disabled tap is never re-enabled; `handleTriggerTapLost` re-arms through `start`, whose
+    //   new `tapCreate` comes back NULL without the grant, and the trigger then falls back to
+    //   listen-only or fails with F633's status;
+    // - while the active tap is armed, the grant is re-checked with a probe tap once a second and
+    //   whenever WhisperMeet comes to the front;
+    // - every branch that cannot vouch for the tap arms listen-only until WhisperMeet next comes to
+    //   the front: a loss the system calls "user input", and a third loss since the last time.
+
+    /// Whether an active tap can be created now. Tests assign it; none creates a real probe tap.
+    var activeTapProbe: () -> Bool = { HotkeyMonitor.canCreateActiveTap() }
+    /// The pause between probes while the active tap is armed. Tests step it by hand.
+    var activeTapCheckSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    static let activeTapCheckInterval: Duration = .seconds(1)
+    /// Losses of the active tap since WhisperMeet last came to the front, at which the trigger stops
+    /// trying to hold the key back.
+    static let triggerTapLossLimit = 3
+    private var triggerTapLosses = 0
+    private var activeTapCheck: Task<Void, Never>?
+    private var activeTapCheckGeneration = 0
+
     /// True while dictation owns the microphone/result path or is retiring a resident model. Used by
     /// `AppModel` to avoid microphone and large-model contention with meeting recording.
     var isActive: Bool {
@@ -248,15 +275,16 @@ final class DictationController: ObservableObject {
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
         hotkeyMonitor.onPressCancel = { [weak self] in self?.handlePressCancel() }
-        // F523. NSApplication posts this on the main thread, so the retry runs before `post`
+        hotkeyMonitor.onTriggerTapLost = { [weak self] loss in self?.handleTriggerTapLost(loss) }
+        // F523, F547. NSApplication posts this on the main thread, so the retry runs before `post`
         // returns; the hop covers anything that posts it from elsewhere.
         activationObserver = activationNotifications.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: nil
         ) { [weak self] _ in
             if Thread.isMainThread {
-                MainActor.assumeIsolated { self?.retryFailedHotkey() }
+                MainActor.assumeIsolated { self?.applicationBecameActive() }
             } else {
-                Task { @MainActor in self?.retryFailedHotkey() }
+                Task { @MainActor in self?.applicationBecameActive() }
             }
         }
         if activateOnInit {
@@ -570,6 +598,7 @@ final class DictationController: ObservableObject {
                 hotkeyMonitor.resetToggleState()
             }
         }
+        updateActiveTapCheck()
         guard session.state == .idle else { return }
         status = settledStatus
     }
@@ -640,6 +669,72 @@ final class DictationController: ObservableObject {
         hotkeyTapFailed || (hotkeyMonitor.isArmedWithoutHoldingBack && session.state == .idle)
     }
 
+    /// WhisperMeet came to the front (F523, F547). An armed active tap is re-checked; a trigger that
+    /// failed, or is listen-only, is retried — and a trigger that was made listen-only because its
+    /// active tap could not be vouched for may hold the key back again, since coming to the front is
+    /// the user's own step back into the app.
+    func applicationBecameActive() {
+        triggerTapLosses = 0
+        hotkeyMonitor.mayHoldTriggerBack = true
+        if hotkeyMonitor.isHoldingTriggerBack {
+            checkActiveTap()
+        } else {
+            retryFailedHotkey()
+        }
+    }
+
+    /// The system disabled the F-key trigger's active tap (F547). The monitor has already dispatched
+    /// the edge the tap missed. Re-armed through `applyHotkeyStart`, so the new tap is created from
+    /// scratch and refused without the grant; a loss the system attributes to user input, or a third
+    /// loss since WhisperMeet last came to the front, re-arms listen-only instead.
+    private func handleTriggerTapLost(_ loss: TriggerTapLoss) {
+        guard enabled else { return }
+        triggerTapLosses += 1
+        if loss == .userInput || triggerTapLosses >= Self.triggerTapLossLimit {
+            hotkeyMonitor.mayHoldTriggerBack = false
+        }
+        log.notice("the trigger's active tap was disabled (\(String(describing: loss), privacy: .public), loss \(self.triggerTapLosses, privacy: .public)); re-arming")
+        applyHotkeyStart()
+    }
+
+    /// Re-arms the trigger if an active tap can no longer be created (F547): Accessibility was
+    /// revoked or the app removed from the list, perhaps with no disable event at all. The re-arm's
+    /// own `tapCreate` then fails too, so the trigger falls back to listen-only or fails.
+    private func checkActiveTap() {
+        guard enabled, hotkeyMonitor.isHoldingTriggerBack, !activeTapProbe() else { return }
+        log.error("an active tap can no longer be created; re-arming the trigger without it")
+        applyHotkeyStart()
+    }
+
+    /// Runs `checkActiveTap` once a second while the active tap is armed, and only then (F547).
+    /// Called after every arm and on disable.
+    private func updateActiveTapCheck() {
+        guard enabled, hotkeyMonitor.isHoldingTriggerBack else {
+            activeTapCheck?.cancel()
+            activeTapCheck = nil
+            return
+        }
+        guard activeTapCheck == nil else { return }
+        activeTapCheckGeneration &+= 1
+        let generation = activeTapCheckGeneration
+        activeTapCheck = Task { @MainActor [weak self] in
+            while true {
+                // A re-arm inside `checkActiveTap` can cancel this very task; stop before pausing.
+                guard !Task.isCancelled, let pause = self?.activeTapCheckSleep else { return }
+                do { try await pause(Self.activeTapCheckInterval) } catch { return }
+                guard let self, !Task.isCancelled, self.activeTapCheckGeneration == generation else { return }
+                guard self.enabled, self.hotkeyMonitor.isHoldingTriggerBack else {
+                    self.activeTapCheck = nil
+                    return
+                }
+                self.checkActiveTap()
+            }
+        }
+    }
+
+    /// Whether the once-a-second check of the active tap is running.
+    var isCheckingActiveTap: Bool { activeTapCheck != nil }
+
     private func apply() {
         if enabled {
             ensureHelperInstalled()
@@ -653,6 +748,7 @@ final class DictationController: ObservableObject {
             hotkeyTapFailed = false
             accessibilityPoll?.cancel()
             accessibilityPoll = nil
+            updateActiveTapCheck()
             recorder.cancel()             // never leave the mic hot after the user disables dictation
             captureWatchdog.cancel()
             dismissWorkItem?.cancel()
@@ -808,6 +904,7 @@ final class DictationController: ObservableObject {
     deinit {
         if let activationObserver { activationNotifications.removeObserver(activationObserver) }
         accessibilityPoll?.cancel()
+        activeTapCheck?.cancel()
         hotkeyMonitor.stop()
         engine.shutdown()
         refiner.shutdown()

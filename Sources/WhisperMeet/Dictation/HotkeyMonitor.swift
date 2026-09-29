@@ -21,10 +21,36 @@ protocol HotkeyMonitoring: AnyObject {
     /// was refused — Accessibility missing, Input Monitoring granted — is heard by the listen-only
     /// tap and still reaches the app in front. Worth arming again once Accessibility is granted.
     var isArmedWithoutHoldingBack: Bool { get }
+    /// An F-key trigger's active tap is armed and holding the key back (F547). While it is, the
+    /// controller keeps checking that Accessibility still allows it.
+    var isHoldingTriggerBack: Bool { get }
+    /// Whether `start` may create the active tap at all (F547). Turned off after a loss nobody can
+    /// vouch for, so `start` arms listen-only, the safe direction: a listen-only tap never makes a
+    /// key wait on it.
+    var mayHoldTriggerBack: Bool { get set }
+    /// The system disabled the active tap (F547). Called on the main queue after the edge the tap
+    /// missed has been dispatched. The owner re-arms through `start`; nothing re-enables the old tap.
+    var onTriggerTapLost: ((TriggerTapLoss) -> Void)? { get set }
 }
 
 extension HotkeyMonitoring {
     var isArmedWithoutHoldingBack: Bool { false }
+    var isHoldingTriggerBack: Bool { false }
+    var mayHoldTriggerBack: Bool {
+        get { true }
+        set {}
+    }
+    var onTriggerTapLost: ((TriggerTapLoss) -> Void)? {
+        get { nil }
+        set {}
+    }
+}
+
+/// Why the system disabled an F-key trigger's active tap (F547): its callback did not answer in
+/// time, or "user input", which CGEventTypes.h names and does not explain.
+enum TriggerTapLoss: Equatable {
+    case timeout
+    case userInput
 }
 
 /// Global push-to-talk listener backed by a CGEventTap. Detects the configured key's down/up
@@ -36,8 +62,10 @@ extension HotkeyMonitoring {
 /// gets an active tap that holds the key back from the app in front while dictation is armed —
 /// under the listen-only tap an F-key held to talk in Terminal typed an escape sequence per
 /// autorepeat, and F6/F7 stepped Xcode's debugger. That tap runs on its own thread
-/// (`TriggerTapThread`): an active tap holds every key event in the session until its callback
-/// answers, and on the main run loop a busy main thread would have stalled typing in every app.
+/// (`TriggerTapThread`): an active tap holds every key-down and key-up in the session until its
+/// callback answers, and on the main run loop a busy main thread would have stalled typing in every
+/// app. It is never re-enabled once the system disables it, and the controller re-checks that
+/// Accessibility still allows it; see `triggerTapWasDisabled` and `canCreateActiveTap`.
 final class HotkeyMonitor: HotkeyMonitoring {
     var onPressStart: (() -> Void)?
     var onPressEnd: (() -> Void)?
@@ -58,6 +86,9 @@ final class HotkeyMonitor: HotkeyMonitoring {
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
     /// An F-key trigger fell back to the listen-only tap (F547).
     private(set) var isArmedWithoutHoldingBack = false
+    var mayHoldTriggerBack = true
+    var isHoldingTriggerBack: Bool { triggerTap != nil }
+    var onTriggerTapLost: ((TriggerTapLoss) -> Void)?
     private var hotkey: DictationHotkey = .rightOption
     private var keyDown = false       // physical down-state of the configured hotkey key
     private var toggledOn = false     // (toggle mode) whether dictation is currently on
@@ -105,10 +136,14 @@ final class HotkeyMonitor: HotkeyMonitoring {
         removeTap()
         adopt(hotkey)
         if Self.tapKind(for: hotkey) == .holdsTriggerBack {
-            if startTriggerTap(keyCode: hotkey.keyCode) { return true }
+            if mayHoldTriggerBack, startTriggerTap(keyCode: hotkey.keyCode) { return true }
             // Without it the trigger still works, listen-only as before F547; it just also reaches
             // the app in front. Never a dead key because the better tap was refused.
-            log.error("the F-key trigger's active tap could not be created; listening only")
+            if mayHoldTriggerBack {
+                log.error("the F-key trigger's active tap could not be created; listening only")
+            } else {
+                log.notice("the F-key trigger is armed listen-only until WhisperMeet comes to the front")
+            }
         }
         let fellBack = Self.tapKind(for: hotkey) == .holdsTriggerBack
         let mask: CGEventMask =
@@ -198,9 +233,6 @@ final class HotkeyMonitor: HotkeyMonitoring {
             context.release() // no tap, so no callback can hold it
             return false
         }
-        // Set before the source is added: the tap thread reads it only from callbacks, which cannot
-        // run before then.
-        context.takeUnretainedValue().port = port
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else {
             CFMachPortInvalidate(port)
             context.release() // never added to a run loop, so no callback can hold it
@@ -215,19 +247,23 @@ final class HotkeyMonitor: HotkeyMonitoring {
     }
 
     /// The F-key trigger's tap callback (F547), on `TriggerTapThread`. It must stay trivially cheap:
-    /// every key event in the session waits on its answer. It reads two integer fields and the
-    /// flags, updates `TriggerKeyFilter` (a few comparisons, no lock), and hands the monitor an edge
-    /// with at most one `DispatchQueue.main.async`, only for the trigger key; it never waits on the
-    /// main thread. Returning nil deletes the event (CGEventTypes.h, `CGEventTapCallBack`).
-    /// Internal so a test can call it with a real `CGEvent` and no tap.
+    /// every key-down and key-up in the session waits on its answer (the mask has nothing else). It
+    /// reads two integer fields and the flags, updates `TriggerKeyFilter` (a few comparisons, no
+    /// lock), and hands the monitor an edge with at most one `DispatchQueue.main.async`, only for
+    /// the trigger key; it never waits on the main thread. Returning nil deletes the event
+    /// (CGEventTypes.h, `CGEventTapCallBack`). Internal so a test can call it with a real
+    /// `CGEvent` and no tap.
     static let triggerTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let context = Unmanaged<TriggerTapContext>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            // The system disabled the tap, so the key reached the app meanwhile, and an edge may
-            // have gone unheard. Re-enable, and let the monitor read the key as F446 does.
-            if let port = context.port { CGEvent.tapEnable(tap: port, enable: true) }
-            DispatchQueue.main.async { context.monitor?.recoverFromDisabledTap() }
+            // Never re-enabled here. An active tap re-enabled from its own callback is the shape
+            // that froze the whole keyboard in other apps when Accessibility was revoked: the
+            // system disables the tap, the callback puts it straight back, and every key waits on
+            // it again (deskflow #9562, slovo #73). Disabled, it blocks nothing; the monitor's
+            // owner re-arms through `start`, whose new `tapCreate` is the check that counts.
+            let loss: TriggerTapLoss = type == .tapDisabledByUserInput ? .userInput : .timeout
+            DispatchQueue.main.async { context.monitor?.triggerTapWasDisabled(context, loss) }
             return Unmanaged.passUnretained(event)
         }
         let verdict = context.filter.verdict(
@@ -242,6 +278,39 @@ final class HotkeyMonitor: HotkeyMonitoring {
             DispatchQueue.main.async { context.monitor?.handleTriggerKey(keyCode, down: down) }
         }
         return verdict.consume ? nil : Unmanaged.passUnretained(event)
+    }
+
+    /// The system disabled the F-key trigger's active tap (F547). The key may have been pressed or
+    /// released meanwhile, so first that edge is read from the key and dispatched (F446); then the
+    /// owner is told, and re-arms through `start` — a new `tapCreate` rather than a re-enable, so
+    /// without the grant it comes back NULL and the trigger falls back to listen-only or fails. A
+    /// tap already replaced reports nothing.
+    func triggerTapWasDisabled(_ context: TriggerTapContext, _ loss: TriggerTapLoss) {
+        guard context.isCurrent else { return }
+        recoverFromDisabledTap()
+        onTriggerTapLost?(loss)
+    }
+
+    /// Whether an active keyboard tap can be created now (F547): the check that Accessibility still
+    /// allows the armed one. CGEvent.h: a tap not permitted to see key events has those bits
+    /// cleared, and an empty mask returns NULL — so a key-down-only active tap is refused without the
+    /// grant. `AXIsProcessTrusted()` is not used: it has been reported to stay true when the app is
+    /// removed from the Accessibility list rather than unchecked (Apple Developer Forums 735204).
+    /// The probe is placed after every other tap, disabled and invalidated at once, and never added
+    /// to a run loop. Tests never call it; `DictationController.activeTapProbe` is the seam.
+    static func canCreateActiveTap() -> Bool {
+        let passThrough: CGEventTapCallBack = { _, _, event, _ in Unmanaged.passUnretained(event) }
+        guard let probe = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .defaultTap,
+            eventsOfInterest: 1 << CGEventType.keyDown.rawValue,
+            callback: passThrough,
+            userInfo: nil
+        ) else { return false }
+        CGEvent.tapEnable(tap: probe, enable: false)
+        CFMachPortInvalidate(probe)
+        return true
     }
 
     /// An F-key trigger's press or release, as its tap forwarded it (F547). A tap replaced since it
@@ -262,6 +331,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
         isArmedWithoutHoldingBack = false
         if let triggerTap {
             let loop = TriggerTapThread.runLoop
+            triggerTap.context.takeUnretainedValue().isCurrent = false
             CFRunLoopRemoveSource(loop, triggerTap.source, .commonModes)
             CGEvent.tapEnable(tap: triggerTap.port, enable: false)
             CFMachPortInvalidate(triggerTap.port)
@@ -482,12 +552,13 @@ struct TriggerKeyFilter: Equatable {
 }
 
 /// What an F-key trigger's tap knows (F547). `filter` is read and written only by the tap's
-/// callback, on the tap thread; `monitor` is read only on the main queue; `port` is written once on
-/// the main thread before the tap's source is added, and read by the callback after.
+/// callback, on the tap thread; `monitor` and `isCurrent` are read and written only on the main
+/// queue.
 final class TriggerTapContext: @unchecked Sendable {
     var filter: TriggerKeyFilter
-    var port: CFMachPort?
     weak var monitor: HotkeyMonitor?
+    /// False once the monitor has removed this context's tap, so a loss it reported late is ignored.
+    var isCurrent = true
 
     init(keyCode: UInt16, monitor: HotkeyMonitor?) {
         filter = TriggerKeyFilter(keyCode: keyCode)
