@@ -127,9 +127,10 @@ func segmentReRunSlicesPastAListChunk() async throws {
 // F581 — F471 stopped slicing a stereo, 24-bit or float import as if it were 16-bit mono (wrong
 // audio, spliced in silently) by refusing it: "Re-transcribe this segment" was unavailable on those
 // meetings. The segment's span is now decoded and written as 16-bit mono at the recording's own rate,
-// and the engine runs on that. The fixtures put the audio in the SECOND second only, and for stereo in
-// the RIGHT channel only: a clip cut from the wrong place is silent, and a conversion that keeps
-// channel 0 instead of mixing (F398's trap) is silent too.
+// and the engine runs on that. The fixtures put the audio in the SECOND second only, and with more than
+// one channel in the LAST channel only: a clip cut from the wrong place is silent, a conversion that
+// keeps channel 0 instead of mixing (F398's trap) is silent too, and so is a converter that drops
+// every channel of an unlabelled 3+-channel layout (the lane-D review's finding).
 
 /// One frame of `channels` channels, the last one carrying `value` and the others silent, encoded as
 /// `bits`-bit integer PCM or (formatTag 3) 32-bit float.
@@ -150,6 +151,10 @@ func segmentReRunTranscodesLayoutsItCannotSlice() async throws {
         // The WAVE_FORMAT_EXTENSIBLE wrapper, which ffmpeg and many recorders write past 16 bits or
         // two channels, and which F471's ticket names.
         (2, 24, false, true), (2, 32, true, true),
+        // More than two channels in a PLAIN header — no speaker mask, so AVAudioFile reports a
+        // discrete, unlabelled layout, and an `AVAudioConverter` asked to downmix that returned all
+        // zeros (the lane-D review's probe). The tone is in the last channel, as everywhere here.
+        (3, 24, false, false), (4, 16, false, false),
     ]
     for layout in layouts {
         let label = Comment(rawValue: "\(layout.channels) ch, \(layout.bits)-bit\(layout.float ? " float" : "")"
@@ -188,8 +193,8 @@ func segmentReRunTranscodesLayoutsItCannotSlice() async throws {
         #expect(header.sampleRate == 16_000, "the recording's own rate — \(label)")
         let clipSamples = samples(in: clip.dropFirst(Int(header.dataOffset)))
         #expect(clipSamples.count == 16_000, "exactly the one second of the segment — \(label)")
-        // Every sample from the tone, none from the silence either side; and for stereo, the right
-        // channel mixed in rather than dropped with channel 0's silence.
+        // Every sample from the tone, none from the silence either side; and with several channels,
+        // the last one mixed in rather than dropped.
         #expect(clipSamples.allSatisfy { $0 > 0 }, label)
         #expect(Set(clipSamples).count == 1, label)
     }

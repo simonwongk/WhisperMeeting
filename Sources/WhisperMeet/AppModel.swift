@@ -2523,20 +2523,28 @@ final class AppModel: ObservableObject {
         return url
     }
 
-    /// A segment clip from a WAV that cannot be byte-sliced — stereo, 24- or 32-bit, float, or the
-    /// WAVE_FORMAT_EXTENSIBLE wrapper (F581). Decodes just the segment's frames with AVFoundation,
-    /// mixes every channel into one (`MonoDownmixConverter`: a plain converter would keep channel 0
-    /// and drop the rest, F398), and writes 16-bit mono at the recording's own rate — the layout
-    /// `makeSegmentClip` writes for a native recording, which every engine already takes. The
-    /// recording is opened for reading only; the clip goes to a fresh temp file, as before.
+    /// A segment clip from a WAV that cannot be byte-sliced — more than one channel, 24- or 32-bit,
+    /// float, or the WAVE_FORMAT_EXTENSIBLE wrapper (F581). Decodes just the segment's frames with
+    /// AVFoundation, averages every channel into one, and writes 16-bit mono at the recording's own
+    /// rate — the layout `makeSegmentClip` writes for a native recording, which every engine already
+    /// takes. The recording is opened for reading only; the clip goes to a fresh temp file, as before.
+    ///
+    /// **The channels are averaged here, by hand, not by an `AVAudioConverter`.** The first version
+    /// used `MonoDownmixConverter`, which does mix stereo and a speaker-labelled layout. But a WAV
+    /// with three or more channels and a plain `fmt ` (no WAVE_FORMAT_EXTENSIBLE speaker mask) opens
+    /// with a discrete, unlabelled channel layout, and the converter turned that into an all-zero
+    /// clip: the engine ran on silence, and its guess was spliced in or "no timestamped text" was
+    /// reported — F471's "wrong audio, nothing said", which the refusal this replaced had prevented.
+    /// Averaging the decoded float channels has no layout to misread. (The same converter in capture
+    /// and dictation is F659.)
     ///
     /// Refused, as F471 refused every such file, only when AVFoundation cannot decode the format at
     /// all. The span is bounded exactly as a byte slice is (`SegmentAudioRange.frameRange`), so a
     /// timestamp past the end is refused here too rather than decoded to the end of the file (F416).
     ///
     /// The one raise the SDK headers name on this path is `AVAudioPCMBuffer`'s initializer, for a
-    /// non-PCM format (`AVAudioBuffer.h`); both formats here are PCM — a file's processing format is
-    /// always deinterleaved float, and the target is built as Int16 below.
+    /// non-PCM format (`AVAudioBuffer.h`); a file's processing format is always PCM — deinterleaved
+    /// float, which is also why `floatChannelData` is there to average.
     static func decodedSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
         let file: AVAudioFile
         do {
@@ -2545,9 +2553,8 @@ final class AppModel: ObservableObject {
             throw SegmentReRunError.unsupportedAudioLayout
         }
         let source = file.processingFormat
-        guard source.sampleRate > 0, source.channelCount > 0,
-              let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: source.sampleRate,
-                                         channels: 1, interleaved: true) else {
+        let channels = Int(source.channelCount)
+        guard source.sampleRate > 0, channels > 0 else {
             throw SegmentReRunError.unsupportedAudioLayout
         }
         let frames = try SegmentAudioRange.frameRange(
@@ -2556,8 +2563,7 @@ final class AppModel: ObservableObject {
         )
         // `AVAudioFrameCount` is 32-bit: a span past `UInt32.max` frames (about a day at 48 kHz) is
         // refused rather than truncated.
-        guard let count = AVAudioFrameCount(exactly: frames.count),
-              let converter = MonoDownmixConverter.make(from: source, to: target) else {
+        guard let count = AVAudioFrameCount(exactly: frames.count) else {
             throw SegmentReRunError.unsupportedAudioLayout
         }
         var pcm = Data()
@@ -2574,13 +2580,18 @@ final class AppModel: ObservableObject {
                     throw SegmentReRunError.unsupportedAudioLayout
                 }
                 try file.read(into: decoded, frameCount: pass)
-                guard decoded.frameLength > 0,
-                      let mono = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: decoded.frameLength) else { break }
-                // Same rate on both sides, so the simple conversion applies (`AVAudioConverter.h`:
-                // no codec, no sample-rate conversion).
-                try converter.convert(to: mono, from: decoded)
-                guard let samples = mono.int16ChannelData else { throw SegmentReRunError.unreadableRecording }
-                pcm.append(Data(bytes: samples[0], count: Int(mono.frameLength) * MemoryLayout<Int16>.size))
+                let length = Int(decoded.frameLength)
+                guard length > 0 else { break }
+                guard let channelData = decoded.floatChannelData else { throw SegmentReRunError.unreadableRecording }
+                var mono = [Int16](repeating: 0, count: length)
+                let scale = 1 / Float(channels)
+                for frame in 0..<length {
+                    var sum: Float = 0
+                    for channel in 0..<channels { sum += channelData[channel][frame] }
+                    // NaN becomes silence and ±∞ the rail, not a trap (F354).
+                    mono[frame] = Int16(clampedAudioSample: sum * scale)
+                }
+                mono.withUnsafeBytes { pcm.append(contentsOf: $0) }
                 remaining -= min(remaining, decoded.frameLength)
             }
         } catch let error as SegmentReRunError {
