@@ -4,14 +4,16 @@ import Testing
 import WhisperCore
 @testable import WhisperMeet
 
-/// F601, part 2 — F516 read the whole clipboard synchronously on the main actor between writing
-/// the transcript and posting ⌘V, with no size limit: every representation of whatever the user had
-/// copied, produced on demand if the owner provides it lazily, on the run loop that also hosts the
-/// hotkey tap. Measured 2026-09-28 with a 4032 × 3024 image offered lazily by another process as TIFF
-/// and PNG: the first read took 2,531 ms (TIFF 104 ms, PNG 2,412 ms) and copied 88.8 MB; offered
-/// eagerly, 22 ms. Both are more than a frame or two, so F425's off-main read and 32 MiB cap come
-/// back — the read starts when the dictation does, and is used at paste time only while the
-/// clipboard is provably the same (`changeCount`), so F516's "the clipboard at paste time" holds.
+/// F601, part 2 — F516 read the whole clipboard synchronously on the main actor at paste time, just
+/// before writing the transcript and posting ⌘V, with no size limit: every representation of
+/// whatever the user had copied, produced on demand if the owner provides it lazily, on the run
+/// loop that also hosts the hotkey tap. Measured 2026-09-28 with a 4032 × 3024 image offered by
+/// another process as TIFF and PNG: offered lazily, the first read took 2,531 ms (TIFF 104 ms, PNG
+/// 2,412 ms) and copied 88.8 MB — about 150 frames at 60 Hz, far past the ticket's "a frame or two";
+/// offered eagerly, 22 ms, 1.3 frames, under that threshold though it still copied 88.8 MB. The lazy
+/// case decided it: F425's off-main read and 32 MiB cap come back — the read starts when the
+/// dictation does, and is used at paste time only while the clipboard is provably the same
+/// (`changeCount`), so F516's "the clipboard at paste time" holds.
 ///
 /// Private pasteboards, a counter for ⌘V, a scheduler fired by hand, and a snapshot reader that
 /// records which thread it ran on. The one wait is on the read's own task, required to exist.

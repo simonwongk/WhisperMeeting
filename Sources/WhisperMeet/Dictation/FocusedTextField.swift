@@ -76,17 +76,20 @@ enum FocusedTextField {
 
     /// A text field is one of the standard text roles, or anything exposing a text selection —
     /// which is how a web or Electron editor (a contenteditable) presents itself once its
-    /// accessibility tree exists — unless it is shown to be read-only (F601).
+    /// accessibility tree exists.
     ///
-    /// Read-only takes both of `AXUIElementIsAttributeSettable`'s answers, for the value and for
-    /// the selected text, saying "no". A read-only text view — a console or log pane — says so for
-    /// both, and a paste into it inserts nothing, so its clipboard must not be given back over the
-    /// transcript. One "no" is not enough: AXAttributeConstants.h lets an editable element's value
-    /// be unsettable "if some other form of direct manipulation is more appropriate", which a
-    /// terminal's may well be. No answer is not enough either. In doubt it stays a text field,
-    /// because the two mistakes are not equal: a read-only pane taken for a field loses the
-    /// transcript from the clipboard, where it is still in the history; a field taken for a
-    /// read-only pane loses the user's own clipboard, which is nowhere else.
+    /// Read-only (F601) is read but, for now, only logged: an element for which
+    /// `AXUIElementIsAttributeSettable` says "no" for both the value and the selected text is marked
+    /// "(read-only)" in the summary and still counts as a text field. A read-only console or log
+    /// pane answers that way, and acting on it would stop its clipboard being restored over the
+    /// transcript. But the lane J review found Ghostty's terminal view implements only the getters
+    /// for both attributes and iTerm2's only a selection-range setter, and showed in-process that
+    /// AppKit reports a getters-only view as settable for neither — so these two answers cannot
+    /// tell a terminal from a log pane. The two mistakes are not equal: a read-only pane taken for a
+    /// field loses the transcript from the clipboard, where it is still in the history; a terminal
+    /// taken for a read-only pane loses the user's own clipboard, which is nowhere else. Until the
+    /// on-screen check (F174) records what Terminal, iTerm2 and Ghostty really answer, the reading
+    /// decides nothing.
     static func probe(reading: Reading) -> Probe {
         let name = reading.bundleIdentifier ?? "unknown app"
         var summary = "\(name): no focused element visible"
@@ -97,7 +100,7 @@ enum FocusedTextField {
             let textRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"]
             let isReadOnly = focused.valueSettable == false && focused.selectedTextSettable == false
             summary = "\(name) \(role)\(isReadOnly ? " (read-only)" : "")"
-            isTextField = (textRoles.contains(role) || focused.hasSelectedTextRange) && !isReadOnly
+            isTextField = textRoles.contains(role) || focused.hasSelectedTextRange
             isPasswordField = focused.subrole == kAXSecureTextFieldSubrole
         }
         if reading.secureEventInput {

@@ -212,8 +212,10 @@ Codable request/response + **newline-delimited JSON** framing for the helper's s
   paste time: since F601 it is read off the main thread when the dictation starts, capped at
   32 MiB, and used only if the clipboard's `changeCount` has not moved; otherwise it is read again
   at paste time. (A lazily provided 12 MP image took 2.5 s to read, measured 2026-09-28.) A focused
-  element Accessibility reports as read-only — value and selected text both unsettable — is not a
-  text field (F601). When no text field has focus the transcript is still pasted but left on the
+  element Accessibility reports as read-only — value and selected text both unsettable — is marked
+  "(read-only)" in the log but still counts as a text field (F601): terminals such as Ghostty and
+  iTerm2 probably answer the same way, so it decides nothing until the on-screen check (F174) has
+  real readings. When no text field has focus the transcript is still pasted but left on the
   clipboard as an ordinary copy — the user's rule: only a dictation that went into no text field
   stays on the clipboard. Clipboard-only delivery
   leaves it there because that is the delivery. Why paste rather than an Accessibility write or

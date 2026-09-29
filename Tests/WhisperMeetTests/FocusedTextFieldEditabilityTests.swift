@@ -4,15 +4,20 @@ import Foundation
 import Testing
 @testable import WhisperMeet
 
-/// F601, part 1 — F516's probe counted any element with a text role, or any element answering
+/// F601, part 1 — F516's probe counts any element with a text role, or any element answering
 /// `kAXSelectedTextRangeAttribute`, as a text field. A focused read-only `AXTextArea` (a console or
-/// log pane) is both, so ⌘V inserted nothing, the pill said "Pasted", and 1.5 s later the user's old
-/// clipboard was put back over the transcript — the one case F516's rule exists to prevent.
+/// log pane) is both, so ⌘V inserts nothing, the pill says "Pasted", and 1.5 s later the user's old
+/// clipboard is put back over the transcript.
 ///
-/// Read-only takes positive evidence: `AXUIElementIsAttributeSettable` answering "no" for both the
-/// value and the selected text. AXAttributeConstants.h allows an editable element's value to be
-/// unsettable ("it does not need to be writable if some other form of direct manipulation is more
-/// appropriate"), so one "no", or no answer, leaves the element a text field.
+/// The probe reads `AXUIElementIsAttributeSettable` for the value and the selected text, and marks an
+/// element answering "no" to both as "(read-only)" in the diagnostic log — but, after the lane J
+/// review, does NOT act on it. Ghostty's terminal view implements only the getters for both
+/// attributes and iTerm2's only a selection-range setter, and the review's in-process stand-in showed
+/// AppKit reports a getters-only view as settable for neither: the same answer a read-only
+/// `NSTextView` gives. Acting on it would most likely stop every dictation into those terminals from
+/// giving the clipboard back — the worse of the two mistakes, since the user's own clipboard is
+/// nowhere else. So the reading is logged until the F174 check records what Terminal, iTerm2 and
+/// Ghostty really answer, and these tests pin that it changes nothing yet.
 
 private func reading(valueSettable: Bool?, selectedTextSettable: Bool?, role: String = kAXTextAreaRole) -> FocusedTextField.Reading {
     FocusedTextField.Reading(
@@ -25,32 +30,37 @@ private func reading(valueSettable: Bool?, selectedTextSettable: Bool?, role: St
     )
 }
 
-@Test("A read-only text area is not a text field (F601)")
-func aReadOnlyTextAreaIsNotATextField() {
-    #expect(!FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: false)).isTextField)
-    // Not a text role, only a selection — a web page's document, say — read-only as well.
-    #expect(!FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: false, role: "AXWebArea")).isTextField)
+@Test("A read-only reading is logged but does not yet change what counts as a text field (F601)")
+func aReadOnlyReadingIsLoggedOnly() {
+    let probe = FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: false))
+    #expect(probe.isTextField)
+    #expect(probe.summary.contains("(read-only)"))
+    let webArea = FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: false, role: "AXWebArea"))
+    #expect(webArea.isTextField)
+    #expect(webArea.summary.contains("(read-only)"))
 }
 
-@Test("An editable text area, or one Accessibility gives no clear answer for, is still a text field (F601)")
+@Test("An editable text area, or one Accessibility gives no clear answer for, is a text field and not marked (F601)")
 func anEditableOrUnansweredTextAreaIsATextField() {
-    #expect(FocusedTextField.probe(reading: reading(valueSettable: true, selectedTextSettable: true)).isTextField)
-    #expect(FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: true)).isTextField)
-    #expect(FocusedTextField.probe(reading: reading(valueSettable: true, selectedTextSettable: false)).isTextField)
-    // One "no" and no answer: the value may simply not be the way this element is edited.
-    #expect(FocusedTextField.probe(reading: reading(valueSettable: false, selectedTextSettable: nil)).isTextField)
-    #expect(FocusedTextField.probe(reading: reading(valueSettable: nil, selectedTextSettable: nil)).isTextField)
+    let cases: [(Bool?, Bool?)] = [(true, true), (false, true), (true, false), (false, nil), (nil, nil)]
+    for (value, selectedText) in cases {
+        let probe = FocusedTextField.probe(reading: reading(valueSettable: value, selectedTextSettable: selectedText))
+        #expect(probe.isTextField)
+        #expect(!probe.summary.contains("(read-only)"))
+    }
 }
 
+/// Pins the interim decision end to end, so acting on the reading later is a deliberate change with
+/// its own RED: a dictation into an element read as read-only still gives the clipboard back.
 @MainActor
-@Test("A dictation into a read-only pane is left on the clipboard, not restored over (F601)")
-func aDictationIntoAReadOnlyPaneStaysOnTheClipboard() throws {
+@Test("A dictation where the focused element reads as read-only still gives the clipboard back, for now (F601)")
+func aReadOnlyReadingStillRestoresTheClipboard() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
     board.clearContents()
     board.setString("copied on my phone", forType: .string)
     try #require(board.string(forType: .string) == "copied on my phone", "the private pasteboard does not round-trip a string on this host")
-    var scheduled = 0
+    var restores: [@MainActor () -> Void] = []
     var pasted = 0
     let injector = TextInjector(
         pasteboard: board,
@@ -60,11 +70,12 @@ func aDictationIntoAReadOnlyPaneStaysOnTheClipboard() throws {
             pasted += 1
             return true
         },
-        schedule: { _, _ in scheduled += 1 }
+        schedule: { _, work in restores.append(work) }
     )
 
-    #expect(injector.deliver("dictated words", autoPaste: true) == .pastedUnconfirmed)
+    #expect(injector.deliver("dictated words", autoPaste: true) == .pasted)
     #expect(pasted == 1)
-    #expect(scheduled == 0)
-    #expect(board.string(forType: .string) == "dictated words")
+    try #require(restores.count == 1)
+    restores[0]()
+    #expect(board.string(forType: .string) == "copied on my phone")
 }
