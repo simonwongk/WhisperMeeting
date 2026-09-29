@@ -779,6 +779,7 @@ final class DictationController: ObservableObject {
         var helpers = Self.bundledDictationHelpers(fileManager: files)
         helpers.append(Self.bundledRefineHelper(fileManager: files))
         helpers.append(Self.bundledSummarizeHelper(fileManager: files))
+        helpers.append(Self.bundledCorrectHelper(fileManager: files))
         // The one-shot Qwen meeting helper is read at process launch. Atomic replacement makes
         // readers safe, but defer a nonessential update while an existing meeting pass owns it.
         if !isMeetingTranscriptionRunning() {
@@ -864,6 +865,41 @@ final class DictationController: ObservableObject {
             name: "summarize_local",
             bundledData: bundledData,
             installedScript: SummarizerRuntime.helperScript(applicationSupport: applicationSupport),
+            runtimeInstalled: files.isExecutableFile(atPath: python.path)
+                && files.fileExists(atPath: model.path)
+        )
+    }
+
+    /// The transcript-correction helper (F165) lives in the summarizer runtime, next to
+    /// `summarize_local.py`, but was the one runtime helper this launch sync did not copy (F643): a
+    /// fix to it (F475's context pre-flight and refusal of truncated output) reached an existing
+    /// install only after the summarizer's Repair, while the app's Swift side already expected the
+    /// new payload shape.
+    private static func bundledCorrectHelper(
+        fileManager files: FileManager
+    ) -> DictationHelperSync.Helper {
+        correctHelper(
+            bundledData: Bundle.main.url(forResource: "correct_local", withExtension: "py")
+                .flatMap { try? Data(contentsOf: $0) },
+            fileManager: files
+        )
+    }
+
+    /// The same runtime prerequisites as `summarizeHelper` — the interpreter and the model, since
+    /// correction runs on the summarizer's model — so an interrupted install never gains a lone
+    /// helper script. Internal for the headless sync test.
+    static func correctHelper(
+        bundledData: Data?,
+        applicationSupport: URL? = nil,
+        fileManager files: FileManager = .default
+    ) -> DictationHelperSync.Helper {
+        let python = SummarizerRuntime.pythonExecutable(applicationSupport: applicationSupport)
+        let model = SummarizerRuntime.modelDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent("model.safetensors")
+        return DictationHelperSync.Helper(
+            name: "correct_local",
+            bundledData: bundledData,
+            installedScript: SummarizerRuntime.correctionHelperScript(applicationSupport: applicationSupport),
             runtimeInstalled: files.isExecutableFile(atPath: python.path)
                 && files.fileExists(atPath: model.path)
         )
