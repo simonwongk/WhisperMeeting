@@ -20,6 +20,15 @@ activation_complete=0
 # F520: set only while the new venv sits at the live path unverified — see cleanup_and_restore.
 new_venv_swapped_in=0
 lock_acquired=0
+# The Quick Dictation model's cache, a sibling of Runtime/ (LocalWhisperRuntime.modelDirectory), and
+# the pinned model's directory in it — `models--${dictation_repository//\//--}` below, spelled out
+# here because the reclaim needs it before that block runs (a script test pins the two together).
+hub_directory="${runtime_directory:h}/Models/hf/hub"
+dictation_model_directory_name="models--mlx-community--whisper-large-v3-turbo"
+# Set by the Quick Dictation model's own staged swap below; empty until it starts (cleanup_and_restore).
+dictation_staging=""
+dictation_backup=""
+dictation_target=""
 
 mkdir -p "$runtime_directory"
 
@@ -57,6 +66,16 @@ cleanup_and_restore() {
     mv "$backup_venv" "$venv_target"
   fi
   [[ -d "$staging_venv" ]] && rm -rf "$staging_venv"
+  # F520 (review): the Quick Dictation model is staged and swapped under Models/hf/hub, outside
+  # Runtime/, and this trap used to know nothing of it: a Cancel or Quit during its ~1.5 GB download
+  # left the partial download there for good, and one between moving the old model aside and moving
+  # the new one in left the model only in its backup. Put a displaced model back if its place is
+  # empty, then drop the backup and the staging directory.
+  if [[ -n "$dictation_backup" && -e "$dictation_backup" ]]; then
+    [[ -e "$dictation_target" ]] || mv "$dictation_backup" "$dictation_target"
+    rm -rf "$dictation_backup"
+  fi
+  [[ -n "$dictation_staging" ]] && rm -rf "$dictation_staging"
   [[ "$lock_acquired" -eq 1 ]] && rm -f "$lock_file"
   exit "$exit_status"
 }
@@ -92,6 +111,18 @@ else
   done
 fi
 for abandoned_staging in "$runtime_directory"/.venv-install-*(N); do rm -rf "$abandoned_staging"; done
+# The same for the Quick Dictation model, left by an install whose trap never ran (a power loss): put
+# a displaced model back if its place is empty, and drop partial downloads. Such an install also left
+# its `.venv-install-*` behind — the model is fetched while the staging venv exists — so this runs at
+# launch whenever it is needed, not only at the next install.
+for orphaned_model in "$hub_directory"/.dictation-model-backup-*(N); do
+  if [[ ! -e "$hub_directory/$dictation_model_directory_name" ]]; then
+    mv "$orphaned_model" "$hub_directory/$dictation_model_directory_name"
+  else
+    rm -rf "$orphaned_model"
+  fi
+done
+for abandoned_download in "$hub_directory"/.dictation-model-staging-*(N); do rm -rf "$abandoned_download"; done
 
 # Recovery-only mode (F520): reclaim and stop, as QWEN_/SUMMARIZER_/DIARIZATION_INSTALL_RECOVERY_ONLY
 # do for their runtimes (F33, F167, F219). The app runs this at launch, before it probes the runtime,
@@ -320,9 +351,11 @@ fi
 new_venv_swapped_in=1
 # Re-verify at the LIVE path — the relocated shebangs must actually run — and roll back if not.
 if ! "$venv_target/bin/whisper" --help >/dev/null 2>&1; then
-  # This branch does its own rollback; the trap must not remove what it restores.
-  new_venv_swapped_in=0
   rm -rf "$venv_target"
+  # This branch does its own rollback, and the trap must not remove what it restores — but only
+  # from here: a Cancel during the removal above must still let the trap finish it and restore the
+  # backup, rather than leave a half-deleted venv live (review probe P2).
+  new_venv_swapped_in=0
   if [[ -e "$backup_venv" ]]; then
     mv "$backup_venv" "$venv_target"
     print -u2 "The relocated Local Whisper runtime failed verification; the previous runtime was restored."

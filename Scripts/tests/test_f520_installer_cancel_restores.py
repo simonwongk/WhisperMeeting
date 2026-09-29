@@ -26,6 +26,7 @@ model downloads and curl are stood in for), in its own process group, signalled 
 """
 
 import os
+import re
 import shutil
 import unittest
 
@@ -102,6 +103,117 @@ class WhisperCancelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(harness.read(os.path.join(self.venv, "MARKER")), "old")
         self.assertFalse(os.path.exists(self.sandbox.log), "recovery-only mode ran the interpreter")
+
+    def test_a_cancel_during_a_failed_verifications_rollback_still_restores(self):
+        """Review probe P2: the relocated venv fails its `whisper --help`, and the Cancel lands while
+        the rollback is removing it. The flag that tells the trap an unverified venv is live was
+        cleared before that removal, so the trap left a half-deleted new venv live and the working
+        one in a hidden backup."""
+        harness.write_executable(
+            os.path.join(self.sandbox.shims, "rm"),
+            "#!/bin/sh\n"
+            'if [ "$1" = "-rf" ] && [ "$2" = "%s" ] && [ ! -e "$FAKE_BLOCK_MARKER" ]; then\n'
+            '  /bin/rm -f "$2/bin/whisper"; echo rm > "$FAKE_BLOCK_MARKER"; sleep 60\n'
+            "fi\n"
+            'exec /bin/rm "$@"\n' % self.venv,
+        )
+        returncode, stderr = self.sandbox.run_and_terminate_group(
+            self.runtime,
+            "rollback-rm",
+            FAKE_WHISPER_FAIL_CALL=2,
+            FAKE_WHISPER_COUNT=os.path.join(self.sandbox.root, "whisper-calls"),
+        )
+        self.assert_restored(returncode, stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.venv, "bin", "whisper")))
+
+
+class WhisperDictationModelCancelTests(unittest.TestCase):
+    """Review probe P1 and the swap after it: the Quick Dictation model is the install's largest
+    single download (~1.5 GB), staged under `Models/hf/hub/.dictation-model-staging-<pid>` — outside
+    `Runtime/`, and unknown to the EXIT trap, so a Cancel or Quit during it leaked the partial
+    download for good; and a kill between moving the old model aside and moving the new one in
+    left the model only in `.dictation-model-backup-<pid>`."""
+
+    def setUp(self):
+        self.sandbox = harness.InstallerSandbox("setup-local-whisper.sh")
+        self.addCleanup(self.sandbox.cleanup)
+        self.runtime = os.path.join(self.sandbox.root, "Runtime")
+        self.venv = os.path.join(self.runtime, "venv")
+        self.hub = os.path.join(self.sandbox.root, "Models", "hf", "hub")
+        self.model = os.path.join(self.hub, "models--mlx-community--whisper-large-v3-turbo")
+        harness.fake_whisper_venv(self.venv, "old", with_mlx_whisper=True, with_yt_dlp=True)
+        _write(os.path.join(self.model, "MARKER"), "old model")
+        # The pinned hashes are what the script checks; `shasum` answers with them.
+        pins = dict(re.findall(r'^(dictation_(?:config|weights)_sha256)="([0-9a-f]{64})"$',
+                               self.sandbox.source, re.MULTILINE))
+        self.assertEqual(len(pins), 2, "the script's pinned hashes moved; update this test")
+        harness.write_executable(
+            os.path.join(self.sandbox.shims, "shasum"),
+            "#!/bin/sh\n"
+            'case "$3" in\n'
+            '  */config.json) echo "%s  $3" ;;\n'
+            '  */weights.safetensors) echo "%s  $3" ;;\n'
+            '  *) exec /usr/bin/shasum "$@" ;;\n'
+            "esac\n" % (pins["dictation_config_sha256"], pins["dictation_weights_sha256"]),
+        )
+
+    def assert_nothing_leaked(self, stderr):
+        self.assertEqual(harness.hidden_entries(self.hub, ".dictation-model-"), [],
+                         "a dictation-model staging or backup directory was left behind\n" + stderr)
+
+    def test_a_cancel_during_the_model_download_leaves_no_partial_download(self):
+        returncode, stderr = self.sandbox.run_and_terminate_group(self.runtime, "download")
+        self.assertEqual(returncode, 130, stderr)
+        self.assert_nothing_leaked(stderr)
+        self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model")
+        self.assertEqual(harness.read(os.path.join(self.venv, "MARKER")), "old")
+
+    def test_a_cancel_between_the_model_swaps_puts_the_old_model_back(self):
+        # Hang the move of the NEW model into place: the old one has just been moved aside.
+        harness.write_executable(
+            os.path.join(self.sandbox.shims, "mv"),
+            "#!/bin/sh\n"
+            'case "$1" in */.dictation-model-staging-*) if [ ! -e "$FAKE_BLOCK_MARKER" ]; then\n'
+            '  echo mv > "$FAKE_BLOCK_MARKER"; sleep 60; fi ;; esac\n'
+            'exec /bin/mv "$@"\n',
+        )
+        returncode, stderr = self.sandbox.run_and_terminate_group(
+            self.runtime, "model-swap", FAKE_DOWNLOAD_SUCCEEDS=1)
+        self.assertEqual(returncode, 130, stderr)
+        self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model",
+                         "the working dictation model was left only in its backup")
+        self.assert_nothing_leaked(stderr)
+
+    def test_a_verified_model_download_replaces_the_old_one(self):
+        """The same shims on the happy path: the pinned model lands and nothing is left over."""
+        result = self.sandbox.run(self.runtime, FAKE_DOWNLOAD_SUCCEEDS="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.model, "MARKER")))
+        self.assertTrue(os.path.isfile(os.path.join(self.model, "refs", "main")))
+        self.assert_nothing_leaked(result.stderr)
+
+    def test_the_reclaims_model_directory_is_the_one_the_download_block_derives(self):
+        """The reclaim runs before the download block defines `dictation_repository`, so it spells
+        the directory out; this keeps the two from drifting."""
+        spelled = re.search(r'^dictation_model_directory_name="([^"]+)"$', self.sandbox.source, re.MULTILINE)
+        repository = re.search(r'^dictation_repository="([^"]+)"$', self.sandbox.source, re.MULTILINE)
+        self.assertIsNotNone(spelled)
+        self.assertIsNotNone(repository)
+        self.assertEqual(spelled.group(1), "models--" + repository.group(1).replace("/", "--"))
+
+    def test_an_interrupted_installs_model_leftovers_are_reclaimed(self):
+        """What a power loss leaves (no trap ran): another PID's staging, and its backup with the
+        live model gone. The reclaim — at launch, or at the next install — puts the model back and
+        removes the rest, under the same lock as everything else it reclaims."""
+        _write(os.path.join(self.hub, ".dictation-model-staging-4242", "blobs", "x.incomplete"), "partial")
+        os.rename(self.model, os.path.join(self.hub, ".dictation-model-backup-4242"))
+        _write(os.path.join(self.runtime, ".venv-install-4242", "bin", "partial"))
+
+        result = self.sandbox.run(self.runtime, WHISPER_INSTALL_RECOVERY_ONLY="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model")
+        self.assert_nothing_leaked(result.stderr)
 
 
 class QwenCancelTests(unittest.TestCase):

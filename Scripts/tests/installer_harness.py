@@ -97,10 +97,11 @@ if args[:2] == ["-m", "pip"]:
         # signal the post-swap verification.
         write_executable(os.path.join(VENV, "bin", "whisper"),
             "#!/bin/sh\n"
-            'if [ -n "$FAKE_WHISPER_BLOCK_CALL" ]; then\n'
+            'if [ -n "$FAKE_WHISPER_COUNT" ]; then\n'
             '  count_file="$FAKE_WHISPER_COUNT"\n'
             '  n=$(cat "$count_file" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$count_file"\n'
             '  if [ "$n" = "$FAKE_WHISPER_BLOCK_CALL" ]; then echo whisper > "$FAKE_BLOCK_MARKER"; sleep 60; fi\n'
+            '  if [ "$n" = "$FAKE_WHISPER_FAIL_CALL" ]; then exit 1; fi\n'
             "fi\n"
             "exit 0\n")
     elif name == "yt-dlp":
@@ -121,8 +122,27 @@ if args[:1] == ["-"]:
     if len(args) > 1:
         # setup-local-whisper.sh's shebang rewrite: run the script's own code for real.
         os.execv(REAL_PYTHON, [REAL_PYTHON, "-"] + args[1:])
-    # A Hugging Face download heredoc. No network in a test: fail like a dead connection.
+    # A Hugging Face download heredoc. Like the real `snapshot_download`, it writes into its cache
+    # directory as it goes — partial blobs first — so a signal mid-download leaves what a real one
+    # would (huggingface_hub's file_download.py writes `blobs/<etag>.incomplete`).
+    stage = os.environ.get("DICTATION_STAGE")
+    if stage:
+        os.makedirs(os.path.join(stage, "blobs"), exist_ok=True)
+        with open(os.path.join(stage, "blobs", "weights.incomplete"), "w", encoding="utf-8") as handle:
+            handle.write("partial download")
     maybe_block("download")
+    if stage and os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
+        # A finished pinned snapshot at the layout the script verifies; `shasum` is shimmed.
+        snapshot = os.path.join(
+            stage, "models--" + os.environ["DICTATION_REPOSITORY"].replace("/", "--"),
+            "snapshots", os.environ["DICTATION_REVISION"],
+        )
+        os.makedirs(snapshot, exist_ok=True)
+        for name in ("config.json", "weights.safetensors"):
+            with open(os.path.join(snapshot, name), "w", encoding="utf-8") as handle:
+                handle.write("new model")
+        sys.exit(0)
+    # No network in a test: fail like a dead connection.
     print("huggingface_hub.errors.LocalEntryNotFoundError: no network in this test", file=sys.stderr)
     sys.exit(1)
 
