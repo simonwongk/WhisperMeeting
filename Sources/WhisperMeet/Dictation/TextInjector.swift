@@ -152,6 +152,11 @@ final class TextInjector {
 
     /// One serial queue, so a read blocked on a slow promise (a phone that has gone out of range)
     /// makes the next dictation's read wait rather than pile a second blocked thread beside it (F425).
+    ///
+    /// Every other read and write of the pasteboard here goes through it too, with `sync` (F657):
+    /// the early read may still be running at paste time, and the main thread must not read,
+    /// clear or write the same pasteboard while the queue is inside `data(forType:)`. Waiting for
+    /// it is no slower than F516's paste-time read on the main thread, which it replaces.
     nonisolated private static let snapshotQueue = DispatchQueue(
         label: "com.whispermeet.dictation.clipboard-snapshot",
         qos: .userInitiated
@@ -164,11 +169,11 @@ final class TextInjector {
     /// F516 made that copy at paste time, on the main actor, and measured nothing. Measured
     /// 2026-09-28 in a separate process: reading a 12-megapixel image another app provides lazily
     /// took 2.5 s, and one it provided eagerly 22 ms — time F516 would spend on the run loop that
-    /// hosts the hotkey tap. Read here, it overlaps the user speaking. At paste time it is used only if the clipboard's `changeCount`
-    /// is still the one it was read under — so the clipboard given back is still the one the user
-    /// had when the paste happened, which is F516's rule; if it changed (an item arriving from the
-    /// iPhone while they spoke), or the read has not come back yet, it is read again then, as F516
-    /// does.
+    /// hosts the hotkey tap. Read here, it overlaps the user speaking. At paste time it is used
+    /// only if the clipboard's `changeCount` is still the one it was read under — so the clipboard
+    /// given back is still the one the user had when the paste happened, which is F516's rule; if
+    /// it changed (an item arriving from the iPhone while they spoke), or the read has not come
+    /// back yet, it is read again then, after the early read has finished (F657).
     func captureWillStart(autoPaste: Bool) -> FocusedTextField.Probe {
         discardClipboardPrefetch()
         let target = target()
@@ -271,17 +276,22 @@ final class TextInjector {
     /// The nspasteboard.org marker for a secret, which clipboard managers neither show nor keep.
     nonisolated static let concealedMarker = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
+    /// Writes on the snapshot queue, so an early read still in flight finishes first (F657).
     private func write(_ text: String, markers: [NSPasteboard.PasteboardType]) {
-        pasteboard.clearContents()
-        let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
-        for marker in markers { item.setData(Data(), forType: marker) }
-        pasteboard.writeObjects([item])
+        let pasteboard = self.pasteboard
+        Self.snapshotQueue.sync {
+            pasteboard.clearContents()
+            let item = NSPasteboardItem()
+            item.setString(text, forType: .string)
+            for marker in markers { item.setData(Data(), forType: marker) }
+            pasteboard.writeObjects([item])
+        }
     }
 
     /// The clipboard as it is now: the early read's answer while the clipboard is provably
     /// unchanged since it began — a refusal included, so a clipboard over the cap is not read a
-    /// second time here — and otherwise a read on this, the main, thread (F601).
+    /// second time here (F601) — and otherwise a read at paste time, on the snapshot queue after
+    /// any early read still on it, so the two never overlap (F657).
     private func clipboardSnapshot(readEarly early: (result: Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>, changeCount: Int)?) -> PasteboardSnapshot? {
         if let early, early.changeCount == pasteboard.changeCount {
             return accept(early.result, when: "when the dictation started")
@@ -290,7 +300,10 @@ final class TextInjector {
             log.notice("clipboard not copied for restore: the system would ask before reading it")
             return nil
         }
-        return accept(readSnapshot(PasteboardHandle(pasteboard: pasteboard), maximumSnapshotBytes), when: "at paste time")
+        let handle = PasteboardHandle(pasteboard: pasteboard)
+        let read = readSnapshot
+        let maximumBytes = maximumSnapshotBytes
+        return accept(Self.snapshotQueue.sync { read(handle, maximumBytes) }, when: "at paste time")
     }
 
     private func accept(_ result: Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>, when: String) -> PasteboardSnapshot? {
@@ -317,9 +330,14 @@ final class TextInjector {
             log.error("clipboard not restored: a saved representation was refused")
             return
         }
-        pasteboard.clearContents()
-        // An empty snapshot is an empty clipboard, which the clear above has already restored.
-        if !staged.isEmpty, !pasteboard.writeObjects(staged) {
+        // On the snapshot queue like every other write (F657).
+        let pasteboard = self.pasteboard
+        let accepted = Self.snapshotQueue.sync {
+            pasteboard.clearContents()
+            // An empty snapshot is an empty clipboard, which the clear above has already restored.
+            return staged.isEmpty || pasteboard.writeObjects(staged)
+        }
+        guard accepted else {
             log.error("clipboard not restored: the pasteboard refused the saved items")
             return
         }

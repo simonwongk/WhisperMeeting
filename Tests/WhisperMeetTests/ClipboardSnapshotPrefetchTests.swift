@@ -135,7 +135,11 @@ func aClipboardChangedAfterTheEarlyReadIsReadAgain() async throws {
     harness.put("copied on my phone while dictating")
 
     #expect(injector.deliver("dictated words", autoPaste: true, pressedIn: pressedIn) == .pasted)
-    #expect(harness.reads.onMain == [false, true])
+    // Read again at paste time. Which thread runs it is GCD's choice since F657 routes it through
+    // the snapshot queue with `sync` ("invokes the block on the current thread when possible"), so
+    // only the early read's thread is asserted.
+    #expect(harness.reads.onMain.count == 2)
+    #expect(harness.reads.onMain.first == false)
     harness.runRestores()
     #expect(harness.text == "copied on my phone while dictating")
 }
