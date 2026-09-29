@@ -5,6 +5,28 @@ import WhisperCore
 /// these, so a test drives two windows' fields through the same calls.
 @MainActor
 enum MeetingFieldSync {
+    enum Field { case title, notes }
+
+    /// Whether a field counts as being edited, so a change from the other window must not be
+    /// written into it (`SharedFieldDraft.libraryChanged(to:isEditingHere:)`).
+    ///
+    /// **The title: focus alone (F675).** A `TextField` with the cursor in it is backed by AppKit's
+    /// field editor, which keeps first responder when its window goes to the background. Re-seeding
+    /// the draft under it may leave the field editor showing the old title, and if that string comes
+    /// back through the binding when editing ends it reads as typing — and the commit writes the old
+    /// title over the rename. Not re-seeding while focused avoids the question; `EditableMeetingTitle`
+    /// catches up in its `commit()` once focus leaves.
+    ///
+    /// **The notes: focused in the key window.** Notes are written through on every keystroke, so a
+    /// background window's notes hold nothing unsaved; following the other window while this one is
+    /// not in front is what keeps its copy current before the user types in it again (F564).
+    nonisolated static func isEditing(_ field: Field, focused: Bool, windowIsActive: Bool) -> Bool {
+        switch field {
+        case .title: focused
+        case .notes: focused && windowIsActive
+        }
+    }
+
     /// The title field's commit: on Return, on focus loss, and when the field goes away. Writes only
     /// what was typed in this field, so a window that never touched the title cannot write an old
     /// one back over a rename made in another window.

@@ -141,6 +141,44 @@ func notesFromOneWindowSurviveTypingInTheOther() throws {
     #expect(windowA.text == "Agenda: budget\nAction: send deck", "window A catches up once it is not being typed in")
 }
 
+// MARK: - F675: a title field with the cursor in it, in a window that is not in front
+
+@MainActor
+@Test("A title with the cursor in it in a background window is not re-seeded, so its field editor cannot write the old title back (F675)")
+func aFocusedTitleInABackgroundWindowKeepsTheRename() throws {
+    let (store, id, root) = try makeStore()
+    defer { store.flushPendingEdits(); try? FileManager.default.removeItem(at: root) }
+    var windowA = SharedFieldDraft(stored: "Weekly sync")
+    var windowB = SharedFieldDraft(stored: "Weekly sync")
+
+    windowA.userTyped("Q3 budget review")
+    MeetingFieldSync.commitTitle(&windowA, store: store, meetingID: id)
+
+    // Window B's title has the cursor, but B is not the key window — the case F564's rule let
+    // through: it re-seeded the draft while AppKit's field editor may still show "Weekly sync".
+    let editing = MeetingFieldSync.isEditing(.title, focused: true, windowIsActive: false)
+    windowB.libraryChanged(to: store.meeting(id: id)?.title ?? "", isEditingHere: editing)
+    // When B's editing ends, SwiftUI may hand the field editor's string back through the setter.
+    windowB.userTyped("Weekly sync")
+    MeetingFieldSync.commitTitle(&windowB, store: store, meetingID: id)
+
+    #expect(store.meeting(id: id)?.title == "Q3 budget review", "the field editor wrote the old title back over the rename")
+    // And once B's commit has run, the field catches up (the view's `commit()` does exactly this).
+    windowB.libraryChanged(to: store.meeting(id: id)?.title ?? "", isEditingHere: false)
+    #expect(windowB.text == "Q3 budget review")
+}
+
+@Test("Focus alone is editing for the title; the notes still follow the other window while theirs is not in front (F675)")
+func focusAloneIsEditingForTheTitle() {
+    #expect(MeetingFieldSync.isEditing(.title, focused: true, windowIsActive: false))
+    #expect(MeetingFieldSync.isEditing(.title, focused: true, windowIsActive: true))
+    #expect(!MeetingFieldSync.isEditing(.title, focused: false, windowIsActive: true))
+    // Notes are written through on every keystroke, so a background window's notes hold nothing
+    // unsaved and follow the other window; F564's notes rule is unchanged.
+    #expect(!MeetingFieldSync.isEditing(.notes, focused: true, windowIsActive: false))
+    #expect(MeetingFieldSync.isEditing(.notes, focused: true, windowIsActive: true))
+}
+
 @Test("The title and notes views run the shared draft, and re-seed from the library when it changes (F564)")
 func theViewsUseTheSharedDraft() throws {
     let content = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
@@ -150,7 +188,12 @@ func theViewsUseTheSharedDraft() throws {
     #expect(title.contains(".onChange(of: store.meeting(id: meetingID)?.title)"))
     #expect(title.contains("draft.libraryChanged("))
     #expect(title.contains("draft.userTyped("), "typing must reach the draft through the binding's setter")
+    // F675: the re-seed asks the shared rule, not a local `focused && windowIsActive`.
+    #expect(title.contains("MeetingFieldSync.isEditing(.title, focused: focused"))
+    #expect(title.contains("isEditingHere: isBeingEdited"))
+    #expect(!title.contains("isEditingHere: focused && windowIsActive"))
 
+    #expect(content.contains("MeetingFieldSync.isEditing(.notes, focused: notesFocused"))
     #expect(content.contains("MeetingFieldSync.typeNotes("))
     #expect(content.contains(".onChange(of: store.meeting(id: meetingID)?.notes)"))
     #expect(content.contains("notesDraft.libraryChanged("))

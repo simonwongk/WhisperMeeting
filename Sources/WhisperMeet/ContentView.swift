@@ -2917,6 +2917,9 @@ private struct TranscriptDetailView: View {
     @State private var notesLoadedFor: UUID?
     @FocusState private var notesFocused: Bool
     @Environment(\.appearsActive) private var windowIsActive
+    private var notesAreBeingEdited: Bool {
+        MeetingFieldSync.isEditing(.notes, focused: notesFocused, windowIsActive: windowIsActive)
+    }
     @StateObject private var copyAck = TransientAcknowledgment(hold: .seconds(1.5))
 
     /// A plain per-meeting scratchpad (agenda / attendee notes), separate from the transcript and the
@@ -2950,9 +2953,9 @@ private struct TranscriptDetailView: View {
                 // Notes typed in another window on this meeting: followed unless the user is
                 // typing here, and caught up when they stop.
                 .onChange(of: store.meeting(id: meetingID)?.notes) { _, notes in
-                    notesDraft.libraryChanged(to: notes ?? "", isEditingHere: notesFocused && windowIsActive)
+                    notesDraft.libraryChanged(to: notes ?? "", isEditingHere: notesAreBeingEdited)
                 }
-                .onChange(of: notesFocused && windowIsActive) { _, isEditing in
+                .onChange(of: notesAreBeingEdited) { _, isEditing in
                     if !isEditing {
                         notesDraft.libraryChanged(to: store.meeting(id: meetingID)?.notes ?? "", isEditingHere: false)
                     }
@@ -4791,8 +4794,10 @@ private struct EditableMeetingTitle: View {
     /// second window after a rename in the first — so closing that window undid the rename.
     @State private var draft = SharedFieldDraft(stored: "")
     @FocusState private var focused: Bool
-    /// A field focused in a window that is not the key one is not being typed in.
     @Environment(\.appearsActive) private var windowIsActive
+    private var isBeingEdited: Bool {
+        MeetingFieldSync.isEditing(.title, focused: focused, windowIsActive: windowIsActive)
+    }
 
     var body: some View {
         TextField("Meeting title", text: Binding(
@@ -4810,9 +4815,9 @@ private struct EditableMeetingTitle: View {
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commit() }
             }
-            // A rename in another window: follow it unless this field holds typing of its own.
+            // A rename in another window: follow it unless this field holds typing of its own or has the cursor (F675).
             .onChange(of: store.meeting(id: meetingID)?.title) { _, title in
-                draft.libraryChanged(to: title ?? "", isEditingHere: focused && windowIsActive)
+                draft.libraryChanged(to: title ?? "", isEditingHere: isBeingEdited)
             }
             .onDisappear(perform: commit)
     }
