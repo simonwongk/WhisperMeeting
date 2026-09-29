@@ -3675,7 +3675,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func stopRecording(title: String) async -> UUID? {
+    /// - Parameter transcribe: whether a saved meeting's transcription starts now. `false` only for
+    ///   Stop & Quit (F673): the process is about to end, so a job started here would be killed
+    ///   mid-run and the meeting reopen as "Local transcription was interrupted". It is saved
+    ///   `.recorded` instead, ready to transcribe at the next launch.
+    func stopRecording(title: String, transcribe: Bool = true) async -> UUID? {
         guard let id = activeMeetingID else { return nil }
         // F292: one stop at a time, and never mid-start — `start()` is still building the stream and
         // its writers, and a stop then would finalize under it. Stop is pressed again once live.
@@ -3737,7 +3741,7 @@ final class AppModel: ObservableObject {
 
             refreshRuntime()
             let engineInstalled = isSelectedEngineInstalled
-            if engineInstalled {
+            if engineInstalled, transcribe {
                 beginTranscription(id: id)
             }
             // F470: what the queue actually holds, not whether an engine is installed — a meeting
@@ -3748,9 +3752,9 @@ final class AppModel: ObservableObject {
             // missing-engine message, so neither replaces the other.
             if artifact.captureStoppedEarly, !isFinalizingAfterCaptureLoss {
                 var message = Self.captureStoppedEarlyMessage(audioDuration: artifact.duration, start: start)
-                if !engineInstalled, let unavailable = transcriptionUnavailableMessage { message += " " + unavailable }
+                if !engineInstalled, transcribe, let unavailable = transcriptionUnavailableMessage { message += " " + unavailable }
                 report(message)
-            } else if !engineInstalled {
+            } else if !engineInstalled, transcribe {
                 // F262: name the engine that is installed instead of telling a user who just
                 // installed one to install one.
                 alertMessage = transcriptionUnavailableMessage
@@ -3838,8 +3842,9 @@ final class AppModel: ObservableObject {
         case .idle:
             return true
         case .recording:
-            // "" is the windowless stop — the title typed on the record screen is used (F298).
-            return await stopRecording(title: "") != nil
+            // "" is the windowless stop — the title typed on the record screen is used (F298). No
+            // transcription: the app is about to quit under it (F673).
+            return await stopRecording(title: "", transcribe: false) != nil
         case .stopping:
             // F672: a stop already owns the capture — the user's Stop, or a sleep's or a lost
             // capture's finalize, including one that began while the question was on screen.

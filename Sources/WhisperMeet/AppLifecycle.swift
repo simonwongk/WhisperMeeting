@@ -221,7 +221,7 @@ public final class AppLifecycle: ObservableObject {
 @MainActor
 enum QuitDuringRecordingAlert {
     static let message = "Stop and save the recording before quitting?"
-    static let information = "WhisperMeet is recording. Stop & Quit saves what has been recorded so far as a meeting, then quits. Keep Recording leaves WhisperMeet open and recording."
+    static let information = "WhisperMeet is recording. Stop & Quit saves what has been recorded so far as a meeting, ready to transcribe the next time you open WhisperMeet, then quits. Keep Recording leaves WhisperMeet open and recording."
     static let stopAndQuitTitle = "Stop & Quit"
     static let keepRecordingTitle = "Keep Recording"
 

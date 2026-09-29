@@ -278,6 +278,43 @@ func aStopBegunUnderTheQuestionIsWaitedFor() async throws {
     #expect(model.recordingState == .idle)
 }
 
+// MARK: - F673: Stop & Quit does not start a transcription it is about to quit under
+
+@MainActor
+@Test("Stop & Quit with an engine installed saves the meeting ready to transcribe, without starting a job it would quit under (F673)")
+func stopAndQuitDoesNotStartATranscription() async throws {
+    let (model, cleanup) = try makeModel(engineInstalled: true)
+    defer { cleanup() }
+    // A stub engine that never finishes on its own: a job that starts is visibly running at the reply.
+    let engine = Gate()
+    defer { Task { await engine.open() } }
+    model.runTranscriptionEngineOverride = { _, _ in
+        await engine.wait()
+        return TranscriptionResult(id: "stub", text: "Done.", languageCode: "en", audioDuration: 2, confidence: nil,
+                                   segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "Done.")])
+    }
+    try #require(model.isSelectedEngineInstalled, "sanity: the stub engine counts as installed")
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
+    let atReply = Locked<(quit: Bool, active: Bool, queued: Bool, status: MeetingStatus?)?>(nil)
+
+    let decision = lifecycle.shouldTerminate { quit in
+        atReply.withLock { $0 = (quit, model.hasActiveTranscription, model.isQueuedForTranscription(id),
+                                 model.store.meeting(id: id)?.status) }
+    }
+    try #require(decision == .terminateLater)
+    let deadline = Date().addingTimeInterval(30)
+    while atReply.withLock({ $0 == nil }), Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let seen = try #require(atReply.withLock { $0 }, "the quit was never answered")
+
+    #expect(seen.quit)
+    #expect(!seen.active, "a transcription started here is killed by the quit and reopens as interrupted")
+    #expect(!seen.queued)
+    #expect(seen.status == .recorded, "saved, and ready to transcribe at the next launch")
+    #expect(!model.hasActiveTranscription && model.store.meeting(id: id)?.status == .recorded,
+            "and nothing starts one after the reply either")
+}
+
 // MARK: - F672: a quit while a stop is still saving
 
 /// Polls the recording's phase — the precondition's own subject — against the wall clock.
