@@ -1636,15 +1636,20 @@ final class MeetingStore: ObservableObject {
         rootDirectory.appendingPathComponent("meetings.pending-shred.json")
     }
 
-    /// The queue file's two kinds of entry (F603).
+    /// The queue file's three kinds of entry (F603, F668).
     ///
     /// `deletedAt` is the epoch second each deletion happened, as the clock read at the delete.
     /// `firstSeenFutureAt` is, for a deletion dated beyond `now + shredGracePeriod` — a date no
     /// deletion can have — the `now` at which this build first saw it that way. The deletion's
     /// own date is never rewritten from a later clock; see `processPendingShreds`.
+    /// `sideCopiesPending` is a deletion whose history is shredded but which a copy of the index
+    /// outside the history may still hold (`shredSideCopies`), keyed to the deletion's date; it
+    /// stays until every such copy is clean or gone, so a copy that could not be cleaned once is
+    /// looked at again rather than forgotten (F668).
     private struct PendingShredQueue: Equatable {
         var deletedAt: [UUID: Int] = [:]
         var firstSeenFutureAt: [UUID: Int] = [:]
+        var sideCopiesPending: [UUID: Int] = [:]
     }
 
     /// The key prefix a `firstSeenFutureAt` entry is stored under, in the same `[String: Int]` file
@@ -1652,6 +1657,10 @@ final class MeetingStore: ObservableObject {
     /// earlier build reads is unchanged, and an earlier build's reader drops a key that is not a UUID
     /// — so it ignores these, and its next write of the queue simply leaves them out.
     private static let firstSeenFuturePrefix = "first-seen-future:"
+
+    /// The key prefix a `sideCopiesPending` entry is stored under, in the same file, for the same
+    /// reasons (F668).
+    private static let sideCopiesPrefix = "side-copies:"
 
     /// Read leniently (F498). `UUID(uuidString:)` accepts either case, so a file naming one meeting
     /// in two spellings — hand-edited, or written by something other than this build — holds two
@@ -1666,10 +1675,15 @@ final class MeetingStore: ObservableObject {
             else { return PendingShredQueue() }
             var deletions: [(UUID, Int)] = []
             var sightings: [(UUID, Int)] = []
+            var sideCopies: [(UUID, Int)] = []
             for (key, value) in raw {
                 if key.hasPrefix(Self.firstSeenFuturePrefix) {
                     if let id = UUID(uuidString: String(key.dropFirst(Self.firstSeenFuturePrefix.count))) {
                         sightings.append((id, value))
+                    }
+                } else if key.hasPrefix(Self.sideCopiesPrefix) {
+                    if let id = UUID(uuidString: String(key.dropFirst(Self.sideCopiesPrefix.count))) {
+                        sideCopies.append((id, value))
                     }
                 } else if let id = UUID(uuidString: key) {
                     deletions.append((id, value))
@@ -1678,13 +1692,20 @@ final class MeetingStore: ObservableObject {
             let deletedAt = Dictionary(deletions, uniquingKeysWith: max)
             // A sighting without its deletion describes nothing, and is dropped on the next write.
             let firstSeen = Dictionary(sightings, uniquingKeysWith: max).filter { deletedAt[$0.key] != nil }
-            return PendingShredQueue(deletedAt: deletedAt, firstSeenFutureAt: firstSeen)
+            return PendingShredQueue(
+                deletedAt: deletedAt,
+                firstSeenFutureAt: firstSeen,
+                sideCopiesPending: Dictionary(sideCopies, uniquingKeysWith: max)
+            )
         }
         set {
             var raw: [String: Int] = [:]
             for (id, value) in newValue.deletedAt { raw[id.uuidString] = value }
             for (id, value) in newValue.firstSeenFutureAt where newValue.deletedAt[id] != nil {
                 raw[Self.firstSeenFuturePrefix + id.uuidString] = value
+            }
+            for (id, value) in newValue.sideCopiesPending {
+                raw[Self.sideCopiesPrefix + id.uuidString] = value
             }
             if raw.isEmpty {
                 try? FileManager.default.removeItem(at: pendingShredURL)
@@ -1761,6 +1782,8 @@ final class MeetingStore: ObservableObject {
         // `Int.max`) makes nothing impossible, so every entry keeps its own date — which defers.
         let (horizon, horizonOverflowed) = now.addingReportingOverflow(grace)
         var queue = PendingShredQueue()
+        // A copy is never cleaned of a meeting that is live again, as the history is not (F668).
+        queue.sideCopiesPending = stored.sideCopiesPending.filter { !live.contains($0.key) }
         for (id, deletedAt) in stored.deletedAt where !live.contains(id) {
             queue.deletedAt[id] = deletedAt
             guard !horizonOverflowed, deletedAt > horizon else { continue }
@@ -1776,7 +1799,11 @@ final class MeetingStore: ObservableObject {
         let due = overflowed ? [] : queue.deletedAt.compactMap { id, deletedAt -> UUID? in
             (queue.firstSeenFutureAt[id] ?? deletedAt) <= cutoff ? id : nil
         }
-        guard !due.isEmpty else { return [] }
+        guard !due.isEmpty else {
+            retrySideCopies(&queue)
+            if queue != stored { pendingShredQueue = queue }
+            return []
+        }
         do {
             // At the JSON level, so what a newer build wrote into the history survives (F552).
             let shred = try meetingFiles.shredHistory(removingElementsWithIDs: Set(due.map(\.uuidString)))
@@ -1793,16 +1820,13 @@ final class MeetingStore: ObservableObject {
             }
             var remaining = queue
             for id in due {
+                // The history is done; the copies outside it are next, and stay queued until clean.
+                remaining.sideCopiesPending[id] = remaining.deletedAt[id]
                 remaining.deletedAt.removeValue(forKey: id)
                 remaining.firstSeenFutureAt.removeValue(forKey: id)
             }
+            retrySideCopies(&remaining)
             pendingShredQueue = remaining
-            // The index's copies outside the history too (F457). Reported rather than retried: the
-            // history is done, and a copy this pass could not rewrite is named so it can be found.
-            let stuck = shredSideCopies(Set(due))
-            if !stuck.isEmpty {
-                storageErrorMessage = "A deleted meeting's text could not be removed from \(stuck.joined(separator: ", ")) in the library folder. Everything else was removed."
-            }
             return due
         } catch {
             storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes the saved history at once."
@@ -2028,39 +2052,105 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// A copy of the index outside its history that still holds (or may hold) deleted meetings after
+    /// a pass (F668). `path` is relative to the library folder, so a snapshot's `meetings.json` is
+    /// never mistaken for the live one.
+    private struct StuckSideCopy: Equatable {
+        enum Reason: Equatable {
+            /// Could not be read, or its cleaned bytes could not be written back — worth retrying.
+            case couldNotRewrite
+            /// Not a readable index, and its bytes name a deleted meeting. Retrying cannot clean it;
+            /// only the user can remove it.
+            case notAnIndex
+        }
+        let path: String
+        let ids: Set<UUID>
+        let reason: Reason
+    }
+
     /// Removes deleted meetings from the index's copies outside its history — quarantined copies and
     /// the index files in a restore's snapshot — once their week is over (F457), the same way the
     /// history is shredded (`JSONArrayShred`, F552): only those meetings' entries go, and everything
     /// else in each copy stays readable, because these copies exist so someone can recover from
-    /// them. A copy that is not a JSON array is left as it is. Audio in a snapshot is not touched.
+    /// them. Recording folders a snapshot set aside, `notes.md` included, are not touched (F664).
     ///
-    /// Returns the names of copies that could not be read or rewritten, so the caller can say which
-    /// still hold the text rather than report a removal that did not happen.
-    private func shredSideCopies(_ ids: Set<UUID>) -> [String] {
+    /// Returns every copy that still holds, or may hold, one of the ids (F668): one that could not be
+    /// read (it is not known what it holds, so all of `ids`), one whose cleaned bytes could not be
+    /// written back, and one that does not parse as an index but whose bytes name one of them. A copy
+    /// that does not parse and names none of them is clean for this purpose. Nothing is deleted.
+    private func shredSideCopies(_ ids: Set<UUID>) -> [StuckSideCopy] {
         let side = sideCopiesOfTheIndex()
-        var files = side.quarantine.map { rootDirectory.appendingPathComponent($0) }
+        var paths = side.quarantine
         for snapshot in side.snapshots {
-            let folder = rootDirectory.appendingPathComponent(snapshot, isDirectory: true)
             for name in ["meetings.json", "meetings.backup.json"] {
-                let url = folder.appendingPathComponent(name)
-                if FileManager.default.fileExists(atPath: url.path) { files.append(url) }
+                let path = "\(snapshot)/\(name)"
+                if FileManager.default.fileExists(atPath: rootDirectory.appendingPathComponent(path).path) {
+                    paths.append(path)
+                }
             }
         }
         let doomed = Set(ids.map(\.uuidString))
-        var failed: [String] = []
-        for url in files {
+        let byLowercased = Dictionary(ids.map { ($0.uuidString.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        func uuids(_ lowercased: Set<String>) -> Set<UUID> { Set(lowercased.compactMap { byLowercased[$0] }) }
+        var stuck: [StuckSideCopy] = []
+        for path in paths {
+            let url = rootDirectory.appendingPathComponent(path)
             guard let data = try? Data(contentsOf: url) else {
-                failed.append(url.lastPathComponent)
+                stuck.append(StuckSideCopy(path: path, ids: ids, reason: .couldNotRewrite))
                 continue
             }
-            guard let shredded = JSONArrayShred.removingElements(withIDs: doomed, from: data) else { continue }
+            guard let shredded = JSONArrayShred.removingElements(withIDs: doomed, from: data) else {
+                // Holds none of them — unless it does not parse, when only its bytes can say.
+                if !JSONArrayShred.isArray(data) {
+                    let named = uuids(JSONArrayShred.mentionedIDs(doomed, in: data))
+                    if !named.isEmpty { stuck.append(StuckSideCopy(path: path, ids: named, reason: .notAnIndex)) }
+                }
+                continue
+            }
             do {
                 try shredded.data.write(to: url, options: .atomic)
             } catch {
-                failed.append(url.lastPathComponent)
+                stuck.append(StuckSideCopy(path: path, ids: uuids(shredded.removed), reason: .couldNotRewrite))
             }
         }
-        return failed
+        return stuck
+    }
+
+    /// What the last side-copy pass in this session reported, so a copy that stays stuck is said once
+    /// per launch rather than after every delete (F668). In memory on purpose: the next launch says it
+    /// again, because the text is still there.
+    private var reportedStuckSideCopies: [String] = []
+
+    /// Runs the side-copy shred for every id whose history is done, keeps queued the ids some copy
+    /// still holds, and says which copies they are (F668).
+    private func retrySideCopies(_ queue: inout PendingShredQueue) {
+        guard !queue.sideCopiesPending.isEmpty else {
+            reportedStuckSideCopies = []
+            return
+        }
+        let stuck = shredSideCopies(Set(queue.sideCopiesPending.keys))
+        let stillHeld = stuck.reduce(into: Set<UUID>()) { $0.formUnion($1.ids) }
+        queue.sideCopiesPending = queue.sideCopiesPending.filter { stillHeld.contains($0.key) }
+        let paths = stuck.map(\.path).sorted()
+        defer { reportedStuckSideCopies = paths }
+        guard !paths.isEmpty, paths != reportedStuckSideCopies else { return }
+        storageErrorMessage = Self.stuckSideCopiesMessage(stuck)
+    }
+
+    private static func stuckSideCopiesMessage(_ stuck: [StuckSideCopy]) -> String {
+        var sentences: [String] = []
+        let retryable = stuck.filter { $0.reason == .couldNotRewrite }.map(\.path).sorted()
+        let unreadable = stuck.filter { $0.reason == .notAnIndex }.map(\.path).sorted()
+        if !retryable.isEmpty {
+            sentences.append("A deleted meeting's text could not be removed from \(retryable.joined(separator: ", ")) in the library folder. WhisperMeet will try again the next time it checks.")
+        }
+        if !unreadable.isEmpty {
+            let files = unreadable.joined(separator: ", ")
+            sentences.append(unreadable.count == 1
+                ? "\(files) in the library folder is a copy of the meeting index that cannot be read as one, and it still contains a deleted meeting's text, so WhisperMeet cannot remove just that meeting from it. Delete the file yourself if you no longer need it."
+                : "\(files) in the library folder are copies of the meeting index that cannot be read as one, and they still contain a deleted meeting's text, so WhisperMeet cannot remove just that meeting from them. Delete the files yourself if you no longer need them.")
+        }
+        return sentences.joined(separator: " ")
     }
 
     func addVocabulary(_ terms: [String]) {
