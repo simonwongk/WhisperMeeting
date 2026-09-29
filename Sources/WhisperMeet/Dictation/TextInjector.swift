@@ -210,6 +210,8 @@ final class TextInjector {
     /// user started or nowhere. Nil skips both press-time checks.
     func deliver(_ text: String, autoPaste: Bool, pressedIn pressed: FocusedTextField.Probe? = nil) -> Delivery {
         let early = prefetched
+        // Started, and not yet back: anything below that touches the pasteboard waits for it (F657).
+        let earlyReadInFlight = clipboardPrefetch != nil && early == nil
         discardClipboardPrefetch()
         let target = focusedTextField()
         // What was judged, so a real app's secure-input and text-field reading can be checked
@@ -223,27 +225,54 @@ final class TextInjector {
         // The controller holds the text for the pill's Copy button and keeps it out of the history.
         // Touches nothing here — a restore owed to the previous paste still goes ahead.
         if let secure = target.secureInput ?? pressed?.secureInput {
-            log.notice("secure input (\(String(describing: secure), privacy: .public)): dictation not pasted and not written to the clipboard")
-            if case let .keyboardEntry(app?) = secure { return .secureKeyboardEntry(app: app) }
-            return .secureInput
+            return refused(for: secure)
         }
-        generation &+= 1
         let carried = pending.flatMap { pasteboard.changeCount == $0.written ? $0.snapshot : nil }
-        pending = nil
         guard autoPaste, canSynthesizePaste() else {
+            takeOverClipboard()
             write(text, markers: [])
             return .clipboard
         }
         // The user moved to another app while it was transcribing: ⌘V would land in whatever they
         // are doing now. Left on the clipboard, where they can paste it where they meant.
         if let started = pressed?.processIdentifier, let now = target.processIdentifier, started != now {
+            takeOverClipboard()
             write(text, markers: [])
             log.notice("frontmost app changed since the press (now \(target.summary, privacy: .public)): dictation left on the clipboard")
             return .appChanged
         }
         // The clipboard as it is at paste time: an item that arrived while the user was speaking —
         // from the iPhone, say — is the clipboard they expect back. Only when it will be given back.
-        let snapshot = target.isTextField ? (carried ?? clipboardSnapshot(readEarly: early)) : nil
+        var snapshot: PasteboardSnapshot? = nil
+        var mayHaveWaited = earlyReadInFlight
+        if target.isTextField {
+            if let carried {
+                snapshot = carried
+            } else {
+                let taken = clipboardSnapshot(readEarly: early)
+                snapshot = taken.snapshot
+                mayHaveWaited = mayHaveWaited || taken.readNow
+            }
+        }
+        // Seconds can pass in that read, or waiting for the early one (F657): time enough for a
+        // password prompt to take focus, or the user to switch apps. So look again before the
+        // clipboard is touched and ⌘V is sent (F656) — after draining the snapshot queue, so the
+        // write below cannot wait again after this look.
+        if mayHaveWaited {
+            Self.snapshotQueue.sync {}
+            let now = focusedTextField()
+            log.notice("delivery target after the clipboard read: \(now.summary, privacy: .public)")
+            if let secure = now.secureInput {
+                return refused(for: secure)
+            }
+            if let before = target.processIdentifier, let after = now.processIdentifier, before != after {
+                takeOverClipboard()
+                write(text, markers: [])
+                log.notice("frontmost app changed during the clipboard read: dictation left on the clipboard")
+                return .appChanged
+            }
+        }
+        takeOverClipboard()
         write(text, markers: snapshot != nil ? Self.transientMarkers : [])
         let written = pasteboard.changeCount
         guard synthesizePaste() else { return .clipboard }
@@ -262,13 +291,27 @@ final class TextInjector {
         return .pasted
     }
 
+    /// A secure-input delivery (F445, F586): nothing pasted, nothing written, and the restore
+    /// bookkeeping untouched, so a restore owed to the previous paste still goes ahead.
+    private func refused(for secure: FocusedTextField.SecureInput) -> Delivery {
+        log.notice("secure input (\(String(describing: secure), privacy: .public)): dictation not pasted and not written to the clipboard")
+        if case let .keyboardEntry(app?) = secure { return .secureKeyboardEntry(app: app) }
+        return .secureInput
+    }
+
+    /// Every write of a dictation takes the clipboard over: a restore scheduled by an earlier paste
+    /// (whose `generation` this bumps) does nothing afterwards, and its snapshot is dropped.
+    private func takeOverClipboard() {
+        generation &+= 1
+        pending = nil
+    }
+
     /// Writes a dictation made into secure input, on the user's explicit Copy from the pill (F586):
     /// their own act, so the pasteboard is written — still marked concealed and transient, so the
     /// clipboard-history tools that honour the markers neither show nor keep it. Like any write, it
     /// takes the clipboard over from a restore still owed to an earlier paste.
     func copyConcealed(_ text: String) {
-        generation &+= 1
-        pending = nil
+        takeOverClipboard()
         write(text, markers: Self.transientMarkers + [Self.concealedMarker])
         log.notice("secure-input dictation copied at the user's request, concealed")
     }
@@ -292,18 +335,19 @@ final class TextInjector {
     /// unchanged since it began — a refusal included, so a clipboard over the cap is not read a
     /// second time here (F601) — and otherwise a read at paste time, on the snapshot queue after
     /// any early read still on it, so the two never overlap (F657).
-    private func clipboardSnapshot(readEarly early: (result: Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>, changeCount: Int)?) -> PasteboardSnapshot? {
+    /// `readNow` says the clipboard was read here, which can take seconds (F656 looks again after).
+    private func clipboardSnapshot(readEarly early: (result: Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>, changeCount: Int)?) -> (snapshot: PasteboardSnapshot?, readNow: Bool) {
         if let early, early.changeCount == pasteboard.changeCount {
-            return accept(early.result, when: "when the dictation started")
+            return (accept(early.result, when: "when the dictation started"), false)
         }
         guard mayReadContents() else {
             log.notice("clipboard not copied for restore: the system would ask before reading it")
-            return nil
+            return (nil, false)
         }
         let handle = PasteboardHandle(pasteboard: pasteboard)
         let read = readSnapshot
         let maximumBytes = maximumSnapshotBytes
-        return accept(Self.snapshotQueue.sync { read(handle, maximumBytes) }, when: "at paste time")
+        return (accept(Self.snapshotQueue.sync { read(handle, maximumBytes) }, when: "at paste time"), true)
     }
 
     private func accept(_ result: Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>, when: String) -> PasteboardSnapshot? {
