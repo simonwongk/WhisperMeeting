@@ -232,12 +232,12 @@ func cancelKillsDecoderGrandchild() async throws {
         executableURL: executableURL,
         modelDirectory: directory.appendingPathComponent("Models")
     )
-    let startedAt = Date()
     let task = Task { try await client.transcribe(recordingAt: audioURL) }
 
-    // Wait for the "decoder" to exist before cancelling.
+    // Wait for the "decoder" to exist before cancelling. 30 s (it was 10): a precondition, and the
+    // loop leaves the moment the pid is readable, so the cap only matters to a slow spawn.
     var decoder: pid_t = -1
-    for _ in 0..<200 {
+    for _ in 0..<600 {
         try? await Task.sleep(for: .milliseconds(50))
         if let text = try? String(contentsOf: pidFile, encoding: .utf8),
            let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
@@ -248,18 +248,47 @@ func cancelKillsDecoderGrandchild() async throws {
     #expect(decoder > 0)
     #expect(kill(decoder, 0) == 0, "the stand-in decoder never started")
 
-    task.cancel()
-    await #expect(throws: CancellationError.self) { try await task.value }
-
-    var died = false
-    for _ in 0..<100 {
-        try? await Task.sleep(for: .milliseconds(50))
-        if kill(decoder, 0) != 0 { died = true; break }
+    // F645: this used to end with `Date().timeIntervalSince(startedAt) < 20`, the guard against passing
+    // for the wrong reason (both stand-ins exit by themselves after 120 s). It compared two durations,
+    // and a loaded machine moves either one. The stand-ins still run for 120 s and every wait below is
+    // capped at 30 s, so a `transcribe` that has returned, and a decoder that is gone, inside the cap
+    // were caused by the cancellation — and a cancel that does nothing fails on a wait, not after two
+    // minutes.
+    let returned = ReturnFlag()
+    Task {
+        _ = try? await task.value
+        returned.markReturned()
     }
+    task.cancel()
+    var waited = 0
+    while !returned.hasReturned, waited < 6_000 {
+        try await Task.sleep(for: .milliseconds(5))
+        waited += 1
+    }
+    let cancelled = returned.hasReturned
+    var died = false
+    if cancelled {
+        for _ in 0..<600 {
+            try? await Task.sleep(for: .milliseconds(50))
+            if kill(decoder, 0) != 0 { died = true; break }
+        }
+    }
+    // A run that failed must not leave the stand-ins sleeping for two minutes: signal the decoder's
+    // whole group (the helper leads it), never our own.
+    if !died, decoder > 0 {
+        let group = getpgid(decoder)
+        if group > 0, group != getpgrp() { _ = killpg(group, SIGKILL) } else { _ = kill(decoder, SIGKILL) }
+    }
+    try #require(cancelled, "cancelling did not make transcribe() return")
+    await #expect(throws: CancellationError.self) { try await task.value }
     #expect(died, "the decoder survived cancellation — the process group was not killed")
-    // Without this the test would pass for the wrong reason: if the kill did nothing, both processes
-    // would simply exit on their own ~120 s later and everything would look dead.
-    #expect(Date().timeIntervalSince(startedAt) < 20, "cancellation did not take effect promptly")
+}
+
+private final class ReturnFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var returned = false
+    func markReturned() { lock.withLock { returned = true } }
+    var hasReturned: Bool { lock.withLock { returned } }
 }
 
 @Test("Cancellation before launch prevents the process from spawning")
