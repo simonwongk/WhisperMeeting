@@ -771,13 +771,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             if let count = record.recordCount { counts[name] = count }
             times[name] = record.wroteAtEpochSeconds
         }
-        // The budget follows the index this save just wrote (F527); everything else in the policy
-        // is passed through unchanged, so `prune` itself stays a pure function of what it is given.
-        var policy = retention
-        policy.byteBudget = retention.effectiveByteBudget(forIndexBytes: indexBytes)
+        // The budget scales with the larger of this index and the largest generation the rules
+        // keep (F527, F650). `prune` does that sizing, because only it knows what the rules keep.
         return history.prune(
-            policy: policy, now: now, recordCounts: counts, writtenAt: times,
-            liveFingerprints: liveFingerprints
+            policy: retention, now: now, recordCounts: counts, writtenAt: times,
+            liveFingerprints: liveFingerprints, indexBytes: indexBytes
         )
     }
 

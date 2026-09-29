@@ -57,23 +57,30 @@ public struct RetentionPolicy: Sendable, Equatable {
     /// The most generations these rules keep at once in the ordinary case: the newest
     /// `recentCount`, one per age anchor, the high-water pin, and the live primary and backup that
     /// rule 4 keeps even when they are not among the newest (F527). Derived from the rules rather
-    /// than chosen, so a policy with more anchors gets a proportionally larger budget.
+    /// than chosen, so a policy with more anchors gets a proportionally larger budget. Saturating,
+    /// so no configured `recentCount` can make it trap (F650).
     public var maximumKeptGenerations: Int {
-        max(0, recentCount) + ageAnchors.count + (pinHighWaterRecordCount ? 1 : 0) + 2
+        let others = ageAnchors.count + (pinHighWaterRecordCount ? 1 : 0) + 2
+        let (sum, overflow) = max(0, recentCount).addingReportingOverflow(others)
+        return overflow ? Int.max : sum
     }
 
-    /// The byte budget for an index whose current body is `indexBytes` long (F527).
+    /// The byte budget when the largest generation it must make room for is `indexBytes` long
+    /// (F527). A save passes the larger of the index it just wrote and the largest generation the
+    /// rules keep (F650) — never the new index alone, which a wipe shrinks to two bytes.
     ///
     /// **Why it scales.** The budget may trim only age anchors, and it trims whenever what the
     /// rules kept is over it. A fixed 256 MiB is passed by the three newest generations alone once
     /// the index reaches ~85 MB — about 570 meetings at F211's measured ~15 MB per hundred — and
     /// from then on every save pruned the hour, day and week anchors, leaving three saves of undo.
-    /// Room for `maximumKeptGenerations` copies of the current index means the budget does nothing
-    /// in the steady state at any size, which is what design §7.2 always said it should do.
+    /// Room for `maximumKeptGenerations` copies of the largest kept generation means that, below
+    /// the ceiling, the budget trims nothing the rules keep in the ordinary case — whether the
+    /// index is growing, steady, or has just been wiped — which is what design §7.2 always said a
+    /// budget should do.
     ///
     /// **Why the ceiling.** It is still a ceiling on disk use, so the scaling stops somewhere. The
     /// default, 2 GiB, is eight times the old fixed budget; with the default rules' nine slots it
-    /// binds only once the index itself passes ~238 MB, about 1,590 meetings at the same density —
+    /// binds only once a kept generation passes ~238 MB, about 1,590 meetings at the same density —
     /// nearly three times the ~570 at which the fixed budget began pruning every anchor. Past it,
     /// the budget trims the anchors oldest-first exactly as before, and never rules 1, 3 or 4.
     ///
@@ -344,13 +351,18 @@ public struct StoreHistory: Sendable {
     ///
     /// `conflict-` files are **never** pruned here. They are a losing writer's work and exist
     /// nowhere else, so only the user — having seen them — may remove them.
+    ///
+    /// `indexBytes` nil — every direct caller — trims against `policy.byteBudget` as written. A save
+    /// passes the index it just wrote, and the budget is then scaled to the larger of that and the
+    /// largest generation the rules keep (F650; see `RetentionPolicy.effectiveByteBudget`).
     @discardableResult
     public func prune(
         policy: RetentionPolicy,
         now: Int,
         recordCounts: [String: Int],
         writtenAt: [String: Int],
-        liveFingerprints: [String]
+        liveFingerprints: [String],
+        indexBytes: Int? = nil
     ) -> [String] {
         let entries = entries().map { entry -> RetainedGeneration in
             guard let count = recordCounts[entry.name] else { return entry }
@@ -411,13 +423,18 @@ public struct StoreHistory: Sendable {
         //
         // Oldest-first, and only among rule-2 anchors: rules 1, 3 and 4 are exempt, so the budget
         // can never take the newest generations, the high-water pin, or bytes that are live.
-        var keptBytes = entries
-            .filter { keep.contains($0.name) || anchored.contains($0.name) }
-            .reduce(0) { $0 + $1.byteCount }
-        if keptBytes > policy.byteBudget {
+        let ruleKept = entries.filter { keep.contains($0.name) || anchored.contains($0.name) }
+        var keptBytes = ruleKept.reduce(0) { $0 + $1.byteCount }
+        // Sized by the largest generation the rules keep, never by the new index alone (F650): the
+        // save that writes `[]` over a large library is the one whose anchors — older and larger —
+        // are the way back, and a budget scaled from two bytes trimmed exactly those.
+        let budget = indexBytes.map { newIndex in
+            policy.effectiveByteBudget(forIndexBytes: max(newIndex, ruleKept.map(\.byteCount).max() ?? 0))
+        } ?? policy.byteBudget
+        if keptBytes > budget {
             for entry in entries.reversed()
             where anchored.contains(entry.name) && !keep.contains(entry.name) {
-                guard keptBytes > policy.byteBudget else { break }
+                guard keptBytes > budget else { break }
                 doomed.append(entry)
                 keptBytes -= entry.byteCount
             }
