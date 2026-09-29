@@ -1351,7 +1351,7 @@ final class MeetingStore: ObservableObject {
     /// `reloadForConflictRecovery()` into a real caller for the first time — until this, the only
     /// caller was a test, and every later save in this session failed the same compare-and-swap.
     ///
-    /// `lastPersistedByID` is captured BEFORE the reload runs, deliberately: `reloadForConflictRecovery()`
+    /// `persistedByID` is captured BEFORE the reload runs, deliberately: `reloadForConflictRecovery()`
     /// calls `loadMeetings()`, which advances `lastPersistedMeetings` to the just-reloaded (rival's)
     /// state — the right thing for the NEXT race, but exactly the wrong thing to diff THIS one
     /// against, which would collapse back into "diff against the rival" (the bug the delta redesign
@@ -1368,11 +1368,11 @@ final class MeetingStore: ObservableObject {
     private func beginConflictRecovery(note: String? = nil) {
         guard conflictOffer == nil, let report = writeConflict else { return }
         let losing = meetings
-        // Not `uniqueKeysWithValues`: a hand-edited index can hold one id twice, and since F642 any
-        // lost save reaches this line — a trap here would turn a race into a crash (F498's lesson).
-        let lastPersistedByID = Dictionary(
-            lastPersistedMeetings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
-        )
+        // Every saved copy of each id, not one. A hand-edited index can hold one id twice, and since
+        // F642 any lost save reaches this line. `uniqueKeysWithValues` trapped on that; keeping the
+        // first copy (the first F642 cut) made the second copy always "differ from what was saved",
+        // so an untouched twin was offered as this session's edit and Keep wrote it over the other.
+        let persistedByID = Dictionary(grouping: lastPersistedMeetings, by: \.id)
         // A debounced flush still scheduled would save the reloaded winner for nothing. Whatever it
         // was carrying is in `losing`, so it is offered back below rather than lost with the timer.
         pendingIndexFlush?.cancel()
@@ -1384,7 +1384,7 @@ final class MeetingStore: ObservableObject {
         reloadForConflictRecovery()
         // This session's own edits since its last save — a record it never touched, whatever the
         // rival did to it, is excluded here regardless.
-        let ownEdits = losing.filter { lastPersistedByID[$0.id] != $0 }
+        let ownEdits = losing.filter { !(persistedByID[$0.id]?.contains($0) ?? false) }
         guard !ownEdits.isEmpty else {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,
             // once — the token is fresh now, so no later save repeats it.
@@ -1400,7 +1400,7 @@ final class MeetingStore: ObservableObject {
             // to delete, so it is offered back like any other edit. Before F642 one reached here
             // only behind an earlier failed save, because the one race path edited existing
             // records; now `upsert` — the end of every recording — brings one with every race.
-            if winnerIDs.contains(record.id) || lastPersistedByID[record.id] == nil {
+            if winnerIDs.contains(record.id) || persistedByID[record.id] == nil {
                 delta.append(record)
             } else {
                 deletedByOther.append(record)

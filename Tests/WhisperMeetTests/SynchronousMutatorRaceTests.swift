@@ -184,6 +184,38 @@ func lostDeleteReloadsAndSaysSo() throws {
     #expect(!FileManager.default.fileExists(atPath: audio.path))
 }
 
+/// An index can hold one id twice — a hand edit, or a merge by something other than this app. The
+/// first cut of F642 keyed this session's last save by id, keeping the first copy, so the second
+/// copy always "differed from what was saved" and was offered as this session's edit; Keep then
+/// wrote it over its twin, and one body was gone from the index though nobody had touched either.
+/// (Found by lane C's first independent review, probe P1.)
+@Test("An untouched duplicate id is not offered as an edit, and Keep leaves both copies (F642)")
+@MainActor
+func duplicateIDsAreNotOfferedAsEdits() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dup = UUID(), other = UUID()
+    let older = Date(timeIntervalSince1970: 1_700_000_000)
+    let twinA = MeetingRecord(id: dup, title: "Dup A", createdAt: older.addingTimeInterval(100_000), status: .completed)
+    let twinB = MeetingRecord(id: dup, title: "Dup B", createdAt: older, status: .completed)
+    let x = MeetingRecord(id: other, title: "X", createdAt: older.addingTimeInterval(-10), status: .completed)
+    try foreignWriterCommits([twinA, twinB, x], in: root)
+    let store = MeetingStore(rootDirectory: root)
+    try #require(store.meetings.filter { $0.id == dup }.count == 2)
+    var theirs = x
+    theirs.title = "X, retitled by the other copy"
+    try foreignWriterCommits([twinA, twinB, theirs], in: root)
+
+    store.update(id: other) { $0.title = "X renamed here" }
+
+    let offer = try #require(store.conflictOffer)
+    #expect(offer.delta.map(\.id) == [other], "an untouched duplicate was offered as this session's edit: \(offer.delta.map(\.title))")
+    store.keepConflictedEdit()
+    let onDisk = MeetingStore(rootDirectory: root).meetings.filter { $0.id == dup }.map(\.title).sorted()
+    let expected: [String] = ["Dup A", "Dup B"]
+    #expect(onDisk == expected, "Keep overwrote one duplicate with its twin")
+}
+
 /// `delete(ids:)` saves twice when a folder cannot be removed: once without the row, then again to
 /// put it back (F146). Another copy saving between the two used to leave the row unlisted, the
 /// token stale and the session stuck. The row is this session's to put back, so it is offered.
