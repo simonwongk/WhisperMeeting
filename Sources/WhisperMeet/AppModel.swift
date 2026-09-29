@@ -5928,7 +5928,8 @@ final class AppModel: ObservableObject {
     /// pins only what this run pinned (F471). It defaults to `.automatic`, which never flags — and the
     /// default is RECORDED as the request, so a caller that omits it claims the run was automatic.
     /// Every engine run must pass what it actually asked for; the one production caller,
-    /// `performTranscription`, passes its queue snapshot (F574's Second Opinion fix must too).
+    /// `performTranscription`, passes its queue snapshot. (Second Opinion never calls this — it
+    /// writes nothing but a Replace — so it has no request to record.)
     func apply(
         result: TranscriptionResult, to id: UUID,
         requestedLanguage: WhisperLanguage = .automatic,

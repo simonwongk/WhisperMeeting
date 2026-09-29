@@ -112,7 +112,8 @@ func comparisonStillSeesARealDifference() {
 // the two engines split sentences differently that is still one-to-one: this transcript's "A. B." over
 // the other engine's "A." and "B." offered only "B.", and Replace wrote "B." over "A. B." — a sentence
 // both engines heard, deleted. Every segment that overlaps the line by a real share of the shorter
-// span is joined, in time order; a sliver is no counterpart at all.
+// span is joined, in time order; a sliver of the shorter span is no counterpart at all. (A SHORT
+// neighbour's sliver of the line can be a quarter of its own span — the cases F658 is for.)
 @Test("A line the other engine split in two is offered the whole of its reading, not the larger piece (F572)")
 func comparisonJoinsEverySegmentTheLineCovers() {
     // The ticket's exhibit: the same words, split differently — the engines agree.
@@ -151,7 +152,8 @@ func comparisonJoinsInTimeOrderAndRespectsChineseSpacing() {
 
 @Test("A sliver of overlap is no counterpart: a line the other engine dropped is offered nothing to replace (F572)")
 func comparisonTreatsASliverAsNoCounterpart() {
-    // The other engine heard nothing at 5.0–5.5; its previous sentence runs 50 ms into the line.
+    // The other engine heard nothing at 5.0–5.5; its previous sentence — long, 2 s — runs 50 ms into
+    // the line. A SHORT straddling segment would still pair (F658).
     let spans = TranscriptComparison.compare(
         [seg(5.0, 5.5, "Yes.")],
         [seg(3.0, 5.05, "so anyway we are done"), seg(6.0, 7.0, "Next item.")]
@@ -238,8 +240,11 @@ func comparisonFastPathMatchesTheReference() {
     #expect(mismatches == 0)
 }
 
-@Test("Two lines the other engine heard as one are each still offered its complete reading (F572 control)")
-func comparisonOffersTheWholeSegmentToEachLineItCovers() {
+// PINNED AS IS, NOT AS INTENDED, until F658: both rows offer the whole shared segment, so a Replace
+// on either writes the other line's sentence a second time. This is what F472 did too; the test
+// keeps F572 from changing it silently, and F658 replaces this expectation.
+@Test("Two lines the other engine heard as one each offer the whole shared segment — the duplication F658 fixes (F572 control)")
+func comparisonOffersASharedSegmentToBothLinesUntilF658() {
     let spans = TranscriptComparison.compare(
         [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbrs.")],
         [seg(10, 18, "We ship on Friday. Then we review the numbers.")]

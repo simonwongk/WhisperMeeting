@@ -83,6 +83,13 @@ public enum TranscriptComparison {
     /// entirely it was the WHOLE offered text — Replace then wrote a neighbour's sentence over a
     /// line nobody else transcribed. Measured against the shorter span so that a short segment the
     /// line fully contains, and a long one that fully contains a short line, both count.
+    ///
+    /// What this does NOT stop, because a fraction of the shorter span cannot (F658): a SHORT
+    /// neighbour a few tenths of a second early still shares a quarter of its own length, so it is
+    /// joined in and Replace writes it twice; a short straddler ("Yeah.") still stands in for a line
+    /// the other engine dropped; and a tail the line shares with a LONG segment, under a quarter of
+    /// the line, is still left out. No threshold fixes all three — raising it trades the first for
+    /// more of the third.
     static let minimumOverlapFraction = 0.25
 
     /// The other engine's reading of `segment` (F472, F572).
@@ -242,8 +249,8 @@ extension TranscriptComparison {
     ///
     /// The first agreeing segment is then the lower of the first overlapping one that says the same
     /// text and that untimed one. A line with no timestamps can match any segment by its text only,
-    /// which is a third dictionary. The per-line work is a binary search plus the overlapping
-    /// segments themselves, instead of the whole other transcript.
+    /// which is a second dictionary (`firstSaying`). The per-line work is a binary search plus the
+    /// overlapping segments themselves, instead of the whole other transcript.
     struct CounterpartIndex {
         private let secondary: [TranscriptSegment]
         private let texts: [String]
