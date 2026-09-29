@@ -2617,6 +2617,8 @@ private struct ReplacementRulesEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var heardDraft = ""
     @State private var preferredDraft = ""
+    /// Why the last Add Rule did not add the rule (F525), or nil.
+    @State private var ruleMessage: String?
 
     private var canAdd: Bool {
         !heardDraft.trimmingCharacters(in: .whitespaces).isEmpty
@@ -2651,6 +2653,13 @@ private struct ReplacementRulesEditor: View {
                     .buttonStyle(.borderedProminent)
                     // F464: a refused add would still clear the drafts, so it is not offered.
                     .disabled(!canAdd || store.isListReadOnly(.replacementRules))
+            }
+
+            // F525: beside the fields it is about — a duplicate, a no-op, or the 500-rule limit.
+            if let ruleMessage {
+                Text(ruleMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             if !store.replacementRules.isEmpty {
@@ -2689,7 +2698,11 @@ private struct ReplacementRulesEditor: View {
     private func addRule() {
         // F464: Return in either field reaches here too, past the disabled button.
         guard canAdd, !store.isListReadOnly(.replacementRules) else { return }
-        store.addReplacementRule(heard: heardDraft, preferred: preferredDraft)
+        let outcome = store.addReplacementRule(heard: heardDraft, preferred: preferredDraft)
+        ruleMessage = outcome.message
+        // F525: the typed rule stays in the fields unless it was added — at the limit it used to be
+        // cleared as if saved.
+        guard outcome == .added else { return }
         heardDraft = ""
         preferredDraft = ""
     }
@@ -2731,9 +2744,8 @@ private struct VocabularyView: View {
                     .foregroundStyle(.secondary)
                 // The starred count too (F333): once more terms are starred than fit, "star the
                 // terms that matter most" asks for something already done and every star is filled.
-                if let coverage = VocabularyPrompt.coverageNotice(
-                    for: store.vocabulary, starredCount: store.prioritizedVocabulary.count
-                ) {
+                // F525: counted over the starred-first list actually sent, out of every stored term.
+                if let coverage = store.vocabularyCoverageNotice {
                     Label(coverage, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.orange)
@@ -2856,24 +2868,18 @@ private struct VocabularyView: View {
         // ('，'), enumeration comma ('、') or semicolon ('；') splits terms the same way a typed
         // ASCII ',' does, instead of merging a pasted list into one term.
         let terms = manualTerms.components(separatedBy: MeetingTags.listSeparators)
-        let before = Set(store.vocabulary)
-        withAnimation(reduceMotion ? nil : .uiSpring) {
+        // F525: the store says what it did with each term. This used to diff the list before and
+        // after, which cannot see a term turned away at the 5,000-term limit — and until F525 the
+        // store evicted a saved term instead, so the diff read "Saved 3 terms" over a silent loss.
+        let result = withAnimation(reduceMotion ? nil : .uiSpring) {
             store.addVocabulary(terms)
         }
-        let added = Set(store.vocabulary).subtracting(before).count
-        // F196: this said "the prompt may already be at its 100-term limit", which stopped being
-        // true when F187 separated stored vocabulary from the prompt subset. Nothing about an import
-        // touches the prompt — `added == 0` means the terms were already there, the 5,000-term
-        // storage ceiling is full, or the library is read-only. Naming the prompt's limit sent a
-        // user to prune a list that was not the one refusing them.
-        importMessage = added == 0
-            // A read-only library is deliberately not named here: `MeetingStore.mutationIsAllowed`
-            // already sets `storageErrorMessage` to `ReadOnlyLibraryNotice.mutationRefused` for
-            // that case, and saying it twice in two different wordings is how two explanations
-            // start to disagree.
-            ? "Nothing new was added. Those terms are already saved, or the list is at its \(MeetingStore.maxStoredVocabularyTerms.formatted())-term limit."
-            : "Saved \(added) term\(added == 1 ? "" : "s")."
-        manualTerms = ""
+        importMessage = result.message()
+        // Keep what was not added, so nothing typed is lost: the whole entry when the list is
+        // read-only, the refused terms at the limit.
+        if !result.wasRefused {
+            manualTerms = result.refusedTerms.joined(separator: "\n")
+        }
     }
 
     private func importDocuments(_ urls: [URL]) {
@@ -2886,13 +2892,12 @@ private struct VocabularyView: View {
                 importMessage = "None of the selected document\(result.failed.count == 1 ? "" : "s") could be read."
                 return
             }
-            let before = Set(store.vocabulary)
             // One animated layout change for the whole batch — deliberately no stagger (F116).
-            withAnimation(reduceMotion ? nil : .uiSpring) {
+            // F525: the store's own account, including terms refused at the 5,000-term limit.
+            let addition = withAnimation(reduceMotion ? nil : .uiSpring) {
                 store.addVocabulary(result.terms)
             }
-            let added = Set(store.vocabulary).subtracting(before).count
-            var message = "Saved \(added) candidate term\(added == 1 ? "" : "s"). Remove anything that should not influence transcription."
+            var message = addition.message(candidates: true)
             if !result.failed.isEmpty {
                 message += " \(result.failed.count) file\(result.failed.count == 1 ? "" : "s") could not be read and were skipped."
             }
@@ -3170,8 +3175,12 @@ private struct TranscriptDetailView: View {
                 set: { if !$0 { vocabularySuggestions = nil } }
             )) {
                 VocabularySuggestionSheet(suggestions: vocabularySuggestions ?? []) { chosen in
-                    withAnimation(reduceMotion ? nil : .uiSpring) {
+                    let addition = withAnimation(reduceMotion ? nil : .uiSpring) {
                         store.addVocabulary(chosen)
+                    }
+                    // F525: this path said nothing at all, so a term refused at the limit vanished.
+                    if let limit = addition.limitSentence {
+                        model.alertMessage = limit
                     }
                 }
             }

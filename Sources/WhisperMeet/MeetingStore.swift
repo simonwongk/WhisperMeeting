@@ -665,6 +665,19 @@ final class MeetingStore: ObservableObject {
     /// use rather than in storage.
     var promptVocabulary: [String] { Self.promptSafeTerms(vocabulary, first: prioritizedVocabulary) }
 
+    /// The Vocabulary screen's "N of your M terms fit" notice, or nil when every term is sent (F525).
+    ///
+    /// N is counted over `promptVocabulary` — starred terms first, the list the recognizer is
+    /// actually given — and M over every stored term. It used to be worked out from `vocabulary`
+    /// itself, which `VocabularyPrompt` capped at its first 100 alphabetically, so past 100 terms
+    /// both numbers were wrong: "of your 100" for a list of 5,000, and a fitting count taken over a
+    /// different ordering from the one sent.
+    var vocabularyCoverageNotice: String? {
+        VocabularyPrompt.coverageNotice(
+            sending: promptVocabulary, storedCount: vocabulary.count, starredCount: prioritizedVocabulary.count
+        )
+    }
+
     /// Exact `heard → preferred` replacement rules (F179), persisted like vocabulary. Reviewed before
     /// any apply — the matcher only proposes; nothing auto-applies and the audio is never touched.
     @Published private(set) var replacementRules: [ReplacementRule] = []
@@ -2241,10 +2254,36 @@ final class MeetingStore: ObservableObject {
         return sentences.joined(separator: " ")
     }
 
-    func addVocabulary(_ terms: [String]) {
-        guard listMutationIsAllowed(.vocabulary) else { return }
-        vocabulary = Self.storedTerms(vocabulary + terms)
+    /// Adds `terms` and says what happened to each (F525).
+    ///
+    /// At `maxStoredVocabularyTerms` the new terms are REFUSED, in the order offered, and counted —
+    /// never the stored ones evicted. This used to keep the collation-first 5,000 of old + new, so a
+    /// new term that sorted earlier pushed a reviewed one out (Mandarin first, because CJK sorts
+    /// after Latin) while the screen said "Saved 3 terms." A term the user reviewed is worth more
+    /// than one they have not seen yet, and a refusal can be undone by removing something; a silent
+    /// eviction cannot, because nobody knows it happened.
+    @discardableResult
+    func addVocabulary(_ terms: [String]) -> VocabularyAddition {
+        guard listMutationIsAllowed(.vocabulary) else { return VocabularyAddition(wasRefused: true) }
+        let saved = Set(vocabulary)
+        var result = VocabularyAddition()
+        var accepted: [String] = []
+        var seen = Set<String>()
+        for term in terms.map(Self.normalizeTerm) where !term.isEmpty && seen.insert(term).inserted {
+            if saved.contains(term) {
+                result.alreadySaved += 1
+            } else if vocabulary.count + accepted.count < Self.maxStoredVocabularyTerms {
+                accepted.append(term)
+            } else {
+                result.refusedAtLimit += 1
+                result.refusedTerms.append(term)
+            }
+        }
+        result.added = accepted.count
+        guard !accepted.isEmpty else { return result }
+        vocabulary = Self.storedTerms(vocabulary + accepted)
         persistVocabulary()
+        return result
     }
 
     func removeVocabulary(_ term: String) {
@@ -2297,15 +2336,21 @@ final class MeetingStore: ObservableObject {
 
     /// Adds a `heard → preferred` replacement rule (F179), trimming both sides and ignoring an empty,
     /// no-op (`heard == preferred`), or already-present rule. Capped so the list can't grow unbounded.
-    func addReplacementRule(heard: String, preferred: String) {
-        guard listMutationIsAllowed(.replacementRules) else { return }
+    /// Returns what happened (F525): the rule editor keeps the typed rule unless it was `.added`,
+    /// and says why for the rest — at the limit this used to return in silence while the editor
+    /// cleared both fields as if the rule had been saved.
+    @discardableResult
+    func addReplacementRule(heard: String, preferred: String) -> ReplacementRuleAddition {
+        guard listMutationIsAllowed(.replacementRules) else { return .refused }
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !h.isEmpty, !p.isEmpty, h != p else { return }
+        guard !h.isEmpty, !p.isEmpty, h != p else { return .noChange }
         let rule = ReplacementRule(heard: h, preferred: p)
-        guard !replacementRules.contains(rule), replacementRules.count < Self.maxReplacementRules else { return }
+        guard !replacementRules.contains(rule) else { return .duplicate }
+        guard replacementRules.count < Self.maxReplacementRules else { return .atLimit }
         replacementRules.append(rule)
         persistReplacementRules()
+        return .added
     }
 
     func removeReplacementRule(_ rule: ReplacementRule) {
@@ -2314,7 +2359,8 @@ final class MeetingStore: ObservableObject {
         persistReplacementRules()
     }
 
-    private static let maxReplacementRules = 500
+    /// Not `private` (F525): `ReplacementRuleAddition.atLimit`'s sentence quotes it.
+    nonisolated static let maxReplacementRules = 500
 
     /// Dismisses a transient storage message. While the library is read-only this restores the
     /// standing explanation instead of clearing it (F194): the banner is the only persistent sign
@@ -2339,20 +2385,23 @@ final class MeetingStore: ObservableObject {
 
     /// Storage-side normalization only (F187): trim, drop empties, dedupe, sort. The 1,000-character
     /// prompt budget belongs to `promptVocabulary`, not to what the user's file is allowed to contain.
-    /// The ceiling here exists so a runaway paste cannot grow the file without bound; it is deliberately
-    /// far above any budget a prompt could impose, so reaching it is a bug report, not a routine trim.
+    ///
+    /// No ceiling here (F525): `addVocabulary` enforces `maxStoredVocabularyTerms` by refusing what
+    /// does not fit. This used to cut the sorted list at the ceiling, which is what made an add evict
+    /// stored terms — and at load it trimmed a longer file (another build's, or a hand edit) in memory,
+    /// so the next save or Keep This List made the trim permanent.
     private static func storedTerms(_ values: [String]) -> [String] {
         Array(Set(values.map(normalizeTerm).filter { !$0.isEmpty }))
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-            .prefix(maxStoredVocabularyTerms)
-            .map { $0 }
     }
 
-    /// Not `private` (F492): the Vocabulary screen's header and its Add-result message both quote
-    /// this number, and a hand-copied literal in either one is exactly how they drifted apart —
-    /// the header claimed 100 (the prompt's cap, `VocabularyPrompt.maxTerms`) while this constant,
-    /// what storage actually enforces, was 5,000 the whole time.
-    static let maxStoredVocabularyTerms = 5_000
+    /// Not `private` (F492): the Vocabulary screen's header and the Add-result message
+    /// (`VocabularyAddition.limitSentence`, F525) both quote this number, and a hand-copied literal in
+    /// either one is exactly how they drifted apart — the header claimed 100 (the prompt's cap,
+    /// `VocabularyPrompt.maxTerms`) while this constant, what storage actually enforces, was 5,000
+    /// the whole time. The ceiling exists so a runaway paste cannot grow the file without bound; it is
+    /// deliberately far above any budget a prompt could impose.
+    nonisolated static let maxStoredVocabularyTerms = 5_000
 
     /// The prompt budget: at most 100 terms AND at most 1,000 characters once joined. Applied only when
     /// a prompt is built (`promptVocabulary`) — never to what is stored (F187).

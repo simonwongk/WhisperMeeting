@@ -121,9 +121,25 @@ public enum VocabularyPrompt {
     /// the cap was 1,000 characters and any list that genuinely overran Whisper's budget had its
     /// whole prompt evicted, so "which terms survived" was moot. Now some survive and some do not,
     /// and the user has no way to tell which of their terms are biasing anything.
+    ///
+    /// For a list that is both what is stored and what is sent. The app's list is not (F525): it
+    /// stores up to 5,000 terms and sends a starred-first selection of them, so it uses
+    /// `coverage(sending:storedCount:)`. This one counts every non-empty term as the total — it used
+    /// to count `terms(raw)`, which stops at 100, so past 100 the notice said "of your 100 terms".
     public static func coverage(of raw: [String]) -> PromptCoverage {
-        let capped = terms(raw)
-        return PromptCoverage(fitting: promptedTerms(raw).count, total: capped.count)
+        coverage(sending: raw, storedCount: nonEmptyCount(raw))
+    }
+
+    /// What fits of the list the recognizer is given, out of how many terms the user has stored
+    /// (F525). `promptList` is what a prompt is built from — `MeetingStore.promptVocabulary`,
+    /// starred terms first — so `fitting` is exactly the terms `build` would send.
+    public static func coverage(sending promptList: [String], storedCount: Int) -> PromptCoverage {
+        let fitting = promptedTerms(promptList).count
+        return PromptCoverage(fitting: fitting, total: max(storedCount, fitting))
+    }
+
+    private static func nonEmptyCount(_ raw: [String]) -> Int {
+        raw.count { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// A plain-language notice when some terms do not fit, or nil when they all do (F272).
@@ -133,10 +149,13 @@ public enum VocabularyPrompt {
     /// terms are kept is the user's to steer: starred terms lead the list (F300), the rest follow
     /// in collation order.
     public static func coverageNotice(for raw: [String]) -> String? {
-        let coverage = coverage(of: raw)
+        notice(for: coverage(of: raw))
+    }
+
+    private static func notice(for coverage: PromptCoverage) -> String? {
         guard coverage.isTruncated else { return nil }
         return """
-        \(coverage.fitting) of your \(coverage.total) terms fit the model's prompt budget. \
+        \(coverage.fitting.formatted()) of your \(coverage.total.formatted()) terms fit the model's prompt budget. \
         The rest are stored and searchable but are not sent to the recognizer — \
         the limit is the model's, and non-Latin scripts use it up faster. \
         \(starAdvice)
@@ -152,8 +171,18 @@ public enum VocabularyPrompt {
 
     /// The notice for a list whose starred terms alone overrun the budget.
     public static func coverageNotice(for raw: [String], starredCount: Int) -> String? {
-        guard let notice = coverageNotice(for: raw) else { return nil }
-        guard starredCount >= coverage(of: raw).fitting else { return notice }
+        notice(for: coverage(of: raw), starredCount: starredCount)
+    }
+
+    /// The notice for the list actually sent, out of every stored term (F525) — what the Vocabulary
+    /// screen shows, through `MeetingStore.vocabularyCoverageNotice`.
+    public static func coverageNotice(sending promptList: [String], storedCount: Int, starredCount: Int) -> String? {
+        notice(for: coverage(sending: promptList, storedCount: storedCount), starredCount: starredCount)
+    }
+
+    private static func notice(for coverage: PromptCoverage, starredCount: Int) -> String? {
+        guard let notice = notice(for: coverage) else { return nil }
+        guard starredCount >= coverage.fitting else { return notice }
         return notice.replacingOccurrences(of: starAdvice, with: unstarAdvice)
     }
 

@@ -25,12 +25,18 @@ func vocabularyCopyDerivesStorageLimitFromTheStoreConstant() throws {
     )
 
     // Both copies must be built from the same symbol, or a future edit to one can silently
-    // reintroduce a second, disagreeing number.
+    // reintroduce a second, disagreeing number. Since F525 the Add-result message is the store's
+    // (`VocabularyAddition`, in MeetingStore's module) rather than a string built here, so the
+    // header is this file's one reference and the message is checked by what it says.
     let referenceCount = source.components(separatedBy: "MeetingStore.maxStoredVocabularyTerms").count - 1
     #expect(
-        referenceCount >= 2,
-        "expected the header and the Add-result message to both reference MeetingStore.maxStoredVocabularyTerms; found \(referenceCount) reference(s)"
+        referenceCount >= 1,
+        "expected the header to reference MeetingStore.maxStoredVocabularyTerms; found \(referenceCount) reference(s)"
     )
+    let limitMessage = VocabularyAddition(refusedAtLimit: 1, refusedTerms: ["x"]).message()
+    #expect(limitMessage.contains(MeetingStore.maxStoredVocabularyTerms.formatted()))
+    let messageSource = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/VocabularyAddition.swift")
+    #expect(!messageSource.contains("5,000"), "the Add-result message must not hard-code 5,000 as a literal")
 }
 
 /// The constant the copy above must be able to see. Reachable from `ContentView` requires it not be
