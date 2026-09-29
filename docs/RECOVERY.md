@@ -105,7 +105,7 @@ them are **advisory**: delete any of them and the library still opens exactly as
 ~/Library/Application Support/WhisperMeet/
   meetings.json                  the current index
   meetings.backup.json           the previous generation
-  meetings.ledger.json           which generation is current, and its lineage (~600 bytes)
+  meetings.ledger.json           which generation is current, and its lineage (~15 KB once 64 saves in)
   meetings.history/              past generations, one file each
     g-000000041-4f2a…json        g-<sequence>-<fingerprint>.json
     conflict-000000042-…json     a save that lost a race to another writer
