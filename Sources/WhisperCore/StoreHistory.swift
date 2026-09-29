@@ -66,8 +66,9 @@ public struct RetentionPolicy: Sendable, Equatable {
     }
 
     /// The byte budget when the largest generation it must make room for is `indexBytes` long
-    /// (F527). A save passes the larger of the index it just wrote and the largest generation the
-    /// rules keep (F650) — never the new index alone, which a wipe shrinks to two bytes.
+    /// (F527). A save hands `prune` only the size of the index it just wrote; `prune` calls this
+    /// with the larger of that and the largest generation the rules keep (F650) — never the new
+    /// index alone, which a wipe shrinks to two bytes.
     ///
     /// **Why it scales.** The budget may trim only age anchors, and it trims whenever what the
     /// rules kept is over it. A fixed 256 MiB is passed by the three newest generations alone once
