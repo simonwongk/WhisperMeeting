@@ -5689,7 +5689,21 @@ final class AppModel: ObservableObject {
     /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened.
     func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
-        return ReplacementRuleMatcher.corrections(rules: store.replacementRules, segments: meeting.segments)
+        return ReplacementRuleMatcher.corrections(
+            rules: store.replacementRules, segments: meeting.segments, evidence: cjkWordEvidence
+        )
+    }
+
+    /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one
+    /// (F594). Injectable in the F47 shape so a test can pin the segmentation; defaults to
+    /// `NLTokenizer`'s, which `WhisperCore` cannot import.
+    var cjkWordSegmenter: CJKWordEvidence.Segmenter = NaturalLanguageWordSegmenter.wordRanges
+
+    /// The segmenter plus the user's vocabulary: a CJK phrase inside a longer vocabulary term is part
+    /// of that term, which is the only way to see a phrasal compound (会议纪要) the segmenter splits.
+    /// The same evidence for proposing and for applying, so the two cannot disagree (F444).
+    var cjkWordEvidence: CJKWordEvidence {
+        CJKWordEvidence(segmenter: cjkWordSegmenter, knownTerms: store.vocabulary)
     }
 
     /// Cited cross-meeting retrieval (F180): rank transcript segments across the completed meetings in
@@ -5955,7 +5969,7 @@ final class AppModel: ObservableObject {
     /// text no longer matches what's shown). The recording is never opened (F82).
     func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) {
         guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return }
-        let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments)
+        let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments, evidence: cjkWordEvidence)
         store.update(id: id) {
             $0.segments = corrected
             $0.transcriptText = TranscriptFormatter.timestamped(corrected)
@@ -6170,7 +6184,9 @@ final class AppModel: ObservableObject {
         defer { proposingCorrectionsID = nil }
         do {
             let corrections = try await proposeTranscriptCorrections(plainText, vocabulary, reference)
-            return TranscriptCorrection.glossaryCorrections(from: corrections, segments: meeting.segments)
+            return TranscriptCorrection.glossaryCorrections(
+                from: corrections, segments: meeting.segments, evidence: cjkWordEvidence
+            )
         } catch is CancellationError {
             return []
         } catch {

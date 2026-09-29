@@ -22,10 +22,11 @@ public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
 public enum ReplacementRuleMatcher {
     public static func corrections(
         rules: [ReplacementRule],
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        evidence: CJKWordEvidence = .none
     ) -> [GlossaryCorrection] {
         let asCorrections = rules.map { TranscriptCorrection(from: $0.heard, to: $0.preferred) }
-        return TranscriptCorrection.glossaryCorrections(from: asCorrections, segments: segments)
+        return TranscriptCorrection.glossaryCorrections(from: asCorrections, segments: segments, evidence: evidence)
     }
 }
 
@@ -50,13 +51,29 @@ public enum ReplacementRuleMatcher {
 /// failure 1, any script), and additionally require a Latin/alphanumeric `heard` to be a WHOLE
 /// token — not immediately flanked by another Latin letter or digit (kills failure 2).
 ///
-/// CJK terms are deliberately exempted from the whole-token check, mirroring `ProtectedTerms`
-/// (`Sources/WhisperCore/ProtectedTerms.swift`, F245). Chinese has no space between words, so
-/// nothing short of a segmenter can tell whether a CJK character next to `heard` starts a new word
-/// or continues the same one, and treating every CJK neighbour as "still the same token" would make
-/// a CJK rule impossible to ever apply. Failure 1's fix still protects a CJK rule whose `preferred`
-/// contains its `heard`. The CJK-detection helper (`hasCJK` below) stays a separate, local copy of
-/// `ProtectedTerms`'s (it is `private` there); the *connector* check is shared, see below.
+/// CJK terms are exempt from the Latin whole-token check, mirroring `ProtectedTerms`
+/// (`Sources/WhisperCore/ProtectedTerms.swift`, F245): Chinese has no space between words, so the
+/// character next to `heard` says nothing about whether it starts a new word, and treating every CJK
+/// neighbour as "still the same token" would make a CJK rule impossible to ever apply. Failure 1's
+/// fix still protects a CJK rule whose `preferred` contains its `heard`. The CJK-detection helper
+/// (`hasCJK` below) stays a separate, local copy of `ProtectedTerms`'s (it is `private` there); the
+/// *connector* check is shared, see below.
+///
+/// **A CJK occurrence gets its word edges from `CJKWordEvidence` instead (F594).** Without it,
+/// 会议 → 会议室 also rewrote the 会议 inside 整理会议纪要 — failure 2, for Chinese. `WhisperCore`
+/// cannot segment Chinese itself, so the caller supplies what can, and an occurrence is refused when
+/// either says it is part of a longer word:
+///
+/// - **the segmenter** reports a word that starts before the occurrence and ends inside it, or starts
+///   inside it and ends after it — the occurrence cuts that word (会议 in 会议厅, which NLTokenizer
+///   keeps whole). An occurrence spanning several whole words cuts nothing, and neither does a gap
+///   the segmenter reports no word for (whitespace, punctuation);
+/// - **a known term** longer than `heard` and containing it occurs around it (会议 in 会议纪要 when
+///   会议纪要 is in the user's vocabulary). Only this one sees a phrasal compound: NLTokenizer splits
+///   会议纪要 into 会议 | 纪要, which was measured before any of this was written.
+///
+/// With `.none` (no segmenter, no known terms) a CJK occurrence is judged exactly as it was before
+/// F594. A Latin occurrence ignores the evidence entirely: it already has F444's boundary.
 ///
 /// A CJK neighbour also does not block a LATIN `heard`, and deliberately does not use the classic
 /// `\b` regex boundary for that: `\b` treats Han ideographs as word characters (confirmed against
@@ -68,22 +85,47 @@ public enum ReplacementRuleMatcher {
 /// F592 (this file's own connector check used to be a second, independently-written predicate that
 /// disagreed with `ProtectedTerms`'s on an underscore neighbour and on a non-Han Unicode letter
 /// neighbour; see `LatinTokenBoundary`'s doc comment for which definition won and why).
-enum ReplacementBoundary {
+final class ReplacementBoundary {
+    let heard: String
+    let preferred: String
+    private let evidence: CJKWordEvidence
+    /// The known terms that could enclose a CJK occurrence of `heard`, worked out on first need: with
+    /// hundreds of rules and a 5,000-term vocabulary, a scan per rule that never matches is waste.
+    private var enclosingTermsCache: [String]?
+
+    init(heard: String, notCoveredBy preferred: String, evidence: CJKWordEvidence = .none) {
+        self.heard = heard
+        self.preferred = preferred
+        self.evidence = evidence
+    }
+
     /// Whether `heard` genuinely occurs in `text` (see the type's documentation).
-    static func occurs(_ heard: String, notCoveredBy preferred: String, in text: String) -> Bool {
-        firstRange(of: heard, notCoveredBy: preferred, in: text) != nil
+    static func occurs(
+        _ heard: String, notCoveredBy preferred: String, in text: String, evidence: CJKWordEvidence = .none
+    ) -> Bool {
+        firstRange(of: heard, notCoveredBy: preferred, in: text, evidence: evidence) != nil
     }
 
     /// The first range in `text` where `heard` is a genuine occurrence, or `nil` if there is none.
-    static func firstRange(of heard: String, notCoveredBy preferred: String, in text: String) -> Range<String.Index>? {
+    static func firstRange(
+        of heard: String, notCoveredBy preferred: String, in text: String, evidence: CJKWordEvidence = .none
+    ) -> Range<String.Index>? {
+        ReplacementBoundary(heard: heard, notCoveredBy: preferred, evidence: evidence)
+            .firstRange(in: SegmentedText(text, segmenter: evidence.segmenter))
+    }
+
+    /// The first genuine occurrence of `heard` in the segmented text. The text carries its own word
+    /// ranges, so one segmentation serves every rule checked against the same segment.
+    func firstRange(in segmented: SegmentedText) -> Range<String.Index>? {
         guard !heard.isEmpty else { return nil }
-        let preferredRanges = preferred.isEmpty ? [] : allRanges(of: preferred, in: text)
+        let text = segmented.text
+        let preferredRanges = preferred.isEmpty ? [] : Self.allRanges(of: preferred, in: text)
         var searchStart = text.startIndex
         while let candidate = text.range(of: heard, range: searchStart..<text.endIndex) {
             let coveredByPreferred = preferredRanges.contains {
                 $0.contains(candidate.lowerBound) && candidate.upperBound <= $0.upperBound
             }
-            if !coveredByPreferred, isWholeToken(candidate, in: text) {
+            if !coveredByPreferred, isWholeWord(candidate, in: segmented) {
                 return candidate
             }
             searchStart = text.index(after: candidate.lowerBound)
@@ -94,7 +136,7 @@ enum ReplacementBoundary {
     /// Every (possibly overlapping) range where `needle` occurs in `text`. Overlap-permissive on
     /// purpose: over-covering with `preferred` is the safe direction, since it can only make the
     /// matcher skip more, never propose a wrong replacement.
-    private static func allRanges(of needle: String, in text: String) -> [Range<String.Index>] {
+    static func allRanges(of needle: String, in text: String) -> [Range<String.Index>] {
         var ranges: [Range<String.Index>] = []
         var searchStart = text.startIndex
         while let found = text.range(of: needle, range: searchStart..<text.endIndex) {
@@ -104,10 +146,13 @@ enum ReplacementBoundary {
         return ranges
     }
 
-    /// Whether the match at `range` is a whole token rather than a fragment of a larger Latin run.
-    /// CJK occurrences are exempt — see the type's documentation.
-    private static func isWholeToken(_ range: Range<String.Index>, in text: String) -> Bool {
-        guard !hasCJK(text[range]) else { return true }
+    /// Whether the match at `range` is a whole word rather than part of a longer one: F444's Latin
+    /// token rule for a Latin occurrence, the caller's evidence for a CJK one (F594).
+    private func isWholeWord(_ range: Range<String.Index>, in segmented: SegmentedText) -> Bool {
+        let text = segmented.text
+        guard !Self.hasCJK(text[range]) else {
+            return !segmented.cutsAWord(range) && !liesInsideAKnownTerm(range, in: text)
+        }
         if range.lowerBound > text.startIndex, LatinTokenBoundary.isConnector(text[text.index(before: range.lowerBound)]) {
             return false
         }
@@ -117,14 +162,57 @@ enum ReplacementBoundary {
         return true
     }
 
+    /// Whether a known term longer than `heard` occurs around `range` — 会议 inside 会议纪要.
+    private func liesInsideAKnownTerm(_ range: Range<String.Index>, in text: String) -> Bool {
+        enclosingTerms().contains { term in
+            Self.allRanges(of: term, in: text).contains {
+                $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound && $0 != range
+            }
+        }
+    }
+
+    private func enclosingTerms() -> [String] {
+        if let enclosingTermsCache { return enclosingTermsCache }
+        let terms = evidence.knownTerms.filter { term in
+            term.count > heard.count && Self.hasCJK(term) && term.contains(heard)
+        }
+        enclosingTermsCache = terms
+        return terms
+    }
+
     /// Same ranges `ProtectedTerms.hasCJK` checks (F245) — duplicated rather than shared, because
     /// that one is `private` to its own file; this is a plain Unicode CJK-ideograph range check,
     /// unlikely to need to change independently. (The *connector* check this file used to keep
     /// alongside it, `isLatinConnector`, is no longer a second copy — F592 moved it to
     /// `LatinTokenBoundary`, shared with `ProtectedTerms`.)
-    private static func hasCJK(_ text: some StringProtocol) -> Bool {
+    static func hasCJK(_ text: some StringProtocol) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+        }
+    }
+}
+
+/// One segment's text and the word ranges a segmenter finds in it, segmented at most once however
+/// many phrases are checked against it (F594).
+final class SegmentedText {
+    let text: String
+    private let segmenter: CJKWordEvidence.Segmenter?
+    private var words: [Range<String.Index>]?
+
+    init(_ text: String, segmenter: CJKWordEvidence.Segmenter?) {
+        self.text = text
+        self.segmenter = segmenter
+    }
+
+    /// Whether a word the segmenter found starts or ends strictly inside `range` while reaching
+    /// beyond it — `range` cuts that word. With no segmenter nothing is cut.
+    func cutsAWord(_ range: Range<String.Index>) -> Bool {
+        guard let segmenter else { return false }
+        let found = words ?? segmenter(text)
+        words = found
+        return found.contains { word in
+            (word.lowerBound < range.lowerBound && range.lowerBound < word.upperBound)
+                || (word.lowerBound < range.upperBound && range.upperBound < word.upperBound)
         }
     }
 }

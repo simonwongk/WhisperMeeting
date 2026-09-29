@@ -63,18 +63,21 @@ public enum GlossaryCorrector {
     /// `ReplacementBoundary` — the same rule the matcher used to propose it, so a proposal and its
     /// application can never disagree about which occurrence was meant: not a fragment of a longer
     /// Latin word, and not a `from` that only reads that way because it sits inside an already-`to`
-    /// span). Segments without a correction are unchanged; corrections are order-independent (each
+    /// span, and — for a CJK `from` — not part of a longer Chinese word by `evidence`, F594). Pass the
+    /// evidence the proposals were made with, or the applier can pick an occurrence the matcher
+    /// refused. Segments without a correction are unchanged; corrections are order-independent (each
     /// targets a specific segment index).
     public static func apply(
         _ corrections: [GlossaryCorrection],
-        to segments: [TranscriptSegment]
+        to segments: [TranscriptSegment],
+        evidence: CJKWordEvidence = .none
     ) -> [TranscriptSegment] {
         var result = segments
         for correction in corrections {
             guard result.indices.contains(correction.segmentIndex),
                   let range = ReplacementBoundary.firstRange(
                     of: correction.from, notCoveredBy: correction.to,
-                    in: result[correction.segmentIndex].text
+                    in: result[correction.segmentIndex].text, evidence: evidence
                   ) else { continue }
             result[correction.segmentIndex].text.replaceSubrange(range, with: correction.to)
         }

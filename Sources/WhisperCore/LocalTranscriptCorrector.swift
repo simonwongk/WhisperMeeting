@@ -19,15 +19,20 @@ public struct TranscriptCorrection: Sendable, Equatable, Codable {
     /// "Genuine" is `ReplacementBoundary`'s call (F444): a plain substring test proposed a correction
     /// for every segment that ALREADY read `to` (because `from` was a substring of it, as "Jon" is of
     /// "Jonathan"), and could clip an unrelated word ("Jon" inside "Jones") that never mis-heard
-    /// anything.
+    /// anything. For a CJK `from`, `evidence` supplies the word edges Chinese does not write (F594):
+    /// without it 会议 → 会议室 was also proposed for the 会议 inside 会议纪要.
     public static func glossaryCorrections(
         from corrections: [TranscriptCorrection],
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        evidence: CJKWordEvidence = .none
     ) -> [GlossaryCorrection] {
         var result: [GlossaryCorrection] = []
+        // One segmentation per segment, shared by every correction checked against it.
+        let segmented = segments.map { SegmentedText($0.text, segmenter: evidence.segmenter) }
         for correction in corrections where !correction.from.isEmpty && correction.from != correction.to {
-            for (index, segment) in segments.enumerated()
-            where ReplacementBoundary.occurs(correction.from, notCoveredBy: correction.to, in: segment.text) {
+            let boundary = ReplacementBoundary(heard: correction.from, notCoveredBy: correction.to, evidence: evidence)
+            for (index, _) in segments.enumerated()
+            where boundary.firstRange(in: segmented[index]) != nil {
                 result.append(GlossaryCorrection(
                     segmentIndex: index, from: correction.from, to: correction.to
                 ))
