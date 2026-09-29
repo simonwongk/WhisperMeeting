@@ -123,3 +123,45 @@ func shredMatchesCaseInsensitivelyAndRotatesOnlyWhenNeeded() throws {
     #expect(try Data(contentsOf: primary) == primaryBefore, "the live value was saved again for no reason")
     #expect(try store.retainedGenerations().count == generationsBefore)
 }
+
+@Test("A library whose history directory could not be created still has the backup copy shredded (F665)")
+func shredRotatesTheBackupWithoutAHistoryDirectory() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A plain file squatting the history directory's name: every save succeeds and retains nothing.
+    try Data("not a directory".utf8).write(to: root.appendingPathComponent("meetings.history"))
+    try store.save([Note(id: "k", title: "Standup"), Note(id: "s", title: "Secret")], now: 1)
+    try store.save([Note(id: "k", title: "Standup")], now: 2)   // the delete: the backup still holds it
+    let backup = root.appendingPathComponent("meetings.backup.json")
+    try #require(try String(contentsOf: backup, encoding: .utf8).contains("Secret"))
+
+    let shred = try store.shredHistory(removingElementsWithIDs: ["s"])
+
+    #expect(shred.rewritten.isEmpty)
+    #expect(shred.rotation != nil, "the backup held the record, so it had to be rotated out")
+    #expect(!(try String(contentsOf: backup, encoding: .utf8).contains("Secret")))
+}
+
+/// Found while fixing F665, beside the same check: the rotation saved `load()`'s value against
+/// `load()`'s token, and a load that is not complete has no token — so the rotation was an
+/// unchecked save. Over a primary that belongs to a second lineage it silently made that primary
+/// current and ended the divergence the library is meant to put to the user. The backup keeps the
+/// deleted text until the next ordinary save instead: deferred, never destructive.
+@Test("A shred never rotates over an index that did not load cleanly (F665)")
+func shredDoesNotRotateOverADivergentIndex() throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try store.save([Note(id: "k", title: "Standup"), Note(id: "s", title: "Secret")], now: 1)
+    try store.save([Note(id: "k", title: "Standup")], now: 2)
+    // A primary no save recorded, written beside a ledger that still describes the last one.
+    let primary = root.appendingPathComponent("meetings.json")
+    let foreign = Data(#"[{"id":"k","title":"Standup"},{"id":"x","title":"Written elsewhere"}]"#.utf8)
+    try foreign.write(to: primary)
+    try #require(try store.load()?.health == .divergentGenerations)
+
+    let shred = try store.shredHistory(removingElementsWithIDs: ["s"])
+
+    #expect(shred.rotation == nil, "an unchecked save ran over a library with two lineages")
+    #expect(try Data(contentsOf: primary) == foreign)
+    #expect(try store.load()?.health == .divergentGenerations, "the divergence was resolved without asking")
+}
