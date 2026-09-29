@@ -25,9 +25,9 @@ enum InstallOutcome: Equatable {
     case installed
     case failed(InstallerError)
     /// Cancelled from Settings or by Quit (F520) before the installer switched the new version in
-    /// — from its switch-over on it ignores the signal and finishes, and the run is `.installed`
-    /// (F654). So the traps have put back what the run was replacing, and `previousKept` — installed
-    /// before and still installed — is about the previous version.
+    /// — from its switch-over on it ignores the signal, finishes and exits 0, and the run is judged
+    /// like any finished install (F654). So the traps have put back what the run was replacing, and
+    /// `previousKept` — installed before and still installed — is about the previous version.
     case cancelled(previousKept: Bool)
 }
 
