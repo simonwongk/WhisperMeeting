@@ -10,8 +10,8 @@ import Foundation
 /// - An F-key is chosen when it goes down. With ⌘ or ⌃ held it is a shortcut instead, and is let
 ///   through, as is any other key with ⌘ or ⌃ held (⌘W closes the window, ⌘Q quits).
 /// - A modifier is chosen when it comes back up with nothing pressed while it was down: that is a
-///   lone modifier. A key or another modifier pressed meanwhile made it half of a chord, and its
-///   release chooses nothing.
+///   lone modifier. A key, another modifier or a click (F653) meanwhile made it half of a chord,
+///   and its release chooses nothing. Clicks are always let through.
 /// - Any other key, Tab and Space included, is refused and held back, so it types nothing into a
 ///   field that has focus; the Settings window says why and that Esc cancels.
 ///
@@ -23,6 +23,9 @@ public struct DictationTriggerCapture: Sendable, Equatable {
         /// A modifier key went down or up. `flags` is the event's raw modifier flags, whose
         /// device-dependent bits say which side's key is down.
         case modifiersChanged(keyCode: UInt16, flags: UInt64)
+        /// A mouse button went down, anywhere (F653). A modifier held for it — ⌘-click, ⌥-click —
+        /// was half of a chord, as with a key.
+        case click
     }
 
     public enum Decision: Equatable, Sendable {
@@ -47,6 +50,9 @@ public struct DictationTriggerCapture: Sendable, Equatable {
 
     public mutating func handle(_ input: Input) -> Decision {
         switch input {
+        case .click:
+            if !heldModifiers.isEmpty { chorded = true }
+            return .pass
         case let .keyDown(keyCode, isShortcut):
             if keyCode == DictationKeyName.escapeKeyCode { return .cancel }
             if !heldModifiers.isEmpty { chorded = true }

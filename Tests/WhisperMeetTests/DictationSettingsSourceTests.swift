@@ -42,6 +42,17 @@ func triggerCaptureIsScopedAndCancellable() throws {
     #expect(capture.contains("return event"), "the capture swallows every key")
 }
 
+@Test("Choosing a trigger hears clicks, in the app and outside it, as chord input (F653)")
+func triggerCaptureHearsClicks() throws {
+    let source = try contentViewSource()
+    let capture = body(following: "private func toggleKeyCapture()", in: source)
+    #expect(capture.contains("keyCapture.handle(.click)"), "a click is not fed to the capture")
+    #expect(capture.contains(".leftMouseDown"), "the capture's monitors do not include mouse-down")
+    #expect(capture.contains("addGlobalMonitorForEvents"), "a modifier-click in another app is not heard")
+    let end = body(following: "private func endKeyCapture()", in: source)
+    #expect(end.contains("keyCaptureClickMonitor"), "the click monitor outlives the capture")
+}
+
 @Test("The trigger row no longer promises F-keys type nothing, and warns about keys macOS uses (F547)")
 func triggerRowDescribesWhatTheKeyReallyDoes() throws {
     // Literals kept: the claim being removed is copy.

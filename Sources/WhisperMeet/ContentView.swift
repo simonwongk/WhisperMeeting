@@ -1435,6 +1435,8 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var capturingKey = false
     @State private var keyMonitor: Any?
+    /// Clicks in other apps while choosing a trigger, which the local monitor cannot see (F653).
+    @State private var keyCaptureClickMonitor: Any?
     @State private var keyCaptureHint: String?
     /// What the keys pressed so far in this capture add up to (F521).
     @State private var keyCapture = DictationTriggerCapture()
@@ -2110,7 +2112,14 @@ struct SettingsView: View {
         capturingKey = true
         keyCaptureHint = nil
         keyCapture = DictationTriggerCapture()
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks.union([.keyDown, .flagsChanged])) { event in
+            // F653: a click anywhere makes a modifier held for it — ⌘-click, ⌥-click — half of a
+            // chord, not a lone press to choose. The click itself is the app's.
+            if clicks.contains(NSEvent.EventTypeMask(type: event.type)) {
+                _ = keyCapture.handle(.click)
+                return event
+            }
             guard event.window === window else { return event }
             let input: DictationTriggerCapture.Input = event.type == .flagsChanged
                 ? .modifiersChanged(keyCode: event.keyCode, flags: UInt64(event.modifierFlags.rawValue))
@@ -2134,9 +2143,15 @@ struct SettingsView: View {
                 return event
             }
         }
+        // A ⌘-click in another app's window leaves WhisperMeet frontmost, so the ⌘'s release still
+        // arrives here; only a global monitor hears that click. Mouse-down needs no permission.
+        keyCaptureClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { _ in
+            _ = keyCapture.handle(.click)
+        }
     }
     private func endKeyCapture() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        if let keyCaptureClickMonitor { NSEvent.removeMonitor(keyCaptureClickMonitor); self.keyCaptureClickMonitor = nil }
         capturingKey = false
         keyCaptureHint = nil
     }

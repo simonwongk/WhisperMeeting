@@ -82,6 +82,23 @@ func twoModifiersTogetherChooseNeither() {
     #expect(capture.handle(down(rightOption, flags: 0)) == .choose(rightOption))
 }
 
+@Test("A modifier held for a click is not chosen on its release, and the click goes through (F653)")
+func aModifierHeldForAClickIsNotATrigger() {
+    for (key, flags) in [(leftCommand, commandFlag | 0x0008), (rightOption, optionFlag | 0x0040)] {
+        var capture = DictationTriggerCapture()
+        #expect(capture.handle(down(key, flags: flags)) == .pass)
+        // ⌘-click or ⌥-click in the Settings window: the click is the app's, and it makes the
+        // modifier half of a chord.
+        #expect(capture.handle(.click) == .pass)
+        #expect(capture.handle(down(key, flags: 0)) == .pass, "a modifier held for a click became the trigger")
+    }
+    // A click with nothing held changes nothing: the next lone modifier is still a choice.
+    var capture = DictationTriggerCapture()
+    #expect(capture.handle(.click) == .pass)
+    #expect(capture.handle(down(rightOption, flags: optionFlag | 0x0040)) == .pass)
+    #expect(capture.handle(down(rightOption, flags: 0)) == .choose(rightOption))
+}
+
 @Test("A modifier already down when capture began chooses nothing on its release (F521)")
 func aModifierHeldBeforeCaptureIsNotChosen() {
     var capture = DictationTriggerCapture()
