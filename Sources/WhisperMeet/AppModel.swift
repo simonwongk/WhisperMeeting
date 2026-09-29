@@ -1245,9 +1245,9 @@ final class AppModel: ObservableObject {
     /// WhisperMeet is listed in System Settings only once something has — which used to be Start or
     /// Test Recording alone. So the row's "Enable, then quit with ⌘Q" sent a new user to a list with
     /// nothing in it to enable. Asking here puts it there; when that does not grant access outright,
-    /// the pane is opened at the switch the user now needs. The very first ask also shows macOS's
-    /// own prompt, which offers the same pane: a second route to one place, never a click that
-    /// does nothing.
+    /// the pane is opened at the switch the user now needs. (macOS may show a prompt of its own on
+    /// the first ask; this code does not depend on what it offers, and opening the pane as well
+    /// means the click is never one that does nothing.)
     func requestSystemAudioAccess() {
         if !requestScreenCaptureAccess() {
             openScreenCaptureSettings()
