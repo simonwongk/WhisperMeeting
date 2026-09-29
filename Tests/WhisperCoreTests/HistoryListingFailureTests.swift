@@ -48,12 +48,14 @@ private func countsOnDisk(_ fixture: Fixture) -> [Int] {
     }.sorted()
 }
 
-/// Seventeen meetings, a wipe, then a hundred ordinary saves — F517's shape, so the pinned
-/// generation's record is far past the newest 64 and held only by "its file is on disk".
-private func wipeThenKeepWorking(_ store: BackupJSONStore<[Note]>, now: Int) throws -> GenerationToken {
+/// Seventeen meetings, a wipe, then `saves` ordinary saves — F517's shape. With the default hundred
+/// the pinned generation's record is far past the newest 64 and held only by "its file is on disk".
+private func wipeThenKeepWorking(
+    _ store: BackupJSONStore<[Note]>, now: Int, saves: Int = 100
+) throws -> GenerationToken {
     var token = try store.save((0..<17).map { Note(title: "meeting \($0)") }, now: now).token
     token = try store.save([], expecting: token, now: now).token
-    for index in 0..<100 {
+    for index in 0..<saves {
         token = try store.save([Note(title: "after the wipe \(index)")], expecting: token, now: now).token
     }
     return token
@@ -79,6 +81,40 @@ func aFailedListingKeepsThePinnedRecord() throws {
 
     listing.isFailing = true
     token = try store.save([Note(title: "the listing fails once")], expecting: token, now: now).token
+    listing.isFailing = false
+    _ = try store.save([Note(title: "the listing works again")], expecting: token, now: now)
+
+    #expect(countsOnDisk(fixture).contains(17), "the pinned generation was pruned: \(countsOnDisk(fixture))")
+}
+
+/// Why F648 keeps every named record rather than only those ALREADY past the window (the narrower
+/// rule its review proposed first): the record that crosses the window in the very save whose
+/// listing fails can be the pin's own. Under the narrower rule the four other tests here all pass;
+/// this one fails (the review's probe P3, round 2).
+@Test("The pin's record crossing the window in the save whose listing fails is kept (F648)")
+func aRecordCrossingTheWindowDuringAFailedListingIsKept() throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let listing = ListingSwitch()
+    var io = StoreFileIO.live
+    io.contentsOfDirectory = { url, phase in
+        if listing.isFailing, phase == .listHistory { throw CocoaError(.fileReadUnknown) }
+        return try StoreFileIO.live.contentsOfDirectory(url, phase)
+    }
+    let store = BackupJSONStore<[Note]>(
+        primaryURL: fixture.primaryURL, backupURL: fixture.backupURL, io: io,
+        writer: "aaaa0648", recordCount: { $0.count }
+    )
+    let now = 1_757_000_000
+    // Sixty-two saves after the wipe put the seventeen-meeting record at index 63: the last slot
+    // inside the window, so the next save pushes it across.
+    var token = try wipeThenKeepWorking(store, now: now, saves: 62)
+    let ledgerURL = fixture.directory.appendingPathComponent("meetings.ledger.json")
+    let pinIndex = try #require(StoreLedger.read(at: ledgerURL)?.history.firstIndex { $0.recordCount == 17 })
+    try #require(pinIndex == 63, "precondition: the pin's record sits at index 63, not \(pinIndex)")
+
+    listing.isFailing = true
+    token = try store.save([Note(title: "the listing fails as the record crosses")], expecting: token, now: now).token
     listing.isFailing = false
     _ = try store.save([Note(title: "the listing works again")], expecting: token, now: now)
 
