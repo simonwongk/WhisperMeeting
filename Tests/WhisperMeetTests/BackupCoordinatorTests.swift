@@ -210,6 +210,17 @@ func sourceChangedMidRunNoLongerFailsVerification() throws {
     // The backup holds the NEW bytes — what was actually on disk when it was copied — not the
     // stale up-front snapshot and not a refusal.
     #expect(backedUpIndex == "meetings v2 (saved mid-backup)")
+
+    // And the generation must pass the check a RESTORE runs on it (F651). This test used to stop
+    // above: the file grew from 11 to 30 bytes mid-run, and the manifest recorded the 11-byte
+    // size beside the 30-byte hash, so the backup said "verified" and then failed its own
+    // verification with "Wrong size in this backup" — unrestorable, and only discovered on the
+    // day it was needed. `summary.verified` is the run's own opinion; this is the restore's.
+    let generation = backupRoot(dest).appendingPathComponent("1000")
+    let check = try BackupManifest.verify(in: generation, deep: true)
+    #expect(check.isIntact, "\(check.problems)")
+    let plan = try BackupRestorePlan.make(from: generation, into: source, deep: true)
+    #expect(plan.isSafeToApply)
 }
 
 @Test("copyAndVerify retries once against a changed source, bounded rather than looping forever (F504)")
@@ -255,7 +266,7 @@ func copyAndVerifySucceedsAfterOneRetry() throws {
     try FileManager.default.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
     var sleepCalls = 0
-    let hash = try BackupCoordinator.copyAndVerify(
+    let copied = try BackupCoordinator.copyAndVerify(
         from: sourceURL, to: destURL, relativePath: "meetings.json",
         retryDelay: 0,
         sleep: { _ in sleepCalls += 1 },
@@ -269,8 +280,11 @@ func copyAndVerifySucceedsAfterOneRetry() throws {
         }
     )
     #expect(sleepCalls == 1, "exactly one retry was needed")
-    #expect(hash == (try BackupCoordinator.sha256(of: destURL)))
+    #expect(copied.sha256 == (try BackupCoordinator.sha256(of: destURL)))
     #expect(try String(decoding: Data(contentsOf: destURL), as: UTF8.self) == "v2 (saved mid-copy)")
+    // The size it reports is the size of the bytes it hashed — the new 19-byte content, not the
+    // 2-byte original (F651). It comes from the same pass as the hash, so the two cannot disagree.
+    #expect(copied.size == Int64(Data("v2 (saved mid-copy)".utf8).count))
 }
 
 private final class Captured: @unchecked Sendable {
@@ -398,6 +412,44 @@ func backupFallsBackToVerifiedCopyWhenHardLinkFails() throws {
     let manifest = try #require(BackupManifest.read(in: root.appendingPathComponent("2000")))
     #expect(try BackupManifest.verify(in: root.appendingPathComponent("2000"), deep: true).isIntact)
     #expect(manifest.files.count == 2)
+}
+
+// F651 — the F532 fallback copies a `.skip` file from the LIVE library, so a file that changes
+// between the up-front scan and its own turn is copied at its new size. The manifest must describe
+// the bytes that were actually copied — size as well as hash — or the generation reports verified
+// and then fails its own check. Same failure as F504's scenario, reached through the fallback.
+@Test("A file that changes size mid-run through the hard-link fallback still yields a generation that verifies (F651)")
+func fallbackCopyOfFileChangedMidRunVerifies() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F651-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meeting index v1", to: source.appendingPathComponent("meetings.json"))
+    try write("audio-A", to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+    _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 2)
+
+    // Second run: both files plan `.skip`; every link fails (an exFAT-style destination); and the
+    // recording is rewritten, LONGER, after the up-front scan but before its own turn.
+    let grown = "audio-A, and then a good deal more of it than the scan ever saw"
+    let summary = try BackupCoordinator.backUp(
+        source: source, destination: dest, now: 2_000, retain: 2,
+        beforeProcessingForTesting: { relativePath in
+            if relativePath == "Recordings/A/meeting.wav" {
+                try? Data(grown.utf8).write(to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+            }
+        },
+        linkItem: { _, _ in throw CocoaError(.fileWriteUnsupportedScheme) }
+    )
+    #expect(summary.verified)
+
+    let generation = backupRoot(dest).appendingPathComponent("2000")
+    let copied = try String(
+        decoding: Data(contentsOf: generation.appendingPathComponent("Recordings/A/meeting.wav")), as: UTF8.self
+    )
+    #expect(copied == grown, "the fallback copies what is on disk now, not the stale scan")
+    let check = try BackupManifest.verify(in: generation, deep: true)
+    #expect(check.isIntact, "\(check.problems)")
+    #expect(try BackupRestorePlan.make(from: generation, into: source, deep: true).isSafeToApply)
 }
 
 // F532 — the free-space check must budget for the fallback copy too: on a linkless destination a

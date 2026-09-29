@@ -195,10 +195,12 @@ enum BackupCoordinator {
 
         var copied = 0
         var skipped = 0
-        // Overrides `sourceFiles`' up-front hash for the manifest, for exactly the files this run
-        // actually re-hashed post-copy (F504) — a `.skip` entry is hardlinked from an already
-        // verified previous generation and never re-read, so its up-front hash still describes it.
-        var rehashedContent: [String: String] = [:]
+        // Overrides `sourceFiles`' up-front hash AND size for the manifest, for exactly the files
+        // this run copied and re-hashed post-copy (F504, F651): every `.copy` entry, and any `.skip`
+        // entry whose hard link failed and fell back to a copy (F532). A `.skip` entry that WAS
+        // hard-linked shares the previous generation's inode and is never re-read, so its up-front
+        // hash and size still describe it.
+        var copiedContent: [String: CopiedFile] = [:]
         for item in plan {
             beforeProcessingForTesting?(item.file.relativePath)
             let sourceURL = source.appendingPathComponent(item.file.relativePath)
@@ -220,7 +222,7 @@ enum BackupCoordinator {
                         // depending on where it failed; clear the target first so the copy always
                         // starts from empty.
                         try? fileManager.removeItem(at: destURL)
-                        rehashedContent[item.file.relativePath] = try Self.copyAndVerify(
+                        copiedContent[item.file.relativePath] = try Self.copyAndVerify(
                             from: sourceURL, to: destURL, relativePath: item.file.relativePath, fileManager: fileManager
                         )
                     }
@@ -229,7 +231,7 @@ enum BackupCoordinator {
                 }
                 skipped += 1
             case .copy:
-                rehashedContent[item.file.relativePath] = try Self.copyAndVerify(
+                copiedContent[item.file.relativePath] = try Self.copyAndVerify(
                     from: sourceURL, to: destURL, relativePath: item.file.relativePath, fileManager: fileManager
                 )
                 copied += 1
@@ -240,10 +242,14 @@ enum BackupCoordinator {
         // becomes visible at the final name in one rename (F191 slice D).
         //
         // Built from `sourceFiles`, which is exactly the set that got into the generation — except
-        // a `.copy` entry's hash comes from `rehashedContent`, the hash `copyAndVerify` actually
-        // measured post-copy, not the one `descriptors(of:)` measured minutes earlier at the top of
-        // this run (F504). A hardlinked (skipped) file shares the previous generation's inode and
-        // therefore its contents, so the up-front source hash still describes it correctly.
+        // that every file this run COPIED (each `.copy` entry, and each `.skip` entry that fell back
+        // to a copy) takes its hash AND its size from `copiedContent`: what `copyAndVerify`
+        // actually measured on the bytes it wrote, not what `descriptors(of:)` measured minutes
+        // earlier at the top of this run (F504, F651). Taking only the hash from the fresh
+        // measurement was the F651 defect — a file that changed mid-run got its new hash beside its
+        // old size, and the generation reported verified and then failed its own check. A
+        // hardlinked (skipped) file shares the previous generation's inode and therefore its
+        // contents, so the up-front hash and size still describe it correctly.
         //
         // The marker stays. A generation written before this has no manifest and must still read
         // as complete — an improvement that made older backups unrestorable would be data loss
@@ -251,9 +257,11 @@ enum BackupCoordinator {
         try BackupManifest(
             generation: String(now),
             createdAtEpoch: now,
-            files: sourceFiles.map {
-                .init(relativePath: $0.relativePath, size: $0.size,
-                      sha256: rehashedContent[$0.relativePath] ?? $0.contentHash)
+            files: sourceFiles.map { file in
+                if let copied = copiedContent[file.relativePath] {
+                    return .init(relativePath: file.relativePath, size: copied.size, sha256: copied.sha256)
+                }
+                return .init(relativePath: file.relativePath, size: file.size, sha256: file.contentHash)
             }
         ).write(to: generationDir)
         try Data().write(to: generationDir.appendingPathComponent(completionMarker))
@@ -430,13 +438,40 @@ enum BackupCoordinator {
         of url: URL,
         read: (FileHandle, Int) throws -> Data? = { try $0.read(upToCount: $1) }
     ) throws -> String {
+        try hashAndCount(of: url, read: read).sha256
+    }
+
+    /// The SHA-256 of a file and the number of bytes that hash covers, from ONE pass (F651).
+    ///
+    /// The size is counted from the same chunks the hasher consumed, not `stat`ed before or after,
+    /// so the two cannot describe different bytes. That is the whole point: the backup's manifest
+    /// records a size beside every hash, and a size measured at a different moment from the hash is
+    /// how a "verified" generation came to fail its own check.
+    static func hashAndCount(
+        of url: URL,
+        read: (FileHandle, Int) throws -> Data? = { try $0.read(upToCount: $1) }
+    ) throws -> (sha256: String, byteCount: Int64) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
+        var byteCount: Int64 = 0
         while let chunk = try read(handle, hashChunkByteCount), !chunk.isEmpty {
             hasher.update(data: chunk)
+            byteCount += Int64(chunk.count)
         }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), byteCount)
+    }
+
+    /// What `copyAndVerify` measured about the bytes it put at the destination (F651).
+    struct CopiedFile: Equatable, Sendable {
+        /// SHA-256 of the destination, which `copyAndVerify` has already checked equals the
+        /// source's at the moment after the copy.
+        let sha256: String
+        /// Size of those same bytes. The manifest must record THIS beside `sha256`, never the size
+        /// the up-front scan saw: a file that changed between the scan and its own turn has a new
+        /// size as well as a new hash, and pairing the old size with the new hash produced a
+        /// generation that reported verified and then failed "Wrong size in this backup".
+        let size: Int64
     }
 
     /// Copies `sourceURL` to `destURL` and verifies the copy against a hash of the source taken
@@ -455,6 +490,9 @@ enum BackupCoordinator {
     /// continuously or the copy itself is corrupt, and either way the whole backup must still
     /// refuse rather than report success over mismatched bytes (`fileManager`/`retryDelay`/`sleep`
     /// are seams so the F504 tests can drive the retry without a real half-second wait).
+    ///
+    /// Returns the hash AND the size of the bytes now at `destURL`, measured in one pass (F651), so
+    /// the caller can record a manifest entry whose size and hash describe the same bytes.
     static func copyAndVerify(
         from sourceURL: URL,
         to destURL: URL,
@@ -468,7 +506,7 @@ enum BackupCoordinator {
         // narrow to hit deterministically from a test — so this is what F504's tests use to force
         // that same mismatch on demand, on whichever attempt they choose.
         afterCopyForTesting: ((Int) -> Void)? = nil
-    ) throws -> String {
+    ) throws -> CopiedFile {
         let maxAttempts = 2
         for attempt in 1...maxAttempts {
             if attempt > 1 {
@@ -477,10 +515,10 @@ enum BackupCoordinator {
             }
             try fileManager.copyItem(at: sourceURL, to: destURL)
             afterCopyForTesting?(attempt)
-            let destHash = try sha256(of: destURL)
+            let dest = try hashAndCount(of: destURL)
             let sourceHashNow = try sha256(of: sourceURL)
-            if BackupVerification.succeeded(expectedHash: sourceHashNow, actualHash: destHash) {
-                return destHash
+            if BackupVerification.succeeded(expectedHash: sourceHashNow, actualHash: dest.sha256) {
+                return CopiedFile(sha256: dest.sha256, size: dest.byteCount)
             }
         }
         throw BackupCoordinatorError.verificationFailed(relativePath)
