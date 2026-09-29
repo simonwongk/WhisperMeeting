@@ -91,6 +91,34 @@ func historyAvailableSaysNothing() throws {
     #expect(try model.store.indexGenerations().count >= 2)
 }
 
+@MainActor
+@Test("A history folder that can be written but not listed reaches the same notice (F688)")
+func writeOnlyHistoryIsNoticed() throws {
+    let (model, root, suite) = try makeModel(squattingHistory: false)
+    let historyURL = root.appendingPathComponent("meetings.history", isDirectory: true)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyURL.path)
+        try? FileManager.default.removeItem(at: root)
+        UserDefaults().removePersistentDomain(forName: suite)
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "First", status: .recorded))
+    try #require(model.store.storageErrorMessage == nil, "precondition: a healthy first save says nothing")
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: historyURL.path)
+    try #require(
+        (try? FileManager.default.contentsOfDirectory(atPath: historyURL.path)) == nil,
+        "precondition: this process cannot list a 0300 folder (it would if it ran as root)"
+    )
+    let before = model.windowlessAlertCount
+    model.store.update(id: id) { $0.title = "Second" }
+
+    let notice = try #require(model.store.storageErrorMessage, "a write-only history folder said nothing")
+    #expect(notice.contains("meetings.history"), "\(notice)")
+    #expect(notice.contains("not listed"), "\(notice)")
+    #expect(model.windowlessAlertCount == before + 1)
+}
+
 @Test("The notice's channel is still rendered by the window and mirrored when there is none (F553)")
 func historyNoticeChannelIsReachable() throws {
     // The window cannot be rendered in this target (F174), so the reachability of the channel the

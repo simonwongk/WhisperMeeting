@@ -73,11 +73,13 @@ public struct StoreLedger: Codable, Sendable, Equatable {
     public var formatVersion: Int
     public var current: Record
     public var previous: Record?
-    /// Newest first, includes `current`. Bounded: the newest 64 records, plus one for every older
-    /// generation whose file is still under `<stem>.history/` (F517) — never a log of every save.
-    /// A save that cannot list that folder keeps every record naming a file rather than guess
-    /// (F648); beyond one per generation on disk, that adds at most the 64 records that were
-    /// inside the window when the listing began to fail.
+    /// Newest first, includes `current`. While the folder can be listed: the newest 64 records,
+    /// plus one for every older generation whose file is still under `<stem>.history/` (F517) —
+    /// which retention bounds. A save that cannot list the folder keeps every record naming a file
+    /// rather than guess (F648). That adds at most the 64 records that were inside the window when
+    /// the listing began to fail, as long as retention fails too (a squatted or unwritable folder);
+    /// a folder that can be written but not listed gains a file and a record per save until it can
+    /// be listed again, and each such save reports `.historyUnavailable` (F688).
     public var history: [Record]
     /// False when this writer could not create or use `<stem>.history/`. A load NEVER declares
     /// divergence while this is false — without history there is no evidence to be sure with.

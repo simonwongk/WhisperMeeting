@@ -402,6 +402,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // its count, and the next save that could see the folder pruned the one generation the pin
         // existed for. Missing information must defer a decision, never make it.
         let archivedNames = try? io.contentsOfDirectory(history.directoryURL, .listHistory)
+        // A folder that EXISTS and still could not be listed (F688). Asked only on failure, so the
+        // ordinary save pays no extra `stat`. An absent folder is not this case: every new library's
+        // first save finds none, and `record` below simply creates it.
+        let listingFailedOnExistingFolder = archivedNames == nil && io.isDirectory(history.directoryURL) == true
 
         // 4. quarantine — F187, verbatim. Anything that exists and does not decode is copied aside
         //    before anything can replace it, and a preserve failure throws with nothing written.
@@ -480,6 +484,16 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 ))
             } else {
                 phases.append(.retain)
+                // Kept, but into a folder nothing can list (F688) — a write-only `chmod 0300`, or a
+                // read error on the directory. No prune can run, the recovery list is empty, and
+                // F648's ledger keeps a record per save because it cannot see which files are gone:
+                // every save adds a full copy and a record with no end, and retention "succeeded"
+                // throughout. Reported through the same repair, so F553's notice reaches the user.
+                if listingFailedOnExistingFolder {
+                    repairs.append(.historyUnavailable(
+                        reason: "\(history.directoryURL.lastPathComponent) can be written to but not listed, so nothing saved in it can be found again or cleaned up"
+                    ))
+                }
             }
         } catch {
             historyAvailable = false
@@ -732,11 +746,13 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // every save.
         //
         // When this save could not list the folder (F648), nothing is decided: every record that
-        // names a file is kept, as though its file were there. That is still bounded without a
-        // timeout. `prune` lists through the same seam, so while the listing fails nothing is pruned
-        // and every generation retained meanwhile is still on disk; the only other records kept are
-        // the at most 64 that were inside the window when the outage began. The first save that
-        // can list again trims back to the rule above.
+        // names a file is kept, as though its file were there. The first save that can list again
+        // trims back to the rule above. Until then the extra records are bounded only while the
+        // failure also stops retention — a squatted or unwritable folder: new records name no file,
+        // so the only extras are the at most 64 that were inside the window when the outage began.
+        // A folder that can be written but not listed (`chmod 0300`) is the exception: each save
+        // keeps a file nothing can prune, and so a record, with no bound but the outage's end.
+        // That is why such a save reports `.historyUnavailable` (F688) rather than guessing here.
         let isOnDisk: (String) -> Bool = archivedNames.map { names in
             let onDisk = Set(names)
             return { onDisk.contains($0) }
