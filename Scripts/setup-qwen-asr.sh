@@ -180,6 +180,11 @@ chmod 644 "$staging_directory/qwen_dictate_server.py"
 "$staging_directory/venv/bin/python" "$staging_directory/qwen_transcribe.py" --help >/dev/null
 "$staging_directory/venv/bin/python" "$staging_directory/qwen_dictate_server.py" --help >/dev/null
 
+# F654: everything above can still fail with nothing changed; from here the runtime is switched over
+# in two renames, and then only the old copy is left to delete. A Cancel or Quit from here on
+# finishes that and exits 0, rather than reporting "cancelled" for an update that happened. (Children
+# inherit the ignore, so the backup's `rm -rf` completes too.)
+trap '' HUP INT TERM
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"
 fi

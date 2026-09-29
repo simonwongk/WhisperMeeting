@@ -24,8 +24,10 @@ struct InstallerJob: Sendable {
 enum InstallOutcome: Equatable {
     case installed
     case failed(InstallerError)
-    /// Cancelled from Settings or by Quit (F520). The script's traps put back what it replaced;
-    /// `previousKept` is whether that left an install in place.
+    /// Cancelled from Settings or by Quit (F520) before the installer switched the new version in
+    /// — from its switch-over on it ignores the signal and finishes, and the run is `.installed`
+    /// (F654). So the traps have put back what the run was replacing, and `previousKept` — installed
+    /// before and still installed — is about the previous version.
     case cancelled(previousKept: Bool)
 }
 
@@ -71,8 +73,11 @@ extension AppModel {
     /// Cancellation is the task's: every installer runs under `ProcessGroupRunner`, awaited
     /// directly (no detached task in between), so cancelling this task reaches the runner's
     /// cancellation handler, which sends SIGTERM to the installer's whole process group — pip,
-    /// curl and Homebrew included. Each script's `trap 'exit 130' HUP INT TERM` then runs its EXIT
-    /// trap, which puts back the runtime it was replacing and removes its staging directory.
+    /// curl and Homebrew included. Until its switch-over, each script's `trap 'exit 130' HUP INT
+    /// TERM` then runs its EXIT trap, which puts back the runtime it was replacing and removes what
+    /// it staged (for Local Whisper, the Quick Dictation model's staging too). From the switch-over
+    /// on there is nothing to put back, so each script ignores the signal, finishes and exits 0, and
+    /// `runInstallerScript` reports that as the success it is (F654).
     ///
     /// It is also every install's epilogue, whatever `body` concluded — installed, failed or
     /// cancelled: `body` clears its own `isInstalling…` flag last, and then whatever transcription
@@ -86,8 +91,9 @@ extension AppModel {
         }
     }
 
-    /// Stops the install of `component`, if one is running. The script restores what it replaced
-    /// before the install's own epilogue reports it cancelled.
+    /// Stops the install of `component`, if one is running. Before its switch-over the script puts
+    /// back what it was replacing and the install reports itself cancelled; after it, the script
+    /// finishes and the install reports itself installed (F654).
     func cancelInstall(_ component: ModelInstallComponent) {
         guard let task = installTasks[component] else { return }
         cancellingInstalls.insert(component)
@@ -135,11 +141,10 @@ extension AppModel {
             refreshRuntime()
             return isInstalled(self) ? .installed : .failed(.notReady(component))
         } catch is CancellationError {
+            // Only a script that stopped before its switch-over gets here: one that got past it
+            // exits 0 and returns above as a success (F654). (This used to also catch a cancel that
+            // landed as a first install exited 0, because the runner threw regardless of the exit.)
             refreshRuntime()
-            // A cancel that lands as the script is exiting 0 still throws, because the runner
-            // checks for cancellation after the child is reaped. If that left a runtime where
-            // there was none, the install happened; say so rather than "cancelled".
-            if !wasInstalled, isInstalled(self) { return .installed }
             return .cancelled(previousKept: wasInstalled && isInstalled(self))
         } catch let error as InstallerError {
             refreshRuntime()
@@ -152,8 +157,10 @@ extension AppModel {
 
     /// Runs an installer script to completion under `ProcessGroupRunner` (F520), keeping its whole
     /// output in `job.logURL` and throwing an `InstallerError` whose reason is the output's last
-    /// line (F567). Cancelling the calling task kills the script's process group and throws
-    /// `CancellationError` once the script has exited — that is, after its traps have restored.
+    /// line (F567). Cancelling the calling task sends the script's process group SIGTERM. A script
+    /// that then exits non-zero had not switched over, and this throws `CancellationError` once it
+    /// has exited — after its traps have restored. One that exits 0 had passed its switch-over,
+    /// where every installer ignores the signal and finishes (F654), and this returns normally.
     nonisolated static func runInstallerScript(_ job: InstallerJob) async throws {
         let log = try InstallerLog(url: job.logURL)
         defer { log.close() }
@@ -164,6 +171,7 @@ extension AppModel {
                 arguments: [job.scriptURL.path] + job.arguments,
                 environment: job.environment,
                 stallTimeout: job.stallTimeout,
+                returnsOutcomeWhenCancelled: true,
                 onOutput: { log.write($0) }
             )
         } catch let error as ProcessGroupRunnerError {
@@ -174,6 +182,10 @@ extension AppModel {
                 throw InstallerError.scriptFailed(job.component, reason: error.localizedDescription, previousKept: false)
             }
         }
+        // F654: a cancelled installer that exited 0 had passed its switch-over, where every
+        // installer ignores the signal and finishes — the new version is live, so this is success
+        // and the caller probes it as one. Any other exit after a cancel is the cancel.
+        if Task.isCancelled, outcome.exitStatus != 0 { throw CancellationError() }
         guard outcome.exitStatus == 0 else {
             throw InstallerError.scriptFailed(
                 job.component,

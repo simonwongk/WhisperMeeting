@@ -233,6 +233,12 @@ from mlx_lm.models.cache import can_trim_prompt_cache, make_prompt_cache, trim_p
 # of the same rename, and removing `$backup_directory` afterwards no longer takes it with it,
 # because it is no longer there to take. `cleanup_and_restore` rescues it back out if a kill lands
 # before that swap completes.
+#
+# F654: from here — the relocation and the two renames — the model is switched over, and then only
+# the old copy is left to delete. A Cancel or Quit from here on finishes that and exits 0, rather than
+# reporting "cancelled" for an update that happened (see setup-qwen-asr.sh). That also puts the
+# relocation-to-swap window beyond a signal's reach; the trap's rescue stays for an error exit.
+trap '' HUP INT TERM
 if [[ -d "$target_directory/embedding-model" ]]; then
   mv "$target_directory/embedding-model" "$staging_directory/embedding-model"
 fi

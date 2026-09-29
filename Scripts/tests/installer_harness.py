@@ -131,6 +131,16 @@ if args[:1] == ["-"]:
         with open(os.path.join(stage, "blobs", "weights.incomplete"), "w", encoding="utf-8") as handle:
             handle.write("partial download")
     maybe_block("download")
+    if os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
+        # Qwen's and the summarizer's pinned models, at the paths their scripts hash (`shasum`
+        # is shimmed by the test that asks for this).
+        for key, parts in (("QWEN_STAGE", ("model", "aligner")), ("SUMMARIZER_STAGE", ("model",))):
+            if os.environ.get(key):
+                for part in parts:
+                    os.makedirs(os.path.join(os.environ[key], part), exist_ok=True)
+                    with open(os.path.join(os.environ[key], part, "model.safetensors"), "w", encoding="utf-8") as handle:
+                        handle.write("new model")
+                sys.exit(0)
     if stage and os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
         # A finished pinned snapshot at the layout the script verifies; `shasum` is shimmed.
         snapshot = os.path.join(
@@ -180,6 +190,8 @@ class InstallerSandbox:
         self.shims = os.path.join(self.root, "shims")
         os.makedirs(self.shims)
         self.block_marker = os.path.join(self.root, "blocked")
+        # Created after the signal: a shim that must outlive a SIGTERM its script now ignores waits for it.
+        self.release_marker = os.path.join(self.root, "released")
         self.log = os.path.join(self.root, "fake.log")
         self.fake_python = os.path.join(self.root, "fake-python", "python3.11")
         write_executable(self.fake_python, _FAKE_PYTHON.format(real_python=sys.executable))
@@ -230,6 +242,7 @@ class InstallerSandbox:
         environment["PATH"] = self.shims + os.pathsep + environment.get("PATH", "")
         environment["FAKE_LOG"] = self.log
         environment["FAKE_BLOCK_MARKER"] = self.block_marker
+        environment["FAKE_RELEASE"] = self.release_marker
         environment.update({key: str(value) for key, value in overrides.items()})
         return environment
 
@@ -246,7 +259,9 @@ class InstallerSandbox:
     def run_and_terminate_group(self, argument, blocked_step, **overrides):
         """Starts the installer in its own process group, waits until the fake reaches
         `blocked_step`, then sends SIGTERM to the whole group — exactly what
-        `ProcessGroupRunner.cancel()` does — and returns (returncode, stderr)."""
+        `ProcessGroupRunner.cancel()` does — and returns (returncode, stderr). After the signal it
+        creates `FAKE_RELEASE`, which `hold_until_released` shims wait on: a step whose script ignores
+        SIGTERM has to be able to finish once the signal has been sent."""
         stderr_path = os.path.join(self.root, "stderr.txt")
         with open(stderr_path, "w", encoding="utf-8") as stderr:
             process = subprocess.Popen(
@@ -271,6 +286,7 @@ class InstallerSandbox:
                             )
                         )
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                open(self.release_marker, "w").close()
                 process.wait(timeout=30)
             finally:
                 if process.poll() is None:
@@ -278,6 +294,15 @@ class InstallerSandbox:
                     process.wait(timeout=10)
         with open(stderr_path, encoding="utf-8") as handle:
             return process.returncode, handle.read()
+
+
+def hold_until_released(marker_name):
+    """Shell lines that mark the step as reached and then wait — boundedly — for the test to have
+    sent its signal. Unlike `sleep 60`, this ends by itself when the signal was ignored."""
+    return (
+        'echo {} > "$FAKE_BLOCK_MARKER"\n'
+        'i=0; while [ ! -e "$FAKE_RELEASE" ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n'
+    ).format(marker_name)
 
 
 def fake_whisper_venv(path, marker, with_mlx_whisper=False, with_yt_dlp=False):

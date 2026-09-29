@@ -299,6 +299,10 @@ if ! runtime_is_complete "$staging_directory"; then
   exit 1
 fi
 
+# F654: from here the runtime is switched over and only the old copy is left to delete; a Cancel or
+# Quit finishes that and exits 0 instead of reporting "cancelled" for an update that happened (see
+# setup-qwen-asr.sh).
+trap '' HUP INT TERM
 if [[ -e "$target_directory" ]]; then
   mv "$target_directory" "$backup_directory"
 fi

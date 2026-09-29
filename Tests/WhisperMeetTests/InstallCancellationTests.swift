@@ -34,12 +34,17 @@ private final class Locked<Value>: @unchecked Sendable {
 }
 
 /// A stand-in installer: `$1` is the directory it reports into.
+///
+/// It works in short sleeps rather than one `sleep 20`. `started` is written before the first
+/// sleep is forked, so a SIGTERM that lands in between reaches zsh but no child — zsh then runs its
+/// trap only after the next command, and a single `sleep 20` made that 20 seconds (observed: the
+/// first-install test once took 20.2 s and still passed). With 50 ms sleeps the trap runs within one.
 private func writeStubInstaller(in directory: URL) throws -> URL {
     let script = directory.appendingPathComponent("stub-installer.sh")
     try """
     trap 'print trapped > "$1/trapped"; exit 130' TERM
     print started > "$1/started"
-    sleep 20
+    i=0; while [[ $i -lt 400 ]]; do sleep 0.05; i=$((i + 1)); done
     print finished > "$1/finished"
     """.write(to: script, atomically: true, encoding: .utf8)
     return script
@@ -156,6 +161,42 @@ func cancelledFirstInstallClaimsNothing() async throws {
     try await waitUntil("the install to end") { !model.isInstallingQwenRuntime }
 
     #expect(model.qwenInstallationMessage == "Installation cancelled.")
+}
+
+@MainActor
+@Test("A Cancel the installer outlives — it had already switched over — reports installed, not cancelled (F654)")
+func cancelAfterTheSwitchOverReportsInstalled() async throws {
+    let (model, root) = try makeModel("switched")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // What every installer does from its switch-over on (F654): ignore the signal, finish, exit 0.
+    let script = root.appendingPathComponent("switched-installer.sh")
+    try """
+    trap '' HUP INT TERM
+    print started > "$1/started"
+    i=0; while [[ ! -e "$1/release" && $i -lt 600 ]]; do sleep 0.05; i=$((i + 1)); done
+    print finished > "$1/finished"
+    exit 0
+    """.write(to: script, atomically: true, encoding: .utf8)
+    model.installerScriptURL = { _ in script }
+    model.runInstallerJob = { job in
+        try await AppModel.runInstallerScript(InstallerJob(
+            component: job.component, scriptURL: script, arguments: [root.path],
+            logURL: root.appendingPathComponent("install.log")
+        ))
+    }
+    model.refreshRuntime()
+    #expect(model.isRuntimeInstalled)
+
+    model.installLocalWhisper()
+    try await waitUntil("the installer to start") { exists(root, "started") }
+    model.cancelInstall(.whisper)
+    try Data().write(to: root.appendingPathComponent("release"))
+    try await waitUntil("the install to end") { !model.isInstallingRuntime }
+
+    #expect(exists(root, "finished"))
+    #expect(model.installationMessage == "Local Whisper is ready. The selected model downloads once, when first used.",
+            "\(model.installationMessage ?? "nil")")
+    #expect(model.alertMessage == nil)
 }
 
 @MainActor

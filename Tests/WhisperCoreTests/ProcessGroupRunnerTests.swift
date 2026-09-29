@@ -181,3 +181,66 @@ func normalRunStreamsOutput() async throws {
     #expect(outcome.output.contains("hello"))
     #expect(outcome.exitStatus == 3)
 }
+
+// F654 — an installer past its switch-over ignores the signal and finishes; its caller has to see
+// that it exited 0 rather than a bare `CancellationError`, or a completed update reads "cancelled".
+
+private func waitForFile(_ url: URL) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while !FileManager.default.fileExists(atPath: url.path), Date() < deadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try #require(FileManager.default.fileExists(atPath: url.path), "timed out waiting for \(url.lastPathComponent)")
+}
+
+@Test("With returnsOutcomeWhenCancelled, a child that outlives the cancel reports its exit status (F654)")
+func cancelledRunReportsTheOutcomeWhenAsked() async throws {
+    let (directory, script) = try makeScript("""
+    trap '' TERM
+    echo started > "$1"
+    i=0; while [ ! -e "$2" ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done
+    exit 0
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let started = directory.appendingPathComponent("started")
+    let release = directory.appendingPathComponent("release")
+
+    let task = Task {
+        try await ProcessGroupRunner().run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, started.path, release.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0,
+            returnsOutcomeWhenCancelled: true
+        )
+    }
+    try await waitForFile(started)
+    task.cancel()
+    try Data().write(to: release)
+    let outcome = try await task.value
+    #expect(outcome.exitStatus == 0)
+}
+
+@Test("With returnsOutcomeWhenCancelled, a child the cancel stops reports a non-zero status (F654)")
+func cancelledRunReportsTheSignalWhenAsked() async throws {
+    let (directory, script) = try makeScript("""
+    echo started > "$1"
+    sleep 30
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let started = directory.appendingPathComponent("started")
+
+    let task = Task {
+        try await ProcessGroupRunner().run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, started.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0,
+            returnsOutcomeWhenCancelled: true
+        )
+    }
+    try await waitForFile(started)
+    task.cancel()
+    let outcome = try await task.value
+    #expect(outcome.exitStatus != 0)
+}

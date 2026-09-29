@@ -97,6 +97,9 @@ restore_previous() {
   rm -rf "$previous"
 }
 trap 'rm -rf "$staging"; restore_previous' EXIT
+# F654: from here the model is switched over and only the previous copy is left to delete; a Cancel
+# or Quit finishes that and exits 0 instead of reporting "cancelled" for a download that completed.
+trap '' HUP INT TERM
 if [[ -d "$target" ]]; then mv "$target" "$previous"; fi
 if ! mv "$staging" "$target"; then
   print -u2 "The search model could not be installed; the previous one is being put back."

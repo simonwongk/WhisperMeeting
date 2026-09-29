@@ -365,6 +365,10 @@ if ! "$venv_target/bin/whisper" --help >/dev/null 2>&1; then
   exit 1
 fi
 activation_complete=1
+# F654: the new venv is live and verified; nothing is left to put back, only the old copy to delete.
+# A Cancel or Quit from here on finishes that and exits 0, rather than reporting "cancelled" for an
+# update that happened. (Children inherit the ignore, so the `rm` below completes too.)
+trap '' HUP INT TERM
 new_venv_swapped_in=0
 if [[ -e "$backup_venv" ]]; then
   if ! rm -rf "$backup_venv"; then

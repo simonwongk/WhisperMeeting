@@ -124,12 +124,18 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         if pid > 0 { _ = killpg(pid, SIGTERM) }
     }
 
+    /// - Parameter returnsOutcomeWhenCancelled: When true, a cancellation that arrives after the child
+    ///   was spawned still sends the group SIGTERM, but the run returns the child's `Outcome` rather
+    ///   than throwing `CancellationError`, so the caller can tell a child that stopped from one that
+    ///   ignored the signal and finished (F654: an installer past its switch-over does exactly that,
+    ///   and exits 0). A cancellation before spawn still throws — nothing ran. Default false.
     public func run(
         executableURL: URL,
         arguments: [String],
         environment: [String: String],
         stallTimeout: TimeInterval,
         outputUse: OutputUse = .diagnostics,
+        returnsOutcomeWhenCancelled: Bool = false,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async throws -> Outcome {
         // Never spawn a child for an already-cancelled task: the old `ProcessCancellationController`
@@ -252,8 +258,10 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         }
 
         if state.stalled { throw ProcessGroupRunnerError.stalled(stallTimeout) }
-        try Task.checkCancellation()
-        if isCancelRequested() { throw CancellationError() }
+        if !returnsOutcomeWhenCancelled {
+            try Task.checkCancellation()
+            if isCancelRequested() { throw CancellationError() }
+        }
 
         // Decode wait(2) status: low byte holds the signal when killed, high byte the exit code.
         let exitStatus = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : -(status & 0x7F)
