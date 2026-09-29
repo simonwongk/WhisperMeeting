@@ -115,10 +115,17 @@ enum BackupCoordinator {
     static func backUp(
         source: URL, destination: URL, now: Int, retain: Int,
         beforeProcessingForTesting: ((String) -> Void)? = nil,
-        // Test-only seam (real `FileManager.linkItem` in production): F532's tests cannot mount a
-        // real exFAT/FAT/SMB destination, so this lets a test make hard-linking fail exactly the
-        // way it does there — `linkItem` throwing ENOTSUP/EPERM/EXDEV — without one.
-        linkItem: (URL, URL) throws -> Void = { try FileManager.default.linkItem(at: $0, to: $1) }
+        // Seam (real `FileManager.linkItem` in production): what a hard link between two paths
+        // does. A test must not depend on the host having an exFAT/FAT/SMB volume to write to, so
+        // it injects a link that throws the way `linkItem` does there (ENOTSUP/EPERM/EXDEV) — or
+        // one that succeeds by copying, to model a destination that supports links on any host.
+        // The SAME function is used by the per-file `.skip` link and by `probeHardLinkSupport`
+        // (F652), so a test that makes links fail makes the space check see it too.
+        linkItem: (URL, URL) throws -> Void = { try FileManager.default.linkItem(at: $0, to: $1) },
+        // Seam (the real volume reading in production): free bytes at the backup location, or nil
+        // when unknown. Lets a test give the space check a known number instead of whatever the
+        // host's temp volume happens to have (F652).
+        freeSpace: (URL) -> Int64? = { BackupCoordinator.availableCapacity(at: $0) }
     ) throws -> BackupSummary {
         let fileManager = FileManager.default
         guard !pathsOverlap(source, destination) else { throw BackupCoordinatorError.destinationOverlapsSource }
@@ -165,12 +172,12 @@ enum BackupCoordinator {
         // to a real, space-costing copy. The free-space check has to know that BEFORE the run
         // starts — a check that only ever counted `.copy` bytes would pass a run that then runs
         // out of room partway through what it thought were free skips.
-        let hardLinksSupported = probeHardLinkSupport(in: backupRoot, fileManager: fileManager)
+        let hardLinksSupported = probeHardLinkSupport(in: backupRoot, fileManager: fileManager, linkItem: linkItem)
 
         // Pre-copy free-space check for the bytes that will actually be written. Only reject on a
         // credible positive reading below the need — see `shouldRejectForSpace` (F90 audit fix).
         let bytesToCopy = BackupPlan.bytesNeeded(for: plan, hardLinksSupported: hardLinksSupported)
-        let available = availableCapacity(at: backupRoot)
+        let available = freeSpace(backupRoot)
         if shouldRejectForSpace(available: available, needed: bytesToCopy) {
             throw BackupCoordinatorError.insufficientSpace(needed: bytesToCopy, available: available ?? 0)
         }
@@ -532,36 +539,47 @@ enum BackupCoordinator {
         return available < needed
     }
 
-    private static func availableCapacity(at url: URL) -> Int64? {
+    static func availableCapacity(at url: URL) -> Int64? {
         let probe = FileManager.default.fileExists(atPath: url.path) ? url : url.deletingLastPathComponent()
         return (try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage
     }
 
+    /// Name prefix of the throwaway files the hard-link probe writes under the backup root. Dotted
+    /// and non-numeric, so `numericDirectories` can never mistake one for a generation, and a
+    /// constant so a test that has to tell the probe's link from a per-file link derives the
+    /// distinction from here rather than restating a literal.
+    static let hardLinkProbePrefix = ".hardlink-probe-"
+
     /// Whether the volume backing `backupRoot` supports hard links, checked once per run rather
-    /// than discovered file-by-file (F532). Writes two throwaway files under `backupRoot` — always
-    /// present by this point, since `backUp` already created it — and tries to link one to the
-    /// other.
+    /// than discovered file-by-file (F532). Writes ONE throwaway file under `backupRoot` — always
+    /// present by this point, since `backUp` already created it — and tries to hard-link it to a
+    /// second name, through `linkItem`.
+    ///
+    /// `linkItem` is the same function `backUp` uses for its per-file `.skip` links, passed in
+    /// rather than defaulted (F652): with the real `FileManager.linkItem` baked in here, a test that
+    /// made the per-file link fail left the probe answering "links work", so the space check never
+    /// budgeted for the fallback and hardcoding the answer to `true` passed every test. Required so
+    /// a future caller cannot forget the seam.
     ///
     /// Defaults to `true` (the ordinary case: APFS, HFS+, most local volumes) when the probe
     /// itself cannot even run, e.g. `backupRoot` is unwritable for some unrelated reason. That
     /// failure surfaces on its own moments later, at the real copy/link inside the run, with a
     /// precise error; guessing "unsupported" here would only misreport it as a space problem.
-    ///
-    /// Internal rather than private so `hardLinkProbeReportsTrueOnLocalVolume` (F532) can call it
-    /// directly: a real exFAT/FAT/SMB destination cannot be mounted in this sandbox
-    /// (`hdiutil create -fs ExFAT` fails with "Operation not permitted" here), so the false branch
-    /// is exercised only through `BackupPlan.bytesNeeded`'s own pure unit test.
-    static func probeHardLinkSupport(in backupRoot: URL, fileManager: FileManager) -> Bool {
-        let probeA = backupRoot.appendingPathComponent(".hardlink-probe-\(UUID().uuidString)")
-        let probeB = backupRoot.appendingPathComponent(".hardlink-probe-\(UUID().uuidString)")
+    static func probeHardLinkSupport(
+        in backupRoot: URL,
+        fileManager: FileManager,
+        linkItem: (URL, URL) throws -> Void
+    ) -> Bool {
+        let probeA = backupRoot.appendingPathComponent("\(hardLinkProbePrefix)\(UUID().uuidString)")
+        let probeB = backupRoot.appendingPathComponent("\(hardLinkProbePrefix)\(UUID().uuidString)")
         defer {
             try? fileManager.removeItem(at: probeA)
             try? fileManager.removeItem(at: probeB)
         }
         guard (try? Data([0]).write(to: probeA)) != nil else { return true }
         do {
-            try fileManager.linkItem(at: probeA, to: probeB)
+            try linkItem(probeA, probeB)
             return true
         } catch {
             return false

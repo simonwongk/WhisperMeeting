@@ -353,10 +353,11 @@ func realContentionIsStillAnotherBackupRunning() throws {
 // F532 — a file unchanged since the previous generation is normally hardlinked, which costs no
 // extra space and no extra I/O. exFAT, FAT32, and most SMB mounts refuse hard links outright, so
 // every backup after the first used to fail there in full. The fix falls back to a verified copy
-// exactly like a changed file gets, and a real exFAT/FAT/SMB destination cannot be mounted in this
-// sandbox (`hdiutil create -fs ExFAT` was tried and failed with "Operation not permitted" — see the
-// closure draft's Gaps), so the seam is an injected `linkItem` that fails the same way `linkItem`
-// does there (ENOTSUP/EPERM/EXDEV).
+// exactly like a changed file gets. A test must not require the host to have an exFAT/FAT/SMB
+// volume to write to, so the seam is an injected `linkItem` that fails the way `linkItem` does
+// there (ENOTSUP/EPERM/EXDEV). It is a stand-in, not a substitute: the independent review of this
+// change ran the same two-run backup onto a real mounted exFAT image, and that run is what shows
+// the injected failure matches the real one.
 
 @Test("An unchanged file falls back to a verified copy when hard-linking fails, as on exFAT/FAT/SMB (F532)")
 func backupFallsBackToVerifiedCopyWhenHardLinkFails() throws {
@@ -373,17 +374,24 @@ func backupFallsBackToVerifiedCopyWhenHardLinkFails() throws {
 
     // Second run: nothing changed, so the plan marks every file `.skip` — the exact scenario a
     // real exFAT/FAT/SMB backup drive hits on its second run. `linkItem` always fails, simulating
-    // that destination without needing to mount one.
-    var linkAttempts = 0
+    // that destination without needing to mount one. It serves the space check's probe as well as
+    // the per-file links (F652), so the two are counted apart.
+    var probeAttempts = 0
+    var fileLinkAttempts = 0
     let g2 = try BackupCoordinator.backUp(
         source: source, destination: dest, now: 2_000, retain: 2,
-        linkItem: { _, _ in
-            linkAttempts += 1
+        linkItem: { from, _ in
+            if from.lastPathComponent.hasPrefix(BackupCoordinator.hardLinkProbePrefix) {
+                probeAttempts += 1
+            } else {
+                fileLinkAttempts += 1
+            }
             throw CocoaError(.fileWriteUnsupportedScheme) // stands in for ENOTSUP on exFAT/FAT
         }
     )
 
-    #expect(linkAttempts == 2, "both unchanged files attempted a hardlink before falling back")
+    #expect(probeAttempts == 1, "the destination is probed once per run")
+    #expect(fileLinkAttempts == 2, "both unchanged files attempted a hardlink before falling back")
     #expect(g2.copied == 0, "the plan itself still calls these .skip — unchanged since last time")
     #expect(g2.skipped == 2)
     #expect(g2.verified)
@@ -452,21 +460,96 @@ func fallbackCopyOfFileChangedMidRunVerifies() throws {
     #expect(try BackupRestorePlan.make(from: generation, into: source, deep: true).isSafeToApply)
 }
 
-// F532 — the free-space check must budget for the fallback copy too: on a linkless destination a
-// `.skip` item is not free, so a check that only ever counted `.copy` bytes could pass a run that
-// then runs out of room midway through what it thought were free skips. The arithmetic itself
-// (`BackupPlan.bytesNeeded`) has its own pure unit coverage in `Tests/WhisperCoreTests/BackupPlanTests.swift`;
-// this exercises the coordinator's own probe of the destination volume, which decides which side of
-// that arithmetic a real run uses.
-@Test("probeHardLinkSupport reports true on an ordinary local volume, which is what a real run's space check budgets from (F532)")
-func hardLinkProbeReportsTrueOnLocalVolume() throws {
-    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F532-probe-\(UUID().uuidString)")
+// F652 — F532's space accounting was tested as arithmetic (`BackupPlan.bytesNeeded`) but never as
+// something the COORDINATOR does: hardcoding `hardLinksSupported = true` in `backUp` passed every
+// backup test, because the injected link failure reached the per-file `.skip` link and never the
+// probe, and the space check read the host's real free space. Both are seams now, so this can state
+// the property directly: on a destination without hard links, room for the changed file alone is
+// NOT enough, because every unchanged file becomes a real copy too.
+@Test("Without hard links, room for the changed file but not for the fallback copies of the unchanged ones is refused (F652)")
+func spaceCheckBudgetsForFallbackCopiesWhenLinksAreUnavailable() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F652-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let unchanged = String(repeating: "a", count: 4_000)
+    try write("index v1", to: source.appendingPathComponent("meetings.json"))
+    try write(unchanged, to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+    _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 3)
+
+    // One file changes (a `.copy`, costs its size on any destination); one does not (a `.skip`,
+    // free as a link, its full size as a fallback copy).
+    let changed = String(repeating: "b", count: 100)
+    try write(changed, to: source.appendingPathComponent("meetings.json"))
+    let copyBytes = Int64(changed.utf8.count)
+    let skipBytes = Int64(unchanged.utf8.count)
+    let room = copyBytes + 900        // enough for the changed file; not for the changed file plus 4,000
+
+    // Links fail: the probe must see it, so the run needs copyBytes + skipBytes and is refused.
+    do {
+        _ = try BackupCoordinator.backUp(
+            source: source, destination: dest, now: 2_000, retain: 3,
+            linkItem: { _, _ in throw CocoaError(.fileWriteUnsupportedScheme) },
+            freeSpace: { _ in room }
+        )
+        Issue.record("expected the run to be refused for space")
+    } catch BackupCoordinatorError.insufficientSpace(let needed, let available) {
+        #expect(needed == copyBytes + skipBytes)
+        #expect(available == room)
+    }
+    #expect(!FileManager.default.fileExists(atPath: backupRoot(dest).appendingPathComponent("2000").path),
+            "a run refused for space publishes nothing")
+
+    // Links work (a copy stands in for the link, so this holds on any host): the SAME room is
+    // enough, because only the changed file costs bytes.
+    let linked = try BackupCoordinator.backUp(
+        source: source, destination: dest, now: 3_000, retain: 3,
+        linkItem: { try FileManager.default.copyItem(at: $0, to: $1) },
+        freeSpace: { _ in room }
+    )
+    #expect(linked.verified)
+    #expect(try BackupManifest.verify(in: backupRoot(dest).appendingPathComponent("3000"), deep: true).isIntact)
+}
+
+// F532, F652 — the probe that decides which side of `BackupPlan.bytesNeeded` (pure arithmetic, unit
+// tested in `Tests/WhisperCoreTests/BackupPlanTests.swift`) a real run uses. Both outcomes go
+// through the injected link, so neither depends on which filesystem the host's temp directory is
+// on: the test this replaces asserted `true` from the real `FileManager.linkItem`, which holds on
+// APFS and is a claim about the machine, not about the code.
+@Test("probeHardLinkSupport reports what the link it is given does, and leaves nothing behind (F652)")
+func hardLinkProbeFollowsTheInjectedLinkAndCleansUp() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F652-probe-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }
+    func leftovers() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? [] }
 
-    #expect(BackupCoordinator.probeHardLinkSupport(in: tmp, fileManager: .default))
-    // The probe cleans up after itself — it must never leave its throwaway files behind for a
-    // real generation's directory listing to trip over.
-    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
-    #expect(leftovers.isEmpty)
+    // A link that works (a copy stands in for it, on any host).
+    var worked = 0
+    #expect(BackupCoordinator.probeHardLinkSupport(
+        in: tmp, fileManager: .default,
+        linkItem: { worked += 1; try FileManager.default.copyItem(at: $0, to: $1) }
+    ))
+    #expect(worked == 1, "one probe, one link attempt")
+    #expect(leftovers().isEmpty, "the probe must not leave its throwaway files for a generation listing to trip over")
+
+    // A link that fails the way exFAT/FAT/SMB's does.
+    #expect(!BackupCoordinator.probeHardLinkSupport(
+        in: tmp, fileManager: .default,
+        linkItem: { _, _ in throw CocoaError(.fileWriteUnsupportedScheme) }
+    ))
+    #expect(leftovers().isEmpty)
+}
+
+@Test("A probe that cannot even write its file answers 'supported' rather than blaming the volume (F652)")
+func hardLinkProbeThatCannotRunDoesNotClaimUnsupported() {
+    // The probe's own write failing says nothing about hard links, and that failure surfaces on its
+    // own at the real copy with a precise error; answering "unsupported" here would mis-budget the
+    // space check for a reason unrelated to links. The link must not even be attempted.
+    let missing = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F652-missing-\(UUID().uuidString)/deeper")
+    var attempts = 0
+    #expect(BackupCoordinator.probeHardLinkSupport(
+        in: missing, fileManager: .default, linkItem: { _, _ in attempts += 1 }
+    ))
+    #expect(attempts == 0)
 }
