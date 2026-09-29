@@ -74,11 +74,15 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// one, so a newer build's marker stays beside the fields it describes.
     ///
     /// **Except the one direction a save does change the content (F552).** A record a NEWER build
-    /// wrote reaches this build's encoder without the fields this build does not know, so what
-    /// lands on disk is at most this build's schema. Keeping the newer number there is the wrong
-    /// marker this comment calls worse than none, so `SchemaMarker` writes the smaller of the two.
-    /// Memory keeps what was read — the marker is data, not a gate — and a record at or below this
-    /// build's version is written exactly as it was.
+    /// wrote reaches this build's encoder without the fields this build does not know. Keeping the
+    /// newer number there is the wrong marker this comment calls worse than none, so `SchemaMarker`
+    /// writes the smaller of the two. Memory keeps what was read — the marker is data, not a gate —
+    /// and a record at or below this build's version is written exactly as it was.
+    ///
+    /// The lowered marker is exact only for a newer schema that ADDS fields. One that changes what an
+    /// existing field means passes through this build unchanged, so a lowered record can already
+    /// hold values in the newer form: a future migration keyed on `schemaVersion < N` must therefore
+    /// be idempotent over values already in form N (review of F552).
     var schemaVersion: Int? {
         get { schemaMarker?.version }
         set { schemaMarker = newValue.map(SchemaMarker.init) }

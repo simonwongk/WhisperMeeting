@@ -280,6 +280,40 @@ func shredDoesNotAdoptAnotherCopysCommit() throws {
             "this session's next save overwrote the other copy's commit without a conflict")
 }
 
+/// The guard itself (review round 1: the test above no longer reaches it, because since F552 the
+/// shred rotates only when the backup still holds the deleted meeting, and another copy's ordinary
+/// save rotates it out first). What does reach it is a primary replaced WITHOUT a rotation: the
+/// hand restore `docs/RECOVERY.md` describes — copy an older index over `meetings.json`, remove the
+/// ledger — done while this session is running and before its shred. The rotation then re-saves
+/// content this session never read; adopting that generation let the session's next save pass the
+/// compare-and-swap and write its stale list over the restored one.
+@MainActor
+@Test("The shred's rotation is not adopted when it re-saved content this session never read (F552)")
+func shredRotationOverAHandRestoredIndexIsNotAdopted() throws {
+    let (store, root, secret) = try makeMistakenDelete("hand-restore")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    let backupURL = root.appendingPathComponent("meetings.backup.json")
+    try #require(String(decoding: try Data(contentsOf: backupURL), as: UTF8.self).contains("confidential-kestrel"),
+                 "fixture: the delete was the last save, so the backup still holds the meeting")
+    // The hand restore: an index this session never read, with no ledger to describe it.
+    let restored = MeetingRecord(id: UUID(), title: "Restored by hand", status: .completed)
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(store.meetings + [restored]).write(to: root.appendingPathComponent("meetings.json"))
+    try FileManager.default.removeItem(at: root.appendingPathComponent("meetings.ledger.json"))
+
+    try #require(store.processPendingShreds(now: deletedAt + week) == [secret])
+    try #require(!String(decoding: try Data(contentsOf: backupURL), as: UTF8.self).contains("confidential-kestrel"),
+                 "fixture: the rotation must have run for the guard to matter")
+    store.upsert(MeetingRecord(id: UUID(), title: "This session's next meeting", status: .completed))
+
+    #expect(MeetingStore(rootDirectory: root).meeting(id: restored.id) != nil,
+            "this session's next save wrote its stale list over the hand-restored index")
+    #expect(store.conflictOffer != nil, "the stale save should have lost the race and been offered back (F642)")
+}
+
 // MARK: - F603: a clock that is behind at one launch must not shorten the week
 
 /// F498 wrote `min(deletedAt, now)` back to disk at every launch, so one launch with the clock
