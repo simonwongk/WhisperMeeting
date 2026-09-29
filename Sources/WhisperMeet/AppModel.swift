@@ -1754,6 +1754,8 @@ final class AppModel: ObservableObject {
         // What `store.update` leaves it as if it declines to run the change at all — while a lost
         // save's conflict offer is unresolved, which that banner explains (F619).
         var outcome = SecondOpinionReplacement.refused(Self.secondOpinionReplaceNotSaved)
+        var before: (segments: [TranscriptSegment], transcriptText: String)?
+        let commitsBefore = store.persistCommitCount
         store.update(id: id) { meeting in
             guard !store.isTranscriptEdited(meeting) else {
                 outcome = .refused(Self.secondOpinionReplaceRefusedForEdits)
@@ -1763,9 +1765,24 @@ final class AppModel: ObservableObject {
                 outcome = .refused(Self.secondOpinionReplaceLineGone)
                 return
             }
+            before = (meeting.segments, meeting.transcriptText)
             meeting.segments[index].text = secondary
             meeting.transcriptText = TranscriptFormatter.timestamped(meeting.segments)
             outcome = .replaced
+        }
+        // F661: `.replaced` above means the line changed in memory; the store saves after the closure
+        // returns, and a save that fails leaves the old line on disk. A Replace counts only once it
+        // is committed. Otherwise the line is put back — so the window shows what the disk holds and
+        // the row can simply be pressed again — and the sheet says why. The store's own message and
+        // unsaved-changes state are left as they are: they are its report on the library, not this
+        // action's, and the main window says them once the sheet closes.
+        if outcome == .replaced, store.persistCommitCount == commitsBefore, let before {
+            let reason = store.storageErrorMessage
+            store.update(id: id) { meeting in
+                meeting.segments = before.segments
+                meeting.transcriptText = before.transcriptText
+            }
+            return .refused(Self.secondOpinionReplaceSaveFailed(reason))
         }
         return outcome
     }
@@ -1778,6 +1795,12 @@ final class AppModel: ObservableObject {
         + "the transcript as it is now."
     /// Why Replace wrote nothing: the meeting was deleted while the sheet was open (F605).
     static let secondOpinionReplaceMeetingGone = "This meeting no longer exists, so nothing was replaced."
+    /// How the sheet's message starts when a Replace's save failed (F661).
+    static let secondOpinionReplaceSaveFailedLead = "The replacement could not be saved, so the line was put back as it was."
+    /// Why Replace wrote nothing: the save failed (F661). The store's own reason follows the lead.
+    static func secondOpinionReplaceSaveFailed(_ storeMessage: String?) -> String {
+        [secondOpinionReplaceSaveFailedLead, storeMessage].compactMap { $0 }.joined(separator: " ")
+    }
     /// Why Replace wrote nothing when the library declined the change without a reason of its own (F605).
     static let secondOpinionReplaceNotSaved = "The library isn't accepting changes right now, so nothing "
         + "was replaced. Resolve the notice in the main window, then try again."

@@ -96,6 +96,40 @@ func secondOpinionReplaceReportsAReadOnlyLibrary() async throws {
     #expect(model.store.storageErrorMessage == nil, "the store's own refusal would also land behind the sheet")
 }
 
+// F661 — F605 reported `.replaced` as soon as the line was changed in memory, before the store tried
+// to save it. When that save failed the row still read "Replaced", the index on disk still held the
+// old line, and the store's error went to the window's alert behind the sheet. Replace now counts
+// only a change that reached disk; one that did not is put back, and the sheet says why.
+@MainActor
+@Test("A Replace whose save fails is not reported as replaced, and the line is put back (F661)")
+func secondOpinionReplaceReportsAFailedSave() async throws {
+    let (model, id, diverging, root) = try await makeComparedMeeting()
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    // The library root refuses new writes — how a full disk or a permissions problem reaches the
+    // index save (MeetingStoreDeleteOrderingTests' technique).
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+
+    let outcome = model.applySecondOpinionSpan(diverging, to: id)
+
+    guard case let .refused(reason) = outcome else {
+        Issue.record("a Replace that never reached disk was reported as \(outcome)")
+        return
+    }
+    #expect(reason.hasPrefix(AppModel.secondOpinionReplaceSaveFailedLead), "the sheet says the save failed")
+    #expect(model.store.meeting(id: id)?.segments[1].text == "second wrong",
+            "what the window shows is what the disk holds")
+    #expect(model.store.meeting(id: id).map(model.store.isTranscriptEdited) == false)
+
+    // Once the library can be written again, the same row's Replace works.
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+    #expect(model.applySecondOpinionSpan(diverging, to: id) == .replaced)
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meeting(id: id)?.segments[1].text == "second right", "and it reached disk")
+}
+
 // The sheet cannot be rendered here (F174's standing reason), so its wiring is checked in the source,
 // comments stripped first (F285): a row is marked only on `.replaced`, a refusal goes to the sheet's
 // OWN alert, and the Replace closure is still the model's.
