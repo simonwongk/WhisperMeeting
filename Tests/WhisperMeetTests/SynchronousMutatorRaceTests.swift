@@ -216,6 +216,66 @@ func duplicateIDsAreNotOfferedAsEdits() throws {
     #expect(onDisk == expected, "Keep overwrote one duplicate with its twin")
 }
 
+/// Both copies of a duplicated id edited — the batch bar's `addTag` edits every copy of an id — and
+/// the save lost. Keep used to write each offered record into the FIRST copy of its id, so both
+/// edits landed in one slot and one twin's body left the index (lane C review round 2, probe P1).
+@Test("When both copies of a duplicated id were edited, Keep writes each into its own slot and loses neither body (F642)")
+@MainActor
+func bothEditedTwinsKeepTheirOwnBodies() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dup = UUID(), other = UUID()
+    let older = Date(timeIntervalSince1970: 1_700_000_000)
+    let twinA = MeetingRecord(id: dup, title: "Dup A", createdAt: older.addingTimeInterval(100_000), status: .completed)
+    let twinB = MeetingRecord(id: dup, title: "Dup B", createdAt: older, status: .completed)
+    let x = MeetingRecord(id: other, title: "X", createdAt: older.addingTimeInterval(-10), status: .completed)
+    try foreignWriterCommits([twinA, twinB, x], in: root)
+    let store = MeetingStore(rootDirectory: root)
+    try #require(store.meetings.filter { $0.id == dup }.count == 2)
+    var theirs = x
+    theirs.title = "X, retitled by the other copy"
+    try foreignWriterCommits([twinA, twinB, theirs], in: root)
+
+    store.addTag("urgent", to: [dup])
+    try #require(store.conflictOffer?.delta.count == 2)
+    store.keepConflictedEdit()
+
+    let onDisk = MeetingStore(rootDirectory: root).meetings.filter { $0.id == dup }
+    let titles: [String] = onDisk.map(\.title).sorted()
+    #expect(titles == ["Dup A", "Dup B"], "Keep overwrote one twin with the other")
+    #expect(onDisk.allSatisfy { $0.tags == ["urgent"] }, "Keep lost the tag on one twin")
+}
+
+/// Keep stamps this build's schema version on what it writes (F188, "Mark it") — and only that.
+/// It used to stamp every copy of an offered id, so an untouched twin claimed a version its content
+/// was never written under: the wrong marker F188's doc calls worse than none.
+@Test("Keep marks only the copies it wrote, never an untouched twin (F642, F188)")
+@MainActor
+func keepStampsOnlyWhatItWrote() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dup = UUID(), other = UUID()
+    let older = Date(timeIntervalSince1970: 1_700_000_000)
+    let twinA = MeetingRecord(id: dup, title: "Dup A", createdAt: older.addingTimeInterval(100_000), status: .completed)
+    var twinB = MeetingRecord(id: dup, title: "Dup B", createdAt: older, status: .completed)
+    twinB.schemaVersion = nil   // written before the marker existed
+    let x = MeetingRecord(id: other, title: "X", createdAt: older.addingTimeInterval(-10), status: .completed)
+    try foreignWriterCommits([twinA, twinB, x], in: root)
+    let store = MeetingStore(rootDirectory: root)
+    var theirs = x
+    theirs.title = "X, retitled by the other copy"
+    try foreignWriterCommits([twinA, twinB, theirs], in: root)
+
+    store.update(id: dup) { $0.title = "Dup A, renamed here" }   // the first copy, as `update` does
+    try #require(store.conflictOffer != nil)
+    store.keepConflictedEdit()
+
+    let onDisk = MeetingStore(rootDirectory: root).meetings.filter { $0.id == dup }
+    #expect(onDisk.first { $0.title == "Dup A, renamed here" } != nil)
+    let untouched = try #require(onDisk.first { $0.title == "Dup B" }, "the untouched twin's body was lost")
+    #expect(untouched.schemaVersion == nil, "Keep stamped a twin it never wrote")
+}
+
 /// `delete(ids:)` saves twice when a folder cannot be removed: once without the row, then again to
 /// put it back (F146). Another copy saving between the two used to leave the row unlisted, the
 /// token stale and the session stuck. The row is this session's to put back, so it is offered.

@@ -1511,19 +1511,23 @@ final class MeetingStore: ObservableObject {
         guard let offer = conflictOffer else { return }
         conflictOffer = nil
         guard !offer.delta.isEmpty else { return }
-        for record in offer.delta {
-            if let index = meetings.firstIndex(where: { $0.id == record.id }) {
+        // Each offered record takes its own slot: the first copy of its id not already written this
+        // pass, or a new one. `firstIndex` alone put every edited copy of a duplicated id into one
+        // slot, so a batch tag over both twins lost one twin's body (lane C review round 2).
+        var written: Set<Int> = []
+        for var record in offer.delta {
+            // As `upsert` stamps a record it just wrote (F188, "Mark it") — the content just changed.
+            // Only what is written here: an untouched twin keeps the marker it was written under.
+            record.schemaVersion = MeetingRecord.currentSchemaVersion
+            if let index = meetings.indices.first(where: { !written.contains($0) && meetings[$0].id == record.id }) {
                 meetings[index] = record
+                written.insert(index)
             } else {
                 meetings.append(record)
+                written.insert(meetings.count - 1)
             }
         }
         meetings = MeetingOrdering.sorted(meetings)
-        // As `upsert` stamps a record it just wrote (F188, "Mark it") — the content just changed.
-        let deltaIDs = Set(offer.delta.map(\.id))
-        for index in meetings.indices where deltaIDs.contains(meetings[index].id) {
-            meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
-        }
         persistMeetings()
         for record in offer.delta {
             scheduleNotesSidecarWrite(for: record.id)
