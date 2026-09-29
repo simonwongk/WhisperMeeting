@@ -332,6 +332,13 @@ final class AppModel: ObservableObject {
     /// (F356's shape: crash mid-meeting, relaunch, the orphan loop rebuilds it). The caller now
     /// folds this into the one combined summary, first.
     func reportCrashesSinceLastLaunch(now: Date = Date()) -> String? {
+        CrashReportInventory.notice(for: crashReportsSinceLastLaunch(now: now))
+    }
+
+    /// The sweep and the stamp behind `reportCrashesSinceLastLaunch`, without the wording (F640):
+    /// `performStartupRecovery` runs this early, for the stamp, and words the notice last, once it
+    /// knows whether the notice is all the launch has to say.
+    func crashReportsSinceLastLaunch(now: Date = Date()) -> [CrashReportRecord] {
         let previous = defaults.object(forKey: Self.lastLaunchKey) as? Double
         // The stamp is written FIRST and unconditionally, including on the branch below that
         // reports nothing. A stamp written only on success would re-report the same crash on
@@ -347,9 +354,16 @@ final class AppModel: ObservableObject {
         // does so on a fresh `UserDefaults` suite, so each of them would read the user's real
         // `~/Library/Logs/DiagnosticReports` and pass or fail according to what was in it. There
         // happen to be zero WhisperMeet reports there today, which is luck, not a property.
-        guard let previous else { return nil }
-        let reports = crashReportsSince(Date(timeIntervalSince1970: previous))
-        return CrashReportInventory.notice(for: reports)
+        guard let previous else { return [] }
+        return crashReportsSince(Date(timeIntervalSince1970: previous))
+    }
+
+    /// The one startup summary: the crash notice first (F476), then everything else, or nil when
+    /// there is nothing to say. The notice reassures only when it is the whole summary (F640).
+    nonisolated static func startupSummary(crashes: [CrashReportRecord], messages: [String]) -> String? {
+        let crashNotice = CrashReportInventory.notice(for: crashes, isTheWholeSummary: messages.isEmpty)
+        let all = (crashNotice.map { [$0] } ?? []) + messages
+        return all.isEmpty ? nil : all.joined(separator: "\n\n")
     }
 
     /// Tells the user something, wherever they can be reached (F257).
@@ -2885,18 +2899,19 @@ final class AppModel: ObservableObject {
         // F257: idempotent, and started here because this is the one method that runs once per
         // launch regardless of window state now that `AppLifecycle` owns the call.
         observeStorageErrors()
-        // F370/F476: captured here, not reported, and appended to `messages` below so it survives
-        // as part of the ONE combined summary. Before the runtime reclaims below, because those can
-        // take seconds and the stamp (`reportCrashesSinceLastLaunch`'s side effect) should advance
-        // promptly — but the notice text itself is only ever shown at the bottom, alongside
-        // whatever else this launch has to say, or a later `report(messages.joined(...))` would
-        // silently replace it: there is only one `alertMessage` slot, and a crash mid-meeting
-        // (F356's shape) is exactly the launch where the orphan sweep below also has something to
-        // report.
+        // F370/F476: captured here, not reported, and put first in the ONE combined summary so it
+        // survives. Before the runtime reclaims below, because those can take seconds and the stamp
+        // (`crashReportsSinceLastLaunch`'s side effect) should advance promptly — but the notice
+        // text itself is only ever shown at the bottom, alongside whatever else this launch has to
+        // say, or a later report would silently replace it: there is only one `alertMessage` slot,
+        // and a crash mid-meeting (F356's shape) is exactly the launch where the orphan sweep below
+        // also has something to report.
+        //
+        // F640: only the reports are captured here; `startupSummary` words the notice at the end,
+        // because whether it may say "Nothing was lost" depends on everything below — it may only
+        // when nothing else is said.
         var messages: [String] = []
-        if let crashNotice = reportCrashesSinceLastLaunch() {
-            messages.append(crashNotice)
-        }
+        let crashes = crashReportsSinceLastLaunch()
         // F520: the meetings-critical Whisper venv first, for the reason all four share — an install
         // interrupted mid-swap leaves the working runtime in a hidden backup, and the probe below
         // must see it restored.
@@ -2926,7 +2941,7 @@ final class AppModel: ObservableObject {
             // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
             // launch with no window — a login item, or a window closed before this ran — showed it
             // to nobody. It is the notice that tells a user their recording came back.
-            report(messages.joined(separator: "\n\n"))
+            if let summary = Self.startupSummary(crashes: crashes, messages: messages) { report(summary) }
             return
         }
 
@@ -3303,11 +3318,11 @@ final class AppModel: ObservableObject {
         // Read-only integrity sweep over the whole library (including anything just recovered above):
         // flags missing/truncated/inconsistent audio without ever touching it (F83 wires the F66 core).
         messages.append(contentsOf: Self.integrityMessages(verifyLibraryIntegrity()))
-        if !messages.isEmpty {
+        if let summary = Self.startupSummary(crashes: crashes, messages: messages) {
             // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
             // launch with no window — a login item, or a window closed before this ran — showed it
             // to nobody. It is the notice that tells a user their recording came back.
-            report(messages.joined(separator: "\n\n"))
+            report(summary)
         }
     }
 

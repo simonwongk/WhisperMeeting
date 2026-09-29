@@ -97,17 +97,26 @@ public enum CrashReportInventory {
     /// One sentence and no action button. The crash already happened and there is nothing for them
     /// to do about it; what this buys is that they *know*, and that a support question starts with
     /// a file name instead of with "it disappeared".
-    public static func notice(for reports: [CrashReportRecord]) -> String? {
+    ///
+    /// - Parameter isTheWholeSummary: whether this notice is all the launch has to say (F640). The
+    ///   reassurance "Nothing was lost and your recordings are untouched." is made only then. Since
+    ///   F476 the notice shares one alert with everything else startup recovery found, and a folder
+    ///   that could not be rebuilt, a truncated recovery or an integrity finding sat directly below a
+    ///   sentence saying nothing was lost. Deciding which of those messages "report a loss" would be
+    ///   a hand-kept list of phrases that the next new message slips past; leaving the claim out
+    ///   whenever anything else is said cannot contradict anything, and the other messages say what
+    ///   actually happened.
+    public static func notice(for reports: [CrashReportRecord], isTheWholeSummary: Bool = true) -> String? {
         guard let newest = reports.first else { return nil }
         let when = DateFormatter.crashNotice.string(from: newest.writtenAt)
         let others = reports.count - 1
         let count = others == 0
             ? "A crash report"
             : (others == 1 ? "2 crash reports" : "\(reports.count) crash reports")
+        let reassurance = isTheWholeSummary ? "Nothing was lost and your recordings are untouched. " : ""
         return """
             \(count) from WhisperMeet appeared since the last launch — the most recent at \(when). \
-            Nothing was lost and your recordings are untouched. \
-            Export Diagnostics from Settings includes the details.
+            \(reassurance)Export Diagnostics from Settings includes the details.
             """
     }
 }
