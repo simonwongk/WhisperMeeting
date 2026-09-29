@@ -74,36 +74,50 @@ struct BackupManifest: Codable, Equatable, Sendable {
         )
     }
 
-    /// The manifest a generation carries, or nil when it has none — which is the ordinary state of
-    /// a generation written before this existed, not an error.
+    /// The manifest a generation carries, or nil when there is no USABLE one.
     ///
-    /// Collapses two very different situations to the same `nil` (F557): "no file at all" (an
-    /// older backup, nothing wrong) and "a file is there but truncated or otherwise undecodable"
-    /// (this generation's own evidence is damaged). `verify` below must NOT make the same
-    /// collapse — it needs `readOutcome` to tell those apart.
+    /// Deliberately collapses "no file at all" (an older backup, nothing wrong) and "a file is
+    /// there but cannot be trusted" (this generation's own evidence is damaged) into the same
+    /// `nil` (F557). That is right for a caller that only wants the manifest if there is one to
+    /// use, and wrong for any caller that has to act differently on the two: `verify` and
+    /// `BackupRestorePlan.make` both do, and both use `readOutcome`.
     static func read(in generationDirectory: URL) -> BackupManifest? {
         if case let .present(manifest) = readOutcome(in: generationDirectory) { return manifest }
         return nil
     }
 
     /// Whether `.backup-manifest.json` is absent, present and readable, or present and damaged
-    /// (F557). The distinction `read` cannot make: an absent manifest means an older backup, which
-    /// stays restorable through the "Restore Anyway" override; a damaged one means this
-    /// generation's own integrity evidence cannot be trusted, which "Restore Anyway" must NOT
-    /// override — those are different questions to ask the user and this is the tri-state that
-    /// keeps them different all the way to `BackupRestorePlan`.
+    /// (F557). An absent manifest means an older backup, which stays restorable through the
+    /// "Restore Anyway" override; a damaged one means this generation's own integrity evidence
+    /// cannot be trusted, which "Restore Anyway" must NOT override — those are different questions
+    /// to ask the user and this is the tri-state that keeps them different all the way to
+    /// `BackupRestorePlan`.
     enum ReadOutcome: Equatable {
+        /// There is no such file. The only thing that means "made before manifests existed".
         case absent
         case present(BackupManifest)
-        /// The file exists but did not decode — truncated JSON, garbage bytes, or any other
-        /// corruption. Distinct from `.absent`: this generation is not "from an earlier version",
-        /// it is damaged.
+        /// The file exists but is not a manifest this app can use: truncated JSON, garbage bytes,
+        /// or a read that failed for any reason other than "no such file" (EIO from a failing
+        /// drive, a sync client's file that never downloaded, EACCES, a directory at the path).
+        /// Distinct from `.absent`: this generation is not "from an earlier version", it is
+        /// damaged.
         case corrupt
     }
 
     static func readOutcome(in generationDirectory: URL) -> ReadOutcome {
         let url = generationDirectory.appendingPathComponent(fileName)
-        guard let data = try? Data(contentsOf: url) else { return .absent }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .absent
+        } catch {
+            // Every other failure to read is evidence the file is there and unusable — the
+            // fail-closed reading. Treating it as "absent" would offer Restore Anyway for a
+            // backup whose manifest is exactly what a failing disk or a stalled sync client
+            // takes first (F557 Part 2).
+            return .corrupt
+        }
         guard let manifest = try? JSONDecoder().decode(BackupManifest.self, from: data) else {
             return .corrupt
         }

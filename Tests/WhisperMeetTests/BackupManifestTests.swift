@@ -192,6 +192,27 @@ func garbageManifestIsDamagedNotUnverifiable() throws {
     #expect(result.problems.contains { $0.lowercased().contains("damaged") })
 }
 
+// F557 Part 2 — only "there is no such file" means a generation from before manifests existed.
+// A manifest that is there but cannot be read (EIO from a failing drive, a sync file that never
+// downloaded, EACCES) is damage of the same kind as a truncated one. A directory at the path is the
+// deterministic stand-in: it fails to read the same way for every user, root included.
+@Test("A manifest that exists but cannot be read is damaged, not absent (F557)")
+func unreadableManifestIsDamagedNotAbsent() throws {
+    let (root, source, destination) = try makeLibrary("manifest-unreadable")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let summary = try BackupCoordinator.backUp(source: source, destination: destination, now: 10, retain: 3)
+    let generation = generationURL(destination, summary.generation)
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    try FileManager.default.removeItem(at: manifestURL)
+    try FileManager.default.createDirectory(at: manifestURL, withIntermediateDirectories: false)
+
+    #expect(BackupManifest.readOutcome(in: generation) == .corrupt)
+    let result = try BackupManifest.verify(in: generation, deep: false)
+    #expect(!result.isIntact)
+    #expect(!result.isUnverifiable)
+    #expect(!result.problems.contains { $0.contains("earlier version") })
+}
+
 @Test("A generation from a build with no manifest still reads as complete")
 func preManifestGenerationIsStillUsable() throws {
     // The append-only rule, one directory over. A generation written before slice D has a

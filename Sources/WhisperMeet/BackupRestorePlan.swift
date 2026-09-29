@@ -76,10 +76,17 @@ struct BackupRestorePlan: Equatable, Sendable {
     }
 
     static func make(from generation: URL, into library: URL, deep: Bool) throws -> BackupRestorePlan {
-        let manifest = BackupManifest.read(in: generation)
+        let outcome = BackupManifest.readOutcome(in: generation)
+        let manifest: BackupManifest?
+        if case let .present(found) = outcome { manifest = found } else { manifest = nil }
         // Asked before verification, because verification's answer for a folder with no manifest
         // is "unverifiable", which reads as an older backup — and this is not one.
-        if manifest == nil, !FileManager.default.fileExists(
+        //
+        // Only an ABSENT manifest counts (F557). A folder whose manifest is there but damaged —
+        // truncated by an interrupted copy that may also have cut `meetings.json` — is a damaged
+        // backup, not a folder that was never one, and it has to reach `verify` so the user is told
+        // it is damaged rather than to "choose one dated folder".
+        if case .absent = outcome, !FileManager.default.fileExists(
             atPath: generation.appendingPathComponent("meetings.json").path
         ) {
             throw NotABackupGeneration(path: generation.lastPathComponent)
@@ -97,7 +104,10 @@ struct BackupRestorePlan: Equatable, Sendable {
 
         // The backup's file set. From the manifest when there is one — it is the authoritative
         // list, and using it means a file the manifest omits is not silently restored — and from
-        // the directory otherwise, which is the only option for a pre-slice-D generation.
+        // the directory otherwise: the only option for a pre-slice-D generation, and, for a damaged
+        // manifest, a description of what is on disk that lets the sheet say what a restore would
+        // have touched. The damaged case is never applied — `verification` above already reports it
+        // as neither intact nor unverifiable, so `apply` refuses it and no override button exists.
         let backupFiles: [String: Int64]
         if let manifest {
             backupFiles = Dictionary(

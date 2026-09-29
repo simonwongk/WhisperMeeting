@@ -160,6 +160,49 @@ func garbageManifestIsNotOfferedTheOverride() throws {
     #expect(!plan.requiresExplicitOverride, "a damaged manifest must not be offered Restore Anyway")
 }
 
+// F557 Part 2 — the ticket's second scenario: a manifest that EXISTS but cannot be read at all
+// (a failing USB drive answering EIO, a cloud-sync file that never downloaded, a permissions
+// change). It is not "made by an earlier version" either — the file is there. A directory sitting
+// at the manifest path is the deterministic stand-in: reading it fails the same way for any user,
+// root included, where `chmod 000` would only fail for a non-root one.
+@Test("A manifest that exists but cannot be read is refused outright, never offered the override (F557)")
+func unreadableManifestIsNotOfferedTheOverride() throws {
+    let (root, library, generation) = try makeFixture("unreadable-manifest")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    try FileManager.default.removeItem(at: manifestURL)
+    try FileManager.default.createDirectory(at: manifestURL, withIntermediateDirectories: false)
+
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: false)
+    #expect(!plan.verification.isIntact)
+    #expect(!plan.verification.isUnverifiable, "an unreadable manifest is not an absent one")
+    #expect(!plan.isSafeToApply)
+    #expect(!plan.requiresExplicitOverride, "an unreadable manifest must not be offered Restore Anyway")
+}
+
+// F557 (review) — `make` asked `read == nil` to decide "this folder is not a backup at all", which
+// is true only of an ABSENT manifest. A truncated manifest beside a missing index is the ticket's
+// own Part 1 scenario (an interrupted copy cuts both), and it was refused with the wrong reason:
+// "is not a backup generation. Choose one dated folder…" for a folder that is exactly one.
+@Test("A damaged manifest beside a missing index is refused as damaged, not as 'not a backup generation' (F557)")
+func damagedManifestWithMissingIndexIsNotMisdiagnosed() throws {
+    let (root, library, generation) = try makeFixture("damaged-manifest-no-index")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    let original = try Data(contentsOf: manifestURL)
+    try original.prefix(original.count / 3).write(to: manifestURL)
+    try FileManager.default.removeItem(at: generation.appendingPathComponent("meetings.json"))
+
+    do {
+        let plan = try BackupRestorePlan.make(from: generation, into: library, deep: false)
+        #expect(!plan.isSafeToApply)
+        #expect(!plan.verification.isUnverifiable)
+        #expect(!plan.requiresExplicitOverride)
+    } catch is BackupRestorePlan.NotABackupGeneration {
+        Issue.record("a folder with a damaged manifest is a damaged backup, not 'not a backup generation'")
+    }
+}
+
 @Test("A plan totals the bytes it would write")
 func planTotalsBytes() throws {
     let (root, library, generation) = try makeFixture("bytes")
