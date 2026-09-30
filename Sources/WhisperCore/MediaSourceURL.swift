@@ -102,17 +102,26 @@ public enum MediaSourceURL {
         return nil
     }
 
-    /// Whether a YouTube URL points at a playlist or channel rather than one video — a `list=` query,
-    /// or a channel/playlist path. The caller refuses these in v1.
+    /// Whether a YouTube URL points at a playlist or channel rather than one video — a `list=` query
+    /// that names no video, or a channel/playlist path. The caller refuses these in v1.
+    ///
+    /// A `list=` beside a video — `watch?v=<id>&list=…`, or `youtu.be/<id>?list=…`, which yt-dlp
+    /// redirects to the former — is a video playing inside a playlist, and is one video (F618). Every
+    /// yt-dlp vector passes `--no-playlist`, which picks the video when a URL names both, so that link
+    /// imports just the video. Only a `list=` with no video left to pick — `/playlist?list=`,
+    /// `watch?list=`, `/embed/videoseries?list=` — is refused here.
     ///
     /// YouTube's shapes only (F495). Elsewhere `/@user/…` is a single post — TikTok's canonical video
     /// URL is `/@user/video/<id>`, Mastodon's and Threads' are `/@user/<id>` — so another host's link
     /// is never judged by these rules. Whether it is a playlist is decided by what yt-dlp resolves it
     /// to: `MediaDownloadClient.parseProbe` refuses a `playlist` or `multi_video` result for every
-    /// host. `--no-playlist` is no substitute; it only picks the video when a URL names both.
+    /// host. `--no-playlist` is no substitute for that; it only picks the video when a URL names both.
     static func isPlaylistOrChannel(host: String, components: URLComponents) -> Bool {
         guard isYouTubeHost(host) else { return false }
-        if components.queryItems?.contains(where: { $0.name == "list" }) == true { return true }
+        if components.queryItems?.contains(where: { $0.name == "list" }) == true,
+           !namesVideoBesideItsList(host: host, components: components) {
+            return true
+        }
         let path = components.path.lowercased()
         let firstSegment = path.split(separator: "/").first.map(String.init) ?? ""
         return path.hasPrefix("/playlist")
@@ -120,6 +129,19 @@ public enum MediaSourceURL {
             || path.hasPrefix("/c/")
             || path.hasPrefix("/user/")
             || firstSegment.hasPrefix("@") // /@handle channel pages
+    }
+
+    /// The two shapes whose `list=` yt-dlp's `--no-playlist` resolves to one video: `/watch` with a
+    /// non-empty `v=` (on any YouTube host), and `youtu.be/<id>`. Keyed on these rather than on
+    /// `youTubeVideoID`, whose path markers would read `/embed/videoseries?list=` as a video called
+    /// "videoseries".
+    private static func namesVideoBesideItsList(host: String, components: URLComponents) -> Bool {
+        let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        if bare == "youtu.be" {
+            return components.path.split(separator: "/").first.map { !$0.isEmpty } ?? false
+        }
+        guard components.path.lowercased() == "/watch" else { return false }
+        return components.queryItems?.contains(where: { $0.name == "v" && $0.value?.isEmpty == false }) == true
     }
 
     private static func nonEmpty(_ value: String) -> String? {

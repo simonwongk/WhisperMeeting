@@ -48,7 +48,8 @@ func genericWebHost() throws {
 
 @Test("Detects playlist and channel URLs so the caller can refuse them (F183)")
 func detectsPlaylistsAndChannels() throws {
-    #expect(try MediaSourceURL.validate("https://youtube.com/watch?v=abc&list=PL123").isPlaylist)
+    // `watch?v=abc&list=PL123` used to be asserted here as a playlist. That pinned the pre-F618
+    // behaviour; a video playing inside a playlist is one video — see the F618 test below.
     #expect(try MediaSourceURL.validate("https://www.youtube.com/playlist?list=PL123").isPlaylist)
     #expect(try MediaSourceURL.validate("https://www.youtube.com/channel/UC12345").isPlaylist)
     #expect(try MediaSourceURL.validate("https://www.youtube.com/@SomeCreator").isPlaylist)
@@ -73,5 +74,38 @@ func otherHostsAreNotJudgedByYouTubeChannelRules() throws {
     }
     // YouTube's own channel and playlist shapes are still refused.
     #expect(try MediaSourceURL.validate("https://m.youtube.com/@SomeCreator/videos").isPlaylist)
-    #expect(try MediaSourceURL.validate("https://youtu.be/dQw4w9WgXcQ?list=PL123").isPlaylist)
+    // `youtu.be/dQw4w9WgXcQ?list=PL123` used to be asserted here as a playlist, which pinned the
+    // pre-F618 behaviour: it names one video, and yt-dlp redirects it to `watch?v=…&list=…`.
+    #expect(try MediaSourceURL.validate("https://www.youtube.com/playlist?list=PL123").isPlaylist)
+}
+
+// F618 — a link copied from a video playing inside a playlist names that video AND the playlist.
+// Every yt-dlp vector passes `--no-playlist`, which yt-dlp documents as "Download only the video, if
+// the URL refers to a video and a playlist" (options.py, yt-dlp 2026.08.19), so the link imports just
+// the video. Refusing it as a playlist refused a common way to copy a YouTube link.
+@Test("A video playing inside a playlist is one video, not a playlist (F618)")
+func aVideoInsideAPlaylistIsOneVideo() throws {
+    let cases: [(url: String, videoID: String)] = [
+        ("https://www.youtube.com/watch?v=abc&list=PL123", "abc"),
+        ("https://youtube.com/watch?v=abc&list=PL123", "abc"),
+        ("https://youtu.be/dQw4w9WgXcQ?list=PL123&si=x", "dQw4w9WgXcQ"),
+        ("https://music.youtube.com/watch?v=abc&list=RDAMVMabc", "abc"),
+        ("https://m.youtube.com/watch?v=abc&list=PL123&index=3", "abc"),
+        ("https://www.youtube.com/watch?list=PL123&v=abc", "abc"),
+    ]
+    for (url, videoID) in cases {
+        let parsed = try MediaSourceURL.validate(url)
+        #expect(!parsed.isPlaylist, "\(url)")
+        #expect(parsed.videoID == videoID, "\(url)")
+    }
+    // A link that names only the playlist is still one: there is no video for --no-playlist to pick.
+    for playlist in [
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://www.youtube.com/watch?list=PL123",
+        "https://www.youtube.com/watch?v=&list=PL123",
+        "https://www.youtube.com/embed/videoseries?list=PL123",
+        "https://youtu.be/?list=PL123",
+    ] {
+        #expect(try MediaSourceURL.validate(playlist).isPlaylist, "\(playlist)")
+    }
 }

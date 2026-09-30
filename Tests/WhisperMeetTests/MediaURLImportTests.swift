@@ -170,6 +170,22 @@ func refusesUnsupportedLinks() async throws {
 }
 
 @MainActor
+@Test("A video link copied from inside a playlist imports that video (F618)")
+func videoInsidePlaylistImports() async throws {
+    let (model, root) = try makeModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let box = SeamBox()
+    stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "One talk", durationSeconds: 60))
+
+    let link = "https://www.youtube.com/watch?v=abc123&list=PL1"
+    let id = try #require(await model.importFromURL(link))
+    // It reached the downloader unchanged, where `--no-playlist` picks the video out of the playlist.
+    #expect(box.probedURL == link)
+    #expect(box.downloadURL == link)
+    #expect(model.store.meeting(id: id)?.source?.videoID == "abc123")
+}
+
+@MainActor
 @Test("A long video asks for explicit confirmation, then proceeds when confirmed (F183)")
 func longMediaRequiresConfirmation() async throws {
     let (model, root) = try makeModel()

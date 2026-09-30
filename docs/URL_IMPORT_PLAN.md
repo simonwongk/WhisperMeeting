@@ -14,7 +14,7 @@
 | Accepted URLs | Any yt-dlp-supported URL; YouTube first-class |
 | Captions | Always transcribe locally; the publisher's captions are kept only as a comparison reference |
 | Downloaded format | 16 kHz mono 16-bit **WAV** — keeps per-segment re-run working; ~115 MB/hour |
-| Playlist / channel URLs | Refused in v1; `--no-playlist` always |
+| Playlist / channel URLs | Refused in v1; `--no-playlist` always, so a video playing inside a playlist (`watch?v=…&list=…`, `youtu.be/…?list=…`) imports just that video (F618) |
 | Long videos | Warn **and require explicit confirmation** above the threshold; never hard-capped |
 | `docs/PRODUCT_SPEC.md` | **Left untouched** — see [Spec tension](#spec-tension-recorded-not-resolved) |
 
