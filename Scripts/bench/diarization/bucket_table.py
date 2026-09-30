@@ -100,6 +100,13 @@ def run(rttm_dir, hypothesis_dir, gate):
             f"no hypothesis .json files in {hypothesis_dir!r} — --hypotheses is ONE threshold "
             "directory from `sweep` (e.g. <sweep out>/0.60), and nothing was scored"
         )
+    # Files read are not rows scored (F616): hypotheses whose same-stem RTTMs have no SPEAKER lines
+    # were read, tallied nothing, and printed the same all-zero table F409 refused above.
+    if not sum(counts[0] for counts in totals.values()):
+        raise SystemExit(
+            f"the RTTMs in {rttm_dir!r} for {hypothesis_dir!r} hold no reference turns "
+            "(no SPEAKER lines) — nothing was scored"
+        )
     return totals
 
 

@@ -617,6 +617,10 @@ def main():
 
     with open(args.input, encoding="utf-8") as handle:
         payload = json.load(handle)
+    # An empty list printed four `micro ... DER 0.00%  JER 100.00%  (total 0.0 s)` lines, or a JSON
+    # scorecard, and exited 0 — a result over nothing (F616). Refused before either mode prints.
+    if not payload["files"]:
+        raise SystemExit(f'{args.input!r} has an empty "files" list — nothing was scored')
 
     per_file = []
     rows = []

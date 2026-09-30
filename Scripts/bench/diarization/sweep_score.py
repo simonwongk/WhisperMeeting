@@ -25,9 +25,11 @@ def main(argv):
     rttm_dir, sweep_dir = argv
     conditions = [name for name, _, _ in sd.CONDITIONS]
     strict = conditions[0]
-    print("threshold | files | " + " | ".join(f"DER {c}" for c in conditions)
-          + f" | miss/FA/confusion ({strict}) | displayed precision | coverage")
-    scored_any = False
+    # Every threshold is scored and checked before anything is printed (F616). The header used to
+    # go out first and each row as it was scored, so a refusal for a later threshold left the header
+    # and the earlier rows on stdout: `sweep_score.py rttm sweep > out.md` wrote a well-formed
+    # partial table and then exited 1.
+    rows = []
     for threshold in sorted(os.listdir(sweep_dir)):
         folder = os.path.join(sweep_dir, threshold)
         if not os.path.isdir(folder):
@@ -53,24 +55,34 @@ def main(argv):
             raise SystemExit(
                 f"no .json hypotheses in {folder!r} — nothing was scored for threshold {threshold}"
             )
-        scored_any = True
+        cells = [sd.micro_average(reports, c) for c in conditions]
+        first = cells[0]
+        # Reference speech, not files read (F616): hypotheses whose same-stem RTTMs have no
+        # SPEAKER lines are read and score nothing, and the component split below divided by it.
+        if first["total"] <= 0:
+            raise SystemExit(
+                f"the RTTMs in {rttm_dir!r} for {folder!r} hold no reference speech (no SPEAKER "
+                f"lines?) — nothing was scored for threshold {threshold}"
+            )
         # `displayed_label_metrics` calls the no-rows case 1.0 — "it was never wrong" — and this
         # printed 0.0 for the same input. One definition, not two (F343).
         precision = (correct / shown) if shown else 1.0
-        cells = [sd.micro_average(reports, c) for c in conditions]
-        first = cells[0]
         parts = "/".join(f"{100 * first[k] / first['total']:.1f}" for k in ("miss", "false_alarm", "confusion"))
-        print(f"{threshold} | {len(reports)} | " + " | ".join(f"{100 * c['der']:.1f}" for c in cells)
-              + f" | {parts} | {100 * precision:.1f} | {100 * shown / max(1, segments):.1f}")
+        rows.append(f"{threshold} | {len(reports)} | " + " | ".join(f"{100 * c['der']:.1f}" for c in cells)
+                    + f" | {parts} | {100 * precision:.1f} | {100 * shown / max(1, segments):.1f}")
 
     # A header with no rows under it reads as "scored, nothing to say". It actually means the two
     # arguments were swapped — the usage is <rttm dir> <sweep dir>, and the README had it backwards
     # until F348 followed its own instructions and got exactly this (F343's lesson, one script over).
-    if not scored_any:
+    if not rows:
         raise SystemExit(
             f"no threshold directories in {sweep_dir!r} — arguments are <rttm dir> <sweep dir>, "
             "and nothing was scored"
         )
+    print("threshold | files | " + " | ".join(f"DER {c}" for c in conditions)
+          + f" | miss/FA/confusion ({strict}) | displayed precision | coverage")
+    for row in rows:
+        print(row)
 
 
 if __name__ == "__main__":

@@ -156,6 +156,23 @@ class SelfTestEntryPoint(unittest.TestCase):
         ends = lambda line: [m.end() for m in re.finditer(r"\S+", line)]
         self.assertEqual(ends(header)[2:5], ends(row)[2:5])
 
+    def test_an_empty_file_list_is_a_refusal(self):
+        # F616: `{"files": []}` printed four `micro ... DER 0.00%  JER 100.00%  (total 0.0 s)`
+        # lines (or a JSON scorecard) and exited 0 — a result over nothing.
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "scores.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"files": []}, handle)
+            for extra in ((), ("--json",)):
+                with self.subTest(extra=extra):
+                    result = subprocess.run(
+                        [sys.executable, os.path.join(BENCH, "score_diarization.py"), path, *extra],
+                        capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn("nothing was scored", result.stderr)
+                    self.assertEqual(result.stdout, "")
+
 
 def write_fixture(corpus, hypotheses, fixture_id, turns, hypothesis_lines):
     """A synthetic truth file, plus the runtime's text output unless `hypothesis_lines` is None."""

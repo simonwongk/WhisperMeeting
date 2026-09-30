@@ -119,6 +119,36 @@ class ProducersRefuseWhatTheyCannotScore(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertIn("0.70", result.stderr)
         self.assertIn("nothing was scored", result.stderr)
+        # F616: the refusal fired mid-loop, after the header and the 0.60 row were printed, so
+        # `sweep_score.py rttm sweep > out.md` left a well-formed partial table behind.
+        self.assertEqual(result.stdout, "")
+
+    def write_speakerless_reference(self, hypotheses):
+        """A same-stem RTTM with no SPEAKER lines: the .json is read, and nothing is scored."""
+        write_meeting(self.rttm, hypotheses, "m1", [(0.0, 10.0, "A", "y")])
+        with open(os.path.join(self.rttm, "m1.rttm"), "w", encoding="utf-8") as handle:
+            handle.write(";; an RTTM with no SPEAKER lines\n")
+
+    def test_bucket_table_refuses_references_with_no_speaker_lines(self):
+        # F616: it counted .json files read, not rows scored, so this printed the all-zero table
+        # ("coverage 0.0 % of 0 rows") and exited 0.
+        hypotheses = os.path.join(self.sweep, "0.60")
+        self.write_speakerless_reference(hypotheses)
+        result = run("bucket_table.py", "--rttm", self.rttm, "--hypotheses", hypotheses)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("nothing was scored", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_sweep_score_refuses_references_with_no_speaker_lines(self):
+        # F616: `first['total']` was zero, and the miss/FA/confusion cell divided by it.
+        self.write_speakerless_reference(os.path.join(self.sweep, "0.60"))
+        result = run("sweep_score.py", self.rttm, self.sweep)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("0.60", result.stderr)
+        self.assertIn("nothing was scored", result.stderr)
+        self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":
