@@ -82,24 +82,30 @@ func aDeadHoldersLeaseIsAvailable() throws {
 
     // Handshake, so the assertion below cannot race the child taking the lock.
     //
-    // Bounded, and both bounds matter. `Process.run()` on `/usr/bin/env` succeeds whenever `env`
-    // exists — it says nothing about `python3`, which Apple has been steadily unbundling and which
-    // a runner without Command Line Tools does not have. An unbounded loop over `availableData`
-    // would then spin at 100% CPU forever on an already-EOF pipe, and this suite already has a
-    // scar from a wedged child presenting as a silent hang (F169). Empty data is EOF; the deadline
-    // catches a child that opens the pipe and then stalls.
-    var banner = Data()
-    let deadline = Date().addingTimeInterval(10)
-    while !String(decoding: banner, as: UTF8.self).contains("locked") {
-        let chunk = out.fileHandleForReading.availableData
-        if chunk.isEmpty { break }          // the child exited without taking the lock
-        if Date() >= deadline { break }
-        banner.append(chunk)
-    }
-    try #require(
-        String(decoding: banner, as: UTF8.self).contains("locked"),
-        "the holder child never reported taking the lock — is python3 present?"
+    // Bounded both ways the child can fail to answer, and both bounds matter. `Process.run()` on
+    // `/usr/bin/env` succeeds whenever `env` exists — it says nothing about `python3`, which Apple
+    // has been steadily unbundling and which a runner without Command Line Tools does not have —
+    // and this suite already has a scar from a wedged child presenting as a silent hang (F169). A
+    // child that exits closes the pipe, which reads as end of file. A child that stays alive and
+    // silent — an interpreter that hangs before its first write, or a `flock` that never returns —
+    // is caught by `readHandshake`'s deadline, which is checked while nothing is arriving (F485);
+    // the `defer` above then SIGKILLs it.
+    let handshake = readHandshake(
+        from: out.fileHandleForReading, until: "locked", timeoutMilliseconds: 10_000
     )
+    switch handshake {
+    case .found:
+        break
+    case .endOfFile:
+        Issue.record("the holder child exited without reporting the lock — is python3 present?")
+        return
+    case .timedOut:
+        Issue.record("the holder child was silent for 10 s — a hung python3, or a flock that never returned")
+        return
+    case .failed(let code):
+        Issue.record("reading the holder child's output failed with errno \(code)")
+        return
+    }
 
     let blocked = LibraryWriterLock.acquire(root: root)
     #expect(blocked.lease == .heldElsewhere(realm: "shared"), "a live holder must block")
@@ -119,4 +125,135 @@ func aDeadHoldersLeaseIsAvailable() throws {
     #expect(acquired == .held(realm: "shared"), "a SIGKILLed holder must not keep the lease")
     // And therefore the gate lets the relaunch after a crash rebuild, which is the whole point.
     #expect(InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(acquired))
+}
+
+// MARK: - A handshake read that a silent child cannot wedge (F485)
+
+/// How `readHandshake` ended.
+private enum HandshakeOutcome: Equatable {
+    /// The needle arrived.
+    case found
+    /// The writer closed its end without sending the needle.
+    case endOfFile
+    /// The deadline passed first: the writer still has its end open and has not sent the needle.
+    case timedOut
+    /// `poll(2)` or `read(2)` failed with this `errno`.
+    case failed(Int32)
+}
+
+/// Reads `handle` until its bytes contain `needle`, the writer closes, or `timeoutMilliseconds`
+/// pass — whichever comes first.
+///
+/// The deadline has to be able to fire while nothing is arriving, which is exactly when a loop over
+/// `FileHandle.availableData` cannot check it: `availableData` blocks until bytes or end of file, so
+/// the loop this replaced checked its deadline only after a chunk arrived, and a writer that stayed
+/// silent was not bounded at all (F485). Here every read is preceded by a `poll(2)` for the time
+/// that is left, so a silent writer costs the timeout and no more. `read(2)` rather than
+/// `availableData` for a second reason: `availableData` raises an Objective-C exception on a read
+/// error, which no Swift `catch` sees.
+private func readHandshake(
+    from handle: FileHandle, until needle: String, timeoutMilliseconds: Int
+) -> HandshakeOutcome {
+    let descriptor = handle.fileDescriptor
+    // Monotonic milliseconds, so a change to the wall clock cannot stretch or cut the wait. The sum
+    // cannot overflow: uptime in milliseconds is nowhere near `UInt64.max - UInt64(Int.max)`.
+    func uptimeMilliseconds() -> UInt64 { DispatchTime.now().uptimeNanoseconds / 1_000_000 }
+    let deadline = uptimeMilliseconds() + UInt64(max(0, timeoutMilliseconds))
+    var banner = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while !String(decoding: banner, as: UTF8.self).contains(needle) {
+        let now = uptimeMilliseconds()
+        guard now < deadline else { return .timedOut }
+        var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        // `clamping:`, because a plain `Int32(_:)` traps on a remainder past `Int32.max`.
+        let ready = poll(&request, 1, Int32(clamping: deadline - now))
+        if ready < 0 {
+            let code = errno
+            if code == EINTR { continue }
+            return .failed(code)
+        }
+        if ready == 0 { continue }                      // nothing yet; the deadline is checked above
+        if request.revents & Int16(POLLNVAL) != 0 { return .failed(EBADF) }
+        let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+        if count < 0 {
+            let code = errno
+            if code == EINTR || code == EAGAIN { continue }
+            return .failed(code)
+        }
+        if count == 0 { return .endOfFile }             // the writer closed without the needle
+        banner.append(contentsOf: buffer[..<count])
+    }
+    return .found
+}
+
+/// Runs `readHandshake` on a global-queue thread and waits a bounded time for it to return, so a
+/// read that blocks fails the test that made it instead of hanging the suite. `nil` means it did
+/// not return. The ten seconds asks only whether it returned at all — the tests below pass either
+/// a timeout over thirty times shorter, or one so long that only returning on the end of file or on
+/// the banner can beat it — so it is not a speed assertion.
+private func handshakeWithWatchdog(
+    reading handle: FileHandle, until needle: String, timeoutMilliseconds: Int
+) -> HandshakeOutcome? {
+    let result = HandshakeResult()
+    let returned = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        result.store(readHandshake(from: handle, until: needle, timeoutMilliseconds: timeoutMilliseconds))
+        returned.signal()
+    }
+    guard returned.wait(timeout: .now() + 10) == .success else { return nil }
+    return result.load()
+}
+
+private final class HandshakeResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: HandshakeOutcome?
+
+    func store(_ value: HandshakeOutcome) { lock.withLock { outcome = value } }
+    func load() -> HandshakeOutcome? { lock.withLock { outcome } }
+}
+
+@Test("The handshake gives up on a peer that keeps its pipe open and says nothing (F485)")
+func theHandshakeGivesUpOnASilentPeer() throws {
+    // The shape of a child that hangs before its first write, or waits in `flock`: the write end
+    // stays open, so there is no end of file to return on, and nothing arrives either.
+    let pipe = Pipe()
+    // On every path, so a read that is still blocked gets end of file and its thread finishes.
+    defer { try? pipe.fileHandleForWriting.close() }
+
+    let outcome = handshakeWithWatchdog(
+        reading: pipe.fileHandleForReading, until: "locked", timeoutMilliseconds: 300
+    )
+    let returned = try #require(outcome, "the handshake read never returned from a silent peer")
+    #expect(returned == .timedOut)
+}
+
+@Test("The handshake reports a peer that closes without the banner as end of file (F485)")
+func theHandshakeReportsAPeerThatClosesWithoutTheBanner() throws {
+    // A child that exits before taking the lock — a missing `python3`, say — closes its stdout
+    // having written nothing on it; any complaint goes to stderr, which this pipe does not carry.
+    let pipe = Pipe()
+    try pipe.fileHandleForWriting.close()
+
+    // A timeout far longer than the watchdog's ten seconds, so only the end of file can make this
+    // return in time.
+    let outcome = handshakeWithWatchdog(
+        reading: pipe.fileHandleForReading, until: "locked", timeoutMilliseconds: 600_000
+    )
+    let returned = try #require(outcome, "the handshake read did not return at end of file")
+    #expect(returned == .endOfFile)
+}
+
+@Test("The handshake returns on the banner without waiting for the peer to close (F485)")
+func theHandshakeReturnsOnTheBannerAlone() throws {
+    // The holder child keeps its end open after the banner — it is blocked in `sys.stdin.read()`
+    // holding the lock — so the read must return on the needle, not on end of file.
+    let pipe = Pipe()
+    defer { try? pipe.fileHandleForWriting.close() }
+    try pipe.fileHandleForWriting.write(contentsOf: Data("locked\n".utf8))
+
+    let outcome = handshakeWithWatchdog(
+        reading: pipe.fileHandleForReading, until: "locked", timeoutMilliseconds: 600_000
+    )
+    let returned = try #require(outcome, "the handshake read did not return on the banner")
+    #expect(returned == .found)
 }
