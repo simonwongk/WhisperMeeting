@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for Scripts/qwen_dictate_server.py (F431).
+"""Unit tests for Scripts/qwen_dictate_server.py (F431, F607).
 
 Run: python3 Scripts/tests/test_qwen_dictate_server.py
 
@@ -9,6 +9,7 @@ deferred into functions, and these tests replace the three that touch the runtim
 
 import importlib.util
 import os
+import re
 import sys
 import unittest
 from types import SimpleNamespace
@@ -141,6 +142,186 @@ class DictationDecodeTests(unittest.TestCase):
         server.split_clip = lambda audio, sample_rate: seen.append((audio, sample_rate)) or list(self.chunks)
         self.request(_Qwen3ASR([1], {1: "hi"}))
         self.assertEqual(seen, [(("audio from", "/tmp/clip.wav"), 16_000)])
+
+
+# The Swift side of the reply wait, read from the source rather than restated (F607): the first
+# `readLine(timeout: …)` inside `WarmWhisperDictationEngine.transcribe`, which Qwen dictation shares
+# through `WarmQwenDictationEngine`'s runner. If that argument stops being a literal, this raises
+# instead of silently pinning a stale number.
+_SWIFT_ENGINE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "Sources", "WhisperCore", "WarmWhisperDictationEngine.swift"
+)
+
+
+def swift_reply_timeout_seconds():
+    with open(_SWIFT_ENGINE, encoding="utf-8") as handle:
+        source = handle.read()
+    start = source.index("public func transcribe(")
+    # The FIRST `readLine(timeout:` after `transcribe` begins, whatever its argument: matching only
+    # a literal would skip a renamed one and land on the 1,800 s ready wait further down.
+    match = re.compile(r"readLine\(timeout:\s*([^,)]+)").search(source, start)
+    if match is None:
+        raise AssertionError("no readLine(timeout:) after WarmWhisperDictationEngine.transcribe")
+    argument = match.group(1).strip()
+    if not re.fullmatch(r"[0-9][0-9_]*(\.[0-9_]+)?", argument):
+        raise AssertionError(f"transcribe's reply wait is {argument!r}, not a literal; update this reader")
+    return float(argument.replace("_", ""))
+
+
+class _Clock:
+    """A monotonic clock that only moves when the fake decoder pulls a token."""
+
+    def __init__(self):
+        self.now = 1_000.0
+
+    def __call__(self):
+        return self.now
+
+
+class _TimedQwen3ASR(_Qwen3ASR):
+    """`_Qwen3ASR` whose every decoded token costs `1 / rate` seconds of `clock`, with a script per
+    chunk (`chunk_scripts[i]` is `(script, repeat)` for the i-th `stream_generate` call)."""
+
+    def __init__(self, chunk_scripts, vocabulary, clock, rate):
+        super().__init__(chunk_scripts[0][0], vocabulary, repeat=chunk_scripts[0][1])
+        self.chunk_scripts = chunk_scripts
+        self.clock = clock
+        self.rate = rate
+        self.per_chunk_pulled = []
+
+    def stream_generate(self, audio, *, max_tokens=LIBRARY_MAX_TOKENS, language="English", **_):
+        index = len(self.stream_calls)
+        self.stream_calls.append({"max_tokens": max_tokens, "language": language})
+        script, repeat = self.chunk_scripts[index]
+        self.per_chunk_pulled.append(0)
+        emitted = 0
+        while emitted < max_tokens:
+            if not repeat and emitted >= len(script):
+                return
+            self.clock.now += 1.0 / self.rate
+            self.pulled += 1
+            self.per_chunk_pulled[index] += 1
+            token = script[emitted % len(script)]
+            emitted += 1
+            yield token, None
+
+
+class DictationReplyDeadlineTests(unittest.TestCase):
+    """F607 — F431's 768-token cap bounded the worst reply only at the development Mac's measured
+    ~45 tok/s: five chunks each stuck in a cycle too long for the F260 guard decode 5 x 768 = 3,840
+    tokens, which is 192 s at 20 tok/s and 384 s at 10 — past the Swift reply wait, so a looping
+    dictation on a slower Mac still ended in the watchdog kill and a cold reload. The bound must not
+    rest on a rate nobody has measured, so these tests run the same worst case at three rates."""
+
+    _SEAMS = ("load_clip", "split_clip", "release_chunk_memory", "monotonic")
+    CHUNKS = 5  # a 120 s dictation cut as early as every 25 s
+    LONG_CYCLE = list(range(10, 22))  # twelve tokens: longer than the guard's eight-token window
+
+    def setUp(self):
+        self._saved = {name: getattr(server, name, None) for name in self._SEAMS}
+        self.clock = _Clock()
+        server.monotonic = self.clock
+        server.load_clip = lambda path: ("audio from", path)
+        server.split_clip = lambda audio, sample_rate: [
+            ([0.1] * 16_000, 30.0 * index) for index in range(self.CHUNKS)
+        ]
+        server.release_chunk_memory = lambda: None
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(server, name, value)
+
+    def vocabulary(self):
+        words = {token: f"w{token} " for token in self.LONG_CYCLE}
+        words.update({token: f"s{token} " for token in range(100, 300)})
+        return words
+
+    def dictate(self, model):
+        started = self.clock.now
+        response = server.transcribe_request(
+            model, {"wavPath": "/tmp/clip.wav", "language": None, "initialPrompt": None}
+        )
+        return response, self.clock.now - started
+
+    def test_the_helper_mirrors_the_swift_reply_wait(self):
+        timeout = swift_reply_timeout_seconds()
+        self.assertEqual(getattr(server, "REPLY_TIMEOUT_SECONDS", None), timeout)
+        budget = getattr(server, "DICTATION_DECODE_BUDGET_SECONDS", None)
+        self.assertIsNotNone(budget)
+        self.assertLess(budget, timeout)
+
+    def test_five_stuck_chunks_reply_inside_the_swift_wait_at_any_rate(self):
+        timeout = swift_reply_timeout_seconds()
+        for rate in (10, 20, 45):
+            with self.subTest(rate=rate):
+                self.clock.now = 1_000.0
+                model = _TimedQwen3ASR(
+                    [(self.LONG_CYCLE, True)] * self.CHUNKS, self.vocabulary(), self.clock, rate
+                )
+                response, elapsed = self.dictate(model)
+                self.assertLess(elapsed, timeout)
+                self.assertEqual(len(model.stream_calls), self.CHUNKS)
+                self.assertTrue(response["text"].startswith("w10 w11"))
+
+    def test_one_stuck_chunk_does_not_starve_the_speech_after_it(self):
+        """A fair share per chunk, not one deadline for the whole clip: a runaway first chunk is cut
+        at its share, and the four ordinary chunks after it are decoded in full. At 5 tok/s the
+        runaway alone would take 768 / 5 = 154 s, so one deadline for the whole clip would spend all
+        of it on the first chunk and decode none of the speech after it."""
+        speech = [list(range(100 + 40 * index, 140 + 40 * index)) for index in range(4)]
+        model = _TimedQwen3ASR(
+            [(self.LONG_CYCLE, True)] + [(chunk, False) for chunk in speech],
+            self.vocabulary(), self.clock, rate=5,
+        )
+        response, elapsed = self.dictate(model)
+        self.assertLess(elapsed, swift_reply_timeout_seconds())
+        self.assertEqual(model.per_chunk_pulled[1:], [len(chunk) for chunk in speech])
+        for chunk in speech:
+            self.assertIn("".join(f"s{token} " for token in chunk).strip(), response["text"])
+
+    def test_ordinary_five_chunk_speech_is_decoded_in_full_at_a_slow_rate(self):
+        """~140 tokens a chunk — the F431 bench's densest chunk was 138 — at 20 tok/s is 35 s in all,
+        well inside the budget, so the deadline must not cut a single token of it."""
+        speech = [list(range(100 + 40 * index, 100 + 40 * index + 140)) for index in range(self.CHUNKS)]
+        words = {token: f"s{token} " for token in range(100, 400)}
+        model = _TimedQwen3ASR([(chunk, False) for chunk in speech], words, self.clock, rate=20)
+        response, _elapsed = self.dictate(model)
+        self.assertEqual(model.per_chunk_pulled, [140] * self.CHUNKS)
+        decoded = ["".join(words[token] for token in chunk) for chunk in speech]
+        self.assertEqual(response["text"], " ".join(decoded).strip())
+
+
+class DictationChunkJoinTests(unittest.TestCase):
+    """F607 part 2 — dictation joins its chunks with `qwen_transcribe.joined_text` (F431), so F562's
+    CJK boundary rule changed multi-chunk Mandarin dictation too. Nothing on the dictation side
+    pinned it: the only multi-chunk test joined Latin words, which `" ".join` would also pass."""
+
+    _SEAMS = ("load_clip", "split_clip", "release_chunk_memory")
+
+    def setUp(self):
+        self._saved = {name: getattr(server, name, None) for name in self._SEAMS}
+        server.load_clip = lambda path: ("audio from", path)
+        server.split_clip = lambda audio, sample_rate: [([0.1] * 16_000, 0.0), ([0.1] * 16_000, 30.0)]
+        server.release_chunk_memory = lambda: None
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(server, name, value)
+
+    def dictate(self, chunk_texts):
+        vocabulary = {index + 1: text for index, text in enumerate(chunk_texts)}
+        clock = _Clock()
+        model = _TimedQwen3ASR([([index + 1], False) for index in range(len(chunk_texts))], vocabulary, clock, 45)
+        return server.transcribe_request(
+            model, {"wavPath": "/tmp/clip.wav", "language": "Chinese", "initialPrompt": None}
+        )["text"]
+
+    def test_a_mandarin_boundary_gets_no_space(self):
+        self.assertEqual(self.dictate(["我们明天开会", "我们明天开会"]), "我们明天开会我们明天开会")
+
+    def test_a_code_switched_boundary_keeps_its_space(self):
+        self.assertEqual(self.dictate(["我们用", "Swift 写"]), "我们用 Swift 写")
+        self.assertEqual(self.dictate(["deploy 到", "production"]), "deploy 到 production")
 
 
 class MeetingHelperContractTests(unittest.TestCase):

@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import wave
 
 
@@ -24,17 +25,34 @@ DICTATION_CHUNK_SECONDS = 30.0
 # F431: tokens one chunk may decode before it is cut off. mlx-audio's own default is 8192, which a
 # decoder stuck in a cycle longer than the F260 guard's window (`ASR_MAX_CYCLE_LEN` tokens) runs all
 # the way to: ~139 s per chunk at F213's measured single-row 59 tok/s (measured on the development
-# Mac, Apple M3 Pro, 18 GB), past the 120 s that `WarmWhisperDictationEngine` waits for a reply. A
-# dictation is at most 120 s (`BoundedAudioSampleBuffer.maximumDurationSeconds`); with every cut
-# landing as early as 25 s that is five chunks, decoded one after another, so the cap is what bounds
-# the worst reply.
+# Mac, Apple M3 Pro, 18 GB), past the 120 s that `WarmWhisperDictationEngine` waits for a reply.
 #
 # Both sides of 768, measured on the F431 bench (synthetic 120 s clips, this model, development Mac
 # — Apple M3 Pro, 18 GB): the densest chunk was 138 tokens for 32.7 s of speech, so 768 is over five
-# times what speech needed; and that chunk decoded end to end at ~45 tok/s, at which five chunks
-# each stuck at 768 tokens take ~85 s, inside the timeout. 1024 would have left ~113 s at that
-# rate — too close to 120 to call a bound.
+# times what speech needed; and that chunk decoded end to end at ~45 tok/s.
+#
+# F607: this cap is NOT what bounds the reply — it is a token count, and whether a token count fits
+# a timeout depends on the decode rate. A dictation is at most 120 s
+# (`DictationCaptureLimits.maximumDurationSeconds`); with every cut landing as early as 25 s that is
+# five chunks decoded one after another, 5 x 768 = 3,840 tokens when every chunk is stuck: ~85 s at
+# the ~45 tok/s above, but ~192 s at 20 tok/s — and Qwen dictation is offered on every Apple-silicon
+# Mac, where no rate but the M3 Pro's has been measured. `DICTATION_DECODE_BUDGET_SECONDS` below is
+# the bound, and it needs no rate; the cap stays as the per-chunk ceiling it was measured to be.
 DICTATION_MAX_TOKENS = 768
+
+# F607: the reply wait on the Swift side — `readLine(timeout: 120)` in
+# `WarmWhisperDictationEngine.transcribe`, which `WarmQwenDictationEngine` shares through its
+# runner. Mirrored, not imported, so `test_qwen_dictate_server.py` reads that literal from the
+# Swift source and fails if the two drift apart.
+REPLY_TIMEOUT_SECONDS = 120.0
+# Wall-clock seconds a request may spend decoding before its reply is sent with what was decoded so
+# far. The 20 s left of the reply wait covers what this clock cannot interrupt: loading the clip,
+# each chunk's audio encode and prefill (which run before its first token is pulled), the one decode
+# step in flight when a chunk's time runs out, and the join and emit.
+DICTATION_DECODE_BUDGET_SECONDS = REPLY_TIMEOUT_SECONDS - 20.0
+
+# The clock the budget is measured on; a test replaces it with one that advances per decoded token.
+monotonic = time.monotonic
 
 
 def emit(payload: dict) -> None:
@@ -112,18 +130,34 @@ def release_chunk_memory():
     mx.clear_cache()
 
 
-def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS):
+def tokens_until(stream, stop_at):
+    """`stream`'s tokens as ints, read only while `monotonic()` is before `stop_at` (F607).
+
+    The clock is checked before each pull, so a chunk whose time is already spent never starts its
+    audio encode and prefill; `None` reads the whole stream.
+    """
+    iterator = iter(stream)
+    while stop_at is None or monotonic() < stop_at:
+        try:
+            token, _logprobs = next(iterator)
+        except StopIteration:
+            return
+        yield int(token)
+
+
+def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS, stop_at=None):
     """One chunk's tokens from mlx-audio's own greedy stream, with the meeting path's guard (F431).
 
     `stream` yields `(token, logprobs)` and ends at EOS or at its own `max_tokens`
     (`qwen3_asr.py:867-968`). It is fed to `greedy_decode_rows` — the loop every meeting decodes
     through — as a one-row batch, so the F260 cycle guard stops a runaway, F421 trims what it
-    already emitted back to one copy, and `max_tokens` bounds anything the guard cannot see. The
-    tokens themselves are exactly the ones `generate` would have produced up to that point: the
-    stream is the library's, only the decision to stop reading it is added.
+    already emitted back to one copy, `max_tokens` caps anything the guard cannot see, and `stop_at`
+    (F607) ends the chunk when its share of the reply's time is spent, at whatever rate this Mac
+    decodes. The tokens themselves are exactly the ones `generate` would have produced up to that
+    point: the stream is the library's, only the decision to stop reading it is added.
     """
-    tokens = (int(token) for token, _logprobs in stream)
-    end = meeting.ASR_EOS_TOKEN_IDS[0]  # a finished stream reads as EOS, which it was
+    tokens = tokens_until(stream, stop_at)
+    end = meeting.ASR_EOS_TOKEN_IDS[0]  # a finished or timed-out stream reads as EOS
     first = next(tokens, end)
     rows = meeting.greedy_decode_rows(
         [first],
@@ -134,16 +168,32 @@ def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS):
     return rows[0]
 
 
-def transcribe_audio(model, audio, language):
-    """Decode a clip chunk by chunk through the guarded loop, joined as a meeting's chunks are."""
+def transcribe_audio(model, audio, language, deadline=None):
+    """Decode a clip chunk by chunk through the guarded loop, joined as a meeting's chunks are.
+
+    With a `deadline` (a `monotonic()` time), each chunk may run until an equal share of the time
+    left: (deadline - now) / chunks still to decode (F607). A runaway chunk is cut at its share, so
+    it cannot starve the speech after it, and time an early-finishing chunk leaves unused passes to
+    the rest. A chunk cut this way contributes what it decoded — the same partial-output choice
+    F431 made for the token cap — so the reply arrives before the Swift wait kills the helper and
+    the model stays loaded.
+    """
     meeting = meeting_helper()
+    chunks = list(split_clip(audio, model.sample_rate))
     texts = []
-    for chunk_audio, _offset in split_clip(audio, model.sample_rate):
+    for index, (chunk_audio, _offset) in enumerate(chunks):
+        stop_at = None
+        if deadline is not None:
+            now = monotonic()
+            stop_at = now + max(0.0, deadline - now) / (len(chunks) - index)
+        # The call shape is the pinned mlx-audio 0.3.1 `Qwen3ASR.stream_generate(audio, *,
+        # max_tokens, language, ...)` (`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:867-968`); the
+        # deadline is enforced by what this helper reads, not by an argument the library lacks.
         stream = model.stream_generate(
             chunk_audio, max_tokens=DICTATION_MAX_TOKENS, language=language
         )
         try:
-            tokens = guarded_chunk_tokens(stream, meeting)
+            tokens = guarded_chunk_tokens(stream, meeting, stop_at=stop_at)
         finally:
             # A guarded stop leaves the library's generator suspended mid-decode; close it now
             # rather than whenever it happens to be collected.
@@ -154,8 +204,12 @@ def transcribe_audio(model, audio, language):
 
 
 def transcribe_request(model, request: dict) -> dict:
+    # Measured from here, once the request line has been read. The Swift side starts its wait right
+    # after writing that line, so the two clocks start within moments of each other; the budget's
+    # 20 s margin absorbs the difference.
+    deadline = monotonic() + DICTATION_DECODE_BUDGET_SECONDS
     language = request.get("language") or "auto"
-    text = transcribe_audio(model, load_clip(request["wavPath"]), language).strip()
+    text = transcribe_audio(model, load_clip(request["wavPath"]), language, deadline).strip()
     detected_language = None if language == "auto" else language
     return {
         "text": text,
