@@ -1656,7 +1656,7 @@ final class MeetingStore: ObservableObject {
     /// app offers the history (Recover Library) only while the library cannot be read, as after the
     /// wipe. A delete on a healthy library — one meeting, or all of them — has no in-app undo; the
     /// week keeps a hand restore (`docs/RECOVERY.md`) possible, and nothing more.
-    static let shredGracePeriod: TimeInterval = 604_800
+    nonisolated static let shredGracePeriod: TimeInterval = 604_800
 
     private var pendingShredURL: URL {
         rootDirectory.appendingPathComponent("meetings.pending-shred.json")
