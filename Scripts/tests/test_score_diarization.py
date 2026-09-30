@@ -173,6 +173,44 @@ class SelfTestEntryPoint(unittest.TestCase):
                     self.assertIn("nothing was scored", result.stderr)
                     self.assertEqual(result.stdout, "")
 
+    def run_scorer(self, files, *extra):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "scores.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"files": files}, handle)
+            return subprocess.run(
+                [sys.executable, os.path.join(BENCH, "score_diarization.py"), path, *extra],
+                capture_output=True, text=True)
+
+    SILENT = {"id": "silent1", "duration": 10.0, "reference": [], "hypothesis": []}
+    # A hypothesis over a silent reference is all false alarm: its micro DER is then 100.00% over
+    # `(total 0.0 s)`, a ratio with no denominator rather than a measurement.
+    SILENT_WITH_FALSE_ALARM = {"id": "silent2", "duration": 10.0, "reference": [],
+                               "hypothesis": [[1.0, 4.0, "A"]]}
+
+    def test_a_list_with_no_reference_speech_is_a_refusal(self):
+        # F616 review: a non-empty list whose references are all silent printed a micro DER for
+        # every condition over `(total 0.0 s)` — 0.00%, or 100.00% with any false alarm — and
+        # exited 0: a result over nothing, like the empty list above, and what sweep_score
+        # refuses for a threshold.
+        for files in ([self.SILENT], [self.SILENT, self.SILENT_WITH_FALSE_ALARM]):
+            for extra in ((), ("--json",)):
+                with self.subTest(files=[f["id"] for f in files], extra=extra):
+                    result = self.run_scorer(files, *extra)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn("nothing was scored", result.stderr)
+                    self.assertEqual(result.stdout, "")
+
+    def test_one_silent_file_beside_speech_is_still_scored(self):
+        speech = {"id": "speech", "duration": 10.0, "reference": [[0.0, 5.0, "A"]],
+                  "hypothesis": [[0.0, 5.0, "x"]]}
+        for extra in ((), ("--json",)):
+            with self.subTest(extra=extra):
+                result = self.run_scorer([self.SILENT, speech], *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("silent1", result.stdout)
+
 
 def write_fixture(corpus, hypotheses, fixture_id, turns, hypothesis_lines):
     """A synthetic truth file, plus the runtime's text output unless `hypothesis_lines` is None."""

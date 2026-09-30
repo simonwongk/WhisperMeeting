@@ -636,6 +636,12 @@ def main():
         rows.append((entry["id"], entry.get("stratum", ""), primary["der"],
                      report["collar250_overlap_skipped"]["der"], primary["jer"],
                      primary["speakers_reference"], primary["speakers_hypothesis"]))
+    # Files listed are not speech scored (F616): references that are all silent printed a micro
+    # DER over `(total 0.0 s)` in every condition, 0.00% or 100.00% with any false alarm. Checked
+    # on the strict condition, as sweep_score checks: the others only cut holes (collars, skipped
+    # overlap) out of the scored region, so none of them holds more speech than it does.
+    if micro_average(per_file, CONDITIONS[0][0])["total"] <= 0:
+        raise SystemExit(f'the references in {args.input!r} hold no speech — nothing was scored')
 
     if args.json:
         print(json.dumps({
