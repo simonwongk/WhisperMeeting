@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import resource
 import sys
 import threading
 import time
@@ -145,27 +146,68 @@ def report_progress(message: str) -> None:
     """One heartbeat line on stderr; stdout and --output stay pure (F24).
 
     The Swift side stops a helper that prints nothing for LocalSummarizer.defaultStallTimeout (F512),
-    so every phase that can take a while says so: the model load (load_with_heartbeat), each prompt
-    chunk, and generation (see should_report_generation). Silence then means stuck, not slow."""
+    so every phase that can take a while says so: the model load while it is moving
+    (load_with_heartbeat, F606), each prompt chunk, and generation (see should_report_generation).
+    Silence then means stuck, not slow."""
     print(f"[summarize] {message}", file=sys.stderr, flush=True)
 
 
 LOAD_REPORT_SECONDS = 15.0
+LOAD_PROGRESS_CPU_FRACTION = 0.01
+
+
+def load_progress_sample():
+    """(major page faults, block reads, CPU seconds used by every thread except the caller) for this
+    process: what a model load moves while it is working (F606).
+
+    The heartbeat thread takes this sample, so its own CPU is subtracted: getrusage(RUSAGE_SELF)
+    alone counts every thread, and would read the heartbeat's own wakeups as the load moving.
+    process_time() is read before thread_time(), so the subtraction can only undercount."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return (usage.ru_majflt, usage.ru_inblock, time.process_time() - time.thread_time())
+
+
+def load_made_progress(before, after, interval) -> bool:
+    """Whether the load moved between two load_progress_sample()s taken `interval` seconds apart:
+    any major fault or block read (a page-in), or other threads' CPU of at least 1% of the interval.
+
+    Measured 2026-09-30 with the installed Qwen3-8B-4bit and mlx_lm 0.30.5 on an 18 GB Mac, sampling
+    every 0.5 s: a warm 3.9 s load moved the other threads' CPU by 0.22-0.57 s per sample and took
+    up to 171 major faults per sample; the same process with its main thread then blocked for 20 s
+    moved it by 0.0022 s in all, with no major faults and no block reads. 1% of a 15 s interval is
+    0.15 s: about 70 times that blocked total, and below any 0.5 s sample of the load. A cold load,
+    or one under heavy swap, has not been measured.
+
+    What this cannot see: a load that spins the CPU while making no progress reads as moving, so a
+    wedge of that shape is still stopped only by Cancel, as every wedge was before F606."""
+    return (
+        after[0] > before[0]
+        or after[1] > before[1]
+        or after[2] - before[2] >= interval * LOAD_PROGRESS_CPU_FRACTION
+    )
 
 
 def load_with_heartbeat(load, model_path, interval=LOAD_REPORT_SECONDS):
-    """Run mlx_lm's load() while a thread reports every `interval` seconds that it is still going.
+    """Run mlx_lm's load() while a thread reports every `interval` seconds that it is still going,
+    as long as it is (F606).
 
     load() blocks with no output for as long as a cold 4.5 GB model takes to page in, and on a
     swapping Mac nobody has measured that (F512 review); rather than trust it to finish inside the
-    stall timeout, the load speaks for itself. The thread is joined on every exit, so no line can
-    arrive after the load has returned or raised."""
+    stall timeout, the load speaks for itself. It speaks only when load_made_progress says it
+    moved since the last check: F512's first version reported every interval unconditionally, so a
+    load wedged in a call that releases the GIL was never silent, the stall timeout could never
+    stop it, and it held the summary slot until Cancel. The thread is joined on every exit, so no
+    line can arrive after the load has returned or raised."""
     finished = threading.Event()
     started = time.monotonic()
 
     def beat():
+        last = load_progress_sample()
         while not finished.wait(interval):
-            report_progress(f"still loading model ({int(time.monotonic() - started)} s)")
+            current = load_progress_sample()
+            if load_made_progress(last, current, interval):
+                report_progress(f"still loading model ({int(time.monotonic() - started)} s)")
+            last = current
 
     thread = threading.Thread(target=beat, name="load-heartbeat", daemon=True)
     thread.start()

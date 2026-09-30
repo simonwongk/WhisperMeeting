@@ -138,9 +138,9 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     /// again" cannot help: the same files fail the same way every time until they are replaced.
     case localModelUnreadable(String)
     /// The local helper printed nothing for this many seconds and was stopped (F512). It reports
-    /// around loading the model, after every prompt chunk, and while generating every 32 tokens or
-    /// 5 seconds, whichever comes first (checked per token) — so silence that long means it stopped
-    /// making progress, not that it is slow.
+    /// around loading the model and during it while the load is moving (F606), after every prompt
+    /// chunk, and while generating every 32 tokens or 5 seconds, whichever comes first (checked per
+    /// token) — so silence that long means it stopped making progress, not that it is slow.
     case helperStalled(TimeInterval)
 
     public var errorDescription: String? {

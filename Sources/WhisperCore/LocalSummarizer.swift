@@ -106,9 +106,12 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// How long the helper may print nothing before it is presumed wedged and stopped (F512).
     ///
     /// Derived from what the helper reports, not from how long a summary takes: it prints before and
-    /// after loading the model, after every prompt chunk of mlx_lm's `prefill_step_size` (2,048
-    /// tokens), and while generating every 32 tokens or 5 seconds. So ten silent minutes means the
-    /// model load, one prompt chunk or one token took ten minutes.
+    /// after loading the model, every 15 s during the load while the load is moving (a major fault, a
+    /// block read, or CPU on another thread; `load_made_progress`, F606), after every prompt chunk of
+    /// mlx_lm's `prefill_step_size` (2,048 tokens), and while generating every 32 tokens or 5
+    /// seconds. So ten silent minutes means the model load made no progress for ten minutes, or one
+    /// prompt chunk or one token took ten minutes. A load that spins the CPU without progressing
+    /// still reads as moving, and is stopped only by Cancel.
     ///
     /// Measured 2026-09-24 with the installed Qwen3-8B-4bit on an 18 GB M3 Pro with 15.5 GB of swap in
     /// use, on a synthetic 32,323-token transcript: the longest silence was 40 s, one prompt chunk
@@ -382,7 +385,7 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// `--output`, not stdout (F24).
     ///
     /// Through `runHelper` — by default `ProcessGroupRunner` (F512) rather than a bare `Process`, for
-    /// its stall watchdog: a helper that printed nothing — a wedged mlx, a load that never returns —
+    /// its stall watchdog: a helper that printed nothing — a wedged mlx, a load stuck waiting (F606) —
     /// used to hold the one summary slot, and with it every Summarize and every Ask answer, until the
     /// app was quit. Cancelling still stops the helper, now as a process group. The runner's own
     /// errors describe a download, so both are restated here in the summarizer's words.

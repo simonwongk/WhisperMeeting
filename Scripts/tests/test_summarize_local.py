@@ -439,20 +439,36 @@ class LoadHeartbeatTests(unittest.TestCase):
     No clock. The first version slept 80 ms and expected two 10 ms beats; the CI runner produced
     one (2026-09-26, run 36217649615) where this Mac produced several. The fake load below returns
     when it has SEEN two beats, so the wait's subject is the assertion's subject, and a heartbeat
-    that never comes fails on the wait, not on a count."""
+    that never comes fails on the wait, not on a count.
+
+    F606: a beat is sent only when the load moved since the last check, so a wedged load goes
+    silent and the stall timeout can stop it. The tests that need beats therefore stand in a probe
+    that always moves; the tests that need silence wait on the number of probes taken, not on time."""
 
     def setUp(self):
         self.beats = []
         self._report = summ.report_progress
         summ.report_progress = lambda message: self.beats.append(message)
+        self._sample = getattr(summ, "load_progress_sample", None)
 
     def tearDown(self):
         summ.report_progress = self._report
+        if self._sample is None:
+            if hasattr(summ, "load_progress_sample"):
+                del summ.load_progress_sample
+        else:
+            summ.load_progress_sample = self._sample
+
+    def _always_moving(self):
+        counter = iter(range(1, 1_000_000))
+        return lambda: (next(counter), 0, 0.0)
 
     def _heartbeat_thread_is_alive(self):
         return any(thread.name == "load-heartbeat" and thread.is_alive() for thread in threading.enumerate())
 
     def test_a_slow_load_keeps_reporting_until_it_returns(self):
+        summ.load_progress_sample = self._always_moving()
+
         def load_until_two_beats(path, **kwargs):
             deadline = time.monotonic() + 30
             while len(self.beats) < 2:
@@ -479,6 +495,101 @@ class LoadHeartbeatTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             summ.load_with_heartbeat(broken_load, "/models/x", interval=0.001)
         self.assertFalse(self._heartbeat_thread_is_alive(), "the heartbeat thread is still running")
+
+    def _load_until(self, probes_taken, beats_seen, cap_seconds=30):
+        """A load that returns once the heartbeat has taken 4 probes, as `probes_taken()` counts
+        them -- or, so that a heartbeat which never probes fails on an assertion instead of hanging,
+        once `beats_seen` beats have arrived. The cap is only a backstop: neither passing nor failing waits on it."""
+        def load(path, **kwargs):
+            deadline = time.monotonic() + cap_seconds
+            while probes_taken() < 4 and len(self.beats) < beats_seen:
+                self.assertLess(time.monotonic(), deadline, f"neither 4 probes nor {beats_seen} beats in {cap_seconds} s")
+                time.sleep(0.001)
+            return ("model", "tokenizer")
+        return load
+
+    def test_a_load_that_makes_no_progress_is_silent(self):
+        # F606: before, a load wedged in a call that releases the GIL (a stalled page-in, Metal
+        # init) was reported "still loading" every 15 s for as long as it hung, so the 600 s
+        # stall timeout could never stop it and it held the summary slot until Cancel.
+        calls = []
+
+        def stuck():
+            calls.append(1)
+            return (7, 0, 1.25)
+
+        summ.load_progress_sample = stuck
+        load = self._load_until(lambda: len(calls), beats_seen=3)
+        summ.load_with_heartbeat(load, "/models/x", interval=0.001)
+        self.assertEqual(self.beats, [], "a load that did not move was still reported as loading")
+        self.assertGreaterEqual(len(calls), 4, "the heartbeat never probed the load")
+
+    def test_a_blocked_load_is_silent_with_the_real_probe(self):
+        # The same claim against the real probe: the load below waits in a lock acquire, which
+        # releases the GIL and burns no CPU -- the shape of a wedged Metal or page-in wait. The
+        # interval is 50 ms rather than 1 ms because the CPU bar scales with it (see
+        # load_made_progress), and a 10 microsecond bar would be timer noise.
+        real = summ.load_progress_sample
+        taken = threading.Event()
+        calls = []
+
+        def counting():
+            sample = real()
+            calls.append(sample)
+            if len(calls) >= 4:
+                taken.set()
+            return sample
+
+        summ.load_progress_sample = counting
+
+        def blocked_load(path, **kwargs):
+            # Returns on the 4th probe; on a heartbeat that never probes, the 30 s backstop ends it
+            # and the assertion below fails on the beats that arrived meanwhile.
+            taken.wait(30)
+            return ("model", "tokenizer")
+
+        summ.load_with_heartbeat(blocked_load, "/models/x", interval=0.05)
+        self.assertGreaterEqual(len(calls), 4, "the heartbeat never probed the load")
+        self.assertEqual(self.beats, [], f"a blocked load was reported as loading: {calls}")
+
+
+class LoadProgressTests(unittest.TestCase):
+    """F606: what counts as a load moving. Measured with the installed Qwen3-8B-4bit and mlx_lm
+    0.30.5 (see load_made_progress): a warm load moved the other threads' CPU by 0.22-0.57 s per
+    0.5 s and took up to 171 major faults per 0.5 s; the same process then blocked for 20 s moved
+    it by 0.0022 s in all, with no major faults and no block reads."""
+
+    def test_major_faults_or_block_reads_are_progress(self):
+        self.assertTrue(summ.load_made_progress((10, 0, 1.0), (11, 0, 1.0), 15.0))
+        self.assertTrue(summ.load_made_progress((10, 5, 1.0), (10, 6, 1.0), 15.0))
+
+    def test_cpu_counts_only_above_one_percent_of_the_interval(self):
+        # From 0.0 so the subtraction is exact: 1.15 - 1.0 is 0.1499999999999999 in binary.
+        self.assertFalse(summ.load_made_progress((10, 5, 0.0), (10, 5, 0.0), 15.0))
+        self.assertFalse(summ.load_made_progress((10, 5, 0.0), (10, 5, 0.149), 15.0))
+        self.assertTrue(summ.load_made_progress((10, 5, 0.0), (10, 5, 0.15), 15.0))
+
+    def _burn(self, seconds):
+        start = time.thread_time()
+        while time.thread_time() - start < seconds:
+            pass
+
+    def test_the_probing_threads_own_cpu_is_not_progress(self):
+        # The heartbeat thread takes the probe, so its own wakeups must not read as the load
+        # moving: getrusage(RUSAGE_SELF) alone counts every thread, and moved by up to 0.5 ms per
+        # 0.5 s in the blocked measurement from the sampling thread's work alone.
+        before = summ.load_progress_sample()
+        self._burn(0.05)
+        after = summ.load_progress_sample()
+        self.assertLess(after[2] - before[2], 0.01, f"the caller's own CPU was counted: {before} -> {after}")
+
+    def test_another_threads_cpu_is_progress(self):
+        before = summ.load_progress_sample()
+        worker = threading.Thread(target=self._burn, args=(0.05,))
+        worker.start()
+        worker.join()
+        after = summ.load_progress_sample()
+        self.assertGreaterEqual(after[2] - before[2], 0.045, f"another thread's CPU was missed: {before} -> {after}")
 
 
 if __name__ == "__main__":
