@@ -286,6 +286,10 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// from `mlx_lm`'s `stream_generate`, which reports `"length"` when it stopped at `--max-tokens`
     /// rather than at an end-of-turn token.
     static func answerRefusal(warning: String?, finishReason: String?) -> SummarizerError? {
+        // F598: before the warning check, which would otherwise wrap it as a degraded answer.
+        if finishReason == Self.modelUnreadableFinishReason {
+            return .localModelUnreadable(warning ?? Self.modelUnreadableFallback)
+        }
         if let warning, !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .answerDegraded(warning)
         }
@@ -307,12 +311,24 @@ public struct LocalSummarizer: MeetingSummarizer {
         if finishReason == "too_long" {
             return .localInputTooLong(warning ?? "This transcript is too long for the on-device model.")
         }
+        // F598: the helper could not read the model's own files, so it never ran the model either;
+        // "try again" (`.localOutputDegraded`'s advice) cannot help a broken install.
+        if finishReason == Self.modelUnreadableFinishReason {
+            return .localModelUnreadable(warning ?? Self.modelUnreadableFallback)
+        }
         if let warning, !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .localOutputDegraded(warning)
         }
         if finishReason == "length" { return .localOutputTruncated }
         return nil
     }
+
+    /// `summarize_local.py`/`correct_local.py`'s `MODEL_UNREADABLE` (F598).
+    static let modelUnreadableFinishReason = "model_unreadable"
+    /// Only for a payload that carries the finish reason without its warning; the helpers always
+    /// write both.
+    static let modelUnreadableFallback = "The on-device model's files could not be read. Use "
+        + "Repair or Update under Summaries in Settings, then try again."
 
     static let answerFormatInstruction = """
     Respond with ONLY a JSON object with exactly these keys: "summary" (a string holding your \

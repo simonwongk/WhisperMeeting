@@ -11,6 +11,8 @@ runs the model and parses its text into {summary, keyPoints, actionItems}, degra
 Before loading the model, the assembled prompt is measured against the installed model's own
 context window (F475 Part 3): `finishReason: "too_long"` means the transcript needs more tokens
 than fit alongside --max-tokens of response, and the model was never even loaded.
+`finishReason: "model_unreadable"` means the model's own files could not be read (F598): a missing or
+corrupt config.json, tokenizer, or weights file, reported with a sentence instead of a traceback.
 
     python3 summarize_local.py --model <dir> --input <in.json> --output <out.json> [--max-tokens N]
 
@@ -234,6 +236,59 @@ def context_overflow_detail(prompt_tokens: int, context_limit: int, max_tokens: 
     )
 
 
+# F598: what a partial or damaged model install raises, measured against the installed runtime
+# (mlx_lm 0.30.5) on a temporary copy of the model folder: a missing config.json is
+# FileNotFoundError, a truncated config.json or tokenizer.json is json.JSONDecodeError (a
+# ValueError), and a corrupt model.safetensors is RuntimeError("[load_safetensors] Invalid json
+# header length ..."). mlx_lm's own load() documents FileNotFoundError and ValueError. A Metal
+# allocation failure is a RuntimeError too, measured the same day: "[metal::malloc] Attempting to
+# allocate ... bytes which is greater than the maximum allowed buffer size ...".
+MODEL_UNREADABLE = "model_unreadable"
+
+
+def is_unreadable_model_error(error: BaseException) -> bool:
+    """Whether `error`, raised while reading the model's files, means the install itself is damaged.
+
+    Only the RuntimeError that names the weights file counts: any other RuntimeError, such as a
+    Metal allocation failure while the weights are evaluated, is not a broken install, and telling
+    the user to repair it would send them to a multi-gigabyte download that cannot help."""
+    if isinstance(error, (OSError, ValueError)):
+        return True
+    return isinstance(error, RuntimeError) and str(error).startswith("[load_safetensors]")
+
+
+def model_unreadable_detail(model_dir: str, error: BaseException) -> str:
+    """The sentence the Swift side shows verbatim (`SummarizerError.localModelUnreadable`)."""
+    reason = f"{type(error).__name__}: {error}"
+    if len(reason) > 300:
+        reason = reason[:300] + "…"
+    return (
+        f"The on-device model in {model_dir} could not be read ({reason}). Its files may be "
+        "incomplete or damaged. Use Repair or Update under Summaries in Settings, then try again."
+    )
+
+
+def load_counting_inputs(load_config, load_tokenizer, model_dir: str, messages: list):
+    """(context_limit, prompt_tokens) for the pre-flight, reading only config.json and the
+    tokenizer files. prompt_tokens is None when the config declares no context window."""
+    config = load_config(Path(model_dir))
+    if not isinstance(config, dict):
+        raise ValueError(f"config.json holds a {type(config).__name__}, not an object")
+    context_limit = config.get("max_position_embeddings")
+    if not context_limit:
+        return None, None
+    counting_tokenizer = load_tokenizer(Path(model_dir))
+    return context_limit, len(apply_chat_template(counting_tokenizer, messages))
+
+
+def write_model_unreadable(output_path: str, model_dir: str, error: BaseException) -> None:
+    write_payload(output_path, {
+        "summary": "", "keyPoints": [], "actionItems": [],
+        "warning": model_unreadable_detail(model_dir, error),
+        "finishReason": MODEL_UNREADABLE, "generatedTokens": 0,
+    })
+
+
 def main() -> int:
     args = parse_args()
     with open(args.input, encoding="utf-8") as handle:
@@ -258,11 +313,16 @@ def main() -> int:
     # the (comparatively expensive) full weights load below — `load_config`/`load_tokenizer` read
     # only the tokenizer files and a small JSON file, not the multi-gigabyte weights.
     messages = build_chat_messages(system_prompt, transcript)
-    config = load_config(Path(args.model))
-    context_limit = config.get("max_position_embeddings")
+    try:
+        context_limit, prompt_tokens = load_counting_inputs(
+            load_config, load_tokenizer, args.model, messages
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        if not is_unreadable_model_error(error):
+            raise
+        write_model_unreadable(args.output, args.model, error)
+        return 0
     if context_limit:
-        counting_tokenizer = load_tokenizer(Path(args.model))
-        prompt_tokens = len(apply_chat_template(counting_tokenizer, messages))
         detail = context_overflow_detail(prompt_tokens, context_limit, args.max_tokens)
         if detail:
             write_payload(args.output, {
@@ -272,7 +332,14 @@ def main() -> int:
             return 0
 
     report_progress("loading model")
-    model, tokenizer = load_with_heartbeat(load, args.model)
+    try:
+        model, tokenizer = load_with_heartbeat(load, args.model)
+    except (OSError, ValueError, RuntimeError) as error:
+        # F598: the weights are read only here, so a corrupt model.safetensors surfaces here.
+        if not is_unreadable_model_error(error):
+            raise
+        write_model_unreadable(args.output, args.model, error)
+        return 0
     report_progress("model loaded")
     prompt = apply_chat_template(tokenizer, messages)
     sampler = make_sampler(temp=0.0)  # greedy: a summary should be reproducible, not sampled.

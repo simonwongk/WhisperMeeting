@@ -130,6 +130,13 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     /// against the model's own tokenizer and `config.json` `max_position_embeddings`, never a
     /// guessed character count. `detail` names the measured token counts.
     case localInputTooLong(String)
+    /// The on-device model's own files could not be read — a missing or corrupt `config.json`,
+    /// tokenizer, or weights file, such as a hand-deleted or corrupted file (F598).
+    /// `summarize_local.py`/`correct_local.py` report it as `finishReason: "model_unreadable"`
+    /// instead of an uncaught traceback, and the copy is their detail verbatim, which names the
+    /// model folder and the Settings repair. Distinct from `.localOutputDegraded`, whose "try
+    /// again" cannot help: the same files fail the same way every time until they are replaced.
+    case localModelUnreadable(String)
     /// The local helper printed nothing for this many seconds and was stopped (F512). It reports
     /// around loading the model, after every prompt chunk, and while generating every 32 tokens or
     /// 5 seconds, whichever comes first (checked per token) — so silence that long means it stopped
@@ -168,6 +175,8 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
         case .localOutputUnreadable:
             return "The on-device model's output could not be read. Nothing was saved — try again."
         case let .localInputTooLong(detail):
+            return detail
+        case let .localModelUnreadable(detail):
             return detail
         case .unreadableResponse:
             return "Claude returned a summary the app could not read."

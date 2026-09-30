@@ -188,6 +188,45 @@ func localSummarizerRefusesATranscriptTooLongForContext() async throws {
     }
 }
 
+// F598 — a partial or damaged model install (a missing or corrupt config.json, tokenizer, or weights
+// file) is reported by the helper as `finishReason: "model_unreadable"` instead of a traceback.
+@Test("An unreadable model install is refused with the helper's own detail, verbatim, not as degraded output (F598)")
+func localSummarizerRefusesAnUnreadableModel() async throws {
+    // No apostrophe: the fixture embeds this JSON inside a single-quoted zsh string.
+    let detail = "The on-device model in /tmp/model could not be read (FileNotFoundError: no " +
+        "config.json). Its files may be incomplete or damaged. Use Repair or Update under " +
+        "Summaries in Settings, then try again."
+    let fixture = try LocalSummaryFixture(outputJSON: """
+    {"summary":"","keyPoints":[],"actionItems":[],"warning":\(String(reflecting: detail)),\
+    "finishReason":"model_unreadable","generatedTokens":0}
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    await #expect(throws: SummarizerError.localModelUnreadable(detail)) {
+        _ = try await summarizer.summarize(transcript: "hello", language: nil, style: .balanced)
+    }
+    // The alert is the detail itself: not wrapped in "could not be read cleanly … try again", whose
+    // advice cannot help a broken install.
+    #expect(SummarizerError.localModelUnreadable(detail).errorDescription == detail)
+}
+
+@Test("Ask and correction map an unreadable model the same way summarize does (F598)")
+func unreadableModelRefusalIsSharedByEveryLocalPath() {
+    let detail = "The on-device model could not be read."
+    #expect(LocalSummarizer.localOutputRefusal(warning: detail, finishReason: "model_unreadable")
+            == .localModelUnreadable(detail))
+    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "model_unreadable")
+            == .localModelUnreadable(detail))
+    // A payload without a warning still names the way out.
+    let fallback = LocalSummarizer.localOutputRefusal(warning: nil, finishReason: "model_unreadable")
+    #expect(fallback?.errorDescription?.contains("Repair or Update") == true, "got \(String(describing: fallback))")
+    #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "model_unreadable") == fallback)
+}
+
 @Test("Local summarizer surfaces a helper failure as helperFailed")
 func localSummarizerSurfacesHelperFailure() async throws {
     let fixture = try LocalSummaryFixture(script: "#!/bin/zsh\nprint -u2 'model load blew up'\nexit 1\n")

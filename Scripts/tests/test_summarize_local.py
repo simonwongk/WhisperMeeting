@@ -326,6 +326,111 @@ class MainEndToEndTests(unittest.TestCase):
         self.assertIn("model_path", recorded)
         self.assertIn("prompt", recorded)
 
+class UnreadableModelTests(unittest.TestCase):
+    """F598 - a partial or damaged model install is refused with a sentence, not a traceback.
+
+    `load_config` here is a faithful copy of the installed mlx_lm 0.30.5's (utils.py:250-252: open
+    `config.json`, `json.load` it, no guard), run over a real temporary model directory, so the
+    exceptions are the ones the real call raises rather than ones a fake chose to raise."""
+
+    def setUp(self):
+        self.model_dir = tempfile.mkdtemp()
+
+    def _run(self, load_tokenizer=None, load=None):
+        recorded = _install_fake_mlx_lm(['{"summary":"x","keyPoints":[],"actionItems":[]}'])
+        utils = sys.modules["mlx_lm.utils"]
+
+        def faithful_load_config(model_path):
+            with open(model_path / "config.json", "r") as f:
+                return json.load(f)
+
+        utils.load_config = faithful_load_config
+        if load_tokenizer is not None:
+            utils.load_tokenizer = load_tokenizer
+        if load is not None:
+            sys.modules["mlx_lm"].load = load
+        directory = tempfile.mkdtemp()
+        input_path = os.path.join(directory, "in.json")
+        output_path = os.path.join(directory, "out.json")
+        with open(input_path, "w", encoding="utf-8") as handle:
+            json.dump({"systemPrompt": "SYS", "transcript": "hello world"}, handle)
+        sys.argv = ["summarize_local.py", "--model", self.model_dir,
+                    "--input", input_path, "--output", output_path]
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = summ.main()
+        with open(output_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return code, payload, recorded
+
+    def _write_config(self, text):
+        with open(os.path.join(self.model_dir, "config.json"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def _assert_refused(self, code, payload, recorded):
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["finishReason"], "model_unreadable")
+        self.assertEqual(payload["summary"], "")
+        self.assertEqual(payload["keyPoints"], [])
+        self.assertEqual(payload["actionItems"], [])
+        self.assertEqual(payload["generatedTokens"], 0)
+        self.assertIn(self.model_dir, payload["warning"])
+        self.assertIn("Repair or Update", payload["warning"])
+        self.assertNotIn("prompt", recorded, "the model generated anyway")
+
+    def test_a_missing_config_is_refused_before_the_model_loads(self):
+        code, payload, recorded = self._run()
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+        self.assertIn("FileNotFoundError", payload["warning"])
+
+    def test_a_corrupt_config_is_refused_before_the_model_loads(self):
+        self._write_config("{")
+        code, payload, recorded = self._run()
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+        self.assertIn("JSONDecodeError", payload["warning"])
+
+    def test_a_config_that_is_not_an_object_is_refused(self):
+        self._write_config("[]")
+        code, payload, recorded = self._run()
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+
+    def test_a_corrupt_tokenizer_is_refused_before_the_model_loads(self):
+        # What transformers raises for a truncated tokenizer.json, measured against the installed
+        # runtime: JSONDecodeError("Failed to parse tokenizer.json: ...").
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def broken_tokenizer(path):
+            raise json.JSONDecodeError("Failed to parse tokenizer.json", "{", 0)
+
+        code, payload, recorded = self._run(load_tokenizer=broken_tokenizer)
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+
+    def test_corrupt_weights_are_refused(self):
+        # mlx's own message for a corrupt model.safetensors (100 KB of random bytes), measured
+        # against the installed runtime.
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def broken_load(path, **kwargs):
+            raise RuntimeError("[load_safetensors] Invalid json header length file " + path)
+
+        code, payload, recorded = self._run(load=broken_load)
+        self._assert_refused(code, payload, recorded)
+
+    def test_a_runtime_error_that_is_not_a_damaged_file_still_raises(self):
+        # A Metal allocation failure is not a broken install; "repair" would send the user to a
+        # multi-gigabyte download that cannot help, so it keeps its own message.
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def out_of_memory(path, **kwargs):
+            raise RuntimeError("[metal::malloc] Attempting to allocate 9000000000 bytes")
+
+        with self.assertRaises(RuntimeError):
+            self._run(load=out_of_memory)
+
+
 class LoadHeartbeatTests(unittest.TestCase):
     """F512 review: `load()` blocks with no output, and the Swift side stops a helper that is silent
     for its stall timeout — so a slow cold load under swap would have read as a wedge. A thread

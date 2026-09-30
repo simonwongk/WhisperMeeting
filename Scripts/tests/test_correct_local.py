@@ -201,5 +201,93 @@ class MainEndToEndTests(unittest.TestCase):
         self.assertIn("prompt", recorded)
 
 
+
+class UnreadableModelTests(unittest.TestCase):
+    """F598 - test_summarize_local.py's twin: a partial or damaged model install is refused with a
+    sentence, not a traceback. `load_config` is a faithful copy of the installed mlx_lm 0.30.5's
+    (utils.py:250-252), run over a real temporary model directory."""
+
+    def setUp(self):
+        self.model_dir = tempfile.mkdtemp()
+
+    def _run(self, load_tokenizer=None, load=None):
+        recorded = _install_fake_mlx_lm(['{"corrections":[]}'])
+        utils = sys.modules["mlx_lm.utils"]
+
+        def faithful_load_config(model_path):
+            with open(model_path / "config.json", "r") as f:
+                return json.load(f)
+
+        utils.load_config = faithful_load_config
+        if load_tokenizer is not None:
+            utils.load_tokenizer = load_tokenizer
+        if load is not None:
+            sys.modules["mlx_lm"].load = load
+        directory = tempfile.mkdtemp()
+        input_path = os.path.join(directory, "in.json")
+        output_path = os.path.join(directory, "out.json")
+        with open(input_path, "w", encoding="utf-8") as handle:
+            json.dump({"systemPrompt": "SYS", "transcript": "Kew Bernetes runs."}, handle)
+        sys.argv = ["correct_local.py", "--model", self.model_dir,
+                    "--input", input_path, "--output", output_path]
+        code = correct.main()
+        with open(output_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return code, payload, recorded
+
+    def _write_config(self, text):
+        with open(os.path.join(self.model_dir, "config.json"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def _assert_refused(self, code, payload, recorded):
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["finishReason"], "model_unreadable")
+        self.assertEqual(payload["corrections"], [])
+        self.assertEqual(payload["generatedTokens"], 0)
+        self.assertIn(self.model_dir, payload["warning"])
+        self.assertIn("Repair or Update", payload["warning"])
+        self.assertNotIn("prompt", recorded, "the model generated anyway")
+
+    def test_a_missing_config_is_refused_before_the_model_loads(self):
+        code, payload, recorded = self._run()
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+        self.assertIn("FileNotFoundError", payload["warning"])
+
+    def test_a_corrupt_config_is_refused_before_the_model_loads(self):
+        self._write_config("{")
+        code, payload, recorded = self._run()
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+        self.assertIn("JSONDecodeError", payload["warning"])
+
+    def test_a_corrupt_tokenizer_is_refused_before_the_model_loads(self):
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def broken_tokenizer(path):
+            raise json.JSONDecodeError("Failed to parse tokenizer.json", "{", 0)
+
+        code, payload, recorded = self._run(load_tokenizer=broken_tokenizer)
+        self._assert_refused(code, payload, recorded)
+        self.assertNotIn("model_path", recorded, "the full model load ran")
+
+    def test_corrupt_weights_are_refused(self):
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def broken_load(path, **kwargs):
+            raise RuntimeError("[load_safetensors] Invalid json header length file " + path)
+
+        code, payload, recorded = self._run(load=broken_load)
+        self._assert_refused(code, payload, recorded)
+
+    def test_a_runtime_error_that_is_not_a_damaged_file_still_raises(self):
+        self._write_config('{"max_position_embeddings": 40960}')
+
+        def out_of_memory(path, **kwargs):
+            raise RuntimeError("[metal::malloc] Attempting to allocate 9000000000 bytes")
+
+        with self.assertRaises(RuntimeError):
+            self._run(load=out_of_memory)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
