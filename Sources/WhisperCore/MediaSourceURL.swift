@@ -102,14 +102,18 @@ public enum MediaSourceURL {
         return nil
     }
 
-    /// Whether a YouTube URL points at a playlist or channel rather than one video — a `list=` query
-    /// that names no video, or a channel/playlist path. The caller refuses these in v1.
+    /// Whether a YouTube URL is refused as a playlist or channel rather than taken as one video — a
+    /// `list=` query on any shape but the two below, or a channel/playlist path. The caller refuses
+    /// these in v1.
     ///
-    /// A `list=` beside a video — `watch?v=<id>&list=…`, or `youtu.be/<id>?list=…`, which yt-dlp
-    /// redirects to the former — is a video playing inside a playlist, and is one video (F618). Every
-    /// yt-dlp vector passes `--no-playlist`, which picks the video when a URL names both, so that link
-    /// imports just the video. Only a `list=` with no video left to pick — `/playlist?list=`,
-    /// `watch?list=`, `/embed/videoseries?list=` — is refused here.
+    /// Exactly two `list=` shapes are accepted, as a video playing inside a playlist (F618):
+    /// `watch?v=<id>&list=…`, and `youtu.be/<id>?list=…`, which yt-dlp redirects to the former. Every
+    /// yt-dlp vector passes `--no-playlist`, which yt-dlp's source shows picking the video for these,
+    /// so that link imports just the video. Every other YouTube `list=` is refused here — not only
+    /// those with no video left to pick (`/playlist?list=`, `watch?list=`, `/embed/videoseries?list=`)
+    /// but also `/shorts/<id>?list=`, `/live/<id>?list=` and `/embed/<id>?list=`, which do name a
+    /// video: no yt-dlp source was found showing `--no-playlist` resolving those to it, so they stay
+    /// on the refused side.
     ///
     /// YouTube's shapes only (F495). Elsewhere `/@user/…` is a single post — TikTok's canonical video
     /// URL is `/@user/video/<id>`, Mastodon's and Threads' are `/@user/<id>` — so another host's link

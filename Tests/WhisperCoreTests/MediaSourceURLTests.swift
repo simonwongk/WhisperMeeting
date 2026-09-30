@@ -109,3 +109,21 @@ func aVideoInsideAPlaylistIsOneVideo() throws {
         #expect(try MediaSourceURL.validate(playlist).isPlaylist, "\(playlist)")
     }
 }
+
+// F618 review — the rule is narrower than "a list= that names no video is refused". Only the two
+// shapes above are accepted; these three name a video and are still refused, because no yt-dlp
+// source was found showing `--no-playlist` resolving them to it. Pinned so the doc comment on
+// `isPlaylistOrChannel`, which says so, cannot drift from the code without a failure. Widening
+// them is a decision for a ticket, not a side effect of an edit.
+@Test("A Shorts, live or embed link that also carries a list= is still refused, as documented (F618)")
+func videoPathsBesideAListStayRefused() throws {
+    for url in [
+        "https://www.youtube.com/shorts/abc123?list=PL1",
+        "https://www.youtube.com/live/abc123?list=PL1",
+        "https://www.youtube.com/embed/abc123?list=PL1",
+    ] {
+        let parsed = try MediaSourceURL.validate(url)
+        #expect(parsed.videoID == "abc123", "\(url) names a video")
+        #expect(parsed.isPlaylist, "\(url) is refused all the same")
+    }
+}
