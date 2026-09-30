@@ -75,8 +75,9 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     }
 
     /// The documented availability probe, injectable so the refusal path can be driven headlessly
-    /// (F367). `nil` means read the real hardware format from this recorder's own engine — which is
-    /// the only thing a test cannot do, because touching `inputNode` is what needs a device.
+    /// (F367). `nil` means read the real hardware format from this recorder's own engine — the one
+    /// thing a test must not do, because the first touch of `inputNode` creates the engine's input
+    /// node, and that is real CoreAudio work on whatever machine runs the suite (F405).
     typealias HardwareFormatProbe = @Sendable () -> (sampleRate: Double, channels: UInt32)
 
     private let engine = AVAudioEngine()
@@ -97,6 +98,13 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     private(set) var isRecording = false
     var onCaptureInterrupted: (@Sendable (DictationCaptureInterruption) -> Void)?
     private var configurationObserver: (any NSObjectProtocol)?
+    /// The node `start()` installed its tap on, so each teardown removes the tap from that node
+    /// rather than asking the engine for one (F405). `AVAudioEngine.h`: the engine "creates a
+    /// singleton on demand when this property is first accessed", so a teardown written as
+    /// `engine.inputNode.removeTap` was, on a recorder that never installed a tap, that first access:
+    /// it created the node only to remove a tap that was never there. Set only by `start()`, and
+    /// cleared by every teardown.
+    private var installedInput: AVAudioInputNode?
 
     /// Registers the configuration-change observer here rather than in `start()` (F357). The
     /// notification is scoped to this recorder's own engine, and the handler refuses unless a
@@ -137,7 +145,8 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     private func handleConfigurationChange() {
         guard isRecording else { return }
         log.notice("audio device configuration changed mid-dictation; ending the capture")
-        engine.inputNode.removeTap(onBus: 0)
+        installedInput?.removeTap(onBus: 0)
+        installedInput = nil
         engine.stop()
         isRecording = false
         interruption = .deviceConfigurationChanged
@@ -150,7 +159,8 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     #if DEBUG
     /// Test seams (F357, F368). A real `start()` needs an input device, so these stand in for the
-    /// state it would have produced — nothing here is reachable from the app.
+    /// state it would have produced — nothing here is reachable from the app. `setRecordingForTesting`
+    /// installs no tap, so `installedInput` stays `nil` and no teardown creates the node (F405).
     var engineForTesting: AVAudioEngine { engine }
     var droppedChunkCountForTesting: Int { processingQueue.sync { droppedChunks } }
     var capturedSampleCountForTesting: Int { processingQueue.sync { sampleBuffer.samples.count } }
@@ -222,7 +232,6 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         // The Swift `throws` from `engine.start()` is a different channel and is carried out of
         // the block separately: the block cannot itself throw, so swallowing it here would turn a
         // perfectly ordinary error into a success.
-        var installedInput: AVAudioInputNode?
         var swiftFailure: (any Error)?
         var raised: NSError?
         let completed = WMRunCatchingObjCExceptions({
@@ -270,6 +279,7 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
             // tap is a no-op, and this call is itself inside the guard's reach only if the node
             // exists — if `inputNode` was what raised, there is nothing to remove.
             installedInput?.removeTap(onBus: 0)
+            installedInput = nil
             engine.stop()
             if let swiftFailure { throw swiftFailure }
             throw RecorderError.captureEngineRaised(
@@ -326,7 +336,8 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     func stop() throws -> (url: URL, duration: TimeInterval) {
         guard isRecording else { throw RecorderError.notRecording }
-        engine.inputNode.removeTap(onBus: 0)
+        installedInput?.removeTap(onBus: 0)
+        installedInput = nil
         engine.stop()
         isRecording = false
 
@@ -359,7 +370,8 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     func cancel() {
         if isRecording {
-            engine.inputNode.removeTap(onBus: 0)
+            installedInput?.removeTap(onBus: 0)
+            installedInput = nil
             engine.stop()
             isRecording = false
         }

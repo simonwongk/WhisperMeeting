@@ -187,6 +187,86 @@ func anotherEnginesChangeIsNotOurs() {
     #expect(interruptions.value.isEmpty, "a meeting capture's engine must not end a dictation")
 }
 
+// MARK: - F405, a teardown must not create the node it tears down
+
+private let recorderSourcePath = "Sources/WhisperMeet/Dictation/MicDictationRecorder.swift"
+
+/// The recorder's source with comments stripped (F285) and string literals blanked, so a brace in
+/// a comment or a literal cannot move a declaration's end.
+private func recorderSourceForBraceMatching() throws -> String {
+    SourceAssertion.stripComments(
+        try String(contentsOf: SourceAssertion.url(recorderSourcePath), encoding: .utf8),
+        blankStringLiterals: true
+    )
+}
+
+/// The body of the declaration whose head is `head`, which must end with its opening brace, so a
+/// protocol requirement of the same name, which has no body, cannot match. The source must have
+/// had its string literals blanked, or a `{` inside one would be counted as a scope.
+private func declarationBody(_ head: String, in source: String) -> Substring? {
+    guard let found = source.range(of: head), head.hasSuffix("{") else { return nil }
+    var depth = 1
+    var cursor = found.upperBound
+    while cursor < source.endIndex {
+        switch source[cursor] {
+        case "{": depth += 1
+        case "}":
+            depth -= 1
+            if depth == 0 { return source[found.upperBound..<cursor] }
+        default: break
+        }
+        cursor = source.index(after: cursor)
+    }
+    return nil
+}
+
+@Test("Ending a capture that never installed a tap never creates the input node (F405)")
+func endingWithoutATapCreatesNoInputNode() throws {
+    // `AVAudioEngine.h`: the engine "creates a singleton on demand when this property is first
+    // accessed". A teardown written as `engine.inputNode.removeTap` was therefore the first access
+    // on a recorder whose tap was never installed, and did real CoreAudio work on whatever machine
+    // ran it to remove a tap that did not exist. `attachedNodes` is where the created node shows.
+    func hasInputNode(_ recorder: MicDictationRecorder) -> Bool {
+        recorder.engineForTesting.attachedNodes.contains { $0 is AVAudioInputNode }
+    }
+    let probe: MicDictationRecorder.HardwareFormatProbe = { (sampleRate: 48_000, channels: 1) }
+
+    let center = NotificationCenter()
+    let interrupted = MicDictationRecorder(hardwareFormatProbe: probe, notificationCenter: center)
+    try #require(!hasInputNode(interrupted), "a fresh engine has no input node until one is asked for")
+    interrupted.setRecordingForTesting()
+    center.post(name: .AVAudioEngineConfigurationChange, object: interrupted.engineForTesting)
+    #expect(!hasInputNode(interrupted), "the configuration-change handler created the input node")
+
+    let stopped = MicDictationRecorder(hardwareFormatProbe: probe)
+    stopped.setRecordingForTesting()
+    // It throws, because nothing was captured; which error it throws is not this test's subject.
+    _ = try? stopped.stop()
+    #expect(!hasInputNode(stopped), "stop() created the input node")
+
+    let cancelled = MicDictationRecorder(hardwareFormatProbe: probe)
+    cancelled.setRecordingForTesting()
+    cancelled.cancel()
+    #expect(!hasInputNode(cancelled), "cancel() created the input node")
+}
+
+@Test("No teardown path asks the engine for its input node (F405)")
+func theTeardownPathsDoNotReachForTheInputNode() throws {
+    // The source-level twin of the test above, with a different blind spot: that one depends on
+    // AVFAudio listing a lazily created node in `attachedNodes`, which is observed rather than
+    // documented; this one depends only on the text. Each teardown removes the tap from the node
+    // `start()` installed it on, so a recorder that installed nothing touches nothing.
+    let source = try recorderSourceForBraceMatching()
+    for head in [
+        "func handleConfigurationChange() {",
+        "func stop() throws -> (url: URL, duration: TimeInterval) {",
+        "func cancel() {",
+    ] {
+        let body = try #require(declarationBody(head, in: source), "\(head) not found; did it move?")
+        #expect(!body.contains("engine.inputNode"), "\(head) asks the engine for its input node")
+    }
+}
+
 // MARK: - the controller's side of F357 and F368
 
 @MainActor
