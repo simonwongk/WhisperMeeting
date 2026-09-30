@@ -6806,12 +6806,15 @@ extension AppModel {
             alertMessage = ReadOnlyLibraryNotice.integrityCheckDeclined
             return
         }
-        let messages = Self.integrityMessages(verifyLibraryIntegrity())
+        let results = verifyLibraryIntegrity()
+        let messages = Self.integrityMessages(results)
         if messages.isEmpty {
             alertMessage = "Library check complete — no audio problems were found."
         } else {
-            let header = "Library check found problems with \(messages.count) recording"
-                + (messages.count == 1 ? "" : "s")
+            // One result per meeting, one message per finding: the header counts recordings, so it
+            // takes the results' count, not the lines' (F505).
+            let header = "Library check found problems with \(results.count) recording"
+                + (results.count == 1 ? "" : "s")
                 + ". The recordings were not changed."
             alertMessage = ([header] + messages).joined(separator: "\n\n")
         }

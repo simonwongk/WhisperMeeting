@@ -177,3 +177,46 @@ func libraryIntegritySweepUsesInjectedSeamAndSkipsRecordinglessMeetings() throws
     #expect(results.first?.meeting.id == withRecordingID)
     #expect(results.first?.findings == [.recordingMissing])
 }
+
+/// F505: Verify Library's header counted finding LINES as recordings, so one meeting with three
+/// findings was reported as "problems with 3 recordings". The header counts meetings; every finding
+/// line stays in the body.
+@MainActor
+@Test("Verify Library's header counts recordings with problems, not findings (F505)")
+func verifyLibraryHeaderCountsRecordingsNotFindings() throws {
+    let root = try makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = headyModel(root: root)
+
+    let manyID = UUID()
+    model.store.upsert(MeetingRecord(id: manyID, title: "Three findings",
+                                     recordingPath: "Recordings/\(manyID.uuidString)/meeting.wav"))
+    let threeFindings: [IntegrityFinding] = [
+        .wavTruncated(declaredBytes: 1_000, actualBytes: 144),
+        .durationInconsistent(headerSeconds: 10, indexSeconds: 30),
+        .sourceTrackFrameMismatch(track: "system", expectedFrames: 480_000, actualFrames: 1),
+    ]
+    model.checkMeetingIntegrity = { _ in threeFindings }
+
+    model.verifyLibrary()
+
+    let single = try #require(model.alertMessage)
+    #expect(single.hasPrefix("Library check found problems with 1 recording."))
+    // Header plus one paragraph per finding: nothing was dropped from the body.
+    #expect(single.components(separatedBy: "\n\n").count == 1 + 3)
+
+    // Two meetings, with three findings and one finding: two recordings, four lines.
+    let oneID = UUID()
+    model.store.upsert(MeetingRecord(id: oneID, title: "One finding",
+                                     recordingPath: "Recordings/\(oneID.uuidString)/meeting.wav"))
+    model.checkMeetingIntegrity = { descriptor in
+        descriptor.recordingURL.path.contains(oneID.uuidString) ? [.recordingMissing] : threeFindings
+    }
+    model.alertMessage = nil
+
+    model.verifyLibrary()
+
+    let pair = try #require(model.alertMessage)
+    #expect(pair.hasPrefix("Library check found problems with 2 recordings."))
+    #expect(pair.components(separatedBy: "\n\n").count == 1 + 4)
+}
