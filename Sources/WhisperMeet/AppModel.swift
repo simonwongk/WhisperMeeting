@@ -4661,9 +4661,10 @@ final class AppModel: ObservableObject {
         let id = UUID()
         let directory = store.recordingDirectoryURL(for: id)
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let copyFile = copyRecordingIntoLibrary
         do {
             let copiedURL = try await Task.detached(priority: .userInitiated) {
-                try Self.copyImportedRecording(from: sourceURL, into: directory)
+                try Self.copyImportedRecording(from: sourceURL, into: directory, copyingWith: copyFile)
             }.value
             let duration = await Self.loadDuration(of: copiedURL)
             // `loadDuration` returns 0 when `AVURLAsset` cannot parse the file — a truncated MP4 or
@@ -4948,9 +4949,18 @@ final class AppModel: ObservableObject {
         return ImportOutcome(firstID: firstID, notImported: notImported)
     }
 
+    /// Copies an imported file's bytes into the library, as `(source, destination)`. A seam in the
+    /// F47 shape so a test can do what a writer that paused and resumed does — change the source
+    /// while it is being copied (F698). Only the byte copy is replaceable: the version check around
+    /// it in `copyImportedRecording` stays real under test, because that check is what is tested.
+    var copyRecordingIntoLibrary: @Sendable (URL, URL) throws -> Void = { source, destination in
+        try FileManager.default.copyItem(at: source, to: destination)
+    }
+
     nonisolated private static func copyImportedRecording(
         from sourceURL: URL,
-        into directory: URL
+        into directory: URL,
+        copyingWith copyFile: (URL, URL) throws -> Void
     ) throws -> URL {
         let didAccess = sourceURL.startAccessingSecurityScopedResource()
         defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
@@ -4965,10 +4975,12 @@ final class AppModel: ObservableObject {
             try FileManager.default.removeItem(at: destination)
         }
         let before = sourceVersion(of: sourceURL)
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
-        // The source is open anyway, so re-stating it is O(1) — and it catches exactly the case the
-        // watched folder's settle window cannot: a writer that paused longer than six seconds and
-        // then resumed, leaving a copy that is a prefix of the real recording (F326).
+        try copyFile(sourceURL, destination)
+        // Re-stating the source costs one `stat` — and it catches exactly the case the watched
+        // folder's settle window cannot: a writer that paused longer than that window and then
+        // resumed, leaving a copy that is a prefix of the real recording (F326). Both reads go to
+        // the file system: through the URL's resource-value cache the second returned the first's
+        // values, and this check did not fire (F698).
         if let before, let after = sourceVersion(of: sourceURL), after != before {
             try? FileManager.default.removeItem(at: destination)
             throw ImportError.sourceChangedDuringCopy
@@ -4988,11 +5000,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The file's size and modification date as the file system reports them at this moment.
+    ///
+    /// Read with `attributesOfItem(atPath:)`, not `url.resourceValues(forKeys:)`: Foundation caches
+    /// resource values on the URL object, and nothing clears that cache on the detached task the
+    /// import runs on, so the second of `copyImportedRecording`'s two reads returned the first one's
+    /// values and the re-check could never see a change (F698 — measured: a 4-byte file grown to 34
+    /// bytes still read as 4 through the same `URL`, on the main thread and on a detached thread).
     nonisolated private static func sourceVersion(of url: URL) -> WatchedFolderInbox.Version? {
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-              let size = values.fileSize, let modified = values.contentModificationDate
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.int64Value,
+              let modified = attributes[.modificationDate] as? Date
         else { return nil }
-        return WatchedFolderInbox.Version(size: Int64(size), modified: modified)
+        return WatchedFolderInbox.Version(size: size, modified: modified)
     }
 
     nonisolated private static func loadDuration(of url: URL) async -> TimeInterval {
