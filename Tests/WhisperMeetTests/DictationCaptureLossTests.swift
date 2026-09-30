@@ -311,6 +311,7 @@ func aDeviceChangeEndsTheSessionInAStatedState() async throws {
     monitor.onPressStart?()
     try #require(controller.status == .listening)
     let togglesBefore = monitor.resetToggleCount
+    let cancelsBefore = recorder.cancelCount
 
     recorder.simulateCaptureInterruption()
     for _ in 0..<200 where controller.status == .listening {
@@ -326,7 +327,14 @@ func aDeviceChangeEndsTheSessionInAStatedState() async throws {
     // end-edge, so a toggle-mode press afterwards must start a capture rather than fire a no-op
     // end edge into an already-failed session.
     #expect(monitor.resetToggleCount > togglesBefore)
-    #expect(!recorder.isRecording)
+    // The recorder is released (F405). `!recorder.isRecording` cannot show that, because the fake
+    // clears it itself before calling back, so this counts the `cancel()` instead.
+    #expect(recorder.cancelCount > cancelsBefore, "the controller did not release the recorder")
+    // And the history says so, which is where a support question starts: F357 promised that
+    // `dictation-log.json` records `failed`, and until F405 nothing read it back.
+    let entries = DictationLogStore(directory: directory).log.entries
+    #expect(entries.count == 1)
+    #expect(entries.first?.outcome == .failed(DictationCaptureInterruption.deviceConfigurationChanged.message))
 }
 
 @MainActor

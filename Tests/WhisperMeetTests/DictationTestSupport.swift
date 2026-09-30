@@ -32,6 +32,10 @@ func isolatedTextInjector() -> TextInjector {
 final class FakeDictationRecorder: DictationRecording {
     private(set) var isRecording = false
     private(set) var stopCount = 0
+    /// How many times `cancel()` ran (F405). Without it nothing could tell whether the controller
+    /// released the recorder after an interruption: `simulateCaptureInterruption` clears
+    /// `isRecording` itself, so `!isRecording` holds whatever the controller does.
+    private(set) var cancelCount = 0
     var startError: Error?
     /// Thrown by `stop()`. The controller's catch there used to treat every error as "nothing
     /// heard"; F368 made it distinguish silence from a broken capture, so a test needs to choose.
@@ -61,6 +65,7 @@ final class FakeDictationRecorder: DictationRecording {
     }
 
     func cancel() {
+        cancelCount += 1
         isRecording = false
     }
 
