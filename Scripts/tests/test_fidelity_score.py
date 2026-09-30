@@ -16,6 +16,7 @@ under the plain system python3 that `Scripts/quality-check.sh` provides.
 
 import importlib.util
 import os
+import re
 import unittest
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "bench", "fidelity", "score.py")
@@ -49,6 +50,49 @@ class ProtectedTermTests(unittest.TestCase):
         self.assertEqual(found, [])
         found = score.altered_terms("the cult was banned", "the group was banned", ["cult"])
         self.assertEqual(found, ["cult"])
+
+    def test_a_term_with_punctuation_at_its_edge_is_matched(self):
+        """F697: beside a term's leading or trailing punctuation, `\\b` needs a word character on the
+        far side, so "C++ first" and " .NET" never matched, which meant `altered_terms` never counted
+        one as altered and `term_verdict` called a kept one `term_altered`. The app stopped using
+        `\\b` in F534; the scorer had not."""
+        for source, output, term in [
+            ("port the parser to C++ first", "port the parser to C first", "C++"),
+            ("write it in C# today", "write it in C today", "C#"),
+            ("I love .NET today", "I love it today", ".NET"),
+        ]:
+            with self.subTest(term=term):
+                self.assertEqual(score.altered_terms(source, output, [term]), [term])
+                self.assertEqual(score.altered_terms(source, source, [term]), [])
+                self.assertEqual(score.term_verdict(source, source, term), "ok")
+
+    def test_a_latin_term_glued_to_chinese_is_matched(self):
+        """F697: Whisper and Qwen write code-switched Mandarin with no space, and Python's `\\b`
+        counts a Han ideograph as a word character, so there was no boundary to find."""
+        self.assertEqual(
+            score.altered_terms("这个Kubernetes集群", "这个集群", ["Kubernetes"]), ["Kubernetes"]
+        )
+        self.assertEqual(score.altered_terms("这个Kubernetes集群", "这个Kubernetes集群", ["Kubernetes"]), [])
+
+    def test_an_adjacent_latin_letter_or_digit_still_is_not_a_boundary(self):
+        """The lookarounds keep the whole-word rule for pure Latin text: a term running straight
+        into another letter, digit or underscore is a different token."""
+        for text, term in [("Kubernetes2 cluster", "Kubernetes"), ("the CCPA applies", "CCP"),
+                           ("a foo_bar name", "foo")]:
+            with self.subTest(term=term, text=text):
+                self.assertFalse(score.contains_term(text, term))
+
+    def test_the_boundary_class_is_the_apps(self):
+        """F697: the scorer and `ProtectedTerms` must call the same event `term_altered`, so the
+        scorer's class is checked against `LatinTokenBoundary.regexCharacterClass` in the Swift
+        source rather than restated and trusted."""
+        swift = os.path.join(
+            os.path.dirname(__file__), "..", "..", "Sources", "WhisperCore", "LatinTokenBoundary.swift"
+        )
+        with open(swift, encoding="utf-8") as handle:
+            declaration = re.search(r'static let regexCharacterClass = "([^"]*)"', handle.read())
+        self.assertIsNotNone(declaration, "LatinTokenBoundary.regexCharacterClass not found")
+        self.assertEqual(score.LATIN_TOKEN_CHARACTER_CLASS, declaration.group(1))
 
     def test_english_matching_ignores_case(self):
         found = score.altered_terms("Tiananmen square", "tiananmen Square", ["Tiananmen Square"])

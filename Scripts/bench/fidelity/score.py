@@ -32,6 +32,13 @@ ENGLISH_DROP_THRESHOLD = 3
 #: Removed before a drop is measured: a refinement that deletes these is doing its job.
 FILLERS = ("um", "uh", "er", "erm", "ah", "like", "you know", "i mean", "sort of", "kind of")
 
+#: What continues a Latin token rather than ending it: an ASCII letter, digit or underscore. The
+#: app's `LatinTokenBoundary.regexCharacterClass` (`Sources/WhisperCore/LatinTokenBoundary.swift`),
+#: which `ProtectedTerms` matches with, so the bench's `term_altered` and the app's refusal are the
+#: same event (F697). `Scripts/tests/test_fidelity_score.py` reads the Swift declaration and fails
+#: if the two differ.
+LATIN_TOKEN_CHARACTER_CLASS = "A-Za-z0-9_"
+
 _SIMPLIFIED_TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "st_characters.txt")
 
 
@@ -127,13 +134,24 @@ def contains_term(text, term):
     CJK matches as a substring because it has no word boundaries; English matches whole words,
     case-insensitively, because substring matching there is wrong in a way that silently scores a
     faithful output as an alteration — an exploratory run flagged "cult" inside "culture".
+
+    "Whole word" is asserted on the neighbours, not with `\\b` (F697, following the app's F534): the
+    term must not have a `LATIN_TOKEN_CHARACTER_CLASS` character on either side. `\\b` needed a word
+    character on the far side of a term's leading or trailing punctuation, so "C++", "C#" and ".NET"
+    never matched in ordinary text; and Python counts a Han ideograph as a word character, so a Latin
+    term written against Chinese with no space ("这个Kubernetes集群") never matched either.
+    `altered_terms` skips a term the source did not contain, so it silently under-counted both, and
+    `term_verdict`, which asks only whether the output has the term, called a kept one
+    `term_altered`.
     """
     text, term = _normalized(text), _normalized(term)
     if not term:
         return False
     if _has_cjk(term):
         return term in text
-    return re.search(r"\b" + re.escape(term) + r"\b", text, re.IGNORECASE) is not None
+    boundary = "[" + LATIN_TOKEN_CHARACTER_CLASS + "]"
+    pattern = "(?<!" + boundary + ")" + re.escape(term) + "(?!" + boundary + ")"
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 
 def altered_terms(source, output, terms, aliases=None):
