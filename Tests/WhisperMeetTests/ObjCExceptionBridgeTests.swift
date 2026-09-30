@@ -105,19 +105,126 @@ func nonPCMBufferFormatRaiseIsCaught() throws {
     #expect(raised != nil)
 }
 
-@Test("Every hardware call in start() is inside the bridge (F374)")
+// MARK: - F374 and F403: the recorder's own raising calls
+
+/// Every `WMRunCatchingObjCExceptions({ … })` block in `source`, from its opening brace to its
+/// matching closing one. `source` must have had its comments stripped and its string literals
+/// blanked, or a brace in either would be counted as a scope (F285).
+private func bridgedRanges(in source: String) -> [Range<String.Index>] {
+    var ranges: [Range<String.Index>] = []
+    var searchFrom = source.startIndex
+    while let opening = source.range(of: "WMRunCatchingObjCExceptions({", range: searchFrom..<source.endIndex) {
+        var depth = 1
+        var cursor = opening.upperBound
+        while cursor < source.endIndex, depth > 0 {
+            if source[cursor] == "{" { depth += 1 }
+            if source[cursor] == "}" { depth -= 1 }
+            if depth > 0 { cursor = source.index(after: cursor) }
+        }
+        guard cursor < source.endIndex else { break }
+        ranges.append(opening.upperBound..<cursor)
+        searchFrom = source.index(after: cursor)
+    }
+    return ranges
+}
+
+/// The body of the declaration whose head is `head` (which must end with its opening brace).
+private func bodyRange(of head: String, in source: String) -> Range<String.Index>? {
+    guard head.hasSuffix("{"), let found = source.range(of: head) else { return nil }
+    var depth = 1
+    var cursor = found.upperBound
+    while cursor < source.endIndex {
+        if source[cursor] == "{" { depth += 1 }
+        if source[cursor] == "}" {
+            depth -= 1
+            if depth == 0 { return found.upperBound..<cursor }
+        }
+        cursor = source.index(after: cursor)
+    }
+    return nil
+}
+
+/// Every occurrence of `needle` in `haystack`, as ranges.
+private func occurrences(of needle: String, in haystack: String) -> [Range<String.Index>] {
+    var found: [Range<String.Index>] = []
+    var searchFrom = haystack.startIndex
+    while let hit = haystack.range(of: needle, range: searchFrom..<haystack.endIndex) {
+        found.append(hit)
+        searchFrom = hit.upperBound
+    }
+    return found
+}
+
+/// The 1-based line `index` falls on, so a failure names a line somebody can open.
+private func lineNumber(of index: String.Index, in source: String) -> Int {
+    source[..<index].reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
+}
+
+@Test("Every hardware call in start() is inside the bridge (F374, F403)")
 func theHardwareCallsAreAllInsideTheBridge() throws {
-    // The behavioural tests above prove the bridge works; nothing headless can prove the recorder
-    // USES it, because reaching `start()`'s hardware section needs a device. This is the F306
-    // source assertion that stands in for that, and it checks the three calls AVAudioEngine.h
-    // documents as able to raise.
-    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/MicDictationRecorder.swift")
-    let bridged = try #require(source.range(of: "WMRunCatchingObjCExceptions({"))
-    let closing = try #require(source.range(of: "}, &raised)"))
-    let block = source[bridged.upperBound..<closing.lowerBound]
-    #expect(block.contains("engine.inputNode"))
+    // The behavioural tests prove the bridge works, and `aRaisingProbeIsCaughtByTheBridge` proves
+    // start() routes the probe through it; nothing headless can prove the rest of start() does,
+    // because reaching its hardware section needs a device. This is the F306 source assertion that
+    // stands in for that.
+    //
+    // F403: the first version of this test sliced the first bridged block and checked that it
+    // CONTAINED `engine.inputNode`. That could never see the call that mattered, which was outside:
+    // `AVAudioEngine.h` says the engine "creates a singleton on demand when this property is first
+    // accessed", and in production the first access was the availability probe, read before the
+    // block. So this now checks the other direction too — what is OUTSIDE every block.
+    let source = SourceAssertion.stripComments(
+        try String(
+            contentsOf: SourceAssertion.url("Sources/WhisperMeet/Dictation/MicDictationRecorder.swift"),
+            encoding: .utf8
+        ),
+        blankStringLiterals: true
+    )
+    let bridged = bridgedRanges(in: source)
+    let setUp = try #require(bridged.first, "start() has no bridged block at all")
+    func isBridged(_ hit: Range<String.Index>) -> Bool {
+        bridged.contains { $0.contains(hit.lowerBound) }
+    }
+
+    // The probe's own real read is the one sanctioned `engine.inputNode` outside a block — and
+    // only because the next check requires every call to the probe to be inside one.
+    let probeBody = try #require(
+        bodyRange(of: "func hardwareFormat() -> (sampleRate: Double, channels: UInt32) {", in: source),
+        "hardwareFormat() not found; did it move?"
+    )
+    for hit in occurrences(of: "engine.inputNode", in: source)
+    where !isBridged(hit) && !probeBody.contains(hit.lowerBound) {
+        Issue.record("line \(lineNumber(of: hit.lowerBound, in: source)): `engine.inputNode` outside every bridged block")
+    }
+    let probeCalls = occurrences(of: "hardwareFormat()", in: source)
+        .filter { !source[..<$0.lowerBound].hasSuffix("func ") }
+    #expect(!probeCalls.isEmpty, "start() no longer consults the probe")
+    for hit in probeCalls where !isBridged(hit) {
+        Issue.record("line \(lineNumber(of: hit.lowerBound, in: source)): the probe is called outside every bridged block, and in production it is the first `inputNode` access")
+    }
+    // F367's ordering, kept inside the block: the probe is consulted before the node is reached.
+    let block = source[setUp]
+    if let probeInBlock = block.range(of: "self.hardwareFormat()"),
+       let nodeInBlock = block.range(of: "engine.inputNode") {
+        #expect(probeInBlock.lowerBound < nodeInBlock.lowerBound, "the probe must run before the node is reached (F367)")
+    } else {
+        Issue.record("start()'s bridged block must consult the probe and then reach the node")
+    }
     #expect(block.contains("installTap(onBus: 0"))
     #expect(block.contains("try engine.start()"))
+
+    // The teardown after a failed start runs on the engine that just failed, which may be the one
+    // that raised, so it is bridged too.
+    let startBody = try #require(
+        bodyRange(of: "func start(onLevel: @escaping @Sendable (Float) -> Void) throws {", in: source)
+    )
+    for call in ["engine.stop()", "removeTap(onBus: 0)"] {
+        let hits = occurrences(of: call, in: source).filter { startBody.contains($0.lowerBound) }
+        #expect(!hits.isEmpty, "start() no longer tears down with \(call)")
+        for hit in hits where !isBridged(hit) {
+            Issue.record("line \(lineNumber(of: hit.lowerBound, in: source)): start()'s failure teardown calls \(call) outside every bridged block")
+        }
+    }
+
     // And the Swift `throws` is carried out rather than swallowed: a block that cannot throw makes
     // it far too easy to turn an ordinary error into a silent success.
     #expect(block.contains("swiftFailure = error"))

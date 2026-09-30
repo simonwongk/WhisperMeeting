@@ -91,6 +91,33 @@ func theProbeIsReadOnEveryStart() throws {
     #expect(probes.count == 2)
 }
 
+@Test("A probe that raises is caught by the bridge, and the recorder survives for the next press (F403)")
+func aRaisingProbeIsCaughtByTheBridge() throws {
+    // In production the probe is `engine.inputNode.inputFormat(forBus: 0)`, and it is the FIRST
+    // access of `inputNode` — the one `AVAudioEngine.h` says "creates a singleton on demand". It
+    // used to run before F374's bridge, so a raise there was the abort F356 was, not an error.
+    // Before F403 this test took the whole test process down with it.
+    let calls = Counter()
+    let recorder = MicDictationRecorder(hardwareFormatProbe: {
+        calls.increment()
+        if calls.count == 1 {
+            NSException(name: .invalidArgumentException, reason: "probe raised", userInfo: nil).raise()
+        }
+        return (sampleRate: 0, channels: 0)
+    })
+
+    #expect(throws: MicDictationRecorder.RecorderError.captureEngineRaised(reason: "probe raised")) {
+        try recorder.start(onLevel: { _ in })
+    }
+    #expect(!recorder.isRecording, "a start that raised must not leave the recorder believing it captures")
+    // The engine is a `let` reused by every later press, so the next press must reach the probe
+    // again and get its ordinary answer rather than a stuck state.
+    #expect(throws: MicDictationRecorder.RecorderError.audioFormatUnavailable) {
+        try recorder.start(onLevel: { _ in })
+    }
+    #expect(calls.count == 2)
+}
+
 // MARK: - F368, a dropped buffer is counted
 
 @Test("A capture that heard nothing is silence only when nothing was dropped (F368)")

@@ -186,55 +186,63 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     func start(onLevel: @escaping @Sendable (Float) -> Void) throws {
         guard !isRecording else { return }
 
-        // The documented availability probe, and both halves of it. AVAudioEngine.h, `inputNode`:
-        // "Check for the input node's input format (i.e. hardware format) for non-zero sample rate
-        // and channel count to see if input is enabled. Trying to perform input through the input
-        // node when it is not enabled or available will cause the engine to throw an error (when
-        // possible) or an exception." An exception is not a Swift error and no `catch` below can
-        // see it, so this guard is the whole defence (F358). It reads `inputFormat`, not
-        // `outputFormat`, because that is the property those sentences name.
+        // Everything that touches the hardware runs inside `WMRunCatchingObjCExceptions` (F374),
+        // and that starts with the availability probe (F403).
         //
-        // Be clear about what this does NOT do: the probe is read here and `engine.start()` runs
-        // below, so input becoming unavailable in between can still raise — structurally the same
-        // read-then-use shape F356 is about. Unlike the tap's format, the API offers no way to
-        // decline the claim, so this narrows the window and cannot close it. Tracked as F374.
-        // Through `hardwareFormat()` so a test can supply the answer (F367). The real read is
-        // `input.inputFormat(forBus: 0)` on this recorder's own engine — see below — and touching
-        // `inputNode` at all is what needs a device, so the probe is consulted BEFORE the node is
-        // reached. Read on every start and never cached: F356's whole lesson is that a value read
-        // before a side-effecting framework call is already stale, so a value kept between
-        // captures is worse again.
-        let hardwareFormat = self.hardwareFormat()
-        guard
-            hardwareFormat.sampleRate > 0,
-            hardwareFormat.channels > 0,
-            let converter = DictationTapConverter(targetSampleRate: targetSampleRate)
-        else {
-            throw RecorderError.audioFormatUnavailable
-        }
-
-        processingQueue.sync {
-            sampleBuffer.removeAll(keepingCapacity: true)
-            droppedChunks = 0
-        }
-        interruption = nil
-
-        // Everything that touches the hardware runs inside `WMRunCatchingObjCExceptions` (F374).
+        // An exception is not a Swift error, so before F374 the app aborted — which is exactly what
+        // happened twice in the field, and what the user saw was the app vanishing. `installTap`
+        // raised in F356, and `engine.start()` validates the live device, which AVAudioEngine.h
+        // says it answers for an unavailable input by throwing "or an exception", with nothing the
+        // caller can decline. The `inputNode` getter is not documented to raise, but its first
+        // access does real work, so it is inside the block too.
         //
-        // F358's probe above narrows the window between reading the device and using it; it cannot
-        // close it, because `engine.start()` validates the live device and AVAudioEngine.h says it
-        // answers an unavailable input by throwing "or an exception". An exception is not a Swift
-        // error, so before this the app aborted — which is exactly what happened twice in the
-        // field, and what the user saw was the app vanishing. Three of the four calls below can
-        // raise (`inputNode`, `installTap`, `start`), so the block covers all of them rather than
-        // just the one this ticket named.
+        // That is why the probe is inside the block: in production it is the FIRST access of
+        // `inputNode`. AVAudioEngine.h: the engine "creates a singleton on demand when this
+        // property is first accessed". Until F403 the probe ran before this block, so the access
+        // that created the node was unbridged, and the bridged `engine.inputNode` below only
+        // returned a node that already existed.
         //
         // The Swift `throws` from `engine.start()` is a different channel and is carried out of
         // the block separately: the block cannot itself throw, so swallowing it here would turn a
-        // perfectly ordinary error into a success.
+        // perfectly ordinary error into a success. A refusal by the probe is carried out the same
+        // way, as `formatRefused`.
+        var formatRefused = false
         var swiftFailure: (any Error)?
         var raised: NSError?
         let completed = WMRunCatchingObjCExceptions({
+            // The documented availability probe, and both halves of it. AVAudioEngine.h,
+            // `inputNode`: "Check for the input node's input format (i.e. hardware format) for
+            // non-zero sample rate and channel count to see if input is enabled. Trying to perform
+            // input through the input node when it is not enabled or available will cause the
+            // engine to throw an error (when possible) or an exception." It reads `inputFormat`,
+            // not `outputFormat`, because that is the property those sentences name (F358).
+            //
+            // It narrows the window and cannot close it: the probe is read here and
+            // `engine.start()` runs below, so input becoming unavailable in between can still
+            // raise — structurally the same read-then-use shape F356 is about. The bridge is what
+            // makes that raise an error instead of an abort (F374).
+            //
+            // Through `hardwareFormat()` so a test can supply the answer (F367), and consulted
+            // BEFORE the block's own `engine.inputNode`, so a refusal installs nothing. Read on
+            // every start and never cached: F356's whole lesson is that a value read before a
+            // side-effecting framework call is already stale, so a value kept between captures is
+            // worse again.
+            let hardwareFormat = self.hardwareFormat()
+            guard
+                hardwareFormat.sampleRate > 0,
+                hardwareFormat.channels > 0,
+                let converter = DictationTapConverter(targetSampleRate: targetSampleRate)
+            else {
+                formatRefused = true
+                return
+            }
+
+            processingQueue.sync {
+                sampleBuffer.removeAll(keepingCapacity: true)
+                droppedChunks = 0
+            }
+            interruption = nil
+
             let input = engine.inputNode
             installedInput = input
             // `format: nil`, and that is the F356 fix rather than a simplification. AVAudioNode.h
@@ -274,13 +282,23 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
             }
         }, &raised)
 
+        if formatRefused { throw RecorderError.audioFormatUnavailable }
         if !completed || swiftFailure != nil {
             // Tear down whatever got installed before the failure. `removeTap` on a bus with no
-            // tap is a no-op, and this call is itself inside the guard's reach only if the node
-            // exists — if `inputNode` was what raised, there is nothing to remove.
-            installedInput?.removeTap(onBus: 0)
+            // tap is a no-op, and `installedInput` is nil if the failure came before the node was
+            // reached, so there is nothing to remove. Bridged too (F403): this runs on the engine
+            // that just failed, possibly by raising, and `ObjCExceptionBridge.h` says the process
+            // state after an exception is undefined. A second raise here is logged, not rethrown —
+            // the first failure is the one the user needs to hear about.
+            var teardownRaised: NSError?
+            let tornDown = WMRunCatchingObjCExceptions({
+                installedInput?.removeTap(onBus: 0)
+                engine.stop()
+            }, &teardownRaised)
             installedInput = nil
-            engine.stop()
+            if !tornDown {
+                log.error("dictation teardown after a failed start raised: \(teardownRaised?.localizedDescription ?? "no reason", privacy: .public)")
+            }
             if let swiftFailure { throw swiftFailure }
             throw RecorderError.captureEngineRaised(
                 reason: raised?.localizedDescription ?? "the audio engine could not be started"
@@ -293,9 +311,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// node's input format (i.e. hardware format) for non-zero sample rate and channel count to
     /// see if input is enabled. Trying to perform input through the input node when it is not
     /// enabled or available will cause the engine to throw an error (when possible) **or an
-    /// exception**." An exception is not a Swift error and no `catch` can see it, so the guard in
-    /// `start` is the whole defence (F358) — and it narrows the window rather than closing it,
-    /// because `engine.start()` runs afterwards (F374).
+    /// exception**." The guard in `start` narrows that window rather than closing it, because
+    /// `engine.start()` runs afterwards (F358, F374).
+    ///
+    /// Call it only inside `start`'s `WMRunCatchingObjCExceptions` block (F403). With no injected
+    /// probe this is the recorder's first access of `inputNode`, the one that creates the node, so
+    /// it belongs inside the bridge with every other call that does hardware work.
     ///
     /// It reads `inputFormat`, not `outputFormat`, because that is the property those sentences
     /// name.
