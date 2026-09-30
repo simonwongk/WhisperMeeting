@@ -237,9 +237,9 @@ Beyond the core record → transcribe flow:
   Two things to know, and the app cannot resolve either: the request goes to the site you linked, so
   **that site sees it** (nothing about your meetings is uploaded), and **many sites' terms prohibit
   downloading** — you are responsible for having the right to the content you paste. The publisher's
-  own captions, when available, are kept only as a reviewable reference, never as the transcript. The
-  downloader ships with the local Whisper runtime; if a link fails with "the downloader is out of
-  date", update it from the same Settings section.
+  own captions, when available, are saved with the meeting but not shown in the app yet, and never
+  used as the transcript. The downloader ships with the local Whisper runtime; if a link fails with
+  "the downloader is out of date", update it from the same Settings section.
 
 ## Recording safety and recovery
 

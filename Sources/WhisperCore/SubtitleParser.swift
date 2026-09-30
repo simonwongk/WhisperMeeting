@@ -1,15 +1,23 @@
 import Foundation
 
-/// Parses WebVTT / SRT captions into `[TranscriptSegment]` (F183). This is the inverse of the VTT/SRT
-/// that `TranscriptExporter` already writes, so its red-green test is a clean round-trip.
+/// Parses WebVTT / SRT captions into `[TranscriptSegment]` (F183). It reads what `TranscriptExporter`
+/// writes: that exporter entity-escapes `&`, `<` and `>` in cue text (F44), and this parser decodes
+/// those three references back, so exported captions round-trip (F491). The one exception is SubRip text
+/// that itself contains a literal `&lt;`, `&gt;` or `&amp;`: the exporter leaves `&` raw there, so that
+/// output is ambiguous and decodes to the character the reference names.
 ///
-/// It is a **write path into the transcript**, not a passive reference: the second-opinion sheet's adopt
-/// action copies a caption span straight into `meeting.segments[].text`. So this parser must uphold two
-/// non-negotiable product invariants before a segment is ever constructed:
+/// Where its output goes today: `MediaDownloadClient` parses a link import's caption track, and
+/// `AppModel.importFromURL` → `adoptImportedRecording` stores the result as
+/// `MeetingRecord.referenceSegments`. **Nothing displays, compares or adopts those segments yet** —
+/// Second Opinion compares one engine's transcript against another's and never reads them, and no
+/// action copies a caption into `meeting.segments` (F491). They are kept so a future caption
+/// comparison has them. It must still uphold two non-negotiable product invariants before a segment is
+/// ever constructed, because a stored segment is one wiring change away from the transcript:
 ///
 /// - **No diarization.** Broadcast/YouTube captions embed speaker labels (`>> `, `JOHN:`, `[Speaker 1]`,
-///   the `<v Name>` voice tag, a leading dialogue dash). Those are stripped, so adopting a caption can
-///   never put speaker identity into a WhisperMeet transcript (`PRODUCT_SPEC.md` § "Explicit limitation").
+///   the `<v Name>` voice tag, a leading dialogue dash). Those are stripped — including a `>>` that
+///   arrives as `&gt;&gt;` — so a caption can never put speaker identity into a WhisperMeet
+///   transcript (`PRODUCT_SPEC.md` § "Explicit limitation").
 /// - **Original language.** Enforced upstream by pinning `--sub-langs` to the video's own language at the
 ///   download layer (never requesting auto-translated tracks); this parser only ever sees the pinned track.
 public enum SubtitleParser {
@@ -36,7 +44,9 @@ public enum SubtitleParser {
             // ("JOHN: hi" / ">> and then we shipped"), so cleaning only the joined string would leave
             // every label after the first embedded in the segment text — speaker identity in the
             // transcript, which the no-diarization invariant forbids.
-            let cleaned = cleanCueText(
+            // The joined pass strips labels only: tags and entities were handled per line, and running
+            // either again would strip a decoded `<b>` as a tag or decode a `&amp;lt;` twice (F491).
+            let cleaned = stripSpeakerLabels(
                 textLines.map(cleanCueText).filter { !$0.isEmpty }.joined(separator: " ")
             )
             guard !cleaned.isEmpty else { continue }
@@ -85,13 +95,30 @@ public enum SubtitleParser {
         return total
     }
 
-    /// Strips inline tags (`<c>`, `<00:00:01.000>`, `<v Name>`), then any leading speaker labels, so no
-    /// speaker identity survives into a segment. Applied repeatedly because a line can stack them
-    /// (`>> JOHN:`). Whitespace-collapsed.
+    /// Strips inline tags (`<c>`, `<00:00:01.000>`, `<v Name>`), decodes the `&lt;` / `&gt;` / `&amp;`
+    /// character references, then strips any leading speaker labels, so no speaker identity survives
+    /// into a segment. The order matters: tags first, so an escaped `&lt;b&gt;` is kept as text rather
+    /// than removed as a tag; decoding before labels, so an escaped `&gt;&gt;` chevron is still a
+    /// chevron (F491). Whitespace-collapsed.
     static func cleanCueText(_ text: String) -> String {
         // Remove every angle-bracket tag (timing cues, <c> color spans, <v Name> voice spans).
-        var result = text.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        let untagged = text.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+        return stripSpeakerLabels(decodeCharacterReferences(untagged))
+    }
+
+    /// The three references `TranscriptExporter.escapeCueText` writes. `&amp;` goes last so each
+    /// reference decodes exactly once: `&amp;lt;` becomes the text `&lt;`, not `<`. Other named or
+    /// numeric references are left as written.
+    static func decodeCharacterReferences(_ text: String) -> String {
+        text.replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
+    /// Collapses whitespace, then removes leading speaker labels repeatedly, because a line can stack
+    /// them (`>> JOHN:`).
+    static func stripSpeakerLabels(_ text: String) -> String {
+        var result = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
 
         var changed = true

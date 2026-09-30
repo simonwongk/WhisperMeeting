@@ -2,8 +2,9 @@ import Foundation
 import Testing
 @testable import WhisperCore
 
-// F183 — captions → segments. Because the adopt action writes a caption span into the transcript, the
-// parser must strip speaker labels (no-diarization invariant) and collapse rolling-caption duplicates.
+// F183 — captions → segments. They are stored as `MeetingRecord.referenceSegments`, which nothing shows
+// yet (F491), but the parser still strips speaker labels (no-diarization invariant) so no future path
+// can carry speaker identity into a transcript, and collapses rolling-caption duplicates.
 
 @Test("Parses WebVTT cues into timed segments, ignoring header and cue settings (F183)")
 func parsesWebVTT() {
@@ -83,4 +84,35 @@ func collapsesRollingDuplicates() {
     #expect(segments.count == 1)
     #expect(segments[0].text == "we agreed on the budget")
     #expect(segments[0].end == 3) // end extended across the collapsed run
+}
+
+// F491 — WebVTT (and TranscriptExporter's own SRT) carry `<`, `>` and `&` as character references.
+// Label stripping is anchored on a literal `>>`, so an escaped chevron used to slip past it whole.
+@Test("Strips a speaker label whose chevrons arrive entity-escaped (no-diarization invariant, F491)")
+func stripsEntityEscapedSpeakerLabels() {
+    func text(_ cue: String) -> String? {
+        SubtitleParser.parse("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n\(cue)").first?.text
+    }
+    #expect(text("&gt;&gt; JOHN: Good morning.") == "Good morning.")
+    #expect(text("&gt;&gt; and then we shipped") == "and then we shipped")
+}
+
+@Test("Captions TranscriptExporter writes as VTT and SRT parse back to the original text (F491)")
+func roundTripsTranscriptExporterCueText() {
+    // `&`, `<`, `>` and `-->` are what the exporter escapes (F44). A decoded `<b>` is text, not a tag.
+    func roundTrip(_ format: TranscriptExportFormat, _ original: String) -> [String] {
+        let request = TranscriptExportRequest(
+            title: "t",
+            languageCode: "en",
+            durationSeconds: 2,
+            transcriptText: original,
+            segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: original)]
+        )
+        return SubtitleParser.parse(TranscriptExporter.render(format, request)).map(\.text)
+    }
+    #expect(roundTrip(.vtt, "AT&T said <b> --> ok") == ["AT&T said <b> --> ok"])
+    #expect(roundTrip(.srt, "AT&T said <b> --> ok") == ["AT&T said <b> --> ok"])
+    // WebVTT escapes `&` too, so a literal entity in the text decodes exactly once. (SubRip leaves `&`
+    // raw, so the same text cannot round-trip through .srt — the exporter's output is ambiguous there.)
+    #expect(roundTrip(.vtt, "write &lt; for <") == ["write &lt; for <"])
 }

@@ -264,10 +264,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// decode — a non-optional field here would make every pre-existing meeting fail to decode, and the
     /// next persist would overwrite both the index and its backup.
     var source: MediaSource?
-    /// The publisher's own captions for a link-imported meeting, parsed to segments and kept purely as a
-    /// reviewable reference for the existing comparison sheet — never the transcript itself, and never a
-    /// source of speaker identity (`SubtitleParser` strips speaker labels). Optional so old indexes
-    /// decode (F183).
+    /// The publisher's own captions for a link-imported meeting, parsed to segments and stored for a
+    /// future caption comparison — never the transcript itself, and never a source of speaker identity
+    /// (`SubtitleParser` strips speaker labels). Nothing reads this yet: no view shows it, and Second
+    /// Opinion compares engine against engine without it (F491). Optional so old indexes decode (F183).
     var referenceSegments: [TranscriptSegment]?
 
     init(
