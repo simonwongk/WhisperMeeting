@@ -76,8 +76,13 @@ of these index files.
 | WhisperMeet quits, crashes or loses power while a link import is downloading | Nothing is removed. At the next launch the folder is listed as a failed **Interrupted import from _host_** entry that keeps the link, so the source can be opened and imported again. There is no resume. Deleting that entry also removes its folder, with the partial download and the saved link, so the entry is not listed again at the next launch (F576). | Everything already in your library. A `source.json` sidecar is written into the folder *before* the audio arrives, which is how the leftover folder identifies itself as a link import rather than an anonymous orphan. |
 
 Before a new meeting, WhisperMeet refuses to start when less than 500 MB is available. During a
-meeting it warns when available storage falls below 2 GB, while leaving the user in control of when
-to stop. These checks reduce risk but do not replace the recovery behavior above.
+meeting it warns when available storage falls below the space Stop needs to write `meeting.wav` for
+the audio recorded so far (about 96 KB per recorded second) plus 10 minutes of the raw tracks' growth
+(about 230 MB), the time allowed for noticing the warning and stopping. The threshold is never less
+than the same 500 MB the start check uses; that floor decides for about the first 47 minutes, and
+after that the threshold grows with the recording (`RecordingHealthMonitor`, F530, F597). The
+warning leaves the user in control of when to stop. These checks reduce risk but do not replace the
+recovery behavior above.
 
 When recovery must mix raw tracks without the original timing manifest, the two tracks are aligned
 from their beginnings. The app labels that meeting as recovered because precise start-time alignment
