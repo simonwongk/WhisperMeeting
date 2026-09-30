@@ -415,9 +415,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             )
         } catch {
             // Best-effort once the mix has succeeded (F502): `meeting.wav` above is already
-            // complete and durable — this only describes the raw tracks beside it, and
-            // `InterruptedRecordingRecovery` already treats a missing manifest as a normal state
-            // (`writeRecoveryManifestIfNeeded` fills one in later from the session sidecar).
+            // complete and durable — this only describes the raw tracks beside it. Nothing writes
+            // it later: `stopRecording` indexes the meeting, and `InterruptedRecordingRecovery`'s
+            // backfill (`writeRecoveryManifestIfNeeded`) is reached only for a folder that is not
+            // indexed or through a source rebuild, and `SourceRebuild` never offers one over a
+            // complete `meeting.wav` (F638). The loss is visible
+            // instead — Verify Library reports these tracks as unchecked
+            // (`IntegrityFinding.sourceTrackManifestMissing`) rather than reading as clean.
             // Rethrowing here used to send an otherwise-successful Stop down `stopRecording`'s
             // "recovered after a finishing error" path, which drops `healthReport` entirely (a
             // `RecoveredRecording` carries none) and skips automatic transcription — for a

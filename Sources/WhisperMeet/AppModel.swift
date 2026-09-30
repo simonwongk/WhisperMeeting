@@ -6797,11 +6797,19 @@ extension AppModel {
         return text
     }
 
-    func verifyLibraryIntegrity() -> [LibraryIntegrityResult] {
+    /// `includingUncheckedSourceTracks` (F638) decides whether `.sourceTrackManifestMissing` is
+    /// reported. Off by default, which is what the launch sweep gets: that sweep reports damage, and
+    /// a missing description is neither damage nor anything the user can clear, so it would repeat
+    /// in the startup notice on every launch. The Verify Library button asks for it, because a user
+    /// who asked what was checked should not be told "no problems" about tracks nothing looked at.
+    func verifyLibraryIntegrity(includingUncheckedSourceTracks: Bool = false) -> [LibraryIntegrityResult] {
         var results: [LibraryIntegrityResult] = []
         for meeting in store.meetings {
             guard let descriptor = integrityDescriptor(for: meeting) else { continue }
-            let findings = checkMeetingIntegrity(descriptor)
+            var findings = checkMeetingIntegrity(descriptor)
+            if !includingUncheckedSourceTracks {
+                findings.removeAll { $0 == .sourceTrackManifestMissing }
+            }
             if !findings.isEmpty {
                 results.append(LibraryIntegrityResult(meeting: meeting, findings: findings))
             }
@@ -6819,7 +6827,7 @@ extension AppModel {
             alertMessage = ReadOnlyLibraryNotice.integrityCheckDeclined
             return
         }
-        let results = verifyLibraryIntegrity()
+        let results = verifyLibraryIntegrity(includingUncheckedSourceTracks: true)
         let messages = Self.integrityMessages(results)
         if messages.isEmpty {
             alertMessage = "Library check complete — no audio problems were found."
@@ -6839,10 +6847,19 @@ extension AppModel {
         guard !meeting.recordingPath.isEmpty else { return nil }
         let recordingURL = store.recordingURL(for: meeting)
         let directory = recordingURL.deletingLastPathComponent()
+        let sourceTracks = Self.sourceTracks(in: directory)
+        // F638: derived from the folder rather than recorded at Stop, so it also covers a manifest
+        // that was written and later lost or damaged. An import has no raw tracks, so it never
+        // qualifies; a capture whose manifest decodes has `sourceTracks` and is checked instead.
+        let rawTracksWithoutManifest = sourceTracks.isEmpty
+            && ["system-audio.f32", "microphone-audio.f32"].contains {
+                FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+            }
         return MeetingIntegrityDescriptor(
             recordingURL: recordingURL,
-            sourceTracks: Self.sourceTracks(in: directory),
-            indexDurationSeconds: meeting.duration > 0 ? meeting.duration : nil
+            sourceTracks: sourceTracks,
+            indexDurationSeconds: meeting.duration > 0 ? meeting.duration : nil,
+            rawTracksWithoutManifest: rawTracksWithoutManifest
         )
     }
 
@@ -6898,6 +6915,9 @@ extension AppModel {
             return "“\(title)”: the \(track) source track is shorter than recorded (\(actualFrames) of \(expectedFrames) frames)."
         case let .durationInconsistent(headerSeconds, indexSeconds):
             return "“\(title)”: the recording’s length (\(String(format: "%.1f", headerSeconds))s) doesn’t match its saved duration (\(String(format: "%.1f", indexSeconds))s)."
+        case .sourceTrackManifestMissing:
+            // "Missing or unreadable", not "failed to write": the folder alone cannot say why.
+            return "“\(title)”: its separate microphone and system tracks were not checked, because the file describing them (source-tracks.json) is missing or unreadable."
         }
     }
 }

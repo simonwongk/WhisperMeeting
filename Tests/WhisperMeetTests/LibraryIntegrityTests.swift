@@ -220,3 +220,84 @@ func verifyLibraryHeaderCountsRecordingsNotFindings() throws {
     #expect(pair.hasPrefix("Library check found problems with 2 recordings."))
     #expect(pair.components(separatedBy: "\n\n").count == 1 + 4)
 }
+
+// MARK: - F638: raw tracks with no description are reported as unchecked, not silently skipped
+
+/// A capture folder: a complete canonical WAV plus both raw `.f32` tracks, and no manifest unless
+/// the caller writes one.
+private func makeCaptureFolder(_ id: UUID, in root: URL) throws -> URL {
+    let dir = try makeMeetingDirectory(id, in: root)
+    try (wavHeader(sampleRate: 16_000, channels: 1, bitsPerSample: 16, dataBytes: 32_000)
+        + Data(count: 32_000)).write(to: dir.appendingPathComponent("meeting.wav"))
+    try Data(count: 16_000 * MemoryLayout<Float>.size).write(to: dir.appendingPathComponent("system-audio.f32"))
+    try Data(count: 16_000 * MemoryLayout<Float>.size).write(to: dir.appendingPathComponent("microphone-audio.f32"))
+    return dir
+}
+
+/// F638: when `source-tracks.json` could not be written after a complete mix (F502 made that write
+/// best-effort), the folder is indexed and never gets one, and Verify Library skipped the raw-track
+/// check without a word — the report said "no audio problems" about tracks it had not looked at.
+/// Asked for explicitly, the check now says those tracks were not checked. A capture folder that
+/// has its manifest, and an import that has no raw tracks at all, say nothing.
+@MainActor
+@Test("Verify Library says a capture's raw tracks were not checked when their manifest is missing (F638)")
+func verifyLibraryReportsRawTracksWithoutAManifest() throws {
+    let root = try makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = headyModel(root: root)
+
+    let unmanifestedID = UUID()
+    _ = try makeCaptureFolder(unmanifestedID, in: root)
+
+    let manifestedID = UUID()
+    let manifestedDir = try makeCaptureFolder(manifestedID, in: root)
+    try writeSourceManifest(systemFrames: 16_000, microphoneFrames: 16_000, in: manifestedDir)
+
+    let importedID = UUID()
+    let importedDir = try makeMeetingDirectory(importedID, in: root)
+    try (wavHeader(sampleRate: 16_000, channels: 1, bitsPerSample: 16, dataBytes: 32_000)
+        + Data(count: 32_000)).write(to: importedDir.appendingPathComponent("meeting.wav"))
+
+    func record(_ id: UUID, _ title: String) -> MeetingRecord {
+        MeetingRecord(id: id, title: title, recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed)
+    }
+    model.store.upsert(record(unmanifestedID, "Unchecked tracks"))
+    model.store.upsert(record(manifestedID, "Described tracks"))
+    model.store.upsert(record(importedID, "Imported file"))
+
+    model.verifyLibrary()
+
+    let message = try #require(model.alertMessage)
+    #expect(message.hasPrefix("Library check found problems with 1 recording."))
+    #expect(message.contains("“Unchecked tracks”"))
+    #expect(message.contains("source-tracks.json"))
+    #expect(!message.contains("Described tracks"))
+    #expect(!message.contains("Imported file"))
+
+    // Read-only: the check describes the gap, it does not fill it with invented alignment.
+    let unmanifestedDir = root.appendingPathComponent("Recordings/\(unmanifestedID.uuidString)", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: unmanifestedDir.appendingPathComponent("source-tracks.json").path))
+    #expect(!FileManager.default.fileExists(atPath: unmanifestedDir.appendingPathComponent("source-tracks.recovered.json").path))
+}
+
+/// F638, the other half of the choice: the launch sweep reports damage, and a missing description
+/// is neither damage nor something the user can clear, so it is left to the Verify Library button
+/// rather than repeated in the startup notice on every launch.
+@MainActor
+@Test("The launch sweep does not repeat the unchecked-raw-tracks note on every launch (F638)")
+func launchSweepLeavesUncheckedRawTracksToVerifyLibrary() async throws {
+    let root = try makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = headyModel(root: root)
+
+    let id = UUID()
+    _ = try makeCaptureFolder(id, in: root)
+    model.store.upsert(MeetingRecord(id: id, title: "Unchecked tracks",
+                                     recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
+                                     status: .completed))
+
+    await model.performStartupRecovery()
+
+    #expect(model.alertMessage?.contains("Unchecked tracks") != true)
+    #expect(model.verifyLibraryIntegrity().isEmpty)
+}

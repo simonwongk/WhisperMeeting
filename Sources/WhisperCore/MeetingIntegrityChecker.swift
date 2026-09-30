@@ -135,6 +135,10 @@ public enum IntegrityFinding: Sendable, Equatable {
     case wavTruncated(declaredBytes: Int64, actualBytes: Int64)
     case sourceTrackFrameMismatch(track: String, expectedFrames: Int64, actualFrames: Int64)
     case durationInconsistent(headerSeconds: Double, indexSeconds: Double)
+    /// The folder holds raw `.f32` tracks but no readable description of them, so the frame check
+    /// above could not run (F638). Not a finding about the audio itself: it says what went
+    /// unchecked, where the report used to say nothing and read as a clean result.
+    case sourceTrackManifestMissing
 }
 
 public struct MeetingIntegrityDescriptor: Sendable {
@@ -152,11 +156,21 @@ public struct MeetingIntegrityDescriptor: Sendable {
     public let recordingURL: URL
     public let sourceTracks: [SourceTrack]
     public let indexDurationSeconds: Double?
+    /// Raw tracks are on disk but `sourceTracks` is empty, because no manifest beside them could be
+    /// read (F638).
+    /// Decided by the caller, which is the side that looks for and decodes the manifest.
+    public let rawTracksWithoutManifest: Bool
 
-    public init(recordingURL: URL, sourceTracks: [SourceTrack], indexDurationSeconds: Double?) {
+    public init(
+        recordingURL: URL,
+        sourceTracks: [SourceTrack],
+        indexDurationSeconds: Double?,
+        rawTracksWithoutManifest: Bool = false
+    ) {
         self.recordingURL = recordingURL
         self.sourceTracks = sourceTracks
         self.indexDurationSeconds = indexDurationSeconds
+        self.rawTracksWithoutManifest = rawTracksWithoutManifest
     }
 }
 
@@ -213,6 +227,9 @@ public enum MeetingIntegrityChecker {
                     track: track.name, expectedFrames: track.expectedFrameCount, actualFrames: actualFrames
                 ))
             }
+        }
+        if descriptor.rawTracksWithoutManifest {
+            findings.append(.sourceTrackManifestMissing)
         }
 
         return findings
