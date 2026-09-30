@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import WhisperCore
 @testable import WhisperMeet
 
 // F146 — deleting a meeting must not silently orphan its audio: if the recording folder can't be
@@ -65,7 +66,9 @@ func deleteRefusesPathTraversal() throws {
     #expect(store.storageErrorMessage != nil)                                                        // explained
 }
 
-// F148 #6 — an empty recordingPath (resolves to the library root's parent) must not delete anything.
+// F148 #6 — an empty recordingPath resolved its folder to the library root's parent, and a delete
+// must never remove the library. Since F576 the only folder it may remove is the meeting's own
+// `Recordings/<id>`, which this fixture does not have, so nothing on disk is deleted.
 @MainActor
 @Test("Delete never removes the library root on an empty recordingPath (F148 #6)")
 func deleteRefusesRootPath() throws {
@@ -171,4 +174,65 @@ func deleteRemovesAnOwnFolderNamedInLowercase() throws {
     #expect(!FileManager.default.fileExists(atPath: folder.path))
     #expect(store.meeting(id: id) == nil)
     #expect(store.storageErrorMessage == nil)
+}
+
+// F576 — the one record the app writes with no `recordingPath` is F311's "Interrupted import from
+// <host>", and its message tells the user to delete it. With no path to derive a folder from, the
+// delete took the index entry only: `Recordings/<id>` stayed, `orphanedRecordings()` listed it again
+// because the index no longer had its id, and the next launch indexed the same entry again.
+private func makeInterruptedImportFolder(in root: URL, named name: String) throws -> URL {
+    let folder = root.appendingPathComponent("Recordings/\(name)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    // The shape a crash mid-download leaves — a sidecar and yt-dlp's partial file. The store's
+    // delete reads neither, so the sidecar's contents do not matter here.
+    try Data("{}".utf8).write(to: folder.appendingPathComponent(MediaSource.sidecarFilename))
+    try Data("partial bytes".utf8).write(to: folder.appendingPathComponent("recording.m4a.part"))
+    return folder
+}
+
+@MainActor
+@Test("Deleting a meeting with no recording path removes its own Recordings/<id> folder (F576)")
+func deleteRemovesTheOwnFolderOfAMeetingWithNoRecordingPath() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeleteNoPath-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let folder = try makeInterruptedImportFolder(in: root, named: id.uuidString)
+    let store = MeetingStore(rootDirectory: root)
+    store.upsert(MeetingRecord(id: id, title: "Interrupted import from example.com", status: .failed))
+    try #require(store.meeting(id: id)?.recordingPath == "", "fixture: the record has no recording path")
+
+    #expect(store.delete(ids: [id]) == [id])
+
+    #expect(!FileManager.default.fileExists(atPath: folder.path), "the folder and its partial download survived")
+    #expect(try store.orphanedRecordings().isEmpty, "the folder is listed again, so the next launch re-indexes it")
+    #expect(store.storageErrorMessage == nil, "\(store.storageErrorMessage ?? "")")
+}
+
+// The spelling half. `orphanedRecordings()` lists a folder under any name `UUID(uuidString:)`
+// parses to the id, lowercase included. On the default case-insensitive volume `Recordings/<UPPER>`
+// names a lowercase folder too, so removing it proves nothing about spelling here; on a case-sensitive
+// volume only the folder's own name removes it. So the name handed to the remover is the assertion.
+@MainActor
+@Test("A meeting with no recording path has its own folder removed by the name it has on disk (F576)")
+func deleteNamesTheOwnFolderOfAMeetingWithNoRecordingPathAsItIsSpelledOnDisk() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DeleteNoPathLowercase-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let name = id.uuidString.lowercased()
+    let folder = try makeInterruptedImportFolder(in: root, named: name)
+    let store = MeetingStore(rootDirectory: root)
+    store.upsert(MeetingRecord(id: id, title: "Interrupted import from example.com", status: .failed))
+    var removed: [String] = []
+    store.removeRecordingDirectory = { url in
+        removed.append(url.lastPathComponent)
+        try FileManager.default.removeItem(at: url)
+    }
+
+    #expect(store.delete(ids: [id]) == [id])
+
+    #expect(removed == [name], "the remover was handed \(removed), not the folder's own name")
+    #expect(!FileManager.default.fileExists(atPath: folder.path))
+    #expect(try store.orphanedRecordings().isEmpty)
 }

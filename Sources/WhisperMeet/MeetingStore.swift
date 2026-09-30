@@ -1591,13 +1591,30 @@ final class MeetingStore: ObservableObject {
     /// Derived from `recordingPath`, because that is where the audio actually is, and accepted only
     /// when the folder sits directly in `Recordings` under a name that parses to this meeting's id.
     /// Compared as a `UUID`, not as a string: `FolderRebuild` keeps the folder's own spelling in
-    /// `recordingPath`, and `UUID(uuidString:)` reads either case. Anything else returns nil, and the
-    /// delete takes the index entry only and leaves the disk alone.
+    /// `recordingPath`, and `UUID(uuidString:)` reads either case. Any other non-empty path returns
+    /// nil, and the delete takes the index entry only and leaves the disk alone.
+    ///
+    /// An empty `recordingPath` has nothing to derive a folder from — it resolves to the library
+    /// root — and it is what F311's "Interrupted import from <host>" entry has, whose folder holds
+    /// the link's `source.json` and any partial download. Taking the entry only left that folder
+    /// to `orphanedRecordings()`, which lists it as soon as the index no longer has its id, so the
+    /// next launch indexed the same entry again (F576). So the folder is found the way that listing
+    /// finds it: directly in `Recordings`, under a name that parses to this meeting's id. That keeps
+    /// the name it has on disk, the only spelling a case-sensitive volume removes. When the listing
+    /// names no such folder, or `Recordings` cannot be listed, it is `recordingDirectoryURL(for:)`,
+    /// and the default `removeRecordingDirectory` does nothing where nothing is there.
     private func ownRecordingFolder(of meeting: MeetingRecord) -> URL? {
-        let folder = recordingURL(for: meeting).deletingLastPathComponent().standardizedFileURL
         let recordings = rootDirectory
             .appendingPathComponent("Recordings", isDirectory: true)
             .standardizedFileURL
+        guard !meeting.recordingPath.isEmpty else {
+            let listed = try? FileManager.default.contentsOfDirectory(
+                at: recordings, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            )
+            let named = listed?.first { UUID(uuidString: $0.lastPathComponent) == meeting.id }
+            return (named ?? recordingDirectoryURL(for: meeting.id)).standardizedFileURL
+        }
+        let folder = recordingURL(for: meeting).deletingLastPathComponent().standardizedFileURL
         guard folder.deletingLastPathComponent().standardizedFileURL.path == recordings.path,
               UUID(uuidString: folder.lastPathComponent) == meeting.id else { return nil }
         return folder
@@ -1845,9 +1862,10 @@ final class MeetingStore: ObservableObject {
     /// nothing has been touched, and memory is put back to match the index still on disk.
     ///
     /// Per record: the read-only guard runs before anything else (F187), and the only folder ever
-    /// removed is the meeting's own `Recordings/<id>` (`ownRecordingFolder(of:)`, F452) — for any
-    /// other `recordingPath` only the index entry goes and the message says so. No notes-sidecar
-    /// hook: the sidecar lives in the recording folder, which dies with the meeting.
+    /// removed is the meeting's own `Recordings/<id>` (`ownRecordingFolder(of:)`, F452), found by the
+    /// meeting's id when `recordingPath` is empty (F576) — for any other `recordingPath` only the
+    /// index entry goes and the message says so. No notes-sidecar hook: the sidecar lives in the
+    /// recording folder, which dies with the meeting.
     @discardableResult
     func delete(ids: [UUID]) -> [UUID] {
         guard editMutationIsAllowed() else { return [] }
@@ -1943,7 +1961,8 @@ final class MeetingStore: ObservableObject {
     }
 
     /// For a delete that removed index entries only, because the recording path did not name the
-    /// meeting's own folder (F452) — outside the library, empty, or a directory other things share.
+    /// meeting's own folder (F452) — outside the library, or a directory other things share. An
+    /// empty path is not one of them: its folder is found by the meeting's id (F576).
     private static func entryOnlyDeleteMessage(count: Int) -> String {
         count == 1
             ? "This meeting's recording path did not point to its own recording folder, so no files were deleted from disk; the meeting was removed from the list."

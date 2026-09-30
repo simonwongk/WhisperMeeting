@@ -129,3 +129,36 @@ func aCaptureFolderWithNoAudioIsUntouched() async throws {
     #expect(model.store.meeting(id: id) == nil, "a capture folder with no audio must not be indexed")
     #expect(model.alertMessage?.contains("did not contain enough audio") == true)
 }
+
+@MainActor
+@Test("Deleting the interrupted import removes its folder, so the next launch does not list it again (F576)")
+func deletingTheInterruptedImportDoesNotBringItBack() async throws {
+    // The entry's message says "delete this entry", and until F576 that delete took the entry
+    // only. The record has no `recordingPath`, so nothing named its folder; the folder stayed,
+    // `orphanedRecordings()` listed it because its id was no longer indexed, and F311's branch
+    // indexed it again at the next launch — a meeting the user deleted, back.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("InterruptedLinkDelete-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, _) = try makeInterruptedDownload(in: root, withPartFile: true)
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+
+    let suite = "F576.\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suite) }
+    let model = makeModel(root: root, suite: suite)
+    await model.performStartupRecovery()
+    let meeting = try #require(model.store.meeting(id: id), "fixture: the first launch indexes it (F311)")
+    try #require(meeting.recordingPath.isEmpty, "fixture: this is the record with no recording path")
+
+    // What the delete confirmation's "Delete Recording and Transcript" button calls (ContentView).
+    model.deleteMeetings(ids: [id])
+
+    #expect(model.store.meeting(id: id) == nil)
+    #expect(!FileManager.default.fileExists(atPath: folder.path), "the folder and its partial download survived the delete")
+    #expect(model.store.storageErrorMessage == nil, "\(model.store.storageErrorMessage ?? "")")
+
+    let relaunched = makeModel(root: root, suite: suite)
+    await relaunched.performStartupRecovery()
+    #expect(relaunched.store.meeting(id: id) == nil, "the deleted entry was indexed again at the next launch")
+}
