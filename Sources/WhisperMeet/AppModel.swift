@@ -690,6 +690,27 @@ final class AppModel: ObservableObject {
     /// clears, so a later recurrence — even of the same wording — is treated as new again.
     private var lastWatchedFolderRefusalMessage: String?
 
+    /// How many times each queued file's copy has failed for a reason that is not the file's, by
+    /// path (F554). Only a failed copy counts: a refusal before it — a busy app, a full disk the
+    /// precompute saw, a folder that cannot be listed — costs the file nothing. Cleared when the file
+    /// imports, is refused on its merits, or is given up on.
+    private var watchedFolderCopyAttempts: [String: Int] = [:]
+
+    /// Tries a watched file's copy gets before it is given up on, with one alert (F554).
+    ///
+    /// The bound is on failures the queue cannot see coming, not on waiting. Every cause the queue
+    /// can observe is checked before each try and holds the file without spending one: the folder
+    /// must be readable (`watchedFolderProblem`, which a dropped share sets on the next look, and
+    /// which clears when the share is back), and the batch must fit in free space
+    /// (`watchedFolderImportRefusalMessage`). So a try happens only when both say the copy should
+    /// work; a failure that repeats while they say so is not one the queue will see clear, and each
+    /// try re-copies the whole file, which on a NAS can be gigabytes. Three is a choice, not a
+    /// measurement: tries at least one look apart, enough to ride out a blip the checks did not see,
+    /// and few enough that a file that will not copy costs three copies, not one every look.
+    /// Holding costs no try and needs no expiry of its own: a held file is in memory only and left
+    /// out of the saved record, so quitting leaves it new for the next launch.
+    static let watchedFolderCopyAttemptLimit = 3
+
     /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
     /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
     func restartWatchedFolder() {
@@ -752,8 +773,11 @@ final class AppModel: ObservableObject {
     /// the watcher on *every* exit path including the degraded early return, so "the library cannot
     /// accept changes right now" is the normal case, not a hypothetical.
     private func deliverWatchedFiles() {
+        // A folder that cannot be listed — a share that dropped, a drive that was ejected — cannot
+        // be copied from either: the queue waits for the next look that can read it (F554).
         guard watchedFolderDelivery == nil, !pendingWatchedFiles.isEmpty, recordingState == .idle,
-              !isImporting, !isPreflightTestActive, !isInstallingRecognitionRuntime else { return }
+              !isImporting, !isPreflightTestActive, !isInstallingRecognitionRuntime,
+              watchedFolderProblem == nil else { return }
         // A degraded library or insufficient storage refuses every file in the batch the same way
         // `importOne` would, but checking here — before the notification and the attempt — is what
         // lets a persisting cause be held silently instead of repeating both every three seconds
@@ -786,9 +810,43 @@ final class AppModel: ObservableObject {
             // Back on the queue, at the front: the next look retries them. Only refusals that can
             // succeed later come back — a file the importer rejected on its merits is left to the
             // inbox, which offers it again if and when it changes.
-            self.pendingWatchedFiles.insert(contentsOf: outcome.notImported, at: 0)
+            self.pendingWatchedFiles.insert(contentsOf: self.countingCopyFailures(in: batch, outcome: outcome), at: 0)
             self.watchedFolderDelivery = nil
         }
+    }
+
+    /// The files of `batch` to put back on the queue, having counted the failed copies among them
+    /// against `watchedFolderCopyAttemptLimit` (F554). A file that reaches the limit is given up on:
+    /// it leaves the queue, so the next look writes it into the saved record as seen, and the inbox
+    /// offers it again only if it changes or leaves the folder and comes back — which is why the
+    /// alert says so, once, and names the way to import it by hand.
+    private func countingCopyFailures(in batch: [URL], outcome: ImportOutcome) -> [URL] {
+        var requeue: [URL] = []
+        var givenUp: [String] = []
+        for url in outcome.notImported {
+            guard let reason = outcome.copyFailures[url.path] else {
+                requeue.append(url)
+                continue
+            }
+            let attempts = (watchedFolderCopyAttempts[url.path] ?? 0) + 1
+            if attempts < Self.watchedFolderCopyAttemptLimit {
+                watchedFolderCopyAttempts[url.path] = attempts
+                requeue.append(url)
+            } else {
+                givenUp.append("\(url.lastPathComponent) — \(reason)")
+            }
+        }
+        let requeued = Set(requeue.map(\.path))
+        for url in batch where !requeued.contains(url.path) {
+            watchedFolderCopyAttempts[url.path] = nil
+        }
+        if !givenUp.isEmpty {
+            alertMessage = "Not imported from your watched folder after \(Self.watchedFolderCopyAttemptLimit) tries: "
+                + givenUp.joined(separator: " ")
+                + " WhisperMeet will not try again on its own. Once the problem is fixed, import "
+                + (givenUp.count == 1 ? "it" : "them") + " with Import Recordings…"
+        }
+        return requeue
     }
 
     /// Why the whole waiting batch would be refused right now, or nil when it would not — the same
@@ -4626,11 +4684,17 @@ final class AppModel: ObservableObject {
     /// on the queue (F321). `permanent` means the importer judged the file itself — and the file is
     /// then left to the inbox, which offers it again if and when it changes. Re-queueing those would
     /// re-copy a broken file every three seconds forever.
-    /// `UnsurfacedError`: a `Result` discriminator that decides re-queueing, never copy — every
-    /// site that refuses has already set `alertMessage` with a sentence of its own (F366).
+    /// `copyFailedTransiently` is the third answer, and only the watched folder gets it: the copy
+    /// failed for a reason that is not the file's — the disk filled, its share dropped — so the file
+    /// goes back on the queue, but each try re-copies it, so the queue counts them (F554).
+    /// `UnsurfacedError`: a `Result` discriminator that decides re-queueing, never copy — a refusal
+    /// the user is told about has already set `alertMessage` with a sentence of its own (F366), and
+    /// `copyFailedTransiently` carries its reason instead, for the watched folder to say if it gives
+    /// up.
     enum ImportRefusal: UnsurfacedError, Equatable {
         case retryable
         case permanent
+        case copyFailedTransiently(reason: String)
     }
 
     /// Who handed the file over, which decides what a refusal can promise (F551). Only the watched
@@ -4703,6 +4767,11 @@ final class AppModel: ObservableObject {
         } catch {
             isImporting = false
             try? FileManager.default.removeItem(at: directory)
+            // Silent, because the watched folder tries the file again and speaks only if it gives
+            // up (F554). A file the user handed over is imported once, so they are told now, as before.
+            if origin == .watchedFolder, ImportCopyFailure.isTransient(error) {
+                return .failure(.copyFailedTransiently(reason: error.localizedDescription))
+            }
             var message = "The recording could not be imported: \(error.localizedDescription)"
             if let nextStep = (error as? ImportError)?.nextStep(for: origin) {
                 message += " " + nextStep
@@ -4940,9 +5009,12 @@ final class AppModel: ObservableObject {
 
     /// What importing a batch did. `notImported` lists the files a caller that owns a queue should
     /// keep and offer again — it carries only the refusals that can succeed later (F321).
+    /// `copyFailures` says which of those were tried and failed to copy, by path, with the reason:
+    /// a refusal before the copy costs nothing, and a failed copy is a try the queue counts (F554).
     struct ImportOutcome {
         var firstID: UUID?
         var notImported: [URL]
+        var copyFailures: [String: String] = [:]
     }
 
     @discardableResult
@@ -4959,6 +5031,7 @@ final class AppModel: ObservableObject {
         }
         var firstID: UUID?
         var notImported: [URL] = []
+        var copyFailures: [String: String] = [:]
         for url in urls {
             let itemTitle = urls.count == 1 ? title : ""
             switch await importOne(
@@ -4968,11 +5041,14 @@ final class AppModel: ObservableObject {
                 if firstID == nil { firstID = id }
             case .failure(.retryable):
                 notImported.append(url)
+            case .failure(.copyFailedTransiently(let reason)):
+                notImported.append(url)
+                copyFailures[url.path] = reason
             case .failure(.permanent):
                 continue
             }
         }
-        return ImportOutcome(firstID: firstID, notImported: notImported)
+        return ImportOutcome(firstID: firstID, notImported: notImported, copyFailures: copyFailures)
     }
 
     /// Copies an imported file's bytes into the library, as `(source, destination)` — the source
