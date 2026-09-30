@@ -12,22 +12,38 @@ Usage:
     Scripts/bench/dictation-ab.py                 # both engines, markdown table on stdout
     Scripts/bench/dictation-ab.py --json out.json # also dump per-clip detail
     Scripts/bench/dictation-ab.py --engine turbo  # one engine only
+    Scripts/bench/dictation-ab.py --engine qwen-meeting --clips encs,cs --words
+                                                  # the MEETING path on the same clips (F628)
+
+`qwen-meeting` is not a dictation engine and is not run by default: it is a control row that runs
+the same Qwen weights through `qwen_transcribe.py`, the script a meeting runs, one process per clip
+with the argv `QwenASRClient` builds — so a per-word result can be told apart as the model's or the
+dictation path's.
 
 Requires the runtimes to be installed (Settings → Install…), and the clips to exist:
 `Scripts/bench/clips/*.wav` are gitignored, so run `Scripts/bench/generate_clips.sh` first.
 Reads only the bench clips — never a user recording, meeting index, or transcript.
 """
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 
 BENCH = os.path.dirname(os.path.abspath(__file__))
 CLIPS = os.path.join(BENCH, "clips")
 SUPPORT = os.path.expanduser("~/Library/Application Support/WhisperMeet")
+
+# F628 — the meeting engine's argv and payload reader are F293's, not a second copy. Loaded by path
+# as `benchmark.py` loads it; it is stdlib-only, so this script still runs on the system python3.
+_meeting_spec = importlib.util.spec_from_file_location(
+    "qwen_meeting_engine", os.path.join(BENCH, "qwen_meeting_engine.py"))
+qwen_meeting_engine = importlib.util.module_from_spec(_meeting_spec)
+_meeting_spec.loader.exec_module(qwen_meeting_engine)
 
 ENGINES = {
     # Mirrors DictationController.makeEngine(for:) — keep in sync if that changes.
@@ -47,7 +63,23 @@ ENGINES = {
                  "--model-dir", f"{SUPPORT}/Models"],
         "env": {},
     },
+    # F628: the same Qwen weights through the script a MEETING runs — QwenASRClient's paths under
+    # Runtime/Qwen3ASR and its forced environment (QwenASRClient.makeEnvironment). One process per
+    # clip, as the app runs one per meeting, so every clip's seconds include the model and aligner
+    # load. Not in DEFAULT_ENGINES; ask for it with --engine qwen-meeting.
+    "qwen-meeting": {
+        "label": "Qwen3-ASR 1.7B (meeting path)",
+        "kind": "meeting",
+        "python": f"{SUPPORT}/Runtime/Qwen3ASR/venv/bin/python",
+        "script": f"{SUPPORT}/Runtime/Qwen3ASR/qwen_transcribe.py",
+        "model": f"{SUPPORT}/Runtime/Qwen3ASR/model",
+        "aligner": f"{SUPPORT}/Runtime/Qwen3ASR/aligner",
+        "env": {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+    },
 }
+
+# What a run with no --engine compares: the two Quick Dictation helpers.
+DEFAULT_ENGINES = ("qwen3-asr-1.7b-8bit", "turbo")
 
 
 def normalize(text):
@@ -96,11 +128,47 @@ def word_diff(reference, hypothesis):
     return results
 
 
-def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
+def helper_environment(spec):
     environment = dict(os.environ)
     environment.update({"PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"})
     environment.update(spec["env"])
     environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + environment.get("PATH", "")
+    return environment
+
+
+def selected_clips(references, clip_filter):
+    """(clip id, reference, wav path) for every clip the run covers, in id order."""
+    for clip_id, reference in sorted(references.items()):
+        if clip_filter and not matches_clip_filter(clip_id, clip_filter):
+            continue
+        wav = os.path.join(CLIPS, f"{clip_id}.wav")
+        if not os.path.exists(wav):
+            raise SystemExit(f"missing {wav} — run Scripts/bench/generate_clips.sh first")
+        yield clip_id, reference, wav
+
+
+def clip_row(clip_id, reference, text, elapsed, helper_error, reported_language):
+    rate = error_rate(reference["text"], text, reference["lang"] in ("zh", "cs", "encs"))
+    row = {"clip": clip_id, "lang": reference["lang"], "seconds": round(elapsed, 3),
+           "text": text, "reference": reference["text"],
+           "error_rate": round(rate, 4), "helper_error": helper_error,
+           "reported_language": reported_language}
+    if "words" in reference:
+        row["words"] = word_diff(reference, text)
+    return row
+
+
+def print_row(key, row):
+    print(f"  {key:22} {row['clip']}  {row['seconds']:6.2f}s  err={row['error_rate']:.3f}  "
+          f"{row['text']!r}", flush=True)
+    if row["helper_error"]:
+        print(f"    helper error: {row['helper_error']}", flush=True)
+    for w in row.get("words", []):
+        print(f"    word {w['word']!r:16} {'KEPT' if w['kept'] else 'DROPPED'}", flush=True)
+
+
+def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
+    environment = helper_environment(spec)
 
     started = time.monotonic()
     process = subprocess.Popen(
@@ -143,12 +211,7 @@ def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
         raise SystemExit(f"{key}: helper never reported ready.\n{detail}{hint}")
 
     rows = []
-    for clip_id, reference in sorted(references.items()):
-        if clip_filter and not matches_clip_filter(clip_id, clip_filter):
-            continue
-        wav = os.path.join(CLIPS, f"{clip_id}.wav")
-        if not os.path.exists(wav):
-            raise SystemExit(f"missing {wav} — run Scripts/bench/generate_clips.sh first")
+    for clip_id, reference, wav in selected_clips(references, clip_filter):
         # language: null is the app's "Detect automatically" default; --language overrides it to
         # the exact pinned string the app sends (WhisperLanguage.commandLineValue, e.g. "English").
         request = {"wavPath": wav, "language": language, "initialPrompt": None}
@@ -157,26 +220,55 @@ def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
         process.stdin.flush()
         response = json.loads(process.stdout.readline())
         elapsed = time.monotonic() - clip_started
-        text = response.get("text") or ""
-        rate = error_rate(reference["text"], text, reference["lang"] in ("zh", "cs", "encs"))
-        row = {"clip": clip_id, "lang": reference["lang"], "seconds": round(elapsed, 3),
-               "text": text, "reference": reference["text"],
-               "error_rate": round(rate, 4), "helper_error": response.get("error"),
-               "reported_language": response.get("language")}
-        if "words" in reference:
-            row["words"] = word_diff(reference, text)
+        row = clip_row(clip_id, reference, response.get("text") or "", elapsed,
+                       response.get("error"), response.get("language"))
         rows.append(row)
         if verbose:
-            print(f"  {key:22} {clip_id}  {elapsed:6.2f}s  err={rate:.3f}  {text!r}", flush=True)
-            if "words" in row:
-                for w in row["words"]:
-                    print(f"    word {w['word']!r:16} {'KEPT' if w['kept'] else 'DROPPED'}",
-                          flush=True)
+            print_row(key, row)
 
     process.stdin.close()
     process.wait(timeout=30)
     return {"engine": key, "label": spec["label"],
             "cold_seconds": round(cold_seconds, 2), "clips": rows}
+
+
+def run_meeting_engine(key, spec, references, verbose, clip_filter=None, language=None,
+                       runner=subprocess.run, timeout=1800):
+    """The meeting path (F628): one `qwen_transcribe.py` process per clip, reading `--output`.
+
+    `language=None` is the app's "Detect automatically", which `QwenASRClient` sends to this helper
+    as `auto` (`language.commandLineValue ?? "auto"`); a pinned value such as "English" is passed
+    through as the app would pass it. A run that writes no output is a recorded total miss carrying
+    the helper's stderr tail, never a skipped clip — skipping would quietly raise the row's score.
+    """
+    environment = helper_environment(spec)
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="dictation-ab-meeting-") as work:
+        output = os.path.join(work, "meeting-out.json")
+        for clip_id, reference, wav in selected_clips(references, clip_filter):
+            # One work file serves every clip, so the previous clip's must go first: a helper that
+            # dies before writing would otherwise be credited with the last clip's transcript.
+            if os.path.exists(output):
+                os.remove(output)
+            command = qwen_meeting_engine.meeting_engine_command(
+                spec["python"], spec["script"], spec["model"], spec["aligner"],
+                wav, output, language or "auto")
+            clip_started = time.monotonic()
+            completed = runner(command, capture_output=True, text=True, env=environment,
+                               timeout=timeout)
+            elapsed = time.monotonic() - clip_started
+            try:
+                text, detected = qwen_meeting_engine.read_meeting_payload(
+                    output, diagnostic=(completed.stderr or completed.stdout or ""))
+                helper_error = None
+            except RuntimeError as failure:
+                text, detected, helper_error = "", None, str(failure)
+            row = clip_row(clip_id, reference, text, elapsed, helper_error, detected)
+            rows.append(row)
+            if verbose:
+                print_row(key, row)
+    # No daemon, so no separate cold start: the load is inside every clip's seconds.
+    return {"engine": key, "label": spec["label"], "cold_seconds": None, "clips": rows}
 
 
 def table(results):
@@ -190,8 +282,12 @@ def table(results):
         for lang in languages:
             subset = [c["error_rate"] for c in clips if c["lang"] == lang]
             cells.append(f"{sum(subset) / len(subset):.3f}" if subset else "—")
-        out.append(f"| {result['label']} | {result['cold_seconds']:.1f} s | "
-                   f"{warm:.2f} s | " + " | ".join(cells) + " |")
+        if result["cold_seconds"] is None:
+            # The meeting row: a process per clip, so its per-clip seconds include the load.
+            timing = f"in every clip | {warm:.2f} s (cold)"
+        else:
+            timing = f"{result['cold_seconds']:.1f} s | {warm:.2f} s"
+        out.append(f"| {result['label']} | {timing} | " + " | ".join(cells) + " |")
     return "\n".join(out)
 
 
@@ -211,7 +307,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--engine", choices=sorted(ENGINES), action="append",
-                        help="restrict to one engine (repeatable); default is both")
+                        help="restrict to one engine (repeatable); default is the two "
+                             "dictation engines. qwen-meeting runs the meeting script instead")
     parser.add_argument("--clips", metavar="ID[,ID...]",
                         help="restrict to clip ids or id-prefixes (comma-separated), "
                              "e.g. --clips encs,cs; default is every clip in references.json")
@@ -231,7 +328,7 @@ def main():
     clip_filter = arguments.clips.split(",") if arguments.clips else None
 
     results = []
-    for key in (arguments.engine or sorted(ENGINES)):
+    for key in (arguments.engine or DEFAULT_ENGINES):
         spec = ENGINES[key]
         if not (os.path.exists(spec["python"]) and os.path.exists(spec["script"])):
             print(f"skip {key}: runtime not installed", file=sys.stderr)
@@ -241,8 +338,9 @@ def main():
             # so an ordinary run's header doesn't read as if something had been pinned.
             suffix = f" (language={arguments.language!r})" if arguments.language else ""
             print(f"== {key}{suffix} ==", flush=True)
-        results.append(run_engine(key, spec, references, not arguments.quiet,
-                                  clip_filter=clip_filter, language=arguments.language))
+        run = run_meeting_engine if spec.get("kind") == "meeting" else run_engine
+        results.append(run(key, spec, references, not arguments.quiet,
+                           clip_filter=clip_filter, language=arguments.language))
 
     if not results:
         raise SystemExit("no engine runtime installed — nothing to compare")
