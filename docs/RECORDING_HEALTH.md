@@ -42,7 +42,9 @@ attention** — derived from the warnings below (`RecordingHealthSnapshot.overal
 each channel has a meter and a plain-language state chip, followed by the storage line and a
 collapsible **"How this is measured"** explainer. The meters and warnings are calculated from the
 same converted samples written into `microphone-audio.f32` and `system-audio.f32`, not from an
-unrelated preview path.
+unrelated preview path — with one exception: full-scale (clipped) frames are counted on each
+captured channel **before** the two-channel capture is mixed down to mono (F419), because a source
+clipped on one channel only is averaged to half scale by the mix and would otherwise go unreported.
 
 The panel checks once per second and reports:
 
@@ -51,7 +53,7 @@ The panel checks once per second and reports:
 | A previously active channel delivers no samples for more than 3 seconds | Warn that capture stopped. | needs attention |
 | No microphone samples arrive during the initial 4-second grace period | Warn that microphone capture stopped. | needs attention |
 | No system-audio samples have ever arrived after 15 seconds | Ask the user to play meeting audio to verify the channel. Silence alone is not described as a capture failure. | worth a check |
-| A channel reaches 98% of full scale | Keep a clipping warning visible for 3 seconds. | worth a check |
+| A channel reaches 98% of full scale, or any captured input channel reaches full scale before the mono mix (F419) | Keep a clipping warning visible for 3 seconds. | worth a check |
 | Available storage falls below 2 GB | Warn the user to stop soon to protect the recording. | needs attention |
 
 Warnings do not stop the meeting automatically. Stopping safely is normally preferable to abruptly

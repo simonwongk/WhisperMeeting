@@ -346,3 +346,48 @@ func aReportWithCountsDecodesBackToTheSameNumbers() throws {
     #expect(restored.systemAudioFramesMeasured == 14_400_000)
     #expect(restored.systemAudioFramesAtFullScale == 139)
 }
+
+// MARK: - F419: a count taken before the downmix must reach the warning and the note
+
+// F419 moved the full-scale count before the downmix, so a source clipped on one channel of two now
+// arrives with its frames counted and a peak of only 0.5 — the mix of the file. The warning used to
+// be raised by `peak >= 0.98` alone, so without this the count would be persisted and the clipping
+// note that reads it would never be shown: a count-only test would pass while the user saw nothing.
+
+@Test("Counted full-scale frames raise the clipping warning even when the mixed peak is low (F419)")
+func countedFullScaleFramesRaiseTheWarningWithALowPeak() throws {
+    let monitor = RecordingHealthMonitor(startedAt: 100)
+    monitor.receive(
+        .systemAudio,
+        level: .init(rms: 0.35, peak: 0.5, framesMeasured: 2_400, framesAtFullScale: 2_400),
+        at: 101
+    )
+    let snapshot = monitor.snapshot(at: 102, availableStorageBytes: 20_000_000_000)
+    #expect(snapshot.warnings.contains(.systemAudioClipping))
+
+    let report = monitor.report()
+    #expect(report.warnings.contains(.systemAudioClipping))
+    let message = try #require(RecordingHealthAdvisory.message(for: report))
+    #expect(message.contains("System audio was at full scale for 2,400 of 2,400 samples"))
+}
+
+@Test("The old trigger still fires, and a low peak with nothing counted still does not (F419 control)")
+func thePeakTriggerIsUnchangedAndCleanAudioStaysClean() {
+    let loudPeak = RecordingHealthMonitor(startedAt: 100)
+    loudPeak.receive(
+        .microphone,
+        level: .init(rms: 0.4, peak: 0.99, framesMeasured: 2_400, framesAtFullScale: 0),
+        at: 101
+    )
+    #expect(loudPeak.snapshot(at: 102, availableStorageBytes: 20_000_000_000)
+        .warnings.contains(.microphoneClipping))
+
+    let clean = RecordingHealthMonitor(startedAt: 100)
+    clean.receive(
+        .microphone,
+        level: .init(rms: 0.35, peak: 0.5, framesMeasured: 2_400, framesAtFullScale: 0),
+        at: 101
+    )
+    #expect(!clean.snapshot(at: 102, availableStorageBytes: 20_000_000_000)
+        .warnings.contains(.microphoneClipping))
+}

@@ -1239,33 +1239,9 @@ private final class FloatTrackWriter {
         // passed straight through rather than copied into an array, because this runs on the
         // `sampleHandlerQueue` for every buffer.
         try track.append(samples, frameCount: Int(outputBuffer.frameLength))
-        let sampleCount = Int(outputBuffer.frameLength)
-        guard sampleCount > 0 else { return .silent }
-        var squaredSum: Float = 0
-        var peak: Float = 0
-        // F346: count the frames at the rail here, where the samples are — meaning **after** the
-        // downmix (F398), so this measures clipping in what was recorded and not clipping at the
-        // source. A full-scale right channel alone averages to 0.5 and does not count. Whether the
-        // figure should instead be taken per input channel, before conversion, is F419. Before
-        // F398 this read the left channel only, which was not a decision anybody made.
-        //
-        // `peak` is clamped to 1 by `RecordingAudioLevel`, so by the time anything downstream sees
-        // it, "touched full scale once" and "flat-topped for a third of the buffer" are the same
-        // number. Measured at ~0.06 ns/frame against the loop's existing ~0.58, so about 11% of a
-        // computation that already runs on every buffer.
-        var framesAtFullScale = 0
-        for index in 0..<sampleCount {
-            let magnitude = abs(samples[index])
-            squaredSum += magnitude * magnitude
-            peak = max(peak, magnitude)
-            if magnitude >= RecordingHealthMonitor.fullScaleFloor { framesAtFullScale += 1 }
-        }
-        return RecordingAudioLevel(
-            rms: sqrt(squaredSum / Float(sampleCount)),
-            peak: peak,
-            framesMeasured: sampleCount,
-            framesAtFullScale: framesAtFullScale
-        )
+        // The level and the clipping count are `CaptureLevelMeter`'s, so a test can drive the
+        // production computation without a `CMSampleBuffer` (F419).
+        return CaptureLevelMeter.measure(input: inputBuffer, output: outputBuffer)
     }
 
     /// Writes a gap the capture could not record as silence, keeping offsets honest (F275).

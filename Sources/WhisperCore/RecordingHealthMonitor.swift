@@ -15,6 +15,11 @@ public struct RecordingAudioLevel: Sendable, Equatable {
     /// `peak` is `min(1, …)`, so a buffer that merely touched full scale and one that was driven
     /// far past it are indistinguishable from here on. Nil means "this build did not measure it",
     /// which is every level constructed before F346 and every hand-built one in a test.
+    ///
+    /// From the meeting capture, `framesAtFullScale` is not taken from the same samples as `rms`
+    /// and `peak` (F419): those describe the mono mix that was recorded, while it counts frames
+    /// where any input channel was at the rail before the downmix (or the mix's own count, when
+    /// that is larger). Both counts are in output frames.
     public let framesMeasured: Int?
     public let framesAtFullScale: Int?
 
@@ -525,11 +530,15 @@ public final class RecordingHealthMonitor {
     ) {
         channel.level = level
         channel.lastReceivedAt = time
-        if level.peak >= 0.98 {
+        // Two triggers (F419). The peak is the mix's, so it misses a source clipped on one channel
+        // of two — that mixes to 0.5 — while the capture path now counts full-scale frames per input
+        // channel, before the downmix. Without the second clause that count would be persisted and
+        // the clipping note that reads it (`RecordingHealthAdvisory`) never shown. A counted frame
+        // on the mix already implies a peak at the rail, so this adds only the per-channel case,
+        // and a recording that was flagged before still is (F346).
+        if level.peak >= 0.98 || (level.framesAtFullScale ?? 0) > 0 {
             channel.lastClippedAt = time
         }
-        // The trigger above is unchanged on purpose (F346): a recording that was flagged before
-        // still is. What changes is that the evidence now survives alongside it.
         if let measured = level.framesMeasured, let atFullScale = level.framesAtFullScale {
             channel.framesMeasured = (channel.framesMeasured ?? 0) + measured
             channel.framesAtFullScale = (channel.framesAtFullScale ?? 0) + atFullScale
