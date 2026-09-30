@@ -469,15 +469,37 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        recordStreamStop(from: stream, error: error)
+    }
+
+    /// The delegate's body, extracted so a test can reach its identity guard (F484).
+    ///
+    /// Only the live stream's stop is a death. After a restart the replaced stream can still report
+    /// its own stop, late; without the check that report would mark the healthy new capture dead and
+    /// the health tick would restart it again. `StreamStopIdentityTests` drives both sides, and
+    /// checks that the delegate above is nothing but this forward.
+    func recordStreamStop(from candidate: AnyObject, error: Error) {
         captureQueue.async { [weak self] in
             // Already on the capture queue: the stored property, not the syncing accessor (F334).
-            guard let self, self._stream === stream else { return }
+            guard let self, self._liveStreamIdentity === candidate else { return }
             self.recordStreamDeath(error)
         }
     }
 
-    /// Records a capture-stream failure. Internal so `StreamFailurePowerAssertionTests` can drive it
-    /// without an `SCStream` (F254).
+    /// The object a stop report must be to count as the live stream: `_stream`, or in a DEBUG
+    /// build a stand-in a test installed (F484). A test cannot fill `_stream`: an `SCStream` needs
+    /// an `SCContentFilter`, whose declared initializers all take an `SCDisplay` or `SCWindow`, and
+    /// those come only from `SCShareableContent`. Must run on `captureQueue`.
+    private var _liveStreamIdentity: AnyObject? {
+        #if DEBUG
+        if let _liveStreamStandInForTesting { return _liveStreamStandInForTesting }
+        #endif
+        return _stream
+    }
+
+    /// Records a capture-stream failure without the delegate's identity guard. No production code
+    /// calls it; it is internal so `StreamFailurePowerAssertionTests` and the other death tests can
+    /// drive it without an `SCStream` (F254). The delegate's own path is `recordStreamStop` (F484).
     ///
     /// It deliberately does **not** end the recording activity, which is what it used to do. That
     /// single line put the Mac to sleep five seconds after a lid close, twice, on the user's own
@@ -760,6 +782,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         try publishRestart(nil, generation: generation, paddingFrames: paddingFrames)
     }
 
+    /// F484: what `recordStreamStop` treats as the live stream in place of `_stream`, which a test
+    /// cannot fill. Nothing in the app sets it, and `reset()` does not clear it.
+    private var _liveStreamStandInForTesting: AnyObject?
+
+    func installLiveStreamStandInForTesting(_ standIn: AnyObject?) {
+        captureQueue.sync { _liveStreamStandInForTesting = standIn }
+    }
+
     /// What a stop or a cancel does to the session state, without the stream teardown around it.
     func resetForTesting() { reset() }
     #endif
@@ -874,9 +904,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// a single throwing write — a full disk is the realistic cause — tore down a stream that was
     /// still delivering, padded the timeline with silence for audio that had been captured, recorded
     /// the fabricated outage in the manifest, and ended the meeting after three cycles telling the
-    /// user the capture "stopped unexpectedly". `_streamDied` is written only by `recordStreamDeath`,
-    /// reached only from `stream(_:didStopWithError:)` and the restart's own failure path, so it
-    /// means a death and nothing else.
+    /// user the capture "stopped unexpectedly". `_streamDied` is set true only by
+    /// `recordStreamDeath` — reached from `stream(_:didStopWithError:)` through `recordStreamStop`,
+    /// and from the test-only `handleStreamFailure` — and by the restart's own failure path, so it
+    /// means a death and nothing else (F484 corrected who sets it).
     var captureDidDie: Bool { captureQueue.sync { _streamDied } }
 
     private func requestMicrophoneAccess() async -> Bool {
