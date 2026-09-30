@@ -779,7 +779,9 @@ final class AppModel: ObservableObject {
         }
         watchedFolderDelivery = Task { [weak self] in
             guard let self else { return }
-            let outcome = await self.importRecordings(from: batch, title: "", requireReadableAudio: true)
+            let outcome = await self.importRecordings(
+                from: batch, title: "", requireReadableAudio: true, origin: .watchedFolder
+            )
             self.inFlightWatchedFiles = []
             // Back on the queue, at the front: the next look retries them. Only refusals that can
             // succeed later come back — a file the importer rejected on its merits is left to the
@@ -4611,7 +4613,7 @@ final class AppModel: ObservableObject {
     /// like a live recording. Whisper (via FFmpeg) decodes any supported container directly, so no
     /// conversion is needed here.
     func importRecording(from sourceURL: URL, title: String) async -> UUID? {
-        if case .success(let id) = await importOne(from: sourceURL, title: title, requireReadableAudio: false) {
+        if case .success(let id) = await importOne(from: sourceURL, title: title, requireReadableAudio: false, origin: .user) {
             return id
         }
         return nil
@@ -4631,11 +4633,21 @@ final class AppModel: ObservableObject {
         case permanent
     }
 
+    /// Who handed the file over, which decides what a refusal can promise (F551). Only the watched
+    /// folder retries a file on its own: its inbox offers a file again once it has changed and
+    /// settled. A file chosen in the picker or sent from Finder, the Dock, Shortcuts or Services is
+    /// imported once, so its refusal has to tell the user what to do instead.
+    enum ImportOrigin: Equatable {
+        case user
+        case watchedFolder
+    }
+
     /// The single place a file becomes a meeting, and the only one that classifies its refusals.
     private func importOne(
         from sourceURL: URL,
         title: String,
-        requireReadableAudio: Bool
+        requireReadableAudio: Bool,
+        origin: ImportOrigin
     ) async -> Result<UUID, ImportRefusal> {
         guard recordingState == .idle, !isImporting, !isPreflightTestActive else { return .failure(.retryable) }
         guard !isInstallingRecognitionRuntime else {
@@ -4691,7 +4703,11 @@ final class AppModel: ObservableObject {
         } catch {
             isImporting = false
             try? FileManager.default.removeItem(at: directory)
-            alertMessage = "The recording could not be imported: \(error.localizedDescription)"
+            var message = "The recording could not be imported: \(error.localizedDescription)"
+            if let nextStep = (error as? ImportError)?.nextStep(for: origin) {
+                message += " " + nextStep
+            }
+            alertMessage = message
             return .failure(.permanent)
         }
     }
@@ -4930,7 +4946,12 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func importRecordings(from urls: [URL], title: String, requireReadableAudio: Bool = false) async -> ImportOutcome {
+    func importRecordings(
+        from urls: [URL],
+        title: String,
+        requireReadableAudio: Bool = false,
+        origin: ImportOrigin = .user
+    ) async -> ImportOutcome {
         // Guarded here as well as in `importOne`, so a multi-file drop yields one message
         // instead of the same refusal repeated once per file (F187).
         guard libraryAcceptsChanges("Import") else {
@@ -4940,7 +4961,9 @@ final class AppModel: ObservableObject {
         var notImported: [URL] = []
         for url in urls {
             let itemTitle = urls.count == 1 ? title : ""
-            switch await importOne(from: url, title: itemTitle, requireReadableAudio: requireReadableAudio) {
+            switch await importOne(
+                from: url, title: itemTitle, requireReadableAudio: requireReadableAudio, origin: origin
+            ) {
             case .success(let id):
                 if firstID == nil { firstID = id }
             case .failure(.retryable):
@@ -5013,9 +5036,24 @@ final class AppModel: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .sourceChangedDuringCopy:
-                return "it was still being written while it was copied. It will be imported once it is finished."
+                return "it was still being written while it was copied."
             case .linkTargetMissing:
                 return "it is a link to a file that cannot be found. The original may have been moved or deleted, or be on a drive that is not connected."
+            }
+        }
+
+        /// What happens next, which depends on who handed the file over (F551). The description
+        /// used to promise "It will be imported once it is finished" on every path, and only the
+        /// watched folder keeps that promise; nothing retries a file the user chose themselves.
+        func nextStep(for origin: ImportOrigin) -> String? {
+            switch self {
+            case .sourceChangedDuringCopy:
+                switch origin {
+                case .watchedFolder: return "It will be imported once it is finished."
+                case .user: return "Try again once it has finished."
+                }
+            case .linkTargetMissing:
+                return nil
             }
         }
     }
