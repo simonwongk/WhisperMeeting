@@ -215,8 +215,10 @@ final class DictationController: ObservableObject {
     private static let useVocabularyKey = "dictationUseVocabulary"
     private static let engineKey = "dictationTranscriptionEngine"
 
+    /// `defaults` follows the library (F550): a `WHISPERMEET_LIBRARY` instance keeps its dictation
+    /// settings apart from the real library's, as `AppModel`'s convenience init does.
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = WhisperMeetLibrary.defaults(),
         engine: DictationEngine? = nil,
         engineFactory: ((DictationTranscriptionEngine) -> DictationEngine)? = nil,
         recorder: any DictationRecording = MicDictationRecorder(),

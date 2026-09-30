@@ -1017,11 +1017,14 @@ final class AppModel: ObservableObject {
     private static let claudeAPIKeyAccount = "claudeAPIKey"
     private static let summarizationEngineKey = "summarizationEngine"
 
+    /// The app's own model. Its settings come from the same place as its library (F550): the
+    /// standard domain normally, a root-derived suite under `WHISPERMEET_LIBRARY`, so a rehearsal
+    /// instance cannot consume the real library's watched-folder files or overwrite its settings.
     convenience init() {
         self.init(
             store: MeetingStore(),
             recorder: AudioCaptureEngine(),
-            defaults: .standard
+            defaults: WhisperMeetLibrary.defaults()
         )
     }
 

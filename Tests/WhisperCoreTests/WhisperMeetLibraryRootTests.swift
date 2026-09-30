@@ -51,3 +51,46 @@ func explicitArgumentWins() {
                 .appendingPathComponent("Runtime", isDirectory: true)
     )
 }
+
+// F550 — the variable moved every file and none of the settings. `UserDefaults.standard` is one
+// domain for the bundle id wherever the library is, so a rehearsal instance read and wrote the real
+// library's watched-folder snapshot, dictation hotkey and last-launch stamp. A moved library gets a
+// settings domain of its own, derived from its root. Nothing here writes to `.standard`: that is the
+// user's real domain.
+
+@Test("Without the variable, settings stay in the standard domain (F550)")
+func defaultLibraryUsesStandardDefaults() {
+    #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [:]) == nil)
+    #expect(WhisperMeetLibrary.defaults(environment: [:]) === UserDefaults.standard)
+    // Ignored exactly where `root` ignores it, so settings and files can never disagree about
+    // which library this is.
+    #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: "  "]) == nil)
+    #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: "scratch/lib"]) == nil)
+}
+
+@Test("A moved library gets its own settings domain, the same one on every launch (F550)")
+func movedLibraryGetsADomainDerivedFromItsRoot() throws {
+    let a = "/tmp/whispermeet-rehearsal-\(UUID().uuidString)"
+    let b = "/tmp/whispermeet-rehearsal-\(UUID().uuidString)"
+    let nameA = try #require(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: a]))
+    let nameB = try #require(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: b]))
+
+    #expect(nameA != nameB)
+    // Derived, not random: relaunching against the same rehearsal must find its own settings.
+    #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: a]) == nameA)
+    // The same directory spelled with a trailing slash is the same library.
+    #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: a + "/"]) == nameA)
+
+    let defaultsA = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: a])
+    let defaultsB = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: b])
+    defer {
+        defaultsA.removePersistentDomain(forName: nameA)
+        defaultsB.removePersistentDomain(forName: nameB)
+    }
+    #expect(defaultsA !== UserDefaults.standard)
+    let key = "F550.probe.\(UUID().uuidString)"
+    defaultsA.set("rehearsal", forKey: key)
+    #expect(defaultsA.string(forKey: key) == "rehearsal")
+    #expect(defaultsB.string(forKey: key) == nil, "another library must not see this library's settings")
+    #expect(UserDefaults.standard.string(forKey: key) == nil, "the real library must not see them either")
+}

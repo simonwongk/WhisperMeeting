@@ -170,8 +170,9 @@ there. A procedure first performed under pressure on real data is not a procedur
 experiment. So there is a rehearsal:
 
 ```bash
-Scripts/rehearse-recovery.sh          # build, print the steps, verify them, clean up
-Scripts/rehearse-recovery.sh --keep   # leave the library in place to practise in the app
+Scripts/rehearse-recovery.sh                 # build, print the steps, verify them, clean up
+Scripts/rehearse-recovery.sh --keep          # the same, then keep the restored library
+Scripts/rehearse-recovery.sh --keep-damaged  # keep the library damaged, to practise in the app
 ```
 
 It builds a synthetic library in a temp directory, damaged the way the 2026-08-14 incident damaged
@@ -184,17 +185,37 @@ It then performs the by-hand restore below and checks that the meetings come bac
 also tests that the documented steps still work. A runbook nobody executes is a runbook that has
 drifted; if this script fails, these instructions are wrong and that is the bug.
 
-To practise the in-app restore on the kept library, launch WhisperMeet against it and nothing else:
+`--keep` therefore hands over a library that is already repaired: WhisperMeet opens it healthy, with
+no read-only notice and no *Recover Library…* button, so there is nothing to practise on in it. To
+practise the in-app restore, use `--keep-damaged`. It stops before the by-hand restore and also puts
+one finished recording in `Recordings/`: an empty index on its own looks like a new library, and
+WhisperMeet opens an empty index read-only only when a recording shows meetings existed. Launch
+WhisperMeet against the directory it prints:
 
 ```bash
 WHISPERMEET_LIBRARY="/path/printed/by/the/script" /Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet
 ```
 
-`WHISPERMEET_LIBRARY` moves the whole library for that process — index, dictation log, `Runtime/`
-and `Models/` — so it opens the rehearsal and never your real meetings. It must be an absolute
-path; quit the ordinary copy of WhisperMeet first, or the two will each see the other as "another
-copy of WhisperMeet is open". Setting `HOME` does **not** do this: macOS resolves Application Support
-from the account, not from `HOME`.
+It opens read-only. Choose *Recover Library…* in Settings. The rehearsal has no ledger, so each copy
+is labelled by its date alone, which is also what you see after a real incident that lost the
+ledger. The newest copy, dated 14 August, is the empty one. Restoring it leaves the library
+read-only and WhisperMeet says so. Choose *Recover Library…* again and restore the 13 August copy,
+which brings the 2 meetings back.
+
+`WHISPERMEET_LIBRARY` moves the whole library for that process: the index, dictation log, `Runtime/`
+and `Models/`, and since F550 its settings. They are kept in a preferences domain derived from the
+directory's path, `~/Library/Preferences/WhisperMeet.library-<hash>.plist`. The rehearsal therefore
+starts with default settings, in which the watched folder and dictation are off. Unless you turn the
+watched folder on inside the rehearsal, it cannot take a file from your watched folder, and its
+settings changes do not reach your real ones. Two exceptions remain: the summary style and meeting
+template are still shared, and so is the Claude API key, which is in the Keychain.
+The path must be absolute. Setting `HOME` does **not** do this, because macOS resolves Application
+Support from the account, not from `HOME`.
+
+You do not have to quit the ordinary copy first. Each library has its own `.writer.lock`, so the two
+never report each other as "another copy of WhisperMeet is open". But if dictation is on in both
+copies, both respond to the same global hotkey. When you are done, delete the directory, and delete
+that preferences file too if you want to remove every trace.
 
 ### Restoring a past generation by hand
 
