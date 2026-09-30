@@ -922,19 +922,45 @@ final class MeetingStore: ObservableObject {
     ///
     /// Runs the sweep detached: it is on the launch path and does transcript-sized string work plus
     /// a file read per meeting, unbounded with library size, so it must not stall the main actor.
-    /// The actor only snapshots (`MeetingRecord` is `Sendable`) and banks the write count; a
-    /// debounced flush racing the sweep at worst rewrites identical bytes, because both sides
-    /// compare before writing.
+    /// The actor only snapshots (`MeetingRecord` is `Sendable`) and banks the write count.
+    ///
+    /// The main actor is free while the pass runs, so an edit and its debounced flush can land
+    /// first: the flush writes notes.md from the live record, then the pass compares that file with
+    /// its own composition of the launch-time snapshot, finds them different, and writes the old
+    /// text back (F496). Comparing before writing does not prevent that, because the two sides
+    /// compare against different compositions. So once the pass returns, every meeting whose live
+    /// record no longer equals its snapshot is queued again and flushed from the live record,
+    /// which makes the last write the current one. Meetings deleted meanwhile are skipped. The flush
+    /// keeps its own guards: degraded writes nothing, and mid-restore leaves the ids pending (F506).
     func backfillNotesSidecars() async {
         guard !isDegraded else { return }
         let snapshot = meetings
-        let root = rootDirectory
-        let written = await Task.detached(priority: .utility) {
+        let written = await notesBackfillPass(snapshot, rootDirectory)
+        sidecarWriteCount += written
+        let live = Dictionary(meetings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let changed = snapshot.filter { record in
+            guard let current = live[record.id] else { return false }
+            return current != record
+        }
+        guard !changed.isEmpty else { return }
+        pendingSidecarIDs.formUnion(changed.map(\.id))
+        flushPendingNotesSidecars()
+    }
+
+    /// The detached per-meeting pass behind `backfillNotesSidecars`: writes the notes.md of each
+    /// snapshot record whose file is stale and returns how many files were written. Injectable only
+    /// so a test can land an edit and its flush while the pass is running (F496); defaults to
+    /// `runNotesBackfillPass`.
+    var notesBackfillPass: @Sendable ([MeetingRecord], URL) async -> Int = { snapshot, root in
+        await MeetingStore.runNotesBackfillPass(snapshot, root: root)
+    }
+
+    nonisolated static func runNotesBackfillPass(_ snapshot: [MeetingRecord], root: URL) async -> Int {
+        await Task.detached(priority: .utility) {
             snapshot.reduce(into: 0) { count, meeting in
                 if Self.writeSidecarIfStale(for: meeting, root: root) { count += 1 }
             }
         }.value
-        sidecarWriteCount += written
     }
 
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…

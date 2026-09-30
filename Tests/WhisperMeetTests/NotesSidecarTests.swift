@@ -253,6 +253,39 @@ func backfillIsIdempotent() async throws {
     #expect(store.sidecarWriteCount == afterFirst)
 }
 
+// F496: the backfill writes from a launch-time snapshot while the main actor is free, so a rename and
+// its debounced flush can land first. The pass then compares the file against the OLD composition,
+// finds it different, and writes the old title back. The last write must come from the live record.
+@Test("An edit flushed while the backfill runs is not overwritten by the launch snapshot")
+@MainActor
+func backfillDoesNotOverwriteAnEditFlushedMidPass() async throws {
+    let (store, root) = try makeStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = try seedMeeting(in: store, root: root, transcript: "launch transcript")
+    store.update(id: meeting.id) { $0.title = "Before launch" }
+    let id = meeting.id
+
+    store.notesBackfillPass = { snapshot, root in
+        // The user's rename and its debounced flush (0.5 s in production, driven explicitly here),
+        // landing after the snapshot was taken.
+        await MainActor.run {
+            store.update(id: id) { $0.title = "Renamed after launch" }
+            store.flushPendingNotesSidecars()
+        }
+        return await MeetingStore.runNotesBackfillPass(snapshot, root: root)
+    }
+
+    await store.backfillNotesSidecars()
+
+    let sidecar = root.appendingPathComponent("Recordings/\(id.uuidString)/notes.md")
+    let written = try String(contentsOf: sidecar, encoding: .utf8)
+    let current = try #require(store.meeting(id: id))
+    #expect(current.title == "Renamed after launch")
+    #expect(written == store.notesMarkdown(for: current))
+    #expect(written.contains("Renamed after launch"))
+    #expect(!written.contains("Before launch"))
+}
+
 @Test("No sidecar is written while the library is read-only")
 @MainActor
 func noSidecarWhileDegraded() async throws {
