@@ -31,9 +31,12 @@ import Testing
 // hand or generated.
 //
 // So the gap is *unexercised*, not *unknown*, and the repair is a fixture derived from the type
-// carrying every optional field with a deliberately unmatched value. Note when building it that an
-// explicit JSON `null` also returns nil without throwing — a generator emitting `"field": null`
-// would look like it exercises the field and would not.
+// carrying every optional field with a deliberately unmatched value. That repair is
+// `PersistedRootDerivedDecodeTests.swift` (F382): a fully populated fixture per root, checked
+// complete by F544's `Mirror` walk, with each string and number leaf replaced in turn by an unknown
+// value. The table above still describes THIS file; the derived one is what goes red on the first
+// row. An explicit JSON `null` also returns nil without throwing, which is why that file never
+// substitutes it.
 //
 // **And do not assert it with a round-trip.** A property with a declared default that is missing
 // from `MeetingRecord`'s hand-written `CodingKeys` encodes to nothing and decodes back to its
@@ -54,11 +57,13 @@ import Testing
 //
 // The four roots, all through `BackupJSONStore`, established by the F188 review:
 //   [MeetingRecord] · [String] (vocabulary) · [ReplacementRule] · DictationLog
+// This line is a note, not the authority: `everyPersistedRootIsCovered` in
+// `PersistedRootDerivedDecodeTests.swift` scans Sources for `BackupJSONStore<…>` and fails when the
+// set changes (F382).
 //
-// Two known throwing members are deliberately NOT asserted as surviving, because they do not:
-// `MeetingTranscriptionEngine` was F250's subject and `DictationLogEntry.Outcome` is F251's. Where
-// those are now lenient, the tests below say so; where they are not, the gap is named rather than
-// papered over.
+// The two members the F188 review found throwing are both lenient now, and each has a test below:
+// `MeetingTranscriptionEngine` (F250, stored as a raw string) and `DictationLogEntry.Outcome`
+// (F251, an unknown case reads as `.failed` carrying its name).
 
 private func decode<T: Decodable>(_ type: T.Type, from json: String) throws -> T {
     let decoder = JSONDecoder()
@@ -144,20 +149,27 @@ func recordingMarkerSurvivesUnknownKeys() throws {
     #expect(marker.offset == 12.5)
 }
 
-@Test("A dictation log entry with an unfamiliar outcome is F251's gap, and this records which way it fails")
-func dictationOutcomeGapIsRecorded() throws {
-    // NOT asserted as surviving, because it does not. `DictationLogEntry.Outcome` is the one
-    // throwing enum the F188 review found in `DictationLog`, filed as F251 and still open.
+@Test("A dictation log with an unfamiliar outcome still decodes, as .failed carrying the case name (F251)")
+func dictationLogSurvivesAnUnknownOutcome() throws {
+    // Decoded as the ROOT, because the whole-log failure is the one that matters: one entry from a
+    // newer build used to make the user's entire dictation history unreadable (F251, fixed).
     //
-    // A test that pinned the CURRENT behaviour as correct would be worse than no test: it would
-    // make the gap look like a decision. This one asserts the failure exists, so F251's fix flips
-    // it — and if someone fixes it without knowing about F251, this fails and points at the ticket
-    // rather than silently agreeing.
-    let json = #"""
-    {"id":"B1000000-0000-4000-8000-000000000001","startedAt":"2026-09-17T10:00:00Z",
-     "durationSeconds":2,"outcome":"teleported"}
-    """#
-    #expect(throws: (any Error).self, "F251: fix this and invert the assertion") {
-        _ = try decode(DictationLogEntry.self, from: json)
+    // This replaced `dictationOutcomeGapIsRecorded`, which asserted the decode THREW and passed
+    // vacuously (F382). Its fixture had `startedAt` and `durationSeconds`, which `DictationLogEntry`
+    // does not have, lacked the required `date` and `text`, and spelled the outcome as a string
+    // where the wire shape is a single-key object — so it threw `keyNotFound` on `date` whatever
+    // the outcome decoder did. It was written the day after F251's fix (ff2f7c7), called F251
+    // still open, and passed anyway. An assertion that the decode *succeeds* cannot be satisfied by
+    // a malformed fixture, which is why this one asserts that direction.
+    let log = try decode(DictationLog.self, from: #"""
+    {"entries":[{"id":"B1000000-0000-4000-8000-000000000001","date":"2026-09-17T10:00:00Z",
+     "text":"kept","outcome":{"teleported":{}}}],"limit":100}
+    """#)
+    let entry = try #require(log.entries.first)
+    #expect(entry.text == "kept")
+    #expect(entry.outcomeKind == "teleported")
+    guard case .failed = entry.outcome else {
+        Issue.record("an unknown outcome should read as .failed, got \(entry.outcome)")
+        return
     }
 }
