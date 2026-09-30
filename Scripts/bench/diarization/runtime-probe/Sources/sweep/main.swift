@@ -45,9 +45,10 @@ for file in files {
     preparer.initialize(models: models)
     let prepared = try await preparer.prepare(audio: try samples16k(file))
     // Saturating rather than `Int(Double)`, the house standard: a trap here loses a 9-hour sweep
-    // for a progress string (F343).
+    // for a progress string (F343). F343's version guarded with `isFinite` instead, which does not
+    // saturate — `1e30` is finite and traps `Int(_:)` all the same (F410).
     let prepareSeconds = Date().timeIntervalSince(started)
-    var line = "\(name) prepare \(prepareSeconds.isFinite ? Int(prepareSeconds.rounded(.down)) : -1)s |"
+    var line = "\(name) prepare \(Int(saturating: prepareSeconds.rounded(.down)))s |"
     for threshold in thresholds {
         let manager = OfflineDiarizerManager(config: config(threshold))
         manager.initialize(models: models)
@@ -61,4 +62,15 @@ for file in files {
         line += String(format: " %.2f:%d", threshold, Set(result.segments.map(\.speakerId)).count)
     }
     print(line)
+}
+
+/// The same clamping as `probe`'s: `Int(Double)` traps on overflow and on NaN, and a bench tool
+/// that traps loses the whole run. Each executable target is its own module, so each carries a copy.
+extension Int {
+    init(saturating value: Double) {
+        if value.isNaN { self = 0 }
+        else if value >= Double(Int.max) { self = .max }
+        else if value <= Double(Int.min) { self = .min }
+        else { self = Int(value) }
+    }
 }
