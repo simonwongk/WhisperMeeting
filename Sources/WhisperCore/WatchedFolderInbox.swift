@@ -82,13 +82,22 @@ public struct WatchedFolderInbox: Sendable {
     /// is gated on. `unchangedLooks` alone cannot distinguish "arrived already at its final size"
     /// from "still streaming in and merely paused", so this is what does.
     private var watching: [String: (version: Version, unchangedLooks: Int, growthEvents: Int)] = [:]
+    private let isImportable: @Sendable (URL) -> Bool
 
     /// `known` is what a previous run of the app last saw in this folder, or nil if it never
     /// watched it. Anything in the folder that is not in `known` arrived while the app was closed
     /// and is new — without this, quitting the app would quietly turn every recording dropped
     /// meanwhile into "already there".
     public init(known: Snapshot? = nil) {
+        self.init(known: known, isImportable: { ExternalFileIntake.isImportable($0) })
+    }
+
+    /// The seam that lets a test count lookups (F671). `isImportable` must answer from a URL's
+    /// `isFileURL` and `pathExtension` alone, as `ExternalFileIntake.isImportable` does, because
+    /// `ready(in:)` asks it once per extension per look and reuses the answer for every file sharing it.
+    init(known: Snapshot? = nil, isImportable: @escaping @Sendable (URL) -> Bool) {
         self.known = known
+        self.isImportable = isImportable
     }
 
     /// What this folder is known to hold, for the caller to persist, or nil before the first look.
@@ -101,8 +110,21 @@ public struct WatchedFolderInbox: Sendable {
     public var snapshot: Snapshot? { didBaseline ? handled : nil }
 
     public mutating func ready(in listing: [Entry]) -> [URL] {
+        // One importable lookup per distinct extension per look, not one per file (F671). This runs
+        // on the main actor every three seconds over the whole listing: over 20,000 files, compiled
+        // -O, a look took 75-250 ms with a UTType lookup per file and 20-35 ms with this. Exact:
+        // `ExternalFileIntake.isImportable` reads only `isFileURL` and `pathExtension`, the key is the
+        // extension exactly as spelled, and a URL that is not a file URL (which `listing(at:)` never
+        // produces) is classified on its own rather than letting its verdict stand for a real file's.
+        var verdictByExtension: [String: Bool] = [:]
         let candidates = listing.filter { entry in
-            !entry.url.lastPathComponent.hasPrefix(".") && ExternalFileIntake.isImportable(entry.url)
+            guard !entry.url.lastPathComponent.hasPrefix(".") else { return false }
+            guard entry.url.isFileURL else { return isImportable(entry.url) }
+            let pathExtension = entry.url.pathExtension
+            if let verdict = verdictByExtension[pathExtension] { return verdict }
+            let verdict = isImportable(entry.url)
+            verdictByExtension[pathExtension] = verdict
+            return verdict
         }
         guard didBaseline else {
             didBaseline = true

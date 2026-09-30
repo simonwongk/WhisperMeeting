@@ -17,8 +17,10 @@ public enum ExternalFileIntake {
     }
 
     /// Whether the *name* says the importer can read it. Deliberately pure — no filesystem — because
-    /// `WatchedFolderInbox` asks this of every candidate on every three-second look, over a listing
-    /// that has already established these are regular files (F324, F344).
+    /// `WatchedFolderInbox` asks this on every three-second look, over a listing that has already
+    /// established these are regular files (F324, F344). It reads only `isFileURL` and
+    /// `pathExtension`, and the inbox relies on that: it asks once per distinct extension per look
+    /// and reuses the answer (F671), so a rule that looked at anything else would be applied wrongly.
     public static func isImportable(_ url: URL) -> Bool {
         guard url.isFileURL, !url.pathExtension.isEmpty,
               let type = UTType(filenameExtension: url.pathExtension) else { return false }
