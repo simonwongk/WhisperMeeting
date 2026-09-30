@@ -57,6 +57,24 @@ func doesNotWarnEarlyWhenStorageIsAmple() {
     #expect(!snapshot.warnings.contains(.lowStorage))
 }
 
+// F597: at elapsed 0 F530's derived threshold is its margin alone (~230 MB), so a recording that
+// started with 450 MB free — less than the 500 MB the app refuses to START with — was not warned
+// until about 270 MB remained.
+@Test("A fresh recording with less free space than the start gate allows is warned at once (F597)")
+func warnsAtOnceBelowTheStartGateFloor() {
+    let monitor = RecordingHealthMonitor(startedAt: 100)
+    monitor.receive(.microphone, level: .silent, at: 101)
+    monitor.receive(.systemAudio, level: .silent, at: 101)
+
+    // 450 MB: above the ~230 MB derived threshold, below the 500 MB start gate.
+    let belowFloor = monitor.snapshot(at: 100, availableStorageBytes: 450_000_000)
+    #expect(belowFloor.warnings.contains(.lowStorage), "450 MB free is less than the app will start a recording with")
+
+    // 550 MB clears it: the floor is the start gate's 500 MB, not a larger number chosen by feel.
+    let aboveFloor = monitor.snapshot(at: 101, availableStorageBytes: 550_000_000)
+    #expect(!aboveFloor.warnings.contains(.lowStorage))
+}
+
 // F530's headline scenario: past ~5.8 hours, meeting.wav alone needs more than a flat 2 GB, so the
 // old threshold could never fire before Stop's write was already impossible.
 @Test("A long recording warns well before Stop's write becomes impossible, past where a flat 2 GB threshold would have stayed silent (F530)")

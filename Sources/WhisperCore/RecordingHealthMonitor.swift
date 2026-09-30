@@ -384,6 +384,23 @@ public final class RecordingHealthMonitor {
         return overflowed ? Int64.max : product
     }
 
+    /// The least free space a running recording is allowed to reach before `.lowStorage` is raised,
+    /// however short the recording (F597). The threshold is `max(derived, floor)`: the derived term
+    /// (what Stop needs now plus the margin) takes over as the recording grows, and this floor only
+    /// matters early on, where the derived term is the margin alone (about 230 MB at 48 kHz).
+    ///
+    /// **500 MB is the app's own start gate, not a new number.** `AppModel.startRecording` refuses
+    /// to start below 500 MB free, calling it a level that puts the meeting audio at risk. Without
+    /// this floor, a recording that started at 510 MB ran for nearly ten minutes with no warning,
+    /// until under 300 MB remained (the capture writes 384,000 B/s at 48 kHz while the derived
+    /// threshold rises by 96,000 B/s). That contradicts the gate that refuses to start one there.
+    /// The gate's literal lives in the app target, which WhisperCore cannot import, so this
+    /// restates it. Change both together.
+    ///
+    /// Not a measurement of what macOS needs to stay responsive. Nobody has measured that, and a
+    /// larger floor chosen by feel would warn a brand-new recording that the start gate let through.
+    public static let lowStorageFloorBytes: Int64 = 500_000_000
+
     public init(
         startedAt: TimeInterval,
         initialGracePeriod: TimeInterval = 4,
@@ -456,11 +473,15 @@ public final class RecordingHealthMonitor {
         // (`RecordingSizeEstimator.mixedBytes`, growing with elapsed time) plus a margin for the
         // still-growing raw tracks. `addingReportingOverflow` because a bound must not itself be the
         // overflow it exists to guard against (AGENTS.md).
+        //
+        // F597: at elapsed 0 that sum is the margin alone, so the threshold never drops below
+        // `lowStorageFloorBytes`, the free space the app requires to start a recording at all.
         if let availableStorageBytes {
             let elapsed = max(0, time - startedAt)
             let neededToStopNow = RecordingSizeEstimator.mixedBytes(forDuration: elapsed, sampleRate: sampleRate)
-            let (threshold, overflowed) = neededToStopNow.addingReportingOverflow(lowStorageMarginBytes)
-            if availableStorageBytes < (overflowed ? Int64.max : threshold) {
+            let (derived, overflowed) = neededToStopNow.addingReportingOverflow(lowStorageMarginBytes)
+            let threshold = max(overflowed ? Int64.max : derived, Self.lowStorageFloorBytes)
+            if availableStorageBytes < threshold {
                 warnings.append(.lowStorage)
             }
         }
