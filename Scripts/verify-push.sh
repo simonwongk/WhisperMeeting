@@ -37,10 +37,20 @@ set -euo pipefail
 readonly SUSPICIOUSLY_FAST_SECONDS=180
 readonly POLL_SECONDS=20
 readonly MAX_POLLS=90   # 30 minutes; the workflow's own timeout is 40
-# Consecutive `gh run list` failures before giving up (F546). One failed call must not end the watch,
-# but an expired token or an offline Mac does not fix itself by waiting, so an unbroken run of them
-# is a verdict about gh, not about CI.
-readonly MAX_GH_FAILURES=3
+# gh failures come in two kinds (F617), and only one of them is worth waiting out.
+#
+# An AUTH failure cannot recover by waiting: gh exits 4 when it has no login (`gh help exit-codes`),
+# and GitHub refuses an expired or revoked token with `HTTP 401: Bad credentials`, which gh need not
+# report as exit 4 — so the message is matched as well as the code. Either ends the watch at the
+# first poll with the `gh auth login` advice.
+#
+# Anything else is treated as transient and retried, up to MAX_GH_TRANSIENT_FAILURES consecutive
+# failures; any successful call resets the count. F546 set that bound at 3 polls, about 40 s, and a
+# wake from sleep or a VPN reconnect can take longer than that. 15 polls is 14 sleeps of 20 s, about
+# five minutes: the number is my judgement (whisper-40, F617), not a measurement, chosen to ride out
+# a reconnect while an offline Mac still gets a verdict in about a sixth of the 30-minute budget
+# rather than at the end of it.
+readonly MAX_GH_TRANSIENT_FAILURES=15
 
 if ! command -v gh >/dev/null 2>&1; then
   print -u2 "gh is not installed, so the run cannot be observed. Check the Actions tab by hand:"
@@ -105,14 +115,22 @@ for _ in $(seq 1 $MAX_POLLS); do
     gh_failures=$((gh_failures + 1))
     gh_error="$(<"$gh_stderr")"
     gh_error="${gh_error:-(no message)}"
-    if (( gh_failures >= MAX_GH_FAILURES )); then
+    if (( gh_rc == 4 )) || [[ "$gh_error" == *"HTTP 401"* || "$gh_error" == *"Bad credentials"* \
+                              || "$gh_error" == *"gh auth login"* ]]; then
+      print -u2 ""
+      print -u2 "gh is not authenticated with GitHub: $gh_error"
+      print -u2 "Waiting cannot fix that, so nothing is known about CI for $short. Run"
+      print -u2 "\`gh auth login\` (\`gh auth status\` shows what is wrong), then run this again."
+      exit 2
+    fi
+    if (( gh_failures >= MAX_GH_TRANSIENT_FAILURES )); then
       print -u2 ""
       print -u2 "gh could not query runs: $gh_error"
       print -u2 "That is gh run list exiting $gh_rc on $gh_failures polls in a row, so nothing is known"
-      print -u2 "about CI for $short. Check \`gh auth status\` and the network, then run this again."
+      print -u2 "about CI for $short. Check the network and \`gh auth status\`, then run this again."
       exit 2
     fi
-    print -u2 "  gh run list exited $gh_rc ($gh_failures of $MAX_GH_FAILURES before giving up): $gh_error"
+    print -u2 "  gh run list exited $gh_rc ($gh_failures of $MAX_GH_TRANSIENT_FAILURES before giving up): $gh_error"
     sleep $POLL_SECONDS
     continue
   fi
@@ -181,13 +199,32 @@ for _ in $(seq 1 $MAX_POLLS); do
     exit 0
   fi
 
+  # The log is fetched on its own, with gh's stderr and status kept (F617). It used to be piped
+  # straight into the filter with `2>/dev/null … || true`, so a failed fetch and a log with no
+  # matching line both printed "First failing lines:" and then nothing. The excerpt now goes to
+  # stderr with its heading; it used to go to stdout, apart from it.
   print -u2 ""
-  print -u2 "CI is NOT green. First failing lines:"
-  gh run view "$run_id" --log-failed 2>/dev/null \
+  log_rc=0
+  failed_log="$(gh run view "$run_id" --log-failed 2>"$gh_stderr")" || log_rc=$?
+  if (( log_rc != 0 )); then
+    gh_error="$(<"$gh_stderr")"
+    print -u2 "CI is NOT green, and its failed log could not be fetched:"
+    print -u2 "  gh run view exited $log_rc: ${gh_error:-(no message)}"
+    print -u2 "Read it by hand:  gh run view $run_id --log-failed"
+    exit 1
+  fi
+  excerpt="$(print -r -- "$failed_log" \
     | sed 's/.*Z //' \
     | grep -aE "error:|recorded an issue|failed after|Test run with" \
     | grep -av "skipped" \
-    | head -10 || true
+    | head -10)" || true
+  if [[ -z "$excerpt" ]]; then
+    print -u2 "CI is NOT green, and no line of its failed log matched the excerpt filter."
+    print -u2 "Read it whole:  gh run view $run_id --log-failed"
+    exit 1
+  fi
+  print -u2 "CI is NOT green. First failing lines:"
+  print -u2 -r -- "$excerpt"
   exit 1
 done
 

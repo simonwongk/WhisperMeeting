@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify-push.sh must say when gh itself is failing (F546).
+"""verify-push.sh must say when gh itself is failing (F546, F617).
 
 Run: python3 Scripts/tests/test_verify_push.py
 
@@ -13,6 +13,11 @@ script asks as if the commit were on origin, and `sleep` returns at once, so exh
 budget takes seconds rather than 30 minutes. Nothing here reaches the network or this checkout's
 remote. `ZDOTDIR` points at the temporary directory so the user's `.zshenv` cannot put a real `gh`
 back in front of the shim.
+
+F617 split gh's failures in two. An auth failure (gh's documented exit 4, or an HTTP 401 / "Bad
+credentials" / "gh auth login" message) cannot recover by waiting, so it ends the watch at the first
+poll; anything else is retried up to a longer bound, so a sleep/wake or VPN reconnect does not end
+the watch. It also made the red-run excerpt report gh's own error instead of printing nothing.
 """
 
 import os
@@ -28,8 +33,12 @@ SCRIPT = os.path.join(os.path.dirname(HERE), "verify-push.sh")
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 AUTH_FAILURE = ("", "HTTP 401: Bad credentials (https://api.github.com/graphql)\n", 1)
+# gh's own "not logged in" answer: exit 4, per `gh help exit-codes`.
+NOT_LOGGED_IN = ("", "To get started with GitHub CLI, please run:  gh auth login\n", 4)
+NETWORK_FAILURE = ("", "error connecting to api.github.com\n", 1)
 NO_RUN_YET = ("", "", 0)
 GREEN = ("completed\tsuccess\t2026-09-26T10:00:00Z\t2026-09-26T10:06:00Z\t4242\n", "", 0)
+RED = ("completed\tfailure\t2026-09-26T10:00:00Z\t2026-09-26T10:06:00Z\t4242\n", "", 0)
 
 FAKE_GH = """#!/bin/sh
 dir=$(dirname "$0")
@@ -52,13 +61,19 @@ esac
 """ % SHA
 
 
-def max_gh_failures():
+def script_constant(name):
     with open(SCRIPT, encoding="utf-8") as handle:
-        match = re.search(r"^readonly MAX_GH_FAILURES=(\d+)", handle.read(), re.MULTILINE)
+        match = re.search(r"^readonly %s=(\d+)" % name, handle.read(), re.MULTILINE)
     return int(match.group(1)) if match else None
 
 
-class VerifyPushReportsGhFailures(unittest.TestCase):
+def max_transient_failures():
+    return script_constant("MAX_GH_TRANSIENT_FAILURES")
+
+
+class ShimmedGh(unittest.TestCase):
+    """The shims and the runner; no tests of its own."""
+
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.shims = os.path.join(self.root, "bin")
@@ -92,30 +107,88 @@ class VerifyPushReportsGhFailures(unittest.TestCase):
             calls = 0
         return result, calls
 
+
+class VerifyPushReportsGhFailures(ShimmedGh):
     def test_a_gh_that_keeps_failing_is_reported_as_gh_failing(self):
-        result, calls = self.watch([AUTH_FAILURE])
+        bound = max_transient_failures()
+        self.assertIsNotNone(bound, "verify-push.sh has no MAX_GH_TRANSIENT_FAILURES bound")
+        result, calls = self.watch([NETWORK_FAILURE])
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("gh could not query runs", result.stderr, result.stdout)
-        self.assertIn("HTTP 401: Bad credentials", result.stderr)
+        self.assertIn("error connecting to api.github.com", result.stderr)
         self.assertNotIn("no run for", result.stdout)
         self.assertNotIn("Gave up watching", result.stderr)
         # It stops at its own bound, not at the end of the 90-poll budget.
-        self.assertEqual(calls, max_gh_failures())
+        self.assertEqual(calls, bound)
+        self.assertLess(bound, script_constant("MAX_POLLS"))
+
+    def test_a_network_blip_longer_than_three_polls_does_not_end_the_watch(self):
+        # F546's bound was 3 polls, about 40 s; a wake from sleep or a VPN reconnect can take longer.
+        result, calls = self.watch([NETWORK_FAILURE] * 4 + [GREEN])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("CI is green on 0123456.", result.stdout)
+        self.assertEqual(calls, 5)
+
+    def test_an_expired_token_ends_the_watch_at_the_first_poll(self):
+        result, calls = self.watch([AUTH_FAILURE, GREEN])
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("HTTP 401: Bad credentials", result.stderr)
+        self.assertIn("gh auth login", result.stderr)
+        self.assertNotIn("CI is green", result.stdout)
+        self.assertEqual(calls, 1)
+
+    def test_not_being_logged_in_ends_the_watch_at_the_first_poll(self):
+        result, calls = self.watch([NOT_LOGGED_IN, GREEN])
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("gh auth login", result.stderr)
+        self.assertNotIn("CI is green", result.stdout)
+        self.assertEqual(calls, 1)
 
     def test_one_failed_call_does_not_end_the_watch(self):
-        result, calls = self.watch([AUTH_FAILURE, NO_RUN_YET, AUTH_FAILURE, GREEN])
+        result, calls = self.watch([NETWORK_FAILURE, NO_RUN_YET, NETWORK_FAILURE, GREEN])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("CI is green on 0123456.", result.stdout)
         self.assertEqual(calls, 4)
 
     def test_only_consecutive_failures_count(self):
-        bound = max_gh_failures()
-        self.assertIsNotNone(bound, "verify-push.sh has no MAX_GH_FAILURES bound")
-        almost = [AUTH_FAILURE] * (bound - 1)
+        bound = max_transient_failures()
+        self.assertIsNotNone(bound, "verify-push.sh has no MAX_GH_TRANSIENT_FAILURES bound")
+        almost = [NETWORK_FAILURE] * (bound - 1)
         result, calls = self.watch(almost + [NO_RUN_YET] + almost + [GREEN])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("CI is green on 0123456.", result.stdout)
         self.assertEqual(calls, 2 * bound)
+
+
+class VerifyPushReportsTheFailedLog(ShimmedGh):
+    """The excerpt under a red run (F617): the first gh call is `run list`, the second `run view`."""
+
+    def test_a_failed_log_fetch_shows_gh_s_error(self):
+        result, calls = self.watch([RED, NETWORK_FAILURE])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CI is NOT green", result.stderr)
+        self.assertIn("error connecting to api.github.com", result.stderr)
+        self.assertIn("gh run view 4242 --log-failed", result.stderr)
+        self.assertEqual(calls, 2)
+
+    def test_a_log_with_no_matching_line_says_so(self):
+        log = ("build\t2026-09-26T10:05:00.0000000Z Process completed with exit code 1.\n", "", 0)
+        result, calls = self.watch([RED, log])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CI is NOT green", result.stderr)
+        self.assertIn("gh run view 4242 --log-failed", result.stderr)
+        self.assertNotIn("First failing lines:", result.stderr)
+        self.assertEqual(calls, 2)
+
+    def test_matching_log_lines_are_excerpted(self):
+        log = ("test\t2026-09-26T10:05:00.0000000Z Sources/A.swift:1:1: error: nope\n"
+               "test\t2026-09-26T10:05:01.0000000Z unrelated\n", "", 0)
+        result, calls = self.watch([RED, log])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("First failing lines:", result.stderr)
+        self.assertIn("Sources/A.swift:1:1: error: nope", result.stderr)
+        self.assertNotIn("unrelated", result.stderr)
+        self.assertEqual(calls, 2)
 
 
 if __name__ == "__main__":
