@@ -59,7 +59,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         category: "RecordingStartup"
     )
 
-    private let captureQueue = DispatchQueue(label: "com.whispermeet.audio-capture", qos: .userInitiated)
+    private let captureQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "com.whispermeet.audio-capture", qos: .userInitiated)
+        #if DEBUG
+        queue.setSpecific(key: AudioCaptureEngine.captureQueueKeyForTesting, value: true)
+        #endif
+        return queue
+    }()
+    #if DEBUG
+    /// Marks `captureQueue` so a test can ask where a callback ran (F632) — `dispatchPrecondition`
+    /// can only trap, not answer.
+    private static let captureQueueKeyForTesting = DispatchSpecificKey<Bool>()
+    /// Whether the calling code is running on `captureQueue` (F632).
+    static var isOnCaptureQueueForTesting: Bool {
+        DispatchQueue.getSpecific(key: captureQueueKeyForTesting) == true
+    }
+    #endif
 
     /// The live capture stream, or nil.
     ///
@@ -75,9 +90,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
     /// The two track writers, behind `captureQueue` for F334's reason and F365's (F364 did the
     /// same for `_streamError`/`_streamDied`). The sample handler and
-    /// `applyPendingRestartPaddingIfNeeded` touch them from the capture queue; `start`, `stop`,
-    /// `reset` and `preservePartialTracks` from the MainActor; `restartAfterFailure` from the
-    /// cooperative pool. An unsynchronized load/store of a strong reference can over-release, and
+    /// `applyPendingRestartPaddingIfNeeded` touch them from the capture queue, and so do
+    /// `finishTrackWriters` (F388) and `preservePartialTracks` (F632), which finish them there;
+    /// `start`, `stop` and `reset` from the MainActor; `restartAfterFailure` from the cooperative
+    /// pool. An unsynchronized load/store of a strong reference can over-release, and
     /// this one is a `FloatTrackWriter` holding an open descriptor.
     ///
     /// **Code already on `captureQueue` must use the `_` storage; a `sync` from the queue
@@ -176,7 +192,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     init(
         stoppingCapture: @escaping () async throws -> Void,
         finishingTracks: @escaping () throws -> Void,
-        preservingPartialTracks: @escaping () -> Void,
+        // nil runs the real `preservePartialTracks()` body (F632); every other caller replaces it.
+        preservingPartialTracks: (() -> Void)?,
         startingCapture: @escaping (
             URL,
             @escaping @Sendable (RecordingHealthSnapshot) -> Void,
@@ -867,13 +884,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     #if DEBUG
     /// Test seam (F292): real track writers without a capture, so `stop()`'s finalize can be driven
     /// the way a dead capture leaves it.
-    func beginTestTrackSession(in directory: URL) throws {
+    /// `deviceSync` reaches each track's `FloatTrackFile`, so a test can observe where `finish()`'s
+    /// flush runs (F632).
+    func beginTestTrackSession(
+        in directory: URL,
+        deviceSync: @escaping FloatTrackFile.DeviceSync = FloatTrackFile.fullFsync
+    ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         systemWriter = try FloatTrackWriter(
-            outputURL: directory.appendingPathComponent("system-audio.f32"), targetSampleRate: Self.targetSampleRate
+            outputURL: directory.appendingPathComponent("system-audio.f32"), targetSampleRate: Self.targetSampleRate,
+            deviceSync: deviceSync
         )
         microphoneWriter = try FloatTrackWriter(
-            outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate
+            outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate,
+            deviceSync: deviceSync
         )
         sessionDirectory = directory
         healthMonitor = RecordingHealthMonitor(
@@ -970,13 +994,25 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         lastLevelsEmittedAt = 0
     }
 
+    /// Finalizes whatever the tracks hold on an abort route. On `captureQueue` since F632, for
+    /// F388's reason: `finish()` closes the descriptor that the sample handler and the restart
+    /// padding write through on that queue. Every caller is in `start()`/`stop()`, never on the
+    /// queue, so the `sync` cannot deadlock.
     private func preservePartialTracks() {
         if let injectedPreserveTracks {
             injectedPreserveTracks()
         } else {
-            _ = try? systemWriter?.finish()
-            _ = try? microphoneWriter?.finish()
+            captureQueue.sync { finishTrackWritersBestEffort() }
         }
+    }
+
+    /// `finishTrackWriters()`'s abort-path twin (F632). Not a `try?` around that function: it
+    /// finishes the two writers in sequence, so a system finish that threw would skip the
+    /// microphone's — and saving what there is means trying each track on its own.
+    private func finishTrackWritersBestEffort() {
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        _ = try? _systemWriter?.finish()
+        _ = try? _microphoneWriter?.finish()
     }
 
     /// Internal rather than private so F254's tests can drive the assertion's lifetime directly;
@@ -1055,7 +1091,11 @@ private final class FloatTrackWriter {
     private(set) var droppedFrames: Int64 = 0
     var frameCount: Int64 { track.frameCount }
 
-    init(outputURL: URL, targetSampleRate: Double) throws {
+    init(
+        outputURL: URL,
+        targetSampleRate: Double,
+        deviceSync: @escaping FloatTrackFile.DeviceSync = FloatTrackFile.fullFsync
+    ) throws {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: targetSampleRate,
@@ -1065,7 +1105,7 @@ private final class FloatTrackWriter {
             throw AudioCaptureError.conversionFailed("Unsupported output audio format")
         }
         targetFormat = format
-        track = try FloatTrackFile(url: outputURL)
+        track = try FloatTrackFile(url: outputURL, sync: deviceSync)
     }
 
     func append(_ sampleBuffer: CMSampleBuffer) throws -> RecordingAudioLevel? {
@@ -1243,8 +1283,9 @@ private final class FloatTrackWriter {
 
     func finish() throws -> FloatTrack {
         // `FloatTrackFile.finish` is idempotent, which this path needs: `preservePartialTracks()`
-        // finalizes both tracks on the abort routes (`:201`, `:228`, `:235`, `:250`) and the normal
-        // stop finalizes them again at `:243`. It flushes the tail before anyone reads it back.
+        // finalizes both tracks on the abort routes (`start()`'s catch and `stop()`'s two), and
+        // `stop()`'s second catch runs after `finishTrackWriters()` may already have finished one.
+        // It flushes the tail before anyone reads it back.
         try track.finish()
         return FloatTrack(
             url: track.url,

@@ -220,3 +220,46 @@ func restartOutlivingStopIsAbandoned() async throws {
     #expect(!engine.hasStreamError, "the abandoned restart put its death back into a reset engine")
     #expect(engine.testFrameCounts == (system: 0, microphone: 0))
 }
+
+// F632 — F388 moved `stop()`'s normal finalize onto `captureQueue`, where the sample handler and
+// the restart padding write the same two writers; the abort-path finalizer, `preservePartialTracks()`,
+// still called `finish()` from whichever thread stop() was on. This drives the REAL body (the
+// injected init's `preservingPartialTracks: nil`) down stop()'s first catch — the stream refused to
+// stop and did not die, so it may still be delivering — and records where each track's
+// finish-time flush ran. 48 000 frames is 192 KB, under the 960 KB periodic-sync interval, so
+// finish() is the only thing that reaches the probe.
+
+private final class QueueProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed: [Bool] = []
+    func record() { lock.lock(); observed.append(AudioCaptureEngine.isOnCaptureQueueForTesting); lock.unlock() }
+    var values: [Bool] { lock.lock(); defer { lock.unlock() }; return observed }
+}
+
+private struct StopRefused: Error {}
+
+@Test("The abort path finishes both partial tracks on the capture queue, and keeps them (F632)")
+func abortPathFinishesTracksOnCaptureQueue() async throws {
+    let directory = try sessionDirectory("abortqueue")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let engine = AudioCaptureEngine(
+        stoppingCapture: { throw StopRefused() },
+        finishingTracks: {},
+        preservingPartialTracks: nil,
+        startingCapture: { _, _, _ in },
+        directory: directory
+    )
+    let probe = QueueProbe()
+    try engine.beginTestTrackSession(in: directory, deviceSync: { _ in probe.record() })
+    try engine.writeTestFrames(system: 48_000, microphone: 48_000, systemStart: 0, microphoneStart: 0)
+
+    await #expect(throws: StopRefused.self) { _ = try await engine.stop() }
+
+    #expect(probe.values == [true, true], "each finish() flush must run on captureQueue")
+    for name in ["system-audio.f32", "microphone-audio.f32"] {
+        let size = try FileManager.default.attributesOfItem(
+            atPath: directory.appendingPathComponent(name).path
+        )[.size] as? Int
+        #expect(size == 48_000 * MemoryLayout<Float>.size, "\(name) must be preserved, not cancelled")
+    }
+}
