@@ -3,6 +3,7 @@ import CoreMedia
 import CoreGraphics
 import Foundation
 import ObjCExceptionBridge
+import os
 import OSLog
 import ScreenCaptureKit
 import WhisperCore
@@ -124,7 +125,21 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// The stream itself stopped — as opposed to one buffer failing to convert or write, which also
     /// sets `_streamError` (F292). Only a real death means the audio ends early, and only a real
     /// death may tear a live capture down to restart it (F363).
-    private var _streamDied = false
+    ///
+    /// Every write also publishes the value to `streamDiedMirror` (F401), for `captureDidDie`. The
+    /// `didSet` does that, not the write sites, so a new write cannot forget it. The flag is still
+    /// owned by the queue. `stop()` reads it together with `_restartInProgress` and `_stream` in one
+    /// queue block, and the restart clears and restores it together with `_streamError`. Only the
+    /// queue keeps those combinations atomic.
+    private var _streamDied = false {
+        didSet { streamDiedMirror.withLock { $0 = _streamDied } }
+    }
+    /// A read-only copy of `_streamDied` for readers that must not wait for `captureQueue` (F401).
+    /// That queue also runs the sample handler and all track I/O, including a restart's whole owed
+    /// padding in one block: 394–515 ms for the 5-minute cap on an M3 Pro's internal SSD. A
+    /// `captureQueue.sync` read from the MainActor waited out all of it. Only `_streamDied`'s
+    /// `didSet` writes it, and the lock guards only the copy, never any queue state.
+    private let streamDiedMirror = OSAllocatedUnfairLock(initialState: false)
     private var streamDied: Bool {
         get { captureQueue.sync { _streamDied } }
         set { captureQueue.sync { _streamDied = newValue } }
@@ -821,6 +836,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// What a stop or a cancel does to the session state, without the stream teardown around it.
     func resetForTesting() { reset() }
+
+    /// Occupies `captureQueue` the way one long block of restart padding does (F401): signals
+    /// `entered` once the block is running, then holds the queue until `release` is signalled.
+    func holdCaptureQueueForTesting(entered: DispatchSemaphore, release: DispatchSemaphore) {
+        captureQueue.async {
+            entered.signal()
+            release.wait()
+        }
+    }
     #endif
 
     /// Silence owed to both tracks by a restart in progress (F292). Read and written only on the
@@ -943,7 +967,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// user the capture "stopped unexpectedly". `_streamDied` is written only by `recordStreamDeath`,
     /// reached only from `stream(_:didStopWithError:)` and the restart's own failure path, so it
     /// means a death and nothing else.
-    var captureDidDie: Bool { captureQueue.sync { _streamDied } }
+    ///
+    /// Read from `streamDiedMirror`, not through `captureQueue.sync` (F401). The 1 Hz health tick
+    /// and `handleCaptureInterruption` call this from the MainActor, and a sync read waited behind
+    /// any restart padding in flight. This is safe from any thread, including `captureQueue`
+    /// itself. Code that must act on the value in the same step as other queue state reads
+    /// `_streamDied` inside its own queue block instead.
+    var captureDidDie: Bool { streamDiedMirror.withLock { $0 } }
 
     private func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
