@@ -4649,9 +4649,12 @@ final class AppModel: ObservableObject {
         guard libraryAcceptsChanges("Import") else { return .failure(.retryable) }
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
-            // The file is copied into the library, so require room for it plus a safety margin.
-            let sourceSize = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            let needed = Int64(sourceSize) + 500_000_000
+            // The file is copied into the library, so require room for it plus a safety margin. A
+            // link is measured as the recording it points to, which is what is copied: the link's
+            // own size is a hundred-odd bytes (F494).
+            let sourceSize = Self.sourceVersion(of: sourceURL.resolvingSymlinksInPath())?.size ?? 0
+            let (sum, overflowed) = sourceSize.addingReportingOverflow(500_000_000)
+            let needed = overflowed ? Int64.max : sum
             if available < needed {
                 alertMessage = "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
                 return .failure(.retryable)
@@ -4949,10 +4952,11 @@ final class AppModel: ObservableObject {
         return ImportOutcome(firstID: firstID, notImported: notImported)
     }
 
-    /// Copies an imported file's bytes into the library, as `(source, destination)`. A seam in the
-    /// F47 shape so a test can do what a writer that paused and resumed does — change the source
-    /// while it is being copied (F698). Only the byte copy is replaceable: the version check around
-    /// it in `copyImportedRecording` stays real under test, because that check is what is tested.
+    /// Copies an imported file's bytes into the library, as `(source, destination)` — the source
+    /// being the recording itself, never a link to it (F494). A seam in the F47 shape so a test can
+    /// do what a writer that paused and resumed does — change the source while it is being copied
+    /// (F698). Only the byte copy is replaceable: the version check around it in
+    /// `copyImportedRecording` stays real under test, because that check is what is tested.
     var copyRecordingIntoLibrary: @Sendable (URL, URL) throws -> Void = { source, destination in
         try FileManager.default.copyItem(at: source, to: destination)
     }
@@ -4965,6 +4969,16 @@ final class AppModel: ObservableObject {
         let didAccess = sourceURL.startAccessingSecurityScopedResource()
         defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
 
+        // A symbolic link is imported as the recording it points to (F494). `copyItem` copies a link
+        // as a link, so the library held a pointer to the user's file: unplayable once they deleted
+        // the original or ejected its drive, and skipped by backups, which take regular files only.
+        let original = sourceURL.resolvingSymlinksInPath()
+        // Still a link once resolved means it points at nothing that exists — copied, it became a
+        // meeting with no audio in it.
+        if (try? FileManager.default.attributesOfItem(atPath: original.path))?[.type] as? FileAttributeType
+            == .typeSymbolicLink {
+            throw ImportError.linkTargetMissing
+        }
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -4974,14 +4988,15 @@ final class AppModel: ObservableObject {
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
-        let before = sourceVersion(of: sourceURL)
-        try copyFile(sourceURL, destination)
+        let before = sourceVersion(of: original)
+        try copyFile(original, destination)
         // Re-stating the source costs one `stat` — and it catches exactly the case the watched
         // folder's settle window cannot: a writer that paused longer than that window and then
         // resumed, leaving a copy that is a prefix of the real recording (F326). Both reads go to
         // the file system: through the URL's resource-value cache the second returned the first's
-        // values, and this check did not fire (F698).
-        if let before, let after = sourceVersion(of: sourceURL), after != before {
+        // values, and this check did not fire (F698). Both read the recording, not a link to it,
+        // whose own size and date do not move when the recording grows (F494).
+        if let before, let after = sourceVersion(of: original), after != before {
             try? FileManager.default.removeItem(at: destination)
             throw ImportError.sourceChangedDuringCopy
         }
@@ -4991,11 +5006,16 @@ final class AppModel: ObservableObject {
     /// What the importer refuses on the file's own merits.
     enum ImportError: LocalizedError {
         case sourceChangedDuringCopy
+        /// A symbolic link whose original does not exist — moved, deleted, or on a drive that is not
+        /// connected (F494).
+        case linkTargetMissing
 
         var errorDescription: String? {
             switch self {
             case .sourceChangedDuringCopy:
                 return "it was still being written while it was copied. It will be imported once it is finished."
+            case .linkTargetMissing:
+                return "it is a link to a file that cannot be found. The original may have been moved or deleted, or be on a drive that is not connected."
             }
         }
     }
