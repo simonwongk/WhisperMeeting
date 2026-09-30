@@ -41,17 +41,18 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Six entries, over the cap of five. (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Seven entries, over the cap of five. (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. |
+| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's. |
 | 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
 | 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 | 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
+| 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
 
 ---
 
@@ -124,6 +125,9 @@ Settings → refinement on, then hold the hotkey for each of these:
 3. One over 60 words — this **must skip** refinement.
 4. Two back-to-back — the second should skip, busy.
 5. One after five idle minutes — falling back to raw is acceptable.
+6. One during a phone or FaceTime call. The call puts the built-in microphone in its voice mode,
+   which is what crashed the app twice in September (F356). It should transcribe correctly — that
+   is **F361**, and it is the only part of it a test cannot do. Say "skip 6" if you would rather not.
 
 Then check that the history records the raw text and the outcome for each. Tell me what looked
 wrong, or say "skip" and it stays open.
@@ -245,6 +249,25 @@ tell me what the paste gave you. I will read the log line myself.
   the Mac's clipboard before the paste, which no paste-based dictation app can work around).
 - **A macOS prompt** asking whether WhisperMeet may read the clipboard — Allow keeps the restore
   working; Don't Allow turns it off and dictation still pastes.
+
+---
+
+## F392 — Add search by meaning, or tell me not to
+
+**Status:** `blocked`. Ask Meetings can also search by meaning, using an on-device model
+(`intfloat/multilingual-e5-small`, about 490 MB). Two constants decide what it returns, and neither
+has ever been measured: the similarity floor (0.70) and the rank-fusion constant (60). The set of
+test questions to measure them against is committed; the model is not installed on this Mac. Putting
+it there is a download into WhisperMeet's own runtime, and it also switches Ask to searching by
+meaning for you, so it is your action to start, not a test's. That is why no agent has done it.
+
+**What I need from you:** in the sidebar, open **Ask Meetings** and press **Add Search by Meaning
+(490 MB)** — or tell me "no", and F392 stays parked with nothing lost.
+
+The download comes once from Hugging Face. After that, searching runs on this Mac and nothing about
+your meetings is uploaded (the button's own help text says the same). Once it is installed, an agent
+runs the measurement against the committed questions only, never your meetings, in a few minutes.
+The same run gives F396 the per-language numbers it is waiting for.
 
 ---
 
