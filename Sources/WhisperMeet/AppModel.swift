@@ -5377,20 +5377,30 @@ final class AppModel: ObservableObject {
     }
 
 
-    /// Deletes a whole selection in a single index write, first stopping every job that belongs to
-    /// one of those meetings: its transcription, its summary, and a second opinion, segment re-run or
-    /// speaker analysis running on it (F512). Their results could never be shown, and each holds a
-    /// slot while it runs — the summary slot, or the engine every queued transcription waits behind.
+    /// Deletes a whole selection in a single index write, then stops every job that belongs to a
+    /// meeting whose deletion stood: its transcription, its summary, and a second opinion, segment
+    /// re-run or speaker analysis running on it (F512). Their results could never be shown, and each
+    /// holds a slot while it runs — the summary slot, or the engine every queued transcription waits
+    /// behind.
+    ///
+    /// Only the ids `store.delete` returns (F666). It used to stop the jobs of every requested id
+    /// before the store was asked, so a delete that did not happen — a folder that could not be
+    /// removed (F146), a library refusing edits (read-only, F187, or a conflict offer outstanding), a
+    /// save that failed or lost to another running copy (F451, F642) — still threw away the meeting's
+    /// running job, and a cancelled transcription was saved onto the meeting still there as
+    /// "cancelled". Stopping after the delete changes nothing for the ids that did go: each cancel
+    /// only signals its task, whose epilogue runs later either way, and a queued job is dropped in
+    /// this same turn.
     func deleteMeetings(ids: [UUID]) {
-        for id in ids {
+        let removed = store.delete(ids: ids)
+        for id in removed {
             cancelTranscription(id: id)
             cancelSummarization(id: id)
         }
-        let doomed = Set(ids)
-        if let running = secondOpinionRunningID, doomed.contains(running) { cancelSecondOpinion() }
-        if let running = segmentReTranscriptionRunningID, doomed.contains(running) { cancelSegmentReTranscription() }
-        if let running = diarizationRunningID, doomed.contains(running) { cancelSpeakerDiarization() }
-        store.delete(ids: ids)
+        let gone = Set(removed)
+        if let running = secondOpinionRunningID, gone.contains(running) { cancelSecondOpinion() }
+        if let running = segmentReTranscriptionRunningID, gone.contains(running) { cancelSegmentReTranscription() }
+        if let running = diarizationRunningID, gone.contains(running) { cancelSpeakerDiarization() }
     }
 
     /// - Parameter cloudUploadConfirmed: The product spec's "an explicit, confirmed Summarize
