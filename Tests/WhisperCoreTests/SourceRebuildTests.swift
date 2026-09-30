@@ -202,3 +202,49 @@ func unrebuiltManifestOmitsTheKey() throws {
     )
     #expect(!json.contains("supersededRecordings"))
 }
+
+@Test("A folder recovered before F282 still records the file its old audio moved to (F558)")
+func preF282RecoveredManifestRecordsTheSupersededRecording() throws {
+    // Every folder recovered before 2026-09-17 carries this manifest, written by the private
+    // `RecoveredSourceManifest` that F282 deleted (558c2e1): its tracks have no
+    // `startOffsetSeconds`. Hand-written in exactly that shape rather than produced by today's
+    // `recover(in:)`, which is what `manifestRecordsTheSupersededRecording` uses and why it could
+    // not see this. Recovery never rewrites a manifest that already exists
+    // (`writeRecoveryManifestIfNeeded`), so this is the file Rebuild Audio meets on such a folder.
+    let directory = try makeFolder("preF282")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try writeTrack(96_000, named: "system-audio.f32", in: directory)
+    try writeTrack(96_000, named: "microphone-audio.f32", in: directory)
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
+        .write(to: directory.appendingPathComponent("meeting-recovered.wav"))
+    let manifestURL = directory.appendingPathComponent("source-tracks.recovered.json")
+    try Data(#"""
+    {"microphoneAudio":{"channels":1,"file":"microphone-audio.f32","format":"float32-little-endian",
+      "frameCount":96000,"sampleRate":48000},
+     "recoveryAlignment":"zero-aligned-after-interruption",
+     "systemAudio":{"channels":1,"file":"system-audio.f32","format":"float32-little-endian",
+      "frameCount":96000,"sampleRate":48000}}
+    """#.utf8).write(to: manifestURL)
+
+    let offer = try #require(SourceRebuild.offer(in: directory, currentDuration: 0.1))
+    _ = try #require(try SourceRebuild.rebuild(offer))
+
+    // Read back as raw JSON, not through `SourceTrackManifest`, so the assertion does not depend on
+    // the decoder the fix changes.
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+    )
+    let superseded = try #require(object["supersededRecordings"] as? [String])
+    #expect(superseded == ["meeting-recovered-superseded-1.wav"])
+    for name in superseded {
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path))
+    }
+    // Everything the old manifest said is still said.
+    #expect(object["recoveryAlignment"] as? String == SourceTrackManifest.rebuiltAlignment)
+    let system = try #require(object["systemAudio"] as? [String: Any])
+    let microphone = try #require(object["microphoneAudio"] as? [String: Any])
+    #expect(system["frameCount"] as? Int == 96_000)
+    #expect(microphone["frameCount"] as? Int == 96_000)
+    #expect(system["file"] as? String == "system-audio.f32")
+    #expect(microphone["file"] as? String == "microphone-audio.f32")
+}

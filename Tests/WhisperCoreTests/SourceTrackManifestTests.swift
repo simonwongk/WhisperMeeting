@@ -318,3 +318,57 @@ func olderManifestsHaveNoDroppedFrames() throws {
     let decoded = try JSONDecoder().decode(SourceTrackManifest.self, from: Data(json.utf8))
     #expect(decoded.systemAudio.droppedFrameCount == nil)
 }
+
+@Test("A recovered manifest written before F282 decodes with its tracks at offset zero (F558)")
+func preF282RecoveredManifestDecodes() throws {
+    // The shape of every `source-tracks.recovered.json` written before 558c2e1, by the private
+    // `RecoveredSourceManifest` that F282 replaced with this type: its tracks never had a
+    // `startOffsetSeconds`. `olderManifestsStillDecode` above is a capture manifest, which has
+    // carried the key since the first one was written, so it could not see this.
+    let json = #"""
+    {"recoveryAlignment":"zero-aligned-after-interruption","truncatedAtSeconds":1.5,
+     "systemAudio":{"file":"system-audio.f32","format":"float32-little-endian",
+      "sampleRate":48000,"channels":1,"frameCount":72000},
+     "microphoneAudio":{"file":"microphone-audio.f32","format":"float32-little-endian",
+      "sampleRate":48000,"channels":1,"frameCount":96000}}
+    """#
+    let decoded = try JSONDecoder().decode(SourceTrackManifest.self, from: Data(json.utf8))
+    #expect(decoded.systemAudio.startOffsetSeconds == 0)
+    #expect(decoded.microphoneAudio.startOffsetSeconds == 0)
+    #expect(decoded.systemAudio.frameCount == 72_000)
+    #expect(decoded.microphoneAudio.frameCount == 96_000)
+    #expect(decoded.systemAudio.droppedFrameCount == nil)
+    #expect(decoded.truncatedAtSeconds == 1.5)
+    #expect(decoded.recoveryAlignment == SourceTrackManifest.rebuiltAlignment)
+}
+
+@Test("A track still writes its offset, so the build before F558 can read what this one writes (F558)")
+func trackStillEncodesItsOffset() throws {
+    // The other direction of the persisted-schema rule. Every earlier build since F282 decodes a
+    // track with a synthesized decoder that REQUIRES `startOffsetSeconds`, so a manifest this build
+    // writes — including one re-encoded from an old-shape file by Rebuild Audio — must carry it.
+    let track = SourceTrackManifest.Track(
+        file: "system-audio.f32",
+        format: "float32-little-endian",
+        sampleRate: 48_000,
+        channels: 1,
+        frameCount: 100,
+        startOffsetSeconds: 0.25
+    )
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(track)) as? [String: Any]
+    )
+    #expect(object["startOffsetSeconds"] as? Double == 0.25)
+    #expect(object["droppedFrameCount"] == nil)
+
+    // And an old-shape track, once decoded, writes the key out rather than staying key-less.
+    let old = #"""
+    {"file":"system-audio.f32","format":"float32-little-endian",
+     "sampleRate":48000,"channels":1,"frameCount":100}
+    """#
+    let upgraded = try JSONDecoder().decode(SourceTrackManifest.Track.self, from: Data(old.utf8))
+    let reencoded = try #require(
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(upgraded)) as? [String: Any]
+    )
+    #expect(reencoded["startOffsetSeconds"] as? Double == 0)
+}

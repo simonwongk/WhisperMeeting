@@ -41,6 +41,39 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
             self.startOffsetSeconds = startOffsetSeconds
             self.droppedFrameCount = droppedFrameCount
         }
+
+        /// Decoded leniently for `startOffsetSeconds`, which pre-F282 recovered manifests lack (F558).
+        ///
+        /// Every `source-tracks.recovered.json` written before 558c2e1 came from a private
+        /// `RecoveredSourceManifest` whose tracks had no such key. A strict decode left
+        /// `SourceRebuild.noteSupersededRecording` unable to read the manifest, so Rebuild Audio on
+        /// such a folder moved the old recording aside and recorded it nowhere.
+        ///
+        /// Zero is the same value this build writes for that folder, not a made-up default. Both
+        /// recovery branches build their manifest through `rebuilt`, which writes 0. For a
+        /// zero-aligned rebuild's manifest, 0 is true by construction. For a finished capture's
+        /// recovered manifest (`captured-timeline`), it is the approximation this build already
+        /// writes, because the offsets from `stop()` were never saved. A capture's
+        /// `source-tracks.json` has had the key since the first one was written (41de66e), so this
+        /// default never replaces a measured offset. Encoding stays synthesized and always writes
+        /// the key, because every build since F282 decodes a track strictly and needs to find it.
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            file = try container.decode(String.self, forKey: .file)
+            format = try container.decode(String.self, forKey: .format)
+            sampleRate = try container.decode(Double.self, forKey: .sampleRate)
+            channels = try container.decode(Int.self, forKey: .channels)
+            frameCount = try container.decode(Int64.self, forKey: .frameCount)
+            startOffsetSeconds = try container.decodeIfPresent(
+                Double.self,
+                forKey: .startOffsetSeconds
+            ) ?? 0
+            droppedFrameCount = try container.decodeIfPresent(Int64.self, forKey: .droppedFrameCount)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case file, format, sampleRate, channels, frameCount, startOffsetSeconds, droppedFrameCount
+        }
     }
 
     /// A span of the recording that is inserted silence rather than captured audio (F282).
