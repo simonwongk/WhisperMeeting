@@ -131,8 +131,10 @@ replaced is still on disk and the restore itself can be undone.
 WhisperMeet offers this, as *Recover Library…*, only while the library is open read-only: on a library
 it can read, putting an older index back would discard every newer meeting, so it is refused there and
 the manual steps below are the way (F457). On a read-only library restoring is not refused, because it
-reads the bytes off disk and verifies them rather than trusting anything in memory. **You
-will need to quit and reopen WhisperMeet afterwards** to get back to a writable library.
+reads the bytes off disk and verifies them rather than trusting anything in memory. When the
+restored generation reads cleanly, the library is writable again straight away and WhisperMeet
+finishes the startup work it skipped while the library was read-only; there is no need to quit and
+reopen. If it still cannot be read, the library stays read-only and WhisperMeet says so.
 
 ### Rebuilding the index from the recording folders
 

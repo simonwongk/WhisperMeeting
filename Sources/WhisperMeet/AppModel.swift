@@ -2890,6 +2890,17 @@ final class AppModel: ObservableObject {
                 // After the hold ends, because that work writes to the library.
                 didPerformStartupRecovery = false
                 Task { await performStartupRecovery() }
+            } else if !store.isDegraded {
+                // F610: a backup can be taken while a transcription runs (`backUpLibrary` does not
+                // refuse then), so the restored index can hold a meeting as `.processing` that no
+                // job in this process owns — the restore refused to start over a running or queued
+                // one. Left alone it shows a spinner, a Cancel that does nothing, and "already being
+                // transcribed", until a relaunch runs this sweep. The launch already did the rest of
+                // its startup work on this healthy library, and that is not re-run: its orphan sweep
+                // treats every recording folder the index does not list as an interrupted recording,
+                // which after a restore includes the ones the message below says the restored index
+                // leaves out. Synchronous, and after the hold ends, because it writes to the library.
+                recoverInterruptedTranscriptions()
             }
             // Asked of the reload, not assumed from the copy (F463). Every file can land and the
             // library still not open — an older backup carries no checksums, so a damaged index in
@@ -6112,8 +6123,10 @@ final class AppModel: ObservableObject {
         // F507: this runs near the end of `performStartupRecovery`, after several awaits that can
         // take seconds (installer reclaim, notes backfill, detached orphan rebuilds) — long enough
         // for the user to press Transcribe on a meeting, or for Stop & Transcribe to queue one,
-        // while this sweep is still to come. `.processing` means "left over from a run this
-        // process never started" only for a meeting `transcription` does not itself know about;
+        // while this sweep is still to come. A restore into a healthy library also calls it (F610),
+        // after its hold ends and so after the queue has been pumped. `.processing` means "left
+        // over from a run this process never started" only for a meeting `transcription` does not
+        // itself know about;
         // `transcription.contains` is true for the one job actually running (`beginTranscription`
         // sets `.processing` the moment it starts) and for anything still queued behind it, whose
         // stored status is left exactly as it was found until it becomes active. Either way, this
