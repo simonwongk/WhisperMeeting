@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import tracemalloc
@@ -80,6 +81,18 @@ def _write_wav(path, samples, channels, rate):
         out.setsampwidth(2)
         out.setframerate(rate)
         out.writeframes(samples.tobytes())
+
+
+def _riff(channels, rate, data):
+    """A well-formed 16-bit PCM RIFF/WAVE whose data chunk is exactly `data`, whole frames or not,
+    with the pad byte RIFF requires after an odd-length chunk. Built by hand so that both are
+    exactly what the test says, rather than whatever `wave`'s writer does with a partial frame."""
+    block = channels * 2
+    fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * block, block, 16)
+    pad = b"\x00" if len(data) % 2 else b""
+    body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+            + b"data" + struct.pack("<I", len(data)) + data + pad)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def _read_wav(path):
@@ -210,6 +223,30 @@ class StreamedConversionTests(unittest.TestCase):
             for block_frames in (9, 65_536):
                 with self.subTest(channels=channels, rate=rate, block_frames=block_frames):
                     dest = os.path.join(self.root, "short.wav")
+                    self.module.convert_to_16k_mono(source, dest, block_frames=block_frames)
+                    self.assertEqual(_read_wav(dest)[1], expected)
+
+    def test_bytes_past_the_last_whole_frame_of_a_data_chunk_are_ignored(self):
+        # A well-formed WAV can declare a data chunk that is not a whole number of frames. The
+        # definition's input is `readframes(getnframes())`, which reads the whole frames and never
+        # the bytes past them, so those bytes change nothing — and an odd count of them must not
+        # read as audio ending in half a sample. 7-frame blocks do not divide the 1,000 frames, so
+        # the last whole-frame block is short as well.
+        for channels, rate, stray in [(1, 16_000, 1), (2, 16_000, 1), (2, 16_000, 3),
+                                      (1, 32_000, 1), (2, 44_100, 3), (3, 8_000, 5),
+                                      (3, 22_050, 4)]:
+            source = os.path.join(self.root, "stray.source.wav")
+            with open(source, "wb") as handle:
+                handle.write(_riff(channels, rate, _signal(1_000, channels).tobytes()
+                                   + bytes(range(1, stray + 1))))
+            params, frames = _read_wav(source)
+            self.assertEqual(len(frames), 1_000 * channels * 2,
+                             "the premise: the header's whole frames are the 1,000 written")
+            expected = self.module.resample_to_16k_mono(frames, channels, 2, rate)
+            for block_frames in (7, 65_536):
+                with self.subTest(channels=channels, rate=rate, stray=stray,
+                                  block_frames=block_frames):
+                    dest = os.path.join(self.root, "stray.wav")
                     self.module.convert_to_16k_mono(source, dest, block_frames=block_frames)
                     self.assertEqual(_read_wav(dest)[1], expected)
 

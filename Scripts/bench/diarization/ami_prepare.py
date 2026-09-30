@@ -162,15 +162,23 @@ def resample_to_16k_mono(frames, channels, sample_width, rate):
 def _blocks(src, block_frames):
     """`src`'s audio, `block_frames` frames at a time.
 
+    It reads what `readframes(getnframes())` reads, the definition's input: the header's whole
+    frames, or fewer when the file ends first. A data chunk can declare bytes past its last whole
+    frame; those are never read, so an odd number of them is not audio ending in half a sample.
+    Only a file cut short inside that audio can end that way, and it can only be the last block.
+
     `wave` returns samples in the host's byte order, which is the order `array` reads, so no block
-    needs swapping. Only the last block can be short, so only the last can end in half a sample.
+    needs swapping.
     """
-    while True:
-        data = src.readframes(block_frames)
+    remaining = src.getnframes()
+    while remaining > 0:
+        want = min(block_frames, remaining)
+        data = src.readframes(want)
         if not data:
             return
         if len(data) % 2:
             raise ValueError("the audio ends in half a sample")
+        remaining -= want
         yield data
 
 
@@ -182,8 +190,8 @@ def _converted_blocks(src, channels, rate, block_frames):
         return
     if rate != 16_000:
         # Which source sample an output sample takes depends on how long the recording is, so a
-        # first pass counts it. It counts what reads back rather than trusting `getnframes()`:
-        # what reads back, not the header, is the length the whole-buffer definition works from.
+        # first pass counts it. It counts what reads back, which is `getnframes()` only for a
+        # file that is not cut short: what reads back is the length the definition works from.
         total = sum(len(data) for data in _blocks(src, block_frames)) // 2 // channels
         src.rewind()
         ratio = rate / 16_000.0
