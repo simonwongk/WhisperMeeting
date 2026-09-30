@@ -144,6 +144,27 @@ class VerifyPushReportsGhFailures(ShimmedGh):
         self.assertNotIn("CI is green", result.stdout)
         self.assertEqual(calls, 1)
 
+    def test_each_auth_signal_ends_the_watch_on_its_own(self):
+        # The fixtures above each carry two signals: the 401 one has "HTTP 401" and "Bad
+        # credentials", the not-logged-in one has exit 4 and "gh auth login". So either half of
+        # each could be deleted and they would still pass. Each fixture here carries exactly one.
+        for label, response in [
+            ("exit 4 alone", ("", "authentication required\n", 4)),
+            ("HTTP 401 alone", ("", "HTTP 401 (https://api.github.com/graphql)\n", 1)),
+            ("Bad credentials alone", ("", "Bad credentials\n", 1)),
+            ("gh auth login alone", ("", "try running: gh auth login\n", 1)),
+        ]:
+            with self.subTest(label):
+                calls_file = os.path.join(self.shims, "gh-calls")
+                if os.path.exists(calls_file):
+                    os.remove(calls_file)  # the call count is per watch, not per test
+                result, calls = self.watch([response, GREEN])
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("gh is not authenticated with GitHub", result.stderr)
+                self.assertIn("`gh auth login`", result.stderr)
+                self.assertNotIn("CI is green", result.stdout)
+                self.assertEqual(calls, 1)
+
     def test_one_failed_call_does_not_end_the_watch(self):
         result, calls = self.watch([NETWORK_FAILURE, NO_RUN_YET, NETWORK_FAILURE, GREEN])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
