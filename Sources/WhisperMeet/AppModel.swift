@@ -3129,8 +3129,9 @@ final class AppModel: ObservableObject {
             // without this, the second sweep refuses to rebuild the user's own crashed recording on
             // the strength of a rival copy that quit before they pressed Restore, and the notice
             // below tells them to quit something that is not running. `refreshWriterLease()`
-            // short-circuits without a syscall when we already hold the lease, so the ordinary
-            // launch pays nothing for it.
+            // returns a lease we already hold without re-acquiring it — no `open`, no `flock`, only
+            // the path resolution that keys the memo (F407) — so the ordinary launch pays almost
+            // nothing for it.
             store.refreshWriterLease()
             let lease = store.writerLease
             // Asked even when the gate is shut, so the notice below is about folders that actually

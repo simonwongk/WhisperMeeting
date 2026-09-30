@@ -47,7 +47,7 @@ public final class LibraryWriterLeaseHandle: @unchecked Sendable {
     deinit { release() }
 }
 
-/// Takes the single-writer lease, once, at launch (F190).
+/// Takes the single-writer lease at launch (F190), and re-asks only through `refresh(for:)` (F188).
 ///
 /// **Never on the save path.** Measured at 14-30 µs, but the cost is not the reason: no lock
 /// acquisition may ever sit between a user's keystroke and their index being durable. `save()` stays
@@ -150,23 +150,30 @@ public enum LibraryWriterLock {
     ///
     /// Three properties, and the first two are what make this safe to add:
     ///
-    /// 1. A `.held` lease short-circuits with no syscall and the SAME handle, so the descriptor
-    ///    this process depends on can never be dropped or re-contended here.
+    /// 1. A `.held` lease is returned as the SAME handle without calling `acquire` — no `open`, no
+    ///    `flock` — so the descriptor this process depends on can never be dropped or re-contended
+    ///    here. (Not "no syscall": the memo key, `resolvingSymlinksInPath()`, reads the filesystem
+    ///    on every call, held or not — F407.)
     /// 2. Every other outcome carries a nil descriptor, so replacing the memoized handle closes
     ///    nothing.
-    /// 3. It can only ever turn a refusal into permission or leave it alone. `acquire` is
-    ///    non-blocking and never unlinks, so re-asking cannot take a lock off a live holder.
+    /// 3. It never takes a lock off a live holder: `acquire` is non-blocking and never unlinks. The
+    ///    answer it adopts can move EITHER way, though (F380, F407). `.heldElsewhere` becomes
+    ///    `.held` once the rival quits, which is what this exists for (F188); and a memoized
+    ///    `.unavailable`, which `mayRebuildInterruptedRecordings` permits, becomes `.heldElsewhere`,
+    ///    which it refuses, if a rival took the lock since. That second direction turns a
+    ///    permission into a refusal — it defers recovery, which is the safe direction to be wrong.
     ///
     /// **Still never on the save path.** Not because of the cost — this is the abnormal path by
-    /// construction, and the normal one returns without a syscall — but because F190's rule is that
-    /// no lock acquisition may sit between a user's keystroke and their index being durable, and an
+    /// construction, and for a held lease it opens nothing — but because F190's rule is that no lock
+    /// acquisition may sit between a user's keystroke and their index being durable, and an
     /// instance that reaches here is precisely one that might have to open a file to answer.
     public static func refresh(for root: URL) -> LibraryWriterLeaseHandle {
         memo.refresh(for: root)
     }
 }
 
-/// One lease per resolved library path, for the lifetime of the process.
+/// One lease per resolved library path, for the lifetime of the process. `handle(for:)` never
+/// replaces an entry; `refresh(for:)` replaces any entry that is not `.held` (F188).
 private final class MemoizedLeases: @unchecked Sendable {
     private let lock = NSLock()
     private var handles: [String: LibraryWriterLeaseHandle] = [:]

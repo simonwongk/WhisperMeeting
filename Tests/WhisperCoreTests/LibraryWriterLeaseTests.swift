@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import WhisperCore
 
-// F190 Task 9 — the single-writer lease. Taken ONCE at launch, never on the save path: measured at
-// 14-30 µs, but the point is not the cost, it is that no lock acquisition can ever appear between a
-// user's keystroke and their index being durable.
+// F190 Task 9 — the single-writer lease. Taken at launch and re-asked only by `refresh(for:)`
+// (F188), never on the save path: measured at 14-30 µs, but the point is not the cost, it is that no
+// lock acquisition can ever appear between a user's keystroke and their index being durable.
 //
 // Not holding the lease never makes anything read-only. It publishes an advisory so the app can say
 // "another copy of WhisperMeet is open" — and that is all. A lease that could degrade health would
@@ -267,4 +267,42 @@ func refreshUnderALiveRivalStillReportsHeldElsewhere() throws {
     #expect(LibraryWriterLock.refresh(for: root).lease == .heldElsewhere(realm: "shared"))
     #expect(rival.descriptorForTesting != nil, "the rival must still hold its own descriptor")
     rival.release()
+}
+
+// F621 — `refresh(for:)`'s doc once said it "can only ever turn a refusal into permission or leave
+// it alone" (F407's Part 3). It re-asks for EVERY answer that is not `.held`, so a permit can
+// become a refusal too: a memoized `.unavailable`, which `mayRebuildInterruptedRecordings` lets
+// through, becomes `.heldElsewhere`, which it refuses, once a rival has taken the lock. That is the
+// safe direction — it defers a recovery — and this pins it, so the doc's property 3 is a claim
+// something checks rather than prose. A refresh that re-asked only `.heldElsewhere`, as the old
+// sentence described, would leave the `.unavailable` in place and fail the first expectation.
+
+@Test("A memoized .unavailable becomes a refusal once a rival takes the lock (F621)")
+func aMemoizedUnavailableCanBecomeARefusalOnRefresh() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // A directory where the lock file goes: `open(O_RDWR|O_CREAT)` fails with EISDIR, which is not
+    // EACCES/EPERM, so `acquire` stops at "could not open the lock" and the memo holds that.
+    let lockPath = root.appendingPathComponent(".writer.lock")
+    try FileManager.default.createDirectory(at: lockPath, withIntermediateDirectories: false)
+    let first = LibraryWriterLock.shared(for: root)
+    guard case .unavailable = first.lease else {
+        Issue.record("expected .unavailable from a directory lock, got \(first.lease)")
+        return
+    }
+    try #require(InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(first.lease))
+
+    // The obstruction goes and another copy takes the lock.
+    try FileManager.default.removeItem(at: lockPath)
+    let rival = LibraryWriterLock.acquire(root: root)
+    try #require(rival.lease == .held(realm: "shared"))
+
+    let refreshed = LibraryWriterLock.refresh(for: root)
+    #expect(refreshed.lease == .heldElsewhere(realm: "shared"))
+    #expect(!InterruptedRecordingRecovery.mayRebuildInterruptedRecordings(refreshed.lease))
+
+    // And the ordinary F188 direction still follows once the rival quits.
+    rival.release()
+    #expect(LibraryWriterLock.refresh(for: root).lease == .held(realm: "shared"))
 }

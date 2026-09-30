@@ -11,12 +11,17 @@ import Testing
 // later launch re-scans it, and the complete recording A writes on stop sits beside it
 // unreferenced with nothing in the UI that mentions it.
 //
-// The two halves cannot be one test, and the reason is a property worth stating: leases are
-// memoized per resolved library path for the LIFETIME OF THE PROCESS and never evicted
-// (`MemoizedLeases`). That is right for the app — one process is one instance — but it means a
-// root that once reported `.heldElsewhere` can never report `.held` again in this process, so the
-// "rival quits, we relaunch" sequence is not reproducible in-process. Each half therefore gets its
-// own root, and neither may reuse the other's.
+// The two halves are separate tests on separate roots, and the reason is a property worth stating:
+// leases are memoized per resolved library path for the LIFETIME OF THE PROCESS (`MemoizedLeases`).
+// This header used to say a root that once reported `.heldElsewhere` "can never report `.held`
+// again", and that stopped being true with F188 (F380, F407): `refresh(for:)` replaces any memo
+// entry that is not `.held`, and `performStartupRecovery` calls it through `refreshWriterLease()`,
+// so "the rival quits, we sweep again" IS reproducible in-process —
+// `recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching` (CrashedFolderUnderRivalLeaseTests.swift)
+// drives it. What still makes a root single-use is the other half of the memo: `shared(for:)`,
+// which `MeetingStore.init` uses, hands a new store the root's memoized answer without re-asking,
+// and a memoized `.held` keeps its descriptor — and so the lock — until the process exits. Neither
+// half may reuse the other's root.
 
 private func makeLiveFolder(in root: URL, seconds: Int = 1) throws -> URL {
     let recordings = root.appendingPathComponent("Recordings", isDirectory: true)

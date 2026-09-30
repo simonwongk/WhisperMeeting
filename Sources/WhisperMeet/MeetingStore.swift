@@ -815,10 +815,11 @@ final class MeetingStore: ObservableObject {
         }
 
         // After `createDirectory` so the lock's `open` cannot fail with ENOENT on a first launch,
-        // and before the three loads. Taken ONCE, here — never on a save path. `shared(for:)` and
-        // not `acquire`: `flock` attaches to the open file description, so two acquisitions in one
-        // process contend, and this store and `DictationLogStore` would lock each other out of the
-        // same library and each report the other as a rival application.
+        // and before the three loads. Taken here at launch, re-asked only by `refreshWriterLease()`
+        // (F188, F407) — never on a save path. `shared(for:)` and not `acquire`: `flock` attaches to
+        // the open file description, so two acquisitions in one process contend, and this store and
+        // `DictationLogStore` would lock each other out of the same library and each report the
+        // other as a rival application.
         let handle = LibraryWriterLock.shared(for: self.rootDirectory)
         leaseHandle = handle
         writerLease = handle.lease

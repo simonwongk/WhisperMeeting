@@ -78,10 +78,12 @@ public enum InterruptedRecordingRecovery {
     /// volume without `flock`, which is worse than the defect. This keeps the lease advisory in
     /// F190's Invariant L sense — the gate defers recovery, it never bricks a library.
     ///
-    /// **Invariant this makes safety-critical: never call `LibraryWriterLock.acquire` outside
-    /// `shared(for:)`.** Two `flock` acquisitions on one file contend within a single process, and
-    /// only `MeetingStore` acquires today, via the memoizing `shared(for:)`, which is why the app
-    /// never reports `.heldElsewhere` against itself. A future second acquirer — wiring
+    /// **Invariant this makes safety-critical: never call `LibraryWriterLock.acquire` except
+    /// through its memo.** Two `flock` acquisitions on one file contend within a single process.
+    /// The memo has two doors, and `MeetingStore` is the only caller of either today:
+    /// `shared(for:)` at `init`, and `refresh(for:)` from `refreshWriterLease()` (F188, F407), which
+    /// returns a lease this process already holds without re-acquiring it. That is why the app
+    /// never reports `.heldElsewhere` against itself. A direct acquirer — wiring
     /// `DictationLogStore`, or a session marker for F258 — would not merely mislabel a UI string;
     /// it would disable recovery of the user's own crashed recordings.
     public static func mayRebuildInterruptedRecordings(_ lease: StoreWriterLease) -> Bool {

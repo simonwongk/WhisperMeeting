@@ -8,9 +8,13 @@ import Testing
 // apart from a live one, and rebuild it under a rival lease.
 //
 // Same recipe as the F255 tests, for the same reason: the library lease is memoized per root for
-// the life of the process, so a root that once reported `.heldElsewhere` never reports `.held`
-// again. Every test gets its own root. And the rival is acquired BEFORE the store is built, or the
-// store memoizes `.held` and the test quietly becomes one of the ungated path.
+// the life of the process. `shared(for:)`, which `MeetingStore.init` uses, never re-asks — a store
+// built on a root inherits whatever the memo holds for it — and only `refresh(for:)` replaces an
+// entry, and never a `.held` one (F188, F407). So a root that reported `.heldElsewhere` CAN report
+// `.held` again once refreshed (`recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching` below proves
+// it), but a memoized `.held` keeps its descriptor, and so the lock, until the process exits. Every
+// test gets its own root. And the rival is acquired BEFORE the store is built, or the store
+// memoizes `.held` and the test quietly becomes one of the ungated path.
 
 private func makeDeadLookingFolder(in root: URL) throws -> URL {
     let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
