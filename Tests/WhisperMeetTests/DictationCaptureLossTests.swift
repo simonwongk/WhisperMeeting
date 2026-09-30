@@ -214,6 +214,85 @@ func anotherEnginesChangeIsNotOurs() {
     #expect(interruptions.value.isEmpty, "a meeting capture's engine must not end a dictation")
 }
 
+// MARK: - F404, the handler and stop() agree on what happened
+
+@Test("A key release after the change still reports the change, not 'not recording' (F404)")
+func aStopAfterTheChangeReportsTheInterruption() {
+    // Interleaving (a): the controller reads `isRecording` as true, the handler ends the capture on
+    // AVFAudio's queue, and then `stop()` runs. `stop()` used to check `isRecording` before the
+    // interruption, so it threw `.notRecording` — "Dictation was not recording, so there was
+    // nothing to finish." went to the overlay and to `dictation-log.json`, and the controller's own
+    // interruption handler then found the session already failed and said nothing. An observer
+    // registered with `queue: nil` runs inside `post`, so this order is exact, not a timing hope.
+    let center = NotificationCenter()
+    let recorder = MicDictationRecorder(
+        hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+        notificationCenter: center
+    )
+    recorder.setRecordingForTesting()
+    center.post(name: .AVAudioEngineConfigurationChange, object: recorder.engineForTesting)
+
+    #expect(throws: MicDictationRecorder.RecorderError.captureInterrupted(.deviceConfigurationChanged)) {
+        _ = try recorder.stop()
+    }
+    // Reported once. A second stop is a stop with nothing behind it, and the next capture must not
+    // inherit this one's reason.
+    #expect(throws: MicDictationRecorder.RecorderError.notRecording) {
+        _ = try recorder.stop()
+    }
+}
+
+@Test("A change while start() is still running does not leak into a later capture (F404)")
+func aChangeDuringARefusedStartIsNotCarriedForward() {
+    // The probe runs inside start(), so it can post the notification while the capture is armed
+    // but not yet recording: the leading edge F404 is about. The probe then refuses, so start()
+    // must report its own refusal, must not call back as if a live capture had ended, and must not
+    // leave the interruption behind for the next capture's key release to report.
+    let center = NotificationCenter()
+    let interruptions = Box<[DictationCaptureInterruption]>([])
+    let engine = Box<AVAudioEngine?>(nil)
+    let recorder = MicDictationRecorder(
+        hardwareFormatProbe: {
+            center.post(name: .AVAudioEngineConfigurationChange, object: engine.value)
+            return (sampleRate: 0, channels: 0)
+        },
+        notificationCenter: center
+    )
+    engine.value = recorder.engineForTesting
+    recorder.onCaptureInterrupted = { reason in interruptions.value.append(reason) }
+
+    #expect(throws: MicDictationRecorder.RecorderError.audioFormatUnavailable) {
+        try recorder.start(onLevel: { _ in })
+    }
+    #expect(!recorder.isRecording)
+    #expect(interruptions.value.isEmpty, "start() reports its own failure; no live capture ended")
+
+    recorder.setRecordingForTesting()
+    #expect(throws: MicDictationRecorder.RecorderError.noAudioCaptured) {
+        _ = try recorder.stop()
+    }
+}
+
+@Test("start() checks the engine is running after starting it (F404)")
+func startChecksTheEngineIsRunningAfterStartingIt() throws {
+    // `AVAudioEngine.h`: on a hardware change "the engine stops itself" and then issues the
+    // notification. If that happens while start() is still running, the notification may arrive
+    // before or after start() returns, and a start that returned success over a stopped engine is
+    // F357's silent capture again. `engine.isRunning` is the one signal that does not depend on
+    // when the notification arrives. A source assertion, because a successful `engine.start()`
+    // needs an input device and `swift test` must never need one.
+    let source = try recorderSourceForBraceMatching()
+    let body = try #require(
+        declarationBody("func start(onLevel: @escaping @Sendable (Float) -> Void) throws {", in: source),
+        "start() not found; did it move?"
+    )
+    let started = try #require(body.range(of: "try engine.start()"), "start() no longer starts the engine")
+    #expect(
+        body[started.upperBound...].contains("engine.isRunning"),
+        "nothing reads engine.isRunning after engine.start() returns"
+    )
+}
+
 // MARK: - F405, a teardown must not create the node it tears down
 
 private let recorderSourcePath = "Sources/WhisperMeet/Dictation/MicDictationRecorder.swift"
