@@ -52,6 +52,7 @@ the reproduction check needs.
 """
 
 import argparse
+import array
 import ast
 import json
 import os
@@ -122,11 +123,20 @@ def rttm_lines(name, turns):
 # Audio
 # --------------------------------------------------------------------------------------
 
+# Frames converted at a time (F418): 128 KiB of the 16 kHz mono every AMI shard already is.
+BLOCK_FRAMES = 65_536
+
+
 def resample_to_16k_mono(frames, channels, sample_width, rate):
-    """Nearest-neighbour decimation to 16 kHz mono 16-bit.
+    """Nearest-neighbour decimation to 16 kHz mono 16-bit — the conversion's definition.
+
+    `prepare` does not call this: it streams through `convert_to_16k_mono`, which
+    `Scripts/tests/test_ami_prepare.py` holds to this byte for byte wherever its blocks fall. This
+    decodes the whole buffer into Python ints, which F395 measured at 2.08 GB resident for
+    TS3004c's 95 MB (F418), so it is kept for the tests and `self_test` and not for a recording.
 
     Nearest-neighbour, not a filtered resample: AMI is already 16 kHz mono in the published shards,
-    so this only runs on a shard that is not, and the honest thing is a conversion whose artefacts
+    so the conversion only changes a shard that is not, and the honest thing is one whose artefacts
     are obvious rather than one that looks principled and is not.
 
     There is no `--strict` refusal mode (F490): this docstring used to claim one, `build_parser`
@@ -149,13 +159,89 @@ def resample_to_16k_mono(frames, channels, sample_width, rate):
     return struct.pack("<%dh" % len(samples), *samples)
 
 
-def write_16k_mono(path, frames, channels, sample_width, rate):
-    converted = resample_to_16k_mono(frames, channels, sample_width, rate)
-    with wave.open(path, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(16_000)
-        out.writeframes(converted)
+def _blocks(src, block_frames):
+    """`src`'s audio, `block_frames` frames at a time.
+
+    `wave` returns samples in the host's byte order, which is the order `array` reads, so no block
+    needs swapping. Only the last block can be short, so only the last can end in half a sample.
+    """
+    while True:
+        data = src.readframes(block_frames)
+        if not data:
+            return
+        if len(data) % 2:
+            raise ValueError("the audio ends in half a sample")
+        yield data
+
+
+def _converted_blocks(src, channels, rate, block_frames):
+    """`src`'s audio as 16 kHz mono 16-bit blocks: `resample_to_16k_mono`'s samples, in pieces."""
+    if channels == 1 and rate == 16_000:
+        # Every AMI shard is already this, so its bytes are copied, never decoded.
+        yield from _blocks(src, block_frames)
+        return
+    if rate != 16_000:
+        # Which source sample an output sample takes depends on how long the recording is, so a
+        # first pass counts it. It counts what reads back rather than trusting `getnframes()`:
+        # what reads back, not the header, is the length the whole-buffer definition works from.
+        total = sum(len(data) for data in _blocks(src, block_frames)) // 2 // channels
+        src.rewind()
+        ratio = rate / 16_000.0
+        count = int(total / ratio)
+    start = done = 0  # the block's first mono sample in the recording; output samples written
+    for data in _blocks(src, block_frames):
+        samples = array.array("h")
+        samples.frombytes(data)
+        if channels > 1:
+            # The floor of each frame's mean, as the definition's `//` is. `zip` stops at the
+            # shortest column, so a trailing partial frame is dropped, as it is there too.
+            columns = [samples[c::channels] for c in range(channels)]
+            samples = array.array("h", (sum(frame) // channels for frame in zip(*columns)))
+        if rate == 16_000:
+            yield samples.tobytes()
+            continue
+        end = start + len(samples)
+        out = array.array("h")
+        # Output sample `done` takes source sample min(total - 1, int(done * ratio)) — the
+        # definition's expression, over the recording's index rather than the block's.
+        while done < count:
+            index = min(total - 1, int(done * ratio))
+            if index >= end:
+                break
+            out.append(samples[index - start])
+            done += 1
+        start = end
+        yield out.tobytes()
+
+
+def convert_to_16k_mono(source_path, dest_path, block_frames=BLOCK_FRAMES):
+    """Write `source_path`'s WAV to `dest_path` as 16 kHz mono 16-bit, a block at a time (F418).
+
+    The samples are `resample_to_16k_mono`'s over the whole file; only the memory differs. That
+    decoded the recording into Python ints, 2.08 GB resident for TS3004c's 95 MB; this holds a
+    block. An already-16 kHz-mono source, which every AMI shard is, is copied byte for byte.
+
+    The blocks go to `<dest>.partial`, which replaces `dest_path` only once the last one is
+    written. Written straight into `dest_path`, a conversion that failed partway would leave a
+    well-formed WAV of the blocks before the failure — a truncated meeting that reads as a whole
+    one, where the whole-buffer conversion failed before writing anything.
+    """
+    with wave.open(source_path, "rb") as src:
+        channels, width, rate = src.getnchannels(), src.getsampwidth(), src.getframerate()
+        if width != 2:
+            raise ValueError("only 16-bit PCM is supported, got %d bytes per sample" % width)
+        partial = dest_path + ".partial"
+        try:
+            with wave.open(partial, "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(16_000)
+                for data in _converted_blocks(src, channels, rate, block_frames):
+                    out.writeframes(data)
+            os.replace(partial, dest_path)
+        finally:
+            if os.path.exists(partial):
+                os.remove(partial)
 
 
 # --------------------------------------------------------------------------------------
@@ -194,12 +280,7 @@ def prepare(manifest_path, out_dir, gap=DEFAULT_GAP):
             handle.write("\n".join(rttm_lines(name, turns)) + "\n")
         source = meeting.get("audio")
         if source:
-            with wave.open(source, "rb") as src:
-                write_16k_mono(
-                    os.path.join(audio_dir, name + ".wav"),
-                    src.readframes(src.getnframes()),
-                    src.getnchannels(), src.getsampwidth(), src.getframerate(),
-                )
+            convert_to_16k_mono(source, os.path.join(audio_dir, name + ".wav"))
         written.append((name, len(turns)))
     return written
 
@@ -252,6 +333,7 @@ def self_test():
     lines = rttm_lines("ES2004a", [(1.5, 2.25, "A")])
     assert lines == ["SPEAKER ES2004a 1 1.500 0.750 <NA> <NA> A <NA> <NA>"], lines
 
+    # The conversion's definition; test_ami_prepare.py holds `convert_to_16k_mono` to it.
     mono = resample_to_16k_mono(struct.pack("<4h", 1, 2, 3, 4), 1, 2, 16_000)
     assert struct.unpack("<4h", mono) == (1, 2, 3, 4)
     downmixed = resample_to_16k_mono(struct.pack("<4h", 10, 20, 30, 40), 2, 2, 16_000)
