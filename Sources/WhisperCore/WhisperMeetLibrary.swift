@@ -60,10 +60,16 @@ public enum WhisperMeetLibrary {
         return suite
     }
 
-    /// The suite `defaults` uses, or nil for the ordinary library. Derived from the standardized
-    /// root, so relaunching against the same directory finds the same settings, and two different
+    /// The suite `defaults` uses, or nil for the ordinary library. Derived from the root, so
+    /// relaunching against the same directory finds the same settings, and two different
     /// directories get different suites. The suite is a plist in `~/Library/Preferences` named after
     /// this value.
+    ///
+    /// The root is keyed the way the writer lease keys its memo (`LibraryWriterLease`): symlinks
+    /// resolved, then standardized. So two spellings of one existing directory, through a symlink
+    /// or with a trailing slash, share one settings domain as they share one `.writer.lock`. A
+    /// directory that does not exist yet has nothing to resolve and is keyed as spelled.
+    /// `AppModel`'s convenience init asks only after its `MeetingStore` has created the root.
     public static func defaultsSuiteName(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
@@ -71,7 +77,7 @@ public enum WhisperMeetLibrary {
         // FNV-1a over the path's UTF-8: stable across launches and builds, which `hashValue` is
         // not (it is seeded per process).
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in moved.standardizedFileURL.path.utf8 {
+        for byte in moved.resolvingSymlinksInPath().standardizedFileURL.path.utf8 {
             hash ^= UInt64(byte)
             hash = hash &* 0x0000_0100_0000_01b3
         }
@@ -79,7 +85,7 @@ public enum WhisperMeetLibrary {
     }
 
     /// The root `WHISPERMEET_LIBRARY` names, or nil when it is unset, blank or relative. One
-    /// predicate, so the files and the settings can never disagree about which library this is.
+    /// predicate, so the files and the settings can never disagree about whether the library moved.
     private static func movedRoot(environment: [String: String]) -> URL? {
         guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
               value.hasPrefix("/") else { return nil }

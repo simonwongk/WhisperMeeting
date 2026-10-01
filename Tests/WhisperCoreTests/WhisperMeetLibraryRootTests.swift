@@ -106,3 +106,23 @@ func movedLibraryGetsADomainDerivedFromItsRoot() throws {
     // nothing; only setting a value would.
     #expect(WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: a]) !== UserDefaults.standard)
 }
+
+@Test("A symlinked spelling of a library's directory gets that library's settings, as it gets its lease (F550)")
+func symlinkedSpellingSharesTheLibrarysSettingsDomain() throws {
+    // The writer lease keys its memo on the resolved path (`LibraryWriterLease`), so two spellings
+    // of one directory are one library to it. The settings were keyed on the path as spelled
+    // (standardized, never resolved), so the same library opened through a symlink got a second
+    // settings domain: a second watched-folder snapshot for the same files. Only names are derived
+    // here; nothing is written.
+    let base = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F550-symlink-\(UUID().uuidString)", isDirectory: true)
+    let real = base.appendingPathComponent("library", isDirectory: true)
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let link = base.appendingPathComponent("link", isDirectory: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+    let viaReal = try #require(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: real.path]))
+    let viaLink = WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: link.path])
+    #expect(viaLink == viaReal, "\(link.path) and \(real.path) are one library")
+}
