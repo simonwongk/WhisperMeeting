@@ -1598,11 +1598,20 @@ final class MeetingStore: ObservableObject {
     /// root — and it is what F311's "Interrupted import from <host>" entry has, whose folder holds
     /// the link's `source.json` and any partial download. Taking the entry only left that folder
     /// to `orphanedRecordings()`, which lists it as soon as the index no longer has its id, so the
-    /// next launch indexed the same entry again (F576). So the folder is found the way that listing
-    /// finds it: directly in `Recordings`, under a name that parses to this meeting's id. That keeps
-    /// the name it has on disk, the only spelling a case-sensitive volume removes. When the listing
-    /// names no such folder, or `Recordings` cannot be listed, it is `recordingDirectoryURL(for:)`,
-    /// and the default `removeRecordingDirectory` does nothing where nothing is there.
+    /// next launch indexed the same entry again (F576). So the folder is looked up by name, as that
+    /// listing reads names: the first entry directly in `Recordings` whose name parses to this
+    /// meeting's id. That keeps the name it has on disk, the only spelling a case-sensitive volume
+    /// removes. When no entry has such a name, or `Recordings` cannot be listed, it is
+    /// `recordingDirectoryURL(for:)`, and the default `removeRecordingDirectory` does nothing where
+    /// nothing is there.
+    ///
+    /// The first such entry only, and not checked to be a directory, where `orphanedRecordings()`
+    /// takes every matching directory: a delete removes one folder per meeting. So on a
+    /// case-sensitive volume holding two spellings of one id, only one goes, and the next launch can
+    /// list the other again; deleting again removes it. Not planned: every recording folder
+    /// WhisperMeet makes is named `id.uuidString` (`recordingDirectoryURL(for:)`), and a restore puts
+    /// back only names a backup already held, so a second spelling of one id exists only where
+    /// something else made one, on a volume that is not the macOS default.
     private func ownRecordingFolder(of meeting: MeetingRecord) -> URL? {
         let recordings = rootDirectory
             .appendingPathComponent("Recordings", isDirectory: true)
