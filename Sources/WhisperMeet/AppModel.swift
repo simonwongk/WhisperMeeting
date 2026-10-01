@@ -2895,11 +2895,15 @@ final class AppModel: ObservableObject {
                 // refuse then), so the restored index can hold a meeting as `.processing` that no
                 // job in this process owns — the restore refused to start over a running or queued
                 // one. Left alone it shows a spinner, a Cancel that does nothing, and "already being
-                // transcribed", until a relaunch runs this sweep. The launch already did the rest of
-                // its startup work on this healthy library, and that is not re-run: its orphan sweep
-                // treats every recording folder the index does not list as an interrupted recording,
-                // which after a restore includes the ones the message below says the restored index
-                // leaves out. Synchronous, and after the hold ends, because it writes to the library.
+                // transcribed", until a relaunch runs this sweep. Only this sweep, because on a
+                // healthy library the launch runs the rest of its startup work itself; that is what
+                // separates this branch from the one above, which re-runs all of it because the
+                // launch skipped it. Leaving the rest out does not keep the message below true
+                // either: the orphan sweep in that work treats every recording folder the index does
+                // not list as an interrupted recording, which after a restore includes the ones the
+                // message says the restored index leaves out. By reading, the branch above indexes
+                // them straight away, and the next launch does on either branch (F699). Synchronous,
+                // and after the hold ends, because it writes to the library.
                 recoverInterruptedTranscriptions()
             }
             // Asked of the reload, not assumed from the copy (F463). Every file can land and the
