@@ -40,7 +40,9 @@ class RehearseRecoveryTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_script(self, *args):
-        environment = dict(os.environ, TMPDIR=self.tmp)
+        # With the trailing slash macOS gives TMPDIR, so `mktemp` sees the doubled slash a real
+        # run does.
+        environment = dict(os.environ, TMPDIR=self.tmp + "/")
         return subprocess.run(
             ["zsh", SCRIPT, *args], env=environment, capture_output=True, text=True, timeout=60
         )
@@ -50,7 +52,17 @@ class RehearseRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(match, result.stdout + result.stderr)
         root = match.group(1)
         self.assertTrue(root.startswith(self.tmp), f"{root} escaped TMPDIR {self.tmp}")
+        # Printed in the form the app keys its settings on, so no doubled slash survives.
+        self.assertNotIn("//", root)
         return root
+
+    def assert_names_its_settings_domain(self, result):
+        # The name itself is checked against the Swift `WhisperMeetLibrary.defaultsSuiteName` by
+        # `RecoveryRehearsalLibraryTests`; here, that both keep modes tell the responder how to
+        # remove it (F550).
+        match = re.search(r"defaults delete (WhisperMeet\.library-[0-9a-f]{16});", result.stdout)
+        self.assertIsNotNone(match, result.stdout)
+        self.assertIn(f"rm -f ~/Library/Preferences/{match.group(1)}.plist", result.stdout)
 
     def read(self, root, name):
         with open(os.path.join(root, name), encoding="utf-8") as handle:
@@ -74,6 +86,7 @@ class RehearseRecoveryTests(unittest.TestCase):
         # which mode does.
         self.assertNotIn("It opens read-only", result.stdout)
         self.assertIn("Use --keep-damaged to practise Recover Library", result.stdout)
+        self.assert_names_its_settings_domain(result)
 
     def test_keep_damaged_leaves_the_damage_the_app_detects(self):
         result = self.run_script("--keep-damaged")
@@ -110,6 +123,7 @@ class RehearseRecoveryTests(unittest.TestCase):
 
         self.assertIn("Recover Library", result.stdout)
         self.assertIn(f'WHISPERMEET_LIBRARY="{root}"', result.stdout)
+        self.assert_names_its_settings_domain(result)
 
     def test_generation_names_carry_the_apps_store_fingerprint(self):
         # The golden values `storeFingerprintMatchesItsPublishedGoldenValues` pins for

@@ -36,6 +36,23 @@ esac
 (( $# <= 1 )) || { print -u2 "Expected at most one argument, got $#."; exit 2 }
 
 root="$(mktemp -d "${TMPDIR:-/tmp}/whispermeet-rehearsal.XXXXXX")"
+# Printed in the form the app keys this library's settings on (F550): symlinks resolved, and the
+# leading /private dropped where the rest still names the directory, as Foundation's
+# `resolvingSymlinksInPath` does. That keeps the domain printed below the one the app opens, and
+# drops the doubled slash a TMPDIR ending in `/` gives the mktemp path.
+root="${root:A}"
+if [[ "$root" == /private/* && -d "${root#/private}" ]]; then
+  root="${root#/private}"
+fi
+# The app's settings domain for this library: `WhisperMeetLibrary.defaultsSuiteName`, FNV-1a
+# over the path's UTF-8. `RecoveryRehearsalLibraryTests` checks it against the Swift.
+settings_domain="$(python3 -c '
+import sys
+h = 0xcbf29ce484222325
+for byte in sys.argv[1].encode("utf-8"):
+    h = ((h ^ byte) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+print("WhisperMeet.library-%016x" % h)
+' "$root")"
 # NOTE: `history` is a read-only builtin variable in zsh, so this is `history_dir`
 # deliberately — the same trap `verify-push.sh` documents for `status`, and it fails at
 # runtime rather than at parse time.
@@ -57,8 +74,9 @@ good_meetings='[{"id":"11111111-1111-4111-8111-111111111111","title":"Synthetic 
 # until F550, and the app refused to restore every generation named that way.
 #
 # Each file also gets its own date. Without a ledger the app knows a generation's meeting count only
-# by restoring it, so Recover Library labels each one by its file's date alone — and three files
-# written in the same second would be three identical choices.
+# by restoring it, so Recover Library labels each one only by when its file was written (date and
+# time, with no meeting count) — and three files written in the same second would be three
+# identical choices.
 archive() {
   local sequence="$1" payload="$2" stamp="$3"
   local digest
@@ -101,10 +119,11 @@ if (( damaged )); then
   print "  WHISPERMEET_LIBRARY=\"$root\" /Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet"
   print "It opens read-only. Use Settings ▸ Recover Library…: the 14 Aug copy is the empty one, and"
   print "restoring it keeps the library read-only; the 13 Aug copy brings the 2 meetings back."
-  print "That process opens only this library, and keeps its settings apart from your real ones"
-  print "(F312, F550; docs/RECOVERY.md names the two that are still shared)."
-  print "Remove it when you are done:"
+  print "That process opens only this library, and keeps its settings apart from your real ones, in"
+  print "the preferences domain $settings_domain (F312, F550; docs/RECOVERY.md names what is still shared)."
+  print "When you are done, quit that copy and remove both:"
   print "  rm -rf $root"
+  print "  defaults delete $settings_domain; rm -f ~/Library/Preferences/$settings_domain.plist"
   exit 0
 fi
 
@@ -138,10 +157,11 @@ if (( keep )); then
   print "Kept the RESTORED library. It opens healthy, so there is nothing to recover in it."
   print "Use --keep-damaged to practise Recover Library. To open this one:"
   print "  WHISPERMEET_LIBRARY=\"$root\" /Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet"
-  print "That process opens only this library, and keeps its settings apart from your real ones"
-  print "(F312, F550; docs/RECOVERY.md names the two that are still shared)."
-  print "Remove it when you are done:"
+  print "That process opens only this library, and keeps its settings apart from your real ones, in"
+  print "the preferences domain $settings_domain (F312, F550; docs/RECOVERY.md names what is still shared)."
+  print "When you are done, quit that copy and remove both:"
   print "  rm -rf $root"
+  print "  defaults delete $settings_domain; rm -f ~/Library/Preferences/$settings_domain.plist"
 else
   rm -rf "$root"
   print "Removed the rehearsal directory. Re-run with --keep-damaged to practise in the app."

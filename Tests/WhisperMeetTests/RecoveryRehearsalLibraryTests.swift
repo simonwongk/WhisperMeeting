@@ -14,7 +14,8 @@ import Testing
 // is asserted rather than inferred from the file shapes (those are `test_rehearse_recovery.py`'s).
 // Following the restore through found two more defects in the script, both fixed with it: it named
 // its generations with a SHA-256 prefix rather than the app's `StoreFingerprint`, so the app
-// refused all three, and it wrote them in the same second, so their date-only labels were identical.
+// refused all three, and it wrote them in the same second, so their labels were identical: with no
+// ledger a label is only the time the file was written.
 //
 // Part 2. `WHISPERMEET_LIBRARY` moved every FILE, but the app still read and wrote
 // `UserDefaults.standard` — the watched folder's path and its known-files snapshot, the dictation
@@ -28,7 +29,9 @@ private func runRehearsal(_ arguments: [String], tmp: URL) async throws -> (stat
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
     process.arguments = [SourceAssertion.url("Scripts/rehearse-recovery.sh").path] + arguments
     var environment = ProcessInfo.processInfo.environment
-    environment["TMPDIR"] = tmp.path
+    // With the trailing slash macOS gives TMPDIR, so the script's `mktemp` path has the doubled
+    // slash a real run has, and the printed library path must still be the one the app keys on.
+    environment["TMPDIR"] = tmp.path + "/"
     process.environment = environment
     let output = Pipe()
     process.standardOutput = output
@@ -61,6 +64,12 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     try #require(run.status == 0, "the rehearsal failed:\n\(run.stdout)")
     let root = try keptRoot(in: run.stdout)
     try #require(FileManager.default.fileExists(atPath: root.path), "--keep-damaged must keep its library")
+    // The script names the settings domain the app will give this library, so the responder can
+    // remove it afterwards. It must be the name `WhisperMeetLibrary` derives from the path the
+    // script printed, or the cleanup line deletes nothing.
+    let domain = try #require(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: root.path]))
+    #expect(run.stdout.contains("defaults delete \(domain)"), "\(run.stdout)")
+    #expect(run.stdout.contains("~/Library/Preferences/\(domain).plist"), "\(run.stdout)")
 
     // Settings in a file inside `tmp`, not in a suite with a NAME. A named suite is a plist in the
     // user's real ~/Library/Preferences, and `removePersistentDomain` empties it without deleting it
@@ -79,7 +88,8 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     // Every generation must be restorable: the script used to name them with a SHA-256 prefix, and
     // the app disabled all three as "damaged — cannot be used".
     #expect(offered.count == 3 && offered.allSatisfy(\.bytesMatchName), "\(offered)")
-    // With no ledger the labels carry only dates, so the dates must tell them apart.
+    // With no ledger a label is only when the file was written (date and time, no meeting count), so
+    // those times must tell them apart.
     #expect(Set(offered.map(AppModel.generationLabel)).count == offered.count,
             "indistinguishable choices: \(offered.map(AppModel.generationLabel))")
 

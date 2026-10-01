@@ -197,25 +197,29 @@ WHISPERMEET_LIBRARY="/path/printed/by/the/script" /Applications/WhisperMeet.app/
 ```
 
 It opens read-only. Choose *Recover Library…* in Settings. The rehearsal has no ledger, so each copy
-is labelled by its date alone, which is also what you see after a real incident that lost the
-ledger. The newest copy, dated 14 August, is the empty one. Restoring it leaves the library
-read-only and WhisperMeet says so. Choose *Recover Library…* again and restore the 13 August copy,
-which brings the 2 meetings back.
+is labelled only by when it was written, a date and a time with no meeting count, which is also what
+you see after a real incident that lost the ledger. The newest copy, dated 14 August, is the empty
+one. Restoring it leaves the library read-only and WhisperMeet says so. Choose *Recover Library…*
+again and restore the 13 August copy, which brings the 2 meetings back.
 
 `WHISPERMEET_LIBRARY` moves the whole library for that process: the index, dictation log, `Runtime/`
 and `Models/`, and since F550 its settings. They are kept in a preferences domain derived from the
-directory's path, `~/Library/Preferences/WhisperMeet.library-<hash>.plist`. The rehearsal therefore
-starts with default settings, in which the watched folder and dictation are off. Unless you turn the
-watched folder on inside the rehearsal, it cannot take a file from your watched folder, and its
-settings changes do not reach your real ones. Two exceptions remain: the summary style and meeting
-template are still shared, and so is the Claude API key, which is in the Keychain.
+directory's path, named `WhisperMeet.library-` and 16 hex digits, which the script prints. The
+rehearsal therefore starts with default settings, in which the watched folder and dictation are off.
+Unless you turn the watched folder on inside the rehearsal, it cannot take a file from your watched
+folder, and its settings changes do not reach your real ones. Three exceptions remain: the summary
+style and meeting template are still shared; so is the Claude API key, which is in the Keychain; and
+so is *Launch at login*, which registers the app itself as a login item (`SMAppService`), so
+switching it in the rehearsal switches it for your real copy.
 The path must be absolute. Setting `HOME` does **not** do this, because macOS resolves Application
 Support from the account, not from `HOME`.
 
 You do not have to quit the ordinary copy first. Each library has its own `.writer.lock`, so the two
 never report each other as "another copy of WhisperMeet is open". But if dictation is on in both
-copies, both respond to the same global hotkey. When you are done, delete the directory, and delete
-that preferences file too if you want to remove every trace.
+copies, both respond to the same global hotkey. When you are done, quit the rehearsal copy and run
+the two cleanup lines the script prints: `rm -rf` of the directory, then `defaults delete` of the
+settings domain and `rm -f` of its file in `~/Library/Preferences`. `defaults delete` alone empties
+that file but leaves it in place.
 
 ### Restoring a past generation by hand
 
