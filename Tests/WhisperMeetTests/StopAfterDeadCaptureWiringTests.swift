@@ -229,8 +229,13 @@ func resumeIsNotAnnouncedAfterStop() async throws {
     model.recorder.handleStreamFailure(StreamDied())
     async let restart: Void = model.handleCaptureInterruption(trigger: .streamFailed, gap: 3)
     try await waitUntil("the restart to reach its seam") { hold.entered }
+    try #require(model.recordingState.isLive, "the recording ended before the Stop under test")
     async let stop = model.stopRecording(title: "")
-    try await waitUntil("the Stop to be waiting on the restart") { model.recordingState == .stopping }
+    // Stop leaves `.recording` before its first suspension, so once it has, the Stop began while
+    // the restart was still held. Not `== .stopping`, for `stopWaitsForAnInFlightRestart`'s
+    // reason: a Stop that does not wait can go through `.stopping` to `.idle` between two polls,
+    // and this timed out after 44 s as the wait instead of reaching the claim below.
+    try await waitUntil("the Stop to begin") { !model.recordingState.isLive }
     hold.release()
     _ = await (stop, restart)
     try #require(finished.with { $0 }, "the restart never finished, so there was no resume to withhold")
