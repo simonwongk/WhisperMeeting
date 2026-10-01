@@ -86,10 +86,14 @@ public enum FloatTrackMixer {
     /// free — mixing at chunk sizes 1, 100 and 8,192 is byte-identical — and keeps
     /// `InterruptedRecordingRecovery` unchanged.
     ///
-    /// Clamped before conversion, because `Int16(1.4 * 32767)` traps and a wrapped sum would flip
-    /// sign — a loud click where the honest failure is a quiet clip. The clamp is now unreachable
-    /// for finite input (the curve's own ceiling is below 1.0) and is kept for NaN, which reaches
-    /// `min(1, nan) == 1.0` and so still produces full scale rather than trapping.
+    /// Converted through `Int16(clampedAudioSample:)`, which clamps before converting because
+    /// `Int16(1.4 * 32767)` traps and a wrapped sum would flip sign — a loud click where the honest
+    /// failure is a quiet clip. The clamp no longer changes any value, because the curve's output
+    /// never exceeds 1.0 in magnitude. It does reach 1.0, and so ±32,767, but only for sums no real
+    /// track holds: ±∞, which the limiter takes to its limit, and finite sums past about ±88,300,
+    /// where `1 − h/(1 + e)` rounds to 1.0 in `Float`. NaN reaches neither: `clampedAudioSample`
+    /// maps it to 0 before the clamp (F354). Before F354, `min(1, nan)` returned 1.0 and a NaN
+    /// frame was a full-scale click.
     public static func mixedSample(system: Float, microphone: Float) -> Int16 {
         let sum = system + microphone
         let magnitude = abs(sum)

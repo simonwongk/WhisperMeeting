@@ -364,9 +364,11 @@ func gainRuleIsSharedAndCorrect() {
     #expect(FloatTrackMixer.mixedSample(system: 0, microphone: 0) == 0)
 
     // Two full-scale tracks sum to 2.0 and come back at 32,685 — under full scale, because the
-    // curve's ceiling is below 1.0 and is reached only in the limit. The `min`/`max` clamp behind it
-    // is now unreachable for finite input and is kept for NaN, which `min(1, nan)` resolves to 1.0
-    // rather than trapping.
+    // curve approaches 1.0 only in the limit (in `Float` it rounds to 1.0 past a sum of about
+    // ±88,300, far outside any track). The clamp in `Int16(clampedAudioSample:)` behind it never
+    // changes a value. ±∞ reaches the rail at ±32,767 through the limiter; NaN is mapped to 0 before
+    // the clamp (F354), where `min(1, nan)` used to resolve it to 1.0, a full-scale click. Both are
+    // pinned by `aNaNSampleIsSilenceNotFullScale` in `NumericConversionGuardTests`.
     #expect(FloatTrackMixer.mixedSample(system: 1, microphone: 1) == 32_685)
     #expect(FloatTrackMixer.mixedSample(system: -1, microphone: -1) == -32_685)
     #expect(FloatTrackMixer.mixedSample(system: 1, microphone: 1) != Int16.max)
@@ -378,22 +380,31 @@ func recoveryAndCaptureMixesAgree() throws {
     // same audio. This is what a divergence in the duplicated gain rule would break, and it is the
     // only test that would notice.
     //
-    // **It was a tautology until F345.** It compared the two paths to each other and to nothing
-    // else, so it passed whatever they both did — and what they both did was modulate the audio at
-    // 31,992 gain flips per second, the most violently modulated fixture in this file, asserting
-    // nothing about it. It now also checks both against a reference computed here from the raw
-    // floats, so "they agree" cannot again mean "they are wrong together".
+    // **It was a tautology until F345, and F345's repair was another one until F399.** It compared
+    // the two paths to each other and to nothing else, so it passed whatever they both did — and
+    // what they both did was modulate the audio at 31,992 gain flips per second, the most violently
+    // modulated fixture in this file, asserting nothing about it. F345 added a reference "computed
+    // here from the raw floats", but computed it by calling `mixedSample`, the per-frame function
+    // both paths call, so the reference moved with the rule: with the pre-F345 rule put back inside
+    // `mixedSample`, this test still passed. The reference is now `referenceMix`, the curve written
+    // out from its definition. So the test checks two things: that the two file paths (padding,
+    // chunking, header) apply the per-frame rule identically, and that the rule they apply is F345's.
     let fixture = try MixFixture()
     defer { fixture.cleanUp() }
 
     var system: [Float] = []
     var microphone: [Float] = []
     for index in 0..<2_000 {
-        // Deliberately crossing every branch of the rule: both-active, solo, near-silence, and
-        // sums past 1.0 that have to clamp.
+        // Spanning both regions of the curve: sums inside the 1.0 knee, which pass at `soloGain`,
+        // and sums past it, which the limiter compresses (nothing clamps for finite input since
+        // F345). The 0.004 microphone frames sit under the pre-F345 rule's 0.01 activity floor and
+        // most of the rest above it, so both of that rule's gains would be exercised if it came back.
         system.append(Float(sin(Double(index) * 0.05)) * 0.9)
         microphone.append(index % 3 == 0 ? 0.004 : Float(cos(Double(index) * 0.03)) * 0.7)
     }
+    let sums = zip(system, microphone).map { abs($0 + $1) }
+    #expect(sums.contains { $0 > FloatTrackMixer.linearSumLimit }, "no frame reaches the limiter")
+    #expect(sums.contains { $0 > 0 && $0 <= FloatTrackMixer.linearSumLimit }, "no frame is linear")
     try fixture.write(system, to: fixture.system)
     try fixture.write(microphone, to: fixture.microphone)
 
@@ -410,12 +421,33 @@ func recoveryAndCaptureMixesAgree() throws {
     )
     let recovered = try pcmSamples(of: rebuilt.recordingURL)
 
-    let reference = zip(system, microphone).map {
-        FloatTrackMixer.mixedSample(system: $0, microphone: $1)
-    }
+    let reference = zip(system, microphone).map { referenceMix(system: $0, microphone: $1) }
     #expect(captured.count == 2_000)
     #expect(recovered == captured, "the two mixing paths disagree")
-    #expect(captured == reference, "both paths agree with each other and with neither the rule nor the audio")
+    #expect(captured == reference, "the mix is not the F345 curve applied to the raw floats")
+}
+
+/// The F345 curve written out again from its definition, as `recoveryAndCaptureMixesAgree`'s
+/// reference (F399).
+///
+/// Deliberately not a call to `FloatTrackMixer.mixedSample`: a reference that calls the function
+/// under test moves with it. Below the knee the curve is `soloGain · (s + m)`. Past it, the soft
+/// limiter `1 − h/(1 + e)`, where `h` is the room left between the knee's output and full scale and
+/// `e = soloGain · (|s + m| − knee)/h` rises from 0 at the knee. Each operation is the one the
+/// mixer performs, in the same order and precision (the limiter in `Double`), so the two match bit
+/// for bit. The constants are read from the mixer, since `gainRuleIsSharedAndCorrect` pins their
+/// effect with literals; what this pins is the shape.
+private func referenceMix(system: Float, microphone: Float) -> Int16 {
+    let sum = system + microphone
+    guard abs(sum) > FloatTrackMixer.linearSumLimit else {
+        return expectedPCM(FloatTrackMixer.soloGain * sum)
+    }
+    let gain = Double(FloatTrackMixer.soloGain)
+    let knee = Double(FloatTrackMixer.linearSumLimit)
+    let headroom = 1 - gain * knee
+    let excess = gain * (Double(abs(sum)) - knee) / headroom
+    let limited = Float(1 - headroom / (1 + excess))
+    return expectedPCM(sum < 0 ? -limited : limited)
 }
 
 @Test("An absurd presentation timestamp does not trap the mix (F151's lesson, third instance)")
@@ -540,7 +572,9 @@ func theMixIsBoundedMonotoneAndOdd() {
     while sum <= 4 {
         let here = FloatTrackMixer.mixedSample(system: sum, microphone: heldMicrophone)
         if here < previous { nonMonotone += 1 }
-        if here == Int16.max || here == Int16.min { unbounded += 1 }
+        // Both rails, by magnitude. `Int16(clampedAudioSample:)` maps −1.0 to −32,767, never to
+        // `Int16.min`, so the `== Int16.min` this used to test could not fire (F399).
+        if abs(Int(here)) >= Int(Int16.max) { unbounded += 1 }
         previous = here
         // Oddness is a property of the curve itself, so it is asked of the sum with nothing held.
         if FloatTrackMixer.mixedSample(system: -sum, microphone: 0)
@@ -556,18 +590,20 @@ func theMixIsBoundedMonotoneAndOdd() {
 func loudOverlapStillDoesNotClip() {
     // What the deleted 0.5 branch existed to prevent. Swept rather than sampled, because the old
     // rule's protection was conditional on both tracks exceeding a floor and this one is not.
+    // Both tracks sweep [−1, 1], and both rails count by magnitude: until F399 this swept [0, 1],
+    // which forms no negative sum, and tested `== Int16.min`, which the conversion never produces.
     var clipped = 0
-    var a = Float(0)
+    var a = Float(-1)
     while a <= 1.0 {
-        var b = Float(0)
+        var b = Float(-1)
         while b <= 1.0 {
             let out = FloatTrackMixer.mixedSample(system: a, microphone: b)
-            if out == Int16.max || out == Int16.min { clipped += 1 }
+            if abs(Int(out)) >= Int(Int16.max) { clipped += 1 }
             b += 1.0 / 256
         }
         a += 1.0 / 256
     }
-    #expect(clipped == 0, "\(clipped) full-scale samples from inputs inside [0, 1]")
+    #expect(clipped == 0, "\(clipped) full-scale samples from inputs inside [-1, 1]")
 }
 
 @Test("Every chunk size produces the same audio, which is what keeps the two paths one rule (F345)")
