@@ -39,8 +39,9 @@ public struct DiagnosticsInput: Sendable {
 
     public let meetings: [Meeting]
     public let vocabulary: [String] // count only is emitted, never the terms
-    /// Crash reports macOS wrote for this app (F370). Names and timestamps only — an `.ips` is
-    /// full of absolute paths and this bundle promises to carry none.
+    /// Crash reports macOS wrote for this app (F370): names and timestamps, plus each report's
+    /// `CrashReportDigest` when it has one (F389) — an allowlist read out of the `.ips`, never the
+    /// file itself, which is full of absolute paths this bundle promises to carry none of.
     public let crashReports: [CrashReportRecord]
 
     public init(
@@ -55,8 +56,9 @@ public struct DiagnosticsInput: Sendable {
 }
 
 /// Builds a deterministic, privacy-safe diagnostics bundle. By construction it emits only structural
-/// metadata — ids, timestamps, durations, status, language code, counts, byte sizes, and error
-/// messages — never transcript text, summaries, vocabulary terms, or absolute paths (F70).
+/// metadata — ids, timestamps, durations, status, language code, counts, byte sizes, error
+/// messages, and each crash report's allowlisted digest (F389) — never transcript text, summaries,
+/// vocabulary terms, or absolute paths (F70).
 public enum DiagnosticsBundleBuilder {
     /// Replaces absolute POSIX paths (two or more `/name` components) with `<path>` so a raw error
     /// message — a Qwen traceback, afconvert stderr, recovery text — can't leak home/absolute paths into
@@ -100,12 +102,18 @@ public enum DiagnosticsBundleBuilder {
             ]
         }
         // F370: the bundle used to contain nothing about crashes at all, so the one artifact a
-        // support question needs was the one thing it could not carry. Names and epochs only —
-        // quoting an `.ips` would put absolute paths into a bundle whose whole guarantee is that
-        // it has none (F70) — plus the command that recovers the exception reason the report
-        // itself does not have.
+        // support question needs was the one thing it could not carry. Names and epochs, plus the
+        // command that recovers an exception reason the report may not have. F389 adds each
+        // report's digest, read by allowlist and path-redacted (`CrashReportDigest` says exactly
+        // what), rather than quoting the `.ips`, which would put absolute paths into a bundle whose
+        // whole guarantee is that it has none (F70).
         let crashReports: [[String: Any]] = input.crashReports.map { report in
-            ["name": report.fileName, "writtenAt": Int(saturating: report.writtenAt.timeIntervalSince1970)]
+            var entry: [String: Any] = [
+                "name": report.fileName,
+                "writtenAt": Int(saturating: report.writtenAt.timeIntervalSince1970),
+            ]
+            if let digest = report.digest { entry["digest"] = digest.jsonObject }
+            return entry
         }
         var payload: [String: Any] = [
             "meetingCount": input.meetings.count,

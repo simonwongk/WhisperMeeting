@@ -6349,9 +6349,19 @@ final class AppModel: ObservableObject {
         transcriptionProgress[id] = nil
     }
 
+    /// The crash reports Export Diagnostics carries, with their digests (F389).
+    ///
+    /// Injected for the reason `crashReportsSince` is: a test points this at a fixture directory and
+    /// never at the user's own `~/Library/Logs/DiagnosticReports`. This one reads the reports'
+    /// contents, not only their names, which makes that rule matter more here, not less.
+    var diagnosticsCrashReports: @Sendable () -> [CrashReportRecord] = {
+        CrashReportInventory.reportsForDiagnostics(in: CrashReportInventory.defaultDirectory())
+    }
+
     /// Privacy-safe diagnostics JSON built from the live library (F86 → delivers F70). The mapping and
     /// its exclusion guarantee (never transcript, summary, vocabulary, title, or paths) are unit-tested
-    /// in `DiagnosticsExport`; this hop only supplies the live store and real recording byte sizes.
+    /// in `DiagnosticsExport`; this hop only supplies the live store, real recording byte sizes, and
+    /// the crash reports from `diagnosticsCrashReports`.
     func diagnosticsJSON() -> String {
         let input = DiagnosticsExport.input(
             meetings: store.meetings,
@@ -6361,9 +6371,7 @@ final class AppModel: ObservableObject {
             // F370: everything macOS has written for this app, not just what this launch noticed.
             // A user exporting diagnostics is answering "what went wrong", and the crash from two
             // launches ago is part of the answer.
-            crashReports: CrashReportInventory.reports(
-                in: CrashReportInventory.defaultDirectory(), newerThan: nil
-            ),
+            crashReports: diagnosticsCrashReports(),
             recordingBytes: { meeting in
                 let path = store.recordingURL(for: meeting).path
                 let size = try? FileManager.default.attributesOfItem(atPath: path)[.size]

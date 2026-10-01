@@ -2,16 +2,19 @@ import Foundation
 
 /// One crash report macOS wrote for this app.
 ///
-/// The file name and its timestamp, and nothing from inside the file. An `.ips` is full of
-/// absolute paths and loaded-image addresses, and `DiagnosticsBundleBuilder` promises a bundle
-/// that carries neither (F70) — so this names the report rather than quoting it.
+/// The file name and its timestamp. An `.ips` is full of absolute paths and loaded-image
+/// addresses, and `DiagnosticsBundleBuilder` promises a bundle that carries neither (F70) — so
+/// this names the report rather than quoting it. `digest` is what Export Diagnostics reads out of
+/// it by allowlist (F389); the launch notice's listing leaves it nil.
 public struct CrashReportRecord: Sendable, Equatable {
     public let fileName: String
     public let writtenAt: Date
+    public let digest: CrashReportDigest?
 
-    public init(fileName: String, writtenAt: Date) {
+    public init(fileName: String, writtenAt: Date, digest: CrashReportDigest? = nil) {
         self.fileName = fileName
         self.writtenAt = writtenAt
+        self.digest = digest
     }
 }
 
@@ -29,7 +32,8 @@ public struct CrashReportRecord: Sendable, Equatable {
 /// report is self-sufficient.
 ///
 /// Read-only, no new permission, nothing uploaded — `~/Library/Logs/DiagnosticReports` is the
-/// user's own directory and the app only lists it.
+/// user's own directory. The launch notice only lists it; Export Diagnostics also reads the newest
+/// few reports into a `CrashReportDigest` (`reportsForDiagnostics`, F389).
 public enum CrashReportInventory {
     /// Where macOS writes them. Per-user, not `/Library/Logs`, which is the system-wide one.
     public static func defaultDirectory(
