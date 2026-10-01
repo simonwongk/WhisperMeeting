@@ -17,8 +17,11 @@ import Testing
 // initializers all take an `SCDisplay` or `SCWindow`. Those are init-unavailable and come only from
 // `SCShareableContent`, which is behind the Screen Recording permission — a test must not ask for it.
 //
-// No clock: `captureQueue` is serial, so the `captureQueue.sync` inside `captureDidDie` runs after
-// the `captureQueue.async` block `recordStreamStop` enqueued.
+// No clock. `recordStreamStop` hands its work to the serial `captureQueue` asynchronously, so each
+// test calls `drainCaptureQueueForTesting()` (a `captureQueue.sync {}`) before it asserts. That
+// orders the assertions after the queued block whatever `captureDidDie` and `hasStreamError` do to
+// read their value. Without it, an accessor that does not wait on the queue fails the death test,
+// and passes the ignore tests' expectations on it without checking anything.
 
 private struct LateStop: Error {}
 
@@ -41,6 +44,7 @@ func staleStreamStopIsIgnored() {
     engine.installLiveStreamStandInForTesting(liveStream)
 
     engine.recordStreamStop(from: replacedStream, error: LateStop())
+    engine.drainCaptureQueueForTesting()
 
     #expect(!engine.captureDidDie, "a late stop from a replaced stream marked the live capture dead")
     #expect(!engine.hasStreamError, "a late stop from a replaced stream recorded an error on the live capture")
@@ -51,6 +55,7 @@ func stopWithNoLiveStreamIsIgnored() {
     let engine = makeEngine()
 
     engine.recordStreamStop(from: NSObject(), error: LateStop())
+    engine.drainCaptureQueueForTesting()
 
     #expect(!engine.captureDidDie)
     #expect(!engine.hasStreamError)
@@ -63,6 +68,7 @@ func liveStreamStopRecordsDeath() {
     engine.installLiveStreamStandInForTesting(liveStream)
 
     engine.recordStreamStop(from: liveStream, error: LateStop())
+    engine.drainCaptureQueueForTesting()
 
     #expect(engine.captureDidDie, "the live stream stopped and the engine did not notice")
     #expect(engine.hasStreamError)

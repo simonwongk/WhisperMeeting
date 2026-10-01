@@ -790,6 +790,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         captureQueue.sync { _liveStreamStandInForTesting = standIn }
     }
 
+    /// Returns once every block already queued on `captureQueue` has run (F484). `recordStreamStop`
+    /// hands its work to the queue asynchronously, so a test drains the queue before it asserts,
+    /// rather than counting on the accessor it reads next happening to wait on the same queue.
+    func drainCaptureQueueForTesting() {
+        captureQueue.sync {}
+    }
+
     /// What a stop or a cancel does to the session state, without the stream teardown around it.
     func resetForTesting() { reset() }
     #endif
@@ -904,10 +911,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// a single throwing write — a full disk is the realistic cause — tore down a stream that was
     /// still delivering, padded the timeline with silence for audio that had been captured, recorded
     /// the fabricated outage in the manifest, and ended the meeting after three cycles telling the
-    /// user the capture "stopped unexpectedly". `_streamDied` is set true only by
-    /// `recordStreamDeath` — reached from `stream(_:didStopWithError:)` through `recordStreamStop`,
-    /// and from the test-only `handleStreamFailure` — and by the restart's own failure path, so it
-    /// means a death and nothing else (F484 corrected who sets it).
+    /// user the capture "stopped unexpectedly". `_streamDied` is written only by `recordStreamDeath`,
+    /// reached only from `stream(_:didStopWithError:)` and the restart's own failure path, so it
+    /// means a death and nothing else.
     var captureDidDie: Bool { captureQueue.sync { _streamDied } }
 
     private func requestMicrophoneAccess() async -> Bool {
