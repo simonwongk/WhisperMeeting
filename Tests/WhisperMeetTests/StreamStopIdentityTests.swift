@@ -13,9 +13,12 @@ import Testing
 // and skips the guard, so deleting the guard failed nothing.
 //
 // These drive the delegate's own body, `recordStreamStop(from:error:)`. The live stream is a
-// stand-in object, not an `SCStream`: building one needs an `SCContentFilter`, whose declared
-// initializers all take an `SCDisplay` or `SCWindow`. Those are init-unavailable and come only from
-// `SCShareableContent`, which is behind the Screen Recording permission — a test must not ask for it.
+// stand-in object, not an `SCStream`. One could be built: `SCStream`'s own `init` is unavailable but
+// `SCContentFilter`'s is not, so `SCStream(filter: SCContentFilter(), …)` typechecks. But
+// ScreenCaptureKit's headers do not say whether constructing a stream asks for the Screen Recording
+// permission, and a test must never risk that prompt. So the stand-in exercises the guard, and
+// `liveStreamIdentityIsTheStreamOutsideDebug` pins as source that outside DEBUG the identity is
+// `_stream` itself.
 //
 // No clock. `recordStreamStop` hands its work to the serial `captureQueue` asynchronously, so each
 // test calls `drainCaptureQueueForTesting()` (a `captureQueue.sync {}`) before it asserts. That
@@ -88,4 +91,49 @@ func delegateForwardsToRecordStreamStop() throws {
         .filter { !$0.isEmpty }
     #expect(Array(body.prefix(2)) == ["recordStreamStop(from: stream, error: error)", "}"],
             "stream(_:didStopWithError:) must be exactly a forward to recordStreamStop(from:error:)")
+}
+
+@Test("Outside DEBUG, a stop is checked against the live SCStream itself (F484)")
+func liveStreamIdentityIsTheStreamOutsideDebug() throws {
+    // The three behavioural tests above either install a stand-in, which the DEBUG branch of
+    // `_liveStreamIdentity` returns first, or have no live stream, where `return _stream` gives nil:
+    // exactly what a getter mutated to `return nil` gives. None of them can tell that line from nil,
+    // so `return nil` would make the shipped app ignore every real stream death with the whole
+    // suite green. This pins the line as source.
+    let source = SourceAssertion.stripComments(
+        try String(
+            contentsOf: SourceAssertion.url("Sources/WhisperMeet/AudioCaptureEngine.swift"),
+            encoding: .utf8
+        ),
+        blankStringLiterals: true
+    )
+    let declarations = source.ranges(of: "var _liveStreamIdentity: AnyObject? {")
+    try #require(declarations.count == 1, "expected one _liveStreamIdentity declaration, found \(declarations.count)")
+    var depth = 1
+    var cursor = declarations[0].upperBound
+    while cursor < source.endIndex, depth > 0 {
+        if source[cursor] == "{" { depth += 1 } else if source[cursor] == "}" { depth -= 1 }
+        cursor = source.index(after: cursor)
+    }
+    try #require(depth == 0, "_liveStreamIdentity's getter never closes")
+    let lines = source[declarations[0].upperBound..<source.index(before: cursor)]
+        .split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+
+    // One `#if DEBUG … #endif` and no other directive, or this guard needs re-reading: an `#else`
+    // or a second condition would put release code where the stripping below throws it away.
+    let directives = lines.filter { $0.hasPrefix("#") }
+    try #require(
+        directives == ["#if DEBUG", "#endif"],
+        "_liveStreamIdentity's compile-time branches changed (\(directives)); re-read this guard"
+    )
+    let opening = try #require(lines.firstIndex(of: "#if DEBUG"))
+    let closing = try #require(lines.firstIndex(of: "#endif"))
+    let releaseGetter = Array(lines[..<opening] + lines[(closing + 1)...])
+    let expected: [String] = ["return _stream"]
+    #expect(
+        releaseGetter == expected,
+        "outside DEBUG, _liveStreamIdentity must be exactly `return _stream`, or a real stream's stop is checked against something else"
+    )
 }

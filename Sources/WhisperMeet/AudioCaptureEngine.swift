@@ -480,16 +480,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// checks that the delegate above is nothing but this forward.
     func recordStreamStop(from candidate: AnyObject, error: Error) {
         captureQueue.async { [weak self] in
-            // Already on the capture queue: the stored property, not the syncing accessor (F334).
+            // Already on the capture queue: the `_` storage, read through the computed
+            // `_liveStreamIdentity`, not the syncing `stream` accessor (F334).
             guard let self, self._liveStreamIdentity === candidate else { return }
             self.recordStreamDeath(error)
         }
     }
 
     /// The object a stop report must be to count as the live stream: `_stream`, or in a DEBUG
-    /// build a stand-in a test installed (F484). A test cannot fill `_stream`: an `SCStream` needs
-    /// an `SCContentFilter`, whose declared initializers all take an `SCDisplay` or `SCWindow`, and
-    /// those come only from `SCShareableContent`. Must run on `captureQueue`.
+    /// build a stand-in a test installed (F484). No test puts a real stream in `_stream`. One could
+    /// be built: `SCStream`'s own `init` is unavailable but `SCContentFilter`'s is not, so
+    /// `SCStream(filter: SCContentFilter(), …)` typechecks. But ScreenCaptureKit's headers do not say
+    /// whether constructing a stream asks for the Screen Recording permission, and a test must never
+    /// risk that prompt. `liveStreamIdentityIsTheStreamOutsideDebug` pins, as source, that outside
+    /// DEBUG this is `_stream` and nothing else. Must run on `captureQueue`.
     private var _liveStreamIdentity: AnyObject? {
         #if DEBUG
         if let _liveStreamStandInForTesting { return _liveStreamStandInForTesting }
@@ -782,8 +786,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         try publishRestart(nil, generation: generation, paddingFrames: paddingFrames)
     }
 
-    /// F484: what `recordStreamStop` treats as the live stream in place of `_stream`, which a test
-    /// cannot fill. Nothing in the app sets it, and `reset()` does not clear it.
+    /// F484: what `recordStreamStop` treats as the live stream in place of `_stream`, which no test
+    /// fills (`_liveStreamIdentity` says why). Nothing in the app sets it, and `reset()` does not
+    /// clear it.
     private var _liveStreamStandInForTesting: AnyObject?
 
     func installLiveStreamStandInForTesting(_ standIn: AnyObject?) {
