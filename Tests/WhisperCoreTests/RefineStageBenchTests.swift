@@ -367,8 +367,8 @@ private enum RefineStageBenchRun {
     /// as successive refined dictations reach one resident helper in the app.
     static func refine(_ run: RefineStageBench.RawRun) async throws -> RefineStageBench.ConditionResult {
         let engine = RecordingRefineEngine(base: ProductionRefineConstruction.engine())
-        // The app's default budget sleep, passed explicitly: see `ProductionRefineConstruction.budgetSleep`.
-        let refiner = DictationRefiner(engine: engine, sleep: ProductionRefineConstruction.budgetSleep)
+        // No `sleep:` argument: the app's own default budget timer, as DictationController builds it.
+        let refiner = DictationRefiner(engine: engine)
         defer { refiner.shutdown() }
         // The app warms the refiner before a dictation can use it; warm-up sends the F203 prime.
         let warmed = await refiner.warmUp()

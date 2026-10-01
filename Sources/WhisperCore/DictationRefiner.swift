@@ -82,12 +82,23 @@ public actor DictationRefiner: DictationTextRefining {
     private var inFlightGeneration = 0
     private var isEvicting = false
 
+    /// `sleep` is the budget timer; `nil` (the app's choice) means `Task.sleep(for:)`.
+    ///
+    /// The real sleep lives in the body, not in the default argument (F718). A closure literal in a
+    /// public default argument is emitted into every module that uses the default, and at `-Onone`
+    /// those copies disagreed on their async context size: 144 bytes in WhisperCore, 128 in its
+    /// clients. The closure's body and the record holding that size are separate weak symbols, so a
+    /// debug link could pair WhisperCore's body with a client's record. The test bundle's link did,
+    /// and so did the debug app's (found by inspecting the binary). The caller then allocated too
+    /// small a context, the task allocator was corrupted, and the process aborted when the budget
+    /// sleep returned. Written here, the closure is compiled once, in this module, and no client
+    /// gets a copy.
     public init(
         engine: any DictationRefineEngine,
-        sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
+        sleep: Sleep? = nil
     ) {
         self.engine = engine
-        self.sleep = sleep
+        self.sleep = sleep ?? { try await Task.sleep(for: $0) }
     }
 
     public func warmUp() async -> Bool {
