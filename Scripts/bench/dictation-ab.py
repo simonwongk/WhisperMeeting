@@ -23,6 +23,19 @@ dictation path's.
 Requires the runtimes to be installed (Settings → Install…), and the clips to exist:
 `Scripts/bench/clips/*.wav` are gitignored, so run `Scripts/bench/generate_clips.sh` first.
 Reads only the bench clips — never a user recording, meeting index, or transcript.
+
+The refine stage (F631). This script measures recognition only. To see what Quick Dictation's
+refinement then does to the same words, give its `--json` files to the opt-in Swift bench. The
+bench sends each raw transcript through `DictationRefiner` as the app does, against the installed
+refine helper, and prints the per-word raw-vs-delivered table. Each file records the language
+setting its run used (`language`, null = Automatic), and the bench labels conditions by it:
+
+    Scripts/bench/dictation-ab.py --clips encs,cs --words --json /tmp/raw-auto.json
+    Scripts/bench/dictation-ab.py --clips encs,cs --words --language English --json /tmp/raw-en.json
+    WHISPERMEET_REFINE_BENCH=1 WHISPERMEET_REFINE_BENCH_RAW=/tmp/raw-auto.json:/tmp/raw-en.json \\
+        swift test --disable-sandbox --no-parallel --filter RefineStageBenchTests
+
+(On a Command Line Tools Mac, add the framework flags AGENTS.md lists under Build commands.)
 """
 import argparse
 import importlib.util
@@ -228,7 +241,11 @@ def run_engine(key, spec, references, verbose, clip_filter=None, language=None):
 
     process.stdin.close()
     process.wait(timeout=30)
-    return {"engine": key, "label": spec["label"],
+    process.stdout.close()
+    process.stderr.close()
+    # `language` is the setting this run sent (None = Automatic), which no row can tell you: a
+    # pinned helper echoes the name it was sent, an automatic one reports what it detected (F631).
+    return {"engine": key, "label": spec["label"], "language": language,
             "cold_seconds": round(cold_seconds, 2), "clips": rows}
 
 
@@ -268,7 +285,8 @@ def run_meeting_engine(key, spec, references, verbose, clip_filter=None, languag
             if verbose:
                 print_row(key, row)
     # No daemon, so no separate cold start: the load is inside every clip's seconds.
-    return {"engine": key, "label": spec["label"], "cold_seconds": None, "clips": rows}
+    return {"engine": key, "label": spec["label"], "language": language,
+            "cold_seconds": None, "clips": rows}
 
 
 def table(results):

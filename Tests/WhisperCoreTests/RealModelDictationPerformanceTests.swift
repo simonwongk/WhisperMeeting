@@ -78,13 +78,9 @@ private enum RealModelPerf {
         )
     }
 
+    /// The app's construction, shared with the F631 refine bench and pinned to the app's source.
     static func productionRefineEngine() -> WarmRefineEngine {
-        WarmRefineEngine(
-            python: SummarizerRuntime.pythonExecutable(),
-            script: SummarizerRuntime.refineHelperScript(),
-            modelDirectory: SummarizerRuntime.modelDirectory(),
-            primePrompt: DictationRefinePrompt.system(languageCode: nil)
-        )
+        ProductionRefineConstruction.engine()
     }
 
     /// Measured elapsed seconds for `body`, printed with a label so an opt-in run leaves a record.
