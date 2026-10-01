@@ -482,9 +482,11 @@ func aMarkerDoesNotEraseAPaddedGap() async throws {
 }
 
 // F363 — `hasStreamError` cannot tell a failed buffer write from a dead stream, and the restart
-// decision was reading it. The engine draws the distinction itself (`AudioCaptureEngine.swift:74-77`)
-// and `DeadCaptureStopTests.writeFailureIsNotAnEarlyStop` already pins it for `stop()`; this pins it
-// for the consumer that tears the stream down, which is where it actually costs the user audio.
+// decision was reading it. The engine draws the distinction itself (`AudioCaptureEngine`'s
+// `_streamError`, set by any failure, versus `_streamDied`, set only by a death and read through
+// `captureDidDie`) and `DeadCaptureStopTests.writeFailureIsNotAnEarlyStop` already pins it for
+// `stop()`; this pins it for the consumer that tears the stream down, which is where it actually
+// costs the user audio.
 
 private struct WriteFailed: Error {}
 

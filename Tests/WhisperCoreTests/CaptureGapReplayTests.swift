@@ -11,8 +11,10 @@ import Testing
 //
 // ScreenCaptureKit will not drop buffers on demand, so the drop comes from the seam instead. The
 // replay below performs exactly the two calls `AudioCaptureEngine` makes per buffer, in that order
-// (`Sources/WhisperMeet/AudioCaptureEngine.swift:713-724`): ask the policy for padding against the
-// frames written so far, append that many silent frames, then append the buffer.
+// (`FloatTrackWriter.append(_:)` in `Sources/WhisperMeet/AudioCaptureEngine.swift`:
+// `CaptureGapPolicy.paddingFrames`, then `track.appendSilence`, then `track.append`): ask the policy
+// for padding against the frames written so far, append that many silent frames, then append the
+// buffer.
 //
 // What this does NOT cover, said plainly rather than implied: the `CMSampleBuffer` plumbing above
 // that call — the converter, `firstPresentationTime`, and the queue it runs on. This is the writer

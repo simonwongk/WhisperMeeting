@@ -2,13 +2,14 @@ import Foundation
 import Testing
 @testable import WhisperCore
 
-// F278 — `WAVWriter.swift:3-4` claims to be "exactly one WAV path in the codebase". It was not:
-// `InterruptedRecordingRecovery` carried its own byte-for-byte reimplementation (`:293-309`).
+// F278 — `WAVWriter`'s doc claimed it was "exactly one WAV path in the codebase". It was not:
+// `InterruptedRecordingRecovery` carried its own byte-for-byte reimplementation, which F278 replaced
+// with a call to `WAVWriter.header` (in `rebuildFromSourceTracks`).
 //
 // A correction to the record: the earlier review said **three** copies and I repeated that in F259's
 // log entry and in F278's own text without checking. There were two. `FloatTrackMixer` already calls
-// `WAVWriter.header` (`AudioCaptureEngine.swift:796`), as do the dictation clip writer
-// (`AppModel.swift:1394`) and the diarization smoke test. Same failure as the fsync figure: a
+// `WAVWriter.header` (`FloatTrackMixer.mix`), as do the segment clip writer
+// (`AppModel.makeSegmentClip`) and the diarization smoke test. Same failure as the fsync figure: a
 // plausible number, asserted and repeated, never verified.
 //
 // Two copies still matter, because **F150** — the `UInt32` data-size field overflowing past ~12.4 h
