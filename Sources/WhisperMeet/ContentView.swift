@@ -3098,6 +3098,13 @@ private struct TranscriptDetailView: View {
             // F422/F423: removing lines changes what the repetition notices describe, so they are
             // recomputed when the lines change — still never per redraw.
             .onChange(of: store.meeting(id: meetingID)?.segments) { _, _ in refreshRepetitionState() }
+            // F575: and when the transcript becomes hand-edited, or an undo makes it the rendered
+            // lines again. A hand edit changes only the text, so the lines-changed refresh never ran
+            // and the notice stayed beside a Remove button that refuses an edited transcript. Keyed
+            // on the remembered Bool (F541), not on the text, so typing does not re-run the analysis.
+            .onChange(of: store.meeting(id: meetingID).map { store.isTranscriptEdited($0) }) { _, _ in
+                refreshRepetitionState()
+            }
             .alert("Transcribe this meeting again?", isPresented: $confirmTranscribeAgain) {
                 Button("Cancel", role: .cancel) {}
                 Button("Transcribe Again") { model.transcribeAgain(id: meetingID) }
