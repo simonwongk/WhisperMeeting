@@ -1912,7 +1912,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Local summaries require an Apple-silicon Mac. Choose Claude to summarize on this Mac.")
+                        Text(SummaryPrivacyCopy.localSummariesUnsupportedCaption)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -3243,7 +3243,7 @@ private struct TranscriptDetailView: View {
                 .labelsHidden()
                 .frame(maxWidth: 150)
                 .disabled(isSummarizing)
-                .help("Choose a template that shapes the summary's structure for this kind of meeting. Everything stays on this Mac.")
+                .help(SummaryPrivacyCopy.templatePickerHelp(for: model.summarizationEngine))
                 Picker("Summary style", selection: $summaryStyle) {
                     ForEach(SummaryStyle.allCases, id: \.self) { style in
                         Text(Self.summaryStyleName(style)).tag(style)
