@@ -43,14 +43,17 @@ public enum WhisperMeetLibrary {
     /// initializers. `ContentView`'s two `@AppStorage` values (summary style and template) read
     /// `.standard` directly and are still shared.
     ///
-    /// `openSuite` is for tests. A suite opened by this name is a plist in the user's real
+    /// `openSuite` is for tests; nil opens the real suite. A suite opened by this name is a plist in the user's real
     /// `~/Library/Preferences`, and `removePersistentDomain` empties that file without deleting it
     /// (F442), so a test that wrote through the real opener would leave one behind on every run.
     public static func defaults(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        openSuite: (String) -> UserDefaults? = { UserDefaults(suiteName: $0) }
+        openSuite: ((String) -> UserDefaults?)? = nil
     ) -> UserDefaults {
         guard let suiteName = defaultsSuiteName(environment: environment) else { return .standard }
+        // The real opener is written here, not as the default argument: a closure in a public
+        // default is compiled into every module that uses the default (F718).
+        let openSuite = openSuite ?? { UserDefaults(suiteName: $0) }
         // `UserDefaults(suiteName:)` is nil only for the app's own bundle id and the global domain,
         // and this name is neither. Falling back to `.standard` here would quietly reintroduce the
         // shared state this exists to separate, so it is not a fallback worth having.
