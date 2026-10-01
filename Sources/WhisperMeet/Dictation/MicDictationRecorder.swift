@@ -392,13 +392,13 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
             let input = engine.inputNode
             stateLock.withLock { installedInput = input }
             // `format: nil`, and that is the F356 fix rather than a simplification. AVAudioNode.h
-        // documents the argument as "If non-nil, attempts to apply this as the format of the
-        // specified output bus" — so a non-nil value is a claim about the hardware, checked against
-        // the live device at install time. Enabling the input stream is itself what reconfigures
-        // that device, so a format read beforehand is stale by the time it is validated, and
-        // AVFAudio answers a mismatch by raising. nil declines to make the claim: the tap delivers
-        // the device's own format and `DictationTapConverter` reads it per buffer. Re-reading the
-        // format one line earlier would only have shortened the window, not closed it.
+            // documents the argument as "If non-nil, attempts to apply this as the format of the
+            // specified output bus" — so a non-nil value is a claim about the hardware, checked against
+            // the live device at install time. Enabling the input stream is itself what reconfigures
+            // that device, so a format read beforehand is stale by the time it is validated, and
+            // AVFAudio answers a mismatch by raising. nil declines to make the claim: the tap delivers
+            // the device's own format and `DictationTapConverter` reads it per buffer. Re-reading the
+            // format one line earlier would only have shortened the window, not closed it.
             // 4,800 frames — 100 ms at 48 kHz — because that is what AVFAudio delivers anyway
             // (F359). `AVAudioNode.h` documents the parameter's "supported range is [100, 400]
             // ms", and this asked for 1,024 frames: 21.3 ms, a twentieth of the documented

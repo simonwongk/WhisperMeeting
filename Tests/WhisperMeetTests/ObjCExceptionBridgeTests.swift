@@ -4,13 +4,16 @@ import ObjCExceptionBridge
 import Testing
 @testable import WhisperMeet
 
-// F374 — the one test in this whole area that can be written honestly.
+// F374 — the bridge, and where it is used.
 //
-// Every other guard around `MicDictationRecorder.start()` is either a source assertion or a probe
-// that narrows a window. This one drives the actual mechanism: a raised `NSException` becomes a
-// Swift-visible error and the process survives. It can be written only because the bridge makes
-// the raise catchable — before it, a test that raised would have taken the test runner down with
-// it, which is why F367 warns against trying to make a fake raise.
+// The first tests below drive the mechanism itself: a raised `NSException` becomes a Swift-visible
+// error and the process survives. Before the bridge, a test that raised took the test runner down
+// with it. F403 recorded exactly that: `aRaisingProbeIsCaughtByTheBridge` (in
+// `DictationCaptureLossTests`) aborted `swiftpm-testing-helper` while the probe still ran outside
+// the bridge. That test now raises through `MicDictationRecorder.start()` itself, and
+// `nonPCMBufferFormatRaiseIsCaught` (F385) has AVFoundation raise for real. What no headless test
+// can reach is pinned by the two source assertions at the end: that the rest of `start()`'s
+// hardware calls, and `AudioCaptureEngine`'s buffer construction, are inside the bridge.
 //
 // The option chosen, and the two rejected. (1) "accept and document" is the status quo plus a
 // sentence and closes nothing. (2) "re-probe immediately before `engine.start()`" narrows the
