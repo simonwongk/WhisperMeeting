@@ -45,10 +45,13 @@ DICTATION_MAX_TOKENS = 768
 # runner. Mirrored, not imported, so `test_qwen_dictate_server.py` reads that literal from the
 # Swift source and fails if the two drift apart.
 REPLY_TIMEOUT_SECONDS = 120.0
-# Wall-clock seconds a request may spend decoding before its reply is sent with what was decoded so
-# far. The 20 s left of the reply wait covers what this clock cannot interrupt: loading the clip,
-# each chunk's audio encode and prefill (which run before its first token is pulled), the one decode
-# step in flight when a chunk's time runs out, and the join and emit.
+# Wall-clock seconds a request may spend before its reply is sent with what was decoded so far. The
+# deadline is set when the request line has been read, before the clip loads, so loading and
+# splitting the clip are paid out of this budget, not out of the margin. The 20 s left of the reply
+# wait covers what this clock cannot interrupt once the deadline passes: a chunk's audio encode and
+# prefill that began just before its time ran out (they run on its first pull, before its first
+# token), the one decode step in flight, and the join and emit. It also covers the moments between
+# the Swift side starting its wait and this clock starting.
 DICTATION_DECODE_BUDGET_SECONDS = REPLY_TIMEOUT_SECONDS - 20.0
 
 # The clock the budget is measured on; a test replaces it with one that advances per decoded token.
