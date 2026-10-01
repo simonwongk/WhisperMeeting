@@ -139,6 +139,20 @@ public enum IntegrityFinding: Sendable, Equatable {
     /// above could not run (F638). Not a finding about the audio itself: it says what went
     /// unchecked, where the report used to say nothing and read as a clean result.
     case sourceTrackManifestMissing
+
+    /// Whether this is a problem with the recording, as opposed to a note about what the check
+    /// could not look at (F638). Verify Library's header counts a recording as having problems only
+    /// for a finding where this is true. A switch with no `default`, so a new case must be classified
+    /// here before anything builds.
+    public var isProblem: Bool {
+        switch self {
+        case .recordingMissing, .recordingEmpty, .wavHeaderUnreadable, .wavTruncated,
+             .sourceTrackFrameMismatch, .durationInconsistent:
+            return true
+        case .sourceTrackManifestMissing:
+            return false
+        }
+    }
 }
 
 public struct MeetingIntegrityDescriptor: Sendable {

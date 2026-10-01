@@ -6833,10 +6833,25 @@ extension AppModel {
             alertMessage = "Library check complete — no audio problems were found."
         } else {
             // One result per meeting, one message per finding: the header counts recordings, so it
-            // takes the results' count, not the lines' (F505).
-            let header = "Library check found problems with \(results.count) recording"
-                + (results.count == 1 ? "" : "s")
-                + ". The recordings were not changed."
+            // counts results, not lines (F505). And it counts a recording as having problems only
+            // for a finding that is one (F638): the unchecked-tracks note says what the check could
+            // not look at, so a recording that carries it is counted as not fully checked instead —
+            // and a library whose only entries are notes is not told it has problems. A recording
+            // can be in both counts. Every line, problem or note, stays in the body.
+            func recordings(_ count: Int) -> String { "\(count) recording" + (count == 1 ? "" : "s") }
+            let withProblems = results.filter { $0.findings.contains { $0.isProblem } }.count
+            let notFullyChecked = results.filter { $0.findings.contains { !$0.isProblem } }.count
+            var header: String
+            if withProblems == 0 {
+                header = "Library check found no audio problems, but \(recordings(notFullyChecked)) could not be fully checked."
+            } else {
+                header = "Library check found problems with \(recordings(withProblems))"
+                if notFullyChecked > 0 {
+                    header += ", and \(recordings(notFullyChecked)) could not be fully checked"
+                }
+                header += "."
+            }
+            header += " The recordings were not changed."
             alertMessage = ([header] + messages).joined(separator: "\n\n")
         }
     }

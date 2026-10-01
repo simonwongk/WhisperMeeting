@@ -268,7 +268,10 @@ func verifyLibraryReportsRawTracksWithoutAManifest() throws {
     model.verifyLibrary()
 
     let message = try #require(model.alertMessage)
-    #expect(message.hasPrefix("Library check found problems with 1 recording."))
+    // The note is not a problem with the recording, so a library whose only entry is the note is
+    // not told it has "problems" — the header counts it as not fully checked instead.
+    #expect(message.hasPrefix("Library check found no audio problems, but 1 recording could not be fully checked."))
+    #expect(!message.contains("found problems with"))
     #expect(message.contains("“Unchecked tracks”"))
     #expect(message.contains("source-tracks.json"))
     #expect(!message.contains("Described tracks"))
@@ -278,6 +281,51 @@ func verifyLibraryReportsRawTracksWithoutAManifest() throws {
     let unmanifestedDir = root.appendingPathComponent("Recordings/\(unmanifestedID.uuidString)", isDirectory: true)
     #expect(!FileManager.default.fileExists(atPath: unmanifestedDir.appendingPathComponent("source-tracks.json").path))
     #expect(!FileManager.default.fileExists(atPath: unmanifestedDir.appendingPathComponent("source-tracks.recovered.json").path))
+}
+
+/// F638 with F505: the header still counts recordings, not lines (F505), but it counts a recording as
+/// having problems only for a finding that is one. The unchecked-tracks note says what the check
+/// could not look at; counted as a problem it told a user with nothing wrong that their library had
+/// problems. Recordings carrying the note are counted separately, as not fully checked.
+@MainActor
+@Test("Verify Library's header counts only recordings with problems, and words unchecked tracks as a note (F638, F505)")
+func verifyLibraryHeaderCountsOnlyRecordingsWithProblems() throws {
+    let root = try makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = headyModel(root: root)
+
+    let firstID = UUID()
+    let secondID = UUID()
+    model.store.upsert(MeetingRecord(id: firstID, title: "First",
+                                     recordingPath: "Recordings/\(firstID.uuidString)/meeting.wav"))
+    model.store.upsert(MeetingRecord(id: secondID, title: "Second",
+                                     recordingPath: "Recordings/\(secondID.uuidString)/meeting.wav"))
+
+    // Notes only, on two recordings: no problems, two not fully checked, both lines kept.
+    model.checkMeetingIntegrity = { _ in [.sourceTrackManifestMissing] }
+    model.verifyLibrary()
+
+    let notesOnly = try #require(model.alertMessage)
+    #expect(notesOnly.hasPrefix(
+        "Library check found no audio problems, but 2 recordings could not be fully checked. The recordings were not changed."
+    ))
+    #expect(notesOnly.components(separatedBy: "\n\n").count == 1 + 2)
+
+    // A problem and the note on the first, the note alone on the second: one recording with
+    // problems, two not fully checked, three lines.
+    model.checkMeetingIntegrity = { descriptor in
+        descriptor.recordingURL.path.contains(firstID.uuidString)
+            ? [.wavTruncated(declaredBytes: 1_000, actualBytes: 144), .sourceTrackManifestMissing]
+            : [.sourceTrackManifestMissing]
+    }
+    model.alertMessage = nil
+    model.verifyLibrary()
+
+    let mixed = try #require(model.alertMessage)
+    #expect(mixed.hasPrefix(
+        "Library check found problems with 1 recording, and 2 recordings could not be fully checked. The recordings were not changed."
+    ))
+    #expect(mixed.components(separatedBy: "\n\n").count == 1 + 3)
 }
 
 /// F638, the other half of the choice: the launch sweep reports damage, and a missing description
