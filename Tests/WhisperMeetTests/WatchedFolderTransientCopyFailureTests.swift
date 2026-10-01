@@ -22,11 +22,11 @@ private func makeModel() throws -> AppModel {
 }
 
 /// A real, parseable WAV: the import measures its duration before adopting it (F326).
-private func makeRecordingFile() throws -> URL {
+private func makeRecordingFile(named name: String = "call.wav") throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("F554Source-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let url = directory.appendingPathComponent("call.wav")
+    let url = directory.appendingPathComponent(name)
     try WAVWriter.wavData(from: [Float](repeating: 0.05, count: 3_200), sampleRate: 16_000).write(to: url)
     return url
 }
@@ -118,8 +118,8 @@ func persistentTransientFailureIsBounded() async throws {
         await look(model)
     }
 
-    #expect(copy.calls > 1, "a transient failure is retried")
-    #expect(copy.calls < 20, "but not forever: every try re-copies the whole file")
+    #expect(copy.calls == AppModel.watchedFolderCopyAttemptLimit,
+            "retried, but exactly as often as the limit says: every try re-copies the whole file")
     #expect(model.pendingWatchedFiles.isEmpty)
     #expect(model.store.meetings.isEmpty)
     #expect(alerts.count == 1, "the give-up is said once, not once per try: \(alerts)")
@@ -127,9 +127,64 @@ func persistentTransientFailureIsBounded() async throws {
     #expect(alert.contains("call.wav"))
     #expect(alert.contains("Import Recordings"), "and says how to import it once the problem is fixed")
 
+    #expect(model.watchedFolderAnnouncementCount == 1, "announced once, not once per try")
+
     let triesAtGiveUp = copy.calls
     await look(model)
     #expect(copy.calls == triesAtGiveUp, "a file given up on is not tried again on its own")
+
+    // The inbox offers it again only once it has changed, and then it is news again.
+    await look(model, ready: [file])
+    #expect(model.watchedFolderAnnouncementCount == 2, "a file handed over afresh is announced afresh")
+    #expect(model.lastWatchedFolderAnnouncement == "Importing from your watched folder: call.wav")
+}
+
+// F554 review — every retry is a new delivery, and each delivery posted "Importing from your
+// watched folder: …" again, so a copy that kept failing announced itself once per try, each time
+// followed by nothing, before the give-up alert: the repeat F454's once-per-cause rule exists to
+// prevent. A file is announced when it first goes to the importer, and not again until it leaves
+// the queue.
+@MainActor
+@Test("A file being retried is announced once, not once per try (F554)")
+func retriedFileIsAnnouncedOnce() async throws {
+    let model = try makeModel()
+    defer { try? FileManager.default.removeItem(at: model.store.rootDirectory) }
+    let file = try makeRecordingFile()
+    defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+    let copy = ScriptedCopy(failing: 2, with: outOfSpace)
+    model.copyRecordingIntoLibrary = { try copy.copy($0, $1) }
+
+    await look(model, ready: [file])
+    await look(model)
+    await look(model)
+
+    try #require(copy.calls == 3)
+    try #require(model.store.meetings.count == 1, "the third try imports it")
+    #expect(model.watchedFolderAnnouncementCount == 1, "three tries, one announcement")
+    #expect(model.lastWatchedFolderAnnouncement == "Importing from your watched folder: call.wav")
+}
+
+@MainActor
+@Test("A new file joining a file being retried is announced by its own name only (F554)")
+func newFileBesideARetryIsAnnouncedAlone() async throws {
+    let model = try makeModel()
+    defer { try? FileManager.default.removeItem(at: model.store.rootDirectory) }
+    let first = try makeRecordingFile()
+    defer { try? FileManager.default.removeItem(at: first.deletingLastPathComponent()) }
+    let second = try makeRecordingFile(named: "standup.wav")
+    defer { try? FileManager.default.removeItem(at: second.deletingLastPathComponent()) }
+    let copy = ScriptedCopy(failing: 1, with: outOfSpace)
+    model.copyRecordingIntoLibrary = { try copy.copy($0, $1) }
+
+    await look(model, ready: [first])
+    try #require(model.pendingWatchedFiles == [first])
+    #expect(model.lastWatchedFolderAnnouncement == "Importing from your watched folder: call.wav")
+    await look(model, ready: [second])
+
+    try #require(model.store.meetings.count == 2, "both import on the second look")
+    #expect(model.watchedFolderAnnouncementCount == 2)
+    #expect(model.lastWatchedFolderAnnouncement == "Importing from your watched folder: standup.wav",
+            "the file being retried was announced on the first look, so only the new one is named")
 }
 
 @MainActor

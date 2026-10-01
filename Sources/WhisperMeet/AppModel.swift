@@ -699,10 +699,12 @@ final class AppModel: ObservableObject {
     /// Tries a watched file's copy gets before it is given up on, with one alert (F554).
     ///
     /// The bound is on failures the queue cannot see coming, not on waiting. Every cause the queue
-    /// can observe is checked before each try and holds the file without spending one: the folder
-    /// must be readable (`watchedFolderProblem`, which a dropped share sets on the next look, and
-    /// which clears when the share is back), and the batch must fit in free space
-    /// (`watchedFolderImportRefusalMessage`). So a try happens only when both say the copy should
+    /// can observe is checked before each delivery and holds the batch without spending a try: the
+    /// folder must be readable (`watchedFolderProblem`, which a dropped share sets on the next look,
+    /// and which clears when the share is back), and the batch must fit in free space
+    /// (`watchedFolderImportRefusalMessage`). The checks are per delivery, not per file: a share
+    /// that drops part-way through a batch costs each file after it one try, since nothing
+    /// re-checks the folder between files. So a delivery happens only when both say the copy should
     /// work; a failure that repeats while they say so is not one the queue will see clear, and each
     /// try re-copies the whole file, which on a NAS can be gigabytes. Three is a choice, not a
     /// measurement: tries at least one look apart, enough to ride out a blip the checks did not see,
@@ -710,6 +712,19 @@ final class AppModel: ObservableObject {
     /// Holding costs no try and needs no expiry of its own: a held file is in memory only and left
     /// out of the saved record, so quitting leaves it new for the next launch.
     static let watchedFolderCopyAttemptLimit = 3
+
+    /// The last "Importing from your watched folder" announcement, and how many have been made,
+    /// whether or not a notification could be posted — there is no `NSApp` in a test process — so a
+    /// test can see what the user would have been told, and how often. The F292/F476 shape of
+    /// `lastWindowlessMessage` and `windowlessAlertCount`: a value and a count, not a list that
+    /// grows for as long as the app runs.
+    private(set) var lastWatchedFolderAnnouncement: String?
+    private(set) var watchedFolderAnnouncementCount = 0
+
+    /// Paths already announced and still on the queue, so a retry is not announced again (F554).
+    /// Cleared with `watchedFolderCopyAttempts`, when the file leaves the queue: a file the inbox
+    /// hands over afresh after that — because it changed — is news again.
+    private var announcedWatchedFiles: Set<String> = []
 
     /// Starts, moves or stops the watcher to match the two settings. Only after startup recovery:
     /// importing while recovery is still deciding what the library holds is the F181 ordering rule.
@@ -794,12 +809,21 @@ final class AppModel: ObservableObject {
         let batch = pendingWatchedFiles
         pendingWatchedFiles.removeAll()
         inFlightWatchedFiles = batch
-        let names = batch.map(\.lastPathComponent).joined(separator: ", ")
         // Said before the import starts, window or no window: the user did not press anything.
-        // `NSApp` is nil in a headless test process, where `UNUserNotificationCenter.current()`
-        // aborts — the same guard `postWindowlessAlert` uses.
-        if NSApp != nil {
-            Self.deliverNotification(title: "WhisperMeet", body: "Importing from your watched folder: \(names)")
+        // Said once per file, not once per delivery (F554): a file back on the queue for another
+        // try was announced when it first went, and saying it again on every try is the repeat
+        // F454's once-per-cause rule exists to prevent. `NSApp` is nil in a headless test process,
+        // where `UNUserNotificationCenter.current()` aborts — the same guard `postWindowlessAlert` uses.
+        let unannounced = batch.filter { !announcedWatchedFiles.contains($0.path) }
+        announcedWatchedFiles.formUnion(unannounced.map(\.path))
+        if !unannounced.isEmpty {
+            let names = unannounced.map(\.lastPathComponent).joined(separator: ", ")
+            let announcement = "Importing from your watched folder: \(names)"
+            lastWatchedFolderAnnouncement = announcement
+            watchedFolderAnnouncementCount += 1
+            if NSApp != nil {
+                Self.deliverNotification(title: "WhisperMeet", body: announcement)
+            }
         }
         watchedFolderDelivery = Task { [weak self] in
             guard let self else { return }
@@ -839,6 +863,7 @@ final class AppModel: ObservableObject {
         let requeued = Set(requeue.map(\.path))
         for url in batch where !requeued.contains(url.path) {
             watchedFolderCopyAttempts[url.path] = nil
+            announcedWatchedFiles.remove(url.path)
         }
         if !givenUp.isEmpty {
             alertMessage = "Not imported from your watched folder after \(Self.watchedFolderCopyAttemptLimit) tries: "
@@ -4767,8 +4792,10 @@ final class AppModel: ObservableObject {
         } catch {
             isImporting = false
             try? FileManager.default.removeItem(at: directory)
-            // Silent, because the watched folder tries the file again and speaks only if it gives
-            // up (F554). A file the user handed over is imported once, so they are told now, as before.
+            // No alert, because the watched folder tries the file again and alerts only if it gives
+            // up (F554); its "Importing from your watched folder" notification was posted once, when
+            // the file first went to the importer, and a retry does not repeat it. A file the user
+            // handed over is imported once, so they are told now, as before.
             if origin == .watchedFolder, ImportCopyFailure.isTransient(error) {
                 return .failure(.copyFailedTransiently(reason: error.localizedDescription))
             }
