@@ -899,11 +899,7 @@ final class AppModel: ObservableObject {
         }
         refreshRecordingPreflight()
         guard let available = recordingPreflight.availableStorageBytes else { return nil }
-        let batchSize = pendingWatchedFiles.reduce(Int64(0)) { total, url in
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            return total + Int64(size)
-        }
-        let needed = batchSize + 500_000_000
+        let needed = Self.importStorageNeeded(forFileSizes: pendingWatchedFiles.map { measureImportSource($0) ?? 0 })
         guard available < needed else { return nil }
         return "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
     }
@@ -4753,9 +4749,7 @@ final class AppModel: ObservableObject {
             // The file is copied into the library, so require room for it plus a safety margin. A
             // link is measured as the recording it points to, which is what is copied: the link's
             // own size is a hundred-odd bytes (F494).
-            let sourceSize = Self.sourceVersion(of: sourceURL.resolvingSymlinksInPath())?.size ?? 0
-            let (sum, overflowed) = sourceSize.addingReportingOverflow(500_000_000)
-            let needed = overflowed ? Int64.max : sum
+            let needed = Self.importStorageNeeded(forFileSizes: [measureImportSource(sourceURL) ?? 0])
             if available < needed {
                 alertMessage = "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
                 return .failure(.retryable)
@@ -5085,6 +5079,30 @@ final class AppModel: ObservableObject {
     /// `copyImportedRecording` stays real under test, because that check is what is tested.
     var copyRecordingIntoLibrary: @Sendable (URL, URL) throws -> Void = { source, destination in
         try FileManager.default.copyItem(at: source, to: destination)
+    }
+
+    /// How many bytes importing a file will copy, as both free-space checks measure it — `importOne`'s
+    /// for one file and the watched folder's for a whole batch: the recording a link points to (F494),
+    /// read from the file system rather than the URL's resource-value cache (F698). A seam in the F47
+    /// shape so a test can stand in sizes no volume will create, which is what the checks' sums have
+    /// to survive (F494).
+    var measureImportSource: @Sendable (URL) -> Int64? = { url in
+        AppModel.sourceVersion(of: url.resolvingSymlinksInPath())?.size
+    }
+
+    /// The free space importing files of these sizes needs: their bytes plus a 500 MB margin. One
+    /// sum for both free-space checks, `importOne`'s and the watched folder's, so they cannot drift.
+    /// It saturates at `Int64.max` instead of trapping (F494): `Int64` addition traps on overflow,
+    /// and the watched folder's copy of this sum did, once per file and once for the margin. A need
+    /// past `Int64.max` is no volume's free space, so it is refused as too big, which it is.
+    nonisolated private static func importStorageNeeded(forFileSizes sizes: [Int64]) -> Int64 {
+        var needed: Int64 = 500_000_000
+        for size in sizes {
+            let (sum, overflowed) = needed.addingReportingOverflow(size)
+            if overflowed { return .max }
+            needed = sum
+        }
+        return needed
     }
 
     nonisolated private static func copyImportedRecording(
