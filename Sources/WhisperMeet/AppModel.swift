@@ -5378,26 +5378,35 @@ final class AppModel: ObservableObject {
 
 
     /// Deletes a whole selection in a single index write, then stops every job that belongs to a
-    /// meeting whose deletion stood: its transcription, its summary, and a second opinion, segment
-    /// re-run or speaker analysis running on it (F512). Their results could never be shown, and each
-    /// holds a slot while it runs — the summary slot, or the engine every queued transcription waits
-    /// behind.
+    /// meeting that is gone: its transcription, its summary, and a second opinion, segment re-run or
+    /// speaker analysis running on it (F512). Their results could never be shown, and each holds a
+    /// slot while it runs — the summary slot, or the engine every queued transcription waits behind.
     ///
-    /// Only the ids `store.delete` returns (F666). It used to stop the jobs of every requested id
-    /// before the store was asked, so a delete that did not happen — a folder that could not be
-    /// removed (F146), a library refusing edits (read-only, F187, or a conflict offer outstanding), a
-    /// save that failed or lost to another running copy (F451, F642) — still threw away the meeting's
-    /// running job, and a cancelled transcription was saved onto the meeting still there as
-    /// "cancelled". Stopping after the delete changes nothing for the ids that did go: each cancel
-    /// only signals its task, whose epilogue runs later either way, and a queued job is dropped in
-    /// this same turn.
+    /// Whether a meeting is gone is asked of the store once it has answered, not assumed from the
+    /// request (F666). This used to stop the jobs of every requested id before the store was asked,
+    /// so a delete that did not happen — a folder that could not be removed (F146), a library
+    /// refusing edits (read-only, F187; a restore in progress; or a conflict offer outstanding), a
+    /// save that failed or lost to another running copy (F451, F642) — still threw away the running
+    /// job of a meeting that was still listed, and where the library took the write, a cancelled
+    /// transcription was saved onto it as "cancelled".
+    ///
+    /// Gone is an id `store.delete` returns, or one asked for that the library no longer lists. The
+    /// second is what a lost race can leave: the store re-reads the library, and when the other copy
+    /// had deleted the same meeting it is gone from this one too, along with its detail view, which
+    /// holds every Cancel for its jobs. Not gone is a row the conflict offer can bring back
+    /// (`conflictOffer.delta`), such as one whose folder could not be removed when the save putting it
+    /// back then lost a race (F642): it is unlisted, and Keep My Edit lists it again.
+    ///
+    /// Stopping after the delete changes nothing for the ids that did go: each cancel only signals its
+    /// task, whose epilogue runs later either way, and a queued job is dropped in this same turn.
     func deleteMeetings(ids: [UUID]) {
         let removed = store.delete(ids: ids)
-        for id in removed {
+        let offeredBack = Set(store.conflictOffer?.delta.map(\.id) ?? [])
+        let gone = Set(removed).union(ids.filter { store.meeting(id: $0) == nil && !offeredBack.contains($0) })
+        for id in gone {
             cancelTranscription(id: id)
             cancelSummarization(id: id)
         }
-        let gone = Set(removed)
         if let running = secondOpinionRunningID, gone.contains(running) { cancelSecondOpinion() }
         if let running = segmentReTranscriptionRunningID, gone.contains(running) { cancelSegmentReTranscription() }
         if let running = diarizationRunningID, gone.contains(running) { cancelSpeakerDiarization() }

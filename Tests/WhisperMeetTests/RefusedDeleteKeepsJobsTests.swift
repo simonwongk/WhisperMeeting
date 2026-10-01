@@ -10,8 +10,10 @@ import Testing
 // away, and a cancelled transcription was then saved onto it as "Local transcription was cancelled".
 //
 // Each refused-delete test holds a job at a gate, makes the delete fail, then opens the gate and
-// requires the job's own result to land. The last test is the standing-delete guard: stopping only
-// the meetings that were removed must still stop them.
+// requires the job's own result to land. The standing-delete guard requires that stopping only the
+// meetings that are gone still stops the ones removed. The last three are a lost race whose re-read
+// no longer lists the meeting: its jobs stop when the other copy had deleted it too, and keep running
+// when the conflict offer can bring the row back.
 
 /// A job held open until released. Whether it was cancelled is recorded, so "the job finished" and
 /// "the job was stopped" cannot be mistaken for each other.
@@ -125,6 +127,20 @@ private func foreignWriterRetitles(in root: URL) throws {
     _ = try rival.save(records, expecting: existing.token)
 }
 
+/// The same rival committing `change` over what it has just read. Called from a
+/// `removeRecordingDirectory` stub, it lands between a kept-folder delete's two saves, as the rival
+/// in F642's `lostRestoringSaveOffersTheKeptRowBack` does.
+private func foreignWriterCommits(in root: URL, _ change: ([MeetingRecord]) -> [MeetingRecord]) throws {
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999",
+        recordCount: { $0.count }
+    )
+    let existing = try rival.load()
+    _ = try rival.save(change(existing?.value ?? []), expecting: existing?.token)
+}
+
 @MainActor
 @Test("A delete whose folder cannot be removed leaves the meeting's summary and second opinion running (F666)")
 func keptFolderDeleteLeavesSummaryAndSecondOpinionRunning() async throws {
@@ -225,4 +241,100 @@ func standingDeleteStopsRunningAndQueuedTranscriptions() async throws {
 
     #expect(probe.cancelled, "the deleted meeting's transcription was not stopped")
     #expect(!model.hasQueuedTranscriptions)
+}
+
+// A lost race re-reads the library. When the other copy had deleted the same meeting, it is gone
+// from this one too, and so is its detail view, which holds every Cancel for its jobs. So its jobs
+// must stop as a standing delete's do, although `store.delete` reports nothing removed. The first
+// cut of F666 stopped only the ids `store.delete` returns, and left this job running (found by the
+// lane's independent review, as a probe).
+@MainActor
+@Test("A delete lost to another running copy that had deleted the same meeting still stops its transcription (F666)")
+func lostRaceToACopyThatAlsoDeletedItStopsTheTranscription() async throws {
+    let (model, root, ids) = try makeModel([.recorded, .recorded])
+    let (doomed, survivor) = (ids[0], ids[1])
+    let probe = GatedProbe()
+    gateEngine(model, probe)
+    model.beginTranscription(id: doomed)
+    try await waitUntil("the transcription to start") { probe.started }
+
+    try foreignWriterCommits(in: root) { $0.filter { $0.id != doomed } }
+    model.deleteMeetings(ids: [doomed])
+    try #require(!model.store.isDegraded, "the re-read was meant to leave a writable library")
+    try #require(model.store.meeting(id: doomed) == nil, "the re-read was meant to show the other copy's delete")
+    try #require(model.store.meeting(id: survivor) != nil)
+    let offeredBack = model.store.conflictOffer?.delta.map(\.id) ?? []
+    try #require(!offeredBack.contains(doomed), "the row was offered back, which is lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning's case")
+
+    // Never released: the job ends by being stopped, or when the probe gives up on its own.
+    try await waitUntil("the transcription to end") { !model.hasActiveTranscription }
+    #expect(probe.cancelled, "the meeting is gone from the library, and its transcription was not stopped")
+}
+
+// The summary is stopped in the same loop as the transcription, and the second opinion by the
+// auxiliary checks below it. Both must read the same set.
+@MainActor
+@Test("A delete lost to another running copy that had deleted the same meeting still stops its summary and second opinion (F666)")
+func lostRaceToACopyThatAlsoDeletedItStopsTheSummaryAndSecondOpinion() async throws {
+    let (model, root, ids) = try makeModel([.completed, .completed])
+    let (doomed, survivor) = (ids[0], ids[1])
+    let summaryProbe = GatedProbe()
+    let engineProbe = GatedProbe()
+    model.summarizationEngine = .local
+    model.isSummarizerModelInstalled = { true }
+    model.makeSummarizer = { _, _ in GatedSummarizer(probe: summaryProbe) }
+    gateEngine(model, engineProbe)
+    model.summarize(id: doomed)
+    #expect(model.requestSecondOpinion(id: doomed))
+    try await waitUntil("both jobs to start") { summaryProbe.started && engineProbe.started }
+
+    try foreignWriterCommits(in: root) { $0.filter { $0.id != doomed } }
+    model.deleteMeetings(ids: [doomed])
+    try #require(!model.store.isDegraded, "the re-read was meant to leave a writable library")
+    try #require(model.store.meeting(id: doomed) == nil, "the re-read was meant to show the other copy's delete")
+    try #require(model.store.meeting(id: survivor) != nil)
+    let offeredBack = model.store.conflictOffer?.delta.map(\.id) ?? []
+    try #require(!offeredBack.contains(doomed), "the row was offered back, which is lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning's case")
+
+    // Never released, as above.
+    try await waitUntil("both jobs to end") { model.activeSummarizationID == nil && !model.isRunningAuxiliaryEngine }
+    #expect(summaryProbe.cancelled, "the meeting is gone from the library, and its summary was not stopped")
+    #expect(engineProbe.cancelled, "the meeting is gone from the library, and its second opinion was not stopped")
+}
+
+// The exception, and why it exists. A delete whose folder cannot be removed saves twice: once without
+// the row, then again to put it back (F146). When another copy saves between the two, the re-read
+// leaves the row unlisted and offers it back (F642), so "no longer listed" alone would stop the job
+// of a row that Keep My Edit lists again.
+@MainActor
+@Test("A kept-folder delete whose save putting the row back lost a race leaves the offered row's transcription running (F666)")
+func lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning() async throws {
+    let (model, root, ids) = try makeModel([.recorded])
+    let id = ids[0]
+    let probe = GatedProbe()
+    gateEngine(model, probe)
+    model.beginTranscription(id: id)
+    try await waitUntil("the transcription to start") { probe.started }
+
+    let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", recordingPath: "none", status: .recorded)
+    model.store.removeRecordingDirectory = { _ in
+        try foreignWriterCommits(in: root) { $0 + [theirs] }
+        throw FolderStuck()
+    }
+    model.deleteMeetings(ids: [id])
+    try #require(model.store.meeting(id: id) == nil, "the re-read was meant to leave the kept row unlisted")
+    let offeredBack = model.store.conflictOffer?.delta.map(\.id) ?? []
+    let expected: [UUID] = [id]
+    try #require(offeredBack == expected, "the kept row was meant to be offered back")
+
+    model.store.keepConflictedEdit()
+    try #require(model.store.meeting(id: id) != nil, "Keep My Edit did not list the row again")
+    probe.release()
+    try await waitUntil("the transcription to end") { !model.hasActiveTranscription }
+
+    #expect(!probe.cancelled, "the transcription of a row the offer could bring back was stopped")
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.errorMessage != cancelledMessage, "a row brought back by Keep My Edit was told it was cancelled")
+    #expect(meeting.status == .completed)
+    #expect(meeting.transcriptText.contains("The transcript the job produced."))
 }
