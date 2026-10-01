@@ -40,6 +40,28 @@ import Testing
 // that appears inside a literal at all, wherever it is (F414's first blind spot, closed here for this
 // file only). A violation's line number comes from the blanked text, so a `\`-newline continuation
 // inside a `"""` literal would shift every later one (F414's second blind spot).
+//
+// **What a pass does not prove.** Scope here is lexical: a use counts as on the queue when it sits
+// inside an accepted body, whatever that body does with it. Three things pass that should not:
+//
+// - **A closure that escapes an accepted scope.** `captureQueue.sync { DispatchQueue.global().async
+//   { self._streamDied = true } }` passes, and so does a `Task { self._streamDied = true }` created
+//   in a func whose first statement is the precondition. The write runs off the queue in both.
+// - **A `let _x`.** Only `var _x` is a field, so `private let _box = NSMutableArray()` mutated from
+//   anywhere is not reported. The file has no `let _x` today.
+// - **The object behind a field.** Only the reference is checked. `systemWriter?.cancel()` goes
+//   through a syncing getter, so it passes, and then runs the writer's own code off the queue. That
+//   is the shape F388 and F632 fixed by hand for `finish()`, and this scan cannot see it.
+//
+// The first two were shown, not assumed: the w2-F-capture review's probes inserted each into the
+// real file's source, in memory, and the scan reported nothing; its fix pass re-ran them with the
+// same result. The third is visible in the real file itself, which passes with such calls in it.
+//
+// Not planned for the first and third: they need the scan to follow what code does at run time, not
+// where it sits in the text, and that is a different tool from a text scan over one file. The second
+// is cheaper (the field pattern would also match `let`) and is left open only because nothing in the
+// file needs it yet. `asyncAfter` on the queue is not a blind spot: it is not recognised as a queue
+// body, so a `_x` inside it is reported (fail closed).
 
 private let captureEnginePath = "Sources/WhisperMeet/AudioCaptureEngine.swift"
 
