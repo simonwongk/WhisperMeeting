@@ -3414,21 +3414,24 @@ private struct TranscriptDetailView: View {
             EditableMeetingTitle(store: store, meetingID: meetingID)
                 .id(meetingID)
             // F183: where a link-imported meeting came from, with a way back to the original page.
+            // F497: only a re-checked http(s) link is opened, under its own host; anything else is
+            // shown as plain text.
             if let source = meeting.source {
+                let link = source.provenanceLink
                 HStack(spacing: 6) {
                     Image(systemName: "link").font(.caption2).foregroundStyle(.tertiary)
                     if let uploader = source.uploader, !uploader.isEmpty {
                         Text(uploader).font(.caption).foregroundStyle(.secondary)
                         Text("·").font(.caption).foregroundStyle(.tertiary)
                     }
-                    if let pageURL = URL(string: source.pageURL) {
-                        Link(source.host, destination: pageURL).font(.caption)
+                    if let link {
+                        Link(link.label, destination: link.url).font(.caption)
                     } else {
                         Text(source.host).font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Imported from \(source.host)")
+                .accessibilityLabel("Imported from \(link?.label ?? source.host)")
             }
             HStack(spacing: 8) {
                 metadataChip(

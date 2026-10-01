@@ -67,6 +67,12 @@ an older build. A string with a computed `isYouTube` avoids that permanently.
 Also provides `suggestedTag` — `"YouTube"` for YouTube, otherwise the host — already trimmed to
 `MeetingTags.maxLength` (32).
 
+And `provenanceLink` (F497), the only thing the detail view's provenance line may open: the stored
+`pageURL` run back through `MediaSourceURL.validate`, so anything an import would have refused
+(`file:`, `smb:`, `javascript:`, a leading `-`, …) gives no link, with the label taken from the
+validated URL's host rather than the stored `host`. `pageURL` is read back from the index and from
+`source.json`, which a restore or a hand edit can supply, and neither path validates it.
+
 ### `MediaSourceURL.swift` — pure validation and normalization
 
 - Accept `http`/`https` only. Reject `file:`, `data:`, `javascript:`, and anything else.
@@ -222,8 +228,9 @@ var referenceSegments: [TranscriptSegment]?
   normal per-meeting progress card the moment the meeting is adopted.
 - **Badge** — in the sidebar row (`ContentView.swift:229`), a small capsule with a `link` symbol and
   the host, rendered before the tag chips, driven by `meeting.source`.
-- **Detail** — a provenance line under the title with the original link, and a "Compare with the
-  video's captions" action.
+- **Detail** — a provenance line under the title with the original link (opened only through
+  `provenanceLink`, F497; otherwise the host is plain text), and a "Compare with the video's
+  captions" action.
 - **Settings** — an "Update downloader" row beside the existing runtime installers, plus its
   installed state.
 

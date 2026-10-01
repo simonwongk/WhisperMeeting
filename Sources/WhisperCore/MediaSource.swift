@@ -64,6 +64,33 @@ public struct MediaSource: Codable, Sendable, Equatable {
         let raw = isYouTube ? "YouTube" : host
         return String(raw.prefix(MeetingTags.maxLength))
     }
+
+    /// A link the meeting header may open, and the label it is shown under (F497).
+    public struct ProvenanceLink: Equatable, Sendable {
+        public let label: String
+        public let url: URL
+    }
+
+    /// The stored `pageURL` re-checked the way an import checks it, or nil when it would not have
+    /// been imported (F497).
+    ///
+    /// `MediaSourceURL.validate` runs at import, but `pageURL` is read back from data this build did
+    /// not necessarily write — the index after Restore Library, or `source.json` read by recovery
+    /// (`read(in:)` validates nothing, and must not: provenance never fails a recovery, F308). So a
+    /// `file:`, `smb:` or `javascript:` URL could reach the header's Link under a stored "youtube.com".
+    /// Re-running the import's check here keeps one rule for what is a link, and the label is the host
+    /// of the URL that would be opened rather than the separately stored `host`, so the two cannot
+    /// disagree. For a record the import wrote they are the same string (`host` is `parsed.host`).
+    ///
+    /// The scheme is checked again on the `URL` itself, because that — not the string `validate`
+    /// parsed — is what is handed to the system to open.
+    public var provenanceLink: ProvenanceLink? {
+        guard let parsed = try? MediaSourceURL.validate(pageURL),
+              let url = URL(string: parsed.url),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return ProvenanceLink(label: parsed.host, url: url)
+    }
 }
 
 /// What a pre-download probe (`yt-dlp --dump-single-json`) reports about a link (F183). Probing before
