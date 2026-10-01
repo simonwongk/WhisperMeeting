@@ -269,13 +269,13 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     /// The configuration-change handler's rule (F404).
     ///
-    /// Pure, and separate from `handleConfigurationChange` for the reason `emptyCaptureFailure` is
-    /// separate from `stop()`. The `starting` row is the leading edge. Through the probe alone a
-    /// test reaches it only in a start that the probe then refuses or raises in, and either one is
-    /// reported ahead of whatever was recorded, so a handler that dropped the change there would
-    /// pass. The DEBUG hardware step reaches it in a start that would otherwise succeed, and there
-    /// a dropped change lets the capture go live, which `aChangeDuringStartRefusesTheStart` fails on.
-    /// The handler is this rule's only caller.
+    /// Pure, so each state's row is tested on its own (`configurationChangeTransitionRows`). The
+    /// `starting` row is the leading edge. Through the probe alone a test reaches it only in a start
+    /// that the probe then refuses or raises in, and either one is reported ahead of whatever was
+    /// recorded, so a handler that dropped the change there would pass. The DEBUG hardware step
+    /// reaches it in a start that would otherwise succeed, and there a dropped change lets the
+    /// capture go live, which `aChangeDuringStartRefusesTheStart` fails on. The handler is this
+    /// rule's only caller.
     static func configurationChangeTransition(from state: CaptureState) -> ConfigurationChangeTransition {
         switch state {
         case .idle:
@@ -299,12 +299,11 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         case failed(any Error)
     }
 
-    /// `start()`'s exit rule (F404). Pure, and separate from `start()` for the same reason as
-    /// `emptyCaptureFailure`: everything in `start()` after its probe needs a device, so this is the
-    /// rule, tested row by row, and `start()` is its only caller. Tests drive `start()`'s use of it
-    /// through the probe for the refusal and raise rows, and through the DEBUG hardware step for the
-    /// recorded-change and live rows. The Swift-error row is not driven, because the step cannot
-    /// throw.
+    /// `start()`'s exit rule (F404). Pure, and separate from `start()` because everything in
+    /// `start()` after its probe needs a device, so this is the rule, tested row by row, and
+    /// `start()` is its only caller. Tests drive `start()`'s use of it through the probe for a
+    /// refusal and a raise, and through the DEBUG hardware step for a recorded change and a live
+    /// start. No test drives a Swift error from `engine.start()`, because the step cannot throw.
     ///
     /// The checks run in precedence order. A refusal by the probe comes first: nothing after the
     /// probe ran, so the only thing it can coincide with is a recorded change, and its sentence is
