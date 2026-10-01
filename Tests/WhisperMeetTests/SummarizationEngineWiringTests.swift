@@ -30,20 +30,60 @@ private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
     try #require(condition(), "timed out waiting for \(what)")
 }
 
+/// `localSummariesSupported` is pinned, never left to the host: the real default is a compile-time
+/// `#if arch(arm64)`, so a test that relied on it would assert this Mac's architecture (F566).
 @MainActor
-private func makeModel() throws -> AppModel {
+private func makeModel(
+    defaults: UserDefaults = UserDefaults(suiteName: "F164.\(UUID().uuidString)")!,
+    localSummariesSupported: Bool = true
+) throws -> AppModel {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("SummarizationEngineWiringTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F164.\(UUID().uuidString)")!
-    return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
+    return AppModel(
+        store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
+        localSummariesSupported: localSummariesSupported
+    )
 }
 
 @MainActor
 @Test("Summarization defaults to the local engine with no stored preference (F164)")
 func summarizationDefaultsToLocal() throws {
-    let model = try makeModel()
+    let model = try makeModel(localSummariesSupported: true)
     #expect(model.summarizationEngine == .local)
+}
+
+// F566 — on an Intel Mac the default was `.local` too, so Summarize told the user to install a
+// model that Settings offers no way to install there.
+
+@MainActor
+@Test("On a Mac without local summaries, a missing preference defaults to Claude and is not persisted (F566)")
+func summarizationDefaultsToClaudeWithoutLocalSupport() throws {
+    let defaults = UserDefaults(suiteName: "F566.\(UUID().uuidString)")!
+    let model = try makeModel(defaults: defaults, localSummariesSupported: false)
+    #expect(model.summarizationEngine == .claude)
+    // A default is not a choice: nothing is written, so the user's first pick is still theirs.
+    #expect(defaults.string(forKey: "summarizationEngine") == nil)
+}
+
+@MainActor
+@Test("A stored local choice on a Mac without local summaries is kept, and Summarize says why it cannot run (F566)")
+func storedLocalChoiceOnUnsupportedMacRefusesHonestly() throws {
+    let defaults = UserDefaults(suiteName: "F566.\(UUID().uuidString)")!
+    defaults.set("local", forKey: "summarizationEngine")
+    let model = try makeModel(defaults: defaults, localSummariesSupported: false)
+    #expect(model.summarizationEngine == .local)
+    model.isSummarizerModelInstalled = { false }
+
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+    model.summarize(id: id)
+
+    let alert = try #require(model.alertMessage)
+    #expect(alert.contains("Apple-silicon"))
+    #expect(alert != SummarizerError.modelNotInstalled.localizedDescription)
+    #expect(model.activeSummarizationID == nil)
+    #expect(model.store.meeting(id: id)?.summary == nil)
 }
 
 @MainActor

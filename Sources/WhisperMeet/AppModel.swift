@@ -288,11 +288,17 @@ final class AppModel: ObservableObject {
     @Published var selectedLanguage: WhisperLanguage {
         didSet { defaults.set(selectedLanguage.rawValue, forKey: Self.languageKey) }
     }
-    /// The summarization engine. `.local` (on-device, keyless) is the default; `.claude` is opt-in
-    /// cloud (F164). Persisted like `selectedEngine`.
+    /// The summarization engine. `.local` (on-device, keyless) is the default where it can run, and
+    /// `.claude` the default on a Mac without local summaries (F566); otherwise `.claude` is opt-in
+    /// cloud (F164). Persisted like `selectedEngine` — but only once the user picks: the initial
+    /// assignment in `init` does not fire `didSet`.
     @Published var summarizationEngine: SummarizationEngine {
         didSet { defaults.set(summarizationEngine.rawValue, forKey: Self.summarizationEngineKey) }
     }
+    /// Whether this Mac can run the local summarizer at all (Apple silicon). An init parameter, not
+    /// a seam assigned after construction, because `init` needs it to pick the default engine
+    /// (F566); `summarize` reads it to word the refusal of a `.local` choice whose model is missing.
+    let localSummariesSupported: Bool
     /// The single in-window alert surface. **Set through `report(_:)`, not directly** (F257).
     ///
     /// The `.alert` host lives in `ContentView` inside the `WindowGroup`, so with the window closed
@@ -1046,7 +1052,10 @@ final class AppModel: ObservableObject {
         // lost — this is exactly the bug that shape of injection caused.
         carryInitialPromptSupport: @escaping @Sendable (URL) -> Bool = {
             LocalWhisperRuntime.supportsCarryInitialPrompt(at: $0)
-        }
+        },
+        // F566: injected so a test can cover a Mac without local summaries; the real value is a
+        // compile-time `#if arch(arm64)`.
+        localSummariesSupported: Bool = SummarizerRuntime.isSupportedOnCurrentMac
     ) {
         self.store = store
         self.recorder = recorder
@@ -1076,9 +1085,13 @@ final class AppModel: ObservableObject {
         selectedLanguage = WhisperLanguage(
             rawValue: defaults.string(forKey: Self.languageKey) ?? ""
         ) ?? .automatic
-        summarizationEngine = SummarizationEngine(
-            rawValue: defaults.string(forKey: Self.summarizationEngineKey) ?? ""
-        ) ?? .local
+        // F566: the same rule as `selectedEngine` above — a missing preference defaults to an
+        // engine this Mac can run, and is not persisted, so the user's first pick is still theirs.
+        self.localSummariesSupported = localSummariesSupported
+        summarizationEngine = SummarizationEngine.initialSelection(
+            stored: SummarizationEngine(rawValue: defaults.string(forKey: Self.summarizationEngineKey) ?? ""),
+            isLocalSupported: localSummariesSupported
+        )
         // `integer(forKey:)` returns 0 for a missing key, which is not in the offered set either,
         // so "absent" and "invalid" both fall back to 5 the same way (F461).
         let storedBackupRetention = defaults.integer(forKey: Self.backupRetentionKey)
@@ -5449,13 +5462,21 @@ final class AppModel: ObservableObject {
         guard libraryAcceptsChanges("Summarization") else { return }
         let engine = summarizationEngine
         // Honest per-engine preconditions: local needs its model installed (offer to install rather
-        // than fail); Claude needs a confirmed upload and a saved key. Neither uploads anything for
-        // `.local` (F164).
+        // than fail, or on a Mac that cannot run it say so — F566); Claude needs a confirmed upload
+        // and a saved key. Neither uploads anything for `.local` (F164).
         let apiKey: String
         switch engine {
         case .local:
             guard isSummarizerModelInstalled() else {
-                alertMessage = SummarizerError.modelNotInstalled.localizedDescription
+                // F566: on a Mac that cannot run the local summarizer, "install the model in
+                // Settings" names a button Settings does not have there, so say why instead. Only
+                // the wording depends on the architecture, not whether a summary starts: a check
+                // ahead of this guard would make every test that stubs the model as installed
+                // depend on the host's architecture through the init parameter's default.
+                alertMessage = localSummariesSupported
+                    ? SummarizerError.modelNotInstalled.localizedDescription
+                    : "Local summaries require an Apple-silicon Mac. "
+                        + "Choose Claude in Settings to summarize on this Mac."
                 return
             }
             apiKey = ""

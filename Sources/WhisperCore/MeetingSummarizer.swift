@@ -253,8 +253,9 @@ public enum MeetingTemplate: String, Codable, CaseIterable, Sendable, Hashable {
     }
 }
 
-/// Which engine produces a meeting summary. `local` (on-device, keyless, private) is the default;
-/// `claude` is the opt-in cloud upgrade behind the same `MeetingSummarizer` protocol (F164).
+/// Which engine produces a meeting summary. `local` (on-device, keyless, private) is the default
+/// where it can run (Apple silicon — see `initialSelection`); `claude` is the opt-in cloud upgrade
+/// behind the same `MeetingSummarizer` protocol (F164).
 public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashable {
     case local
     case claude
@@ -264,6 +265,22 @@ public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashab
         case .local: return "Local (private, on-device)"
         case .claude: return "Claude (cloud)"
         }
+    }
+
+    /// The engine to select at launch (F566), on F262's rule for transcription engines: no stored
+    /// preference is not a choice, so pick the local engine only where it can run at all, and
+    /// Claude otherwise; a stored preference IS a choice, so it is kept even where it cannot run.
+    /// The caller does not persist the result. A stored `.local` on an unsupported Mac has no
+    /// model (its installer refuses there), and `AppModel.summarize` words that refusal as the
+    /// reason rather than as an install instruction the user cannot follow.
+    ///
+    /// Choosing Claude uploads nothing by itself: summarizing with it still needs a saved key and a
+    /// confirmed Summarize press. `isLocalSupported` is passed in rather than read from
+    /// `SummarizerRuntime.isSupportedOnCurrentMac`, a compile-time `#if arch(arm64)`, so a test
+    /// can cover the unsupported case at all.
+    public static func initialSelection(stored: SummarizationEngine?, isLocalSupported: Bool) -> SummarizationEngine {
+        if let stored { return stored }
+        return isLocalSupported ? .local : .claude
     }
 }
 

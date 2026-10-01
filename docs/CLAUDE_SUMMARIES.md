@@ -44,7 +44,9 @@ unless the user selects the Claude engine, pastes a key in Settings, and explici
   - `protocol MeetingSummarizer { func summarize(transcript:language:style:) async throws -> MeetingSummary }`
     (plus a 2-arg convenience defaulting `style` to `.balanced`).
   - `enum SummaryStyle` — `.balanced` / `.brief` / `.detailed` / `.actionItemsFocused` (F63).
-  - `enum SummarizationEngine` — `.local` (default) / `.claude`.
+  - `enum SummarizationEngine` — `.local` (default) / `.claude`. `initialSelection(stored:isLocalSupported:)`
+    keeps a stored choice and otherwise picks `.local` only where local summaries can run (Apple
+    silicon), `.claude` elsewhere (F566).
   - `enum SummarizerError` — `missingAPIKey`, `emptyTranscript`, `requestFailed`, `httpStatus`,
     `refused`, `responseTruncated`, `unreadableResponse`, `emptyResponse`, and the local cases
     `modelNotInstalled`, `helperFailed(String)`.
@@ -59,8 +61,11 @@ unless the user selects the Claude engine, pastes a key in Settings, and explici
 - **`Scripts/setup-local-summarizer.sh`** — dedicated `mlx-lm` venv + pinned model download + sha256
   gate + atomic activation (mirrors `setup-qwen-asr.sh`).
 - **`WhisperMeet/KeychainStore.swift`** — reads/writes/deletes the Claude API key (only used by `.claude`).
-- **`AppModel`** — `summarizationEngine` (persisted, defaults `.local`), the `makeSummarizer(engine,key)`
-  seam, `summarize(id:style:)` with per-engine preconditions (local → model installed; Claude → key),
+- **`AppModel`** — `summarizationEngine` (persisted once the user picks; defaults `.local` on Apple
+  silicon and `.claude` on an Intel Mac, through the `localSummariesSupported` init parameter — F566),
+  the `makeSummarizer(engine,key)` seam, `summarize(id:style:)` with per-engine preconditions (local →
+  model installed, a refusal that names Apple silicon on an Intel Mac; Claude → a confirmed press,
+  then a key),
   `installSummarizer()`, and `isSummarizerInstalled` / `isSummarizerModelInstalled` state.
 - **UI** (`ContentView`):
   - **Settings → Summaries**: an engine picker; for local, a model install/repair row + progress; for
@@ -77,7 +82,9 @@ unless the user selects the Claude engine, pastes a key in Settings, and explici
   `SummarizeLocalHelperScriptTests` (runs the real `summarize_local.py` `parse_summary`).
 - **Python:** `Scripts/tests/test_summarize_local.py` (pure prompt/parse + `main()` with a fake
   `mlx_lm`), wired into `quality-check.sh` step [3/6].
-- **AppModel wiring (WhisperMeet):** `SummarizationEngineWiringTests` — default is `.local`, the chosen
+- **AppModel wiring (WhisperMeet):** `SummarizationEngineWiringTests` — default is `.local` where local
+  summaries are supported and `.claude` where they are not (unpersisted), a stored `.local` on an
+  unsupported Mac is kept and Summarize refuses it with that reason (F566), the chosen
   engine reaches `makeSummarizer`, the full local path stores a summary, and the install-required
   guard fires; `SummaryStyleWiringTests` still proves the style threads through (F81).
 
