@@ -807,7 +807,7 @@ private struct RecordMeetingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("The meters show the loudness of the exact audio being written to disk for each channel — microphone for you, system audio for everyone else.")
                 Text("Checks run once per second. A channel that was working and then delivers no audio for 3 seconds is flagged as stopped.")
-                Text("“Too loud” means the audio reached maximum level and may distort. Silence on the system channel is normal until someone else speaks.")
+                Text("“Too loud” means the audio reached maximum level and may be distorted. Each side of a stereo source is also checked before the two are combined into one, so it can appear even when the meter is well below maximum. Silence on the system channel is normal until someone else speaks.")
                 Text("Storage is watched so you can stop before the disk fills.")
             }
             .font(.caption)
