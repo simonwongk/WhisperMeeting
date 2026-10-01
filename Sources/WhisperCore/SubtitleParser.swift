@@ -2,9 +2,13 @@ import Foundation
 
 /// Parses WebVTT / SRT captions into `[TranscriptSegment]` (F183). It reads what `TranscriptExporter`
 /// writes: that exporter entity-escapes `&`, `<` and `>` in cue text (F44), and this parser decodes
-/// those three references back, so exported captions round-trip (F491). The one exception is SubRip text
-/// that itself contains a literal `&lt;`, `&gt;` or `&amp;`: the exporter leaves `&` raw there, so that
-/// output is ambiguous and decodes to the character the reference names.
+/// those three references back, so the exporter's character escaping round-trips (F491). Only the
+/// escaping does. Cue text is otherwise cleaned on the way in, so an exported line that begins like a
+/// speaker label (`JOHN: `, `- `, `[x]`) loses that prefix, a multi-line cue comes back joined with
+/// spaces, and consecutive cues whose texts repeat or extend each other are merged into one. The one
+/// escaping exception is SubRip text that itself contains a literal `&lt;`, `&gt;` or `&amp;`: the
+/// exporter leaves `&` raw there, so that output is ambiguous and decodes to the character the
+/// reference names.
 ///
 /// Where its output goes today: `MediaDownloadClient` parses a link import's caption track, and
 /// `AppModel.importFromURL` → `adoptImportedRecording` stores the result as
