@@ -80,22 +80,26 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// The live capture stream, or nil.
     ///
     /// Stored behind `captureQueue` like `_streamError`, `_streamDied` and `_pendingRestartPadding`
-    /// (F334, and F364 for the first two — the sentence was false for them until then). `start()`/`stop()` reach it from the MainActor, `restartAfterFailure` from the
-    /// cooperative pool — both are `nonisolated async`, so under SE-0338 they genuinely run in
-    /// parallel — and the sample handler reaches it from the capture queue. Code already on that
-    /// queue uses `_stream` directly; a `sync` from the queue would deadlock.
+    /// (F334, and F364 for the first two — the sentence was false for them until then). `start()`,
+    /// `stop()`, `cancel()` and `restartAfterFailure` reach it from off the queue — all four are
+    /// `nonisolated async`, so under SE-0338 they run on the generic executor whichever actor
+    /// called them, and genuinely in parallel — and the sample handler reaches it from the capture
+    /// queue. Code already on that queue uses `_stream` directly; a `sync` from the queue would
+    /// deadlock.
     private var _stream: SCStream?
     private var stream: SCStream? {
         get { captureQueue.sync { _stream } }
         set { captureQueue.sync { _stream = newValue } }
     }
     /// The two track writers, behind `captureQueue` for F334's reason and F365's (F364 did the
-    /// same for `_streamError`/`_streamDied`). The sample handler and
-    /// `applyPendingRestartPaddingIfNeeded` touch them from the capture queue, and so do
-    /// `finishTrackWriters` (F388) and `preservePartialTracks` (F632), which finish them there;
-    /// `start`, `stop` and `reset` from the MainActor; `restartAfterFailure` from the cooperative
-    /// pool. An unsynchronized load/store of a strong reference can over-release, and
-    /// this one is a `FloatTrackWriter` holding an open descriptor.
+    /// same for `_streamError`/`_streamDied`). On the queue, the sample handler and
+    /// `applyPendingRestartPaddingIfNeeded` write through them — `restartAfterFailure` reaches
+    /// them only that way, inside its own `captureQueue.sync` — `finishTrackWriters` (F388) and
+    /// `preservePartialTracks` (F632) finish them, and `reset` drops them inside its `sync`. Off
+    /// the queue, through the accessors below: `start`, `stop` and `cancel`, which are
+    /// `nonisolated async` and so run on the generic executor, not on their callers' MainActor
+    /// (SE-0338), and the DEBUG test seams. An unsynchronized load/store of a strong reference can
+    /// over-release, and this one is a `FloatTrackWriter` holding an open descriptor.
     ///
     /// **Code already on `captureQueue` must use the `_` storage; a `sync` from the queue
     /// deadlocks.** Converted site by site for that reason, never by rename.
@@ -178,8 +182,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Accumulated here rather than read back from the session sidecar because this is the layer
     /// that does the padding and therefore the only one that knows the frame offset it went in at.
     /// Behind `captureQueue` (F365): appended by the padding on the capture queue and read by
-    /// `stop()` from the MainActor, so a raced `Array` could lose or duplicate a span — F282's end
-    /// state reached through a race instead of through a lost field.
+    /// `stop()` from off it, so a raced `Array` could lose or duplicate a span — F282's end state
+    /// reached through a race instead of through a lost field.
     private var _paddedGaps: [SourceTrackManifest.PaddedGap] = []
     private var paddedGaps: [SourceTrackManifest.PaddedGap] {
         get { captureQueue.sync { _paddedGaps } }
