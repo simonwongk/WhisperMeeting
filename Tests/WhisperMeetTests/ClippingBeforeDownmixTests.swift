@@ -92,11 +92,17 @@ func aFrameCountsOnceWhicheverChannelClipped() throws {
 
 @Test("An interleaved capture is read with its stride, not as one long channel (F419)")
 func interleavedInputIsReadWithItsStride() throws {
+    // The right channel clips on its first 100 frames only, at the odd samples 1, 3, …, 199 of
+    // the one interleaved chunk. Read with the stride, frame f looks at samples 2f and 2f+1 and
+    // finds 100 clipped frames. Read without it, frame f looks at f and f+1, and frames 0 through
+    // 199 each touch one of those odd samples: 200. A fixture that clipped EVERY right-channel
+    // frame could not tell the two apart, because every frame then touches an odd sample either way.
     let (level, outputFrames) = try measure(
-        stereoBuffer(interleaved: true) { _, channel in channel == 1 ? 1.0 : 0 }
+        stereoBuffer(interleaved: true) { frame, channel in channel == 1 && frame < 100 ? 1.0 : 0 }
     )
     try #require(outputFrames == 2_400)
-    #expect(level.framesAtFullScale == 2_400)
+    #expect(level.framesAtFullScale == 100)
+    #expect(level.framesMeasured == 2_400)
 }
 
 @Test("Dual-mono audio is counted exactly as before the change (F419 control)")
