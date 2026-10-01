@@ -204,13 +204,14 @@ func theHardwareCallsAreAllInsideTheBridge() throws {
     for hit in probeCalls where !isBridged(hit) {
         Issue.record("line \(lineNumber(of: hit.lowerBound, in: source)): the probe is called outside every bridged block, and in production it is the first `inputNode` access")
     }
-    // F367's ordering, kept inside the block: the probe is consulted before the node is reached.
+    // F367's ordering, kept inside the block: the probe is consulted before the block's own
+    // `engine.inputNode`.
     let block = source[setUp]
     if let probeInBlock = block.range(of: "self.hardwareFormat()"),
        let nodeInBlock = block.range(of: "engine.inputNode") {
-        #expect(probeInBlock.lowerBound < nodeInBlock.lowerBound, "the probe must run before the node is reached (F367)")
+        #expect(probeInBlock.lowerBound < nodeInBlock.lowerBound, "the probe must run before the block's own `engine.inputNode` (F367)")
     } else {
-        Issue.record("start()'s bridged block must consult the probe and then reach the node")
+        Issue.record("start()'s bridged block must consult the probe and then read its own `engine.inputNode`")
     }
     #expect(block.contains("installTap(onBus: 0"))
     #expect(block.contains("try engine.start()"))

@@ -503,14 +503,17 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
                 log.error("audio engine read not running right after a successful start; the capture goes live anyway")
             }
         case .failed(let error):
-            // A refusal by the probe came before the node was reached, so nothing was installed.
+            // A refusal by the probe came before start()'s own `engine.inputNode` and `installTap`,
+            // and before `engine.start()`, so there is nothing to tear down. In production the
+            // probe's own read means the node exists by then, but no tap is on it.
             if !formatRefused {
                 // Tear down whatever got installed before the failure. `removeTap` on a bus with no
-                // tap is a no-op, and the taken input is nil if the failure came before the node
-                // was reached, so there is nothing to remove. Bridged too (F403): this runs on the
-                // engine that just failed, possibly by raising, and `ObjCExceptionBridge.h` says
-                // the process state after an exception is undefined. A second raise here is logged,
-                // not rethrown — the first failure is the one the user needs to hear about.
+                // tap is a no-op, and the taken input is nil if the failure came before start()
+                // stored the node from its own `engine.inputNode`, so there is nothing to remove.
+                // Bridged too (F403): this runs on the engine that just failed, possibly by
+                // raising, and `ObjCExceptionBridge.h` says the process state after an exception is
+                // undefined. A second raise here is logged, not rethrown — the first failure is the
+                // one the user needs to hear about.
                 var teardownRaised: NSError?
                 let tornDown = WMRunCatchingObjCExceptions({
                     outcome.input?.removeTap(onBus: 0)
