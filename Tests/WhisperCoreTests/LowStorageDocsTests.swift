@@ -30,11 +30,14 @@ private struct LowStorageFigures {
         let floor = Double(RecordingHealthMonitor.lowStorageFloorBytes)
         let margin = Double(RecordingHealthMonitor.defaultLowStorageMarginBytes(sampleRate: sampleRate))
         let mixPerSecond = Double(RecordingSizeEstimator.mixedBytesPerSecond(sampleRate: sampleRate))
-        floorMB = Int((floor / 1_000_000).rounded())
-        marginMB = Int((margin / 1_000_000).rounded())
-        mixKBPerSecond = Int((mixPerSecond / 1_000).rounded())
-        windowMinutes = Int((RecordingHealthMonitor.lowStorageReactionWindow / 60).rounded())
-        floorGovernsMinutes = Int(((floor - margin) / mixPerSecond / 60).rounded())
+        // `Int(saturating:)` rounds to nearest as `.rounded()` did, and cannot trap: a zero rate
+        // makes the last quotient infinite or NaN, which `Int(Double)` would crash the whole test
+        // process on rather than fail one test.
+        floorMB = Int(saturating: floor / 1_000_000)
+        marginMB = Int(saturating: margin / 1_000_000)
+        mixKBPerSecond = Int(saturating: mixPerSecond / 1_000)
+        windowMinutes = Int(saturating: RecordingHealthMonitor.lowStorageReactionWindow / 60)
+        floorGovernsMinutes = Int(saturating: (floor - margin) / mixPerSecond / 60)
     }
 }
 
