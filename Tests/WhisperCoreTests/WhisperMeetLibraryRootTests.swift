@@ -55,8 +55,13 @@ func explicitArgumentWins() {
 // F550 — the variable moved every file and none of the settings. `UserDefaults.standard` is one
 // domain for the bundle id wherever the library is, so a rehearsal instance read and wrote the real
 // library's watched-folder snapshot, dictation hotkey and last-launch stamp. A moved library gets a
-// settings domain of its own, derived from its root. Nothing here writes to `.standard`: that is the
-// user's real domain.
+// settings domain of its own, derived from its root.
+//
+// Nothing here writes a setting at all. `.standard` is the user's real domain, and a suite opened
+// by its derived name is a plist in the user's real ~/Library/Preferences that
+// `removePersistentDomain` empties but never deletes (F442): the first version of the test below
+// left one there on every run. What `defaults` returns is checked by identity instead, through the
+// `openSuite` seam.
 
 @Test("Without the variable, settings stay in the standard domain (F550)")
 func defaultLibraryUsesStandardDefaults() {
@@ -81,16 +86,23 @@ func movedLibraryGetsADomainDerivedFromItsRoot() throws {
     // The same directory spelled with a trailing slash is the same library.
     #expect(WhisperMeetLibrary.defaultsSuiteName(environment: [WhisperMeetLibrary.environmentKey: a + "/"]) == nameA)
 
-    let defaultsA = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: a])
-    let defaultsB = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: b])
-    defer {
-        defaultsA.removePersistentDomain(forName: nameA)
-        defaultsB.removePersistentDomain(forName: nameB)
+    // `defaults` opens exactly the suite `defaultsSuiteName` names, and hands back what it opened.
+    // The opener returns a suite named by a path under the temp directory, which is never written,
+    // so not even that file exists.
+    var opened: [(name: String, suite: UserDefaults)] = []
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("F550-\(UUID().uuidString)")
+    func open(_ name: String) -> UserDefaults? {
+        let suite = UserDefaults(suiteName: scratch.appendingPathComponent(name).path)
+        if let suite { opened.append((name, suite)) }
+        return suite
     }
-    #expect(defaultsA !== UserDefaults.standard)
-    let key = "F550.probe.\(UUID().uuidString)"
-    defaultsA.set("rehearsal", forKey: key)
-    #expect(defaultsA.string(forKey: key) == "rehearsal")
-    #expect(defaultsB.string(forKey: key) == nil, "another library must not see this library's settings")
-    #expect(UserDefaults.standard.string(forKey: key) == nil, "the real library must not see them either")
+    let defaultsA = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: a], openSuite: open)
+    let defaultsB = WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: b], openSuite: open)
+    try #require(opened.count == 2, "\(opened.map(\.name))")
+    #expect(opened.map(\.name) == [nameA, nameB])
+    #expect(defaultsA === opened[0].suite)
+    #expect(defaultsB === opened[1].suite)
+    // And the real opener does not quietly return the user's own domain. Opening a suite writes
+    // nothing; only setting a value would.
+    #expect(WhisperMeetLibrary.defaults(environment: [WhisperMeetLibrary.environmentKey: a]) !== UserDefaults.standard)
 }

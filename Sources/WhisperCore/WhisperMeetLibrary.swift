@@ -42,14 +42,19 @@ public enum WhisperMeetLibrary {
     /// Only what is handed this value moves: `AppModel`'s and `DictationController`'s production
     /// initializers. `ContentView`'s two `@AppStorage` values (summary style and template) read
     /// `.standard` directly and are still shared.
+    ///
+    /// `openSuite` is for tests. A suite opened by this name is a plist in the user's real
+    /// `~/Library/Preferences`, and `removePersistentDomain` empties that file without deleting it
+    /// (F442), so a test that wrote through the real opener would leave one behind on every run.
     public static func defaults(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        openSuite: (String) -> UserDefaults? = { UserDefaults(suiteName: $0) }
     ) -> UserDefaults {
         guard let suiteName = defaultsSuiteName(environment: environment) else { return .standard }
         // `UserDefaults(suiteName:)` is nil only for the app's own bundle id and the global domain,
         // and this name is neither. Falling back to `.standard` here would quietly reintroduce the
         // shared state this exists to separate, so it is not a fallback worth having.
-        guard let suite = UserDefaults(suiteName: suiteName) else {
+        guard let suite = openSuite(suiteName) else {
             preconditionFailure("UserDefaults refused the suite name \(suiteName)")
         }
         return suite

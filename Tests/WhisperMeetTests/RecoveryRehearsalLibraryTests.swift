@@ -62,9 +62,11 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     let root = try keptRoot(in: run.stdout)
     try #require(FileManager.default.fileExists(atPath: root.path), "--keep-damaged must keep its library")
 
-    let suite = "RecoveryRehearsal.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    // Settings in a file inside `tmp`, not in a suite with a NAME. A named suite is a plist in the
+    // user's real ~/Library/Preferences, and `removePersistentDomain` empties it without deleting it
+    // (F442), so the first version of this test left one there on every run. CFPreferences keeps a
+    // suite whose name is an absolute path in `<path>.plist`, so this one goes when `tmp` does.
+    let defaults = try #require(UserDefaults(suiteName: tmp.appendingPathComponent("settings").path))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 
     // What the responder sees: the read-only footnote, which is also the only thing that shows the
@@ -96,6 +98,19 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     model.recoverLibrary(from: previousAgain, confirmed: true)
     #expect(!model.store.isDegraded, "\(model.alertMessage ?? "nil")")
     #expect(model.store.meetings.count == 2)
+
+    // The library is writable again, so `recoverLibrary` resumed startup recovery in a Task of its
+    // own. Left alone, that Task ran after this test had returned: it swept a library the defers
+    // had already deleted, and wrote the launch stamp into settings they had already removed. That
+    // write put a plist back in ~/Library/Preferences while the settings were a named suite, and
+    // with them in `tmp` it would recreate `tmp`, since CFPreferences makes the directory it
+    // writes into. So the sweep runs here, inside the test. The Task's sweep writes the launch
+    // stamp before its first suspension, so an absent stamp means it has not started. This call
+    // then sets the sweep's once-flag before it suspends, and the Task, when it runs, returns at
+    // that flag without touching anything.
+    try #require(defaults.object(forKey: AppModel.lastLaunchKey) == nil, "the resumed sweep had already started")
+    await model.performStartupRecovery()
+    #expect(defaults.object(forKey: AppModel.lastLaunchKey) != nil, "the sweep ran before the test ended")
 }
 
 @Test("The production AppModel and DictationController take their settings from the library, not .standard (F550)")
