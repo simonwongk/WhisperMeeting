@@ -62,3 +62,26 @@ func fullWidthSpaceQueryMatchesAsciiSpaceQuery() {
     #expect(fullWidthQuery.matches(f) == asciiQuery.matches(f))
     #expect(fullWidthQuery.matches(f))
 }
+
+// F568 Part 1 — `before:`/`after:YYYY-MM-DD` used to bound on UTC midnight while the sidebar shows
+// each meeting's local month and day, so a meeting near local midnight landed on the wrong side of
+// its own date. Explicit zones, never the host's: the instants are written in UTC.
+private func instant(_ iso: String) -> Date { ISO8601DateFormatter().date(from: iso)! }
+
+@Test("before:/after: bound on the start of the day in the given time zone (F568)")
+func meetingQueryDateBoundsUseTheLocalDay() {
+    let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+    let losAngeles = TimeZone(identifier: "America/Los_Angeles")!
+    #expect(MeetingQuery.parseDate("2026-09-24", timeZone: shanghai) == instant("2026-09-23T16:00:00Z"))
+    #expect(MeetingQuery.parseDate("2026-09-24", timeZone: losAngeles) == instant("2026-09-24T07:00:00Z"))
+
+    // 07:30 on 24 Sep in Shanghai: shown as "Sep 24", so it is on/after the 24th and not before it.
+    let shanghaiMorning = facet(lang: "en", duration: 600, created: instant("2026-09-23T23:30:00Z"))
+    #expect(MeetingQuery.parse("after:2026-09-24", timeZone: shanghai).matches(shanghaiMorning))
+    #expect(!MeetingQuery.parse("before:2026-09-24", timeZone: shanghai).matches(shanghaiMorning))
+
+    // 18:00 on 23 Sep in Los Angeles: shown as "Sep 23", so it is before the 24th and not after it.
+    let losAngelesEvening = facet(lang: "en", duration: 600, created: instant("2026-09-24T01:00:00Z"))
+    #expect(!MeetingQuery.parse("after:2026-09-24", timeZone: losAngeles).matches(losAngelesEvening))
+    #expect(MeetingQuery.parse("before:2026-09-24", timeZone: losAngeles).matches(losAngelesEvening))
+}

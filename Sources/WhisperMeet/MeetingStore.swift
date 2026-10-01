@@ -968,10 +968,13 @@ final class MeetingStore: ObservableObject {
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
     /// button and the automatic sidecar (debounced flush and detached backfill alike) all route
     /// through here, so none can drift. `nonisolated` so the backfill can compose off the actor.
-    nonisolated static func composeNotes(for meeting: MeetingRecord) -> String {
+    /// The date names its UTC offset (`MeetingNotesExporter.dateText`), so a time-zone change
+    /// rewrites each sidecar once, visibly, and the Mac's language or 12/24-hour setting no longer
+    /// changes the date at all (F568); `timeZone` is injectable only so a test can pin it.
+    nonisolated static func composeNotes(for meeting: MeetingRecord, timeZone: TimeZone = .autoupdatingCurrent) -> String {
         MeetingNotesExporter.markdown(
             title: meeting.title,
-            dateText: meeting.createdAt.formatted(date: .abbreviated, time: .shortened),
+            dateText: MeetingNotesExporter.dateText(for: meeting.createdAt, timeZone: timeZone),
             durationSeconds: meeting.duration,
             languageCode: meeting.languageCode,
             summary: meeting.summary,

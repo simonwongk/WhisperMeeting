@@ -41,8 +41,10 @@ enum DictationRefineReportCommand {
     }
 
     /// `--since yyyy-MM-dd`, read as the start of that day in this Mac's time zone — the zone the
-    /// person asking thinks in, and the one a file's modification date is shown in.
-    static func since(in arguments: [String]) -> Since {
+    /// person asking thinks in, and the one a file's modification date is shown in. `calendar` is
+    /// injectable so a test can pin the zone; `run` must be given the same one, or its header's
+    /// dates will not agree with the cut (F568).
+    static func since(in arguments: [String], calendar: Calendar = .current) -> Since {
         guard let index = arguments.firstIndex(of: sinceFlag) else { return .all }
         guard index + 1 < arguments.count else { return .invalid("") }
         let raw = arguments[index + 1]
@@ -50,7 +52,6 @@ enum DictationRefineReportCommand {
         guard parts.count == 3, raw.count == 10 else { return .invalid(raw) }
         var components = DateComponents()
         (components.year, components.month, components.day) = (parts[0], parts[1], parts[2])
-        let calendar = Calendar.current
         // Round-tripped, so 2026-02-31 is rejected rather than read as early March.
         guard let date = calendar.date(from: components),
               calendar.dateComponents([.year, .month, .day], from: date) == components
@@ -63,7 +64,11 @@ enum DictationRefineReportCommand {
     /// An unreadable log must never come back as an empty table: every rate in an empty table is a
     /// dash, and a reader skims that as "no timeouts". The failure and the healthy state have to
     /// look different from outside.
-    static func run(logURL: URL, since: Since = .all) -> (status: Int32, message: String) {
+    ///
+    /// `calendar` dates the header, and must be the one `since(in:)` read the cut in (both default
+    /// to `.current`): the header used to print GMT dates beside a local cut, so east of UTC it
+    /// could date an entry the cut had just counted to the day before the cut (F568).
+    static func run(logURL: URL, since: Since = .all, calendar: Calendar = .current) -> (status: Int32, message: String) {
         let cut: (date: Date, label: String)?
         switch since {
         case .all: cut = nil
@@ -88,7 +93,7 @@ enum DictationRefineReportCommand {
         let dates = counted.map(\.date)
         var header = "\(report.totalConsidered) of \(counted.count) entries recorded a refinement outcome"
         if let first = dates.min(), let last = dates.max() {
-            let format = Date.ISO8601FormatStyle().year().month().day()
+            let format = Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day()
             header += ", between \(first.formatted(format)) and \(last.formatted(format))"
         }
         header += ". The log keeps at most \(log.limit) entries, so older dictations have already rolled off."

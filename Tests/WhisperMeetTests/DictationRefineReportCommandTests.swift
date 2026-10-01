@@ -143,3 +143,44 @@ func reportCommandRejectsAnUnparseableSince() throws {
     #expect(result.status != 0)
     #expect(!result.message.contains("| words |"))
 }
+
+// F568 Part 2 — `--since` is read as local midnight, and the header's "between" dates were printed
+// in GMT, so east of UTC an entry the cut had just counted could be dated the day before the cut.
+// Both sides now use one calendar; the tests pin Asia/Shanghai rather than the host's zone.
+
+private func shanghaiCalendar() throws -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    return calendar
+}
+
+@Test("--since is the start of that day in the calendar's time zone (F568)")
+func reportSinceUsesTheCalendarsZone() throws {
+    let since = DictationRefineReportCommand.since(in: ["x", "--since", "2026-09-24"], calendar: try shanghaiCalendar())
+    let midnightInShanghai = try #require(ISO8601DateFormatter().date(from: "2026-09-23T16:00:00Z"))
+    #expect(since == .from(midnightInShanghai, label: "2026-09-24"))
+}
+
+@Test("The header's dates are in the same time zone as the --since cut (F568)")
+func reportHeaderDatesAgreeWithSince() throws {
+    let iso = ISO8601DateFormatter()
+    // 07:30 on 24 Sep in Shanghai, so on the counted side of a --since 2026-09-24 cut there.
+    let early = try #require(iso.date(from: "2026-09-23T23:30:00Z"))
+    let url = try writeLog([
+        DictationLogEntry(
+            id: UUID(), date: early, text: (0..<30).map { "word\($0)" }.joined(separator: " "),
+            outcome: .pasted, refinement: DictationRefinement.refined.rawValue
+        ),
+    ], named: "RefineReportZone")
+    defer { try? FileManager.default.removeItem(at: url) }
+    // The cut is given directly, so this test is about the header alone.
+    let cut = try #require(iso.date(from: "2026-09-23T16:00:00Z"))
+
+    let result = DictationRefineReportCommand.run(
+        logURL: url, since: .from(cut, label: "2026-09-24"), calendar: try shanghaiCalendar()
+    )
+    #expect(result.status == 0)
+    #expect(result.message.contains("1 of 1 entries recorded a refinement outcome"))
+    #expect(result.message.contains("between 2026-09-24 and 2026-09-24"))
+    #expect(!result.message.contains("2026-09-23"))
+}

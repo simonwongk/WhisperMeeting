@@ -3118,6 +3118,8 @@ final class AppModel: ObservableObject {
 
         // Every meeting's transcript and summary is mirrored as notes.md beside its audio, so the
         // text survives even an index loss (F198). Idempotent: an up-to-date library writes nothing.
+        // After a time-zone change each sidecar is rewritten once, its date in the new zone and
+        // naming that offset (F568).
         // Awaited, but the sweep itself runs detached off the main actor — see the store.
         await store.backfillNotesSidecars()
         // F295: deletions older than the grace window lose their text from the saved history.

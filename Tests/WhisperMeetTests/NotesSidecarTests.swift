@@ -39,7 +39,8 @@ func notesMarkdownMatchesTheExporter() throws {
     let composed = store.notesMarkdown(for: meeting)
     let direct = MeetingNotesExporter.markdown(
         title: meeting.title,
-        dateText: meeting.createdAt.formatted(date: .abbreviated, time: .shortened),
+        // Derived, not restated: the date's own form is pinned by `notesDateTextNamesItsOffset` (F568).
+        dateText: MeetingNotesExporter.dateText(for: meeting.createdAt, timeZone: .autoupdatingCurrent),
         durationSeconds: meeting.duration,
         languageCode: meeting.languageCode,
         summary: meeting.summary,

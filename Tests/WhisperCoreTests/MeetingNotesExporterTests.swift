@@ -196,3 +196,19 @@ func blankCaveatsAreDropped() {
     #expect(!markdown.contains("- \n"))
     #expect(markdown.components(separatedBy: "\n- ").count == 2)
 }
+
+// F568 Part 3 — notes.md carried `createdAt.formatted(date: .abbreviated, time: .shortened)`: the
+// host's zone and locale, naming neither. A trip rewrote every sidecar with a different wall-clock
+// time and nothing to say why, and a language or 12/24-hour change rewrote every one for nothing.
+// The date is now one fixed form that names its offset. Explicit zones, never the host's.
+
+@Test("The notes date is a fixed form that names its UTC offset (F568)")
+func notesDateTextNamesItsOffset() throws {
+    let instant = try #require(ISO8601DateFormatter().date(from: "2026-09-23T23:30:00Z"))
+    let newYork = try #require(TimeZone(identifier: "America/New_York"))
+    let shanghai = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    #expect(MeetingNotesExporter.dateText(for: instant, timeZone: newYork) == "2026-09-23 19:30 -04:00")
+    #expect(MeetingNotesExporter.dateText(for: instant, timeZone: shanghai) == "2026-09-24 07:30 +08:00")
+    #expect(MeetingNotesExporter.dateText(for: instant, timeZone: utc) == "2026-09-23 23:30 +00:00")
+}

@@ -54,7 +54,8 @@ public struct MeetingQuery: Sendable, Equatable {
         self.freeText = freeText
     }
 
-    public static func parse(_ raw: String) -> MeetingQuery {
+    /// `timeZone` is the zone `before:`/`after:` dates are read in — see `parseDate` (F568).
+    public static func parse(_ raw: String, timeZone: TimeZone = .current) -> MeetingQuery {
         var query = MeetingQuery()
         var freeWords: [String] = []
         for token in TextSearch.tokenize(raw) {
@@ -63,9 +64,9 @@ public struct MeetingQuery: Sendable, Equatable {
                 query.language = String(lower.dropFirst(5))
             } else if lower.hasPrefix("status:") {
                 query.status = String(lower.dropFirst(7))
-            } else if lower.hasPrefix("before:"), let date = Self.parseDate(String(token.dropFirst(7))) {
+            } else if lower.hasPrefix("before:"), let date = Self.parseDate(String(token.dropFirst(7)), timeZone: timeZone) {
                 query.before = date
-            } else if lower.hasPrefix("after:"), let date = Self.parseDate(String(token.dropFirst(6))) {
+            } else if lower.hasPrefix("after:"), let date = Self.parseDate(String(token.dropFirst(6)), timeZone: timeZone) {
                 query.after = date
             } else if lower.hasPrefix("min:"), let duration = Self.parseDuration(String(token.dropFirst(4))) {
                 query.minDuration = duration
@@ -90,11 +91,15 @@ public struct MeetingQuery: Sendable, Equatable {
         return true
     }
 
-    /// `YYYY-MM-DD` as start-of-day UTC. Deterministic (POSIX locale, UTC).
-    static func parseDate(_ string: String) -> Date? {
+    /// `YYYY-MM-DD` as the start of that day in `timeZone` (POSIX locale, so the Gregorian calendar
+    /// whatever the user's). The sidebar passes this Mac's zone, the one each row's date is shown
+    /// in, so `after:` a day includes that day's early-morning meetings; this used to be UTC
+    /// midnight, which put a meeting near local midnight on the wrong side of its own date (F568).
+    /// Injectable so a test can pin the zone. The same convention as the refine report's `--since`.
+    static func parseDate(_ string: String, timeZone: TimeZone = .current) -> Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: string)
     }
