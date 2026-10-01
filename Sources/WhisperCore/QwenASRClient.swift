@@ -97,8 +97,11 @@ public struct QwenASRClient: Sendable {
     public func transcribe(
         recordingAt fileURL: URL,
         language: WhisperLanguage = .automatic,
-        onProgress: @escaping ProgressHandler = { _ in }
+        onProgress: ProgressHandler? = nil
     ) async throws -> TranscriptionResult {
+        // F718: the no-op is written here, not as the default argument, so it is compiled once in
+        // this module. A closure in a public default argument is copied into every client module.
+        let onProgress: ProgressHandler = onProgress ?? { _ in }
         guard runtimeIsComplete else { throw QwenASRError.runtimeNotInstalled }
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw QwenASRError.recordingNotFound

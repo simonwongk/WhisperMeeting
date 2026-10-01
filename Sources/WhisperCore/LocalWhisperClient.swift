@@ -162,8 +162,11 @@ public struct LocalWhisperClient: Sendable {
     public func transcribe(
         recordingAt fileURL: URL,
         options: LocalTranscriptionOptions = .accuracyFirst(),
-        onProgress: @escaping ProgressHandler = { _ in }
+        onProgress: ProgressHandler? = nil
     ) async throws -> TranscriptionResult {
+        // F718: the no-op is written here, not as the default argument, so it is compiled once in
+        // this module. A closure in a public default argument is copied into every client module.
+        let onProgress: ProgressHandler = onProgress ?? { _ in }
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw LocalWhisperError.runtimeNotInstalled
         }
