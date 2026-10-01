@@ -915,16 +915,21 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Test seam (F292): real track writers without a capture, so `stop()`'s finalize can be driven
     /// the way a dead capture leaves it.
     /// `deviceSync` reaches each track's `FloatTrackFile`, so a test can observe where `finish()`'s
-    /// flush runs (F632).
+    /// flush runs (F632). `systemFinishFailure` makes the system track's `finish()` throw once,
+    /// after the track is finalized, so a test can check that one track's failure does not skip
+    /// the other's finish (F632).
     func beginTestTrackSession(
         in directory: URL,
-        deviceSync: @escaping FloatTrackFile.DeviceSync = FloatTrackFile.fullFsync
+        deviceSync: @escaping FloatTrackFile.DeviceSync = FloatTrackFile.fullFsync,
+        systemFinishFailure: Error? = nil
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        systemWriter = try FloatTrackWriter(
+        let system = try FloatTrackWriter(
             outputURL: directory.appendingPathComponent("system-audio.f32"), targetSampleRate: Self.targetSampleRate,
             deviceSync: deviceSync
         )
+        system.finishFailureForTesting = systemFinishFailure
+        systemWriter = system
         microphoneWriter = try FloatTrackWriter(
             outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate,
             deviceSync: deviceSync
@@ -1295,6 +1300,12 @@ private final class FloatTrackWriter {
         if firstPresentationTime == nil { firstPresentationTime = start }
         try track.appendSilence(frames: frames)
     }
+
+    /// Test seam (F632): thrown by the next `finish()`, once, after the track is finalized. The
+    /// only step of `FloatTrackFile.finish` that throws is a `close()` that fails after the flush,
+    /// and a failed finish there leaves the track finished, so that is the failure this stands in
+    /// for. Set before the engine publishes the writer; read and cleared on the capture queue.
+    var finishFailureForTesting: Error?
     #endif
 
     func finish() throws -> FloatTrack {
@@ -1303,6 +1314,12 @@ private final class FloatTrackWriter {
         // `stop()`'s second catch runs after `finishTrackWriters()` may already have finished one.
         // It flushes the tail before anyone reads it back.
         try track.finish()
+        #if DEBUG
+        if let failure = finishFailureForTesting {
+            finishFailureForTesting = nil
+            throw failure
+        }
+        #endif
         return FloatTrack(
             url: track.url,
             firstPresentationTime: firstPresentationTime,

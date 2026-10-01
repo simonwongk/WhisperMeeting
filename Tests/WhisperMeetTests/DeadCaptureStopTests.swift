@@ -263,3 +263,56 @@ func abortPathFinishesTracksOnCaptureQueue() async throws {
         #expect(size == 48_000 * MemoryLayout<Float>.size, "\(name) must be preserved, not cancelled")
     }
 }
+
+// F632, the other half: the abort path finishes each track on its own. `finishTrackWriters()`
+// finishes them in sequence, so `try? finishTrackWriters()` would let a system finish that threw
+// skip the microphone's — losing the tail of the one track that was fine, on the path that exists
+// to save what there is. The system writer's finish is made to throw after it finalizes (the only
+// way `FloatTrackFile.finish` fails), and the probe tells the two tracks apart by descriptor.
+
+private struct CloseFailed: Error {}
+
+private final class TrackFinishProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed: [(track: String, onCaptureQueue: Bool)] = []
+    func record(_ descriptor: Int32) {
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let track = fcntl(descriptor, F_GETPATH, &path) == -1
+            ? "unknown descriptor"
+            : URL(fileURLWithPath: String(cString: path)).lastPathComponent
+        let onCaptureQueue = AudioCaptureEngine.isOnCaptureQueueForTesting
+        lock.lock(); observed.append((track, onCaptureQueue)); lock.unlock()
+    }
+    var tracks: [String] { lock.lock(); defer { lock.unlock() }; return observed.map(\.track) }
+    var onCaptureQueue: [Bool] { lock.lock(); defer { lock.unlock() }; return observed.map(\.onCaptureQueue) }
+}
+
+@Test("A system track whose finish throws does not skip the microphone's on the abort path (F632)")
+func abortPathFinishesEachTrackOnItsOwn() async throws {
+    let directory = try sessionDirectory("abortindependent")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let engine = AudioCaptureEngine(
+        stoppingCapture: { throw StopRefused() },
+        finishingTracks: {},
+        preservingPartialTracks: nil,
+        startingCapture: { _, _, _ in },
+        directory: directory
+    )
+    let probe = TrackFinishProbe()
+    try engine.beginTestTrackSession(
+        in: directory, deviceSync: { probe.record($0) }, systemFinishFailure: CloseFailed()
+    )
+    try engine.writeTestFrames(system: 48_000, microphone: 48_000, systemStart: 0, microphoneStart: 0)
+
+    // stop()'s first catch: the stream refused to stop and did not die, so the abort path runs and
+    // the stop's own error is what comes back, not the system track's.
+    await #expect(throws: StopRefused.self) { _ = try await engine.stop() }
+
+    #expect(
+        probe.tracks == ["system-audio.f32", "microphone-audio.f32"],
+        "the microphone must still be finished after the system finish threw"
+    )
+    // Not `== [true, true]`: the count is the claim above, and repeating it here would report a
+    // skipped microphone a second time, as a queue failure.
+    #expect(!probe.onCaptureQueue.contains(false), "each finish() flush must run on captureQueue")
+}
