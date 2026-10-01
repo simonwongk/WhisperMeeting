@@ -226,9 +226,10 @@ func theHardwareCallsAreAllInsideTheBridge() throws {
     }
 
     // And the Swift `throws` is carried out rather than swallowed: a block that cannot throw makes
-    // it far too easy to turn an ordinary error into a silent success.
+    // it far too easy to turn an ordinary error into a silent success. It leaves start() through
+    // `startExit` (F404), whose rows (`startExitRows`) pin that the error comes back unchanged.
     #expect(block.contains("swiftFailure = error"))
-    #expect(source.contains("if let swiftFailure { throw swiftFailure }"))
+    #expect(source[startBody].contains("swiftFailure: swiftFailure"), "start() no longer hands its Swift failure to startExit")
 }
 
 @Test("The capture path's raising AVAudioPCMBuffer construction is inside the bridge (F385)")

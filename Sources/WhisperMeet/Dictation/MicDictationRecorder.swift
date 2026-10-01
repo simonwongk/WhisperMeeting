@@ -99,8 +99,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     /// Where a capture is (F404). `starting` is the armed state: set before `start()` touches the
     /// hardware, so a configuration change handled while `start()` is still running is recorded
-    /// rather than dropped, which `guard isRecording` used to do.
-    private enum CaptureState { case idle, starting, recording }
+    /// rather than dropped, which `guard isRecording` used to do. Internal rather than private
+    /// because `configurationChangeTransition` takes it, and that rule is internal so a test can
+    /// call it.
+    enum CaptureState { case idle, starting, recording }
 
     /// Guards every field below it (F404). The configuration-change handler runs on AVFAudio's own
     /// queue ("the callback happens on an internal dispatch queue", `AVAudioEngine.h`) while
@@ -111,10 +113,18 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// already holds, which `NSLock` answers by blocking forever.
     private let stateLock = NSLock()
     private var state = CaptureState.idle
-    /// Set by `handleConfigurationChange` in the same critical section that ends the capture, and
-    /// consumed by `stop()` before it decides whether anything was recording, so a key release
-    /// that races the notification reports the reason instead of "not recording" or a truncated
-    /// clip (F357, F404).
+    /// Why the capture ended, or why the one being started must not go live (F357, F404).
+    ///
+    /// `handleConfigurationChange` records it in two states. In `starting` nothing has ended yet:
+    /// `start()` reads it when it leaves `starting`, and `startExit` refuses the start on it. In
+    /// `recording` it is set in the same critical section that ends the capture, and `stop()` takes
+    /// it before its `notRecording` guard, so a key release that lands after the handler has ended
+    /// the capture reports the reason, not "not recording". It is cleared by `start()`'s arming and
+    /// by its failed exit, and taken or cleared by `stop()` and `cancel()` in every state but
+    /// `starting`, which belongs to `start()`. So no capture inherits another's reason.
+    ///
+    /// It cannot help a key release that lands before the notification has been delivered: that
+    /// capture still returns its clip, truncated, as `stop()` explains.
     private var interruption: DictationCaptureInterruption?
     private var interruptionCallback: (@Sendable (DictationCaptureInterruption) -> Void)?
     /// The node `start()` installed its tap on, so each teardown removes the tap from that node
@@ -123,6 +133,15 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// `engine.inputNode.removeTap` was, on a recorder that never installed a tap, that first access:
     /// it created the node only to remove a tap that was never there. Set only by `start()`, and
     /// taken, under the lock, by whichever teardown ends the capture, so only one of them removes it.
+    ///
+    /// That holds within one capture, not across two. The handler takes the node and publishes
+    /// `idle` under the lock, then removes the tap and stops the engine outside it, and the node is
+    /// the engine's singleton. A `start()` that arms in that gap therefore shares bus 0 and the
+    /// engine with a teardown still running: its new tap can be removed or its engine stopped under
+    /// it, or its `installTap` can meet the old tap still on the bus (`AVAudioNode.h`: "Only one tap
+    /// may be installed on any bus"). Reaching that needs a new press during the handler's own
+    /// teardown, right after the device changed; the controller itself answers an interruption with
+    /// `cancel()`, never with `start()`.
     private var installedInput: AVAudioInputNode?
 
     var isRecording: Bool { stateLock.withLock { state == .recording } }
@@ -170,25 +189,20 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// it is not — `stop()` on an engine that has already stopped itself is a no-op, and the
     /// recorder holds the only strong reference either way.
     ///
-    /// While `start()` is still running (`starting`) this only records the reason (F404): `start()`
-    /// is part-way through its own bridged block, so it tears down and reports the failure itself,
-    /// and there is no live capture yet for the callback to announce.
+    /// What it does in each state is `configurationChangeTransition` (F404). While `start()` is
+    /// still running (`starting`) it only records the reason: `start()` is part-way through its own
+    /// bridged block, so it tears down and reports the failure itself, and there is no live capture
+    /// yet for the callback to announce.
     private func handleConfigurationChange() {
         let ended: (input: AVAudioInputNode?, callback: (@Sendable (DictationCaptureInterruption) -> Void)?)? =
             stateLock.withLock {
-                switch state {
-                case .idle:
-                    return nil
-                case .starting:
-                    interruption = .deviceConfigurationChanged
-                    return nil
-                case .recording:
-                    interruption = .deviceConfigurationChanged
-                    state = .idle
-                    let input = installedInput
-                    installedInput = nil
-                    return (input, interruptionCallback)
-                }
+                let transition = MicDictationRecorder.configurationChangeTransition(from: state)
+                state = transition.state
+                if transition.recordsInterruption { interruption = .deviceConfigurationChanged }
+                guard transition.endsCapture else { return nil }
+                let input = installedInput
+                installedInput = nil
+                return (input, interruptionCallback)
             }
         guard let ended else { return }
         log.notice("audio device configuration changed mid-dictation; ending the capture")
@@ -205,6 +219,9 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     var droppedChunkCountForTesting: Int { processingQueue.sync { droppedChunks } }
     var capturedSampleCountForTesting: Int { processingQueue.sync { sampleBuffer.samples.count } }
     func setRecordingForTesting() { stateLock.withLock { state = .recording } }
+    /// For an injected probe to read from inside `start()` (F404). The probe runs between the
+    /// arming and the exit, so this is how a test sees that `start()` armed the capture first.
+    var captureStateForTesting: CaptureState { stateLock.withLock { state } }
     #endif
 
     /// Which failure an empty capture actually was (F368).
@@ -213,6 +230,86 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// rule, and `stop()` below is its only caller.
     static func emptyCaptureFailure(droppedChunks: Int) -> RecorderError {
         droppedChunks > 0 ? .audioConversionFailed(droppedChunks: droppedChunks) : .noAudioCaptured
+    }
+
+    /// What a configuration change does in one state (F404): the state it leaves, whether it
+    /// records the reason, and whether it ended a live capture. When it did, the handler takes the
+    /// node and the callback under the lock, then removes the tap, stops the engine and calls back
+    /// outside it.
+    struct ConfigurationChangeTransition: Equatable {
+        var state: CaptureState
+        var recordsInterruption: Bool
+        var endsCapture: Bool
+    }
+
+    /// The configuration-change handler's rule (F404).
+    ///
+    /// Pure, and separate from `handleConfigurationChange` for the reason `emptyCaptureFailure` is
+    /// separate from `stop()`. The `starting` row is the leading edge, and headlessly it can be
+    /// reached only through a probe that must then refuse or raise, and either one is reported
+    /// ahead of whatever was recorded. So a handler that dropped the change in `starting` passes
+    /// every test that drives the recorder. The handler is this rule's only caller.
+    static func configurationChangeTransition(from state: CaptureState) -> ConfigurationChangeTransition {
+        switch state {
+        case .idle:
+            // Nothing is armed or live, so nothing was interrupted.
+            return ConfigurationChangeTransition(state: .idle, recordsInterruption: false, endsCapture: false)
+        case .starting:
+            // `start()` reads the reason when it leaves `starting` and refuses on it.
+            return ConfigurationChangeTransition(state: .starting, recordsInterruption: true, endsCapture: false)
+        case .recording:
+            return ConfigurationChangeTransition(state: .idle, recordsInterruption: true, endsCapture: true)
+        }
+    }
+
+    /// How `start()` leaves `starting` once its bridged block has returned (F404).
+    enum StartExit {
+        /// Go to `recording`. `engineReportedStopped` means `engine.isRunning` read false right
+        /// after `engine.start()` returned; `start()` logs that and the capture still goes live.
+        case live(engineReportedStopped: Bool)
+        /// Go back to `idle`, tear down whatever was installed, and throw this. The Swift error
+        /// `engine.start()` threw is carried as it is, which is why this is `any Error`.
+        case failed(any Error)
+    }
+
+    /// `start()`'s exit rule (F404). Pure, and separate from `start()` for the same reason as
+    /// `emptyCaptureFailure`: everything in `start()` after its probe needs a device, so this is the
+    /// rule and `start()` is its only caller.
+    ///
+    /// The checks run in precedence order. A refusal by the probe comes first: nothing after the
+    /// probe ran, so the only thing it can coincide with is a recorded change, and its sentence is
+    /// the one that says what to check. A Swift error from `engine.start()` comes next, then a
+    /// raise, then a change the handler recorded while `starting`. That last one refuses even when
+    /// the engine reads running, because the hardware changed while the capture was being set up.
+    ///
+    /// `engineRunning` refuses nothing on its own. `AVAudioEngine.h` documents `running` only as
+    /// "The engine's running state.", and says nothing about when it turns true relative to
+    /// `startAndReturnError:` returning. A refusal resting on it would refuse every dictation if it
+    /// ever read false on a healthy start. The stop it was meant to catch is caught without it,
+    /// because the header says that on a hardware change "the engine stops itself ... and issues
+    /// this notification". A notification handled before this exit is the `interruption` row, and
+    /// one handled after it finds the capture `recording` and ends it out loud. The one stop only
+    /// `engineRunning` would have caught is a stop with no notification. The only such stop the
+    /// header describes is auto shutdown, which is "disabled by default" off watchOS and which this
+    /// recorder never enables. A start like that now goes live, and the false reading is logged, so
+    /// the log can say whether it ever happens.
+    static func startExit(
+        formatRefused: Bool,
+        completed: Bool,
+        raisedReason: String?,
+        swiftFailure: (any Error)?,
+        engineRunning: Bool,
+        interruption: DictationCaptureInterruption?
+    ) -> StartExit {
+        if formatRefused { return .failed(RecorderError.audioFormatUnavailable) }
+        if let swiftFailure { return .failed(swiftFailure) }
+        if !completed {
+            return .failed(RecorderError.captureEngineRaised(
+                reason: raisedReason ?? "the audio engine could not be started"
+            ))
+        }
+        if let interruption { return .failed(RecorderError.captureInterrupted(interruption)) }
+        return .live(engineReportedStopped: !engineRunning)
     }
 
     func requestPermission() async -> Bool {
@@ -326,10 +423,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
             engine.prepare()
             do {
                 try engine.start()
-                // `AVAudioEngine.h`: on a hardware change "the engine stops itself" and then
-                // issues the notification (F404). A stop inside this block can therefore be
-                // announced before or after `start()` returns, and `isRunning` is the one signal
-                // that does not depend on which. `try engine.start()` returning is not it.
+                // Read for `startExit`, which marks a false reading for the log and does not
+                // refuse on it (F404): the header never says `running` is already true when
+                // `start()` returns. A hardware change inside this block is caught without it,
+                // because the engine "stops itself" and then issues the notification, which the
+                // handler records while `starting` or answers by ending the capture once it is
+                // `recording`.
                 engineRunning = engine.isRunning
             } catch {
                 swiftFailure = error
@@ -337,50 +436,54 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         }, &raised)
 
         // Leave `starting` in one critical section, so the handler sees either a start that failed
-        // or a capture that is live, never a gap between the two.
-        let failure: (input: AVAudioInputNode?, interruption: DictationCaptureInterruption?)? =
-            stateLock.withLock {
-                guard formatRefused || !completed || swiftFailure != nil || !engineRunning
-                    || interruption != nil
-                else {
-                    state = .recording
-                    return nil
-                }
-                // A failed start reports its failure by throwing, so nothing is carried forward
-                // for the next capture's key release to report.
-                let failed = (input: installedInput, interruption: interruption)
-                state = .idle
-                installedInput = nil
-                interruption = nil
-                return failed
-            }
-        guard let failure else { return }
-
-        if formatRefused { throw RecorderError.audioFormatUnavailable }
-        // Tear down whatever got installed before the failure. `removeTap` on a bus with no tap is
-        // a no-op, and the taken input is nil if the failure came before the node was reached, so
-        // there is nothing to remove. Bridged too (F403): this runs on the engine that just
-        // failed, possibly by raising, and `ObjCExceptionBridge.h` says the process state after an
-        // exception is undefined. A second raise here is logged, not rethrown — the first failure
-        // is the one the user needs to hear about.
-        var teardownRaised: NSError?
-        let tornDown = WMRunCatchingObjCExceptions({
-            failure.input?.removeTap(onBus: 0)
-            engine.stop()
-        }, &teardownRaised)
-        if !tornDown {
-            log.error("dictation teardown after a failed start raised: \(teardownRaised?.localizedDescription ?? "no reason", privacy: .public)")
-        }
-        if let swiftFailure { throw swiftFailure }
-        if !completed {
-            throw RecorderError.captureEngineRaised(
-                reason: raised?.localizedDescription ?? "the audio engine could not be started"
+        // or a capture that is live, never a gap between the two. `startExit` is the rule.
+        let outcome: (verdict: StartExit, input: AVAudioInputNode?) = stateLock.withLock {
+            let verdict = MicDictationRecorder.startExit(
+                formatRefused: formatRefused,
+                completed: completed,
+                raisedReason: raised?.localizedDescription,
+                swiftFailure: swiftFailure,
+                engineRunning: engineRunning,
+                interruption: interruption
             )
+            if case .live = verdict {
+                state = .recording
+                return (verdict, nil)
+            }
+            // A failed start reports its failure by throwing, so nothing is carried forward for
+            // the next capture's key release to report.
+            let taken = installedInput
+            state = .idle
+            installedInput = nil
+            interruption = nil
+            return (verdict, taken)
         }
-        // The engine started and then stopped, or the handler saw the change while this ran:
-        // either way the capture never went live, and saying so costs one re-press where a start
-        // that reported success would have been F357's silent capture.
-        throw RecorderError.captureInterrupted(failure.interruption ?? .deviceConfigurationChanged)
+
+        switch outcome.verdict {
+        case .live(let engineReportedStopped):
+            if engineReportedStopped {
+                log.error("audio engine read not running right after a successful start; the capture goes live anyway")
+            }
+        case .failed(let error):
+            // A refusal by the probe came before the node was reached, so nothing was installed.
+            if !formatRefused {
+                // Tear down whatever got installed before the failure. `removeTap` on a bus with no
+                // tap is a no-op, and the taken input is nil if the failure came before the node
+                // was reached, so there is nothing to remove. Bridged too (F403): this runs on the
+                // engine that just failed, possibly by raising, and `ObjCExceptionBridge.h` says
+                // the process state after an exception is undefined. A second raise here is logged,
+                // not rethrown — the first failure is the one the user needs to hear about.
+                var teardownRaised: NSError?
+                let tornDown = WMRunCatchingObjCExceptions({
+                    outcome.input?.removeTap(onBus: 0)
+                    engine.stop()
+                }, &teardownRaised)
+                if !tornDown {
+                    log.error("dictation teardown after a failed start raised: \(teardownRaised?.localizedDescription ?? "no reason", privacy: .public)")
+                }
+            }
+            throw error
+        }
     }
 
     /// The documented availability probe. AVAudioEngine.h, `inputNode`: "Check for the input
@@ -438,10 +541,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         // What the lock cannot see: an engine that has stopped itself and whose notification has
         // not been delivered yet. A key release in that gap returns the clip without saying it
         // ended early. The audio missing from it is what followed the engine's stop, so it is
-        // shorter than that delivery delay, which nobody has measured. `start()` checks
-        // `engine.isRunning` and this does not: here the loss is bounded by that delay, and the
-        // check would make every stop after `setRecordingForTesting`, whose engine never ran,
-        // report an interruption.
+        // shorter than that delivery delay, which nobody has measured. `start()` reads
+        // `engine.isRunning`, only to log a false reading (see `startExit`); this does not read it
+        // at all: here the loss is bounded by that delay, and refusing on it would make every stop
+        // after `setRecordingForTesting`, whose engine never ran, report an interruption.
         let ending: (wasRecording: Bool, input: AVAudioInputNode?, interruption: DictationCaptureInterruption?) =
             stateLock.withLock {
                 // `starting` belongs to `start()`, which is still running and will settle it.

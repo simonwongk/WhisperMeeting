@@ -16,7 +16,9 @@ import Testing
 // What still cannot be driven here, stated once rather than implied: a successful `start()` needs a
 // real input device, so the tap install, `engine.start()` and the happy path remain uncovered. The
 // refusals, the drop accounting and the configuration-change response are all reachable, and they
-// are what these three tickets are about.
+// are what these three tickets are about. Where a decision on the unreachable path matters, it is a
+// pure rule tested row by row instead: `emptyCaptureFailure` (F368), and `startExit` and
+// `configurationChangeTransition` (F404).
 
 /// `@Sendable` closures need a reference to count into.
 private final class Counter: @unchecked Sendable {
@@ -31,6 +33,17 @@ private final class Box<T>: @unchecked Sendable {
     private var stored: T
     init(_ initial: T) { stored = initial }
     var value: T {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+/// For a probe that needs the recorder it was injected into: a strong reference from the probe
+/// would be a cycle, since the recorder keeps its probe.
+private final class WeakBox<T: AnyObject>: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var stored: T?
+    var value: T? {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
     }
@@ -273,24 +286,158 @@ func aChangeDuringARefusedStartIsNotCarriedForward() {
     }
 }
 
-@Test("start() checks the engine is running after starting it (F404)")
+// MARK: - F404's leading edge, as rules
+
+/// What `engine.start()` threw, in a row where it threw. Any error that is not a `RecorderError`
+/// can stand in for it, because the rule's job is to hand that error back unchanged.
+private struct EngineStartFailed: Error {}
+
+/// A `StartExit` in a form `#expect` can compare. `StartExit.failed` carries `any Error`, which is
+/// not `Equatable`, because the error `engine.start()` threw is passed through as it is.
+private enum StartVerdict: Equatable {
+    case live(engineReportedStopped: Bool)
+    case recorderError(MicDictationRecorder.RecorderError)
+    case engineStartError
+    case otherError(String)
+}
+
+private func verdict(of exit: MicDictationRecorder.StartExit) -> StartVerdict {
+    switch exit {
+    case .live(let engineReportedStopped): return .live(engineReportedStopped: engineReportedStopped)
+    case .failed(let error as MicDictationRecorder.RecorderError): return .recorderError(error)
+    case .failed(is EngineStartFailed): return .engineStartError
+    case .failed(let error): return .otherError(String(describing: error))
+    }
+}
+
+/// One row of `startExit`: what start()'s bridged block left behind, and what start() must do.
+private struct StartExitRow {
+    var name: String
+    var formatRefused = false
+    var completed = true
+    var raisedReason: String? = nil
+    var engineStartThrew = false
+    var engineRunning = false
+    var interruption: DictationCaptureInterruption? = nil
+    var expected: StartVerdict
+}
+
+@Test("start() leaves `starting` by one rule, and a change recorded while starting refuses the start (F404)")
+func startExitRows() {
+    // A successful `engine.start()` needs an input device, so start()'s exit is tested as the rule
+    // it applies, as F368's `emptyCaptureFailure` is for stop(). Each row is a state the bridged
+    // block can leave behind. F404's leading edge is the three rows after the raises: a change the
+    // handler recorded while `starting` refuses the start whether or not the engine still reads
+    // running, and an engine that reads not running with nothing recorded goes live and is only
+    // reported, because nothing documents when `isRunning` turns true.
+    let changed = DictationCaptureInterruption.deviceConfigurationChanged
+    let rows = [
+        StartExitRow(name: "the probe refused", formatRefused: true,
+                     expected: .recorderError(.audioFormatUnavailable)),
+        StartExitRow(name: "the probe refused after a change was recorded", formatRefused: true,
+                     interruption: changed, expected: .recorderError(.audioFormatUnavailable)),
+        StartExitRow(name: "engine.start() threw", engineStartThrew: true,
+                     expected: .engineStartError),
+        StartExitRow(name: "engine.start() threw after a change was recorded", engineStartThrew: true,
+                     interruption: changed, expected: .engineStartError),
+        StartExitRow(name: "a call raised", completed: false, raisedReason: "probe raised",
+                     expected: .recorderError(.captureEngineRaised(reason: "probe raised"))),
+        StartExitRow(name: "a call raised with no reason", completed: false,
+                     expected: .recorderError(.captureEngineRaised(reason: "the audio engine could not be started"))),
+        StartExitRow(name: "a call raised after a change was recorded", completed: false,
+                     raisedReason: "probe raised", interruption: changed,
+                     expected: .recorderError(.captureEngineRaised(reason: "probe raised"))),
+        StartExitRow(name: "started and running, with a change recorded while starting", engineRunning: true,
+                     interruption: changed, expected: .recorderError(.captureInterrupted(changed))),
+        StartExitRow(name: "started but not running, with a change recorded while starting",
+                     interruption: changed, expected: .recorderError(.captureInterrupted(changed))),
+        StartExitRow(name: "started but not running, with nothing recorded",
+                     expected: .live(engineReportedStopped: true)),
+        StartExitRow(name: "started and running, with nothing recorded", engineRunning: true,
+                     expected: .live(engineReportedStopped: false)),
+    ]
+    for row in rows {
+        let thrown: (any Error)? = row.engineStartThrew ? EngineStartFailed() : nil
+        let exit = MicDictationRecorder.startExit(
+            formatRefused: row.formatRefused,
+            completed: row.completed,
+            raisedReason: row.raisedReason,
+            swiftFailure: thrown,
+            engineRunning: row.engineRunning,
+            interruption: row.interruption
+        )
+        #expect(verdict(of: exit) == row.expected, "\(row.name)")
+    }
+}
+
+@Test("A configuration change is recorded while start() runs, and ends only a live capture (F404)")
+func configurationChangeTransitionRows() {
+    // The handler's rule in each state. `starting` is the leading edge: start() is part-way through
+    // its bridged block, so the reason is recorded for `startExit` to refuse on, and the handler
+    // neither tears down nor calls back, because there is no live capture yet to announce.
+    typealias Transition = MicDictationRecorder.ConfigurationChangeTransition
+    #expect(MicDictationRecorder.configurationChangeTransition(from: .idle)
+            == Transition(state: .idle, recordsInterruption: false, endsCapture: false))
+    #expect(MicDictationRecorder.configurationChangeTransition(from: .starting)
+            == Transition(state: .starting, recordsInterruption: true, endsCapture: false))
+    #expect(MicDictationRecorder.configurationChangeTransition(from: .recording)
+            == Transition(state: .idle, recordsInterruption: true, endsCapture: true))
+}
+
+@Test("start() arms the capture before the probe, the first call that touches the hardware (F404)")
+func startArmsTheCaptureBeforeTheProbe() throws {
+    // The one leading-edge mechanism neither rule can see is the ORDER. The probe is the first
+    // statement inside start()'s bridged block (F403), so the state it observes is the state every
+    // hardware call after it runs in. A change handled in `idle` is dropped, which was F404's
+    // window; in `starting` it is recorded, and `startExit` refuses on it.
+    let recorder = WeakBox<MicDictationRecorder>()
+    let seen = Box<MicDictationRecorder.CaptureState?>(nil)
+    let made = MicDictationRecorder(hardwareFormatProbe: {
+        seen.value = recorder.value?.captureStateForTesting
+        return (sampleRate: 0, channels: 0)
+    })
+    recorder.value = made
+    try #require(made.captureStateForTesting == .idle)
+
+    #expect(throws: MicDictationRecorder.RecorderError.audioFormatUnavailable) {
+        try made.start(onLevel: { _ in })
+    }
+    #expect(seen.value == .starting, "the probe ran before start() armed the capture")
+    // A start left in `starting` would make every later start() return without starting, and the
+    // controller reads a start() that does not throw as a capture that began.
+    #expect(made.captureStateForTesting == .idle, "a refused start must disarm")
+}
+
+@Test("start() reads isRunning after starting the engine, and start() and the handler decide through their rules (F404)")
 func startChecksTheEngineIsRunningAfterStartingIt() throws {
-    // `AVAudioEngine.h`: on a hardware change "the engine stops itself" and then issues the
-    // notification. If that happens while start() is still running, the notification may arrive
-    // before or after start() returns, and a start that returned success over a stopped engine is
-    // F357's silent capture again. `engine.isRunning` is the one signal that does not depend on
-    // when the notification arrives. A source assertion, because a successful `engine.start()`
-    // needs an input device and `swift test` must never need one.
+    // The rules above are worth having only if the recorder uses them. This is a source assertion
+    // because a successful `engine.start()` needs an input device and `swift test` must never need
+    // one: F306's precedent for an entry point the harness cannot drive.
     let source = try recorderSourceForBraceMatching()
-    let body = try #require(
+    let start = try #require(
         declarationBody("func start(onLevel: @escaping @Sendable (Float) -> Void) throws {", in: source),
         "start() not found; did it move?"
     )
-    let started = try #require(body.range(of: "try engine.start()"), "start() no longer starts the engine")
-    #expect(
-        body[started.upperBound...].contains("engine.isRunning"),
-        "nothing reads engine.isRunning after engine.start() returns"
+    let started = try #require(start.range(of: "try engine.start()"), "start() no longer starts the engine")
+    let afterStart = start[started.upperBound...]
+    #expect(afterStart.contains("engineRunning = engine.isRunning"),
+            "nothing reads engine.isRunning after engine.start() returns")
+    let exitCall = try #require(afterStart.range(of: "startExit("), "start() no longer leaves `starting` through startExit")
+    let arguments = afterStart[exitCall.upperBound...].prefix { $0 != ")" }
+    #expect(arguments.contains("engineRunning: engineRunning"), "startExit is not told what isRunning read")
+    #expect(arguments.contains("interruption: interruption"), "startExit is not told what the handler recorded")
+    // A live start whose engine read not running is reported, not dropped in silence. The slice
+    // runs to the first closing brace, which is the end of that `if`, so both must be inside it.
+    let live = try #require(afterStart.range(of: "case .live(let engineReportedStopped):"))
+    let liveCase = afterStart[live.upperBound...].prefix { $0 != "}" }
+    #expect(liveCase.contains("if engineReportedStopped {"), "a live start ignores what isRunning read")
+    #expect(liveCase.contains("log.error("), "a live start over a stopped engine is not logged")
+
+    let handler = try #require(
+        declarationBody("func handleConfigurationChange() {", in: source),
+        "handleConfigurationChange() not found; did it move?"
     )
+    #expect(handler.contains("configurationChangeTransition(from: state)"), "the handler does not decide through its rule")
 }
 
 // MARK: - F405, a teardown must not create the node it tears down
