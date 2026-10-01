@@ -1,8 +1,8 @@
 # Code-switch per-word results: Qwen3-ASR, dictation path vs meeting path (F628)
 
 This file is written by hand from `dictation-ab.py --words` output. It is not generated like
-`results.md`, which `benchmark.py` rewrites from scratch on every run. Re-run the commands below
-to reproduce it.
+`results.md`, which `benchmark.py` rewrites from scratch on every run. To reproduce it, re-run
+the commands below on the same clip files (see **Clips**).
 
 - **Measured:** 2026-09-30, Apple M3 Pro, 18 GB.
 - **Model:** the installed runtime, `mlx-audio=0.3.1`,
@@ -13,7 +13,14 @@ to reproduce it.
 - **Dictation path:** the installed `qwen_dictate_server.py`, kept warm.
 - **Clips:** the synthetic F589 clips from `generate_clips.sh`, voices Samantha (en) and
   Tingting (zh). In encs1–6 the Mandarin words are spliced in, each spoken by the Mandarin voice.
-  In cs1–3 one Mandarin voice reads the mixed text.
+  In cs1–3 one Mandarin voice reads the mixed text. These are the files F589 measured on
+  2026-09-26, copied rather than regenerated. Their SHA-1 prefixes: encs1 `04066b00`,
+  encs2 `871fdba3`, encs3 `1be4b160`, encs4 `1d28c391`, encs5 `a19246e4`, encs6 `f336582c`,
+  cs1 `729dcd87`, cs2 `cc545a3e`, cs3 `912ad034`.
+- **Regenerated clips are different audio.** `generate_clips.sh` run again on the same Mac on
+  2026-09-30 made every `say` call 174 ms longer. In each single-voice clip the waveform also
+  differs over the last 0.16–0.43 s. A re-run on fresh clips is therefore not the same input,
+  and may not reproduce these rows.
 
 ```bash
 Scripts/bench/dictation-ab.py --engine qwen3-asr-1.7b-8bit --clips encs,cs --words [--language English]
@@ -41,8 +48,8 @@ The two dictation columns also match F589's Qwen columns (2026-09-26) verdict fo
 | cs1 | deadline | kept | kept | kept | kept |
 | cs2 | schedule | kept | kept | kept | kept |
 | cs2 | meeting | kept | kept | kept | kept |
-| cs3 | bug | kept | kept | kept (as "fixed") | kept (as "fixed") |
-| cs3 | fix | kept | kept | kept | kept |
+| cs3 | bug | kept | kept | kept | kept |
+| cs3 | fix | kept | kept | kept (as "fixed") | kept (as "fixed") |
 | cs3 | merge | kept | kept | kept | kept |
 
 The parenthesised text is what the hypothesis has in that word's place, read by hand from the raw
@@ -70,9 +77,14 @@ the meeting path.
 | 我去问一下王老师作业的事。 | 我去问一下王老师作业的事。 | 我去问一下王老师作业的事。 | 我去问一下王老师作业的事。 |
 
 Even with English pinned, the name comes back intact when no English surrounds it. So "Wang老师"
-comes from the model decoding a Chinese surname inside an English sentence. It is not a property
-of either decode path, and not of the language setting. F589 recorded the same rendering from
+is not a property of either decode path, and not of the language setting: on these clips it
+appears only when the name sits inside an English sentence. F589 recorded the same rendering from
 Whisper Turbo, a different model.
+
+The control removes the English and the splice together. In encs4 the name follows a 150 ms
+splice from the English voice. The control has no splice, and its 王老师 is a new rendering by the
+same voice (2026-09-30), not encs4's own segment. So it does not settle which of the two causes
+"Wang老师": the English context or the change of voice.
 
 ## What these clips cannot show
 
