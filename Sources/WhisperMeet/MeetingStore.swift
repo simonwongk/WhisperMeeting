@@ -922,7 +922,8 @@ final class MeetingStore: ObservableObject {
     ///
     /// Runs the sweep detached: it is on the launch path and does transcript-sized string work plus
     /// a file read per meeting, unbounded with library size, so it must not stall the main actor.
-    /// The actor only snapshots (`MeetingRecord` is `Sendable`) and banks the write count.
+    /// On the actor it snapshots (`MeetingRecord` is `Sendable`), banks the write count, and
+    /// afterwards reconciles any meeting that changed while the pass ran (below).
     ///
     /// The main actor is free while the pass runs, so an edit and its debounced flush can land
     /// first: the flush writes notes.md from the live record, then the pass compares that file with
