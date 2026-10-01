@@ -212,9 +212,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     }
 
     #if DEBUG
-    /// Test seams (F357, F368). A real `start()` needs an input device, so these stand in for the
-    /// state it would have produced — nothing here is reachable from the app. `setRecordingForTesting`
-    /// installs no tap, so `installedInput` stays `nil` and no teardown creates the node (F405).
+    /// Test seams (F357, F368, F404). A real `start()` needs an input device, so these stand in for
+    /// the state it would have produced or for the calls that need the device — nothing here is
+    /// reachable from the app. `setRecordingForTesting` and the hardware step below install no tap,
+    /// so `installedInput` stays `nil` and no teardown creates the node (F405).
     var engineForTesting: AVAudioEngine { engine }
     var droppedChunkCountForTesting: Int { processingQueue.sync { droppedChunks } }
     var capturedSampleCountForTesting: Int { processingQueue.sync { sampleBuffer.samples.count } }
@@ -222,6 +223,30 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// For an injected probe to read from inside `start()` (F404). The probe runs between the
     /// arming and the exit, so this is how a test sees that `start()` armed the capture first.
     var captureStateForTesting: CaptureState { stateLock.withLock { state } }
+
+    /// Stands in for the calls in `start()` that need an input device (F404): `engine.inputNode`,
+    /// `installTap`, `prepare`, `engine.start()` and the `isRunning` read. It runs where they would,
+    /// inside the bridged block after the probe and the buffer reset, and returns what `isRunning`
+    /// would have read. A test can then run the rest of the real `start()` (the arming, the probe
+    /// and the exit) and post a configuration change while the capture is `starting`. The calls it
+    /// replaces still never run under `swift test`; source assertions check parts of them
+    /// (`theHardwareCallsAreAllInsideTheBridge`, `startChecksTheEngineIsRunningAfterStartingIt`,
+    /// `DictationTapFormatTests`).
+    typealias HardwareStartForTesting = @Sendable () -> Bool
+    /// Set once, by the init below, before the recorder is shared; `nil` for a recorder built any
+    /// other way.
+    private var injectedHardwareStart: HardwareStartForTesting?
+
+    /// The probe is required here, not optional: without one, `start()` would read the real
+    /// hardware format, which creates the input node (F405).
+    convenience init(
+        hardwareFormatProbe: @escaping HardwareFormatProbe,
+        notificationCenter: NotificationCenter,
+        hardwareStartForTesting: @escaping HardwareStartForTesting
+    ) {
+        self.init(hardwareFormatProbe: hardwareFormatProbe, notificationCenter: notificationCenter)
+        injectedHardwareStart = hardwareStartForTesting
+    }
     #endif
 
     /// Which failure an empty capture actually was (F368).
@@ -245,10 +270,12 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
     /// The configuration-change handler's rule (F404).
     ///
     /// Pure, and separate from `handleConfigurationChange` for the reason `emptyCaptureFailure` is
-    /// separate from `stop()`. The `starting` row is the leading edge, and headlessly it can be
-    /// reached only through a probe that must then refuse or raise, and either one is reported
-    /// ahead of whatever was recorded. So a handler that dropped the change in `starting` passes
-    /// every test that drives the recorder. The handler is this rule's only caller.
+    /// separate from `stop()`. The `starting` row is the leading edge. Through the probe alone a
+    /// test reaches it only in a start that the probe then refuses or raises in, and either one is
+    /// reported ahead of whatever was recorded, so a handler that dropped the change there would
+    /// pass. The DEBUG hardware step reaches it in a start that would otherwise succeed, and there
+    /// a dropped change lets the capture go live, which `aChangeDuringStartRefusesTheStart` fails on.
+    /// The handler is this rule's only caller.
     static func configurationChangeTransition(from state: CaptureState) -> ConfigurationChangeTransition {
         switch state {
         case .idle:
@@ -274,7 +301,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     /// `start()`'s exit rule (F404). Pure, and separate from `start()` for the same reason as
     /// `emptyCaptureFailure`: everything in `start()` after its probe needs a device, so this is the
-    /// rule and `start()` is its only caller.
+    /// rule, tested row by row, and `start()` is its only caller. Tests drive `start()`'s use of it
+    /// through the probe for the refusal and raise rows, and through the DEBUG hardware step for the
+    /// recorded-change and live rows. The Swift-error row is not driven, because the step cannot
+    /// throw.
     ///
     /// The checks run in precedence order. A refusal by the probe comes first: nothing after the
     /// probe ran, so the only thing it can coincide with is a recorded change, and its sentence is
@@ -388,6 +418,14 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
                 sampleBuffer.removeAll(keepingCapacity: true)
                 droppedChunks = 0
             }
+
+            #if DEBUG
+            // A test's stand-in for the rest of this block (see `HardwareStartForTesting`).
+            if let injectedHardwareStart {
+                engineRunning = injectedHardwareStart()
+                return
+            }
+            #endif
 
             let input = engine.inputNode
             stateLock.withLock { installedInput = input }

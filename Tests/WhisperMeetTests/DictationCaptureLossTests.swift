@@ -14,11 +14,13 @@ import Testing
 // start-failure path is covered".
 //
 // What still cannot be driven here, stated once rather than implied: a successful `start()` needs a
-// real input device, so the tap install, `engine.start()` and the happy path remain uncovered. The
-// refusals, the drop accounting and the configuration-change response are all reachable, and they
-// are what these three tickets are about. Where a decision on the unreachable path matters, it is a
-// pure rule tested row by row instead: `emptyCaptureFailure` (F368), and `startExit` and
-// `configurationChangeTransition` (F404).
+// real input device, so the input node, the tap install, `engine.start()` and the `isRunning` read
+// never run. The refusals, the drop accounting and the configuration-change response are all
+// reachable, and they are what these three tickets are about. Where a decision on the unreachable
+// path matters, it is a pure rule tested row by row instead: `emptyCaptureFailure` (F368), and
+// `startExit` and `configurationChangeTransition` (F404). Since F404 a DEBUG hardware step stands in
+// for those device calls, so the rest of a successful `start()` (its arming, its probe and its exit)
+// and a change handled while it runs are driven for real.
 
 /// `@Sendable` closures need a reference to count into.
 private final class Counter: @unchecked Sendable {
@@ -410,9 +412,12 @@ func startArmsTheCaptureBeforeTheProbe() throws {
 
 @Test("start() reads isRunning after starting the engine, and start() and the handler decide through their rules (F404)")
 func startChecksTheEngineIsRunningAfterStartingIt() throws {
-    // The rules above are worth having only if the recorder uses them. This is a source assertion
-    // because a successful `engine.start()` needs an input device and `swift test` must never need
-    // one: F306's precedent for an entry point the harness cannot drive.
+    // The rules above are worth having only if the recorder uses them. The tests after this one
+    // drive start()'s exit and the handler for real, but through the DEBUG hardware step, which
+    // replaces the calls from `engine.inputNode` to the `isRunning` read. So this source assertion
+    // stays for what they skip: that isRunning is read after engine.start() and reaches the rule,
+    // and that a false reading is logged. A successful `engine.start()` needs an input device and
+    // `swift test` must never need one: F306's precedent for an entry point the harness cannot drive.
     let source = try recorderSourceForBraceMatching()
     let start = try #require(
         declarationBody("func start(onLevel: @escaping @Sendable (Float) -> Void) throws {", in: source),
@@ -438,6 +443,98 @@ func startChecksTheEngineIsRunningAfterStartingIt() throws {
         "handleConfigurationChange() not found; did it move?"
     )
     #expect(handler.contains("configurationChangeTransition(from: state)"), "the handler does not decide through its rule")
+}
+
+// MARK: - F404's leading edge, through the real start()
+
+// The rules above say what start() and the handler should decide; these check that they do. The
+// DEBUG hardware step stands in for the calls in start() that need an input device (the node, the
+// tap, `prepare`, `engine.start()` and the `isRunning` read), at the point they would run: after
+// the probe and the arming, inside the bridge, before the exit. Everything else is the real code.
+// An observer registered with `queue: nil` runs inside `post`, so a change posted from the step is
+// handled before the step returns, while start() is still `starting`. AVFAudio posts from its own
+// queue, so a real change lands before start()'s exit or after it; the first and third tests below
+// are those two cases. Neither runs two threads at once.
+
+@Test("A configuration change during start()'s hardware calls refuses the start, through the real exit (F404)")
+func aChangeDuringStartRefusesTheStart() {
+    // F404's defect as behaviour: a change handled before start() returned used to be dropped,
+    // and the capture went live into an engine that had stopped itself. Both readings of
+    // `isRunning`, because the change refuses the start whatever the engine reads afterwards.
+    for engineRunning in [false, true] {
+        let center = NotificationCenter()
+        let interruptions = Box<[DictationCaptureInterruption]>([])
+        let engine = Box<AVAudioEngine?>(nil)
+        let steps = Counter()
+        let recorder = MicDictationRecorder(
+            hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+            notificationCenter: center,
+            hardwareStartForTesting: {
+                steps.increment()
+                center.post(name: .AVAudioEngineConfigurationChange, object: engine.value)
+                return engineRunning
+            }
+        )
+        engine.value = recorder.engineForTesting
+        recorder.onCaptureInterrupted = { reason in interruptions.value.append(reason) }
+
+        #expect(throws: MicDictationRecorder.RecorderError.captureInterrupted(.deviceConfigurationChanged),
+                "isRunning read \(engineRunning)") {
+            try recorder.start(onLevel: { _ in })
+        }
+        #expect(steps.count == 1, "the hardware step did not run, so nothing was posted while starting")
+        #expect(!recorder.isRecording, "a refused start must not leave the recorder believing it captures")
+        #expect(interruptions.value.isEmpty, "start() reports its own failure; no live capture ended")
+        // Reported once, by start(). The next key release must not report it again.
+        #expect(throws: MicDictationRecorder.RecorderError.notRecording) {
+            _ = try recorder.stop()
+        }
+    }
+}
+
+@Test("A start with no configuration change goes live through the real exit, whatever isRunning reads (F404)")
+func aStartWithNoChangeGoesLive() throws {
+    // The control for the test above, and F404's decision as behaviour: a false `isRunning` with
+    // nothing recorded goes live (start() logs it) rather than refusing, because nothing documents
+    // when it turns true.
+    for engineRunning in [true, false] {
+        let recorder = MicDictationRecorder(
+            hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+            notificationCenter: NotificationCenter(),
+            hardwareStartForTesting: { engineRunning }
+        )
+        try recorder.start(onLevel: { _ in })
+        #expect(recorder.isRecording, "isRunning read \(engineRunning)")
+        // A live capture that heard nothing ends as `noAudioCaptured`, not `notRecording`.
+        #expect(throws: MicDictationRecorder.RecorderError.noAudioCaptured) {
+            _ = try recorder.stop()
+        }
+        // The step stands in for every call that needs a device, so the engine never made its
+        // input node (observed through `attachedNodes`, as the F405 test below does).
+        #expect(!recorder.engineForTesting.attachedNodes.contains { $0 is AVAudioInputNode })
+    }
+}
+
+@Test("A configuration change after start() has gone live ends the capture and says so (F357, F404)")
+func aChangeAfterALiveStartEndsTheCapture() throws {
+    let center = NotificationCenter()
+    let interruptions = Box<[DictationCaptureInterruption]>([])
+    let recorder = MicDictationRecorder(
+        hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+        notificationCenter: center,
+        hardwareStartForTesting: { true }
+    )
+    recorder.onCaptureInterrupted = { reason in interruptions.value.append(reason) }
+    try recorder.start(onLevel: { _ in })
+    try #require(recorder.isRecording)
+
+    center.post(name: .AVAudioEngineConfigurationChange, object: recorder.engineForTesting)
+
+    #expect(interruptions.value == [.deviceConfigurationChanged])
+    #expect(!recorder.isRecording, "the engine stopped itself; the recorder must not claim otherwise")
+    #expect(throws: MicDictationRecorder.RecorderError.captureInterrupted(.deviceConfigurationChanged)) {
+        _ = try recorder.stop()
+    }
 }
 
 // MARK: - F405, a teardown must not create the node it tears down
