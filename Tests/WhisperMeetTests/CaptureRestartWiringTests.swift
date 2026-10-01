@@ -27,6 +27,41 @@ private final class Locked<Value>: @unchecked Sendable {
     }
 }
 
+/// Holds an injected seam until the test lets it go, and says when the seam was reached (F503).
+///
+/// It replaces sleeping in the seam and sleeping in the test and hoping the two overlapped. Every
+/// wait yields rather than blocks, because a seam that blocked a cooperative thread would starve the
+/// pool the test needs (`StopUnderHungRestartTests`' `Gate` records that deadlock). It also ends on
+/// cancellation, so a test that fails before releasing tears down its `async let` instead of hanging.
+private final class Hold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _entered = false
+    private var _released = false
+
+    var entered: Bool { lock.withLock { _entered } }
+
+    func enterAndWait() async {
+        lock.withLock { _entered = true }
+        while !lock.withLock({ _released }), !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func release() { lock.withLock { _released = true } }
+}
+
+/// The polled value is the precondition itself, and an exhausted bound fails as the wait it is
+/// rather than as a claim about the ordering the test goes on to check (F503).
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(for: .milliseconds(5))
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 @MainActor
 private func makeRestartModel(
     restart: @escaping @Sendable (Int64) async throws -> Void = { _ in }
@@ -217,11 +252,14 @@ func overlappingTriggersRestartOnce() async throws {
     // async, so without a guard two calls both observe `captureDidDie == true` before either has
     // restarted — and the recording gets padded twice for one gap, which shifts the timeline by the
     // gap all over again. Exactly the defect padding exists to prevent.
+    //
+    // The first restart is held in its seam while the other two triggers arrive (F503). A 120 ms
+    // sleep in the seam used to stand in for "lands mid-restart", and nothing required it.
     let padded = Locked<[Int64]>([])
+    let hold = Hold()
     let (model, root, defaults, suite) = try makeRestartModel(restart: { frames in
-        // Slow enough that a second trigger lands mid-restart, which is the real ordering.
-        try? await Task.sleep(for: .milliseconds(120))
-        padded.withLock { $0.append(frames) }
+        let count = padded.withLock { $0.append(frames); return $0.count }
+        if count == 1 { await hold.enterAndWait() }
     })
     defer {
         defaults.removePersistentDomain(forName: suite)
@@ -232,9 +270,16 @@ func overlappingTriggersRestartOnce() async throws {
     model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
 
     async let first: Void = model.handleCaptureInterruption(trigger: .streamFailed, gap: 5)
-    async let second: Void = model.handleCaptureInterruption(trigger: .displayReconfigured, gap: 5)
-    async let third: Void = model.handleCaptureInterruption(trigger: .didWake, gap: 5)
-    _ = await (first, second, third)
+    try await waitUntil("the first restart to reach its seam") { hold.entered }
+    // `restartAfterFailure` clears the death before it calls the seam, so without this a trigger
+    // landing now would be refused by the stream-alive check (F363) and never reach the guard this
+    // test is about. Marking it dead again recreates what a trigger racing the first one observes.
+    model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
+    try #require(model.recorder.captureDidDie, "the later triggers would not see a dead stream")
+    await model.handleCaptureInterruption(trigger: .displayReconfigured, gap: 5)
+    await model.handleCaptureInterruption(trigger: .didWake, gap: 5)
+    hold.release()
+    await first
 
     #expect(padded.withLock { $0 }.count == 1, "one gap was padded more than once")
 }
@@ -344,7 +389,11 @@ func retriesEndAtThePaddingCap() async throws {
 @MainActor
 @Test("Stop during an in-flight restart waits for it instead of racing the engine (F292)")
 func stopWaitsForAnInFlightRestart() async throws {
+    // The restart is held until the Stop has provably begun (F503). This used to sleep 50 ms and
+    // assume the restart had begun by then; when it had not, Stop ran first, the late restart saw
+    // `.stopping` and never ran, and the test failed as a claim that Stop does not wait.
     let events = Locked<[String]>([])
+    let hold = Hold()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F292-race-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let suite = "F292.race.\(UUID().uuidString)"
@@ -360,7 +409,7 @@ func stopWaitsForAnInFlightRestart() async throws {
         startingCapture: { _, _, _ in },
         restartingCapture: { _ in
             events.withLock { $0.append("restart-began") }
-            try? await Task.sleep(for: .milliseconds(200))
+            await hold.enterAndWait()
             events.withLock { $0.append("restart-ended") }
         },
         directory: root
@@ -371,9 +420,16 @@ func stopWaitsForAnInFlightRestart() async throws {
     model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
 
     async let restart: Void = model.handleCaptureInterruption(trigger: .streamFailed, gap: 2)
-    try await Task.sleep(for: .milliseconds(50))
-    _ = await model.stopRecording(title: "")
-    _ = await restart
+    try await waitUntil("the restart to reach its seam") { hold.entered }
+    try #require(model.recordingState.isLive, "the recording ended before the Stop under test")
+    async let stop = model.stopRecording(title: "")
+    // Stop leaves `.recording` before its first suspension, so once it has, the Stop began while
+    // the restart was still held. Not `== .stopping`: a Stop that does not wait can go through
+    // `.stopping` to `.idle` between two polls, and this would time out as the wait instead of
+    // failing below as the claim.
+    try await waitUntil("the Stop to begin") { !model.recordingState.isLive }
+    hold.release()
+    _ = await (stop, restart)
 
     #expect(events.withLock { $0 } == ["restart-began", "restart-ended", "stop"])
 }

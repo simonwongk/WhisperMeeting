@@ -15,6 +15,41 @@ private final class Box<Value>: @unchecked Sendable {
     func with<T>(_ body: (inout Value) -> T) -> T { lock.lock(); defer { lock.unlock() }; return body(&value) }
 }
 
+/// Holds an injected seam until the test lets it go, and says when the seam was reached (F503).
+///
+/// It replaces sleeping in the seam and sleeping in the test and hoping the two overlapped. Every
+/// wait yields rather than blocks, because a seam that blocked a cooperative thread would starve the
+/// pool the test needs (`StopUnderHungRestartTests`' `Gate` records that deadlock). It also ends on
+/// cancellation, so a test that fails before releasing tears down its `async let` instead of hanging.
+private final class Hold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _entered = false
+    private var _released = false
+
+    var entered: Bool { lock.withLock { _entered } }
+
+    func enterAndWait() async {
+        lock.withLock { _entered = true }
+        while !lock.withLock({ _released }), !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func release() { lock.withLock { _released = true } }
+}
+
+/// The polled value is the precondition itself, and an exhausted bound fails as the wait it is
+/// rather than as a claim about what the test goes on to check (F503).
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(for: .milliseconds(5))
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 private struct StreamDied: Error {}
 private struct RestartFailed: Error {}
 
@@ -109,16 +144,24 @@ func retriesReachTheCapWithoutASeededAliveTime() async throws {
 @MainActor
 @Test("A second Stop while the first is finishing does nothing (F292)")
 func secondStopIsIgnored() async throws {
+    // The first Stop is held inside the engine until the second has been refused (F503). A 30 ms
+    // sleep used to stand in for "the first is in flight". When it was not, the "second" Stop was the
+    // one that ran, and `second == nil` still passed, because this engine has no tracks and a Stop
+    // that runs returns nil too.
     let stops = Box(0)
+    let hold = Hold()
     let (model, _, cleanup) = try makeModel(stopping: {
-        stops.with { $0 += 1 }
-        try? await Task.sleep(for: .milliseconds(200))
+        let count = stops.with { $0 += 1; return $0 }
+        if count == 1 { await hold.enterAndWait() }
     })
     defer { cleanup() }
     await model.startRecording()
     async let first = model.stopRecording(title: "One")
-    try await Task.sleep(for: .milliseconds(30))
+    try await waitUntil("the first Stop to reach the engine") { hold.entered }
     let second = await model.stopRecording(title: "")
+    // Before the first is let go: a second Stop that ran would have reached the engine by now.
+    #expect(stops.with { $0 } == 1, "the second Stop reached the engine while the first was finishing")
+    hold.release()
     _ = await first
     #expect(second == nil)
     #expect(stops.with { $0 } == 1, "a second finalize ran over the first")
@@ -173,14 +216,24 @@ func retryingBannerIsClearedByStop() async throws {
 @MainActor
 @Test("A restart that finishes while Stop waits announces no resume (F292)")
 func resumeIsNotAnnouncedAfterStop() async throws {
-    let (model, _, cleanup) = try makeModel(restart: { _ in try? await Task.sleep(for: .milliseconds(200)) })
+    // Held rather than slept (F503). With a 40 ms sleep, a restart that had not begun by then saw
+    // `.stopping` and never ran, so the test passed without the case it names ever happening.
+    let hold = Hold()
+    let finished = Box(false)
+    let (model, _, cleanup) = try makeModel(restart: { _ in
+        await hold.enterAndWait()
+        finished.with { $0 = true }
+    })
     defer { cleanup() }
     await model.startRecording()
     model.recorder.handleStreamFailure(StreamDied())
     async let restart: Void = model.handleCaptureInterruption(trigger: .streamFailed, gap: 3)
-    try await Task.sleep(for: .milliseconds(40))
-    _ = await model.stopRecording(title: "")
-    await restart
+    try await waitUntil("the restart to reach its seam") { hold.entered }
+    async let stop = model.stopRecording(title: "")
+    try await waitUntil("the Stop to be waiting on the restart") { model.recordingState == .stopping }
+    hold.release()
+    _ = await (stop, restart)
+    try #require(finished.with { $0 }, "the restart never finished, so there was no resume to withhold")
     #expect(model.lastWindowlessMessage?.contains("Recording resumed") != true)
     #expect(model.captureRestartNotice?.contains("resumed") != true)
 }
@@ -209,13 +262,6 @@ func menuBarStopKeepsTheTypedTitle() async throws {
 // resume, and the meeting itself carried no reason for being 12 seconds long.
 
 @MainActor
-private func waitUntilIdle(_ model: AppModel) async throws {
-    for _ in 0..<100 where model.recordingState != .idle {
-        try await Task.sleep(for: .milliseconds(20))
-    }
-}
-
-@MainActor
 @Test("A lid close that stops the recording says so, replaces the 'resumed' banner, and marks the meeting (F292)")
 func sleepStopExplainsItself() async throws {
     let (model, _, cleanup) = try makeModel()
@@ -225,7 +271,9 @@ func sleepStopExplainsItself() async throws {
     model.captureRestartNotice = "Recording resumed after the audio capture stopped unexpectedly."
 
     model.handleSystemWillSleep()
-    try await waitUntilIdle(model)
+    // Required, not just awaited (F503). The old helper returned either way, so a sleep stop that
+    // never finished failed below as "the meeting does not exist", a claim about something else.
+    try await waitUntil("the sleep-triggered stop to finish") { model.recordingState == .idle }
 
     let meeting = try #require(model.store.meeting(id: id))
     #expect(meeting.recordingPath.hasSuffix("meeting.wav"), "a lid close must save normally, not lose the audio")
