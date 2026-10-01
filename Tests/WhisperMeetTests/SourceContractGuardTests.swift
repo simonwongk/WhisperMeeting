@@ -139,10 +139,17 @@ func whisperCoreImportsNothingUnexpected() throws {
 
 // MARK: - F364
 
-/// The fields `AudioCaptureEngine`'s own comment declares queue-protected. Until F364 that sentence
-/// was false for two of them, for months, and no test could see it — the claim lives in prose and the
-/// violation lives in a declaration twenty lines away. This is the crude check that would have caught
-/// it, which is exactly the argument F306 makes.
+/// The fields `AudioCaptureEngine`'s own comment declared queue-protected when F364 wrote this. Until
+/// F364 that sentence was false for two of them, for months, and no test could see it — the claim
+/// lives in prose and the violation lives in a declaration twenty lines away. This is the crude check
+/// that would have caught it, which is exactly the argument F306 makes.
+///
+/// It is hand-written, so it does not grow with the file: F365's `_systemWriter`,
+/// `_microphoneWriter` and `_paddedGaps` never joined it. And its six-line window let a syncing
+/// getter vouch for a bare setter. F402 showed both, and added the derived guard in
+/// `CaptureQueueProtectionGuardTests.swift`, which checks every `_`-prefixed field's every use. This
+/// one stays beside it for what the derived guard does not demand: that each name here still HAS its
+/// `_` storage and an un-prefixed accessor that syncs.
 private let queueProtectedCaptureFields = [
     "stream", "streamError", "streamDied", "restartInProgress", "sessionGeneration",
 ]
@@ -161,8 +168,8 @@ func captureEngineQueueProtectedFieldsHaveAccessors() throws {
         }
         // The ACCESSOR's own declaration, not the file at large. The first version of this guard
         // searched the whole source for `captureQueue.sync { _streamDied }` and passed after the
-        // protection was deliberately removed, because `captureDidDie` contains that same text —
-        // F285's shape, in the check written to prevent F285's shape.
+        // protection was deliberately removed, because `captureDidDie` contained that same text
+        // until F401 — F285's shape, in the check written to prevent F285's shape.
         guard let declaration = file.lines.firstIndex(where: {
             $0.text.contains("private var \(field):") || $0.text.contains("private var \(field) ")
         }) else {

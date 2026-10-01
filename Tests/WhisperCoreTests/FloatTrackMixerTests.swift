@@ -488,7 +488,8 @@ func theMixAddsNothingToTheSignalsOwnSlope() throws {
 @Test("A one-LSB change in the input cannot move the output by more than one LSB (F345)")
 func theMixIsLipschitzInItsInput() throws {
     // The same fault stated as a continuity bound, which is what a listener hears as a click.
-    // Measured on the unfixed rule: a single-LSB input step moved the output by up to 4,570 LSB.
+    // Measured on the unfixed rule: a single-LSB input step moved the output by up to 3,096 LSB,
+    // at system ≈ 0.00999 with the microphone at 0.2 (F402 replayed this sweep on that rule).
     let step = Float(1) / Float(Int16.max)
     var worst = 0
     var worstAt = Float(0)

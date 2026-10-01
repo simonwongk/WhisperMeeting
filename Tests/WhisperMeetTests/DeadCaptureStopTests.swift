@@ -99,7 +99,7 @@ func stopWithNoStreamStillResets() async throws {
 
     #expect(artifact.captureStoppedEarly)
     #expect(!engine.isHoldingRecordingActivity, "the Mac was kept awake after the recording ended")
-    #expect(!engine.hasStreamError, "the old death leaked into the next recording")
+    #expect(!engine.captureDidDie, "the old death leaked into the next recording")
 }
 
 private final class Flag: @unchecked Sendable {
@@ -139,7 +139,7 @@ func restartPaddingIsWrittenOnceOnSuccess() async throws {
 
     #expect(engine.testFrameCounts == (system: 48_000 * 13, microphone: 48_000 * 13))
     #expect(engine.restartCount == 1)
-    #expect(!engine.hasStreamError, "a successful restart must clear the death")
+    #expect(!engine.captureDidDie, "a successful restart must clear the death")
     let artifact = try await engine.stop()
     #expect(!artifact.captureStoppedEarly, "a capture that resumed did not end early")
     #expect(try manifestJSON(in: directory)["recoveryAlignment"] as? String == "padded-after-restart")
@@ -193,7 +193,7 @@ func failedRestartPadsNothingAndRetryPadsOnce() async throws {
 
     await #expect(throws: RestartFailed.self) { try await engine.restartAfterFailure(paddingFrames: 48_000 * 3) }
     #expect(engine.testFrameCounts == (system: 48_000 * 10, microphone: 48_000 * 10), "a failed restart padded")
-    #expect(engine.hasStreamError, "the retry needs the death to stay recorded")
+    #expect(engine.captureDidDie, "the retry needs the death to stay recorded")
     #expect(engine.restartCount == 0)
 
     // The retry measures the whole outage (now 5 s) and pays it exactly once.
@@ -217,7 +217,7 @@ func restartOutlivingStopIsAbandoned() async throws {
     await #expect(throws: CancellationError.self) { try await restart.value }
 
     #expect(engine.restartCount == 0, "the abandoned restart counted itself into the next recording")
-    #expect(!engine.hasStreamError, "the abandoned restart put its death back into a reset engine")
+    #expect(!engine.captureDidDie, "the abandoned restart put its death back into a reset engine")
     #expect(engine.testFrameCounts == (system: 0, microphone: 0))
 }
 

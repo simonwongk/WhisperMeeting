@@ -214,7 +214,7 @@ func paddedResumeIsRecordedInTheSidecar() async throws {
 func overlappingTriggersRestartOnce() async throws {
     // The 1 Hz health tick fires `.streamFailed` every second while the stream is dead, and the
     // display and wake notifications can land in the same window. `handleCaptureInterruption` is
-    // async, so without a guard two calls both observe `hasStreamError == true` before either has
+    // async, so without a guard two calls both observe `captureDidDie == true` before either has
     // restarted — and the recording gets padded twice for one gap, which shifts the timeline by the
     // gap all over again. Exactly the defect padding exists to prevent.
     let padded = Locked<[Int64]>([])

@@ -48,7 +48,7 @@ func streamFailureKeepsThePowerAssertion() throws {
     // The whole ticket: losing the stream must not put the Mac to sleep five seconds later.
     #expect(engine.isHoldingRecordingActivity,
             "a stream failure released the assertion — the Mac would sleep before anything finalized")
-    #expect(engine.hasStreamError, "the failure must still be recorded so stop() can preserve tracks")
+    #expect(engine.captureDidDie, "the death must still be recorded, so stop() treats the capture as having died")
 }
 
 @Test("Ending the activity explicitly still releases it (F254 must not leak the assertion)")

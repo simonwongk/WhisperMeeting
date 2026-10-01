@@ -4201,7 +4201,7 @@ final class AppModel: ObservableObject {
     ///
     /// The 1 Hz health tick fires `.streamFailed` every second while the stream is dead, and the
     /// display and wake notifications can land in the same window. `handleCaptureInterruption` is
-    /// async, so without this two calls both observe `hasStreamError == true` before either has
+    /// async, so without this two calls both observe `captureDidDie == true` before either has
     /// restarted, and the recording is padded twice for one gap — shifting the timeline by the gap
     /// all over again, which is precisely the defect padding exists to prevent. Found by a red test.
     private var isHandlingCaptureInterruption = false

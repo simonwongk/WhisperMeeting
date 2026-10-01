@@ -79,7 +79,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// The live capture stream, or nil.
     ///
-    /// Stored behind `captureQueue` like `_streamError`, `_streamDied` and `pendingRestartPadding`
+    /// Stored behind `captureQueue` like `_streamError`, `_streamDied` and `_pendingRestartPadding`
     /// (F334, and F364 for the first two — the sentence was false for them until then). `start()`/`stop()` reach it from the MainActor, `restartAfterFailure` from the
     /// cooperative pool — both are `nonisolated async`, so under SE-0338 they genuinely run in
     /// parallel — and the sample handler reaches it from the capture queue. Code already on that
@@ -479,8 +479,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 break
             }
         } catch {
-            // Already on `captureQueue` — the sample handler is installed with it as its
-            // `sampleHandlerQueue` (`:479-480`), so the stored property, not the accessor (F364).
+            // Already on `captureQueue` — both of `makeStream`'s `addStreamOutput` calls install
+            // the sample handler with it as its `sampleHandlerQueue`, so the stored property, not
+            // the accessor (F364).
             _streamError = error
             // F386. Since F363 stopped a failed write tearing the stream down, a persistent
             // failure drops every buffer while the recording looks alive: the HUD counts, the
@@ -669,7 +670,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     func restartAfterFailure(paddingFrames: Int64) async throws {
         // The death is cleared BEFORE the new stream can start, so a new stream that dies at once
         // records its own death rather than having it erased by a clear that runs after it. Put
-        // back if the restart fails, which keeps `hasStreamError` true for the retry.
+        // back if the restart fails, which keeps `captureDidDie` true for the retry.
         let (generation, previousError) = captureQueue.sync { () -> (Int, Error?) in
             let previous = _streamError
             _restartInProgress = true
@@ -705,9 +706,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             // The check and the padding in ONE step on the queue (F365). `ensureSession` on the
             // line before is a check-then-act: a stop landing between it and this `sync` would
-            // pay silence into writers `stop()` is already finishing, and
-            // `FloatTrackFile.swift:150-151` says what that costs — the descriptor may already
-            // have been reused by another open file, so the write lands in an unrelated one.
+            // pay silence into writers `stop()` is already finishing, and `FloatTrackFile.finish`'s
+            // doc says what that costs — the descriptor may already have been reused by another
+            // open file, so the write lands in an unrelated one.
             try captureQueue.sync {
                 guard generation == _sessionGeneration else { throw CancellationError() }
                 try applyPendingRestartPaddingIfNeeded()
@@ -721,7 +722,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             captureQueue.sync {
                 guard generation == _sessionGeneration else { return }
                 if startedStream != nil || injectedRestartCapture == nil { _stream = nil }
-                pendingRestartPadding = 0
+                _pendingRestartPadding = 0
                 _streamError = _streamError ?? previousError ?? error
                 _streamDied = true
             }
@@ -766,7 +767,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             _sessionGeneration += 1
             // Nothing is owed any more: the restart that owed it is cancelled, and paying it would
             // put silence into a timeline that never had a gap paid for it.
-            pendingRestartPadding = 0
+            _pendingRestartPadding = 0
             return true
         }
         // Logged either way. "The wait ran out and there was nothing in flight" is a different
@@ -800,7 +801,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             #if DEBUG
             onRestartPublishWindowForTesting?()
             #endif
-            pendingRestartPadding = max(0, paddingFrames)
+            _pendingRestartPadding = max(0, paddingFrames)
             if let stream { _stream = stream }
         }
     }
@@ -811,7 +812,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     var onRestartPublishWindowForTesting: (@Sendable () -> Void)?
 
     var sessionGenerationForTesting: Int { sessionGeneration }
-    var pendingRestartPaddingForTesting: Int64 { captureQueue.sync { pendingRestartPadding } }
+    var pendingRestartPaddingForTesting: Int64 { captureQueue.sync { _pendingRestartPadding } }
     var hasLiveStreamForTesting: Bool { stream != nil }
 
     func publishRestartForTesting(generation: Int, paddingFrames: Int64) throws {
@@ -849,18 +850,23 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// Silence owed to both tracks by a restart in progress (F292). Read and written only on the
     /// capture queue, which is also where the sample handler runs, so it is paid exactly once.
-    private var pendingRestartPadding: Int64 = 0
+    /// `_`-prefixed since F402, like the rest of the queue's storage, so the derived guard in
+    /// `CaptureQueueProtectionGuardTests` checks every use of it.
+    private var _pendingRestartPadding: Int64 = 0
 
     func setPendingRestartPadding(_ frames: Int64) {
-        captureQueue.sync { pendingRestartPadding = max(0, frames) }
+        captureQueue.sync { _pendingRestartPadding = max(0, frames) }
     }
 
     /// Pays owed restart silence into both tracks and records where it went (F282). Must run on
-    /// the capture queue, or in a test with no capture running.
+    /// the capture queue, and traps if it does not (F402): it writes through the stored writers and
+    /// appends to `_paddedGaps`. Its two callers are the sample handler and the restart's own
+    /// `captureQueue.sync`.
     func applyPendingRestartPaddingIfNeeded() throws {
-        guard pendingRestartPadding > 0 else { return }
-        let frames = pendingRestartPadding
-        pendingRestartPadding = 0
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        guard _pendingRestartPadding > 0 else { return }
+        let frames = _pendingRestartPadding
+        _pendingRestartPadding = 0
         // A writer with no first buffer yet has nothing to align this padding against (F460): the
         // MIXER's own front-padding positions a track from `firstPresentationTime` once its real
         // audio starts, so writing silence ahead of that would double the gap AND anchor it at
@@ -950,13 +956,16 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         streamError = error   // the syncing accessor: tests call this from off the queue
     }
 
+    /// Whether any capture failure has been recorded: a death, or one buffer that failed to convert
+    /// or write. Test-only, so F402 moved it under DEBUG. No production code reads it: `stop()`
+    /// reads `_streamDied` itself, the restart decision reads it through `captureDidDie`, and only a
+    /// death sets it.
+    var hasStreamError: Bool { captureQueue.sync { _streamError != nil } }
+
     var testFrameCounts: (system: Int64, microphone: Int64) {
         (systemWriter?.frameCount ?? 0, microphoneWriter?.frameCount ?? 0)
     }
     #endif
-
-    /// Whether a stream failure has been recorded — `stop()` uses this to preserve partial tracks.
-    var hasStreamError: Bool { captureQueue.sync { _streamError != nil } }
 
     /// Whether the capture stream itself died, as opposed to a buffer failing to convert or write.
     ///
@@ -964,9 +973,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// a single throwing write — a full disk is the realistic cause — tore down a stream that was
     /// still delivering, padded the timeline with silence for audio that had been captured, recorded
     /// the fabricated outage in the manifest, and ended the meeting after three cycles telling the
-    /// user the capture "stopped unexpectedly". `_streamDied` is written only by `recordStreamDeath`,
-    /// reached only from `stream(_:didStopWithError:)` and the restart's own failure path, so it
-    /// means a death and nothing else.
+    /// user the capture "stopped unexpectedly". `_streamDied` is set true only by
+    /// `recordStreamDeath` — reached from `stream(_:didStopWithError:)`, and from the test-only
+    /// `handleStreamFailure` — and by the restart's own failure path, which puts back the death the
+    /// restart had cleared. So it means a death and nothing else (F402 corrected who sets it).
     ///
     /// Read from `streamDiedMirror`, not through `captureQueue.sync` (F401). The 1 Hz health tick
     /// and `handleCaptureInterruption` call this from the MainActor, and a sync read waited behind
@@ -999,7 +1009,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             _streamDied = false
             _restartInProgress = false
             _sessionGeneration += 1
-            pendingRestartPadding = 0
+            _pendingRestartPadding = 0
             // F365: inside, where this block's own comment always said they belonged. Nilling a
             // writer outside the sync is the over-release the accessors exist to prevent, and it
             // raced `applyPendingRestartPaddingIfNeeded` on the capture queue.

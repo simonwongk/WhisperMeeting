@@ -158,7 +158,7 @@ func aHungRestartIsCancelledByStop() async throws {
 @Test("A restart that owed padding pays none of it once it is cancelled (F365)")
 func anAbandonedRestartPaysNoPadding() async throws {
     // The manifest must describe gaps that were actually paid. A cancelled restart paid none, so
-    // leaving `pendingRestartPadding` set would either put silence into a finished track or record
+    // leaving `_pendingRestartPadding` set would either put silence into a finished track or record
     // a gap that does not exist in the audio — F275's timeline-honesty rule, from the other side.
     let gate = Gate()
     // The seam does not need to owe the padding itself: `restartAfterFailure` calls

@@ -11,7 +11,7 @@ import Testing
 //
 // The generation counter exists to make the restart give up in that case. It could not, because the
 // check and the publish were separate statements: a `reset()` landing between them left `stream`
-// non-nil and `pendingRestartPadding` set on an engine that had been reset — and `start()` is
+// non-nil and `_pendingRestartPadding` set on an engine that had been reset — and `start()` is
 // `guard stream == nil`, so the NEXT meeting recorded nothing at all.
 
 private final class Flag: @unchecked Sendable {
