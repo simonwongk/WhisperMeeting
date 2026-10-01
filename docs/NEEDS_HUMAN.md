@@ -48,7 +48,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 |---|---|---|---|
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's. |
+| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
 | 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
 | 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 | 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
@@ -128,6 +128,10 @@ Settings → refinement on, then hold the hotkey for each of these:
 6. One during a phone or FaceTime call. The call puts the built-in microphone in its voice mode,
    which is what crashed the app twice in September (F356). It should transcribe correctly — that
    is **F361**, and it is the only part of it a test cannot do. Say "skip 6" if you would rather not.
+7. Once a build from 2026-10-01 or later is installed (`Scripts/install-app.sh`; it includes F403 and
+   F404, which changed how a dictation starts the microphone): one dictation in hold mode and one in
+   toggle mode. Both should start listening and transcribe as before. That is **F731**: no test can
+   press a real microphone, so this is the only check of the new start path.
 
 Then check that the history records the raw text and the outcome for each. Tell me what looked
 wrong, or say "skip" and it stays open.
