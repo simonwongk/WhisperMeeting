@@ -1987,10 +1987,14 @@ final class AppModel: ObservableObject {
         clusterThreshold: FluidAudioDiarizationRuntime.clusterThreshold
     )
 
-    /// The canonical recording file names capture and interrupted-recording recovery write. An
-    /// imported or downloaded file keeps its own name, which is what makes this a reliable test for
-    /// "recorded natively in WhisperMeet".
-    private static let nativeRecordingFileNames: Set<String> = ["meeting.wav", "meeting-recovered.wav"]
+    /// The recording file names only WhisperMeet's own audio ever has: what capture and
+    /// interrupted-recording recovery write, and those two after Shrink compressed them, which keeps
+    /// the stem (F795). An imported or downloaded file keeps its own name, and a shrunk import stays
+    /// `recording.*`, which is what makes this a reliable test for "recorded natively in WhisperMeet".
+    /// Analysis decodes through `AudioTranscoder`, which reads `.m4a`.
+    private static let nativeRecordingFileNames: Set<String> = [
+        "meeting.wav", "meeting-recovered.wav", "meeting.m4a", "meeting-recovered.m4a",
+    ]
 
     /// Why the "Analyze Speaker Turns…" entry cannot run for this meeting right now, or nil when it
     /// can. The menu disables itself on this and prints `SpeakerAnalysisCopy.footnote(for:)` beneath

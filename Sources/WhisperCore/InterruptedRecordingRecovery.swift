@@ -139,7 +139,9 @@ public enum InterruptedRecordingRecovery {
     /// The three names are the three ways a recording becomes real, and all three are required:
     /// `meeting.wav` is written only by `AudioCaptureEngine.stop()`; `meeting-recovered.wav` is what
     /// a previous rebuild left behind and the meeting the user actually has; `recording.<ext>` is an
-    /// import, which never has capture tracks at all. Each is checked the same way the recovery path
+    /// import, which never has capture tracks at all. Shrink (F795) adds `meeting.m4a` and
+    /// `meeting-recovered.m4a`: the first two after compression, stem kept, so each keeps its
+    /// provenance; a shrunk import is still `recording.m4a`. Each is checked the same way the recovery path
     /// checks it — a complete WAV header for the captures, non-empty bytes for the import — so a WAV
     /// truncated mid-mix (its header is written LAST) does not read as finalized.
     public static func finalizedRecording(in directory: URL) -> RecoveredRecording? {
@@ -164,6 +166,18 @@ public enum InterruptedRecordingRecovery {
                     duration: duration,
                     source: source
                 )
+            }
+        }
+        // A capture Shrink compressed (F795) keeps its stem, so it keeps its provenance. WhisperCore
+        // cannot decode AAC, so its duration is 0 here, exactly as a non-WAV import's is below; the
+        // index normally carries it, and this path runs only after the index was lost.
+        for (name, source) in [
+            ("meeting.m4a", RecoveredRecording.Source.existingCapture),
+            ("meeting-recovered.m4a", RecoveredRecording.Source.rebuiltSourceTracks),
+        ] {
+            let url = directory.appendingPathComponent(name)
+            if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 0 {
+                return RecoveredRecording(recordingURL: url, duration: 0, source: source)
             }
         }
         // An imported recording keeps a single `recording.<ext>` file and no raw source tracks, so
