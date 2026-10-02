@@ -6381,6 +6381,23 @@ final class AppModel: ObservableObject {
         return DiagnosticsBundleBuilder.json(input)
     }
 
+    /// Writes the diagnostics bundle to the place the user chose, and says so when it cannot (F513).
+    ///
+    /// Settings' "Export diagnostics…" used to write with `try?` and report nothing, so a save to an
+    /// ejected volume, a full disk or a folder the app may not write closed the panel as if it had
+    /// worked, and the user attached nothing — or an old file — to a support request. Atomic, so a
+    /// failed write leaves no half-written bundle under that name; through `report(_:)` rather than
+    /// `alertMessage`, because Settings can be open on its own with no library window to show an
+    /// alert (F257). Nothing is said on success, as the transcript exporters say nothing.
+    func saveDiagnostics(to url: URL) {
+        do {
+            try Data(diagnosticsJSON().utf8).write(to: url, options: .atomic)
+        } catch {
+            let reason = ErrorPresentation.sentence(for: error, fallback: "That location could not be written to.")
+            report("The diagnostics file was not saved. \(reason) Choose another location and export again.")
+        }
+    }
+
     private func handle(error: Error, id: UUID) {
         // Classify the failure so the message tells the user what to actually do (install / re-import /
         // retry) instead of a blind "Transcribe" retry (F68).

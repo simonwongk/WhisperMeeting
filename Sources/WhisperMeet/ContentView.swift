@@ -2048,7 +2048,7 @@ struct SettingsView: View {
         panel.nameFieldStringValue = "WhisperMeet Diagnostics.json"
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? Data(model.diagnosticsJSON().utf8).write(to: url)
+        model.saveDiagnostics(to: url)
     }
 
     private func chooseWatchedFolder() {
