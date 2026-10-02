@@ -584,6 +584,34 @@ final class AppModel: ObservableObject {
     /// meeting — so this is the UI-facing signal that the work is running, the way
     /// `diarizationRunningID`/`segmentReTranscriptionRunningID` are for their own long passes.
     @Published private(set) var sourceRebuildRunningID: UUID?
+
+    // Shrink (F795). See AppModel+Shrink.swift and docs/MEETING_STORAGE_DESIGN.md.
+    @Published var pendingShrink: ShrinkRequest?
+    /// Set only by `AppModel+Shrink.swift`; internal because a `private(set)` setter cannot be
+    /// reached from an extension in another file.
+    @Published var shrinkRunningID: UUID?
+    /// True while a library backup runs. Nothing recorded this before F795; Shrink must not
+    /// delete files a backup is reading, and a backup must not start while Shrink deletes.
+    @Published private(set) var isBackingUp = false
+    @Published var storageFacts: [UUID: MeetingStoragePlan.DiskFacts] = [:]
+    var encodeForShrink: @Sendable (_ input: URL, _ output: URL, _ workingWAV: URL) throws -> Void = {
+        try AudioCompressor.compressSpeech(input: $0, output: $1, workingWAV: $2)
+    }
+    var decodedDurationForShrink: @Sendable (URL) throws -> TimeInterval = { try DecodedAudio.fullyDecodedDuration(of: $0) }
+    var declaredDurationForShrink: @Sendable (URL) -> TimeInterval? = { DecodedAudio.declaredDuration(of: $0) }
+    var storageEntries: @Sendable (URL) -> [MeetingStoragePlan.FolderEntry] = { MeetingStorageMeter.entries(in: $0) }
+    var availableBytesForShrink: @Sendable (URL) -> Int64? = { url in
+        (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage
+    }
+    /// Called before each file Shrink removes. Lets a test observe the order (F795).
+    var willRemoveForShrink: (String) -> Void = { _ in }
+    #if DEBUG
+    var isBackingUpForTesting: Bool {
+        get { isBackingUp }
+        set { isBackingUp = newValue }
+    }
+    #endif
     /// Whether the user has opted into the link-import feature. Off by default: every other
     /// boundary-crossing capability in this app is opt-in (Qwen, Claude summaries), so the network
     /// path is explicit rather than ambient.
@@ -1379,7 +1407,7 @@ final class AppModel: ObservableObject {
     /// Also refused while a restore is copying files (F506), for the same reason in a different
     /// state: the store would refuse the write the work leads up to, and a transcription started
     /// now would write its result into the restored meeting when it finished.
-    private func libraryAcceptsChanges(_ action: String) -> Bool {
+    func libraryAcceptsChanges(_ action: String) -> Bool {
         guard libraryIsNotBeingRestored(action) else { return false }
         guard store.isDegraded else { return true }
         alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
@@ -3034,6 +3062,12 @@ final class AppModel: ObservableObject {
             alertMessage = "Finish recording or importing before backing up the library."
             return
         }
+        guard shrinkRunningID == nil else {
+            alertMessage = "Wait for the meeting being shrunk to finish before backing up the library."
+            return
+        }
+        isBackingUp = true
+        defer { isBackingUp = false }
         let source = store.rootDirectory
         let retain = backupRetention
         let run = runLibraryBackup
@@ -6918,6 +6952,11 @@ extension AppModel {
 
     /// Builds a read-only integrity descriptor for a meeting from its on-disk files. Returns nil for
     /// a meeting with no recording (nothing to check).
+    /// The same read-only descriptor Verify Library builds, for Shrink's damage refusal (F795).
+    func integrityDescriptorForShrink(_ meeting: MeetingRecord) -> MeetingIntegrityDescriptor? {
+        integrityDescriptor(for: meeting)
+    }
+
     private func integrityDescriptor(for meeting: MeetingRecord) -> MeetingIntegrityDescriptor? {
         guard !meeting.recordingPath.isEmpty else { return nil }
         let recordingURL = store.recordingURL(for: meeting)
