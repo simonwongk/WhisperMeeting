@@ -9,6 +9,45 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Feature — meeting storage, and Shrink, 2026-10-02 (F795, F796)
+
+The user asked to see how much space each meeting takes and to make meetings as small as possible. A finished
+one-hour meeting takes about 1.73 GB, 80% of it two raw capture tracks.
+
+**What shipped**
+- Each meeting's page shows its size on disk. **Settings → Meeting library → Show Storage…** lists every meeting,
+  largest first, with the library total.
+- **Shrink…**, on the page or in that list (one meeting, or a selection), replaces a meeting's audio with one AAC file,
+  16 kHz mono, about 15 MB an hour. It deletes the original WAV, the raw tracks and their manifest. The user chose the
+  smallest size, manual only, and immediate deletion. Shrink is now the third deliberately destructive action, beside
+  Cancel Recording and Delete Meeting (`docs/PRODUCT_SPEC.md`).
+- **Nothing is deleted until the copy is proven and committed.** The compressed copy is decoded in full, matched to
+  the original's length, and flushed to disk (`F_FULLFSYNC`). It is then saved into the index, or, for an import that
+  was already AAC, swapped atomically into place. A failed save keeps every original, and also the verified copy:
+  another copy of the app may already be using it.
+- **It refuses rather than guesses.** It is greyed out with a reason for a damaged recording whose raw tracks could
+  still repair it, and when a recording, import, transcription, speaker analysis, rebuild, backup or restore is
+  running. An interrupted shrink is finished on the next press, without a second encode.
+- **Fixed on the way (F796).** Qwen transcription of a stereo import used to drop the right channel entirely, because
+  afconvert's `-c 1` discards channels and does not mix them. Measured with the real model, it now hears both.
+
+**Measured, not assumed.** `Scripts/bench/shrink_accuracy.py` runs the installed Whisper `large` on all ten synthetic
+clips (English, Mandarin, code-switched), original and shrunk. No clip's error rate changed at 32 kbps, nor at 24 kbps.
+Qwen and speaker analysis gave the same results on shrunk audio.
+
+**How it was checked.**
+- Every step was written test-first. 48 new tests; the suite went from 2446 to 2494, and the gate passed on `1f57f26`.
+- An independent review found that a save lost to another copy could delete the meeting's only audio. It also found
+  that recovered meetings could never be shrunk, plus five more problems. All were fixed, each with a test that failed
+  first. Six minor findings are tickets F799–F804.
+- Installed to `/Applications` on 2026-10-02. Not pushed.
+
+**What is not claimed.**
+- The screens have not been clicked through (F805, in NEEDS_HUMAN, on a throwaway meeting).
+- Re-running a single segment is unavailable on a shrunk meeting until F660.
+- After a lost index, a shrunk meeting rebuilt from its folder shows 0:00 (F797).
+- Ten 3-second clips cannot show a small loss on a real hour-long meeting.
+
 ## Maintenance cycle — a low-severity sweep: 60 tickets closed, 2026-09-29 to 2026-10-01
 
 A sweep of the open low-severity tickets. Each was re-checked against the current code first: two

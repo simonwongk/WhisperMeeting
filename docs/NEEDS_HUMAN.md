@@ -41,7 +41,7 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Seven entries, over the cap of five. (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Eight entries, over the cap of five. (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
@@ -53,6 +53,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
 | 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
 | 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
+| 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
 
 ---
 
@@ -272,6 +273,29 @@ The download comes once from Hugging Face. After that, searching runs on this Ma
 your meetings is uploaded (the button's own help text says the same). Once it is installed, an agent
 runs the measurement against the committed questions only, never your meetings, in a few minutes.
 The same run gives F396 the per-language numbers it is waiting for.
+
+---
+
+## F805 — Shrink a throwaway meeting once, on the new build
+
+**Status:** `blocked`. The build installed on 2026-10-02 shows each meeting's disk use and adds **Shrink…**. Shrink
+replaces a meeting's audio with one compressed file of about 15 MB an hour, and deletes the original permanently.
+Tests cover the steps and their order, but the target cannot click its own buttons, so the screens have never been
+used.
+
+**What I need from you:** about five minutes, on a meeting you don't need. Never use a real one: Shrink cannot be
+undone.
+
+1. **Import a throwaway file:** a copy of any voice memo, or a 30-second recording you make for this. Let it transcribe.
+2. **On its page:** the header should show a size such as "1.2 MB" next to the date and length. Press **Shrink…**. The
+   dialog should give the size before and after, and say the original is deleted permanently. Press **Shrink**.
+3. **Afterwards:** it should report "Shrunk … from … to …". It should still **play**, and **Transcribe Again** should
+   still work.
+4. **Settings → Meeting library → Show Storage…:** meetings should be listed largest first, with a total. A meeting that
+   can't be shrunk should say why under its title.
+
+Tell me what looked wrong, or "fine". One more choice is yours: 32 kbps is kept, and 24 kbps scored the same on the
+test clips while saving about 4 MB more an hour. Say "24" if you want the smaller one.
 
 ---
 
