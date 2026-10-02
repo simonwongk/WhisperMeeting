@@ -9,6 +9,99 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — a low-severity sweep: 60 tickets closed, 2026-09-29 to 2026-10-01
+
+A sweep of the open low-severity tickets. Each was re-checked against the current code first: two
+had already been fixed (F487) or rested on a withdrawn observation (F629) and were closed with that
+evidence. Every change was written test-first, so the new test fails without the fix. Twelve of
+the thirteen lanes had an independent reviewer, who reverted each fix and watched its test fail. The
+thirteenth, test-only apart from one small change, was reviewed by the coordinator. Each wave was
+integrated as a whole and passed `Scripts/quality-check.sh`. Tickets that edit the same
+code as another session's in-progress work were left alone, with a dated triage note on each. The
+full trail is in the ticket log, under each ticket's ID.
+
+**Recording**
+- A clipping warning now counts each input channel before the stereo mix, so one channel at full
+  scale is no longer hidden by the downmix (F419).
+- The low-storage warning has a floor at the 500 MB the start check already requires; before, a
+  recording that started with little free space was warned only near 230 MB (F597, F615).
+- A capture that is abandoned finishes its partial tracks on the capture queue, each track
+  separately (F632). The once-a-second health check no longer waits on that queue, so it cannot
+  stall the window during a capture restart (F401).
+
+**Import**
+- A file still being written is refused instead of imported as a truncated prefix. The check meant
+  to catch it read a cached file size and could never fire (F698).
+- Importing a symbolic link copies the recording it points to, not the link (F494).
+- The watched folder retries a copy that failed because the disk filled or a share dropped, with a
+  bound, and announces a retried file once (F554). The "still being written" message says what to do
+  next (F551). A YouTube link to a video playing inside a playlist imports that video (F618).
+- Deleting an interrupted link import removes its folder, so it does not come back at the next
+  launch (F576). A delete that was refused, or that lost a race with another copy, no longer stops
+  the meeting's transcription or summary (F666). The watched folder checks each file type once per
+  look, not once per file (F671).
+
+**Library and recovery**
+- Verify Library's header counts recordings, not findings (F505), and it says when a capture's raw
+  tracks could not be checked because their manifest is missing (F638).
+- A restore into a healthy library relabels a meeting that was mid-transcription, so it is not stuck
+  as "transcribing" (F610). The launch's notes.md backfill can no longer write an older copy over a
+  newer edit (F496). Rebuild Audio works on folders recovered before F282 (F558).
+- The recovery rehearsal can practise Recover Library, and a library opened with `WHISPERMEET_LIBRARY`
+  keeps its own settings instead of sharing the real library's (F550).
+
+**Privacy and diagnostics**
+- Two summary captions no longer say a Claude summary stays on this Mac. The template tooltip
+  depends on the engine, and the Intel caption says the transcript is sent to Anthropic (F555). The
+  new Intel Summarize alert says the same (F566).
+- A link import's provenance link opens only a re-checked http(s) address, labelled with the host it
+  actually opens (F497).
+- Export Diagnostics now carries each crash report's exception and crashed-thread symbols, from an
+  allowlist of fields. Its free text is cut at the first path, and quoted names are removed, so no
+  file name or meeting title reaches the bundle (F389). A failed save is reported instead of closing
+  as if it worked (F513).
+
+**Dictation and summaries**
+- A device change that lands while a dictation is starting ends it with a stated reason, not a silent
+  partial clip. The microphone's availability check runs inside the exception guard (F404, F403,
+  F405). This start path still needs one real press on the new build (F731, in NEEDS_HUMAN).
+- Debug builds of the app could abort the first time dictation refinement waited out its budget.
+  One closure was compiled into two modules with different frame sizes. The default is now written
+  inside WhisperCore, and a guard keeps the shape out (F718).
+- On a Mac that cannot run the local summarizer, summaries default to Claude (not persisted)
+  instead of telling the user to install a model that cannot be installed there (F566).
+- A missing or corrupt local summary model is refused with a sentence, not a Python traceback
+  (F598). The stall watchdog can stop a wedged model load again (F606). A Qwen dictation's reply is
+  bounded by time rather than a token count that only fit on one Mac (F607).
+
+**Everyday use**
+- Dates agree on one time zone: `before:`/`after:` search, the refine report, and notes.md, which now
+  writes each date with its UTC offset (F568). The repeated-lines notice is recomputed when a
+  transcript becomes hand-edited (F575). Suggested Vocabulary drops a sentence-opening "Our" or "The"
+  from a capitalised phrase (F623). A stop-list for generic capitalised words was measured and not
+  adopted: it cost recall (F622).
+
+**Bench, tests and tooling**
+- The fidelity scorer, the diarization bench producers and `ami_prepare.py` (which now streams
+  instead of loading whole files) report and refuse honestly (F697, F616, F418). The diarization
+  runtime probe has been built and run (F410). The meeting engine can be measured per word (F628),
+  and an opt-in refine-stage bench reproduces F589's table (F631).
+- `verify-push.sh` stops at once on an authentication failure and rides out a network blip (F617).
+- Tests that could hang now fail by name, and tests that could not fail now can. Five raw source
+  readers strip comments, with a guard against a sixth. Several guards derive their lists instead
+  of restating them (F681, F485,
+  F484, F690, F635, F625, F399, F503, F634, F402, F412, F544, F382, F415).
+
+**Two defects that only appeared across lanes.** F484's tests relied on a queue wait that F401
+removed; a reviewer caught it by applying the other lane's change. F550 added the exact
+public-default shape F718's guard forbids; the integrated gate caught it. Both were fixed before
+landing.
+
+**What is not claimed.** Nothing here was pushed, so no CI run covers it yet. No change was watched
+in the running app. The real-microphone press is F731; the other on-screen checks are listed in each
+ticket's log entry. On the first launch of the new build, every notes.md sidecar is rewritten once,
+because their date format changed (F568).
+
 ## Library index writes are transactional (F190)
 
 Saving the meeting index is now a transaction with a recorded lineage, so a crash, a full disk, or a
