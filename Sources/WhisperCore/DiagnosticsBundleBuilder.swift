@@ -104,9 +104,9 @@ public enum DiagnosticsBundleBuilder {
         // F370: the bundle used to contain nothing about crashes at all, so the one artifact a
         // support question needs was the one thing it could not carry. Names and epochs, plus the
         // command that recovers an exception reason the report may not have. F389 adds each
-        // report's digest, read by allowlist and path-redacted (`CrashReportDigest` says exactly
-        // what), rather than quoting the `.ips`, which would put absolute paths into a bundle whose
-        // whole guarantee is that it has none (F70).
+        // report's digest, read by allowlist, with its free text cut at the first path and its quoted
+        // names redacted (`CrashReportDigest` says exactly what), rather than quoting the `.ips`,
+        // which would put absolute paths into a bundle whose whole guarantee is that it has none (F70).
         let crashReports: [[String: Any]] = input.crashReports.map { report in
             var entry: [String: Any] = [
                 "name": report.fileName,

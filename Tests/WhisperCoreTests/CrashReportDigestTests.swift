@@ -115,8 +115,10 @@ func crashReportDigestCarriesOnlyItsAllowlist() throws {
     #expect(json.contains("EXC_CRASH"))
     #expect(json.contains("installTapOnBus"))
     #expect(json.contains("MicDictationRecorder.start()"))
-    // A path inside the application-specific information is redacted, its text kept.
-    #expect(json.contains("Fatal error at <path>:42"), "\(json)")
+    // A path inside the application-specific information cuts the message there: the text before it
+    // is kept, the path and everything after it are not.
+    #expect(json.contains("libswiftCore.dylib: Fatal error at <path>…"), "\(json)")
+    #expect(!json.contains(":42 object"), "\(json)")
 
     for leak in [
         "/Users/", "/System/", "/usr/lib", "/Applications", "Library/Caches", "someone",
@@ -127,6 +129,131 @@ func crashReportDigestCarriesOnlyItsAllowlist() throws {
     ] {
         #expect(!json.contains(leak), "\(leak) reached the diagnostics bundle")
     }
+}
+
+// F389 review: `DiagnosticsBundleBuilder.redactPaths` only recognises ASCII path components with no
+// space in them, so on its own it left "<path>/会议记录/季度规划会议.mov" and
+// "<path> Support<path> Meeting Q3.m4a" in the digest, and kept a quoted file name whole. A file name
+// can be a meeting title, which F70 says the bundle never carries. These fixtures are the probes that
+// found it plus the other shapes a path or a name takes in a crash message.
+
+/// One `asi` message (and optionally an exception subtype) in a minimal JSON report, digested. The
+/// body is built with `JSONSerialization` so the fixtures' quotes need no escaping.
+private func digestOf(asi message: String, image: String = "Foundation", subtype: String? = nil) throws -> CrashReportDigest {
+    var exception: [String: Any] = ["type": "EXC_CRASH"]
+    if let subtype { exception["subtype"] = subtype }
+    let body = try JSONSerialization.data(withJSONObject: ["exception": exception, "asi": [image: [message]]])
+    return try #require(CrashReportDigest.parse(Data("{\"app_name\":\"WhisperMeet\",\"bug_type\":\"309\"}\n".utf8) + body))
+}
+
+/// Every fragment of a fixture's path or name: none of these may reach the bundle.
+private let nameFragments = [
+    "jane", "Jane", "会议记录", "季度规划会议", "Movies", "Library", "Application", "Support", "Recordings",
+    "6F1C1D8E", "Board", "Meeting", "Q3", "Acme", "Merger", "Client", "Share", "Volumes", "Desktop",
+    "Documents", "CloudDocs", "Plan", ".mov", ".wav", ".m4a",
+]
+
+@Test("Free text is cut at its first path, so no path segment or file name reaches the bundle (F389)")
+func crashReportDigestCutsFreeTextAtItsFirstPath() throws {
+    let fixtures: [(image: String, message: String, expected: String)] = [
+        ("Foundation", "*** -[NSURL initFileURLWithPath:]: /Users/jane/Movies/会议记录/季度规划会议.mov is not valid",
+         "Foundation: *** -[NSURL initFileURLWithPath:]: <path>…"),
+        ("Foundation", "cannot open /Users/jane/Movies/会议记录/季度规划会议.mov",
+         "Foundation: cannot open <path>…"),
+        ("libswiftCore.dylib",
+         #"Fatal error: 'try!' expression unexpectedly raised an error: Error Domain=NSCocoaErrorDomain Code=260 "The file “Board Meeting Q3.m4a” couldn’t be opened because there is no such file." UserInfo={NSFilePath=/Users/jane/Library/Application Support/WhisperMeet/Recordings/6F1C1D8E-1111-2222-3333-444455556666/Board Meeting Q3.m4a, NSUnderlyingError=0x600003e1c0f0}"#,
+         #"libswiftCore.dylib: Fatal error: '<name>' expression unexpectedly raised an error: Error Domain=NSCocoaErrorDomain Code=260 "<name>" UserInfo={NSFilePath=<path>…"#),
+        ("Foundation", "cannot open /Volumes/Client Share/Acme/Q3 Board.wav",
+         "Foundation: cannot open <path>…"),
+        ("Foundation", "cannot open file:///Users/jane/Documents/Acme Merger Call.wav",
+         "Foundation: cannot open <path>…"),
+        ("Foundation", "cannot open ~/Desktop/Acme Merger Call.wav",
+         "Foundation: cannot open <path>…"),
+        ("Foundation", "cannot open /Users/jane/Library/Mobile Documents/com~apple~CloudDocs/Meetings/Q3 Plan.wav",
+         "Foundation: cannot open <path>…"),
+    ]
+    for fixture in fixtures {
+        let digest = try digestOf(asi: fixture.message, image: fixture.image)
+        #expect(digest.applicationSpecificInformation == [fixture.expected] as [String])
+        let json = bundle(for: digest)
+        for fragment in nameFragments + ["/"] {
+            #expect(!json.contains(fragment), "\(fragment) reached the bundle from \(fixture.message)")
+        }
+    }
+
+    // The exception subtype is free text too; its address is still replaced.
+    let subtype = try digestOf(asi: "abort() called",
+                             subtype: "KERN_INVALID_ADDRESS at 0x0000000000000010 in /Users/jane/Movies/会议记录/季度规划会议.mov")
+    #expect(subtype.exceptionSubtype == "KERN_INVALID_ADDRESS at <addr> in <path>…")
+    let json = bundle(for: subtype)
+    for fragment in nameFragments + ["/"] {
+        #expect(!json.contains(fragment), "\(fragment) reached the bundle from the exception subtype")
+    }
+}
+
+@Test("A quoted name in free text is redacted, whichever quotes it is in (F389)")
+func crashReportDigestRedactsQuotedNames() throws {
+    let fixtures: [(message: String, expected: String)] = [
+        ("Fatal error: Duplicate values for key: '季度规划会议'", "Foundation: Fatal error: Duplicate values for key: '<name>'"),
+        ("Fatal error: Duplicate values for key: 'Acme Merger Call'", "Foundation: Fatal error: Duplicate values for key: '<name>'"),
+        ("The file “Board Meeting Q3.m4a” couldn’t be opened.", "Foundation: The file “<name>” couldn’t be opened."),
+        // An apostrophe inside the name does not close it; one outside a quote does not open one.
+        ("cannot open ‘Jane’s Board Meeting.m4a’ for reading", "Foundation: cannot open ‘<name>’ for reading"),
+        ("can't open 'Acme Merger Call.wav'", "Foundation: can't open '<name>'"),
+        (#"cannot open "Acme Merger Call.wav""#, #"Foundation: cannot open "<name>""#),
+        // A quote that never closes takes the rest of the message with it.
+        ("cannot open “Board Meeting Q3.m4a", "Foundation: cannot open “<name>…"),
+    ]
+    for fixture in fixtures {
+        let digest = try digestOf(asi: fixture.message)
+        #expect(digest.applicationSpecificInformation == [fixture.expected] as [String])
+        let json = bundle(for: digest)
+        for fragment in nameFragments {
+            #expect(!json.contains(fragment), "\(fragment) reached the bundle from \(fixture.message)")
+        }
+    }
+
+    let subtype = try digestOf(asi: "abort() called", subtype: "cannot open “季度规划会议.mov”")
+    #expect(subtype.exceptionSubtype == "cannot open “<name>”")
+}
+
+@Test("The uncaught-exception reason and a Swift file ID survive the cut; the exception's type, signal and termination are untouched (F389)")
+func crashReportDigestKeepsTheExceptionReason() throws {
+    // The preamble's own two quotes delimit the exception's name and reason, which are the useful part
+    // (F356's reason is checked in crashReportDigestReadsTheCrash). A name or path inside the reason is
+    // still redacted and cut.
+    let nested = try digestOf(
+        asi: "*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: 'cannot open “Board Meeting Q3.m4a” at /Users/jane/Movies/会议记录/x.mov'",
+        image: "CoreFoundation")
+    #expect(nested.applicationSpecificInformation == [
+        "CoreFoundation: *** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: 'cannot open “<name>” at <path>…",
+    ] as [String])
+
+    // A "name" that is not an identifier is not an exception name, so the quotes are names again.
+    let notAName = try digestOf(
+        asi: "*** Terminating app due to uncaught exception 'Board Meeting Q3', reason: 'x'", image: "CoreFoundation")
+    #expect(notAName.applicationSpecificInformation == [
+        "CoreFoundation: *** Terminating app due to uncaught exception '<name>', reason: '<name>'",
+    ] as [String])
+
+    // A Swift trap names its source as `Module/File.swift`, which is code, not a path on this Mac.
+    let trap = try digestOf(
+        asi: "WhisperCore/CrashReportDigest.swift:42: Fatal error: Unexpectedly found nil while unwrapping an Optional value",
+        image: "libswiftCore.dylib")
+    #expect(trap.applicationSpecificInformation == [
+        "libswiftCore.dylib: WhisperCore/CrashReportDigest.swift:42: Fatal error: Unexpectedly found nil while unwrapping an Optional value",
+    ] as [String])
+
+    // Fixed vocabulary from the kernel and libsystem keeps the plain cleaning, quotes and all.
+    let report = #"""
+    {"app_name":"WhisperMeet","bug_type":"309"}
+    {"exception":{"type":"EXC_BAD_ACCESS","signal":"SIGSEGV"},"termination":{"namespace":"SIGNAL","indicator":"Segmentation fault: 11 'x'"}}
+    """#
+    let plain = try #require(CrashReportDigest.parse(Data(report.utf8)))
+    #expect(plain.exceptionType == "EXC_BAD_ACCESS")
+    #expect(plain.exceptionSignal == "SIGSEGV")
+    #expect(plain.terminationNamespace == "SIGNAL")
+    #expect(plain.terminationIndicator == "Segmentation fault: 11 'x'")
 }
 
 @Test("Frames, entries and strings are capped, and an address in what is kept is redacted (F389)")

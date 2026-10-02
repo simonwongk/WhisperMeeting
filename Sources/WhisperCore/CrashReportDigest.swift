@@ -17,10 +17,32 @@ import Foundation
 ///
 /// Never the process path, an image's path, base or UUID, a frame's offset or source file, the
 /// thread state, the reporter key, the user ID, the sleep/wake UUID, the incident ID, or any thread
-/// but the crashed one. Every string that is kept still goes through
-/// `DiagnosticsBundleBuilder.redactPaths`, has its hex addresses replaced with `<addr>`, and is
-/// capped, because `asi` and an exception subtype can carry interpolated runtime text. The caps are
-/// `frameLimit` frames per list, `entryLimit` `asi` entries and `stringLimit` characters a string.
+/// but the crashed one. Every string that is kept goes through `DiagnosticsBundleBuilder.redactPaths`,
+/// has its hex addresses replaced with `<addr>` and its control characters with spaces, and is
+/// capped. The caps are `frameLimit` frames per list, `entryLimit` `asi` entries and `stringLimit`
+/// characters a string.
+///
+/// **Free text is cut, not only redacted.** An `asi` entry and the exception subtype can carry
+/// interpolated runtime text, and `redactPaths` recognises only ASCII path components with no space
+/// in them. So before that cleaning, those two fields lose:
+///
+/// - what is between each pair of quotes — `"…"`, `“…”`, `'…'`, `‘…’`, `«…»`, `「…」`, `『…』` —
+///   which becomes `<name>`, the quotes kept. A quote that never closes takes the rest of the string
+///   with it ("<name>…"). The one exception is Apple's preamble "… uncaught exception '<name>',
+///   reason: '<reason>'", when the name is an identifier and the reason's closing quote ends the
+///   string: those two pairs of quotes are kept, and the reason between them is scrubbed like any
+///   other free text;
+/// - everything from the first path-like word on, which becomes `<path>…`: a `file:` URL, a
+///   `<path>` already in the text, or a word with a `/` in it ("/Users/…", "~/…", "Recordings/…")
+///   other than a Swift file ID (`Module/File.swift`). A word starts after the last space,
+///   bracket, quote or `= : , ; |` before it, so an absolute path is cut whole, whatever spaces or
+///   non-ASCII names follow its first `/`.
+///
+/// What this cannot see is text that is neither quoted nor in a path: a file name interpolated
+/// bare ("cannot open Board Meeting.m4a") is carried, up to `stringLimit` characters, and so are the
+/// words before the first `/` of a relative path that has a space in it. The versions, the
+/// exception's type and signal, the termination fields and the frames come from the app's bundle,
+/// the OS and the symbol table rather than from interpolated text, and keep the plain cleaning.
 ///
 /// How much to carry was a scoping call made for this ticket, bounded by F70 (no transcript,
 /// summary, vocabulary, titles or paths): the frames' symbols are the useful part, the binaries'
@@ -108,7 +130,7 @@ public struct CrashReportDigest: Sendable, Equatable {
             osVersion: (header["os_version"] as? String).map(clean),
             exceptionType: (exception["type"] as? String).map(clean),
             exceptionSignal: (exception["signal"] as? String).map(clean),
-            exceptionSubtype: (exception["subtype"] as? String).map(clean),
+            exceptionSubtype: (exception["subtype"] as? String).map(cleanFreeText),
             terminationNamespace: (termination["namespace"] as? String).map(clean),
             terminationIndicator: (termination["indicator"] as? String).map(clean),
             applicationSpecificInformation: applicationSpecificInformation(body["asi"]),
@@ -171,7 +193,7 @@ public struct CrashReportDigest: Sendable, Equatable {
             }
             for message in messages {
                 guard entries.count < entryLimit else { return entries }
-                entries.append(clean("\(image): \(message)"))
+                entries.append(cleanFreeText("\(image): \(message)"))
             }
         }
         return entries
@@ -194,6 +216,130 @@ public struct CrashReportDigest: Sendable, Equatable {
             cleaned = String(cleaned.prefix(stringLimit)) + "…"
         }
         return cleaned
+    }
+
+    /// `clean` for the two fields that carry interpolated runtime text — an `asi` entry and the
+    /// exception subtype — after their quoted names and everything from their first path-like word
+    /// on are taken out (the type's doc lists exactly what).
+    ///
+    /// `redactPaths` alone is not enough here: it recognises only ASCII path components with no
+    /// space in them, so it turned "/Users/jane/Movies/会议记录/季度规划会议.mov" into
+    /// "<path>/会议记录/季度规划会议.mov", and kept a quoted file name whole. A file name can be a
+    /// meeting title, which the bundle never carries (F70).
+    static func cleanFreeText(_ text: String) -> String {
+        clean(scrubbingFreeText(text))
+    }
+
+    /// Apple's uncaught-exception preamble. Its two pairs of quotes are delimiters, not names: the
+    /// exception's name, matched only when it is an identifier as Apple's are, and the reason, which
+    /// is the useful part of the report and is scrubbed like any other free text. Text that does not
+    /// match all of it, to the reason's closing quote at the end, is scrubbed whole instead.
+    private static let uncaughtException = try? NSRegularExpression(
+        pattern: #"^(.*?uncaught exception )'([A-Za-z0-9_.$-]+)', reason: '(.*)'$"#,
+        options: [.dotMatchesLineSeparators]
+    )
+
+    private static func scrubbingFreeText(_ text: String) -> String {
+        let whole = NSRange(text.startIndex..<text.endIndex, in: text)
+        if let uncaughtException,
+           let match = uncaughtException.firstMatch(in: text, range: whole),
+           let lead = Range(match.range(at: 1), in: text),
+           let name = Range(match.range(at: 2), in: text),
+           let reason = Range(match.range(at: 3), in: text) {
+            let scrubbedLead = scrub(String(text[lead]))
+            guard !scrubbedLead.cut else { return scrubbedLead.text }
+            let scrubbedReason = scrub(String(text[reason]))
+            return scrubbedLead.text + "'\(text[name])', reason: '" + scrubbedReason.text
+                + (scrubbedReason.cut ? "" : "'")
+        }
+        return scrub(text).text
+    }
+
+    /// Quote characters and the character that closes each. Whatever is between them is replaced
+    /// with `<name>`, the quotes kept.
+    private static let quotePairs: [Character: Character] = [
+        "\"": "\"", "“": "”", "'": "'", "‘": "’", "«": "»", "「": "」", "『": "』",
+    ]
+
+    /// Characters that end a word for the path search: whitespace and these.
+    private static let wordBreaks: Set<Character> = [
+        "=", ":", ",", ";", "(", ")", "[", "]", "{", "}", "<", ">", "|",
+        "\"", "'", "“", "”", "‘", "’", "«", "»", "「", "」", "『", "』",
+    ]
+
+    /// Quoted names out, then cut at the first path-like word. `cut` says whether the end of `text`
+    /// was dropped, so a caller stitching pieces together stops there.
+    private static func scrub(_ text: String) -> (text: String, cut: Bool) {
+        let named = redactingQuotedNames(text)
+        if let start = firstPathLikeWord(in: named.text) {
+            return (String(named.text[..<start]) + "<path>…", true)
+        }
+        return named
+    }
+
+    /// Replaces what is between each pair of quotes with `<name>`. A quote that never closes takes
+    /// the rest of the text with it ("<name>…"). An ASCII `'` opens a quote only when it does not
+    /// follow a letter or digit, and an ASCII `'` or `’` closes one only when it is not followed by
+    /// one, so the apostrophes in "can't" and "Jane’s" are neither.
+    private static func redactingQuotedNames(_ text: String) -> (text: String, cut: Bool) {
+        let characters = Array(text)
+        func isWordCharacter(_ position: Int) -> Bool {
+            characters.indices.contains(position) && (characters[position].isLetter || characters[position].isNumber)
+        }
+        var output = ""
+        var position = 0
+        while position < characters.count {
+            let quote = characters[position]
+            guard let close = quotePairs[quote], quote != "'" || !isWordCharacter(position - 1) else {
+                output.append(quote)
+                position += 1
+                continue
+            }
+            var end = position + 1
+            while end < characters.count {
+                if characters[end] == close, (close != "'" && close != "’") || !isWordCharacter(end + 1) { break }
+                end += 1
+            }
+            output.append(quote)
+            output += "<name>"
+            guard end < characters.count else { return (output + "…", true) }
+            output.append(close)
+            position = end + 1
+        }
+        return (output, false)
+    }
+
+    /// Where the first path-like word starts: a `file:` URL, an already-substituted `<path>`, or the
+    /// first word with a `/` in it — "/Users/…", "~/…", "Recordings/…" — other than a Swift file ID
+    /// (`Module/File.swift`, which a trap message names and which is code, not a path on this Mac).
+    /// A word runs from the last space or `wordBreaks` character before the `/`, so the cut lands
+    /// before the whole of an absolute path however many spaces or non-ASCII names follow.
+    private static func firstPathLikeWord(in text: String) -> String.Index? {
+        var earliest = text.range(of: #"(?i)\bfile:"#, options: .regularExpression)?.lowerBound
+        if let marker = text.range(of: "<path>")?.lowerBound, marker < (earliest ?? text.endIndex) {
+            earliest = marker
+        }
+        var position = text.startIndex
+        while position < text.endIndex, position < (earliest ?? text.endIndex) {
+            guard !isWordBreak(text[position]) else {
+                position = text.index(after: position)
+                continue
+            }
+            let start = position
+            while position < text.endIndex, !isWordBreak(text[position]) {
+                position = text.index(after: position)
+            }
+            let word = text[start..<position]
+            if word.contains("/"), word.range(of: #"^[A-Za-z_][A-Za-z0-9_]*/[A-Za-z0-9_.+-]+\.swift$"#,
+                                                options: .regularExpression) == nil {
+                return min(start, earliest ?? start)
+            }
+        }
+        return earliest
+    }
+
+    private static func isWordBreak(_ character: Character) -> Bool {
+        character.isWhitespace || wordBreaks.contains(character)
     }
 }
 
