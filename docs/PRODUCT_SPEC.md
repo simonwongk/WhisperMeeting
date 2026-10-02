@@ -8,7 +8,9 @@ post-meeting transcript in the meeting’s original language, with all speech pr
 ## Requirements
 
 - Record both microphone and Mac system audio.
-- Preserve separate source tracks and prepare a combined speech-focused WAV after the meeting.
+- Preserve separate source tracks and prepare a combined speech-focused WAV after the meeting, until
+  the user explicitly shrinks that meeting: **Shrink Meeting** replaces its audio with one compressed
+  recording, by hand only, after confirmation (F795, `docs/MEETING_STORAGE_DESIGN.md`).
 - Do not require realtime transcription.
 - Run open-source speech recognition locally; do not require an API key or upload meeting audio.
   Keep OpenAI Whisper Large as the default and offer the tested Qwen3-ASR path only as an explicit
@@ -95,9 +97,11 @@ treated as people: one track can carry several voices, and one voice can appear 
 ## Recovery boundary
 
 Automatic recovery protects against process failures, app interruption, corrupt indexes, and
-incomplete recording finalization. It preserves all audio files it finds. **Cancel Recording** and
-**Delete Meeting** are explicit user deletion actions and remain intentionally destructive; the
-interface and recovery documentation must state that boundary clearly.
+incomplete recording finalization. It preserves all audio files it finds. **Cancel Recording**,
+**Delete Meeting** and **Shrink Meeting** are explicit user deletion actions and remain intentionally
+destructive; the interface and recovery documentation must state that boundary clearly. Shrink
+deletes a meeting's original audio and raw tracks only after its compressed copy has been decoded in
+full, matched to the original's length, and saved into the index, and it never runs on its own.
 
 ## Two copies of the app, one library — a deliberate limit
 

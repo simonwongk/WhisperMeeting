@@ -23,6 +23,14 @@ A recording longer than about 12 hours 25 minutes holds more audio than a classi
 describe, so its `meeting.wav` is written as **RF64** — the broadcast 64-bit form of WAV, which
 macOS audio tools and ffmpeg both read. Every shorter recording is an ordinary WAV, as before.
 
+**A shrunk meeting** (Shrink Meeting, F795) holds one compressed recording instead: `meeting.m4a`
+(AAC, 16 kHz mono, about 15 MB an hour), `meeting-recovered.m4a` if its audio had been rebuilt, or
+`recording.m4a` for an import. It keeps `notes.md`, speaker labels and the search index. It has no
+`meeting.wav`, no raw `.f32` tracks and no `source-tracks.json`, so Rebuild Audio and re-running a
+single segment (F660) are not available for it, and Verify Library checks only that the file exists
+and is not empty. A whole-library backup made before the meeting was shrunk still holds the original
+files.
+
 A folder from an interrupted recording may also hold a 0-byte `capture.lock`. Like `.writer.lock`
 below, it is not a stale lock: the recording app holds it in an open file descriptor for as long as
 it is capturing, and the kernel releases it when that process dies. It is how a second copy of
@@ -263,8 +271,11 @@ Recovery protects against errors and interruptions. It does not override an expl
 
 - **Cancel Recording** discards the active, unfinished recording.
 - **Delete Meeting** removes that meeting’s local recording folder and transcript.
+- **Shrink Meeting** replaces a meeting’s audio with one compressed recording and deletes the
+  original WAV, both raw tracks and their manifest. Nothing is deleted until the compressed copy
+  has been decoded in full, matched to the original's length, and saved into the index.
 
-Copy the recording folder first if either action should remain reversible.
+Copy the recording folder first if any of these should remain reversible.
 
 **A deleted meeting's text is erased from the saved history a week later (F295).** Deleting a
 meeting removes its recording folder straight away. Its title, transcript, notes and summary stay in

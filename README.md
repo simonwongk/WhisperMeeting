@@ -138,14 +138,17 @@ engine is optional — install only what you use.
 | Local Whisper (default engine) | first transcription | ~1.2 GB Python environment + a Whisper model (Turbo ≈ 1.5 GB or Large ≈ 2.9 GB); also uses Homebrew FFmpeg and Python 3.11 |
 | Qwen3-ASR (opt-in, Apple silicon) | Settings → Install Qwen3-ASR | ≈ 4.2 GB (ASR + forced-aligner models ≈ 2.3 GB, MLX Python environment ≈ 0.7 GB) |
 | Local summaries + AI correction (opt-in, Apple silicon) | Settings → Install Local Model | ≈ 4.7 GB (Qwen3-8B-4bit ≈ 4.3 GB + Python environment ≈ 0.4 GB; a smaller 4B model on Macs under 16 GB of RAM). Summaries and correction share this one runtime. |
-| Your recordings | grows with use | ≈ 1.7 GB per recorded hour: `meeting.wav` (48 kHz, 16-bit mono) ≈ 0.35 GB, plus the two raw microphone/system-audio source tracks (48 kHz, float32) ≈ 0.69 GB each, all kept |
+| Your recordings | grows with use | ≈ 1.7 GB per recorded hour: `meeting.wav` (48 kHz, 16-bit mono) ≈ 0.35 GB, plus the two raw microphone/system-audio source tracks (48 kHz, float32) ≈ 0.69 GB each, all kept — or ≈ 15 MB per hour for a meeting you shrink |
 
 Rules of thumb: a minimal setup (default Whisper only) is about **3–4 GB**; installing everything —
 both ASR engines plus local summaries and AI correction — is roughly **12–16 GB** of models and
 runtimes, on top of your recordings. Enabling AI correction adds no download once local summaries
 are installed. Recordings are never auto-deleted and dominate long-term use — an hour of meetings a
-day is roughly 50 GB a month — so keep an eye on
-`~/Library/Application Support/WhisperMeet/Recordings`.
+day is roughly 50 GB a month. **Settings → Meeting library → Show Storage…** lists every meeting by
+the space it uses, and each meeting's page shows its size. **Shrink…** replaces a meeting's audio
+with one compressed recording (AAC, 16 kHz mono) and deletes the original WAV and raw tracks, after a
+confirmation, and only when you press it. It is lossy and cannot be undone, and Rebuild Audio and
+single-segment re-runs are no longer available for that meeting.
 
 ## Workflow
 
@@ -256,8 +259,8 @@ is resolved.
 
 Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety
 and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual
-recovery steps, and the intentionally destructive **Cancel Recording** and **Delete Meeting**
-actions.
+recovery steps, and the intentionally destructive **Cancel Recording**, **Delete Meeting** and
+**Shrink Meeting** actions.
 
 Before capture, the app checks permissions, the default microphone, and available storage. During
 capture, it monitors the exact microphone and system-audio samples being saved, warns about
