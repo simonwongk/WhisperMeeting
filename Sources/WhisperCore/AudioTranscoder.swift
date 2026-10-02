@@ -43,7 +43,9 @@ public enum AudioTranscoder {
     public static func transcodeToWAV(input: URL, output: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        process.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input.path, output.path]
+        // `--mix`, because `-c 1` alone "add[s]/remove[s] channels without regard to order": it keeps
+        // the left channel and drops the right, so a two-channel call recording lost one party (F796).
+        process.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", "--mix", input.path, output.path]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

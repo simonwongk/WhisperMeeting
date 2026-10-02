@@ -119,3 +119,62 @@ func audioTranscoderFormatGateIsConservative() throws {
     try Data("fLaC".utf8).write(to: flac)
     #expect(!AudioTranscoder.needsTranscoding(flac))
 }
+
+// F796 — afconvert's `-c 1` "add[s]/remove[s] channels without regard to order": it keeps the left
+// channel and discards the right, so Qwen lost one party of a two-channel call recording entirely.
+// `--mix` downmixes. Measured before the fix: right-only 440 Hz tone (RMS 8485) -> mono RMS 0.0.
+private func writeStereoTone(rightOnly: Bool, at url: URL) throws {
+    let rate: UInt32 = 48_000, frames: UInt32 = 48_000, channels: UInt16 = 2, bits: UInt16 = 16
+    let dataBytes = frames * UInt32(channels) * UInt32(bits / 8)
+    var data = Data()
+    func a32(_ v: UInt32) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    func a16(_ v: UInt16) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    data.append(contentsOf: Array("RIFF".utf8)); a32(36 + dataBytes); data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8)); a32(16); a16(1); a16(channels); a32(rate)
+    a32(rate * UInt32(channels) * UInt32(bits / 8)); a16(channels * bits / 8); a16(bits)
+    data.append(contentsOf: Array("data".utf8)); a32(dataBytes)
+    for i in 0..<Int(frames) {
+        let tone = Int16(12_000 * sin(2 * Double.pi * 440 * Double(i) / Double(rate)))
+        a16(UInt16(bitPattern: rightOnly ? 0 : tone))   // left
+        a16(UInt16(bitPattern: tone))                   // right
+    }
+    try data.write(to: url)
+}
+
+/// RMS of a 16-bit PCM WAV's `data` chunk, walking chunks (afconvert may write others first).
+func pcm16RMS(ofWAVAt url: URL) throws -> Double {
+    let bytes = [UInt8](try Data(contentsOf: url))
+    var index = 12
+    while index + 8 <= bytes.count {
+        let id = String(decoding: bytes[index..<index + 4], as: UTF8.self)
+        let size = Int(UInt32(bytes[index + 4]) | UInt32(bytes[index + 5]) << 8
+            | UInt32(bytes[index + 6]) << 16 | UInt32(bytes[index + 7]) << 24)
+        if id == "data" {
+            let end = min(bytes.count, index + 8 + size)
+            var sum = 0.0, count = 0
+            var cursor = index + 8
+            while cursor + 1 < end {
+                let sample = Double(Int16(bitPattern: UInt16(bytes[cursor]) | UInt16(bytes[cursor + 1]) << 8))
+                sum += sample * sample; count += 1; cursor += 2
+            }
+            return count == 0 ? 0 : (sum / Double(count)).squareRoot()
+        }
+        index += 8 + size + (size & 1)
+    }
+    return 0
+}
+
+@Test("A right-channel-only stereo import is not silenced by the mono transcode (F796)")
+func transcodeMixesStereoInsteadOfKeepingTheLeftChannel() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F796-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let rightOnly = dir.appendingPathComponent("right-only.wav")
+    try writeStereoTone(rightOnly: true, at: rightOnly)
+
+    let out = dir.appendingPathComponent("out.wav")
+    try AudioTranscoder.transcodeToWAV(input: rightOnly, output: out)
+
+    // A mix of a full-scale tone and silence is half its RMS (8485 -> ~4242); the discard was 0.
+    #expect(try pcm16RMS(ofWAVAt: out) > 3_000)
+}
