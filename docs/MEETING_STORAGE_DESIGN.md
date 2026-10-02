@@ -318,4 +318,3 @@ approved the original text and has not yet reviewed these changes.
   committed.
 - **Only top-level files are ever deleted.** A nested `sub/recording.txt` is never on the list.
 - **The library total counts only meetings still in the index.**
-
