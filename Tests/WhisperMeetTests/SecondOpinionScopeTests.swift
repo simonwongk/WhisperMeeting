@@ -7,6 +7,20 @@ private func seg(_ text: String, _ start: Double, _ end: Double) -> TranscriptSe
     TranscriptSegment(speaker: nil, start: start, end: end, text: text)
 }
 
+/// Polls `condition` up to 6,000 times with a 5 ms sleep between polls, then requires it, so a
+/// regression that never reaches the awaited state fails here by name instead of hanging the suite
+/// (F681, in F639's shape: bounded by sleeps, never by a count of `Task.yield()`s). That is at least
+/// 30 s; a suppressed state measured 41-44 s, because each sleep overruns its 5 ms.
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 // F88 UX fix — the "running" state must be scoped to the meeting actually being processed, so only that
 // meeting's button shows a spinner (not every meeting's, via a global flag).
 @MainActor
@@ -33,6 +47,6 @@ func secondOpinionRunningStateIsScopedToMeeting() async throws {
     #expect(model.secondOpinionRunningID == id1)   // only meeting 1 is "running"
     #expect(model.secondOpinionRunningID != id2)   // meeting 2 is NOT shown as running
 
-    while model.isRunningAuxiliaryEngine { await Task.yield() }
+    try await waitUntil("the second-opinion run to finish") { !model.isRunningAuxiliaryEngine }
     #expect(model.secondOpinionRunningID == nil)   // cleared when done
 }

@@ -117,7 +117,7 @@ func fluidAudioAdapterThrowsCancellationErrorWhenTheRunnerHonoursCancellation() 
     )
 
     let task = Task { try await client.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), durationSeconds: 8) }
-    while !box.started { await Task.yield() }
+    try await waitUntil("the runtime to start") { box.started }
     task.cancel()
 
     await #expect(throws: CancellationError.self) { _ = try await task.value }
@@ -142,7 +142,7 @@ func fluidAudioAdapterThrowsCancellationErrorEvenWhenTheRunnerIgnoresIt() async 
     )
 
     let task = Task { try await client.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), durationSeconds: 8) }
-    while !box.started { await Task.yield() }
+    try await waitUntil("the runtime to start") { box.started }
     task.cancel()
     box.release = true
 

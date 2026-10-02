@@ -15,6 +15,20 @@ private func makeModel() throws -> AppModel {
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 
+/// Polls `condition` up to 6,000 times with a 5 ms sleep between polls, then requires it, so a
+/// regression that never reaches the awaited state fails here by name instead of hanging the suite
+/// (F681, in F639's shape: bounded by sleeps, never by a count of `Task.yield()`s). That is at least
+/// 30 s; a suppressed state measured 41-44 s, because each sleep overruns its 5 ms.
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
 @MainActor
 @Test("A correction run is attributed to the requested meeting only, and clears when done (F173)")
 func correctionBusyStateIsScopedToTheMeeting() async throws {
@@ -42,7 +56,7 @@ func correctionBusyStateIsScopedToTheMeeting() async throws {
     }
 
     let run = Task { await model.proposeLocalCorrections(for: a) }
-    while gate.release == nil { await Task.yield() }
+    try await waitUntil("the correction run to reach its model") { gate.release != nil }
 
     #expect(model.proposingCorrectionsID == a) // scoped to A…
     #expect(model.proposingCorrectionsID != b) // …never attributed to B

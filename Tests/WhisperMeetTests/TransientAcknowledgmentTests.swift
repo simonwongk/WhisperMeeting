@@ -41,7 +41,7 @@ func retriggerKeepsAcknowledgmentVisible() async throws {
 
     ack.trigger() // press 1 — reset 1 pending
     ack.trigger() // press 2 before the window elapsed — reset 1 must be cancelled
-    while waits.continuations.count < 2 { await Task.yield() }
+    try await waitUntil("both presses' holds to start") { waits.continuations.count >= 2 }
 
     // Press 1's window elapses. Its (cancelled) reset must not clear press 2's confirmation.
     waits.continuations[0].resume(returning: true)
@@ -67,13 +67,13 @@ func cancelledHoldChecksCancellation() async throws {
     }
 
     ack.trigger()
-    while waits.continuations.isEmpty { await Task.yield() }
+    try await waitUntil("the first press's hold to start") { !waits.continuations.isEmpty }
     ack.trigger() // cancels reset 1 while it is mid-wait
     waits.continuations[0].resume(returning: true) // late "elapsed" from the cancelled task
     try await settle()
     #expect(ack.isActive == true)
 
-    while waits.continuations.count < 2 { await Task.yield() }
+    try await waitUntil("the second press's hold to start") { waits.continuations.count >= 2 }
     waits.continuations[1].resume(returning: true)
     try await waitUntil("the acknowledgment to reset") { !ack.isActive }
     #expect(ack.isActive == false)
