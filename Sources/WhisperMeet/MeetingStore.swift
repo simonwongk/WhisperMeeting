@@ -849,7 +849,15 @@ final class MeetingStore: ObservableObject {
     }
 
     func recordingURL(for meeting: MeetingRecord) -> URL {
-        rootDirectory.appendingPathComponent(meeting.recordingPath)
+        let indexed = rootDirectory.appendingPathComponent(meeting.recordingPath)
+        // A record that still names a capture's WAV after Shrink replaced it (F795): an older index
+        // generation restored by Recover Library, or another copy's stale record. Only those two
+        // names, and only when the named file is absent, so the fallback never hides a real file.
+        let name = indexed.lastPathComponent
+        guard name == "meeting.wav" || name == "meeting-recovered.wav",
+              !FileManager.default.fileExists(atPath: indexed.path) else { return indexed }
+        let shrunk = indexed.deletingPathExtension().appendingPathExtension("m4a")
+        return FileManager.default.fileExists(atPath: shrunk.path) ? shrunk : indexed
     }
 
     /// Marks a meeting's notes.md stale and schedules the debounced rewrite — the same clamp-and-cancel
@@ -1267,6 +1275,27 @@ final class MeetingStore: ObservableObject {
         scheduleNotesSidecarWrite(for: id)
     }
 
+    /// Repoints a meeting at a new recording file and reports whether the index save landed (F795).
+    ///
+    /// Shrink deletes the old audio only after this returns true, so this is shaped like
+    /// `delete(ids:)` (F451): the save is the first effect, and a failed save puts the record back. A
+    /// lost race re-reads the library without offering the change back, because the shrink removes
+    /// its new file when this fails, and "Keep my change" would then re-save a path to nothing.
+    func replaceRecordingPath(id: UUID, with relativePath: String) -> Bool {
+        guard editMutationIsAllowed() else { return false }
+        guard let index = meetings.firstIndex(where: { $0.id == id }) else { return false }
+        let before = meetings
+        meetings[index].recordingPath = relativePath
+        meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
+        guard persistMeetings() else {
+            meetings = before
+            if writeConflict?.isRace == true { beginConflictRecovery() }
+            return false
+        }
+        scheduleNotesSidecarWrite(for: id)
+        return true
+    }
+
     /// The save every synchronous mutator makes, with a lost race routed through the same recovery
     /// the debounced path takes (F642).
     ///
@@ -1643,7 +1672,7 @@ final class MeetingStore: ObservableObject {
     /// WhisperMeet makes is named `id.uuidString` (`recordingDirectoryURL(for:)`), and a restore puts
     /// back only names a backup already held, so a second spelling of one id exists only where
     /// something else made one, on a volume that is not the macOS default.
-    private func ownRecordingFolder(of meeting: MeetingRecord) -> URL? {
+    func ownRecordingFolder(of meeting: MeetingRecord) -> URL? {
         let recordings = rootDirectory
             .appendingPathComponent("Recordings", isDirectory: true)
             .standardizedFileURL
