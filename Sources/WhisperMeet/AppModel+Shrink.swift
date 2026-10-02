@@ -25,13 +25,19 @@ extension AppModel {
         storageFacts[id].map { MeetingStoragePlan.totalBytes($0.entries) }
     }
 
-    /// The library total over meetings measured so far.
+    /// The library total: the meetings in the index that have been measured. A deleted meeting's
+    /// cached size is not counted, so freeing space shows in this number (final review).
     var measuredLibraryBytes: Int64 {
-        MeetingStoragePlan.totalBytes(storageFacts.values.map { .init(name: "", bytes: MeetingStoragePlan.totalBytes($0.entries)) })
+        MeetingStoragePlan.totalBytes(store.meetings.compactMap { meeting in
+            storageBytes(for: meeting.id).map { MeetingStoragePlan.FolderEntry(name: "", bytes: $0) }
+        })
     }
 
-    /// Measures these meetings off the main actor and caches what the disk says.
+    /// Measures these meetings off the main actor and caches what the disk says. Facts for meetings
+    /// no longer in the index are dropped.
     func refreshStorage(ids: [UUID]) async {
+        let indexed = Set(store.meetings.map(\.id))
+        for stale in storageFacts.keys where !indexed.contains(stale) { storageFacts[stale] = nil }
         for id in ids {
             guard let meeting = store.meeting(id: id) else { storageFacts[id] = nil; continue }
             storageFacts[id] = await diskFacts(for: meeting)
@@ -55,11 +61,11 @@ extension AppModel {
             eligible.append(meeting)
             let total = MeetingStoragePlan.totalBytes(disk.entries)
             let output = MeetingStoragePlan.outputName(forRecordingNamed: disk.recordingName) ?? disk.recordingName
-            let reclaim = MeetingStoragePlan.isShrunkCapture(disk.recordingName)
+            let resume = MeetingStoragePlan.isResume(disk)
+            let reclaim = resume
                 ? MeetingStoragePlan.totalBytes(MeetingStoragePlan.removableFiles(in: disk.entries, keeping: output))
                 : MeetingStoragePlan.reclaimableBytes(in: disk.entries, recordingName: disk.recordingName, outputName: output)
-            let encoded = MeetingStoragePlan.isShrunkCapture(disk.recordingName)
-                ? 0 : MeetingStoragePlan.predictedOutputBytes(durationSeconds: disk.durationSeconds)
+            let encoded = resume ? 0 : MeetingStoragePlan.predictedOutputBytes(durationSeconds: disk.durationSeconds)
             current = MeetingStoragePlan.totalBytes([.init(name: "", bytes: current), .init(name: "", bytes: total)])
             predicted = MeetingStoragePlan.totalBytes([.init(name: "", bytes: predicted),
                                                        .init(name: "", bytes: Swift.max(0, total - reclaim)),
@@ -159,8 +165,9 @@ extension AppModel {
         if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id)) {
             return .refused(title: meeting.title, reason: reason)
         }
-        guard libraryAcceptsChanges("Shrinking a meeting"),
-              let folder = store.ownRecordingFolder(of: meeting),
+        // Read-only and restoring are refused above, each with its own reason (final review: this
+        // guard used to report a restore as "not stored in its own meeting folder").
+        guard let folder = store.ownRecordingFolder(of: meeting),
               let output = MeetingStoragePlan.outputName(forRecordingNamed: disk.recordingName) else {
             return .refused(title: meeting.title, reason: .unsupportedRecording)
         }
@@ -168,12 +175,13 @@ extension AppModel {
         defer { shrinkRunningID = nil }
         let before = MeetingStoragePlan.totalBytes(disk.entries)
 
-        if !MeetingStoragePlan.isShrunkCapture(disk.recordingName) {
+        if !MeetingStoragePlan.isResume(disk) {
             let recordingURL = store.recordingURL(for: meeting)
             let token = UUID().uuidString
             let tempM4A = folder.appendingPathComponent(".shrink-\(token).m4a")
             let tempWAV = folder.appendingPathComponent(".shrink-\(token).wav")
             let encode = encodeForShrink, decode = decodedDurationForShrink, free = availableBytesForShrink
+            let flush = flushForShrink
             let expected = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
                 .init(name: "", bytes: Int64(saturating: expected * 32_000)),
@@ -190,6 +198,8 @@ extension AppModel {
                     guard abs(decoded - expected) <= 0.5 else {
                         throw ShrinkFailure.lengthMismatch(expected: expected, decoded: decoded)
                     }
+                    // On stable storage before anything is committed or removed (final review).
+                    try flush(tempM4A)
                     let size = (try? tempM4A.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? nil
                     return .success(Int64(size ?? 0))
                 } catch {
@@ -210,6 +220,15 @@ extension AppModel {
                 try? FileManager.default.removeItem(at: tempM4A)
                 return .alreadyCompact(title: meeting.title)
             }
+            // Every guard above ran before the encode's await. Ask again, on the main actor, before
+            // committing: a restore, a read-only reload or another copy may have changed the record in
+            // that window, and the temp file is still only ours to remove (final review).
+            guard let current = store.meeting(id: id), current.recordingPath == meeting.recordingPath,
+                  !store.isDegraded, !store.isRestoringLibrary else {
+                try? FileManager.default.removeItem(at: tempM4A)
+                return .failed(title: meeting.title,
+                               message: "The meeting or the library changed while it was being compressed. Try again.")
+            }
             // Commit (design, step 6).
             let final = folder.appendingPathComponent(output)
             do {
@@ -222,12 +241,19 @@ extension AppModel {
                 try? FileManager.default.removeItem(at: tempM4A)
                 return .failed(title: meeting.title, message: error.localizedDescription)
             }
+            // The rename, flushed too, before the index names it or anything is removed.
+            if (try? await Task.detached { try flush(folder) }.value) == nil {
+                return .failed(title: meeting.title,
+                               message: "The compressed copy could not be confirmed on disk. \(Self.leftCopyNote)")
+            }
             if output.lowercased() != disk.recordingName.lowercased() {
                 let relative = (meeting.recordingPath as NSString).deletingLastPathComponent + "/" + output
                 guard store.replaceRecordingPath(id: id, with: relative) else {
-                    try? FileManager.default.removeItem(at: final)
-                    return .failed(title: meeting.title,
-                                   message: store.storageErrorMessage ?? "The library could not be saved.")
+                    // `final` is LEFT (final review, finding 1). After a lost race another copy's index
+                    // may already name this file, and removing it would leave the meeting with no audio
+                    // at all. Unreferenced, it is harmless, and the next shrink replaces it.
+                    let reason = store.storageErrorMessage ?? "The library could not be saved."
+                    return .failed(title: meeting.title, message: "\(reason) \(Self.leftCopyNote)")
                 }
             }
         }
@@ -249,6 +275,9 @@ extension AppModel {
         return .shrunk(title: meeting.title, before: before,
                        after: MeetingStoragePlan.totalBytes(after.entries), unremoved: unremoved)
     }
+
+    /// Said whenever a verified `.m4a` is left beside the originals it did not replace.
+    static let leftCopyNote = "A compressed copy was left in the meeting's folder; it is not used until a shrink succeeds."
 
     enum ShrinkFailure: LocalizedError {
         case insufficientSpace(needed: Int64, available: Int64)
@@ -274,6 +303,7 @@ extension AppModel {
             || segmentReTranscriptionRunningID == id || sourceRebuildRunningID == id
         live.backupRunning = isBackingUp
         live.anotherShrinkRunning = shrinkRunningID != nil
+        live.libraryRestoring = store.isRestoringLibrary
         return live
     }
 
@@ -289,8 +319,12 @@ extension AppModel {
             let exists = FileManager.default.fileExists(atPath: recordingURL.path)
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
-            let rebuild = SourceRebuild.offer(in: directory, currentDuration: indexDuration) != nil
             let length = declared(recordingURL) ?? (indexDuration > 0 ? indexDuration : 0)
+            // Damage only when a rebuild would recover MORE audio than the recording holds, which is
+            // F256's truncation. A recovered folder never has a complete meeting.wav, so an offer alone
+            // always exists there; a second past the recording allows for track padding (final review).
+            let rebuild = SourceRebuild.offer(in: directory, currentDuration: indexDuration)
+                .map { $0.expectedDurationSeconds > length + 1 } ?? false
             return MeetingStoragePlan.DiskFacts(
                 recordingName: name, recordingExists: exists,
                 inOwnFolder: folder != nil && recordingURL.deletingLastPathComponent().standardizedFileURL.path

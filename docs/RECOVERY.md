@@ -273,7 +273,8 @@ Recovery protects against errors and interruptions. It does not override an expl
 - **Delete Meeting** removes that meeting’s local recording folder and transcript.
 - **Shrink Meeting** replaces a meeting’s audio with one compressed recording and deletes the
   original WAV, both raw tracks and their manifest. Nothing is deleted until the compressed copy
-  has been decoded in full, matched to the original's length, and saved into the index.
+  has been decoded in full, matched to the original's length, flushed to disk, and committed: saved
+  into the index, or, for an import that was already AAC, swapped atomically into place.
 
 Copy the recording folder first if any of these should remain reversible.
 

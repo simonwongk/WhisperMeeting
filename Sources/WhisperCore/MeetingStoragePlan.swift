@@ -43,8 +43,19 @@ public enum MeetingStoragePlan {
 
     /// Whether `name` is a recording Shrink wrote for an in-app capture or rebuild. Such a meeting is
     /// never encoded again; Shrink only finishes removing what an interrupted run left behind.
+    /// Whether Shrink only has to finish an earlier, interrupted run: the recording is already its
+    /// AAC output and the originals it replaced are still there. A capture's `meeting*.m4a` is always
+    /// Shrink's own output; an import's `recording.m4a` beside a leftover `recording.<ext>` can only
+    /// come from Shrink's commit, since an import keeps exactly one file. Nothing is encoded again.
+    public static func isResume(_ disk: DiskFacts) -> Bool {
+        if isShrunkCapture(disk.recordingName) { return true }
+        guard URL(fileURLWithPath: disk.recordingName).pathExtension.lowercased() == "m4a",
+              let output = outputName(forRecordingNamed: disk.recordingName) else { return false }
+        return !removableFiles(in: disk.entries, keeping: output).isEmpty
+    }
+
     public static func isShrunkCapture(_ name: String) -> Bool {
-        name == "meeting.m4a" || name == "meeting-recovered.m4a"
+        ["meeting.m4a", "meeting-recovered.m4a"].contains(name.lowercased())
     }
 
     /// The files Shrink removes, in the order it removes them. Only names on this list are ever removed.
@@ -56,7 +67,9 @@ public enum MeetingStoragePlan {
         let keep = outputName.lowercased()
         func rank(_ name: String) -> Int? {
             let lower = name.lowercased()
-            guard lower != keep else { return nil }
+            // Only the meeting folder's own top-level files: a nested `sub/recording.txt` is the
+            // user's, whatever it is called (final review).
+            guard lower != keep, !lower.contains("/") else { return nil }
             switch lower {
             case "source-tracks.json", "source-tracks.recovered.json": return 0
             case "system-audio.f32", "microphone-audio.f32": return 1
@@ -115,6 +128,9 @@ public enum MeetingStoragePlan {
         public var inOwnFolder: Bool
         /// Verify Library reports a problem (`IntegrityFinding.isProblem`) for this recording.
         public var hasIntegrityProblem: Bool
+        /// Rebuild Audio would recover more audio than the recording holds (F256's truncation). Not
+        /// merely "an offer exists": a recovered folder never has a complete `meeting.wav`, so it is
+        /// always offered, and treating that as damage made every recovered meeting unshrinkable.
         public var rebuildOffered: Bool
         /// The recording's decoded length when it could be read, else the index's duration.
         public var durationSeconds: TimeInterval
@@ -139,6 +155,7 @@ public enum MeetingStoragePlan {
         public var meetingBusy = false
         public var backupRunning = false
         public var anotherShrinkRunning = false
+        public var libraryRestoring = false
         public init() {}
     }
 
@@ -150,6 +167,7 @@ public enum MeetingStoragePlan {
         case alreadyShrunk
         case nothingToGain
         case libraryReadOnly
+        case libraryRestoring
         case captureOrImportInProgress
         case meetingBusy
         case backupRunning
@@ -173,6 +191,8 @@ public enum MeetingStoragePlan {
                 return "Already compact: shrinking would save less than a quarter of its space."
             case .libraryReadOnly:
                 return "The library is read-only, so nothing can be changed."
+            case .libraryRestoring:
+                return "Wait for the library restore to finish."
             case .captureOrImportInProgress:
                 return "Finish recording or importing first."
             case .meetingBusy:
@@ -192,7 +212,7 @@ public enum MeetingStoragePlan {
             return .unsupportedRecording
         }
         guard disk.recordingExists else { return .recordingMissing }
-        if isShrunkCapture(disk.recordingName) {
+        if isResume(disk) {
             // Resume mode: nothing is encoded, so damage and size rules about an encode don't apply.
             if removableFiles(in: disk.entries, keeping: output).isEmpty { return .alreadyShrunk }
         } else {
@@ -205,6 +225,7 @@ public enum MeetingStoragePlan {
             if !isWorthShrinking(encodedBytes: predicted, reclaimableBytes: reclaim) { return .nothingToGain }
         }
         if live.libraryReadOnly { return .libraryReadOnly }
+        if live.libraryRestoring { return .libraryRestoring }
         if live.captureOrImportInProgress { return .captureOrImportInProgress }
         if live.meetingBusy { return .meetingBusy }
         if live.backupRunning { return .backupRunning }

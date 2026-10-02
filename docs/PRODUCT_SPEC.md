@@ -101,7 +101,8 @@ incomplete recording finalization. It preserves all audio files it finds. **Canc
 **Delete Meeting** and **Shrink Meeting** are explicit user deletion actions and remain intentionally
 destructive; the interface and recovery documentation must state that boundary clearly. Shrink
 deletes a meeting's original audio and raw tracks only after its compressed copy has been decoded in
-full, matched to the original's length, and saved into the index, and it never runs on its own.
+full, matched to the original's length, flushed to disk, and committed — saved into the index, or,
+for an import that was already AAC, swapped atomically into place — and it never runs on its own.
 
 ## Two copies of the app, one library — a deliberate limit
 

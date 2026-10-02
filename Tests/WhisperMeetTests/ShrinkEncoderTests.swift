@@ -90,3 +90,50 @@ func storageMeterCountsTheWholeFolder() throws {
     try Data(count: 2_000_000).write(to: dir.appendingPathComponent("meeting.wav"))
     #expect(MeetingStoragePlan.totalBytes(MeetingStorageMeter.entries(in: dir)) >= 2_000_010)
 }
+
+@Test("A right-channel-only stereo import is still audible after Shrink's encode (F795 review)")
+func shrinkKeepsTheRightChannel() throws {
+    // Spec part 4 asked for this, and the first version had none: a one-step `aac@16000 -c 1 --mix`
+    // encode decodes a right-only input to silence, which the length check alone would pass.
+    let dir = try scratch("ShrinkStereo"); defer { try? FileManager.default.removeItem(at: dir) }
+    let rate = 48_000
+    var data = Data()
+    func a32(_ v: UInt32) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    func a16(_ v: UInt16) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    let frames = rate * 2, dataBytes = UInt32(frames * 4)
+    data.append(contentsOf: Array("RIFF".utf8)); a32(36 + dataBytes); data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8)); a32(16); a16(1); a16(2); a32(UInt32(rate)); a32(UInt32(rate * 4)); a16(4); a16(16)
+    data.append(contentsOf: Array("data".utf8)); a32(dataBytes)
+    for i in 0..<frames {
+        a16(0)
+        a16(UInt16(bitPattern: Int16(12_000 * sin(2 * Double.pi * 440 * Double(i) / Double(rate)))))
+    }
+    let input = dir.appendingPathComponent("recording.wav")
+    try data.write(to: input)
+    let out = dir.appendingPathComponent("recording.m4a")
+    try AudioCompressor.compressSpeech(input: input, output: out, workingWAV: dir.appendingPathComponent(".w.wav"))
+    let back = dir.appendingPathComponent("back.wav")
+    try AudioTranscoder.transcodeToWAV(input: out, output: back)
+    let decoded = [Float](try AVAudioFile(forReading: back).readAllFloats())
+    let rms = (decoded.reduce(0) { $0 + $1 * $1 } / Float(max(1, decoded.count))).squareRoot()
+    #expect(rms > 0.05, "rms \(rms)")
+}
+
+@Test("The durable flush accepts a file and a folder (F795 review)")
+func shrinkDurableFlushRuns() throws {
+    let dir = try scratch("Flush"); defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("x.m4a")
+    try Data(count: 10).write(to: file)
+    try DurableFlush.flush(file)
+    try DurableFlush.flush(dir)
+    #expect(throws: (any Error).self) { try DurableFlush.flush(dir.appendingPathComponent("missing")) }
+}
+
+private extension AVAudioFile {
+    func readAllFloats() throws -> [Float] {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: AVAudioFrameCount(length)) else { return [] }
+        try read(into: buffer)
+        guard let channel = buffer.floatChannelData?[0] else { return [] }
+        return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    }
+}

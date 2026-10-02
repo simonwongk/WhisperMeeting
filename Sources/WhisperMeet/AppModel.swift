@@ -607,6 +607,8 @@ final class AppModel: ObservableObject {
         (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage
     }
+    /// Flushes the new file, then its folder, to stable storage before any original is removed.
+    var flushForShrink: @Sendable (URL) throws -> Void = { try DurableFlush.flush($0) }
     /// Called before each file Shrink removes. Lets a test observe the order (F795).
     var willRemoveForShrink: (String) -> Void = { _ in }
     #if DEBUG
@@ -1410,7 +1412,7 @@ final class AppModel: ObservableObject {
     /// Also refused while a restore is copying files (F506), for the same reason in a different
     /// state: the store would refuse the write the work leads up to, and a transcription started
     /// now would write its result into the restored meeting when it finished.
-    func libraryAcceptsChanges(_ action: String) -> Bool {
+    private func libraryAcceptsChanges(_ action: String) -> Bool {
         guard libraryIsNotBeingRestored(action) else { return false }
         guard store.isDegraded else { return true }
         alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
@@ -2895,6 +2897,11 @@ final class AppModel: ObservableObject {
     private var libraryRestoreBlockedReason: String? {
         if store.isRestoringLibrary {
             return "A restore is already running. Wait for it to finish."
+        }
+        // F795: a shrink deletes a meeting's original audio once its compressed copy is saved; a
+        // restore copying originals back underneath it could have them deleted again.
+        if shrinkRunningID != nil {
+            return "Wait for the meeting being shrunk to finish before restoring the library."
         }
         if isRecordingActive || isImporting {
             return "Finish recording or importing before restoring the library."

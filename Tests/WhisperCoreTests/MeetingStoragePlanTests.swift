@@ -133,3 +133,37 @@ func shrinkResumeModeIgnoresEncodeRefusals() {
                          duration: 0, problem: true, rebuild: true)
     #expect(MeetingStoragePlan.unavailability(disk: leftovers, live: .init()) == nil)
 }
+
+// MARK: - Final-review findings (F795)
+
+@Test("A file in a subfolder is never on the delete list, whatever its name (F795 review)")
+func shrinkNeverRemovesNestedFiles() {
+    // The meter lists nested files as "sub/name"; a user's folder inside a meeting folder holding a
+    // file called recording.txt or meeting.wav is not the meeting's audio.
+    let nested = [Entry(name: "Notes/recording.md", bytes: 5), Entry(name: "sub/meeting.wav", bytes: 5),
+                  Entry(name: "sub/system-audio.f32", bytes: 5)]
+    #expect(MeetingStoragePlan.removableFiles(in: nested, keeping: "meeting.m4a").isEmpty)
+}
+
+@Test("An import whose shrink was interrupted is finished, not encoded a second time (F795 review)")
+func shrinkResumesAnInterruptedImport() {
+    // The index already names recording.m4a and the original recording.mp4 survived: that pair only
+    // arises from Shrink's own commit, so the AAC is not encoded again.
+    let interrupted = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
+                                                      Entry(name: "recording.mp4", bytes: 900_000_000)])
+    #expect(MeetingStoragePlan.isResume(interrupted))
+    #expect(MeetingStoragePlan.unavailability(disk: interrupted, live: .init()) == nil)
+    // A plain AAC import with nothing left over is an ordinary candidate, judged by the size rule.
+    let plain = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 900_000_000)])
+    #expect(!MeetingStoragePlan.isResume(plain))
+    #expect(MeetingStoragePlan.isResume(disk("meeting.m4a", entries: [Entry(name: "meeting.m4a", bytes: 1),
+                                                                     Entry(name: "meeting.wav", bytes: 9)])))
+}
+
+@Test("A restore in progress is its own refusal, not a wrong one (F795 review)")
+func shrinkRefusesDuringARestore() {
+    var live = MeetingStoragePlan.LiveFacts()
+    live.libraryRestoring = true
+    #expect(MeetingStoragePlan.unavailability(disk: disk(), live: live) == .libraryRestoring)
+    #expect(MeetingStoragePlan.Unavailability.libraryRestoring.message.contains("restore"))
+}

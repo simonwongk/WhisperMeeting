@@ -112,7 +112,8 @@ verified and the index saved.
 6. **Commit:**
    - Rename the temp `.m4a` to its final name.
    - Update the record's `recordingPath` and save the index through the store's normal compare-and-swap save.
-   - **If the save fails,** remove the new `.m4a`, keep every original, and report the error.
+   - **If the save fails,** keep every original and report the error. *(Amended after the final review: the new
+     `.m4a` is now left in place, not removed. See [Amendments](#amendments-after-the-final-review-2026-10-02).)*
    - **Special case:** if the final name *equals* the original's, as when an import is already `recording.m4a`, the
      commit point is an atomic `replaceItemAt` and the index is unchanged.
 7. **Delete** the originals, using an explicit list of names. Anything not on the list stays.
@@ -294,3 +295,27 @@ Shrink, Shrink Selected, and a refusal.
   both. This remains the fallback if the subprocess becomes a problem.
 - **Keeping `source-tracks.json` after deleting the tracks:** Verify Library would report a damaged track on every
   launch (see step 7).
+
+## Amendments after the final review (2026-10-02)
+
+An independent review of the finished branch found the defects below. I changed the design as follows. The user
+approved the original text and has not yet reviewed these changes.
+
+- **A failed save leaves the verified `.m4a` in place.** Removing it was the one path that could leave a meeting with no
+  audio. With two copies of the app, copy A can overwrite copy B's committed `meeting.m4a` and then lose its own save.
+  If A then removed the file, B's index would name nothing. An unreferenced verified copy is harmless, and the next
+  shrink replaces it.
+- **A flush before anything is committed or removed.** The temp `.m4a` gets `F_FULLFSYNC` after its full decode, and its
+  folder is flushed after the rename. Only then is the index saved and anything deleted. A full decode reads the page
+  cache, which proves the bytes are right but not that they would survive a power loss. A failed flush changes nothing.
+- **"Rebuild offered" means a rebuild would recover more audio.** It now means the tracks hold more than a second beyond
+  the recording, which is F256's truncation. A recovered folder never has a complete `meeting.wav`, so an offer always
+  exists there, and reading every offer as damage had made recovered meetings unshrinkable.
+- **An interrupted import shrink is finished, not encoded again.** `recording.m4a` beside a leftover `recording.<ext>`
+  can only come from Shrink's own commit, so it is resume mode, like `meeting*.m4a`.
+- **Restore and Shrink exclude each other,** and a restore has its own refusal ("Wait for the library restore to
+  finish."). After the encode's `await`, the record and the library state are checked again before anything is
+  committed.
+- **Only top-level files are ever deleted.** A nested `sub/recording.txt` is never on the list.
+- **The library total counts only meetings still in the index.**
+
