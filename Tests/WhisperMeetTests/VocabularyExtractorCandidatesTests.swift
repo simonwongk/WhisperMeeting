@@ -145,6 +145,9 @@ func jargonHeavyTranscriptRecoversEveryTerm() {
         "Terraform", "Ansible", "Prometheus", "Kafka", "Elasticsearch",
     ]
     #expect(expectedJargon.isSubset(of: terms), "missed: \(expectedJargon.subtracting(terms))")
+    // `isSubset` cannot notice an extra term, which is how "Our Kestrel" sat in this fixture's
+    // output unremarked (F623).
+    #expect(!terms.contains("Our Kestrel"))
 }
 
 @Test("No common word is suggested from a plain-prose transcript, mid-sentence or not (F593 keeps F518's property)")
@@ -204,4 +207,48 @@ func documentPathUnaffectedByTranscriptShapeRule() {
     let transcriptTerms = Set(VocabularyExtractor.candidates(in: text, includeLineHeuristic: false))
     #expect(!documentTerms.contains("Kestrel"))
     #expect(transcriptTerms.contains("Kestrel"))
+}
+
+// MARK: - F623: a sentence-initial function word glued to a capitalised term
+
+// The capitalised-phrase rule (`\b[A-Z]… (?:\s+[A-Z]…){1,3}`) reads a sentence-opening "Our" or
+// "The" as the first word of a name, on both paths: "Our Kestrel service…" suggested "Our Kestrel".
+
+@Test("A leading possessive is not glued to a term from a transcript; the term itself is still suggested (F623)")
+func leadingPossessiveIsNotPartOfATranscriptTerm() {
+    let terms = Set(VocabularyExtractor.candidates(
+        in: "Our Kestrel service talks to Redis and Postgres over gRPC.", includeLineHeuristic: false
+    ))
+    #expect(!terms.contains("Our Kestrel"))
+    #expect(terms.contains("Kestrel"))
+}
+
+@Test("Leading determiners are not glued to terms from a document either (F623)")
+func leadingDeterminersAreNotPartOfADocumentTerm() {
+    let terms = Set(VocabularyExtractor.candidates(
+        in: "The Kestrel gateway is down. This Grafana board shows it.", includeLineHeuristic: true
+    ))
+    #expect(!terms.contains("The Kestrel"))
+    #expect(!terms.contains("This Grafana"))
+}
+
+@Test("A multi-word name keeps its words once a leading article is dropped (F623)")
+func multiWordNameSurvivesALeadingArticle() {
+    for includeLineHeuristic in [false, true] {
+        let terms = Set(VocabularyExtractor.candidates(
+            in: "The New York office opens Monday.", includeLineHeuristic: includeLineHeuristic
+        ))
+        #expect(terms.contains("New York"), "includeLineHeuristic: \(includeLineHeuristic)")
+        #expect(!terms.contains("The New York"), "includeLineHeuristic: \(includeLineHeuristic)")
+    }
+}
+
+@Test("An all-caps word that spells a function word is not dropped from a phrase (F623)")
+func allCapsAcronymStartingAPhraseIsKept() {
+    // "IT" and "US" are acronyms, not "it" and "us": only a title-case function word is dropped.
+    let terms = Set(VocabularyExtractor.candidates(
+        in: "Please ask IT Operations and the US Treasury Desk.", includeLineHeuristic: false
+    ))
+    #expect(terms.contains("IT Operations"))
+    #expect(terms.contains("US Treasury Desk"))
 }

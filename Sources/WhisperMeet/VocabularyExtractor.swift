@@ -376,11 +376,7 @@ enum VocabularyExtractor {
             from: text,
             to: &terms
         )
-        addMatches(
-            pattern: #"\b[A-Z][\p{L}\p{M}'’-]+(?:\s+[A-Z][\p{L}\p{M}'’-]+){1,3}\b"#,
-            from: text,
-            to: &terms
-        )
+        addCapitalizedPhraseMatches(from: text, to: &terms)
 
         if includeLineHeuristic {
             for rawLine in text.split(whereSeparator: \.isNewline) {
@@ -419,6 +415,56 @@ enum VocabularyExtractor {
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
             .prefix(200)
             .map { $0 }
+    }
+
+    /// Function words that open a sentence capitalized and so read, to the capitalized-phrase
+    /// rule, as the first word of a name: "Our Kestrel service…" gave "Our Kestrel" (F623).
+    /// Articles, demonstratives, possessive determiners, personal pronouns and conjunctions: closed
+    /// grammatical classes, so this is a closed set in the `calendarWords` sense, not a
+    /// "common words" list. Single letters ("A", "I") are absent because the phrase rule's first
+    /// word needs two. Prepositions are deliberately left out, because they open real terms
+    /// ("On Call", "To Do") about as often as they open a sentence.
+    ///
+    /// Chosen over the first token's `.lexicalClass` tag, which gave the same output on the F593
+    /// fixtures and this ticket's examples (measured for F623), because a list does not inherit
+    /// the tagger's local-versus-CI model risk that F593 recorded.
+    private static let leadingFunctionWords: Set<String> = [
+        "the", "an",
+        "this", "that", "these", "those",
+        "my", "our", "your", "his", "her", "its", "their",
+        "we", "you", "he", "she", "it", "they", "me", "us", "him", "them",
+        "and", "but", "or", "nor", "so", "yet",
+        "if", "when", "while", "because", "although", "though", "since", "unless",
+    ]
+
+    /// Two to four capitalized words in a row ("Priya Raman", "New York"), on both paths. A leading
+    /// function word is dropped first (F623), only in title case so an acronym that spells one
+    /// ("IT Operations", "US Treasury") is kept whole, and what is left counts only if it is still
+    /// two or more words. A single word is not this rule's to suggest: on the document path F518
+    /// keeps single `.otherWord` terms out, and on the transcript path `looksLikeTranscriptJargon`
+    /// already judges the word on its own ("Kestrel", capitalized after "Our", is mid-sentence).
+    private static func addCapitalizedPhraseMatches(from text: String, to terms: inout Set<String>) {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"\b[A-Z][\p{L}\p{M}'’-]+(?:\s+[A-Z][\p{L}\p{M}'’-]+){1,3}\b"#
+        ) else { return }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        for match in expression.matches(in: text, range: range) {
+            guard let range = Range(match.range, in: text) else { continue }
+            var phrase = text[range]
+            while let end = phrase.firstIndex(where: \.isWhitespace),
+                  isTitleCaseFunctionWord(phrase[..<end]) {
+                phrase = phrase[end...].drop(while: \.isWhitespace)
+            }
+            if phrase.split(whereSeparator: \.isWhitespace).count >= 2 {
+                terms.insert(String(phrase))
+            }
+        }
+    }
+
+    private static func isTitleCaseFunctionWord(_ word: Substring) -> Bool {
+        guard let first = word.first, first.isUppercase,
+              !word.dropFirst().contains(where: \.isUppercase) else { return false }
+        return leadingFunctionWords.contains(word.lowercased())
     }
 
     private static func addMatches(
