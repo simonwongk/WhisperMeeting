@@ -233,15 +233,11 @@ func truncatedImportIsNotAdopted() async throws {
 
 @Test("Settings offers the folder, reports an unreadable one, and startup recovery starts the watcher (F318, F325)")
 func watchedFolderIsReachable() throws {
-    func source(_ path: String) throws -> String {
-        try String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent(path), encoding: .utf8)
-    }
-    let view = try source("Sources/WhisperMeet/ContentView.swift")
+    // Comments stripped (F412), so a comment naming a call cannot stand in for it.
+    let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     #expect(view.contains("isOn: $model.watchedFolderEnabled"))
     #expect(view.contains("model.watchedFolderPath = url.path"))
     #expect(view.contains("model.watchedFolderProblem"))
-    let model = try source("Sources/WhisperMeet/AppModel.swift")
+    let model = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
     #expect(model.contains("defer { restartWatchedFolder() }"))
 }

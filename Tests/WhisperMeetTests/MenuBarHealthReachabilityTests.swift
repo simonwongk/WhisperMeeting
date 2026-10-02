@@ -61,9 +61,9 @@ func menuBarIconIsNotAtRiskWhileStopping() throws {
 
 @Test("The menu-bar icon reads the one shared at-risk rule (F337)")
 func menuBarIconUsesTheSharedRule() throws {
-    let entry = try String(contentsOf: URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/WhisperMeet/AppEntry.swift"), encoding: .utf8)
+    // Comments stripped (F412). Read raw, this passed with the call deleted and a comment naming
+    // it left behind.
+    let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     #expect(entry.contains("model.isRecordingAtRisk"))
     #expect(!entry.contains("model.recordingHealth?.overallStatus == .atRisk"),
             "the icon must not re-implement the rule the menu already has")

@@ -72,17 +72,37 @@ func failureIsReported() async throws {
     #expect(model.alertMessage?.contains("could not write an answer") == true)
 }
 
+/// The brace-balanced body after the first `marker`. `source` must have its literals blanked, so a
+/// `{` inside a string is not counted as a scope.
+private func body(following marker: String, in source: String) throws -> Substring {
+    let start = try #require(source.range(of: marker), "\(marker) is gone from ContentView.swift")
+    let open = try #require(source.range(of: "{", range: start.upperBound..<source.endIndex))
+    var depth = 1
+    var cursor = open.upperBound
+    while cursor < source.endIndex, depth > 0 {
+        if source[cursor] == "{" { depth += 1 } else if source[cursor] == "}" { depth -= 1 }
+        cursor = source.index(after: cursor)
+    }
+    return source[open.upperBound..<cursor]
+}
+
 @Test("The Ask view offers the answer and clears it when the results change (F182)")
 func askViewOffersTheAnswer() throws {
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/WhisperMeet/ContentView.swift")
-    let source = try String(contentsOf: url, encoding: .utf8)
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     #expect(source.contains("model.writeMeetingAnswer(question: question, passages: passages)"))
     #expect(source.contains("answerSection\n            List(results)"))
     // Both ways the results can change go through `runSearch`, which clears the answer (F316 folded
-    // the scope-change path into it, so the clear lives in one place).
-    #expect(source.contains("answerOutcome = nil\n        // Keyword results appear at once"))
+    // the scope-change path into it, so the clear lives in one place). Asserted on the order of the
+    // code inside `runSearch` (F412): it used to require the comment that follows the clear, so
+    // rewording that comment failed the test with the code intact.
+    let structure = SourceAssertion.stripComments(
+        try String(contentsOf: SourceAssertion.url("Sources/WhisperMeet/ContentView.swift"), encoding: .utf8),
+        blankStringLiterals: true
+    )
+    let runSearch = try body(following: "private func runSearch()", in: structure)
+    let clear = try #require(runSearch.range(of: "answerOutcome = nil"), "runSearch no longer clears the answer")
+    let refill = try #require(runSearch.range(of: "results = model.askMeetings("), "runSearch no longer sets the results")
+    #expect(clear.lowerBound < refill.lowerBound, "runSearch shows new results before clearing the old answer")
     #expect(source.contains("guard hasSearched else { return }\n        runSearch()"))
 }
 

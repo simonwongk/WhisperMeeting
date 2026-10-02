@@ -75,17 +75,10 @@ func clearAllErasesBackupAndHistory() throws {
 func clearAllConfirmationIsReachableFromTheButton() throws {
     // `WhisperMeet` has no view-render harness (F174), so this asserts against the SOURCE rather
     // than driving the view — comments stripped first, so a paragraph describing the confirmation
-    // does not satisfy the assertion in its place (F285's false positive).
-    let raw = try String(
-        contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/WhisperMeet/DictationView.swift"),
-        encoding: .utf8
-    )
-    let stripped = raw.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-        guard let range = line.range(of: "//") else { return String(line) }
-        return String(line[..<range.lowerBound])
-    }.joined(separator: "\n")
+    // does not satisfy the assertion in its place (F285's false positive). Through
+    // `SourceAssertion` since F412: this used to cut each line at its first `//`, which missed
+    // `/* */` and truncated a `//` inside a string literal.
+    let stripped = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/DictationView.swift")
     #expect(stripped.contains("confirmClearHistory = true"))
     #expect(stripped.contains(".confirmationDialog("))
     #expect(stripped.contains("isPresented: $confirmClearHistory"))
