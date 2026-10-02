@@ -265,3 +265,17 @@ func shrinkAndBackupAreExclusive() async throws {
     f.model.isBackingUpForTesting = true
     #expect(f.model.shrinkUnavailability(for: try #require(f.model.store.meeting(id: f.id))) == .backupRunning)
 }
+
+@Test("The confirmation says what changes, that it is permanent, and what is lost (F795)")
+@MainActor
+func shrinkConfirmationStatesItsPromises() {
+    let request = AppModel.ShrinkRequest(meetingIDs: [UUID()], titles: ["Weekly sync"], currentBytes: 1_728_000_000,
+                                         predictedBytes: 14_800_000, skipped: [], includesUntranscribed: false,
+                                         includesVideo: true)
+    let text = AppModel.shrinkConfirmationMessage(request)
+    #expect(AppModel.shrinkConfirmationTitle(request) == "Shrink “Weekly sync”?")
+    #expect(text.contains("deleted permanently"))
+    #expect(text.contains("Rebuild Audio"))
+    #expect(text.contains("picture is removed"))
+    #expect(!text.contains("hasn't been transcribed"), "only said when it applies")
+}

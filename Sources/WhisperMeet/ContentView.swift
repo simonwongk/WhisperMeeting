@@ -1428,6 +1428,8 @@ struct SettingsView: View {
     /// F239's confirmation. The command is irreversible and gives up the undo protection, so it
     /// asks — and the dialog names what is lost rather than asking "are you sure".
     @State private var confirmForgetHistory = false
+    /// F795's Storage sheet.
+    @State private var showingStorage = false
     @State private var forgetHistoryResult: String?
     /// What the Forget History dialog describes, read from disk when it opens (F457).
     @State private var forgetHistoryInventory: MeetingStore.ForgetHistoryInventory?
@@ -1592,6 +1594,17 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
                 }
                 Text("Scans your saved recordings for missing, truncated, or inconsistent audio and reports what it finds. It never changes or deletes a recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // F795.
+                HStack {
+                    Label(storageSummary, systemImage: "internaldrive")
+                    Spacer()
+                    Button("Show Storage…") { showingStorage = true }
+                        .buttonStyle(.bordered)
+                }
+                .task { await model.refreshStorage(ids: model.store.meetings.map(\.id)) }
+                Text("Lists each meeting by the space it uses. Shrink replaces a meeting's audio with a compressed copy and deletes the original; it runs only when you press it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -2040,7 +2053,17 @@ struct SettingsView: View {
                 Text(ForgetHistoryNotice.dialogMessage(inventory))
             }
         }
+        .sheet(isPresented: $showingStorage) {
+            MeetingStorageView(model: model, store: model.store)
+        }
         .onDisappear { endKeyCapture() }
+    }
+
+    /// The Storage row's label (F795): the measured total, or a plain name until it is measured.
+    private var storageSummary: String {
+        let total = model.measuredLibraryBytes
+        guard !model.storageFacts.isEmpty else { return "Meeting storage" }
+        return "Meetings use \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
     }
 
     private func exportDiagnostics() {
@@ -2979,6 +3002,20 @@ private struct TranscriptDetailView: View {
                 Text(AppModel.rebuildConfirmationMessage(request))
             }
         }
+        // F795. Stands down while the Storage sheet is open, which presents its own.
+        .confirmationDialog(
+            model.pendingShrink.map(AppModel.shrinkConfirmationTitle) ?? "",
+            isPresented: .init(
+                get: { model.pendingShrink != nil && !model.isStorageSheetOpen },
+                set: { if !$0 { model.cancelShrink() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Shrink", role: .destructive) { model.performShrink(confirmed: true) }
+            Button("Cancel", role: .cancel) { model.cancelShrink() }
+        } message: {
+            if let request = model.pendingShrink { Text(AppModel.shrinkConfirmationMessage(request)) }
+        }
         .onAppear {
             if notesLoadedFor != meetingID {
                 notesDraft = SharedFieldDraft(stored: store.meeting(id: meetingID)?.notes ?? "")
@@ -3448,6 +3485,12 @@ private struct TranscriptDetailView: View {
                         systemImage: "checkmark.seal"
                     )
                 }
+                // F795: the space this meeting's folder takes on disk.
+                if let bytes = model.storageBytes(for: meeting.id) {
+                    let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+                    metadataChip(size, systemImage: "internaldrive")
+                        .accessibilityLabel("Storage: \(size)")
+                }
                 Spacer()
                 Button("Show Recording in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([
@@ -3457,8 +3500,21 @@ private struct TranscriptDetailView: View {
                 .disabled(!FileManager.default.fileExists(
                     atPath: store.recordingURL(for: meeting).path
                 ))
+                // F795: disabled with its reason as help, rather than hidden, so a meeting that can't
+                // be shrunk says why. A meeting already shrunk shows nothing.
+                let shrinkReason = model.shrinkUnavailability(for: meeting)
+                if shrinkReason != .alreadyShrunk {
+                    Button("Shrink…") { model.requestShrink(ids: [meeting.id]) }
+                        .disabled(shrinkReason != nil || model.storageBytes(for: meeting.id) == nil)
+                        .help(shrinkReason?.message
+                              ?? "Replace this meeting's audio with a compressed copy and delete the original.")
+                }
             }
             .font(.callout)
+            // Re-measured when a stop, rebuild or shrink changes what the folder holds (F795).
+            .task(id: [meeting.id.uuidString, meeting.recordingPath, meeting.status.rawValue]) {
+                await model.refreshStorage(ids: [meeting.id])
+            }
         }
     }
 
@@ -3741,7 +3797,9 @@ private struct TranscriptDetailView: View {
                     isEdited: isEdited,
                     seekRequest: $seekRequest
                 )
-                .id(meetingID)
+                // The player's StateObject keeps the URL it was built with. Shrink (F795) changes the
+                // path and removes the old file, so the view is keyed on the path as well.
+                .id([meetingID.uuidString, meeting.recordingPath])
             } else {
                 recordingPlayer(meeting)
                 if !meeting.orderedMarkers.isEmpty {

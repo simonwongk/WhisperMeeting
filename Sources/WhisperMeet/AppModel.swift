@@ -594,6 +594,9 @@ final class AppModel: ObservableObject {
     /// delete files a backup is reading, and a backup must not start while Shrink deletes.
     @Published private(set) var isBackingUp = false
     @Published var storageFacts: [UUID: MeetingStoragePlan.DiskFacts] = [:]
+    /// True while the Storage sheet is on screen, so the meeting page's Shrink dialog stands down
+    /// and only the sheet's presents (F795).
+    @Published var isStorageSheetOpen = false
     var encodeForShrink: @Sendable (_ input: URL, _ output: URL, _ workingWAV: URL) throws -> Void = {
         try AudioCompressor.compressSpeech(input: $0, output: $1, workingWAV: $2)
     }

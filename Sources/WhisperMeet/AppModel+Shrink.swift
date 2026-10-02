@@ -82,6 +82,31 @@ extension AppModel {
 
     func cancelShrink() { pendingShrink = nil }
 
+    static func shrinkConfirmationTitle(_ request: ShrinkRequest) -> String {
+        request.meetingIDs.count == 1
+            ? "Shrink “\(request.titles[0])”?"
+            : "Shrink \(request.meetingIDs.count) meetings?"
+    }
+
+    /// The confirmation's body. Static and here, not in the view, because it makes the promises the
+    /// user relies on — what changes, that the deletion is permanent, and what is lost — and a
+    /// promise nothing asserts drifts (the `rebuildConfirmationMessage` rule, F267).
+    static func shrinkConfirmationMessage(_ request: ShrinkRequest) -> String {
+        let size = { (bytes: Int64) in ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+        var text = "This replaces the recording with compressed audio: about \(size(request.currentBytes)) → about \(size(request.predictedBytes)). "
+            + "The original recording and its raw tracks are deleted permanently. "
+            + "Playback, transcription and summaries keep working. "
+            + "Rebuild Audio and re-running a single segment will no longer be available."
+        if request.includesUntranscribed {
+            text += " A meeting that hasn't been transcribed yet will be transcribed from the compressed audio."
+        }
+        if request.includesVideo { text += " For a video, the picture is removed; only the audio is kept." }
+        if !request.skipped.isEmpty {
+            text += " \(request.skipped.count) selected meeting(s) can't be shrunk and will be skipped."
+        }
+        return text
+    }
+
     /// Runs the confirmed shrink, one meeting at a time. Nil unless `confirmed`; the returned task is
     /// the work, for a caller (a test) that waits for it.
     @discardableResult
