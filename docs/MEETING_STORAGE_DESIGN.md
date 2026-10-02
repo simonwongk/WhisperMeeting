@@ -1,6 +1,6 @@
 # Meeting storage: see it, shrink it (F795)
 
-**Status:** design, written 2026-10-02 for the user's review. No code exists yet. Ticket `F795`; it depends on `F796`.
+**Status:** approved by the user on 2026-10-02. The implementation plan is [`MEETING_STORAGE_PLAN.md`](MEETING_STORAGE_PLAN.md). Ticket `F795`; it depends on `F796`.
 
 ## What this is for
 
