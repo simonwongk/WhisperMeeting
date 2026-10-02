@@ -267,9 +267,12 @@ public enum SummarizationEngine: String, Codable, CaseIterable, Sendable, Hashab
         }
     }
 
-    /// The engine to select at launch (F566), on F262's rule for transcription engines: no stored
-    /// preference is not a choice, so pick the local engine only where it can run at all, and
-    /// Claude otherwise; a stored preference IS a choice, so it is kept even where it cannot run.
+    /// The engine to select at launch (F566). No stored preference is not a choice, so pick the
+    /// local engine only where it can run at all, and Claude otherwise — F262's rule for
+    /// transcription engines. A stored preference IS a choice, so it is kept even where it cannot
+    /// run. That half deliberately differs from F262, which falls back from a stored engine this Mac
+    /// cannot run: switching to Claude sends transcripts to Anthropic, so it is never made for the
+    /// user, and Summarize says why the local engine cannot run instead.
     /// The caller does not persist the result. A stored `.local` on an unsupported Mac has no
     /// model (its installer refuses there), and `AppModel.summarize` words that refusal as the
     /// reason rather than as an install instruction the user cannot follow.

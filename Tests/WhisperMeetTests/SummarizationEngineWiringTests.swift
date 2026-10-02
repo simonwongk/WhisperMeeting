@@ -81,6 +81,10 @@ func storedLocalChoiceOnUnsupportedMacRefusesHonestly() throws {
 
     let alert = try #require(model.alertMessage)
     #expect(alert.contains("Apple-silicon"))
+    // Choosing Claude sends the transcript to Anthropic, so the alert must not offer it as a way to
+    // summarize "on this Mac" — the privacy claim F555 removed from the Settings caption.
+    #expect(alert.contains("Anthropic"))
+    #expect(!alert.contains("on this Mac"))
     #expect(alert != SummarizerError.modelNotInstalled.localizedDescription)
     #expect(model.activeSummarizationID == nil)
     #expect(model.store.meeting(id: id)?.summary == nil)

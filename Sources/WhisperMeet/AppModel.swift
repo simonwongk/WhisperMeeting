@@ -5478,7 +5478,7 @@ final class AppModel: ObservableObject {
                 alertMessage = localSummariesSupported
                     ? SummarizerError.modelNotInstalled.localizedDescription
                     : "Local summaries require an Apple-silicon Mac. "
-                        + "Choose Claude in Settings to summarize on this Mac."
+                        + "To use Claude instead, choose it in Settings: the transcript is then sent to Anthropic."
                 return
             }
             apiKey = ""
