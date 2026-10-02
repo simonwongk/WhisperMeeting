@@ -37,13 +37,28 @@ public enum ErrorPresentation {
 
     /// Whether `described` is the Swift-to-NSError bridge's stand-in rather than real copy.
     ///
-    /// Matched on the parenthetical `(<domain> error <code>.)`, which the bridge appends verbatim
-    /// and which carries no translatable words — so this holds in a locale where the sentence in
-    /// front of it does not. Matching the English ("The operation couldn't be completed") would
-    /// have been the obvious test and would silently stop working the day anything is localised,
-    /// which is the kind of check that looks like a guard and is not.
+    /// Matched on the parenthetical the bridge appends: either `(<domain> error <code>.)` with the
+    /// error's own domain, or, since F415, the same shape with any name in it, including Mach's
+    /// `- <reason>` form. Foundation does not always print the domain it was given: it writes
+    /// `NSOSStatusErrorDomain` as `(OSStatus error -10868.)`, an unrecognised `NSCocoaErrorDomain`
+    /// code as `(Cocoa error 99999.)`, and `NSMachErrorDomain` as
+    /// `(Mach error 5 - (os/kern) failure)`. The literal domain match alone let all three through
+    /// as if they were sentences.
+    ///
+    /// Both, not the shape alone, because a domain can contain parentheses of its own: a private
+    /// Swift type's is `Module.(unknown context at $10fb99424).Mute`, which the shape's `[^()]+`
+    /// does not cross. The first draft of this fix dropped the literal match, and
+    /// `placeholdersNamingTheirDomainStillFallBack` caught it.
+    ///
+    /// The shape is English. This comment used to say the parenthetical "carries no translatable
+    /// words", which is false: Foundation's `FoundationErrors.loctable` localises it, as
+    /// `(%1$@-Fehler %2$ld.)` in German and `（%1$@错误%2$ld。）` in Simplified Chinese. So this
+    /// holds only where Foundation renders English, as the domain match did. WhisperMeet ships no
+    /// localisations and declares no development region; which language Foundation then uses for
+    /// its error text has not been verified.
     private static func isBridgePlaceholder(_ described: String, for error: NSError) -> Bool {
         described.contains("(\(error.domain) error \(error.code).)")
+            || described.range(of: #"\([^()]+ error -?\d+(?:\.\)| - )"#, options: .regularExpression) != nil
     }
 
     private static func isBlank(_ text: String) -> Bool {
@@ -83,9 +98,9 @@ public enum ErrorPresentation {
 /// An error that exists to steer code, never to be read by a person (F366).
 ///
 /// `ErrorCopyGuardTests` requires every `Error` in `Sources/` either to carry a sentence or to
-/// declare itself silent by conforming here. Two types needed the second answer and the guard
-/// found both — `WatchedFolderMonitor.Problem` and `AppModel.ImportRefusal` — neither of which has
-/// "Error" in its name, so no hand-written list would have contained them.
+/// declare itself silent by conforming here. The guard found every type that needed the second
+/// answer, and none has "Error" in its name, so no hand-written list would have contained them.
+/// `unsurfacedErrorsAreDeclaredInCode` pins who they are, derived from the guard's own exemption.
 ///
 /// **In code, not in a comment, deliberately.** The guard strips comments before it reads a file,
 /// so an exemption written as prose could not silence it even by accident; a conformance is
