@@ -149,6 +149,21 @@ func ruleEditorKeepsTheDraftsUnlessAdded() throws {
     #expect(showsTheReason)
 }
 
+@Test("The Add box keeps the terms the store refused, and clears only what was taken (F525)")
+func addBoxKeepsRefusedTerms() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    let start = try #require(source.range(of: "private func addManualTerms()"))
+    let body = String(source[start.upperBound...].prefix(1_200))
+    let end = body.range(of: "private func ").map { String(body[..<$0.lowerBound]) } ?? body
+    // The review (rev-G F-d) set the field to "" unconditionally and every test still passed.
+    let keepsRefused = end.contains("manualTerms = result.refusedTerms.joined(separator: \"\\n\")")
+    #expect(keepsRefused)
+    let clearsUnconditionally = end.contains("manualTerms = \"\"")
+    #expect(!clearsUnconditionally)
+    let keepsEverythingWhenRefused = end.contains("if !result.wasRefused")
+    #expect(keepsEverythingWhenRefused)
+}
+
 @Test("The Vocabulary screen reports what the store refused and the notice it computes (F525)")
 func vocabularyScreenUsesTheStoresAccounting() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
