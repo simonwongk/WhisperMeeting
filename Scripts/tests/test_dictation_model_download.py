@@ -40,13 +40,17 @@ WEIGHTS_SHA256 = hashlib.sha256(WEIGHTS).hexdigest()  # what the Hub advertises 
 
 
 class FakeHub:
-    """The two paths the downloader talks to, with the Hub's shapes: `config.json` is served
-    directly (`ETag` + `Content-Length`); `weights.safetensors` answers `resolve/` with a 302 whose
-    headers carry the commit, the sha256 and the size, and the CDN path behind it honours `Range`."""
+    """The paths the downloader talks to, with the shapes the real Hub has (read off the live Hub
+    for these two files, 2026-10-06): `config.json` answers `resolve/` with a 307 to a RELATIVE
+    `/api/resolve-cache/...` whose own `Content-Length` is the redirect body's (276, not the file's
+    268) and which carries no `X-Linked-Size` — the real size is on the 200 behind it;
+    `weights.safetensors` answers with a 302 to an ABSOLUTE CDN URL whose headers carry the commit,
+    the sha256 and the size, and the CDN path honours `Range`."""
 
     def __init__(self):
         hub = self
         self.weights = WEIGHTS
+        self.advertised_extra = 0       # bytes the Hub claims the weights have beyond the ones it serves
         self.advertised_sha = WEIGHTS_SHA256
         self.ignore_range = False       # answer a Range request with the whole file and a 200
         self.drop_after = []            # bytes to send before cutting the connection, one per request
@@ -68,21 +72,27 @@ class FakeHub:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                name = self.path.rsplit("/", 1)[-1]
+                name = self.path.split("?")[0].rsplit("/", 1)[-1]
                 if name == "config.json":
-                    self.send_response(200)
-                    self.send_header("ETag", '"%s"' % CONFIG_ETAG)
+                    redirect_body = b"x" * 276
+                    self.send_response(307)
+                    self.send_header(
+                        "Location",
+                        "/api/resolve-cache/models/mlx-community/whisper-large-v3-turbo/%s/config.json?etag=1" % COMMIT,
+                    )
                     self.send_header("X-Repo-Commit", COMMIT)
-                    self.send_header("Content-Length", str(len(CONFIG)))
+                    self.send_header("X-Linked-ETag", '"%s"' % CONFIG_ETAG)
+                    self.send_header("Content-Length", str(len(redirect_body)))
                     self.end_headers()
                     if not head:
-                        self.wfile.write(CONFIG)
+                        self.wfile.write(redirect_body)
                 elif name == "weights.safetensors":
                     self.send_response(302)
-                    self.send_header("Location", "http://127.0.0.1:%d/cdn/weights" % hub.port)
+                    # `localhost`, not 127.0.0.1: a different host from the endpoint, as the real CDN is
+                    self.send_header("Location", "http://localhost:%d/cdn/weights" % hub.port)
                     self.send_header("X-Repo-Commit", COMMIT)
                     self.send_header("X-Linked-ETag", '"%s"' % hub.advertised_sha)
-                    self.send_header("X-Linked-Size", str(len(hub.weights)))
+                    self.send_header("X-Linked-Size", str(len(hub.weights) + hub.advertised_extra))
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                 else:
@@ -90,8 +100,20 @@ class FakeHub:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
 
+            def _small_file(self, head):
+                hub.requests.append((self.command, self.path))
+                self.send_response(200)
+                self.send_header("ETag", '"%s"' % CONFIG_ETAG)
+                self.send_header("X-Repo-Commit", COMMIT)
+                self.send_header("Content-Length", str(len(CONFIG)))
+                self.end_headers()
+                if not head:
+                    self.wfile.write(CONFIG)
+
             def do_HEAD(self):
-                if self.path.startswith("/cdn/"):
+                if self.path.startswith("/api/resolve-cache/"):
+                    self._small_file(head=True)
+                elif self.path.startswith("/cdn/"):
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(hub.weights)))
                     self.end_headers()
@@ -99,6 +121,9 @@ class FakeHub:
                     self._resolve(head=True)
 
             def do_GET(self):
+                if self.path.startswith("/api/resolve-cache/"):
+                    self._small_file(head=False)
+                    return
                 if not self.path.startswith("/cdn/"):
                     self._resolve(head=False)
                     return
@@ -110,6 +135,12 @@ class FakeHub:
                 if range_header and not hub.ignore_range:
                     start = int(range_header.split("=")[1].split("-")[0])
                     status = 206
+                if start >= len(hub.weights):
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % len(hub.weights))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 body = hub.weights[start:]
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
@@ -170,12 +201,19 @@ class DownloaderTestCase(unittest.TestCase):
         self.repo_cache = os.path.join(self.hub_dir, "models--" + REPO.replace("/", "--"))
         self.beats = Beats()
 
+    def bounded_sleep(self, _seconds):
+        """Every retry sleeps first, so counting them bounds a retry loop that never ends — which a
+        test must report as a failure, not hang the suite on."""
+        self.sleeps_taken = getattr(self, "sleeps_taken", 0) + 1
+        if self.sleeps_taken > 200:
+            raise AssertionError("the downloader is retrying forever")
+
     def download(self, **overrides):
         options = dict(
             endpoint=self.hub.endpoint,
             heartbeat=self.beats,
             retries=0,
-            sleep=lambda _seconds: None,
+            sleep=self.bounded_sleep,
             chunk_size=16 * 1024,
         )
         options.update(overrides)
@@ -240,6 +278,52 @@ class ResumeTests(DownloaderTestCase):
             self.download(retries=2, sleep=sleeps.append)
         self.assertEqual(len(self.hub.ranges), 3)  # the first try and two retries
         self.assertEqual(len(sleeps), 2)
+
+    def test_a_small_file_behind_a_relative_redirect_is_sized_by_the_response_it_lands_on(self):
+        """Found by running the helper against the live Hub: `config.json`'s `resolve/` answer is a 307
+        to a same-host path, and ITS Content-Length (276) is the redirect body's. Taking it as the
+        file's size made every download of the real model a size mismatch, forever. The library
+        follows relative redirects for exactly this reason; so does the downloader."""
+        self.download()
+
+        self.assertEqual(os.path.getsize(os.path.join(self.repo_cache, "blobs", CONFIG_ETAG)), len(CONFIG))
+        self.assertEqual(self.read("snapshots", COMMIT, "config.json"), CONFIG)
+        followed = [path for method, path in self.hub.requests if path.startswith("/api/resolve-cache/")]
+        self.assertTrue(followed, "the relative redirect was never followed")
+
+    def test_a_hub_that_overstates_the_size_ends_the_retries_instead_of_looping(self):
+        """The same live run found the loop itself. The Hub claims 10 bytes more than it serves and
+        answers a Range past the end with 416; the downloader removes the partial file, and the next
+        attempt rewrites the whole file — which, measured against the file it had just removed,
+        looked like progress, and reset the retry budget, every time. Progress is measured against
+        the most bytes ever held, so a rewrite of what was already there is not progress."""
+        self.hub.advertised_extra = 10
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download(retries=1)
+
+    def test_a_full_disk_stops_at_once_with_a_message_that_helps_and_keeps_the_partial_file(self):
+        import errno
+
+        real_stream = server._stream_once
+        attempts = []
+
+        def full_disk_after_some_bytes(url, part_path, have, timeout, chunk_size, heartbeat):
+            attempts.append(have)
+            with open(part_path, "ab") as handle:
+                handle.write(b"x" * 1000)
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        server._stream_once = full_disk_after_some_bytes
+        self.addCleanup(setattr, server, "_stream_once", real_stream)
+        sleeps = []
+        with self.assertRaises(server.ModelDownloadError) as caught:
+            self.download(retries=5, sleep=sleeps.append)
+
+        self.assertEqual(attempts, [0], "a full disk is not retried")
+        self.assertEqual(sleeps, [])
+        self.assertIn("free disk space", str(caught.exception))
+        self.assertEqual(len([n for n in self.blobs() if n.endswith(".part")]), 1)
 
     def test_a_server_that_ignores_range_restarts_the_file_cleanly(self):
         self.hub.drop_after = [70_000]

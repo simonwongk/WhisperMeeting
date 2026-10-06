@@ -484,13 +484,36 @@ class UnexpectedFailureTests(unittest.TestCase):
 
 class MainCacheHandlingTests(unittest.TestCase):
     """F522 — what `main()` does with a model cache it finds unfinished, run through the real
-    `main()` with fake `mlx`, `mlx_whisper` and `huggingface_hub` modules and a recorded downloader.
+    `main()` with fake `mlx` and `mlx_whisper` modules, a recorded downloader, and `huggingface_hub`
+    made UNIMPORTABLE.
 
     The helper used to `shutil.rmtree` the whole repo cache here — every finished file and every
     partial byte — so that the library's own download could start clean. It now completes the cache
-    with `download_dictation_model` and deletes nothing itself."""
+    with `download_dictation_model` and deletes nothing itself.
+
+    The library is blocked because importing it freezes `HF_HUB_OFFLINE` (`constants.py:202`): the
+    helper used to ask it whether the model was cached (importing it) and only THEN set the variable,
+    which therefore did nothing, so every start of a fully cached helper still went to the network
+    (found by pointing `HF_ENDPOINT` at a tripwire in the F522 real-helper run). Nothing before the
+    offline decision may import it."""
 
     REPO_FOLDER = "models--mlx-community--whisper-large-v3-turbo"
+    COMMIT = "a" * 40
+
+    def make_cached(self):
+        """The hub cache layout for a finished model: refs/main, and both files in the snapshot."""
+        blob = os.path.join(self.repo_cache, "blobs", "c" * 64)
+        with open(blob, "wb") as handle:
+            handle.write(b"finished blob")
+        snapshot = os.path.join(self.repo_cache, "snapshots", self.COMMIT)
+        os.makedirs(snapshot, exist_ok=True)
+        for name in ("config.json", "weights.safetensors"):
+            link = os.path.join(snapshot, name)
+            if not os.path.lexists(link):
+                os.symlink(os.path.relpath(blob, snapshot), link)
+        os.makedirs(os.path.join(self.repo_cache, "refs"), exist_ok=True)
+        with open(os.path.join(self.repo_cache, "refs", "main"), "w") as handle:
+            handle.write(self.COMMIT)
 
     def setUp(self):
         import io
@@ -508,18 +531,9 @@ class MainCacheHandlingTests(unittest.TestCase):
             with open(path, "wb") as handle:
                 handle.write(b"bytes already on disk")
 
-        self.cached = False           # what the fake `try_to_load_from_cache` reports
-        self.cache_checks = 0
         self.downloads = []
         self.offline_during_download = []
 
-        fake_hub = ModuleType("huggingface_hub")
-
-        def try_to_load_from_cache(repo, filename, cache_dir=None):
-            self.cache_checks += 1
-            return "/cached/" + filename if self.cached else None
-
-        fake_hub.try_to_load_from_cache = try_to_load_from_cache
         mlx = ModuleType("mlx")
         core = ModuleType("mlx.core")
         core.float32 = "float32"
@@ -528,9 +542,12 @@ class MainCacheHandlingTests(unittest.TestCase):
         whisper = ModuleType("mlx_whisper")
         whisper.transcribe = lambda audio, **kwargs: {"text": "", "language": "en", "segments": []}
 
-        names = ("huggingface_hub", "mlx", "mlx.core", "mlx_whisper")
+        names = ("huggingface_hub", "huggingface_hub.constants", "mlx", "mlx.core", "mlx_whisper")
         self._saved_modules = {name: sys.modules.get(name) for name in names}
-        sys.modules.update({"huggingface_hub": fake_hub, "mlx": mlx, "mlx.core": core, "mlx_whisper": whisper})
+        # A `None` entry makes `import huggingface_hub` raise ImportError: nothing before the
+        # offline decision may import the library (see the class docstring).
+        sys.modules.update({"huggingface_hub": None, "huggingface_hub.constants": None,
+                            "mlx": mlx, "mlx.core": core, "mlx_whisper": whisper})
         self._saved_env = {name: os.environ.get(name) for name in ("HF_HOME", "HF_HUB_OFFLINE")}
         os.environ.pop("HF_HUB_OFFLINE", None)
         self._saved_argv, self._saved_stdin = sys.argv, sys.stdin
@@ -543,7 +560,7 @@ class MainCacheHandlingTests(unittest.TestCase):
             self.offline_during_download.append(os.environ.get("HF_HUB_OFFLINE"))
             if self.download_error is not None:
                 raise self.download_error
-            self.cached = True  # the download completed the cache
+            self.make_cached()  # the download completed the cache
 
         self.download_error = None
         server.download_dictation_model = record
@@ -592,11 +609,40 @@ class MainCacheHandlingTests(unittest.TestCase):
         self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1", "the model is cached now; loading it needs no network")
 
     def test_a_complete_cache_is_used_offline_with_no_download(self):
-        self.cached = True
+        self.make_cached()
         self.run_main()
 
         self.assertEqual(self.downloads, [])
         self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
+
+    def test_a_cache_with_a_ref_but_a_missing_file_is_not_complete(self):
+        self.make_cached()
+        os.remove(os.path.join(self.repo_cache, "snapshots", self.COMMIT, "weights.safetensors"))
+        self.run_main()
+
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_a_snapshot_whose_blob_is_gone_is_not_complete(self):
+        """`isfile` follows the symlink: a link to a deleted blob is not a model."""
+        self.make_cached()
+        os.remove(os.path.join(self.repo_cache, "blobs", "c" * 64))
+        self.run_main()
+
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_going_offline_also_flips_the_flag_of_a_library_that_is_already_imported(self):
+        """The fallback downloader imports the library, which freezes HF_HUB_OFFLINE at that moment;
+        after it, the environment variable alone does nothing."""
+        import sys
+        from types import ModuleType
+
+        constants = ModuleType("huggingface_hub.constants")
+        constants.HF_HUB_OFFLINE = False
+        sys.modules["huggingface_hub.constants"] = constants
+        server.go_offline()
+
+        self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
+        self.assertTrue(constants.HF_HUB_OFFLINE)
 
     def test_a_failed_download_is_reported_on_the_wire_and_the_helper_exits_nonzero(self):
         self.download_error = server.ModelDownloadError("the model download stopped at 5 of 10 bytes")
@@ -607,15 +653,13 @@ class MainCacheHandlingTests(unittest.TestCase):
         self.assertIn("the model download stopped at 5 of 10 bytes", lines[0]["error"])
         self.assertTrue(os.path.exists(self.partial), "a failed download must leave the partial file for the next start")
 
-    def test_a_caller_that_forbids_the_network_gets_no_download_and_no_cache_probe(self):
+    def test_a_caller_that_forbids_the_network_gets_no_download(self):
         os.environ["HF_HUB_OFFLINE"] = "1"
         status, lines = self.run_main()
 
         self.assertEqual(status, 0)
         self.assertEqual(self.downloads, [])
-        self.assertEqual(self.cache_checks, 0, "an offline caller has nothing to decide, and may lack huggingface_hub")
         self.assertTrue(os.path.exists(self.partial))
-
 
 
 if __name__ == "__main__":

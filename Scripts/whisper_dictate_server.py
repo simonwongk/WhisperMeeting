@@ -3,13 +3,17 @@
 
 Loads an Apple-Silicon MLX Whisper model once, then serves newline-delimited JSON
 requests on stdin and writes newline-delimited JSON responses on stdout. Local-only;
-no network at request time (model weights are cached under the app's support dir).
+no network at request time (model weights are cached under the app's support dir). The one
+exception is the model's own first download, before it is loaded (F522): a start whose cache is
+incomplete downloads it, resuming any partial file, and reports `{"downloading": true}` lines on
+stdout while bytes arrive; every later start is offline.
 Exits cleanly when stdin closes (the app terminates it to evict the model).
 
 Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dictation-only.
 """
 import argparse
 import contextlib
+import errno
 import hashlib
 import http.client
 import json
@@ -29,15 +33,40 @@ def model_fully_cached(hub_dir: str, mlx_repo: str) -> bool:
 
     huggingface_hub creates the `models--org--repo` directory tree at the START of a download
     (before any weights finish), so directory existence does NOT mean the model is usable. We
-    check that the files mlx_whisper needs — config.json and weights.safetensors — resolve to
-    real cached paths. `try_to_load_from_cache` returns a str path on a hit, and None or a
-    sentinel object otherwise, so a plain isinstance(str) check is decisive.
+    check what `try_to_load_from_cache` checks (`file_download.py:1529-1559` in 1.24.0) — `refs/main`
+    names a commit, and the files mlx_whisper needs, config.json and weights.safetensors, are real
+    files in that commit's snapshot (`isfile` follows the symlink, so a link to a deleted blob is not
+    a model) — but by reading the layout ourselves, not by asking the library. The ref is read
+    unstripped, as the library reads it: a ref the library could not resolve is not a cache.
+
+    Why not ask it (F522): importing `huggingface_hub` freezes `HF_HUB_OFFLINE` at that moment
+    (`constants.py:202`), and this runs BEFORE the helper decides to set it. The helper used to
+    import the library here and set the variable afterwards, which did nothing, so a fully cached
+    helper still made network calls at every start — contradicting this module's "no network at
+    request time". Nothing before that decision may import the library.
     """
-    from huggingface_hub import try_to_load_from_cache
-    for filename in ("config.json", "weights.safetensors"):
-        if not isinstance(try_to_load_from_cache(mlx_repo, filename, cache_dir=hub_dir), str):
-            return False
-    return True
+    repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
+    try:
+        with open(os.path.join(repo_cache, "refs", "main")) as handle:
+            commit = handle.read()
+    except OSError:
+        return False
+    if not commit or os.sep in commit or commit.startswith("."):
+        return False
+    snapshot = os.path.join(repo_cache, "snapshots", commit)
+    return all(os.path.isfile(os.path.join(snapshot, name)) for name in DICTATION_MODEL_FILES)
+
+
+def go_offline() -> None:
+    """Forbid the network for the rest of this process.
+
+    `HF_HUB_OFFLINE` is read when `huggingface_hub` is imported, so the environment variable only
+    works if it is set first; if the library is already imported (the fallback downloader imports
+    it), the module's own flag has to be set too."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        constants.HF_HUB_OFFLINE = True
 
 
 # F522 — the first-run model download.
@@ -70,7 +99,8 @@ _TRANSIENT_ERRORS = (urllib.error.URLError, http.client.HTTPException, socket.ti
 
 
 class ModelDownloadError(Exception):
-    """The download ran and failed. Partial bytes are kept for the next attempt; do not start over."""
+    """The download ran and failed. Partial bytes are kept for the next attempt to resume — unless
+    they were found corrupt, in which case they were discarded — so never start over for this."""
 
 
 class ResumableDownloadUnavailable(Exception):
@@ -135,38 +165,64 @@ def _resolve_url(endpoint, repo, revision, filename):
     )
 
 
-def _file_metadata(endpoint, repo, revision, filename, timeout):
-    """(commit, etag, size) the Hub reports for one file, read the way the library reads it: the
-    linked ETag (the sha256 of an LFS/Xet file) in preference to the plain one, and the linked size."""
-    url = _resolve_url(endpoint, repo, revision, filename)
-    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": DOWNLOAD_USER_AGENT})
+def _head(url, timeout):
+    """(status, headers) of one HEAD, redirects NOT followed. An error status is a result here."""
+    request = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"}
+    )
     try:
-        try:
-            headers = urllib.request.build_opener(_NoRedirects).open(request, timeout=timeout).headers
-        except urllib.error.HTTPError as error:
-            if 300 <= error.code < 400:
-                headers = error.headers
-            elif error.code in (401, 403, 404):
-                raise ModelDownloadError(
-                    "%s/%s is not available from the model hub (HTTP %d)" % (repo, filename, error.code)
-                )
-            else:
-                raise ResumableDownloadUnavailable("HTTP %d for %s" % (error.code, url))
+        response = urllib.request.build_opener(_NoRedirects).open(request, timeout=timeout)
+        return response.status, response.headers
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers
+
+
+def _file_metadata(endpoint, repo, revision, filename, timeout):
+    """(commit, etag, size) the Hub reports for one file, read the way the library reads it
+    (`get_hf_file_metadata`, `file_download.py:1563-1634` in 1.24.0): same-host redirects are
+    followed, and the response the chain ENDS on is the one read — a different host's redirect
+    (the CDN a large file lives on) is where it stops, because that response is the one carrying
+    the checksum and size; the linked ETag (the sha256 of an LFS/Xet file) is preferred to the plain
+    one, and the linked size to Content-Length.
+
+    The same-host hop is not optional. Against the live Hub `config.json` answers `resolve/` with a
+    307 to a relative path whose own Content-Length is the REDIRECT body's (276, where the file is
+    268): read as the size, every download of the real model was a size mismatch."""
+    url = _resolve_url(endpoint, repo, revision, filename)
+    start = url
+    commit_seen = None
+    try:
+        for _hop in range(6):
+            status, headers = _head(url, timeout)
+            commit_seen = headers.get("X-Repo-Commit") or commit_seen
+            location = headers.get("Location")
+            if 300 <= status < 400 and location:
+                target = urllib.parse.urljoin(url, location)
+                if urllib.parse.urlsplit(target).netloc == urllib.parse.urlsplit(url).netloc:
+                    url = target
+                    continue
+            break
+        else:
+            raise ResumableDownloadUnavailable("too many redirects for %s" % start)
     except _TRANSIENT_ERRORS as error:
-        raise ResumableDownloadUnavailable("%s: %s" % (url, error))
-    commit = headers.get("X-Repo-Commit")
+        raise ResumableDownloadUnavailable("%s: %s" % (start, error))
+    if status in (401, 403, 404):
+        raise ModelDownloadError("%s/%s is not available from the model hub (HTTP %d)" % (repo, filename, status))
+    if status >= 400:
+        raise ResumableDownloadUnavailable("HTTP %d for %s" % (status, start))
+    commit = commit_seen
     etag = _normalize_etag(headers.get("X-Linked-ETag") or headers.get("ETag"))
     size = _int_or_none(headers.get("X-Linked-Size") or headers.get("Content-Length"))
     if not commit or not etag or size is None or not _SAFE_BLOB_NAME.match(etag) \
             or not re.match(r"^[0-9a-f]{40}$", commit):
-        raise ResumableDownloadUnavailable("unusable metadata for %s" % url)
+        raise ResumableDownloadUnavailable("unusable metadata for %s" % start)
     return commit, etag, size
 
 
 def _stream_once(url, part_path, have, timeout, chunk_size, heartbeat):
     """One request for the rest of the file, appended to `part_path`. Raises on any transport error;
     the caller decides from the file's size whether it made progress."""
-    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+    headers = {"User-Agent": DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"}
     if have:
         headers["Range"] = "bytes=%d-" % have
     request = urllib.request.Request(url, headers=headers)
@@ -202,7 +258,12 @@ def _sha256_of(path, chunk_size, heartbeat):
 def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout, heartbeat):
     """Bring `blob_path` into existence as exactly the advertised file, resuming `<blob>.part`."""
     part_path = blob_path + ".part"
-    failures = 0  # consecutive failed attempts that brought in nothing
+    failures = 0  # consecutive failed attempts that did not get past `best`
+    # The most bytes this call has ever held. Progress is measured against it, never against the
+    # file as the last attempt found it: an attempt that deletes the partial file (a 416) and a next
+    # one that rewrites the same bytes would otherwise each look like progress, reset the budget,
+    # and retry forever — which the first run against the live Hub did.
+    best = os.path.getsize(part_path) if os.path.exists(part_path) else 0
     while True:
         have = os.path.getsize(part_path) if os.path.exists(part_path) else 0
         if have > size:
@@ -219,15 +280,23 @@ def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout,
                     os.remove(part_path)  # the partial file no longer matches the source
                 problem = error
             except _TRANSIENT_ERRORS as error:
+                if getattr(error, "errno", None) == errno.ENOSPC:
+                    # Retrying a full disk five times with back-off only delays the one message
+                    # that helps; the partial file stays, and a later attempt resumes it.
+                    raise ModelDownloadError("there is not enough free disk space for the dictation model; "
+                                             "free some space and try again")
                 problem = error
             now = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             if now < size:
-                failures = 0 if now > have else failures + 1
+                if now > best:
+                    best, failures = now, 0
+                else:
+                    failures += 1
                 if failures > retries:
                     raise ModelDownloadError(
                         "the model download stopped at %d of %d bytes: %s" % (now, size, problem or "short read")
                     )
-                sleep(1 if now > have else min(2 ** failures, 10))
+                sleep(1 if failures == 0 else min(2 ** failures, 10))
                 continue
         break
     # A file that is the wrong size, or hashes wrong, is not evidence of anything: keeping it would
@@ -603,7 +672,7 @@ def main() -> int:
         # download and nothing to decide, and the cache is left exactly as it is.
         pass
     elif model_fully_cached(hub_dir, args.mlx_repo):
-        os.environ["HF_HUB_OFFLINE"] = "1"
+        go_offline()
     else:
         # No cache, or an unfinished one — a download that was interrupted (kill, quit/disable
         # mid-download, network drop, disk-full). Forcing HF_HUB_OFFLINE here would wedge dictation
@@ -619,7 +688,7 @@ def main() -> int:
             sys.stdout.flush()
             return 1
         if model_fully_cached(hub_dir, args.mlx_repo):
-            os.environ["HF_HUB_OFFLINE"] = "1"
+            go_offline()
 
     import mlx.core as mx
     import mlx_whisper  # imported after arg parse so --help is instant

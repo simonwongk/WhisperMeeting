@@ -369,16 +369,16 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
     try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    // About two seconds of steady progress against a one-second flat limit, then ready. The
-    // heartbeats are protocol-shaped JSON objects, which `readLine` used to return as the reply.
+    // Five seconds of steady progress, measured by the helper's own clock so a slow host cannot
+    // shorten it, against a three-second flat limit — then ready. The heartbeats are
+    // protocol-shaped JSON objects, which `readLine` used to return as the reply.
     let script = tmp.appendingPathComponent("downloading.sh")
     let helper = """
     printf '{"downloading":true}\\n'
-    i=0
-    while [ "$i" -lt 8 ]; do
+    end=$((SECONDS + 5))
+    while [ "$SECONDS" -lt "$end" ]; do
       sleep 0.25
       printf '{"downloading":true}\\n'
-      i=$((i+1))
     done
     printf '{"downloading":false}\\n'
     printf '{"ready":true}\\n'
@@ -392,8 +392,8 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
         modelDirectory: tmp
     )
     defer { engine.shutdown() }
-    engine.warmUpTimeout = 1
-    engine.downloadStallTimeout = 30 // far above the 0.25 s heartbeat gap: only a real stall reaches it
+    engine.warmUpTimeout = 3
+    engine.downloadStallTimeout = 60 // far above the 0.25 s heartbeat gap: only a real stall reaches it
 
     try await engine.warmUp()
 }

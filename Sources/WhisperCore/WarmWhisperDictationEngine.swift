@@ -427,7 +427,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
                 if let stalledFor = watchdog.expiredStallWindow {
                     throw processFailure(
                         "The dictation model download made no progress for \(Int(stalledFor.rounded())) seconds and was stopped. "
-                            + "Check your connection and try again; a partly downloaded model is kept."
+                            + "Check your connection and try again; a download continues from where it stopped when it can."
                     )
                 }
                 throw processFailure("Dictation helper stopped unexpectedly.\(stderrSuffix())")
