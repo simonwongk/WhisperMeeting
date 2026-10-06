@@ -79,6 +79,74 @@ public enum MeetingScopeResolver {
     }
 }
 
+/// One meeting's segments split into the terms keyword search ranks on — the expensive half of a
+/// rank, done once per version of the meeting's text and reused by every query after it (F538).
+///
+/// `MeetingRetrieval.rank` used to tokenize every segment of every in-scope meeting on every query,
+/// on the main actor, twice per Ask when search by meaning is installed. Compact on purpose, because
+/// Ask keeps one per meeting for the session: each distinct term is stored once, sorted so a query
+/// term is found by binary search, and every token is a 4-byte position in that list — so a rank
+/// reads integers, and skips a meeting outright when it holds none of the query's terms.
+public struct MeetingTermIndex: Sendable {
+    public let meeting: SearchableMeeting
+    /// The meeting's distinct terms, sorted.
+    let terms: [String]
+    /// Every segment's tokens in order, as positions in `terms`.
+    let tokens: [UInt32]
+    /// Where each segment's tokens start in `tokens`, plus the end: one more entry than segments.
+    let offsets: [Int]
+    /// Segments with at least one token; a segment with none is not a document.
+    let documentCount: Int
+
+    /// What a cache of these bounds its memory by.
+    public var tokenCount: Int { tokens.count }
+
+    public init(_ meeting: SearchableMeeting) {
+        var ids: [String: UInt32] = [:]
+        var firstSeen: [String] = []
+        var raw: [UInt32] = []
+        var offsets: [Int] = [0]
+        offsets.reserveCapacity(meeting.segments.count + 1)
+        var documentCount = 0
+        for segment in meeting.segments {
+            let bag = RetrievalTokenizer.tokens(segment.text)
+            if !bag.isEmpty { documentCount += 1 }
+            for token in bag {
+                if let id = ids[token] {
+                    raw.append(id)
+                } else {
+                    // Clamping cannot bite: 2^32 distinct terms in one meeting is far beyond memory.
+                    let id = UInt32(clamping: firstSeen.count)
+                    ids[token] = id
+                    firstSeen.append(token)
+                    raw.append(id)
+                }
+            }
+            offsets.append(raw.count)
+        }
+        // Renumber in sorted order so the dictionary need not be kept for lookups.
+        let order = firstSeen.indices.sorted { firstSeen[$0] < firstSeen[$1] }
+        var renumbered = [UInt32](repeating: 0, count: firstSeen.count)
+        for (sorted, original) in order.enumerated() { renumbered[original] = UInt32(clamping: sorted) }
+        self.meeting = meeting
+        self.terms = order.map { firstSeen[$0] }
+        self.tokens = raw.map { renumbered[Int($0)] }
+        self.offsets = offsets
+        self.documentCount = documentCount
+    }
+
+    /// The term's position in `terms`, or nil when no segment of this meeting has it.
+    func termID(_ term: String) -> UInt32? {
+        var low = 0
+        var high = terms.count
+        while low < high {
+            let middle = (low + high) / 2
+            if terms[middle] < term { low = middle + 1 } else { high = middle }
+        }
+        return low < terms.count && terms[low] == term ? UInt32(clamping: low) : nil
+    }
+}
+
 /// Local BM25 keyword retrieval over segments-as-documents across a scoped meeting set (F180). Each
 /// segment is one document; each returned `CitedResult` is a citation carrying its meeting, snippet,
 /// and (when aligned) a seekable timestamp. This is the "normal search first" half of the Fathom
@@ -90,90 +158,104 @@ public enum MeetingRetrieval {
     /// Okapi BM25 length normalization.
     static let b = 0.75
 
+    /// Tokenizes every meeting, then ranks — for a caller with nothing to reuse. Ask keeps each
+    /// meeting's `MeetingTermIndex` and calls the overload below (F538).
     public static func rank(
         query: String,
         in meetings: [SearchableMeeting],
         limit: Int = 10
     ) -> [CitedResult] {
-        let queryTerms = Set(RetrievalTokenizer.tokens(query))
-        guard !queryTerms.isEmpty, limit > 0 else { return [] }
+        guard limit > 0, !RetrievalTokenizer.tokens(query).isEmpty else { return [] }
+        return rank(query: query, in: meetings.map(MeetingTermIndex.init), limit: limit)
+    }
 
-        struct Doc {
-            let meetingOrder: Int
-            let meetingID: UUID
-            let meetingTitle: String
-            let segmentIndex: Int
-            let start: Double?
-            let text: String
-            let bag: [String]
-            let length: Int
-        }
+    public static func rank(
+        query: String,
+        in indexes: [MeetingTermIndex],
+        limit: Int = 10
+    ) -> [CitedResult] {
+        // Sorted, so every document sums its terms in one fixed order: two documents with the same
+        // terms score bit-identically and fall to the tie-break below. The per-document dictionary
+        // this replaced summed in hash order, so equal documents differed in the last bit and the
+        // documented meeting-order tie-break was skipped at random.
+        let terms = Set(RetrievalTokenizer.tokens(query)).sorted()
+        guard !terms.isEmpty, limit > 0 else { return [] }
 
-        var docs: [Doc] = []
-        var documentFrequency: [String: Int] = [:]
-        for (order, meeting) in meetings.enumerated() {
-            for segment in meeting.segments {
-                let bag = RetrievalTokenizer.tokens(segment.text)
-                guard !bag.isEmpty else { continue }
-                docs.append(Doc(
-                    meetingOrder: order,
-                    meetingID: meeting.id,
-                    meetingTitle: meeting.title,
-                    segmentIndex: segment.index,
-                    start: segment.start,
-                    text: segment.text,
-                    bag: bag,
-                    length: bag.count
-                ))
-                for term in Set(bag).intersection(queryTerms) {
-                    documentFrequency[term, default: 0] += 1
+        // One pass: the corpus totals BM25 needs, and every segment holding a query term together
+        // with how often it holds each one (`frequencies`, `terms.count` per candidate).
+        var documentCount = 0
+        var totalLength = 0
+        var documentFrequency = [Int](repeating: 0, count: terms.count)
+        var candidates: [(meeting: Int, position: Int, length: Int)] = []
+        var frequencies: [Int32] = []
+        var counts = [Int32](repeating: 0, count: terms.count)
+        for (order, index) in indexes.enumerated() {
+            documentCount += index.documentCount
+            totalLength += index.tokens.count
+            let present: [(slot: Int, id: UInt32)] = terms.indices.compactMap { slot in
+                index.termID(terms[slot]).map { (slot, $0) }
+            }
+            guard !present.isEmpty else { continue }
+            for position in 0..<(index.offsets.count - 1) {
+                let start = index.offsets[position]
+                let end = index.offsets[position + 1]
+                var matched = false
+                for token in index.tokens[start..<end] {
+                    for term in present where term.id == token {
+                        counts[term.slot] += 1
+                        matched = true
+                    }
                 }
+                guard matched else { continue }
+                candidates.append((order, position, end - start))
+                for slot in counts.indices where counts[slot] > 0 { documentFrequency[slot] += 1 }
+                frequencies.append(contentsOf: counts)
+                for slot in counts.indices { counts[slot] = 0 }
             }
         }
-
-        let documentCount = docs.count
-        guard documentCount > 0 else { return [] }
-        let averageLength = Double(docs.reduce(0) { $0 + $1.length }) / Double(documentCount)
+        guard documentCount > 0, !candidates.isEmpty else { return [] }
+        let averageLength = Double(totalLength) / Double(documentCount)
 
         // Lucene-style non-negative IDF: `log(1 + …)` never goes negative, so a term appearing in more
         // than half of a small scoped corpus can't *subtract* score.
-        var idf: [String: Double] = [:]
-        for term in queryTerms {
-            let df = Double(documentFrequency[term] ?? 0)
-            idf[term] = log(1 + (Double(documentCount) - df + 0.5) / (df + 0.5))
+        let idf = documentFrequency.map { df in
+            log(1 + (Double(documentCount) - Double(df) + 0.5) / (Double(df) + 0.5))
         }
 
-        var scored: [(result: CitedResult, order: Int)] = []
-        for doc in docs {
-            var termFrequency: [String: Int] = [:]
-            for token in doc.bag where queryTerms.contains(token) {
-                termFrequency[token, default: 0] += 1
-            }
-            guard !termFrequency.isEmpty else { continue } // no query term present → drop
-            let lengthNorm = k1 * (1 - b + b * Double(doc.length) / averageLength)
+        var scored: [(score: Double, order: Int, segmentIndex: Int, candidate: Int)] = []
+        scored.reserveCapacity(candidates.count)
+        for (number, candidate) in candidates.enumerated() {
+            let lengthNorm = k1 * (1 - b + b * Double(candidate.length) / averageLength)
             var score = 0.0
-            for (term, frequency) in termFrequency {
-                let f = Double(frequency)
-                score += (idf[term] ?? 0) * (f * (k1 + 1)) / (f + lengthNorm)
+            for slot in terms.indices {
+                let f = Double(frequencies[number * terms.count + slot])
+                guard f > 0 else { continue }
+                score += idf[slot] * (f * (k1 + 1)) / (f + lengthNorm)
             }
-            scored.append((
-                CitedResult(
-                    meetingID: doc.meetingID,
-                    meetingTitle: doc.meetingTitle,
-                    segmentIndex: doc.segmentIndex,
-                    timestamp: doc.start,
-                    snippet: doc.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    score: score
-                ),
-                doc.meetingOrder
-            ))
+            let segmentIndex = indexes[candidate.meeting].meeting.segments[candidate.position].index
+            scored.append((score, candidate.meeting, segmentIndex, number))
         }
 
         scored.sort { lhs, rhs in
-            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
             if lhs.order != rhs.order { return lhs.order < rhs.order }
-            return lhs.result.segmentIndex < rhs.result.segmentIndex
+            return lhs.segmentIndex < rhs.segmentIndex
         }
-        return scored.prefix(limit).map(\.result)
+        // Only the results kept are built, so a common word matching a hundred thousand segments
+        // trims and copies twenty snippets, not all of them.
+        return scored.prefix(limit).map { entry in
+            let candidate = candidates[entry.candidate]
+            let meeting = indexes[candidate.meeting].meeting
+            let segment = meeting.segments[candidate.position]
+            return CitedResult(
+                meetingID: meeting.id,
+                meetingTitle: meeting.title,
+                segmentIndex: segment.index,
+                timestamp: segment.start,
+                snippet: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                score: entry.score
+            )
+        }
     }
 }
+

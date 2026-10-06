@@ -5854,40 +5854,102 @@ final class AppModel: ObservableObject {
         CJKWordEvidence(segmenter: cjkWordSegmenter, knownTerms: store.vocabulary)
     }
 
+    // MARK: - Ask Meetings: the keyword pass (F180, F538)
+
+    /// How many results an Ask shows.
+    static let askResultLimit = 10
+
+    /// How deep the keyword list is ranked when search by meaning will fuse with it (F316's 20).
+    static let askFusionDepth = 20
+
     /// Cited cross-meeting retrieval (F180): rank transcript segments across the completed meetings in
     /// `scope` against `query`, returning citations (meeting + timestamp + snippet). Local-only,
-    /// transcript-only — the tested `MeetingScopeResolver` + `MeetingRetrieval` do the work; this thin
-    /// adapter just gathers the in-scope meetings from the store and hands their segments across.
-    func askMeetings(query: String, scope: MeetingScope, limit: Int = 10) -> [CitedResult] {
-        MeetingRetrieval.rank(query: query, in: searchableMeetings(in: scope), limit: limit)
+    /// transcript-only — the tested `MeetingScopeResolver` + `MeetingRetrieval` do the work. Off the
+    /// main actor (F538); empty when the calling task is cancelled first.
+    func askMeetings(query: String, scope: MeetingScope, limit: Int = AppModel.askResultLimit) async -> [CitedResult] {
+        guard limit > 0 else { return [] }
+        return await askKeywordPass(query: query, scope: scope, depth: limit)?.top(limit) ?? []
     }
 
-    private func searchableMeetings(in scope: MeetingScope) -> [SearchableMeeting] {
-        let inScope = store.meetings.filter { meeting in
+    /// One Ask's keyword half (F538), kept so search by meaning fuses with it instead of ranking the
+    /// query again, and embeds the meetings exactly as they were searched.
+    struct AskKeywordPass: Sendable {
+        let query: String
+        /// The in-scope meetings, each as Ask searches it.
+        let corpus: [MeetingTermIndex]
+        /// The keyword ranking, as deep as the pass was asked for.
+        let ranked: [CitedResult]
+
+        func top(_ limit: Int) -> [CitedResult] {
+            limit > 0 ? Array(ranked.prefix(limit)) : []
+        }
+    }
+
+    /// Splits one meeting up for keyword search. Injectable so a test can count how often a meeting
+    /// is split up, and see where.
+    var askTermIndexBuilder: @Sendable (SearchableMeeting) -> MeetingTermIndex = { MeetingTermIndex($0) }
+
+    /// Ranks the keyword pass. Injectable so a test can see where it runs, as `summaryCoverageCheck`
+    /// is (F437).
+    var askKeywordRanker: @Sendable (_ query: String, _ corpus: [MeetingTermIndex], _ limit: Int) -> [CitedResult] = {
+        MeetingRetrieval.rank(query: $0, in: $1, limit: $2)
+    }
+
+    /// Each meeting's keyword index, kept until its text changes (F538).
+    private let askTermIndexCache = AskTermIndexCache(tokenLimit: AppModel.askTermIndexTokenLimit)
+
+    /// About 8 million tokens. Synthetic libraries measured 13–17 bytes resident per token held
+    /// (146–149 MB for 11.2 million, 18 MB for 1.1 million), so this is roughly 105–135 MB, reached
+    /// at about 700 meetings of 700 segments. This user's library is ~8,800 segments — about 140,000
+    /// tokens at the synthetic library's 16 a segment, under 2% of it. Past the bound a meeting is
+    /// still searched, just split up again on each query, in the background.
+    static let askTermIndexTokenLimit = 8_000_000
+
+    /// The keyword half of an Ask (F538): the in-scope meetings split up — from the cache, or built
+    /// and cached now — then ranked, all off the main actor. Nil when the calling task is cancelled
+    /// first; a newer search has replaced it.
+    ///
+    /// It ran on the main actor, splitting up every segment of every in-scope meeting on every query:
+    /// 0.6–0.7 s a rank at 70,000 segments and 6.5–11.9 s at 700,000, measured at -O on synthetic
+    /// libraries with the code this replaced, and the view ranked twice per Ask when search by
+    /// meaning was installed. Ranking meetings already split up measured 1–9 ms and 6–52 ms on the
+    /// same libraries; splitting them up, once per version of the text, 0.8–1.4 s and 7.0 s.
+    func askKeywordPass(
+        query: String, scope: MeetingScope, depth: Int = AppModel.askFusionDepth
+    ) async -> AskKeywordPass? {
+        let sources = store.meetings.compactMap { meeting -> AskCorpusSource? in
             MeetingScopeResolver.inScope(
-                tags: meeting.tags ?? [],
-                isCompleted: meeting.status == .completed,
-                scope: scope
-            )
+                tags: meeting.tags ?? [], isCompleted: meeting.status == .completed, scope: scope
+            ) ? AskCorpusSource(meeting) : nil
         }
-        let searchable = inScope.map { meeting in
-            // F455: a hand-edited transcript is searched as the user left it — its lines, not the
-            // segments the editor never touches — so a deleted or corrected sentence is not a
-            // passage, an answer's grounding, or a row in the meaning index any more. The lines
-            // keep their segment's precise time while they still align, and their visible MM:SS
-            // otherwise; a line with neither is still searched, just without a timestamp.
-            let segments = store.isTranscriptEdited(meeting)
-                ? EditedTranscript.segments(transcriptText: meeting.transcriptText, original: meeting.segments)
-                : meeting.segments
-            return SearchableMeeting(
-                id: meeting.id,
-                title: meeting.title,
-                segments: segments.enumerated().map { index, segment in
-                    SearchableSegment(index: index, start: segment.start, text: segment.text)
+        // A deleted meeting's text does not outlive it here.
+        askTermIndexCache.retainOnly(Set(store.meetings.map(\.id)))
+        let cache = askTermIndexCache
+        let build = askTermIndexBuilder
+        let rank = askKeywordRanker
+        let work = Task.detached(priority: .userInitiated) { () -> AskKeywordPass? in
+            var corpus: [MeetingTermIndex] = []
+            corpus.reserveCapacity(sources.count)
+            for source in sources {
+                if let cached = cache.index(for: source) {
+                    corpus.append(cached)
+                    continue
                 }
-            )
+                // Checked only before work not yet done: each meeting already split up was cached
+                // as it finished, so a cancelled pass leaves the next one less to do.
+                if Task.isCancelled { return nil }
+                let index = build(source.searchable)
+                cache.insert(index, for: source)
+                corpus.append(index)
+            }
+            if Task.isCancelled { return nil }
+            return AskKeywordPass(query: query, corpus: corpus, ranked: rank(query, corpus, depth))
         }
-        return searchable
+        return await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
     }
 
     // MARK: - Ask Meetings: search by meaning (F316)
@@ -5949,28 +6011,39 @@ final class AppModel: ObservableObject {
 
     /// Keyword search fused with search by meaning (F316). Falls back to exactly `askMeetings` when
     /// the model is absent or anything about it fails: meaning is an addition, never a dependency.
-    func askMeetingsByMeaning(query: String, scope: MeetingScope, limit: Int = 10) async -> [CitedResult] {
+    func askMeetingsByMeaning(
+        query: String, scope: MeetingScope, limit: Int = AppModel.askResultLimit
+    ) async -> [CitedResult] {
         // Guarded like the sibling rankers (F333): every `prefix` below traps on a negative count.
+        guard limit > 0,
+              let pass = await askKeywordPass(query: query, scope: scope, depth: max(Self.askFusionDepth, limit))
+        else { return [] }
+        return await askMeetingsByMeaning(pass, limit: limit)
+    }
+
+    /// Fuses search by meaning into a keyword pass already ranked (F538). The view shows the pass's
+    /// own results at once and then hands it here, so each Ask is ranked by keyword once — it used
+    /// to rank twice — and the meetings embedded are exactly the ones that were searched.
+    func askMeetingsByMeaning(_ pass: AskKeywordPass, limit: Int = AppModel.askResultLimit) async -> [CitedResult] {
         guard limit > 0 else { return [] }
-        let lexical = askMeetings(query: query, scope: scope, limit: max(20, limit))
         guard isAskEmbeddingInstalled,
-              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Array(lexical.prefix(limit))
+              !pass.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return pass.top(limit)
         }
-        let searchable = searchableMeetings(in: scope).filter { !$0.segments.isEmpty }
+        let searchable = pass.corpus.map(\.meeting).filter { !$0.segments.isEmpty }
         do {
             let indexed = try await askIndexes(for: searchable)
-            let question = try await askEmbedder([query], .query)
+            let question = try await askEmbedder([pass.query], .query)
             // The scalar dot-product loop over every segment of every in-scope meeting, off the
             // main actor for the same reason as the read above (F331).
             let queryVector = question.vectors
-            let ranked = max(20, limit)
+            let ranked = max(Self.askFusionDepth, limit)
             let semantic = await Task.detached(priority: .userInitiated) {
                 SemanticRanker.rank(query: queryVector, in: indexed, limit: ranked)
             }.value
-            return RankFusion.fuse(lexical: lexical, semantic: semantic, limit: limit)
+            return RankFusion.fuse(lexical: pass.ranked, semantic: semantic, limit: limit)
         } catch {
-            return Array(lexical.prefix(limit))
+            return pass.top(limit)
         }
     }
 
@@ -5993,20 +6066,60 @@ final class AppModel: ObservableObject {
     /// library fits whole and a very large one simply stops caching rather than growing without end.
     private static let askIndexCacheVectorLimit = 4_000_000
 
+    /// Passages per helper run when meetings are embedded for search by meaning (F538). Whole
+    /// meetings are grouped up to about this many, and each group is saved before the next starts.
+    ///
+    /// The first index of a library was one run over every missing meeting, saved only when the
+    /// whole run returned — about 9 minutes for 700,000 segments, extrapolating F316's 2,000
+    /// passages in 1.5 s — and any newer search or scope tap cancelled it and kept nothing. Now a
+    /// cancel loses at most the group in flight. 2,000 is that 1.5 s; each extra run costs a helper
+    /// start and model load, ~0.4 s warm by F316's one-process-per-question figure, so smaller
+    /// groups would lose less and spend more on loads. Neither figure is re-measured here: the
+    /// search model is not installed on the Mac this was written on.
+    /// Settable so a test can make every meeting its own run.
+    var askEmbeddingChunkPassages = 2_000
+
+    /// How many `askIndexes` calls are embedding right now. Two can overlap — a search the user just
+    /// replaced is still winding down when the new one starts — and the first to finish must not
+    /// clear `isIndexingForAsk` under the other.
+    private var askIndexingRuns = 0
+
+    /// `meetings` in order, grouped into runs of about `passages` segments; a meeting larger than
+    /// that is a run of its own, since its index is only ever saved whole.
+    nonisolated static func askEmbeddingChunks(_ meetings: [SearchableMeeting], passages: Int) -> [[SearchableMeeting]] {
+        var chunks: [[SearchableMeeting]] = []
+        var current: [SearchableMeeting] = []
+        var count = 0
+        for meeting in meetings {
+            if !current.isEmpty, count + meeting.segments.count > passages {
+                chunks.append(current)
+                current = []
+                count = 0
+            }
+            current.append(meeting)
+            count += meeting.segments.count
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
     /// Each meeting's index: taken from the session cache, else read from beside its recording when
-    /// it matches the transcript, else built (all missing meetings in one model run) and saved.
+    /// it matches the transcript, else built — a group of meetings per model run, each group saved
+    /// as it finishes (F538).
     private func askIndexes(
         for meetings: [SearchableMeeting]
     ) async throws -> [(meeting: SearchableMeeting, index: SegmentEmbeddings)] {
         // Off the main actor (F331): this is a `Data(contentsOf:)` per meeting, a SHA-256 over every
         // meeting's full transcript text, and an `Array` copy of every vector block — all of which
-        // ran on the MainActor, per query, because `AppModel` is `@MainActor`.
-        let requests = meetings.map {
-            (id: $0.id, texts: $0.segments.map(\.text), directory: store.recordingDirectoryURL(for: $0.id))
-        }
+        // ran on the MainActor, per query, because `AppModel` is `@MainActor`. The texts are
+        // gathered there too (F538); only the folder, which the store owns, is looked up here.
+        let directories = meetings.map { store.recordingDirectoryURL(for: $0.id) }
         let cache = askIndexCache
         var ready = await Task.detached(priority: .userInitiated) {
-            Self.readAskIndexes(for: requests, cache: cache)
+            let requests = zip(meetings, directories).map { meeting, directory in
+                (id: meeting.id, texts: meeting.segments.map(\.text), directory: directory)
+            }
+            return Self.readAskIndexes(for: requests, cache: cache)
         }.value
         // By fingerprint, not by value: `SegmentEmbeddings` is `Equatable` over its whole `vectors`
         // array, so comparing entries would walk millions of floats per meeting per query — the cost
@@ -6019,28 +6132,47 @@ final class AppModel: ObservableObject {
             missing.append(meeting)
         }
         if !missing.isEmpty {
+            askIndexingRuns += 1
             isIndexingForAsk = true
-            defer { isIndexingForAsk = false }
-            let texts = missing.flatMap { $0.segments.map(\.text) }
-            let embedded = try await askEmbedder(texts, .passage)
-            var offset = 0
-            for meeting in missing {
-                let length = meeting.segments.count * embedded.dimension
-                let index = SegmentEmbeddings(
-                    modelID: AskEmbeddingRuntime.modelID,
-                    fingerprint: SegmentEmbeddings.fingerprint(of: meeting.segments.map(\.text)),
-                    dimension: embedded.dimension,
-                    vectors: Array(embedded.vectors[offset..<(offset + length)])
-                )
-                offset += length
-                ready[meeting.id] = index
-                cacheAskIndex(index, for: meeting.id)
-                // A read-only library still searches by meaning; it just does not keep the index on
-                // disk — the session cache above is what keeps it from re-embedding every query.
-                let directory = store.recordingDirectoryURL(for: meeting.id)
-                if !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) {
-                    try? index.write(to: directory)
+            defer {
+                askIndexingRuns -= 1
+                isIndexingForAsk = askIndexingRuns > 0
+            }
+            for chunk in Self.askEmbeddingChunks(missing, passages: askEmbeddingChunkPassages) {
+                let texts = chunk.flatMap { $0.segments.map(\.text) }
+                let embedded = try await askEmbedder(texts, .passage)
+                // Checked rather than trusted: a short answer would trap in the slicing below.
+                let (expected, overflow) = texts.count.multipliedReportingOverflow(by: embedded.dimension)
+                guard embedded.dimension > 0, !overflow, embedded.vectors.count == expected else {
+                    throw LocalEmbedderError.unreadableOutput
                 }
+                var offset = 0
+                var saves: [(index: SegmentEmbeddings, directory: URL)] = []
+                for meeting in chunk {
+                    let length = meeting.segments.count * embedded.dimension
+                    let index = SegmentEmbeddings(
+                        modelID: AskEmbeddingRuntime.modelID,
+                        fingerprint: SegmentEmbeddings.fingerprint(of: meeting.segments.map(\.text)),
+                        dimension: embedded.dimension,
+                        vectors: Array(embedded.vectors[offset..<(offset + length)])
+                    )
+                    offset += length
+                    ready[meeting.id] = index
+                    cacheAskIndex(index, for: meeting.id)
+                    // A read-only library still searches by meaning; it just does not keep the index
+                    // on disk — the session cache above is what keeps it from re-embedding every query.
+                    let directory = store.recordingDirectoryURL(for: meeting.id)
+                    if !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) {
+                        saves.append((index, directory))
+                    }
+                }
+                // Saved before the next run starts, so a search that cancels this one keeps every
+                // group finished so far (F538). Written off the main actor; a detached task is not
+                // cancelled with its caller, so a cancel arriving now cannot cut a save short.
+                let pending = saves
+                await Task.detached(priority: .userInitiated) {
+                    for save in pending { try? save.index.write(to: save.directory) }
+                }.value
             }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }

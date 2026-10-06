@@ -118,3 +118,25 @@ func tieBreakStable() {
     let results = MeetingRetrieval.rank(query: "budget review", in: meetings)
     #expect(results.map(\.meetingID) == [idX, idY])
 }
+
+@Test("Meetings split up once rank every later query as a fresh rank would (F538)")
+func termIndexesAreReusableAcrossQueries() {
+    let indexes = corpus.map(MeetingTermIndex.init)
+    for query in ["pricing discount", "discount", "notes here", "unrelated", "missing words", ""] {
+        #expect(MeetingRetrieval.rank(query: query, in: indexes) == MeetingRetrieval.rank(query: query, in: corpus))
+    }
+    #expect(indexes.map(\.tokenCount) == [12, 6])
+}
+
+@Test("Identical multi-term segments tie exactly and come back in meeting order (F538)")
+func identicalSegmentsTieExactlyInMeetingOrder() {
+    // Each score sums several terms. Summed in a per-segment dictionary's hash order, as before
+    // F538, equal segments could differ in the last bit and skip this tie-break.
+    let ids = (0..<40).map { _ in UUID() }
+    let meetings = ids.map { id in
+        SearchableMeeting(id: id, title: "M", segments: [seg(0, 0, "pricing discount budget review summary")])
+    }
+    let results = MeetingRetrieval.rank(query: "summary review budget discount pricing", in: meetings, limit: 40)
+    #expect(Set(results.map(\.score)).count == 1)
+    #expect(results.map(\.meetingID) == ids)
+}

@@ -2353,6 +2353,9 @@ private struct AskMeetingsView: View {
     @State private var answerOutcome: MeetingAnswerPolicy.Outcome?
     @State private var answerTask: Task<Void, Never>?
     @State private var searchTask: Task<Void, Never>?
+    /// A keyword pass is running (F538). The previous results stay up meanwhile, but cannot be
+    /// answered from: the question above them may already be the new one.
+    @State private var isSearching = false
 
     private var libraryTags: [String] {
         MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
@@ -2422,6 +2425,9 @@ private struct AskMeetingsView: View {
         .onAppear {
             if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { runSearch() }
         }
+        // F538: the search stops with the tab. It used to run on while `.onAppear` above started a
+        // second one beside it; indexing saves each finished group, so the next one resumes.
+        .onDisappear { searchTask?.cancel() }
     }
 
     private var scopeCaption: String {
@@ -2460,6 +2466,9 @@ private struct AskMeetingsView: View {
                 description: Text("Type a question or keywords above to find the moments across your meetings that answer it.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if results.isEmpty, isSearching {
+            ProgressView("Searching your meetings…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if results.isEmpty {
             ContentUnavailableView(
                 "No matches",
@@ -2548,7 +2557,7 @@ private struct AskMeetingsView: View {
                     }
                 } else {
                     Button("Write an Answer from These Passages") { writeAnswer() }
-                        .disabled(!model.canWriteMeetingAnswer)
+                        .disabled(!model.canWriteMeetingAnswer || isSearching)
                         .help("Uses the local summary model on this Mac. Nothing is uploaded.")
                 }
             }
@@ -2599,14 +2608,21 @@ private struct AskMeetingsView: View {
         hasSearched = true
         answerTask?.cancel()
         answerOutcome = nil
-        // Keyword results appear at once; with the search model installed, the fused list replaces
-        // them a moment later (F316). A newer search supersedes an older one still embedding.
-        results = model.askMeetings(query: query, scope: scope)
+        // F538: ranked off the main actor, so a large library no longer freezes the window for each
+        // Ask, scope tap and return to this tab. Keyword results replace the list as soon as they
+        // are ranked; with the search model installed, the fused list replaces them a moment later
+        // (F316), fused from that same keyword pass rather than a second rank. A newer search
+        // cancels this one, and the fused list is still dropped if the question was changed.
         searchTask?.cancel()
-        guard model.isAskEmbeddingInstalled else { return }
+        isSearching = true
         let asked = query, askedScope = scope
         searchTask = Task {
-            let fused = await model.askMeetingsByMeaning(query: asked, scope: askedScope)
+            guard let pass = await model.askKeywordPass(query: asked, scope: askedScope),
+                  !Task.isCancelled else { return }
+            results = pass.top(AppModel.askResultLimit)
+            isSearching = false
+            guard model.isAskEmbeddingInstalled else { return }
+            let fused = await model.askMeetingsByMeaning(pass, limit: AppModel.askResultLimit)
             if !Task.isCancelled, asked == query { results = fused }
         }
     }

@@ -48,7 +48,7 @@ func paraphraseIsFoundByMeaning() async throws {
         return (2, texts.flatMap(fakeVector))
     }
 
-    #expect(model.askMeetings(query: "pricing decision", scope: MeetingScope()).isEmpty, "no keyword overlap at all")
+    #expect(await model.askMeetings(query: "pricing decision", scope: MeetingScope()).isEmpty, "no keyword overlap at all")
     let found = await model.askMeetingsByMeaning(query: "pricing decision", scope: MeetingScope())
     #expect(found.map(\.snippet) == ["We agreed fifteen percent off the annual plan."])
     #expect(found.first?.timestamp == 0)
@@ -82,7 +82,8 @@ func meaningSearchFallsBackToKeywords() async throws {
 @Test("The Ask view uses the fused search and offers the download with its size (F316)")
 func askViewIsWiredToMeaningSearch() throws {
     let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    #expect(view.contains("await model.askMeetingsByMeaning(query: asked, scope: askedScope)"))
+    // Fused from the keyword pass the view already ranked, not a second rank of the query (F538).
+    #expect(view.contains("await model.askMeetingsByMeaning(pass, limit: AppModel.askResultLimit)"))
     #expect(view.contains("model.installAskEmbeddingModel()"))
     #expect(view.contains("490 MB"))
     // Read raw, not through the Swift stripper: `build-app.sh` comments with `#`, and running a
@@ -120,7 +121,7 @@ func realModelFindsParaphrases() async throws {
         ("資安我們打算怎麼做", "所有密碼"),
     ] {
         let started = Date()
-        let keyword = model.askMeetings(query: question, scope: MeetingScope()).first?.snippet
+        let keyword = await model.askMeetings(query: question, scope: MeetingScope()).first?.snippet
         let fused = await model.askMeetingsByMeaning(query: question, scope: MeetingScope())
         print("REAL Q: \(question) | keyword top: \(keyword ?? "—") | fused top: \(fused.first?.snippet ?? "—") | \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
         // Top three, not top one: on the measured set the model's recall@1 is 6/10 and @3 is 8/10,

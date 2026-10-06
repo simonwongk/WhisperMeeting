@@ -21,7 +21,7 @@ private func seg(_ start: Double, _ text: String) -> TranscriptSegment {
 
 @MainActor
 @Test("askMeetings scopes by tag + completed status and returns cited, timestamped results (F180)")
-func askMeetingsScopesAndCites() throws {
+func askMeetingsScopesAndCites() async throws {
     let model = try makeModel()
 
     let a = UUID(), b = UUID(), c = UUID()
@@ -43,7 +43,7 @@ func askMeetingsScopesAndCites() throws {
         tags: ["pricing"]
     ))
 
-    let scoped = model.askMeetings(query: "pricing discount", scope: MeetingScope(tags: ["pricing"]))
+    let scoped = await model.askMeetings(query: "pricing discount", scope: MeetingScope(tags: ["pricing"]))
     #expect(!scoped.isEmpty)
     #expect(scoped.allSatisfy { $0.meetingID == a })
     let top = try #require(scoped.first)
@@ -51,7 +51,7 @@ func askMeetingsScopesAndCites() throws {
     #expect(top.snippet.contains("pricing"))
 
     // Empty scope = all completed meetings (A and B), never the non-completed C.
-    let all = model.askMeetings(query: "pricing", scope: MeetingScope())
+    let all = await model.askMeetings(query: "pricing", scope: MeetingScope())
     let ids = Set(all.map(\.meetingID))
     #expect(ids.contains(a))
     #expect(ids.contains(b))

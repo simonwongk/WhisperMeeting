@@ -101,7 +101,7 @@ func askViewOffersTheAnswer() throws {
     )
     let runSearch = try body(following: "private func runSearch()", in: structure)
     let clear = try #require(runSearch.range(of: "answerOutcome = nil"), "runSearch no longer clears the answer")
-    let refill = try #require(runSearch.range(of: "results = model.askMeetings("), "runSearch no longer sets the results")
+    let refill = try #require(runSearch.range(of: "results = pass.top("), "runSearch no longer sets the results")
     #expect(clear.lowerBound < refill.lowerBound, "runSearch shows new results before clearing the old answer")
     #expect(source.contains("guard hasSearched else { return }\n        runSearch()"))
 }
