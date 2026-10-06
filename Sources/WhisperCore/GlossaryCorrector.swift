@@ -25,21 +25,26 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
 /// inside an ordinary sentence was never found. A term already present in the segment is correct and
-/// proposes nothing, and a window must match MORE than half the term's characters, position for
-/// position: at exactly half, a two-character term would match every word sharing one character with
-/// it (计算 for 预算), so a two-character term is only ever matched exactly. A Chinese window is
-/// only proposed where `GlossaryCorrector.apply` would apply it — `ReplacementBoundary` with the
-/// caller's `CJKWordEvidence` (F594) — so a window cutting through a word is not offered. A Latin
-/// term's windows split a token where Latin meets Chinese ("这个Kubernets集群"), so the proposal
-/// replaces "Kubernets", not the Chinese on either side; text without Chinese splits as it did.
+/// proposes nothing. A window must match MORE than half the term's characters, position for
+/// position — at exactly half, a two-character term would match every word sharing one character
+/// with it (计算 for 预算), so a two-character term is never proposed — and every character it gets
+/// wrong must sound like the term's (`MandarinSound`): matching two of three characters in place also
+/// fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536 found pre-ticked in seven of
+/// eight ordinary sentences. A Chinese window is only proposed where `GlossaryCorrector.apply` would
+/// apply it — `ReplacementBoundary` with the caller's `CJKWordEvidence` (F594) — so a window cutting
+/// through a word is not offered. A Latin term's windows split a token where Latin meets Chinese
+/// ("这个Kubernets集群"), so the proposal replaces "Kubernets", not the Chinese on either side; text
+/// without Chinese splits as it did.
 ///
 /// **Cost (F536).** This ran segment × term × window with an O(n·m) LCS and re-normalized every term
 /// for every segment, on the main actor — the round-2 sweep measured about 136 s for one meeting at
 /// the 5,000-term cap. Each term is now prepared once, a Latin window whose length alone rules out
 /// the threshold (or cannot beat the best found so far) is skipped before any LCS, and segments run
 /// in parallel with progress and cancellation (`corrections(vocabulary:segments:evidence:
-/// isCancelled:progress:)`). Measured at -O on a 700-segment synthetic meeting against 5,000 terms:
-/// 78.9 s before, 1.2 s after, with the same 167,128 proposals.
+/// isCancelled:progress:)`). Measured at -O in a scratch package outside the repository, on a
+/// 700-segment synthetic meeting against 5,000 terms: 78.9 s before, 1.2 s after, with the same
+/// 167,128 English proposals. What the repository pins is smaller: `GlossaryCorrectorGoldenTests`
+/// compares 80 terms × 60 segments against the old code.
 public enum GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3
@@ -107,13 +112,15 @@ public enum GlossaryCorrector {
             return present
         }
         var scratch = LCSScratch()
+        // Character readings for the homophone check, per segment so no worker shares it.
+        var sounds: [Character: String] = [:]
         var results: [GlossaryCorrection] = []
         for term in prepared.terms where !term.ids.isEmpty {
             let phrase: String?
             if term.isCJK {
                 guard let chinese else { continue }
                 phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
-                                       evidence: segmentEvidence)
+                                       evidence: segmentEvidence, sounds: &sounds)
             } else {
                 phrase = bestLatinWindow(for: term, in: latin, scratch: &scratch)
             }
@@ -155,7 +162,7 @@ public enum GlossaryCorrector {
     /// character to the left — 请张经 shares 张经 with 张经理 as a subsequence, and comes first.
     private static func bestCJKWindow(
         for term: PreparedTerm, in runs: CJKRuns, text: String, segmented: SegmentedText,
-        evidence: () -> CJKWordEvidence
+        evidence: () -> CJKWordEvidence, sounds: inout [Character: String]
     ) -> String? {
         let length = term.ids.count
         // Cheap upper bound first: every matched character must occur in the segment somewhere.
@@ -170,6 +177,15 @@ public enum GlossaryCorrector {
                 }
                 // More than half, strictly, and better than the best genuine window so far.
                 guard common * 2 > length, common > (best?.score ?? 0) else { continue }
+                // And every character it gets wrong sounds like the one it should be: 张经里 for
+                // 张经理, not 王经理 — a different person who matches just as many characters.
+                let soundsAlike = (0..<length).allSatisfy { offset in
+                    run.ids[start + offset] == term.ids[offset]
+                        || MandarinSound.isHomophone(
+                            text[run.indices[start + offset]], of: term.characters[offset], cache: &sounds
+                        )
+                }
+                guard soundsAlike else { continue }
                 let range = run.indices[start]..<run.end(of: start + length - 1, in: text)
                 let phrase = String(text[range])
                 let boundary = ReplacementBoundary(heard: phrase, notCoveredBy: term.term, evidence: evidence())
@@ -304,6 +320,8 @@ public enum GlossaryCorrector {
         let normalized: String
         let ids: [Int32]
         let isCJK: Bool
+        /// `normalized`'s characters, position for position with `ids`, for the homophone check.
+        let characters: [Character]
     }
 
     private final class PreparedVocabulary: @unchecked Sendable {
@@ -322,7 +340,7 @@ public enum GlossaryCorrector {
             terms = zip(vocabulary, normalized).map { term, normalized in
                 PreparedTerm(
                     term: term, normalized: normalized, ids: table.ids(normalized),
-                    isCJK: ReplacementBoundary.hasCJK(term)
+                    isCJK: ReplacementBoundary.hasCJK(term), characters: Array(normalized)
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)
@@ -464,6 +482,12 @@ public enum GlossaryReviewDefaults {
     ) -> Set<Int> {
         let terms = ProtectedTerms.PreparedTerms(protectedTerms)
         return Set(proposals.indices.filter { terms.touch(proposals[$0].from) })
+    }
+
+    /// Indices of `proposals` whose span contains a Chinese character (F536) — what the app leaves
+    /// unticked from Correct Toward Vocabulary, whose Chinese matches are by sound.
+    public static func chineseSpans(_ proposals: [GlossaryCorrection]) -> Set<Int> {
+        Set(proposals.indices.filter { ReplacementBoundary.hasCJK(proposals[$0].from) })
     }
 
     /// Whether applying `proposal` would rewrite a protected term.

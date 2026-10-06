@@ -5739,8 +5739,19 @@ final class AppModel: ObservableObject {
             }
         }
         guard !cancellation.isCancelled else { return nil }
+        // The pass worked on a copy, and the window stayed usable while it ran. A proposal is a line
+        // number and a phrase, so if a line was removed or edited meanwhile, a proposal for one line
+        // would be applied to another (the review of F536 watched a ticked proposal rewrite the line
+        // the user had left unticked). Offer nothing rather than something aimed at the old lines.
+        guard store.meeting(id: id)?.segments == input.segments else {
+            alertMessage = Self.transcriptChangedDuringCorrectionMessage
+            return nil
+        }
         return proposals
     }
+
+    static let transcriptChangedDuringCorrectionMessage =
+        "The transcript changed while it was being checked against your vocabulary, so nothing is proposed. Choose Correct Toward Vocabulary again."
 
     /// Stops the running Correct Toward Vocabulary pass; its proposals are discarded.
     func cancelGlossaryCorrections() {
@@ -6253,6 +6264,12 @@ final class AppModel: ObservableObject {
         defer { proposingCorrectionsID = nil }
         do {
             let corrections = try await proposeTranscriptCorrections(plainText, vocabulary, reference)
+            // The same hazard as Correct Toward Vocabulary's (F536): the model read a copy for
+            // minutes while the window stayed usable, and a proposal is a line number and a phrase.
+            guard store.meeting(id: id)?.segments == meeting.segments else {
+                alertMessage = "The transcript changed while the local model was reading it, so nothing is proposed. Run the correction again."
+                return []
+            }
             return TranscriptCorrection.glossaryCorrections(
                 from: corrections, segments: meeting.segments, evidence: cjkWordEvidence
             )

@@ -2923,7 +2923,7 @@ private struct TranscriptDetailView: View {
     @AppStorage("summaryTemplate") private var summaryTemplate: MeetingTemplate = .general
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
-    @State private var glossaryProposals: [GlossaryCorrection]?
+    @State private var proposalReviews = ProposalReviewQueue()
     @State private var showSecondOpinion = false
     @State private var showsReferenceImporter = false
     @State private var isSuggestingVocab = false
@@ -3184,11 +3184,13 @@ private struct TranscriptDetailView: View {
                     }
                 }
             }
-            .sheet(isPresented: Binding(
-                get: { glossaryProposals != nil },
-                set: { if !$0 { glossaryProposals = nil } }
-            )) {
-                GlossarySuggestionSheet(proposals: glossaryProposals ?? [], protectedTerms: store.vocabulary) { accepted in
+            // F536: one sheet per set of proposals, keyed by the set's own id so its ticks and
+            // warnings are always this set's; a result arriving while a review is open waits for it.
+            .sheet(item: Binding(
+                get: { proposalReviews.current },
+                set: { if $0 == nil { proposalReviews.close() } }
+            ), onDismiss: { proposalReviews.advance() }) { review in
+                GlossarySuggestionSheet(review: review, protectedTerms: store.vocabulary) { accepted in
                     model.applyGlossaryCorrections(accepted, to: meetingID)
                 }
             }
@@ -3256,7 +3258,7 @@ private struct TranscriptDetailView: View {
                     model.alertMessage = "The local model found nothing to correct against that reference."
                 }
             } else {
-                glossaryProposals = proposals
+                proposalReviews.present(ProposalReview(proposals: proposals, source: .localModel))
             }
         }
     }
@@ -3863,7 +3865,7 @@ private struct TranscriptDetailView: View {
                     if proposals.isEmpty {
                         model.alertMessage = "No transcript spans look close to a vocabulary term."
                     } else {
-                        glossaryProposals = proposals
+                        proposalReviews.present(ProposalReview(proposals: proposals, source: .vocabulary))
                     }
                 }
             } label: {
@@ -3876,7 +3878,7 @@ private struct TranscriptDetailView: View {
                 if proposals.isEmpty {
                     model.alertMessage = "None of your replacement rules matched this transcript."
                 } else {
-                    glossaryProposals = proposals
+                    proposalReviews.present(ProposalReview(proposals: proposals, source: .replacementRules))
                 }
             } label: {
                 Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
@@ -3894,7 +3896,7 @@ private struct TranscriptDetailView: View {
                                 model.alertMessage = "The local model found nothing to correct."
                             }
                         } else {
-                            glossaryProposals = proposals
+                            proposalReviews.present(ProposalReview(proposals: proposals, source: .localModel))
                         }
                     }
                 } label: {
@@ -4654,7 +4656,8 @@ private struct LanguageLineRemovalSheet: View {
 }
 
 private struct GlossarySuggestionSheet: View {
-    let proposals: [GlossaryCorrection]
+    /// One set of proposals and the tool that made it (F536); the sheet is presented per set.
+    let review: ProposalReview
     /// The user's vocabulary (F245): a proposal that would rewrite one of these arrives unticked
     /// and marked, because a model's rename of a term the user taught the app must not land on
     /// one click. `GlossaryReviewDefaults` is the rule; this view only renders it.
@@ -4667,12 +4670,14 @@ private struct GlossarySuggestionSheet: View {
     /// re-runs whenever the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
     @State private var touching: Set<Int>?
 
+    private var proposals: [GlossaryCorrection] { review.proposals }
+
     init(
-        proposals: [GlossaryCorrection],
+        review: ProposalReview,
         protectedTerms: [String] = [],
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
-        self.proposals = proposals
+        self.review = review
         self.protectedTerms = protectedTerms
         self.onApply = onApply
     }
@@ -4705,6 +4710,11 @@ private struct GlossarySuggestionSheet: View {
                                 Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
+                            } else if review.uncheckedByDefault.contains(index) {
+                                // F536: a Chinese match is by sound; it is never applied in one click.
+                                Label("Sounds like the term — check it, then tick it to apply", systemImage: "ear")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -4730,8 +4740,9 @@ private struct GlossarySuggestionSheet: View {
             .padding()
         }
         .frame(width: 440, height: 540)
-        // F245's pre-selection — everything except a proposal that touches a term — once the
-        // touching set is known. Until then nothing is ticked, so Apply stays disabled.
+        // F245's pre-selection — everything except a proposal that touches a term, and (F536) a
+        // Chinese near-miss from Correct Toward Vocabulary — once the touching set is known. Until
+        // then nothing is ticked, so Apply stays disabled.
         .task {
             let proposals = proposals
             let terms = protectedTerms
@@ -4739,7 +4750,7 @@ private struct GlossarySuggestionSheet: View {
                 GlossaryReviewDefaults.touching(proposals, protectedTerms: terms)
             }.value
             touching = found
-            selected = Set(proposals.indices).subtracting(found)
+            selected = review.preselected(touching: found)
         }
     }
 }

@@ -28,6 +28,18 @@ func chineseMishearingInsideASentenceIsFound() {
     #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "张经里", to: "张经理")])
 }
 
+@Test("A window that differs from the term in sound is not proposed, however many characters match (F536)")
+func chineseWindowMustSoundLikeTheTerm() {
+    // Two of three characters in place, but 王 (wang) is not 张 (zhang): a different person.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["张经理"], segments: [seg("王经理明天来")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["数据库"], segments: [seg("数据集已经准备好了")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Q3预算"], segments: [seg("Q4预算还没批")]).isEmpty)
+    var cache: [Character: String] = [:]
+    #expect(MandarinSound.isHomophone("里", of: "理", cache: &cache))
+    #expect(!MandarinSound.isHomophone("王", of: "张", cache: &cache))
+    #expect(!MandarinSound.isHomophone("4", of: "3", cache: &cache))
+}
+
 @Test("A Chinese term already in the segment proposes nothing (F536)")
 func chineseTermAlreadyPresentIsCorrect() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["预算"], segments: [seg("讨论预算")]).isEmpty)
@@ -62,12 +74,14 @@ func chineseWindowCuttingAWordIsNotProposed() {
 
 @Test("A proposal is applied exactly where it was proposed (F536)")
 func chineseProposalAppliesWhereProposed() {
-    // The first 张经里 sits inside the vocabulary term 张经里路 (a street), so it is not the one
-    // proposed; the application must reach the second as well.
+    // 张经里 comes first and sounds like 张经理, but it sits inside the vocabulary term 张经里路 (a
+    // street), where `apply` would never put it; the proposal is the later 张经礼. A different text,
+    // so the check is visible: without it the first window would be proposed, and apply would find
+    // no genuine 张经里 to change.
     let evidence = CJKWordEvidence(knownTerms: ["张经理", "张经里路"])
-    let segments = [seg("在张经里路见到张经里")]
+    let segments = [seg("在张经里路见到张经礼")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["张经理"], segments: segments, evidence: evidence)
-    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "张经里", to: "张经理")])
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "张经礼", to: "张经理")])
     #expect(GlossaryCorrector.apply(corrections, to: segments, evidence: evidence)[0].text == "在张经里路见到张经理")
 }
 
