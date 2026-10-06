@@ -4,15 +4,17 @@
 Run: python3 Scripts/tests/test_dictation_model_download.py
 
 `whisper_dictate_server.py` used to `shutil.rmtree` the whole model cache whenever it found the
-download unfinished, and the installed `huggingface_hub` would not have resumed it anyway: since 1.x
-each attempt writes to a fresh `blobs/<etag>.<random>.incomplete` (`file_download.py:1908`) that is
-deleted when the attempt raises (`:1946-1949`) and orphaned when it is killed, and nothing ever seeds
-a later attempt from it. So the helper now downloads the two files itself, with HTTP `Range`, into a
-partial file named for the blob it will become.
+download unfinished, and the installed `huggingface_hub` (1.24.0, the version measured) would not
+have resumed it anyway: each attempt writes to a fresh `blobs/<etag>.<random>.incomplete`
+(`file_download.py:1908`) that is deleted when the attempt raises (`:1946-1949`) and orphaned when it
+is killed, and nothing ever seeds a later attempt from it. So the helper now downloads the two files
+itself, with HTTP `Range`, into a partial file named for the blob it will become.
 
 These tests run the helper's real downloader against a local HTTP server that behaves like the Hub
-for the two paths involved (a `resolve/` HEAD/GET, the LFS-style redirect to a CDN path that honours
-`Range`). No network, no `huggingface_hub`, no installed runtime: plain system python3, so the
+for the paths involved: `resolve/` HEAD/GET, `config.json`'s relative same-host redirect, and the
+LFS-style redirect to another host's CDN path that honours `Range` (the shapes were read off the live
+Hub; the first version of this fake modelled them wrongly and the tests passed regardless, see F522's
+log entry). No network, no `huggingface_hub`, no installed runtime: plain system python3, so the
 routine gate runs them everywhere.
 """
 
