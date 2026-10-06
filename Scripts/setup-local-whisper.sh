@@ -183,6 +183,16 @@ python_executable="$($brew_executable --prefix python@3.11)/bin/python3.11"
 # here keeps the common case matching rather than falling back on every dictation.
 openai_whisper_version="20250625"
 mlx_whisper_version="0.4.3"
+# F627: mlx-whisper depends on `huggingface_hub` with no version at all, and the dictation model's
+# `refs/main` below relies on how the installed library resolves a revision-less offline
+# `snapshot_download` (`_snapshot_download.py:296-305` in 1.24.0) — undocumented, and covered by
+# routine tests only through `Scripts/tests/test_f626_f627_dictation_cache_pin.py`. 1.24.0 is the
+# version the runtime that dictates every day on the developer's Mac was running when this was pinned
+# (its `dist-info`, read-only); an unpinned `pip install mlx-whisper==0.4.3` resolved 2.0.0 on
+# 2026-09-29, which no one had run. Installed in the SAME pip call as mlx-whisper so the resolver is
+# given both requirements at once. Raise it deliberately: re-run that test with
+# WHISPERMEET_TEST_VENV pointing at a venv holding the new version first.
+huggingface_hub_version="1.24.0"
 
 # Build the new runtime in a STAGING venv; the live venv is untouched until the atomic swap below.
 "$python_executable" -m venv "$staging_venv"
@@ -196,7 +206,7 @@ mlx_whisper_version="0.4.3"
 # mlx-whisper drives quick dictation (Apple-Silicon warm helper). It is arm64-only with a larger
 # dependency tree, so install it best-effort: a failure here must NOT abort the meetings runtime.
 # (Commands in an `if` condition are exempt from `set -e`, so a failure won't kill the script.)
-if ! "$staging_venv/bin/python" -m pip install "mlx-whisper==$mlx_whisper_version"; then
+if ! "$staging_venv/bin/python" -m pip install "mlx-whisper==$mlx_whisper_version" "huggingface_hub==$huggingface_hub_version"; then
   print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
 fi
 
@@ -214,6 +224,31 @@ dictation_revision="a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 dictation_config_sha256="b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379"
 dictation_weights_sha256="951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6"
 
+# F626: is the cache already on disk at $1 (…/models--org--repo) the pinned model? It is when BOTH
+# files of the pinned snapshot hash to the pinned SHA-256s. Until this, the block below
+# downloaded the model into a staging directory and swapped it in on EVERY run, whatever was there:
+# a repair re-fetched 1.6 GB it did not need, and a cache whose files never matched the pin was only
+# ever replaced as a side effect of that. The files are read, never written or deleted — a mismatch
+# is the caller's to replace. If the files verify but `refs/main` (what `mlx_whisper.load_model`'s
+# revision-less offline load follows) names another commit, the ref alone is rewritten, atomically.
+# Returns 0 for a match, 1 for anything else, including a cache that is not there.
+dictation_cache_matches_pin() {
+  local repo_dir="$1"
+  local snapshot="$repo_dir/snapshots/$dictation_revision"
+  [[ -f "$snapshot/config.json" && -f "$snapshot/weights.safetensors" ]] || return 1
+  local actual_config actual_weights
+  actual_config="$(shasum -a 256 "$snapshot/config.json" 2>/dev/null | awk '{ print $1 }')"
+  [[ "$actual_config" == "$dictation_config_sha256" ]] || return 1
+  actual_weights="$(shasum -a 256 "$snapshot/weights.safetensors" 2>/dev/null | awk '{ print $1 }')"
+  [[ "$actual_weights" == "$dictation_weights_sha256" ]] || return 1
+  if [[ "$(cat "$repo_dir/refs/main" 2>/dev/null)" != "$dictation_revision" ]]; then
+    mkdir -p "$repo_dir/refs" || return 1
+    print -n "$dictation_revision" > "$repo_dir/refs/.main-$$" || return 1
+    mv "$repo_dir/refs/.main-$$" "$repo_dir/refs/main" || return 1
+  fi
+  return 0
+}
+
 if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
   # Models/ is a SIBLING of Runtime/ (LocalWhisperRuntime.modelDirectory vs .managedDirectory) —
   # both openai-whisper's --model_dir and the dictation helper's HF cache live there.
@@ -224,7 +259,10 @@ if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
   mkdir -p "$hub_directory"
   rm -rf "$dictation_staging"
 
-  if DICTATION_STAGE="$dictation_staging" DICTATION_REPOSITORY="$dictation_repository" \
+  # F626: an intact pinned model is kept; anything else falls through to the verified download.
+  if dictation_cache_matches_pin "$hub_directory/$dictation_repo_directory_name"; then
+    print "The Quick Dictation model already matches the pinned revision; kept."
+  elif DICTATION_STAGE="$dictation_staging" DICTATION_REPOSITORY="$dictation_repository" \
      DICTATION_REVISION="$dictation_revision" \
      "$staging_venv/bin/python" - <<'PY' >/dev/null 2>&1
 import os

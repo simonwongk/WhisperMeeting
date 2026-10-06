@@ -86,29 +86,34 @@ if args[:2] == ["-m", "venv"]:
     sys.exit(0)
 
 if args[:2] == ["-m", "pip"]:
-    spec = args[-1]
-    name = spec.split("==")[0]
-    maybe_block("pip:" + name)
-    if name in failing:
-        print("ERROR: No matching distribution found for " + spec, file=sys.stderr)
-        sys.exit(1)
-    if name == "openai-whisper":
-        # A console script that answers --help, and can hang on its Nth call so a test can
-        # signal the post-swap verification.
-        write_executable(os.path.join(VENV, "bin", "whisper"),
-            "#!/bin/sh\n"
-            'if [ -n "$FAKE_WHISPER_COUNT" ]; then\n'
-            '  count_file="$FAKE_WHISPER_COUNT"\n'
-            '  n=$(cat "$count_file" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$count_file"\n'
-            '  if [ "$n" = "$FAKE_WHISPER_BLOCK_CALL" ]; then echo whisper > "$FAKE_BLOCK_MARKER"; sleep 60; fi\n'
-            '  if [ "$n" = "$FAKE_WHISPER_FAIL_CALL" ]; then exit 1; fi\n'
-            "fi\n"
-            "exit 0\n")
-    elif name == "yt-dlp":
-        write_executable(os.path.join(VENV, "bin", "yt-dlp"), "#!/bin/sh\nexit 0\n")
-    else:
-        os.makedirs(os.path.join(VENV, "site"), exist_ok=True)
-        open(os.path.join(VENV, "site", name.replace("-", "_")), "w").close()
+    # `pip install a==1 b==2` is ONE call: it fails as a whole if any requirement cannot be met
+    # (F627 installs mlx-whisper and the huggingface_hub it was verified with together), and it
+    # installs every one. This used to read only the last argument.
+    specs = [arg for arg in args[3:] if not arg.startswith("-")] or [args[-1]]
+    for spec in specs:
+        maybe_block("pip:" + spec.split("==")[0])
+        if spec.split("==")[0] in failing:
+            print("ERROR: No matching distribution found for " + spec, file=sys.stderr)
+            sys.exit(1)
+    for spec in specs:
+        name = spec.split("==")[0]
+        if name == "openai-whisper":
+            # A console script that answers --help, and can hang on its Nth call so a test can
+            # signal the post-swap verification.
+            write_executable(os.path.join(VENV, "bin", "whisper"),
+                "#!/bin/sh\n"
+                'if [ -n "$FAKE_WHISPER_COUNT" ]; then\n'
+                '  count_file="$FAKE_WHISPER_COUNT"\n'
+                '  n=$(cat "$count_file" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$count_file"\n'
+                '  if [ "$n" = "$FAKE_WHISPER_BLOCK_CALL" ]; then echo whisper > "$FAKE_BLOCK_MARKER"; sleep 60; fi\n'
+                '  if [ "$n" = "$FAKE_WHISPER_FAIL_CALL" ]; then exit 1; fi\n'
+                "fi\n"
+                "exit 0\n")
+        elif name == "yt-dlp":
+            write_executable(os.path.join(VENV, "bin", "yt-dlp"), "#!/bin/sh\nexit 0\n")
+        else:
+            os.makedirs(os.path.join(VENV, "site"), exist_ok=True)
+            open(os.path.join(VENV, "site", name.replace("-", "_")), "w").close()
     sys.exit(0)
 
 if args[:1] == ["-c"]:
