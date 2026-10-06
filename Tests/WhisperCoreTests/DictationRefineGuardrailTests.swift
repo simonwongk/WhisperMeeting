@@ -107,3 +107,72 @@ func rejectsDroppingAnEmbeddedScript() {
         input: "please send the 会议纪要 to the whole team before 周五"
     ) != nil)
 }
+
+// MARK: - F637: count the embedded words, do not test for their script
+
+@Test("A refinement that translates some, but not all, of the embedded words is refused (F637)")
+func rejectsTranslatingSomeOfTheEmbeddedWords() {
+    // Real, reproduced replies: the installed refine helper on Scripts/bench/clips/cs3's raw text,
+    // Automatic, both recognizers (F589's rebased table; F631's bench reproduces it row for row).
+    // "fix" and "merge" came back as 修复 and 合并 and "bug" survived, so a Latin letter was still
+    // there and F589's presence check let the reply through to be pasted.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 bug 已经修复了，可以合并了。", input: "这个 bug 已经 fix 了，可以 merge 了。"
+    ) == nil)
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个bug已经修复了，可以合并了。", input: "这个bug已经fix了,可以merge了。"
+    ) == nil)
+
+    // The other direction: an English sentence keeps one embedded Mandarin word and loses the other.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Please send the meeting minutes to the whole team before 周五.",
+        input: "please send the 会议纪要 to the whole team before 周五"
+    ) == nil)
+}
+
+@Test("Case, spacing and punctuation around an embedded word are a cleanup, not a loss (F637)")
+func embeddedWordsSurviveCaseAndPunctuationChanges() {
+    // Every embedded word is still there; only its case, the spaces and the punctuation changed.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 Bug 已经 fix 了，可以 Merge 了。", input: "这个bug已经fix了,可以merge了"
+    ) == "这个 Bug 已经 fix 了，可以 Merge 了。")
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Please send the 会议纪要 to the whole team before 周五.",
+        input: "please send the会议纪要to the whole team before周五"
+    ) == "Please send the 会议纪要 to the whole team before 周五.")
+    // A word said twice must come back twice: the comparison is a count, not a set.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 bug 和那个修复的问题都要看。", input: "这个 bug 和那个 bug 的问题都要看"
+    ) == nil)
+}
+
+@Test("Only the minority script is counted, so a cleanup still removes the majority's fillers (F637)")
+func onlyTheMinorityScriptIsCounted() {
+    // English-dominant: the English filler words may go; the Mandarin word may not.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Send the 会议纪要 to the team.", input: "um so send the 会议纪要 to the uh team"
+    ) == "Send the 会议纪要 to the team.")
+    // Mandarin-dominant: a Mandarin filler may go; the English word may not.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 bug 已经修好了。", input: "嗯这个 bug 呃已经修好了"
+    ) == "这个 bug 已经修好了。")
+    // A number is not a script: writing 3 as 三 in Mandarin is not a lost English word.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "下午三点在会议室开会。", input: "下午3点在会议室开会"
+    ) == "下午三点在会议室开会。")
+}
+
+@Test("A refinement may correct an embedded word to the user's own vocabulary term, one for one (F637)")
+func aProtectedTermCorrectionIsNotALoss() {
+    let input = "这个 Kubernetis 集群已经 fix 了"
+    let corrected = "这个 Kubernetes 集群已经 fix 了。"
+    // The misheard word is gone, but the term the user taught the app took its place.
+    #expect(DictationRefinePolicy.acceptedOutput(corrected, input: input, protectedTerms: ["Kubernetes"])
+        == corrected)
+    // Without that term in the vocabulary it is a word the refiner changed, so the raw text ships.
+    #expect(DictationRefinePolicy.acceptedOutput(corrected, input: input) == nil)
+    // A term stands in for the one word it replaced, not for a second word translated beside it.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 Kubernetes 集群已经修复了。", input: input, protectedTerms: ["Kubernetes"]
+    ) == nil)
+}
