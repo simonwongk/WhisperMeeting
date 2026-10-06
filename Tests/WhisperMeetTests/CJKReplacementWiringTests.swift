@@ -69,6 +69,63 @@ func replacementRulesRespectChineseWordsThroughAppModel() throws {
 }
 
 @MainActor
+@Test("Correct with Local AI fans a Chinese correction out only to genuine occurrences (F594)")
+func localModelCorrectionsGetChineseWordBoundaries() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F594-llm-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.cjkWordSegmenter = pinnedSegmenter
+    model.store.addVocabulary(["会议纪要"])
+    model.isCorrectionModelInstalled = { true }
+    // The model fixed one 会议; the fan-out must not offer it for the 会议 inside 会议纪要 (the review
+    // of F594 replaced this path's evidence with `.none` and every test still passed).
+    model.proposeTranscriptCorrections = { _, _, _ in [TranscriptCorrection(from: "会议", to: "会议室")] }
+    let id = addMeeting(model, lines: ["整理会议纪要", "明天开会议"])
+
+    let proposals = await model.proposeLocalCorrections(for: id)
+
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "会议", to: "会议室")])
+}
+
+private final class LocalModelGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    private var entered = false
+    var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return opened }
+    var hasEntered: Bool { lock.lock(); defer { lock.unlock() }; return entered }
+    func open() { lock.lock(); opened = true; lock.unlock() }
+    func enter() { lock.lock(); entered = true; lock.unlock() }
+}
+
+@MainActor
+@Test("A transcript changed while the local model read it gets no proposals (F536's guard, same hazard)")
+func localModelCorrectionsDiscardAChangedTranscript() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F536-llm-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addVocabulary(["Kestrel"])
+    model.isCorrectionModelInstalled = { true }
+    let gate = LocalModelGate()
+    model.proposeTranscriptCorrections = { _, _, _ in
+        gate.enter()
+        let deadline = Date().addingTimeInterval(30)
+        while !gate.isOpen, Date() < deadline { usleep(1_000) }
+        return [TranscriptCorrection(from: "Kestrol", to: "Kestrel")]
+    }
+    let id = addMeeting(model, lines: ["um um", "the Kestrol release is ready", "Kestrol (a bird) is a quote"])
+
+    let pass = Task { await model.proposeLocalCorrections(for: id) }
+    let deadline = Date().addingTimeInterval(30)
+    while !gate.hasEntered, Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+    try #require(gate.hasEntered, "the model never started")
+    try #require(model.removeTranscriptLines(at: IndexSet([0]), from: id) != nil)
+    gate.open()
+
+    #expect(await pass.value.isEmpty)
+    #expect(model.alertMessage?.contains("changed") == true)
+}
+
+@MainActor
 @Test("The app's default Chinese segmenter is NLTokenizer's, as ranges into the text it was given (F594)")
 func defaultSegmenterIsNaturalLanguage() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F594-nl-\(UUID().uuidString)")
