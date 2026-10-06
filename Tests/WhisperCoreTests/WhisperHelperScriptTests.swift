@@ -91,6 +91,11 @@ func whisperDictationHelperStdoutIsPureJSON() throws {
     var environment = ProcessInfo.processInfo.environment
     environment["PYTHONPATH"] = sandbox.appendingPathComponent("fakes").path
     environment["PYTHONUNBUFFERED"] = "1"
+    // F522: a model directory with no cache makes the helper download the model before loading it.
+    // This test's `mlx_whisper` is a fake that needs no weights, so it forbids the network the way
+    // any caller can — the same variable the helper itself sets once the model is cached — and the
+    // helper then neither downloads nor imports `huggingface_hub`, which system python3 lacks.
+    environment["HF_HUB_OFFLINE"] = "1"
     process.environment = environment
 
     let input = Pipe()

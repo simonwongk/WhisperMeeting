@@ -347,3 +347,130 @@ func warmQwenDictationEngineUsesLocalModel() async throws {
     // compares on. This used to pin "English", which was the defect written down as a contract.
     #expect(result.languageCode == "en")
 }
+
+// F522 — the first Quick Dictation model download is 1.6 GB and the helper used to be given a flat
+// 1 800 s to print `{"ready":true}`, so a link slower than ~7 Mbit/s could never finish, however
+// steadily it was progressing. The helper now prints `{"downloading":true}` lines as bytes arrive,
+// and while it does the wait is "no progress for `downloadStallTimeout`" instead. The windows are
+// shortened here; every assertion is on the outcome, never on how long it took.
+
+private final class ThrownMessage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func set(_ message: String) { lock.withLock { text = message } }
+    var value: String { lock.withLock { text } }
+}
+
+@Test("A helper reporting download progress is not killed by the flat warm-up limit (F522)")
+func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineDownloadProgress-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    // About two seconds of steady progress against a one-second flat limit, then ready. The
+    // heartbeats are protocol-shaped JSON objects, which `readLine` used to return as the reply.
+    let script = tmp.appendingPathComponent("downloading.sh")
+    let helper = """
+    printf '{"downloading":true}\\n'
+    i=0
+    while [ "$i" -lt 8 ]; do
+      sleep 0.25
+      printf '{"downloading":true}\\n'
+      i=$((i+1))
+    done
+    printf '{"downloading":false}\\n'
+    printf '{"ready":true}\\n'
+    IFS= read -r request
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+    engine.warmUpTimeout = 1
+    engine.downloadStallTimeout = 30 // far above the 0.25 s heartbeat gap: only a real stall reaches it
+
+    try await engine.warmUp()
+}
+
+@Test("A download that stops reporting progress is stopped, and the error says why (F522)")
+func warmDictationEngineStalledDownloadIsStoppedAndNamed() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineDownloadStall-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    // One heartbeat, then silence. The helper cannot exit by itself until the test releases it, so
+    // an error can only mean the engine stopped it.
+    let release = tmp.appendingPathComponent("release")
+    defer { try? Data().write(to: release) }
+    let script = tmp.appendingPathComponent("stalled.sh")
+    let helper = """
+    printf '{"downloading":true}\\n'
+    while [ -d "\(tmp.path)" ] && [ ! -e "\(release.path)" ]; do sleep 0.05; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+    engine.warmUpTimeout = 600 // the flat budget must not be what ends this
+    engine.downloadStallTimeout = 1
+
+    let outcome = ThrownMessage()
+    let finished = try await finishesWithinCap {
+        do {
+            try await engine.warmUp()
+            outcome.set("warmUp returned without throwing")
+        } catch {
+            outcome.set("\(error)")
+        }
+    }
+    try #require(finished, "a stalled download was never stopped")
+    #expect(outcome.value.contains("no progress"), "the error should name the stall, got: \(outcome.value)")
+}
+
+@Test("A helper that never reports a download still gets only the flat warm-up limit (F522)")
+func warmDictationEngineSilentHelperKeepsTheFlatLimit() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineSilentFlat-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let release = tmp.appendingPathComponent("release")
+    defer { try? Data().write(to: release) }
+    let script = tmp.appendingPathComponent("silent.sh")
+    let helper = """
+    while [ -d "\(tmp.path)" ] && [ ! -e "\(release.path)" ]; do sleep 0.05; done
+    """
+    try helper.write(to: script, atomically: true, encoding: .utf8)
+
+    let engine = WarmWhisperDictationEngine(
+        python: URL(fileURLWithPath: "/bin/sh"),
+        script: script,
+        modelDirectory: tmp
+    )
+    defer { engine.shutdown() }
+    engine.warmUpTimeout = 1
+    engine.downloadStallTimeout = 600 // a silent helper never enters stall mode, so this is unreachable
+
+    let outcome = ThrownMessage()
+    let finished = try await finishesWithinCap {
+        do {
+            try await engine.warmUp()
+            outcome.set("")
+        } catch {
+            outcome.set("\(error)")
+        }
+    }
+    try #require(finished, "a silent helper outlived the flat warm-up limit")
+    #expect(!outcome.value.isEmpty, "the flat limit should have ended the wait with an error")
+}

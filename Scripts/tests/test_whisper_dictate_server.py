@@ -14,6 +14,7 @@ test_refine_server.py, so this runs under plain system python3 with no runtime i
 """
 
 import importlib.util
+import json
 import os
 import struct
 import tempfile
@@ -479,6 +480,141 @@ class UnexpectedFailureTests(unittest.TestCase):
         result = server.transcribe_single_window(None, mlx, [0.0] * 16000, "repo/name", None, None)
         self.assertEqual(self.calls, [("repo/name", "float16")], "the failure was not raised past the imports")
         self.assertIsNone(result)
+
+
+class MainCacheHandlingTests(unittest.TestCase):
+    """F522 — what `main()` does with a model cache it finds unfinished, run through the real
+    `main()` with fake `mlx`, `mlx_whisper` and `huggingface_hub` modules and a recorded downloader.
+
+    The helper used to `shutil.rmtree` the whole repo cache here — every finished file and every
+    partial byte — so that the library's own download could start clean. It now completes the cache
+    with `download_dictation_model` and deletes nothing itself."""
+
+    REPO_FOLDER = "models--mlx-community--whisper-large-v3-turbo"
+
+    def setUp(self):
+        import io
+        import sys
+        from types import ModuleType
+
+        self.tmp = tempfile.mkdtemp(prefix="whispermeet-main-cache-")
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        self.model_dir = os.path.join(self.tmp, "models")
+        self.repo_cache = os.path.join(self.model_dir, "hf", "hub", self.REPO_FOLDER)
+        os.makedirs(os.path.join(self.repo_cache, "blobs"))
+        self.finished = os.path.join(self.repo_cache, "blobs", "a" * 40)
+        self.partial = os.path.join(self.repo_cache, "blobs", "b" * 64 + ".part")
+        for path in (self.finished, self.partial):
+            with open(path, "wb") as handle:
+                handle.write(b"bytes already on disk")
+
+        self.cached = False           # what the fake `try_to_load_from_cache` reports
+        self.cache_checks = 0
+        self.downloads = []
+        self.offline_during_download = []
+
+        fake_hub = ModuleType("huggingface_hub")
+
+        def try_to_load_from_cache(repo, filename, cache_dir=None):
+            self.cache_checks += 1
+            return "/cached/" + filename if self.cached else None
+
+        fake_hub.try_to_load_from_cache = try_to_load_from_cache
+        mlx = ModuleType("mlx")
+        core = ModuleType("mlx.core")
+        core.float32 = "float32"
+        core.zeros = lambda count, dtype=None: [0.0] * count
+        mlx.core = core
+        whisper = ModuleType("mlx_whisper")
+        whisper.transcribe = lambda audio, **kwargs: {"text": "", "language": "en", "segments": []}
+
+        names = ("huggingface_hub", "mlx", "mlx.core", "mlx_whisper")
+        self._saved_modules = {name: sys.modules.get(name) for name in names}
+        sys.modules.update({"huggingface_hub": fake_hub, "mlx": mlx, "mlx.core": core, "mlx_whisper": whisper})
+        self._saved_env = {name: os.environ.get(name) for name in ("HF_HOME", "HF_HUB_OFFLINE")}
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        self._saved_argv, self._saved_stdin = sys.argv, sys.stdin
+        sys.argv = ["whisper_dictate_server.py", "--model-dir", self.model_dir]
+        sys.stdin = io.StringIO("")
+        self._saved_download = getattr(server, "download_dictation_model", None)
+
+        def record(repo, hub_dir, **_options):
+            self.downloads.append((repo, hub_dir))
+            self.offline_during_download.append(os.environ.get("HF_HUB_OFFLINE"))
+            if self.download_error is not None:
+                raise self.download_error
+            self.cached = True  # the download completed the cache
+
+        self.download_error = None
+        server.download_dictation_model = record
+
+    def tearDown(self):
+        import sys
+
+        for name, module in self._saved_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        for name, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        sys.argv, sys.stdin = self._saved_argv, self._saved_stdin
+        if self._saved_download is None:
+            del server.download_dictation_model
+        else:
+            server.download_dictation_model = self._saved_download
+
+    def run_main(self):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = server.main()
+        return status, [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+
+    def test_an_unfinished_cache_is_completed_and_nothing_in_it_is_deleted(self):
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 0)
+        self.assertEqual(self.downloads, [("mlx-community/whisper-large-v3-turbo", os.path.join(self.model_dir, "hf", "hub"))])
+        self.assertTrue(os.path.exists(self.finished), "a finished blob was deleted")
+        self.assertTrue(os.path.exists(self.partial), "a partial file was deleted instead of being resumed")
+        self.assertEqual(lines[0], {"ready": True})
+
+    def test_the_network_is_allowed_while_the_download_runs_and_forbidden_after(self):
+        self.run_main()
+
+        self.assertEqual(self.offline_during_download, [None])
+        self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1", "the model is cached now; loading it needs no network")
+
+    def test_a_complete_cache_is_used_offline_with_no_download(self):
+        self.cached = True
+        self.run_main()
+
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
+
+    def test_a_failed_download_is_reported_on_the_wire_and_the_helper_exits_nonzero(self):
+        self.download_error = server.ModelDownloadError("the model download stopped at 5 of 10 bytes")
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 1)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("the model download stopped at 5 of 10 bytes", lines[0]["error"])
+        self.assertTrue(os.path.exists(self.partial), "a failed download must leave the partial file for the next start")
+
+    def test_a_caller_that_forbids_the_network_gets_no_download_and_no_cache_probe(self):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 0)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(self.cache_checks, 0, "an offline caller has nothing to decide, and may lack huggingface_hub")
+        self.assertTrue(os.path.exists(self.partial))
 
 
 

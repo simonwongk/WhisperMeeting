@@ -38,6 +38,59 @@ private func requestHelperTermination(
     process.terminate()
 }
 
+/// An off-queue deadline for a parked read that can be pushed back (F522). Each `arm` replaces the
+/// pending expiry with a new one; if one is ever allowed to run out it calls `onExpire` once from a
+/// global queue. `expiredStallWindow` says afterwards whether that expiry ended a stall window, so
+/// the reader can name the cause when the terminated child's stdout reads as EOF.
+private final class ReadWatchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: DispatchWorkItem?
+    private var cancelled = false
+    private var expiredWindow: TimeInterval?
+    private let onExpire: @Sendable () -> Void
+
+    init(onExpire: @escaping @Sendable () -> Void) {
+        self.onExpire = onExpire
+    }
+
+    func arm(after seconds: TimeInterval, inStallWindow: Bool) {
+        let item = DispatchWorkItem { [weak self] in
+            self?.fire(stallWindow: inStallWindow ? seconds : nil)
+        }
+        lock.lock()
+        pending?.cancel()
+        let stopped = cancelled
+        pending = stopped ? nil : item
+        lock.unlock()
+        guard !stopped else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        pending?.cancel()
+        pending = nil
+        lock.unlock()
+    }
+
+    /// The stall window that expired, or nil if nothing expired or the flat budget did.
+    var expiredStallWindow: TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return expiredWindow
+    }
+
+    private func fire(stallWindow: TimeInterval?) {
+        lock.lock()
+        let stopped = cancelled
+        if !stopped { expiredWindow = stallWindow }
+        lock.unlock()
+        guard !stopped else { return }
+        onExpire()
+    }
+}
+
 /// Keeps a Whisper model resident in a child Python process, driven over stdin/stdout
 /// newline-delimited JSON, so repeat dictations skip the multi-second model-load cost.
 /// All process/IO work is serialized on a private queue; the model is evicted on `shutdown()`.
@@ -73,6 +126,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private let stderrLock = NSLock()
     private var stderrText = ""
     private var stderrHandle: FileHandle?
+
+    /// How long `warmUp` waits for the helper's `{"ready":true}` — model load, and on the very first
+    /// run the one-time model download too. Internal so a test can shorten it.
+    var warmUpTimeout: TimeInterval = 1_800
+    /// Once the helper reports a download in progress (F522), the wait is no longer this flat budget
+    /// but "no progress for this long". Internal so a test can shorten it.
+    var downloadStallTimeout: TimeInterval = 180
 
     public init(
         python: URL,
@@ -295,10 +355,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             throw processFailure("Dictation model was replaced before it finished starting.")
         }
 
-        // Block until the helper reports the model is resident.
-        // First enable may download the model (~1.6 GB); give the one-time download+load room
-        // before the watchdog kills the helper. Subsequent warm-ups (model cached) return in seconds.
-        let readyLine = try readLine(timeout: 1_800)
+        // Block until the helper reports the model is resident. Model load gets the flat
+        // `warmUpTimeout`. The first enable may also download the model (~1.6 GB), which no flat
+        // budget fits — one that is long enough for a slow link is a wedged helper's wait too — so a
+        // helper that reports `{"downloading":true}` as bytes arrive is instead given
+        // `downloadStallTimeout` of silence, from its last report (F522). Subsequent warm-ups
+        // (model cached) return in seconds and never report a download.
+        let readyLine = try readLine(timeout: warmUpTimeout, stallTimeout: downloadStallTimeout)
         if let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
            ready["ready"] == true {
             return
@@ -312,7 +375,14 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         throw processFailure("Dictation helper failed to start.\(stderrSuffix())")
     }
 
-    private func readLine(timeout: TimeInterval) throws -> Data {
+    /// Reads one reply line.
+    ///
+    /// `stallTimeout` is only for the warm-up (F522). When it is set, a `{"downloading":true}` line
+    /// is consumed as a progress report and moves the deadline to `stallTimeout` from now, and a
+    /// `{"downloading":false}` line moves it back to `timeout` from now; neither is returned.
+    /// Everything else — chatter, and every request read, which passes no `stallTimeout` — is
+    /// exactly as before: chatter and unrecognised lines never move the deadline.
+    private func readLine(timeout: TimeInterval, stallTimeout: TimeInterval? = nil) throws -> Data {
         // `availableData` blocks until data or EOF. A silent-but-alive helper would otherwise hang
         // this read (and, since all work is serialized on `queue`, the whole engine) forever. An
         // off-queue watchdog terminates the process after `timeout`; termination closes stdout, so
@@ -325,14 +395,22 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // would leave `self.stdin` closed but non-nil with the process still `isRunning`, so
         // `ensureRunning()` would short-circuit and the next request would fail EBADF on write
         // instead of respawning.
-        let watchdog = DispatchWorkItem {
+        let watchdog = ReadWatchdog {
             requestHelperTermination(process: watchdogProcess, input: nil)
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        watchdog.arm(after: timeout, inStallWindow: false)
         defer { watchdog.cancel() }
 
         while true {
             if let line = DictationWireProtocol.takeLine(&stdoutBuffer) {
+                if let stallTimeout, let downloading = Self.downloadReport(in: line) {
+                    if downloading {
+                        watchdog.arm(after: stallTimeout, inStallWindow: true)
+                    } else {
+                        watchdog.arm(after: timeout, inStallWindow: false)
+                    }
+                    continue
+                }
                 // Skipping happens inside the watchdog's window on purpose: chatter must not buy the
                 // helper extra time, so the timeout still measures the wait for a real message.
                 guard Self.isProtocolMessage(line) else {
@@ -346,10 +424,25 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             }
             let chunk = stdout.availableData
             if chunk.isEmpty {
+                if let stalledFor = watchdog.expiredStallWindow {
+                    throw processFailure(
+                        "The dictation model download made no progress for \(Int(stalledFor.rounded())) seconds and was stopped. "
+                            + "Check your connection and try again; a partly downloaded model is kept."
+                    )
+                }
                 throw processFailure("Dictation helper stopped unexpectedly.\(stderrSuffix())")
             }
             stdoutBuffer.append(chunk)
         }
+    }
+
+    /// `true`/`false` for a helper's `{"downloading": …}` progress line (any other fields are
+    /// ignored), nil for everything else. A line that also carries `ready` or `error` is a reply, so
+    /// it is never mistaken for progress.
+    private static func downloadReport(in line: Data) -> Bool? {
+        guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+              object["ready"] == nil, object["error"] == nil else { return nil }
+        return object["downloading"] as? Bool
     }
 
     /// Every message in this protocol is a JSON object, so a line that does not start with `{` is

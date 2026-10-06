@@ -10,10 +10,17 @@ Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dicta
 """
 import argparse
 import contextlib
+import hashlib
+import http.client
 import json
 import os
-import shutil
+import re
+import socket
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 
 
@@ -31,6 +38,309 @@ def model_fully_cached(hub_dir: str, mlx_repo: str) -> bool:
         if not isinstance(try_to_load_from_cache(mlx_repo, filename, cache_dir=hub_dir), str):
             return False
     return True
+
+
+# F522 — the first-run model download.
+#
+# The 1.6 GB weights used to be fetched inside `mlx_whisper.load_model`'s own `snapshot_download`,
+# and two things made that fail on a slow or unreliable link. The helper deleted the whole model
+# cache whenever it found the download unfinished, and the app gave the whole warm-up a flat 30
+# minutes, so a link under ~7 Mbit/s could never finish. Neither is fixed by leaving the cache alone,
+# because the installed huggingface_hub never resumes a partial file across processes: each attempt
+# writes `blobs/<etag>.<random>.incomplete` (`file_download.py:1908` in 1.24.0), deletes it when the
+# attempt raises (`:1946-1949`), and orphans it when the process is killed. So the helper downloads
+# the two files itself, with HTTP `Range`, into a partial file named for the blob it will become,
+# then lays them out exactly as the library would (blobs/, snapshots/<commit>/, refs/main) so that
+# `model_fully_cached` and the library's offline load see an ordinary cache.
+#
+# While bytes arrive it prints `{"downloading": true}` (at most once a second) and closes with
+# `{"downloading": false}`; the app reads the first as "the wait is now no-progress-for-N-seconds"
+# rather than a flat budget. Only the resumable path is responsible for those reports being honest —
+# they are printed as chunks are written, never from a timer.
+
+DICTATION_MODEL_FILES = ("config.json", "weights.safetensors")
+DOWNLOAD_REPORT_INTERVAL_SECONDS = 1.0
+DOWNLOAD_CHUNK_BYTES = 1 << 20
+DOWNLOAD_RETRIES = 5
+DOWNLOAD_REQUEST_TIMEOUT_SECONDS = 60
+DOWNLOAD_USER_AGENT = "WhisperMeet-dictation-model-download"
+_SAFE_BLOB_NAME = re.compile(r"^[0-9A-Za-z._-]+$")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_TRANSIENT_ERRORS = (urllib.error.URLError, http.client.HTTPException, socket.timeout, ConnectionError, OSError)
+
+
+class ModelDownloadError(Exception):
+    """The download ran and failed. Partial bytes are kept for the next attempt; do not start over."""
+
+
+class ResumableDownloadUnavailable(Exception):
+    """The resumable path could not even start (metadata unusable). Nothing on disk was changed, so
+    the library's own downloader is a safe fallback."""
+
+
+def emit_download_report(active) -> None:
+    sys.stdout.write(json.dumps({"downloading": bool(active)}) + "\n")
+    sys.stdout.flush()
+
+
+class DownloadHeartbeat:
+    """Reports that bytes are arriving, at most once per `interval`. Called per chunk written."""
+
+    def __init__(self, emit=emit_download_report, clock=time.monotonic,
+                 interval=DOWNLOAD_REPORT_INTERVAL_SECONDS):
+        self._emit = emit
+        self._clock = clock
+        self._interval = interval
+        self._last = None
+
+    def tick(self) -> None:
+        now = self._clock()
+        if self._last is None or now - self._last >= self._interval:
+            self._last = now
+            self._emit(True)
+
+
+def offline_requested() -> bool:
+    """`HF_HUB_OFFLINE` as the library reads it: the caller has forbidden the network."""
+    return os.environ.get("HF_HUB_OFFLINE", "").upper() in ("1", "ON", "YES", "TRUE")
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """The Hub answers a `resolve/` HEAD for a large file with a 302 whose headers carry the commit,
+    checksum and size. Following it would discard exactly what the HEAD is for."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _normalize_etag(value):
+    if not value:
+        return None
+    value = value.strip()
+    if value.startswith("W/"):
+        value = value[2:]
+    return value.strip('"')
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_url(endpoint, repo, revision, filename):
+    return "%s/%s/resolve/%s/%s" % (
+        endpoint, repo, urllib.parse.quote(revision, safe=""), urllib.parse.quote(filename)
+    )
+
+
+def _file_metadata(endpoint, repo, revision, filename, timeout):
+    """(commit, etag, size) the Hub reports for one file, read the way the library reads it: the
+    linked ETag (the sha256 of an LFS/Xet file) in preference to the plain one, and the linked size."""
+    url = _resolve_url(endpoint, repo, revision, filename)
+    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": DOWNLOAD_USER_AGENT})
+    try:
+        try:
+            headers = urllib.request.build_opener(_NoRedirects).open(request, timeout=timeout).headers
+        except urllib.error.HTTPError as error:
+            if 300 <= error.code < 400:
+                headers = error.headers
+            elif error.code in (401, 403, 404):
+                raise ModelDownloadError(
+                    "%s/%s is not available from the model hub (HTTP %d)" % (repo, filename, error.code)
+                )
+            else:
+                raise ResumableDownloadUnavailable("HTTP %d for %s" % (error.code, url))
+    except _TRANSIENT_ERRORS as error:
+        raise ResumableDownloadUnavailable("%s: %s" % (url, error))
+    commit = headers.get("X-Repo-Commit")
+    etag = _normalize_etag(headers.get("X-Linked-ETag") or headers.get("ETag"))
+    size = _int_or_none(headers.get("X-Linked-Size") or headers.get("Content-Length"))
+    if not commit or not etag or size is None or not _SAFE_BLOB_NAME.match(etag) \
+            or not re.match(r"^[0-9a-f]{40}$", commit):
+        raise ResumableDownloadUnavailable("unusable metadata for %s" % url)
+    return commit, etag, size
+
+
+def _stream_once(url, part_path, have, timeout, chunk_size, heartbeat):
+    """One request for the rest of the file, appended to `part_path`. Raises on any transport error;
+    the caller decides from the file's size whether it made progress."""
+    headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+    if have:
+        headers["Range"] = "bytes=%d-" % have
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        if have and response.status != 206:
+            have = 0  # the server ignored Range and is sending the whole file: start the file over
+        elif have:
+            match = re.match(r"^bytes (\d+)-", response.headers.get("Content-Range") or "")
+            if not match or int(match.group(1)) != have:
+                have = 0
+                os.remove(part_path)
+                raise OSError("the server resumed at a different offset than requested")
+        with open(part_path, "ab" if have else "wb") as out:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    return
+                out.write(chunk)
+                heartbeat.tick()
+
+
+def _sha256_of(path, chunk_size, heartbeat):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+            heartbeat.tick()
+
+
+def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout, heartbeat):
+    """Bring `blob_path` into existence as exactly the advertised file, resuming `<blob>.part`."""
+    part_path = blob_path + ".part"
+    failures = 0  # consecutive failed attempts that brought in nothing
+    while True:
+        have = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+        if have > size:
+            os.remove(part_path)
+            have = 0
+        if have < size:
+            problem = None
+            try:
+                _stream_once(url, part_path, have, timeout, chunk_size, heartbeat)
+            except urllib.error.HTTPError as error:
+                if error.code in (401, 403, 404):
+                    raise ModelDownloadError("HTTP %d downloading %s" % (error.code, url))
+                if error.code == 416 and os.path.exists(part_path):
+                    os.remove(part_path)  # the partial file no longer matches the source
+                problem = error
+            except _TRANSIENT_ERRORS as error:
+                problem = error
+            now = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+            if now < size:
+                failures = 0 if now > have else failures + 1
+                if failures > retries:
+                    raise ModelDownloadError(
+                        "the model download stopped at %d of %d bytes: %s" % (now, size, problem or "short read")
+                    )
+                sleep(1 if now > have else min(2 ** failures, 10))
+                continue
+        break
+    # A file that is the wrong size, or hashes wrong, is not evidence of anything: keeping it would
+    # resume from bytes that may be corrupt, so it goes and the next attempt starts clean. The hub
+    # advertises an LFS/Xet file's sha256 as its ETag; a plain git file's ETag is a sha1 that only its
+    # size can vouch for.
+    if os.path.getsize(part_path) != size or (
+        _SHA256_HEX.match(etag) and _sha256_of(part_path, chunk_size, heartbeat) != etag
+    ):
+        os.remove(part_path)
+        raise ModelDownloadError("the downloaded model did not match its published size and checksum and was discarded")
+    os.replace(part_path, blob_path)
+
+
+def _link_snapshot_file(repo_cache, commit, filename, etag):
+    blob_path = os.path.join(repo_cache, "blobs", etag)
+    link = os.path.join(repo_cache, "snapshots", commit, filename)
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    target = os.path.relpath(blob_path, os.path.dirname(link))
+    if os.path.islink(link) and os.readlink(link) == target and os.path.exists(link):
+        return
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink(target, link)
+
+
+def _write_ref(repo_cache, revision, commit):
+    refs = os.path.join(repo_cache, "refs")
+    os.makedirs(refs, exist_ok=True)
+    temporary = os.path.join(refs, ".%s.%d.tmp" % (revision, os.getpid()))
+    with open(temporary, "w") as handle:
+        handle.write(commit)
+    os.replace(temporary, os.path.join(refs, revision))
+
+
+def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, retries=DOWNLOAD_RETRIES,
+                           sleep=time.sleep, chunk_size=DOWNLOAD_CHUNK_BYTES,
+                           timeout=DOWNLOAD_REQUEST_TIMEOUT_SECONDS, files=DICTATION_MODEL_FILES):
+    """Complete the model's hub cache, resuming whatever an earlier attempt left. Every file is
+    resolved at one commit; `refs/main` is written last, so an unfinished model is never advertised.
+
+    Raises `ModelDownloadError` when the transfer fails (partial bytes stay), and
+    `ResumableDownloadUnavailable` when it could not begin (nothing was touched)."""
+    endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
+    heartbeat = heartbeat or DownloadHeartbeat()
+    repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
+
+    commit, first_etag, first_size = _file_metadata(endpoint, mlx_repo, "main", files[0], timeout)
+    metadata = {files[0]: (first_etag, first_size)}
+    for name in files[1:]:
+        _, etag, size = _file_metadata(endpoint, mlx_repo, commit, name, timeout)
+        metadata[name] = (etag, size)
+
+    blobs = os.path.join(repo_cache, "blobs")
+    os.makedirs(blobs, exist_ok=True)
+    wanted_parts = set(etag + ".part" for etag, _ in metadata.values())
+    for leftover in os.listdir(blobs):
+        # The library never reuses its own `.incomplete` files, and a `.part` for an etag the hub no
+        # longer serves cannot be resumed; either can be 1.6 GB. Completed blobs are never touched.
+        if leftover.endswith(".incomplete") or (leftover.endswith(".part") and leftover not in wanted_parts):
+            try:
+                os.remove(os.path.join(blobs, leftover))
+            except OSError:
+                pass
+
+    for name in files:
+        etag, size = metadata[name]
+        blob_path = os.path.join(blobs, etag)
+        if not (os.path.isfile(blob_path) and os.path.getsize(blob_path) == size):
+            _fetch_blob(_resolve_url(endpoint, mlx_repo, commit, name), blob_path, etag, size,
+                        retries, sleep, chunk_size, timeout, heartbeat)
+        _link_snapshot_file(repo_cache, commit, name, etag)
+    _write_ref(repo_cache, "main", commit)
+
+
+def hub_snapshot_download(mlx_repo, hub_dir, heartbeat):
+    """The library's own downloader, used only when the resumable path could not begin. It cannot
+    resume, but it reports progress through the same heartbeat so the app does not stop it early."""
+    from huggingface_hub import snapshot_download
+    from tqdm.auto import tqdm as base_tqdm
+
+    class _Reporting(base_tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs["disable"] = True
+            kwargs.pop("name", None)
+            super().__init__(*args, **kwargs)
+
+        def update(self, n=1):
+            heartbeat.tick()
+            return super().update(n)
+
+    snapshot_download(
+        repo_id=mlx_repo,
+        cache_dir=hub_dir,
+        allow_patterns=list(DICTATION_MODEL_FILES),
+        tqdm_class=_Reporting,
+    )
+
+
+def download_dictation_model(mlx_repo, hub_dir, emit=emit_download_report, fallback=hub_snapshot_download,
+                             **options):
+    """The first-run download, bracketed by the reports the app reads. The closing report is always
+    sent, so a failure cannot leave the app waiting in "no progress for N seconds" mode."""
+    heartbeat = DownloadHeartbeat(emit)
+    emit(True)
+    try:
+        try:
+            ensure_dictation_model(mlx_repo, hub_dir, heartbeat=heartbeat, **options)
+        except ResumableDownloadUnavailable as unavailable:
+            sys.stderr.write("resumable model download unavailable (%s); using the library's\n" % unavailable)
+            fallback(mlx_repo, hub_dir, heartbeat)
+    finally:
+        emit(False)
 
 
 # WhisperMeet's capture format, from DictationCaptureLimits.sampleRate / WAVWriter: 16-bit PCM,
@@ -288,17 +598,28 @@ def main() -> int:
     # run the model isn't cached yet, so we allow that one-time download, after which every
     # subsequent start is fully offline (and works air-gapped).
     hub_dir = os.path.join(hf_home, "hub")
-    repo_cache = os.path.join(hub_dir, "models--" + args.mlx_repo.replace("/", "--"))
-    if os.path.isdir(repo_cache):
+    if offline_requested():
+        # The caller has already forbidden the network (HF_HUB_OFFLINE): there is nothing to
+        # download and nothing to decide, and the cache is left exactly as it is.
+        pass
+    elif model_fully_cached(hub_dir, args.mlx_repo):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    else:
+        # No cache, or an unfinished one — a download that was interrupted (kill, quit/disable
+        # mid-download, network drop, disk-full). Forcing HF_HUB_OFFLINE here would wedge dictation
+        # permanently, since offline mode blocks the very HTTP the partial cache needs to finish.
+        # Complete it here, with the network allowed, before the model is loaded. F522: the old
+        # answer was to delete the whole cache and let mlx_whisper download from zero; this keeps
+        # every finished file and resumes the partial one (see `ensure_dictation_model`), and tells
+        # the app while bytes are arriving so it does not stop a slow download on a flat timer.
+        try:
+            download_dictation_model(args.mlx_repo, hub_dir)
+        except Exception as error:
+            sys.stdout.write(json.dumps({"error": "model download failed: " + str(error)}) + "\n")
+            sys.stdout.flush()
+            return 1
         if model_fully_cached(hub_dir, args.mlx_repo):
             os.environ["HF_HUB_OFFLINE"] = "1"
-        else:
-            # The cache dir exists but its snapshot is incomplete — a download that was
-            # interrupted (watchdog kill, quit/disable mid-download, network drop, sleep,
-            # disk-full). Forcing HF_HUB_OFFLINE here would wedge dictation permanently, since
-            # offline mode blocks the very HTTP the partial cache needs to repair itself. Wipe
-            # the partial cache so THIS run re-downloads cleanly with network allowed.
-            shutil.rmtree(repo_cache, ignore_errors=True)
 
     import mlx.core as mx
     import mlx_whisper  # imported after arg parse so --help is instant
