@@ -10,7 +10,8 @@ public struct SegmentEmbeddings: Sendable, Equatable {
     public static let vectorsFilename = "ask-embeddings.f32"
 
     public let modelID: String
-    /// Of the segment texts the vectors were computed from; a re-transcription or an edit changes it.
+    /// Of the texts the vectors were computed from: a meeting's segments, or a hand-edited
+    /// transcript's lines (`EditedTranscript`, F455). A re-transcription or an edit changes it.
     public let fingerprint: String
     public let dimension: Int
     /// `count × dimension`, row-major, L2-normalised by the embedder.

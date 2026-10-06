@@ -161,8 +161,10 @@ func indexIsCachedWhenItCannotBePersisted() async throws {
         .appendingPathComponent(SegmentEmbeddings.vectorsFilename).path), "and nothing was persisted")
 
     // An edited transcript no longer matches the cached fingerprint, so it is rebuilt — the cache
-    // must not be able to answer with stale vectors.
-    model.store.update(id: id) { $0.segments = [seg(0, "We agreed twenty percent off the annual plan.")] }
+    // must not be able to answer with stale vectors. Edited the way the editor edits (F455): only
+    // the text changes. This used to assign `segments`, which the editor never does, and so it
+    // passed while a real edit left the stale vectors in place.
+    model.store.editTranscript(id: id, text: "00:00  We agreed twenty percent off the annual plan.\n00:30  The offsite moves to May.")
     _ = await model.askMeetingsByMeaning(query: "pricing decision", scope: MeetingScope())
     #expect(await calls.passageRuns == 2)
 }

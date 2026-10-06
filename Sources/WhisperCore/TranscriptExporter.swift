@@ -102,11 +102,6 @@ public struct TranscriptExportRequest: Sendable {
 }
 
 public enum TranscriptExporter {
-    private struct TranscriptLine {
-        let start: TimeInterval?
-        let text: String
-    }
-
     public static func render(
         _ format: TranscriptExportFormat,
         _ request: TranscriptExportRequest
@@ -236,8 +231,9 @@ public enum TranscriptExporter {
                 text: text
             )]
         }
-        let editedLines = transcriptLines(request.transcriptText)
-        if linesStillAlignWithOriginalTimings(editedLines, request.segments) {
+        // The line rules are `EditedTranscript`'s, shared with Ask and the action-item quotes (F455).
+        let editedLines = EditedTranscript.lines(request.transcriptText)
+        if EditedTranscript.alignsWithOriginalTimings(editedLines, request.segments) {
             return zip(request.segments, editedLines).map { segment, line in
                 TranscriptSegment(
                     speaker: segment.speaker,
@@ -270,57 +266,6 @@ public enum TranscriptExporter {
             text: text
         )]
     }
-
-    private static func linesStillAlignWithOriginalTimings(
-        _ lines: [TranscriptLine],
-        _ segments: [TranscriptSegment]
-    ) -> Bool {
-        guard !lines.isEmpty, lines.count == segments.count else { return false }
-        return zip(lines, segments).allSatisfy { line, segment in
-            switch (line.start, segment.start) {
-            case (nil, nil):
-                // An untimed line matching an untimed segment (F473): F263 made a passage with no
-                // timestamp a DESIGNED state (bare line, no drift to check), not a defect — treating
-                // it as misaligned was what collapsed the whole export into one cue.
-                return true
-            case let (editedStart?, originalStart?):
-                // The editable transcript displays whole seconds while Whisper retains subsecond cue
-                // precision. Preserve that precision only when the visible whole-second timestamp was
-                // not changed by the user.
-                return Int(saturating: editedStart.rounded(.down)) == Int(saturating: originalStart.rounded(.down))
-            default:
-                // One side has a timestamp and the other does not — genuine drift (an edit added or
-                // removed a line's timestamp), not F263's untimed-by-design case.
-                return false
-            }
-        }
-    }
-
-    private static func transcriptLines(_ text: String) -> [TranscriptLine] {
-        text.split(whereSeparator: \.isNewline).compactMap { rawLine in
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty else { return nil }
-            let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            guard let match = timestampedLineRegex.firstMatch(in: line, range: range),
-                  let clockRange = Range(match.range(at: 1), in: line),
-                  let textRange = Range(match.range(at: 2), in: line) else {
-                return TranscriptLine(start: nil, text: line)
-            }
-            let clock = line[clockRange].split(separator: ":").compactMap { Double($0) }
-            guard clock.count == 2 || clock.count == 3 else {
-                return TranscriptLine(start: nil, text: line)
-            }
-            let start = clock.reduce(0) { $0 * 60 + $1 }
-            return TranscriptLine(
-                start: start,
-                text: line[textRange].trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-        }
-    }
-
-    private static let timestampedLineRegex = try! NSRegularExpression(
-        pattern: #"^\s*((?:\d{1,3}:)?\d{1,3}:\d{2})\s+(.+?)\s*$"#
-    )
 
     private static func markdown(_ request: TranscriptExportRequest) -> String {
         var lines = ["# \(request.title)", ""]

@@ -5668,7 +5668,13 @@ final class AppModel: ObservableObject {
             )
             // F177: link each action item to its best supporting transcript segment (quote + timestamp)
             // locally, from the stored segments — no extra model call, nothing leaves this Mac.
-            let segments = store.meeting(id: id)?.segments ?? []
+            //
+            // F455: from the transcript as the user left it. A hand edit never touches the stored
+            // segments, so resolving against them quoted a line the user had deleted, or the
+            // mis-hearing they had corrected, under a summary written from the edited text.
+            let segments = store.meeting(id: id).map {
+                EditedTranscript.effectiveSegments(transcriptText: $0.transcriptText, segments: $0.segments)
+            } ?? []
             var resolved = summary
             resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)
             store.update(id: id) { meeting in
@@ -5865,10 +5871,18 @@ final class AppModel: ObservableObject {
             )
         }
         let searchable = inScope.map { meeting in
-            SearchableMeeting(
+            // F455: a hand-edited transcript is searched as the user left it — its lines, not the
+            // segments the editor never touches — so a deleted or corrected sentence is not a
+            // passage, an answer's grounding, or a row in the meaning index any more. The lines
+            // keep their segment's precise time while they still align, and their visible MM:SS
+            // otherwise; a line with neither is still searched, just without a timestamp.
+            let segments = store.isTranscriptEdited(meeting)
+                ? EditedTranscript.segments(transcriptText: meeting.transcriptText, original: meeting.segments)
+                : meeting.segments
+            return SearchableMeeting(
                 id: meeting.id,
                 title: meeting.title,
-                segments: meeting.segments.enumerated().map { index, segment in
+                segments: segments.enumerated().map { index, segment in
                     SearchableSegment(index: index, start: segment.start, text: segment.text)
                 }
             )
@@ -5969,7 +5983,10 @@ final class AppModel: ObservableObject {
     /// every scope-chip and match-mode change, so that was a multi-second model run per tap.
     ///
     /// Validity is the fingerprint, not the id: an edited or re-transcribed meeting no longer
-    /// matches and is rebuilt. Bounded, because a session can visit a whole library.
+    /// matches and is rebuilt. That holds for a hand edit only because the fingerprint is over the
+    /// texts Ask searches, which for an edited transcript are its lines (F455) — the editor never
+    /// changes the segments, so a fingerprint of those would have kept the deleted text's vectors.
+    /// Bounded, because a session can visit a whole library.
     private var askIndexCache: [UUID: SegmentEmbeddings] = [:]
 
     /// About 16 MB of vectors — a 384-dimension index of ~10,000 rows is ~15 MB, so an ordinary

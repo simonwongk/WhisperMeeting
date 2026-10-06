@@ -438,3 +438,20 @@ func fullyUntimedTranscriptStillExportsAsOneCue() {
     #expect(srt.contains("First bit.\nSecond bit."))
     #expect(srt.components(separatedBy: " --> ").count - 1 == 1)
 }
+
+@Test("A segment starting past the half second keeps its own timing in SRT, edited or not (F455)")
+func subtitleExportKeepsTimingsPastTheHalfSecond() {
+    // Whisper's timings are fractional; 30.7 s shows as "00:31" since F287 rounded the display.
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0.25, end: 2.5, text: "Hello everyone."),
+        TranscriptSegment(speaker: nil, start: 30.7, end: 33.6, text: "We'll sue Acme next week."),
+    ]
+    let unedited = TranscriptFormatter.timestamped(segments)
+    for text in [unedited, unedited.replacingOccurrences(of: "sue", with: "see")] {
+        let srt = TranscriptExporter.render(.srt, TranscriptExportRequest(
+            title: "T", languageCode: "en", durationSeconds: 60, transcriptText: text, segments: segments
+        ))
+        #expect(srt.contains("00:00:00,250 --> 00:00:02,500"))
+        #expect(srt.contains("00:00:30,700 --> 00:00:33,600"), "\(srt)")
+    }
+}
