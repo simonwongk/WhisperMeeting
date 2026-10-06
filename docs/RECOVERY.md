@@ -298,9 +298,10 @@ added that this one does not understand (F552). The same removal reaches the ind
 index files in a restore's `.pre-restore-*/` folder lose that meeting's entry and keep the rest. Two
 kinds of copy cannot be cleaned that way, and both are named in a message by their path in the
 library folder rather than skipped (F668): a copy that cannot be rewritten (a permission error, say)
-stays queued and is tried again each time WhisperMeet checks; a copy that is not a readable index
-cannot have one meeting removed from it, so it is left as it is and named once each launch while it
-still contains the meeting — delete it yourself if you no longer need it. The recording folders a
+stays queued and is tried again at the next launch; a copy that is not a readable index cannot have
+one meeting removed from it, so it is left as it is and named once each launch while its bytes still
+name the meeting — it may still contain the text; delete it yourself if you no longer need it. A copy
+that cannot be opened at all is named too, because WhisperMeet could not check it. The recording folders a
 restore set aside in `.pre-restore-*/`, **including each meeting's `notes.md` with its transcript
 and summary**, are not touched by any of this (F664). The queue of pending deletions is
 `meetings.pending-shred.json`.

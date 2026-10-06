@@ -110,14 +110,125 @@ func failedSideCopyRewriteIsRetried() throws {
     #expect(message.contains(".pre-restore-1790000000/meetings.json"),
             "named by its file name alone, a snapshot's copy reads as the live index: \(message)")
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: snapshot.folder.path)
-    store.clearStorageError()
 
-    _ = store.processPendingShreds(now: now + 60)
+    // Retried at the next launch (each pending id is tried once per launch: review round 2).
+    let relaunched = MeetingStore(rootDirectory: root)
+    _ = relaunched.processPendingShreds(now: now + 60)
 
     #expect(!String(decoding: try Data(contentsOf: snapshot.index), as: UTF8.self).contains("confidential-kestrel"),
             "the copy that failed once was never looked at again")
     #expect(String(decoding: try Data(contentsOf: snapshot.index), as: UTF8.self).contains("Standup"))
-    #expect(store.storageErrorMessage == nil)
+    #expect(relaunched.storageErrorMessage == nil)
+}
+
+/// A new deletion has its own week (review round 2, probe P3). A meeting whose side copies were still
+/// queued from an earlier deletion, brought back and deleted again before any pass saw it live, kept
+/// the old `side-copies:` entry — so the next pass stripped the side copies at once, inside the new
+/// deletion's week.
+@MainActor
+@Test("Deleting a meeting again starts a new week for its side copies too (F668)")
+func redeleteStartsANewWeekForSideCopies() throws {
+    let (store, root, secret, index) = try makeLibraryWithADeletedMeeting("redelete")
+    let snapshot = try makeSnapshot(root, index: index)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: snapshot.folder.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let original = try #require(store.meeting(id: secret))
+    store.delete(id: secret)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: snapshot.folder.path)
+    let now = Int(Date().timeIntervalSince1970) + week + 1
+    #expect(store.processPendingShreds(now: now) == [secret])
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: snapshot.folder.path)
+
+    store.upsert(original)   // back under its old id, with no pass in between
+    store.delete(id: secret) // and deleted again, today
+    store.clearStorageError()
+
+    #expect(String(decoding: try Data(contentsOf: snapshot.index), as: UTF8.self).contains("confidential-kestrel"),
+            "the second deletion stripped the snapshot at once, inside its own week")
+    // And a launch an hour into the new week leaves it too.
+    let redeletedAt = try #require(store.pendingShreds[secret])
+    let relaunched = MeetingStore(rootDirectory: root)
+    _ = relaunched.processPendingShreds(now: redeletedAt + 3_600)
+    #expect(String(decoding: try Data(contentsOf: snapshot.index), as: UTF8.self).contains("confidential-kestrel"),
+            "the old side-copy entry outlived the new deletion")
+}
+
+/// A copy that cannot be read says nothing about what it holds (review round 2, probe P4). It was
+/// treated as holding every pending deletion, so it kept each later deletion queued for good and
+/// every launch said it still held text it may never have held.
+@MainActor
+@Test("A copy that cannot be read is reported, but holds no deletion in the queue (F668)")
+func unreadableCopyHoldsNoDeletion() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F668-unreadable-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let copy = root.appendingPathComponent("meetings.unreadable-20200101T000000Z.json")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: copy.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    try Data("[]".utf8).write(to: copy)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: copy.path)
+    let store = MeetingStore(rootDirectory: root)
+    var ids: [UUID] = []
+    for title in ["One", "Two", "Three"] {
+        let id = UUID()
+        ids.append(id)
+        store.upsert(MeetingRecord(id: id, title: title, status: .completed))
+    }
+    store.delete(ids: ids)
+    store.clearStorageError()
+
+    #expect(Set(store.processPendingShreds(now: Int(Date().timeIntervalSince1970) + week + 1)) == Set(ids))
+
+    let raw = (try? JSONDecoder().decode(
+        [String: Int].self, from: Data(contentsOf: root.appendingPathComponent("meetings.pending-shred.json"))
+    )) ?? [:]
+    #expect(raw.isEmpty, "a copy nobody could read keeps \(raw.count) deletions queued")
+    let message = try #require(store.storageErrorMessage, "a copy that could not be checked was not mentioned")
+    #expect(message.contains("meetings.unreadable-20200101T000000Z.json"), "\(message)")
+    #expect(!message.contains("could not be removed from"), "it claims the copy held text: \(message)")
+}
+
+/// "Said once per launch, not after every delete" (review round 2: dropping the check that says it
+/// left every test green). Two deletions come due in two passes of one session, and the same
+/// unreadable-as-an-index copy names both: the second pass must not say it again.
+@MainActor
+@Test("A copy that stays stuck is reported once per launch, not again at the next delete's pass (F668)")
+func stuckCopyIsReportedOncePerLaunch() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F668-once-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = MeetingStore(rootDirectory: root)
+    let first = UUID(), second = UUID()
+    store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed))
+    store.upsert(MeetingRecord(id: first, title: "First secret", status: .completed))
+    store.upsert(MeetingRecord(id: second, title: "Second secret", status: .completed))
+    let index = try Data(contentsOf: root.appendingPathComponent("meetings.json"))
+    let quarantine = root.appendingPathComponent("meetings.unreadable-20260901T100000Z.json")
+    try (index + Data("torn".utf8)).write(to: quarantine)   // names both, and is not JSON
+    store.delete(id: first)
+    let firstDeleted = try #require(store.pendingShreds[first])
+    store.clearStorageError()
+
+    #expect(store.processPendingShreds(now: firstDeleted + week) == [first])
+    let message = try #require(store.storageErrorMessage)
+    #expect(message.contains("meetings.unreadable-20260901T100000Z.json"), "\(message)")
+    store.clearStorageError()
+
+    store.delete(id: second)
+    store.clearStorageError()
+    let secondDeleted = try #require(store.pendingShreds[second])
+    #expect(store.processPendingShreds(now: secondDeleted + week) == [second])
+    #expect(store.storageErrorMessage == nil, "the same stuck copy was reported twice in one launch")
+
+    let relaunched = MeetingStore(rootDirectory: root)
+    _ = relaunched.processPendingShreds(now: secondDeleted + week + 60)
+    #expect(relaunched.storageErrorMessage?.contains("meetings.unreadable-20260901T100000Z.json") == true,
+            "the next launch must say it again: the text is still there")
 }
 
 /// F498's rule reaches the retry too: a meeting that is live again is never stripped from a copy.
@@ -137,12 +248,13 @@ func retryLeavesAMeetingThatCameBack() throws {
     #expect(store.processPendingShreds(now: now) == [secret])
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: snapshot.folder.path)
 
-    // Brought back under its old id, as a restore or a rebuild does.
+    // Brought back under its old id, as a restore or a rebuild does — and the retry comes at the
+    // next launch, which sees it live.
     store.upsert(original)
-    store.clearStorageError()
-    _ = store.processPendingShreds(now: now + 60)
+    let relaunched = MeetingStore(rootDirectory: root)
+    _ = relaunched.processPendingShreds(now: now + 60)
 
     #expect(String(decoding: try Data(contentsOf: snapshot.index), as: UTF8.self).contains("confidential-kestrel"),
             "a live meeting was stripped from a copy")
-    #expect(store.storageErrorMessage == nil)
+    #expect(relaunched.storageErrorMessage == nil)
 }
