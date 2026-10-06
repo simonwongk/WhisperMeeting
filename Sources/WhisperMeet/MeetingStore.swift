@@ -383,9 +383,14 @@ struct OrphanedRecording: Sendable, Equatable {
 /// particular is one event reached by two paths — AppModel's pre-check and the store's backstop throw —
 /// and both must say the same thing.
 enum ReadOnlyLibraryNotice {
-    /// Why the library is read-only. "WhisperMeet" stays capitalized when this is embedded mid-sentence:
-    /// it is a product name, not a word to be case-folded.
-    static let lead = "WhisperMeet could not fully read its meeting library, so it is open in read-only mode."
+    /// Why the library is read-only, in words that are true of EVERY state it can be read-only in
+    /// (F540). It said "could not fully read", which is false when the index read cleanly as empty
+    /// (`.suspectEmpty`) and when two readable versions were found (`.divergentGenerations`). This is
+    /// the sentence the refusals share, so it cannot say what happened — `found(_:)` in
+    /// `LibraryHealthNotice.swift` does that, per state, for the surfaces that can. "WhisperMeet"
+    /// stays capitalized when this is embedded mid-sentence: it is a product name, not a word to be
+    /// case-folded.
+    static let lead = "WhisperMeet cannot be sure its meeting library is complete, so it is open in read-only mode."
     /// After the user attempted an edit, delete, or tag change.
     static let mutationRefused = "\(lead) Nothing has been changed. Resolve recovery before editing, deleting, or recording."
     /// Before a recording can start — from AppModel's pre-check and the store's backstop throw alike.
@@ -408,15 +413,9 @@ enum ReadOnlyLibraryNotice {
     static let menuFootnote =
         "\(lead) Suggestions could not be applied to a transcript, so these are unavailable until recovery is resolved."
 
-    /// The Settings → Library section's read-only sentence (F313): what is true of the library,
-    /// beside the controls that resolve it, with nothing about menus or transcripts.
-    static let librarySectionNotice =
-        "\(lead) Your recordings are untouched. Recover Library restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept."
-
-    /// The standing notice above the detail column while degraded (F313). Names the way out,
-    /// because the read-only state is only ever resolved by taking it.
-    static let banner =
-        "\(lead) Your recordings are untouched. To recover, open Settings → Library → Recover Library…"
+    // The Settings section's sentence and the standing banner (F313) are not constants any more: they say
+    // what was found, so they are `librarySectionNotice(for:)` and `banner(for:)` in
+    // `LibraryHealthNotice.swift`, built from the store's health (F540).
 
     /// For the library check, which reads the index it is reporting on (F194). Reporting "no audio
     /// problems were found" for a library that failed to decode is a clean bill of health for an
@@ -2852,11 +2851,10 @@ final class MeetingStore: ObservableObject {
             transcriptEditMemos.removeAll()
             meetingsToken = result.token
             degrade(to: result.health)
-            if case .recoveredFromBackup = result.health {
-                startupRecoveryMessages.append(
-                    "The meeting index was damaged, so WhisperMeet loaded the previous readable backup, which may be one save behind. Nothing was written and no recording folders were deleted — confirm the library looks right before editing."
-                )
-            }
+            // `.recoveredFromBackup` says nothing here any more (F540): this paragraph ended "confirm the
+            // library looks right before editing", for a library that is read-only and refuses every edit,
+            // and `performStartupRecovery` then added a sentence saying the damaged index "was copied
+            // aside", which this path never does. `ReadOnlyLibraryNotice.startup(for:)` is the one account.
             if case let .partiallySalvaged(parked) = result.health {
                 startupRecoveryMessages.append(Self.partialSalvageMessage(parked: parked))
             }

@@ -1663,7 +1663,7 @@ struct SettingsView: View {
                     // the button already carries the restore dialog and SwiftUI honours one
                     // presentation modifier of a kind per view: with both on the button, neither
                     // appeared on screen.
-                    Text(ReadOnlyLibraryNotice.librarySectionNotice)
+                    Text(ReadOnlyLibraryNotice.librarySectionNotice(for: model.store.health))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         // F289: the other route out of a read-only library, offered by the
@@ -5814,7 +5814,7 @@ struct ReadOnlyLibraryBanner: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "lock.fill")
                     .foregroundStyle(.secondary)
-                Text(ReadOnlyLibraryNotice.banner)
+                Text(ReadOnlyLibraryNotice.banner(for: model.store.health))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

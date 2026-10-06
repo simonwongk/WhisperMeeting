@@ -2978,7 +2978,9 @@ final class AppModel: ObservableObject {
             // it is found only now — and announcing success over a read-only library is the F187
             // honesty rule broken in the one place the user is most likely to believe it.
             var message = store.isDegraded
-                ? "The backup's files were copied into your library, but WhisperMeet could not fully read the restored library, so it is open in read-only mode."
+                ? ReadOnlyLibraryNotice.stillReadOnly(
+                    afterWriting: "The backup's files were copied into your library", store.health
+                )
                 : "Your library was restored from the backup."
             if let snapshot = outcome.preRestoreSnapshot {
                 // Named, because the user may want it back and because a restore that silently
@@ -3163,9 +3165,9 @@ final class AppModel: ObservableObject {
         // recording folder looks orphaned when the in-memory index is empty, which is how ten meetings
         // became blank stubs on 2026-08-14. Show the state and stop; the user decides what happens next.
         if store.isDegraded {
-            messages.append(
-                "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched and the unreadable index was copied aside. Nothing will be changed until you choose how to recover."
-            )
+            // Said per state (F540): "the unreadable index was copied aside" was false for the wipe
+            // shape and for a stale-backup load, and nothing said two versions were found.
+            messages.append(ReadOnlyLibraryNotice.startup(for: store.health))
             // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
             // launch with no window — a login item, or a window closed before this ran — showed it
             // to nobody. It is the notice that tells a user their recording came back.
@@ -6983,10 +6985,11 @@ extension AppModel {
                 // an empty generation beside finalized recordings reads as `.suspectEmpty`, say.
                 // Since F464 no other store can hold the library read-only, so this is about the
                 // index alone. Never report success in that case — the F187 honesty rule.
-                alertMessage = """
-                    The meeting index was restored, but WhisperMeet still could not fully read its \
-                    library, so it stays in read-only mode. Your recordings are untouched.
-                    """
+                // F540: what the library is now, not "could not fully read" — an empty generation is
+                // the usual cause, and an empty index reads fine.
+                alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
+                    afterWriting: "The meeting index was restored", store.health
+                )
             }
         } catch {
             // `pendingLibraryRecovery` is deliberately left populated: a restore can fail for a
@@ -7023,11 +7026,9 @@ extension AppModel {
                 // The rebuilt index was written but still does not load cleanly (since F464 no
                 // other store can hold the library read-only). Never report success in that case —
                 // the F187 honesty rule.
-                alertMessage = """
-                    The meeting index was rebuilt from the recording folders, but WhisperMeet still \
-                    could not fully read its library, so it stays in read-only mode. Your recordings \
-                    are untouched.
-                    """
+                alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
+                    afterWriting: "The meeting index was rebuilt from the recording folders", store.health
+                )
             }
         } catch {
             // The offer stays up, as F193 leaves `pendingLibraryRecovery` populated: the failure
