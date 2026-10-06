@@ -3821,6 +3821,7 @@ private struct TranscriptDetailView: View {
         // section layout; each animation is scoped to the state that inserts or removes it.
         .animation(reduceMotion ? nil : .uiSpring, value: isSuggestingVocab)
         .animation(reduceMotion ? nil : .uiSpring, value: model.proposingCorrectionsID)
+        .animation(reduceMotion ? nil : .uiSpring, value: model.glossaryCorrectionRun?.meetingID)
         .animation(reduceMotion ? nil : .uiSpring, value: model.secondOpinionRunningID)
         .animation(reduceMotion ? nil : .uiSpring, value: model.segmentReTranscriptionRunningID)
         .animation(reduceMotion ? nil : .uiSpring, value: showSecondOpinion)
@@ -3855,16 +3856,20 @@ private struct TranscriptDetailView: View {
             }
             .disabled(isSuggestingVocab)
             Button {
-                let proposals = model.glossaryCorrections(for: meetingID)
-                if proposals.isEmpty {
-                    model.alertMessage = "No transcript spans look close to a vocabulary term."
-                } else {
-                    glossaryProposals = proposals
+                // F536: off the main actor, with progress and Cancel in the status line below the
+                // header. A cancelled pass returns nil and says nothing.
+                Task {
+                    guard let proposals = await model.proposeGlossaryCorrections(for: meetingID) else { return }
+                    if proposals.isEmpty {
+                        model.alertMessage = "No transcript spans look close to a vocabulary term."
+                    } else {
+                        glossaryProposals = proposals
+                    }
                 }
             } label: {
                 Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
             }
-            .disabled(store.vocabulary.isEmpty || isEdited)
+            .disabled(store.vocabulary.isEmpty || isEdited || model.glossaryCorrectionRun != nil)
             // F179: exact user-defined replacement rules, reviewed through the same sheet. No model.
             Button {
                 let proposals = model.replacementRuleCorrections(for: meetingID)
@@ -3982,6 +3987,20 @@ private struct TranscriptDetailView: View {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Scanning the transcript for vocabulary terms…")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        } else if let run = model.glossaryCorrectionRun, run.meetingID == meetingID {
+            // F536: the pass ran on the main actor with no way to stop it (the round-2 sweep measured
+            // about 136 s at the 5,000-term cap). It now says how far through the transcript it is,
+            // and Cancel stops it.
+            HStack(spacing: 8) {
+                ProgressView(value: run.fractionDone)
+                    .frame(width: 120)
+                Text("Checking the transcript against your vocabulary…")
+                Button("Cancel") { model.cancelGlossaryCorrections() }
+                    .controlSize(.small)
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -4642,7 +4661,11 @@ private struct GlossarySuggestionSheet: View {
     let protectedTerms: [String]
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var selected: Set<Int>
+    @State private var selected: Set<Int> = []
+    /// The proposals that touch a vocabulary term, worked out once when the sheet opens, off the
+    /// main actor (F536). This was asked per row on every render and in `init`, which SwiftUI
+    /// re-runs whenever the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
+    @State private var touching: Set<Int>?
 
     init(
         proposals: [GlossaryCorrection],
@@ -4652,7 +4675,6 @@ private struct GlossarySuggestionSheet: View {
         self.proposals = proposals
         self.protectedTerms = protectedTerms
         self.onApply = onApply
-        _selected = State(initialValue: GlossaryReviewDefaults.preselected(proposals, protectedTerms: protectedTerms))
     }
 
     var body: some View {
@@ -4679,7 +4701,7 @@ private struct GlossarySuggestionSheet: View {
                                 Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
                                 Text(proposal.to).fontWeight(.medium)
                             }
-                            if GlossaryReviewDefaults.touchesProtectedTerm(proposal, protectedTerms) {
+                            if touching?.contains(index) == true {
                                 Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
@@ -4708,6 +4730,17 @@ private struct GlossarySuggestionSheet: View {
             .padding()
         }
         .frame(width: 440, height: 540)
+        // F245's pre-selection — everything except a proposal that touches a term — once the
+        // touching set is known. Until then nothing is ticked, so Apply stays disabled.
+        .task {
+            let proposals = proposals
+            let terms = protectedTerms
+            let found = await Task.detached(priority: .userInitiated) {
+                GlossaryReviewDefaults.touching(proposals, protectedTerms: terms)
+            }.value
+            touching = found
+            selected = Set(proposals.indices).subtracting(found)
+        }
     }
 }
 

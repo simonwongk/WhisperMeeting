@@ -9,7 +9,7 @@ import Testing
 // is corrected while the recording is never touched.
 @MainActor
 @Test("Glossary corrections compute and apply through AppModel without touching audio (F82)")
-func glossaryCorrectionsApplyThroughAppModel() throws {
+func glossaryCorrectionsApplyThroughAppModel() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("GlossaryWiringTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(
@@ -35,7 +35,8 @@ func glossaryCorrectionsApplyThroughAppModel() throws {
     ))
     model.store.addVocabulary(["Kubernetes"])
 
-    let proposals = model.glossaryCorrections(for: id)
+    // F536: the pass is asynchronous now, off the main actor.
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
     #expect(proposals.contains { $0.to == "Kubernetes" && $0.segmentIndex == 0 })
 
     model.applyGlossaryCorrections(proposals, to: id)

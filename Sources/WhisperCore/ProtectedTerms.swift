@@ -78,6 +78,78 @@ public enum ProtectedTerms {
         }
     }
 
+    /// Many terms made ready to be tested against many spans (F536) — `touches` for a whole review
+    /// sheet. `touches` prepares its span and compiles a regular expression per Latin term on every
+    /// call, which is fine for one proposal and took 2–12 s for a sheet of 50 against 5,000 terms
+    /// (two -O runs on a loaded machine; 0.15 s prepared, F536's closure has the output). This
+    /// prepares each term once — its normalised text, and its whole-word expression compiled once —
+    /// and gives the same answer as `touches(_:terms:)` for every span, because it asks the same two
+    /// questions with the same patterns and options.
+    public struct PreparedTerms {
+        private struct Term {
+            let text: String
+            let bridged: NSString
+            let matcher: Matcher
+        }
+
+        private let terms: [Term]
+
+        public init(_ terms: [String]) {
+            self.terms = terms.compactMap { raw in
+                // As `PreparedText.contains` does to a term; an empty one never matches either way.
+                let text = raw.precomposedStringWithCanonicalMapping
+                guard !text.isEmpty else { return nil }
+                return Term(text: text, bridged: text as NSString, matcher: Matcher(text))
+            }
+        }
+
+        /// `ProtectedTerms.touches(span, terms:)`, with the terms already prepared.
+        public func touch(_ span: String) -> Bool {
+            let trimmed = span.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            let prepared = PreparedText(trimmed)
+            let spanMatcher = Matcher(prepared.text)
+            return terms.contains { term in
+                // The span contains the term, or the term contains the span.
+                term.matcher.occurs(in: prepared.text, bridged: prepared.bridged)
+                    || spanMatcher.occurs(in: term.text, bridged: term.bridged)
+            }
+        }
+    }
+
+    /// `PreparedText.contains`'s rule for one already-normalised needle, compiled once: a substring
+    /// for CJK, and for Latin the same whole-word expression and options, which `range(of:options:)`
+    /// would compile on every call.
+    private enum Matcher {
+        case substring(String)
+        case wholeWord(NSRegularExpression?)
+
+        init(_ needle: String) {
+            if ProtectedTerms.hasCJK(needle) {
+                self = .substring(needle)
+            } else {
+                self = .wholeWord(ProtectedTerms.wholeWordExpression(for: needle))
+            }
+        }
+
+        func occurs(in text: String, bridged: NSString) -> Bool {
+            switch self {
+            case let .substring(needle):
+                return !needle.isEmpty && text.contains(needle)
+            case let .wholeWord(expression):
+                // An expression that did not compile finds nothing, as `range(of:options:)` would.
+                return expression?.firstMatch(in: text, range: NSRange(location: 0, length: bridged.length)) != nil
+            }
+        }
+    }
+
+    /// The expression `PreparedText.contains` searches with for a Latin term.
+    fileprivate static func wholeWordExpression(for term: String) -> NSRegularExpression? {
+        let boundaryClass = LatinTokenBoundary.regexCharacterClass
+        let pattern = "(?<![\(boundaryClass)])" + NSRegularExpression.escapedPattern(for: term) + "(?![\(boundaryClass)])"
+        return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
     private static func hasCJK(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)

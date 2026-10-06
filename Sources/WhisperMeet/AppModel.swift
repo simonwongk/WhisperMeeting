@@ -5676,12 +5676,81 @@ final class AppModel: ObservableObject {
         return await Task.detached(priority: .userInitiated) { check(input) }.value
     }
 
+    // MARK: - Correct Toward Vocabulary (F82, F536)
+
+    /// A Correct Toward Vocabulary pass in progress, and how far through the transcript it is.
+    struct GlossaryCorrectionRun: Equatable {
+        let meetingID: UUID
+        var fractionDone: Double
+    }
+
+    /// Non-nil while a pass runs; the meeting's status line shows its progress and a Cancel button.
+    @Published private(set) var glossaryCorrectionRun: GlossaryCorrectionRun?
+    private var glossaryCorrectionCancellation: GlossaryPassCancellation?
+
+    /// What one pass is given.
+    struct GlossaryCorrectionInput: Sendable {
+        let vocabulary: [String]
+        let segments: [TranscriptSegment]
+        let evidence: CJKWordEvidence
+    }
+
+    /// The pass itself, injectable in the F47 shape; the core's by default. Runs on a background
+    /// queue: it takes whether to stop and where to report progress, and returns nil if stopped.
+    var glossaryCorrectionPass: @Sendable (
+        GlossaryCorrectionInput, _ isCancelled: @escaping @Sendable () -> Bool,
+        _ progress: @escaping @Sendable (Double) -> Void
+    ) -> [GlossaryCorrection]? = { input, isCancelled, progress in
+        GlossaryCorrector.corrections(
+            vocabulary: input.vocabulary, segments: input.segments, evidence: input.evidence,
+            isCancelled: isCancelled, progress: progress
+        )
+    }
+
     /// Proposed spelling corrections toward the user's vocabulary for a meeting's transcript (F82).
     /// Read-only — computes over the stored segments; the user reviews before any apply.
-    func glossaryCorrections(for id: UUID) -> [GlossaryCorrection] {
-        guard let meeting = store.meeting(id: id) else { return [] }
+    ///
+    /// Off the main actor, with progress and Cancel (F536). It ran synchronously from the Improve
+    /// menu, with the app not responding throughout — about 136 s at the 5,000-term cap by the round-2
+    /// sweep's measurement.
+    /// Returns nil when cancelled, or when a pass is already running.
+    func proposeGlossaryCorrections(for id: UUID) async -> [GlossaryCorrection]? {
+        guard glossaryCorrectionRun == nil, let meeting = store.meeting(id: id) else { return nil }
         // Local matching, not a prompt: it must see EVERY stored term, so it stays on the full list (F187).
-        return GlossaryCorrector.corrections(vocabulary: store.vocabulary, segments: meeting.segments)
+        let input = GlossaryCorrectionInput(
+            vocabulary: store.vocabulary, segments: meeting.segments, evidence: cjkWordEvidence
+        )
+        let cancellation = GlossaryPassCancellation()
+        glossaryCorrectionCancellation = cancellation
+        glossaryCorrectionRun = GlossaryCorrectionRun(meetingID: id, fractionDone: 0)
+        defer {
+            glossaryCorrectionRun = nil
+            glossaryCorrectionCancellation = nil
+        }
+        let pass = glossaryCorrectionPass
+        // A GCD queue rather than a detached task: the pass fans out with `concurrentPerform` and
+        // blocks its calling thread until done, which must not be a cooperative-pool thread.
+        let proposals: [GlossaryCorrection]? = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = pass(input, { cancellation.isCancelled }, { fraction in
+                    Task { @MainActor [weak self] in self?.noteGlossaryProgress(fraction, for: id) }
+                })
+                continuation.resume(returning: result)
+            }
+        }
+        guard !cancellation.isCancelled else { return nil }
+        return proposals
+    }
+
+    /// Stops the running Correct Toward Vocabulary pass; its proposals are discarded.
+    func cancelGlossaryCorrections() {
+        glossaryCorrectionCancellation?.cancel()
+    }
+
+    private func noteGlossaryProgress(_ fraction: Double, for id: UUID) {
+        guard var run = glossaryCorrectionRun, run.meetingID == id, fraction > run.fractionDone else { return }
+        run.fractionDone = fraction
+        glossaryCorrectionRun = run
     }
 
     /// Proposed corrections from the user's exact `heard → preferred` replacement rules (F179).
