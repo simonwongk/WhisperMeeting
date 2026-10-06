@@ -578,10 +578,48 @@ enum BackupCoordinator {
         return available < needed
     }
 
-    static func availableCapacity(at url: URL) -> Int64? {
+    /// The two free-space readings macOS offers for a volume (F695).
+    struct VolumeCapacity: Equatable, Sendable {
+        /// `volumeAvailableCapacityForImportantUsage`: the figure that counts purgeable space as
+        /// available, which is the right one on APFS and reads **0** on exFAT and FAT.
+        let importantUsage: Int64?
+        /// `volumeAvailableCapacity`: the plain free-byte count, which exFAT and FAT report truthfully.
+        let plain: Int64?
+    }
+
+    /// Both readings for the volume holding `url`.
+    static func volumeCapacity(at url: URL) -> VolumeCapacity {
+        let values = try? url.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
+        ])
+        return VolumeCapacity(
+            importantUsage: values?.volumeAvailableCapacityForImportantUsage,
+            plain: values?.volumeAvailableCapacity.map(Int64.init)
+        )
+    }
+
+    /// Which of the two readings to believe. Pure, so the choice needs no volume to test.
+    ///
+    /// The important-usage reading when it is a credible positive number; otherwise the plain one.
+    /// On exFAT and FAT the important-usage key reads **0** (measured on real exFAT and FAT16 images in
+    /// the round-2 review), which `shouldRejectForSpace` — rightly — treats as "unknown, never block"
+    /// (F90): so using it alone meant the free-space check could not refuse anything on exactly the
+    /// destinations F532's fallback-byte accounting exists for, and an over-large backup ran until the
+    /// OS said no, mid-copy, with a generic Cocoa error (F695). Absent or non-positive in both readings
+    /// is still nil — unknown — so the F90 rule that an unreadable volume never blocks a backup is intact.
+    static func chooseAvailableCapacity(_ capacity: VolumeCapacity) -> Int64? {
+        if let important = capacity.importantUsage, important > 0 { return important }
+        return capacity.plain
+    }
+
+    /// Free bytes at the backup location, or nil when unknown. `reading` is the seam: production reads
+    /// the real volume, a test supplies the readings an exFAT drive gives.
+    static func availableCapacity(
+        at url: URL,
+        reading: (URL) -> VolumeCapacity = { BackupCoordinator.volumeCapacity(at: $0) }
+    ) -> Int64? {
         let probe = FileManager.default.fileExists(atPath: url.path) ? url : url.deletingLastPathComponent()
-        return (try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage
+        return chooseAvailableCapacity(reading(probe))
     }
 
     /// Name prefix of the throwaway files the hard-link probe writes under the backup root. Dotted

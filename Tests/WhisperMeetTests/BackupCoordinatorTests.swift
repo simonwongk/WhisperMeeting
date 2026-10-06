@@ -595,6 +595,66 @@ func spaceCheckBudgetsForFallbackCopiesWhenLinksAreUnavailable() throws {
     #expect(try BackupManifest.verify(in: backupRoot(dest).appendingPathComponent("3000"), deep: true).isIntact)
 }
 
+// F695 — F652 proved the coordinator refuses a linkless destination that is too small, but it injected
+// a POSITIVE free-space reading, which real exFAT and FAT never return: the reading the backup used,
+// `volumeAvailableCapacityForImportantUsage`, is 0 there (the round-2 review measured exFAT and FAT16
+// images: important=0, plain=66957312 / 66959360), and a non-positive reading means "unknown, never
+// block" (F90). So on exactly the drives F532's accounting exists for, it computed a figure and never
+// compared it, and a 25 MB backup onto 14 MB free was not refused up front but ran until the OS said no.
+// The volume's plain `volumeAvailableCapacity` is truthful there, so the reading falls back to it.
+@Test("The free-space reading falls back to the plain capacity when the important-usage one is 0 or absent (F695)")
+func availableCapacityFallsBackToThePlainReading() {
+    func choose(_ important: Int64?, _ plain: Int64?) -> Int64? {
+        BackupCoordinator.chooseAvailableCapacity(.init(importantUsage: important, plain: plain))
+    }
+    // APFS: the important-usage figure counts purgeable space, so it is believed when positive.
+    #expect(choose(129_470_833_154, 98_000_000_000) == 129_470_833_154)
+    // exFAT and FAT16, as measured on real images: important reads 0, plain is the truth.
+    #expect(choose(0, 66_957_312) == 66_957_312)
+    #expect(choose(0, 66_959_360) == 66_959_360)
+    // The key being unavailable, or nonsense, is the same as 0.
+    #expect(choose(nil, 1_000) == 1_000)
+    #expect(choose(-1, 1_000) == 1_000)
+    // Neither reading: unknown — which `shouldRejectForSpace` never blocks on.
+    #expect(choose(0, nil) == nil)
+    #expect(choose(nil, nil) == nil)
+}
+
+@Test("A linkless exFAT-style drive too small for the fallback copies is refused up front, through the real reading choice (F695)")
+func exFATStyleReadingStillRefusesBeforeCopying() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F695-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let unchanged = String(repeating: "a", count: 4_000)
+    try write("index v1", to: source.appendingPathComponent("meetings.json"))
+    try write(unchanged, to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+    _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 3)
+    let changed = String(repeating: "b", count: 100)
+    try write(changed, to: source.appendingPathComponent("meetings.json"))
+    let copyBytes = Int64(changed.utf8.count)
+    let skipBytes = Int64(unchanged.utf8.count)
+    let room = copyBytes + 900
+
+    // Not an injected positive number: the readings an exFAT drive gives, run through the same
+    // `availableCapacity` the production default uses.
+    let exFATReadings: (URL) -> BackupCoordinator.VolumeCapacity = { _ in
+        .init(importantUsage: 0, plain: room)
+    }
+    do {
+        _ = try BackupCoordinator.backUp(
+            source: source, destination: dest, now: 2_000, retain: 3,
+            linkItem: { _, _ in throw CocoaError(.fileWriteUnsupportedScheme) },
+            freeSpace: { BackupCoordinator.availableCapacity(at: $0, reading: exFATReadings) }
+        )
+        Issue.record("expected the run to be refused for space before any copying")
+    } catch BackupCoordinatorError.insufficientSpace(let needed, let available) {
+        #expect(needed == copyBytes + skipBytes)
+        #expect(available == room)
+    }
+    #expect(!FileManager.default.fileExists(atPath: backupRoot(dest).appendingPathComponent("2000").path))
+}
+
 // F532, F652 — the probe that decides which side of `BackupPlan.bytesNeeded` (pure arithmetic, unit
 // tested in `Tests/WhisperCoreTests/BackupPlanTests.swift`) a real run uses. Both outcomes go
 // through the injected link, so neither depends on which filesystem the host's temp directory is
