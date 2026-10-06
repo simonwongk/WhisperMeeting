@@ -7,6 +7,9 @@ struct BackupSummary: Sendable, Equatable {
     let generation: String
     let copied: Int
     let skipped: Int
+    /// True only if the new generation passed the restore's own shallow check (F694): every file
+    /// the manifest names is present at the size it records. It was a constant `true` — the run's
+    /// opinion of itself — which is how a generation the restore refused could report verified.
     let verified: Bool
     let prunedGenerations: [String]
 }
@@ -115,6 +118,11 @@ enum BackupCoordinator {
     static func backUp(
         source: URL, destination: URL, now: Int, retain: Int,
         beforeProcessingForTesting: ((String) -> Void)? = nil,
+        // Seam (nil in production) for the up-front SCAN of the source (F694): called with each
+        // file's relative path immediately before the scan reads it. `beforeProcessingForTesting`
+        // fires after the whole scan, so it cannot reach the window inside it — the window between
+        // a file being listed and its bytes being read — and that window is where F694 lived.
+        beforeScanHashForTesting: ((String) -> Void)? = nil,
         // Seam (real `FileManager.linkItem` in production): what a hard link between two paths
         // does. A test must not depend on the host having an exFAT/FAT/SMB volume to write to, so
         // it injects a link that throws the way `linkItem` does there (ENOTSUP/EPERM/EXDEV) — or
@@ -158,7 +166,7 @@ enum BackupCoordinator {
         }
         defer { lock.release() }
 
-        let sourceFiles = try descriptors(of: source, includingTopLevel: backedUpEntries)
+        let sourceFiles = try descriptors(of: source, includingTopLevel: backedUpEntries, beforeHashForTesting: beforeScanHashForTesting)
 
         // Only COMPLETE generations are valid prior snapshots to hardlink from.
         let existing = completeGenerations(in: backupRoot, fileManager: fileManager)
@@ -205,8 +213,10 @@ enum BackupCoordinator {
         // Overrides `sourceFiles`' up-front hash AND size for the manifest, for exactly the files
         // this run copied and re-hashed post-copy (F504, F651): every `.copy` entry, and any `.skip`
         // entry whose hard link failed and fell back to a copy (F532). A `.skip` entry that WAS
-        // hard-linked shares the previous generation's inode and is never re-read, so its up-front
-        // hash and size still describe it.
+        // hard-linked is never re-read; its manifest entry is the scan's, which describes the
+        // previous generation's bytes it is linked to only because the scan measures a file's size
+        // and hash in ONE read (F694) and the plan matched on that hash. Taking the size from the
+        // directory listing instead — as this comment once said was fine — is what F694 was.
         var copiedContent: [String: CopiedFile] = [:]
         for item in plan {
             beforeProcessingForTesting?(item.file.relativePath)
@@ -255,8 +265,9 @@ enum BackupCoordinator {
         // earlier at the top of this run (F504, F651). Taking only the hash from the fresh
         // measurement was the F651 defect — a file that changed mid-run got its new hash beside its
         // old size, and the generation reported verified and then failed its own check. A
-        // hardlinked (skipped) file shares the previous generation's inode and therefore its
-        // contents, so the up-front hash and size still describe it correctly.
+        // hardlinked (skipped) file keeps the scan's entry: it shares the previous generation's
+        // inode, and the scan's hash — which the plan matched against that generation — and size
+        // come from one read of the file (F694), so together they describe those same bytes.
         //
         // The marker stays. A generation written before this has no manifest and must still read
         // as complete — an improvement that made older backups unrestorable would be data loss
@@ -272,6 +283,18 @@ enum BackupCoordinator {
             }
         ).write(to: generationDir)
         try Data().write(to: generationDir.appendingPathComponent(completionMarker))
+
+        // The restore's own cheap check, on the staged generation, before it can become visible
+        // (F694). `verify(deep: false)` only stats each file against the size its manifest entry
+        // records, so it costs a stat per file. `BackupSummary.verified` used to be a constant
+        // `true`, which is how a generation the restore refuses could report verified; now it is
+        // the restore check's answer, and any future way for the manifest and the bytes to
+        // disagree is a refused backup — staging removed by the `defer` above, earlier generations
+        // untouched — instead of an unrestorable one found on the day it is needed.
+        let shallowCheck = try BackupManifest.verify(in: generationDir, deep: false)
+        guard shallowCheck.isIntact else {
+            throw BackupCoordinatorError.verificationFailed(shallowCheck.problems.first ?? "the new backup's manifest")
+        }
 
         // Publish. A pre-existing generation at this stamp is replaced only now, after the
         // replacement is known-good: `replaceItemAt` swaps it atomically, so a same-stamp rerun can
@@ -324,7 +347,7 @@ enum BackupCoordinator {
             generation: String(now),
             copied: copied,
             skipped: skipped,
-            verified: true,
+            verified: true, // reachable only past the shallow check above, which throws on a mismatch
             prunedGenerations: prunedIDs
         )
     }
@@ -339,18 +362,39 @@ enum BackupCoordinator {
     }
 
     /// Enumerate the given top-level entries (or the whole tree when `includingTopLevel` is nil, used for
-    /// reading a prior generation) into `[BackupFile]` (relative path, size, SHA-256).
-    private static func descriptors(of root: URL, includingTopLevel entries: [String]?) throws -> [BackupFile] {
+    /// reading a prior generation) into `[BackupFile]` (relative path, size, SHA-256) — size and hash
+    /// from one read of each file (F694).
+    ///
+    /// `beforeHashForTesting` (nil in production) is called with each file's relative path after it has
+    /// been listed and before it is read, which is the window F694 was about.
+    private static func descriptors(
+        of root: URL, includingTopLevel entries: [String]?,
+        beforeHashForTesting: ((String) -> Void)? = nil
+    ) throws -> [BackupFile] {
         let fileManager = FileManager.default
         let rootPath = root.standardizedFileURL.path
         var result: [BackupFile] = []
 
+        // A file's size and hash from ONE read of it (F694). The size used to be the directory
+        // listing's — read when the file was listed — and the hash a later read of the file, with
+        // every earlier file in the directory (possibly a multi-gigabyte recording) hashed in
+        // between. A file that changed inside that window and settled on the previous generation's
+        // bytes planned `.skip`, was hard-linked to those bytes, and was recorded with the stale
+        // size beside the matching hash: a backup that reported verified and then failed the
+        // restore check. Counting the bytes the hasher consumed makes the two describe the same
+        // bytes by construction, at no extra I/O.
+        func measure(_ url: URL, relativePath: String) throws -> BackupFile {
+            beforeHashForTesting?(relativePath)
+            let measured = try hashAndCount(of: url)
+            return BackupFile(relativePath: relativePath, size: measured.byteCount, contentHash: measured.sha256)
+        }
+
         func addTree(_ base: URL) throws {
             guard let enumerator = fileManager.enumerator(
-                at: base, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+                at: base, includingPropertiesForKeys: [.isRegularFileKey]
             ) else { return }
             for case let url as URL in enumerator {
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey])
                 guard values.isRegularFile == true else { continue }
                 let full = url.standardizedFileURL.path
                 guard full.hasPrefix(rootPath + "/") else { continue }
@@ -359,11 +403,7 @@ enum BackupCoordinator {
                 // Nor the manifest: it describes the generation's user data, so including it in
                 // the next generation's plan would make it a file that must describe itself.
                 if url.lastPathComponent == BackupManifest.fileName { continue }
-                result.append(BackupFile(
-                    relativePath: String(full.dropFirst(rootPath.count + 1)),
-                    size: Int64(values.fileSize ?? 0),
-                    contentHash: try sha256(of: url)
-                ))
+                result.append(try measure(url, relativePath: String(full.dropFirst(rootPath.count + 1))))
             }
         }
 
@@ -375,8 +415,7 @@ enum BackupCoordinator {
                 if isDir.boolValue {
                     try addTree(url)
                 } else {
-                    let values = try url.resourceValues(forKeys: [.fileSizeKey])
-                    result.append(BackupFile(relativePath: entry, size: Int64(values.fileSize ?? 0), contentHash: try sha256(of: url)))
+                    result.append(try measure(url, relativePath: entry))
                 }
             }
         } else {

@@ -460,6 +460,90 @@ func fallbackCopyOfFileChangedMidRunVerifies() throws {
     #expect(try BackupRestorePlan.make(from: generation, into: source, deep: true).isSafeToApply)
 }
 
+// F694 — F651 made a COPIED file's manifest entry come from one pass over the destination, but a
+// HARD-LINKED file (a `.skip` that linked) kept the up-front scan's entry, and the scan took its size
+// from the directory listing and its hash from a later read of the file. A file that changes in
+// between and settles on exactly what the previous generation holds plans `.skip`, links to the
+// previous generation's bytes, and is recorded with the stale size beside the matching hash — so the
+// run reports verified and the restore check says "Wrong size". Reproduced by the reviewer in 3 of 7
+// timing attempts; here the change is injected between the two reads instead of raced against a
+// clock: `beforeScanHashForTesting` fires after a file is listed and before it is read. Both files
+// are exercised because the scan has two branches — a top-level entry (`meetings.json`) and a tree
+// (`Recordings/…`).
+@Test("A file that changes during the scan and settles on the previous generation's bytes still yields a generation that verifies (F694)")
+func scanTakesSizeAndHashOfHardLinkedEntriesFromOnePass() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F694-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let wavURL = source.appendingPathComponent("Recordings/A/meeting.wav")
+    let indexURL = source.appendingPathComponent("meetings.json")
+    try write("AAAA", to: wavURL)
+    try write("index-v1", to: indexURL)
+    _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 3)
+
+    // What the scan LISTS: both files different from the first generation, and different sizes.
+    try write("OTHER-CONTENT-OF-A-DIFFERENT-SIZE", to: wavURL)
+    try write("a-different-length-index", to: indexURL)
+
+    // By the time each file is READ, it is back to exactly what the first generation holds.
+    let summary = try BackupCoordinator.backUp(
+        source: source, destination: dest, now: 2_000, retain: 3,
+        beforeScanHashForTesting: { relativePath in
+            switch relativePath {
+            case "Recordings/A/meeting.wav": try? Data("AAAA".utf8).write(to: wavURL)
+            case "meetings.json": try? Data("index-v1".utf8).write(to: indexURL)
+            default: break
+            }
+        }
+    )
+    #expect(summary.copied == 0 && summary.skipped == 2, "both settled on the first generation's bytes, so both plan .skip")
+
+    let generation = backupRoot(dest).appendingPathComponent("2000")
+    let check = try BackupManifest.verify(in: generation, deep: true)
+    #expect(check.isIntact, "\(check.problems)")
+    #expect(try BackupRestorePlan.make(from: generation, into: source, deep: true).isSafeToApply)
+    let held = try String(decoding: Data(contentsOf: generation.appendingPathComponent("Recordings/A/meeting.wav")), as: UTF8.self)
+    #expect(held == "AAAA")
+}
+
+// F694 — the belt to that fix's braces. `BackupSummary.verified` used to be a constant `true`: the run's
+// opinion of itself, which is how a generation that fails the restore-side check reported success. The
+// new generation now passes the same shallow check a restore runs (`BackupManifest.verify(deep: false)`,
+// which only stats files) before it is published, so any future way for the manifest and the bytes to
+// disagree becomes a refused backup instead of an unrestorable "verified" one. A link that lands a file
+// of the wrong size is a deterministic stand-in for such a disagreement.
+@Test("A generation whose files do not match its own manifest is refused before it is published (F694)")
+func generationFailingItsOwnShallowCheckIsNotPublished() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("F694-check-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meeting index v1", to: source.appendingPathComponent("meetings.json"))
+    try write("audio-A", to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+    _ = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 3)
+
+    // Everything is unchanged, so every file plans `.skip`; this "link" reports success and leaves a
+    // one-byte file behind, which is not what the manifest (written from the scan) describes.
+    do {
+        _ = try BackupCoordinator.backUp(
+            source: source, destination: dest, now: 2_000, retain: 3,
+            linkItem: { _, destination in try Data("x".utf8).write(to: destination) }
+        )
+        Issue.record("expected the run to be refused: its files do not match its manifest")
+    } catch BackupCoordinatorError.verificationFailed(let detail) {
+        #expect(detail.contains("Wrong size"), "\(detail)")
+    }
+
+    let root = backupRoot(dest)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("2000").path), "nothing was published")
+    let leftovers = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [])
+        .filter { $0.hasPrefix(BackupCoordinator.stagingPrefix) }
+    #expect(leftovers.isEmpty, "the refused run's staging directory is removed")
+    // The earlier generation is untouched and still restorable.
+    #expect(try BackupManifest.verify(in: root.appendingPathComponent("1000"), deep: true).isIntact)
+}
+
 // F652 — F532's space accounting was tested as arithmetic (`BackupPlan.bytesNeeded`) but never as
 // something the COORDINATOR does: hardcoding `hardLinksSupported = true` in `backUp` passed every
 // backup test, because the injected link failure reached the per-file `.skip` link and never the
