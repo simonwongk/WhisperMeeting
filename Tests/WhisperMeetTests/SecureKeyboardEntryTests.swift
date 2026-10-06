@@ -101,10 +101,11 @@ func aHiddenFieldIsNotPastedIntoWhileSecureEntryIsOn() throws {
     #expect(harness.pasteCount == 0)
 }
 
-/// The review's must-fix: the session key is undocumented, so it can be missing, 0 or malformed,
-/// and there can be no app in front. Then nothing says the app in front did not turn secure input
-/// on — a sudo prompt under Secure Keyboard Entry is an ordinary `AXTextArea` — so the flag stands,
-/// which is F445's behaviour. Pasting there was the destructive fallback.
+/// The review's must-fix: the session key is undocumented, so it can be missing, 0, of the wrong
+/// type, or a number that names no running app; and there can be no app in front. Then nothing says
+/// the app in front did not turn secure input on — a sudo prompt under Secure Keyboard Entry is an
+/// ordinary `AXTextArea` — so the flag stands, which is F445's behaviour. Pasting there was the
+/// destructive fallback.
 @MainActor
 @Test("With no process named for secure input, even an ordinary text field is not pasted into (F585)")
 func withNoHolderSecureInputRefuses() throws {
@@ -114,6 +115,24 @@ func withNoHolderSecureInputRefuses() throws {
     #expect(harness.dictate() == .secureInput)
 
     harness.reading.focused = nil
+    #expect(harness.dictate() == .secureInput)
+    #expect(harness.pasteCount == 0)
+}
+
+/// The lane J round-2 review's probe (`reviewJ2KeyNamingNoAppIsWeighedAway`), kept as the RED: a
+/// key holding a positive number that resolves to no running app — a pid that has exited, or a
+/// future macOS storing something else there — never equals the app in front, so rule 2 could not
+/// fire and Terminal's own sudo prompt, with Terminal in front, was pasted into.
+@MainActor
+@Test("A session key that names no running app counts as no holder, so the app in front is not pasted into (F585)")
+func aKeyNamingNoRunningAppRefuses() throws {
+    let harness = try SecureEntryHarness()
+    harness.reading.bundleIdentifier = "com.apple.Terminal"
+    harness.reading.processIdentifier = terminal
+    harness.reading.secureInputProcessIdentifier = 2_000_000_000
+    harness.reading.secureInputAppName = nil   // `read()` resolves no NSRunningApplication for it
+
+    #expect(FocusedTextField.probe(reading: harness.reading).secureInput != nil)
     #expect(harness.dictate() == .secureInput)
     #expect(harness.pasteCount == 0)
 }

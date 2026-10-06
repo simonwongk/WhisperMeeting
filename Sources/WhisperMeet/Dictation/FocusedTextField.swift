@@ -65,7 +65,9 @@ enum FocusedTextField {
         /// `IsSecureEventInputEnabled()`: some process, any process, has secure event input on.
         var secureEventInput = false
         /// The process the window-server session dictionary names under
-        /// `kCGSSessionSecureInputPID`, and that process's name — see `secureInputProcess()`.
+        /// `kCGSSessionSecureInputPID`, and that process's name — see `secureInputProcess()`. The
+        /// name is nil when the number resolves to no running app (`NSRunningApplication` has none
+        /// for it, or it has no name); the judgement then treats the key as naming no one (F585).
         var secureInputProcessIdentifier: pid_t?
         var secureInputAppName: String?
     }
@@ -125,8 +127,9 @@ enum FocusedTextField {
     /// paste in every app (F585). The OS does not say which process turned it on (see
     /// `secureInputProcess()`), so it is weighed against what else can be seen:
     ///
-    /// 1. The session names no process, or there is no app in front to compare it with: nothing
-    ///    shows the app in front did not turn secure input on. Not pasted.
+    /// 1. The session names no process — no key, a key of the wrong type, or a number that resolves
+    ///    to no running app (`secureInputAppName` is nil) — or there is no app in front to compare
+    ///    it with: nothing shows the app in front did not turn secure input on. Not pasted.
     /// 2. The app in front is the one the session names — read as the app that was in front when
     ///    secure input came on, as it is for a password prompt or Terminal's own setting. Not
     ///    pasted, whatever Accessibility shows: a sudo prompt in Terminal is an ordinary
@@ -138,15 +141,17 @@ enum FocusedTextField {
     /// So a paste goes ahead only on two positive readings, and every doubt about either is "not
     /// pasted": a false positive costs a paste, with the text still offered by the pill's Copy,
     /// where a false negative types someone's words into a password prompt. If the session key is
-    /// missing, rule 1 gives F445's behaviour; if it names the app in front at the time of the read
-    /// rather than when secure input came on, rule 2 does. Neither is worse than F445. Rule 3 is
-    /// wrong in two cases nothing here can see: a second process turning secure input on while the
-    /// named one still holds it, and an app that turned it on from the background and was brought
-    /// to the front afterwards — each with a password prompt Accessibility shows as ordinary text.
+    /// missing or names no running app, rule 1 gives F445's behaviour; if it names the app in front
+    /// at the time of the read rather than when secure input came on, rule 2 does. Neither is worse
+    /// than F445. Rule 3 is wrong in cases nothing here can see: a second process turning secure
+    /// input on while the named one still holds it; an app that turned it on from the background
+    /// and was brought to the front afterwards — each with a password prompt Accessibility shows as
+    /// ordinary text; and, suspected, a front app the second look of F656 reads stale (F693).
     static func secureInput(_ reading: Reading, isPasswordField: Bool, isTextField: Bool) -> SecureInput? {
         if isPasswordField { return .passwordField }
         guard reading.secureEventInput else { return nil }
         guard let holder = reading.secureInputProcessIdentifier,
+              reading.secureInputAppName != nil,
               let front = reading.processIdentifier,
               holder != front,
               isTextField else {
