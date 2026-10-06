@@ -25,6 +25,13 @@ private final class BlockingReads: @unchecked Sendable {
     private(set) var writtenDuringEarlyRead = false
     private var countAtEarlyEntry = 0
     let release = DispatchSemaphore(value: 0)
+    /// The pasteboard whose writes count as "during the early read": the one read, unless a test
+    /// watches another — the restore test's second injector shares only the snapshot queue.
+    private let watched: TextInjector.PasteboardHandle?
+
+    init(watching watched: TextInjector.PasteboardHandle? = nil) {
+        self.watched = watched
+    }
 
     func snapshot() -> (maxInFlight: Int, earlyEntered: Bool, laterEntered: Bool, writtenDuringEarlyRead: Bool) {
         lock.withLock { (maxInFlight, earlyEntered, laterEntered, writtenDuringEarlyRead) }
@@ -39,7 +46,7 @@ private final class BlockingReads: @unchecked Sendable {
             maxInFlight = max(maxInFlight, inFlight)
             if calls == 1 {
                 earlyEntered = true
-                countAtEarlyEntry = handle.pasteboard.changeCount
+                countAtEarlyEntry = (watched ?? handle).pasteboard.changeCount
             } else {
                 laterEntered = true
             }
@@ -47,7 +54,7 @@ private final class BlockingReads: @unchecked Sendable {
         }
         if call == 1 {
             release.wait()
-            let moved = handle.pasteboard.changeCount != lock.withLock { countAtEarlyEntry }
+            let moved = (watched ?? handle).pasteboard.changeCount != lock.withLock { countAtEarlyEntry }
             lock.withLock { if moved { writtenDuringEarlyRead = true } }
         }
         let result = PasteboardSnapshot.read(from: handle.pasteboard, maximumBytes: limit)
@@ -59,11 +66,17 @@ private final class BlockingReads: @unchecked Sendable {
 @MainActor
 private final class OverlapHarness {
     let board = NSPasteboard.withUniqueName()
-    let reads = BlockingReads()
+    let reads: BlockingReads
+    /// What the release helper watches for a write: this harness's board unless told otherwise.
+    private let watched: NSPasteboard?
     var textFieldFocused = true
+    var frontmost: pid_t = 100
+    var secure = false
     private(set) var pasteCount = 0
 
-    init() throws {
+    init(watching watched: NSPasteboard? = nil) throws {
+        self.watched = watched
+        reads = BlockingReads(watching: watched.map { TextInjector.PasteboardHandle(pasteboard: $0) })
         board.clearContents()
         board.setString("copied on my phone", forType: .string)
         try #require(board.string(forType: .string) == "copied on my phone", "the private pasteboard does not round-trip a string on this host")
@@ -76,7 +89,10 @@ private final class OverlapHarness {
             readSnapshot: { reads.read($0, $1) },
             canSynthesizePaste: { true },
             focusedTextField: { [unowned self] in
-                FocusedTextField.Probe(isTextField: self.textFieldFocused, summary: "test", processIdentifier: 100)
+                FocusedTextField.Probe(
+                    isTextField: self.textFieldFocused, summary: "test", processIdentifier: self.frontmost,
+                    secureInput: self.secure ? .passwordField : nil
+                )
             },
             synthesizePaste: { [unowned self] in
                 self.pasteCount += 1
@@ -97,7 +113,7 @@ private final class OverlapHarness {
         }
         try #require(reads.snapshot().earlyEntered, "the early read never started")
         let reads = self.reads
-        let handle = TextInjector.PasteboardHandle(pasteboard: board)
+        let handle = TextInjector.PasteboardHandle(pasteboard: watched ?? board)
         let start = reads.entryCount
         Thread.detachNewThread {
             let bound = Date().addingTimeInterval(0.5)
@@ -129,6 +145,8 @@ func thePasteTimeReadWaitsForTheEarlyRead() async throws {
     #expect(harness.pasteCount == 1)
 }
 
+/// Since F656 this path drains the queue before its second look, so the drain — not `write`'s own
+/// routing — is what this test now sees; the routing is pinned by the tests below.
 @MainActor
 @Test("A write at delivery waits for an early read still in flight (F657)")
 func aWriteAtDeliveryWaitsForTheEarlyRead() async throws {
@@ -145,4 +163,78 @@ func aWriteAtDeliveryWaitsForTheEarlyRead() async throws {
     #expect(!seen.laterEntered)
     #expect(!seen.writtenDuringEarlyRead)
     #expect(harness.board.string(forType: .string) == "dictated words")
+}
+
+// MARK: - Write routing (lane J round-2 review: reverting either to the main thread failed no test)
+
+/// The delivery's write with no drain before it: the app changed at the first look. Only `write`'s
+/// own trip through the snapshot queue keeps it out of the early read.
+@MainActor
+@Test("A write for an app that changed waits for an early read still in flight (F657)")
+func anAppChangedWriteWaitsForTheEarlyRead() async throws {
+    let harness = try OverlapHarness()
+    let injector = harness.makeInjector()
+    let (pressedIn, early) = try await harness.startBlockedEarlyRead(injector)
+    harness.frontmost = 200
+
+    #expect(injector.deliver("dictated words", autoPaste: true, pressedIn: pressedIn) == .appChanged)
+    await early.value
+
+    let seen = harness.reads.snapshot()
+    #expect(!seen.laterEntered)
+    #expect(!seen.writtenDuringEarlyRead)
+    #expect(harness.pasteCount == 0)
+    #expect(harness.board.string(forType: .string) == "dictated words")
+}
+
+/// F586's Copy, reached the realistic way with a read in flight: a secure refusal at the first look
+/// returns before any wait, leaving this dictation's early read running, and the user presses Copy
+/// on the pill at once.
+@MainActor
+@Test("Copy from the secure pill waits for an early read still in flight (F657, F586)")
+func copyFromTheSecurePillWaitsForTheEarlyRead() async throws {
+    let harness = try OverlapHarness()
+    let injector = harness.makeInjector()
+    let (pressedIn, early) = try await harness.startBlockedEarlyRead(injector)
+    harness.secure = true
+
+    #expect(injector.deliver("dictated words", autoPaste: true, pressedIn: pressedIn) == .secureInput)
+    injector.copyConcealed("dictated words")
+    await early.value
+
+    #expect(!harness.reads.snapshot().writtenDuringEarlyRead)
+    #expect(harness.board.string(forType: .string) == "dictated words")
+}
+
+/// The restore. In the app a restore does not meet an early read — a press while one is owed reads
+/// nothing early, and every delivery write waits for the queue — so this pins its routing with a
+/// second injector, whose blocked read is on its own pasteboard and shares only the (static)
+/// snapshot queue: the restore must wait for it like every other write.
+@MainActor
+@Test("The clipboard restore goes through the snapshot queue like every other write (F657)")
+func theRestoreGoesThroughTheSnapshotQueue() async throws {
+    let restoring = NSPasteboard.withUniqueName()
+    defer { restoring.releaseGlobally() }
+    restoring.clearContents()
+    restoring.setString("copied on my phone", forType: .string)
+    try #require(restoring.string(forType: .string) == "copied on my phone", "the private pasteboard does not round-trip a string on this host")
+    var restores: [@MainActor () -> Void] = []
+    let pasting = TextInjector(
+        pasteboard: restoring,
+        canSynthesizePaste: { true },
+        focusedTextField: { FocusedTextField.Probe(isTextField: true, summary: "test", processIdentifier: 100) },
+        synthesizePaste: { true },
+        schedule: { _, work in restores.append(work) }
+    )
+    #expect(pasting.deliver("dictated words", autoPaste: true) == .pasted)
+    try #require(restores.count == 1)
+
+    let harness = try OverlapHarness(watching: restoring)
+    let reading = harness.makeInjector()
+    let (_, early) = try await harness.startBlockedEarlyRead(reading)
+    restores[0]()
+    await early.value
+
+    #expect(!harness.reads.snapshot().writtenDuringEarlyRead)
+    #expect(restoring.string(forType: .string) == "copied on my phone")
 }
