@@ -5386,13 +5386,47 @@ final class AppModel: ObservableObject {
     }
 
     /// Why Transcribe Again cannot run for this meeting now, or nil. Only what `beginTranscription`
-    /// cannot already say in an alert: a read-only library, and a meeting already being transcribed.
+    /// cannot already say in an alert: a read-only library, and a meeting already being transcribed
+    /// or already waiting to be.
+    ///
+    /// The waiting case (F602) is its own sentence because it is not the `.processing` one: a
+    /// queued Transcribe Again leaves a completed meeting `.completed` until its run starts, so the
+    /// status said nothing, and `beginTranscription` answers a second request for a queued id with
+    /// a silent `enqueue == false`.
     func transcribeAgainBlockedReason(for id: UUID) -> String? {
         if let readOnly = libraryReadOnlyFootnote { return readOnly }
         guard let meeting = store.meeting(id: id) else { return "This meeting no longer exists." }
         if meeting.status == .processing { return "This meeting is already being transcribed." }
+        if isQueuedForTranscription(id) { return Self.transcribeAgainAlreadyQueued }
         return nil
     }
+
+    /// Why Transcribe Again is unavailable for a meeting that is already waiting in the queue (F602).
+    /// Names the control that undoes it, because that control is on the meeting's page.
+    static let transcribeAgainAlreadyQueued =
+        "This meeting is already queued to be transcribed again. Use Remove on its page to take it out of the queue."
+
+    /// Whether a meeting's page draws its status card (F602). Every meeting that is not settled has
+    /// one — and a `.completed` meeting too while a Transcribe Again waits in the queue, because
+    /// queuing does not change its status and the card is the only place that says "Queued", says
+    /// what the job is waiting for, and holds Remove (the sole UI caller of `cancelTranscription`).
+    /// Gating the card on status alone is what hid that job.
+    func showsTranscriptionStatusCard(for meeting: MeetingRecord) -> Bool {
+        meeting.status != .completed || isQueuedForTranscription(meeting.id)
+    }
+
+    /// The card's second line for a queued meeting (F602): what it is waiting for and, when the
+    /// meeting already has a transcript, what happens when the wait ends — the new transcript
+    /// replaces this one, including edits made while it waits, which the confirmation that queued it
+    /// could not have known about.
+    func queuedStatusDetail(for meeting: MeetingRecord) -> String {
+        guard meeting.status == .completed else { return queuedTranscriptionWaitMessage }
+        return queuedTranscriptionWaitMessage + " " + Self.queuedTranscribeAgainReplaces
+    }
+
+    /// What a queued Transcribe Again will do to the transcript it sits on (F602).
+    static let queuedTranscribeAgainReplaces =
+        "It will replace this transcript, including any edits made before it starts."
 
     /// Starts a transcription that queued while Quick Dictation was active (F470). AppEntry calls it
     /// from `DictationController`'s activity-ended hook; with nothing waiting it does nothing.

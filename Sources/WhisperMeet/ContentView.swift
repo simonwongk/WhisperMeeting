@@ -3570,7 +3570,10 @@ private struct TranscriptDetailView: View {
 
     @ViewBuilder
     private func statusCard(_ meeting: MeetingRecord) -> some View {
-        if meeting.status != .completed {
+        // F602: not `meeting.status != .completed` alone. A Transcribe Again that is waiting for
+        // another job leaves its completed meeting `.completed`, and this card is the only place that
+        // says "Queued" and holds Remove — a status-only gate hid the job and its only way out.
+        if model.showsTranscriptionStatusCard(for: meeting) {
             let isQueued = model.isQueuedForTranscription(meeting.id)
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
@@ -3586,7 +3589,7 @@ private struct TranscriptDetailView: View {
                         if meeting.status == .processing {
                             Text(transcriptionPhaseLabel(meeting)).foregroundStyle(.secondary)
                         } else if isQueued {
-                            Text(model.queuedTranscriptionWaitMessage).foregroundStyle(.secondary)
+                            Text(model.queuedStatusDetail(for: meeting)).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
                         } else if meeting.status == .recorded {
