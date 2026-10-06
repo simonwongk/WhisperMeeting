@@ -92,9 +92,10 @@ Fallback / edge branches:
   text field focused in the one in front. Anything less — no app named, the named app in front, no
   field visible — is not pasted, and the pill adds "It came on while <app> was in front" when an
   app is named. So Terminal's Secure Keyboard Entry no longer stops dictation into TextEdit. When
-  the clipboard read before the paste may have taken time, secure input and the app in front are
-  looked at again just before the clipboard is written and ⌘V is sent (F656), so a password prompt
-  that took focus meanwhile gets the secure pill, not the dictation.
+  the delivery may have waited on the clipboard — a read at paste time, or any early read still on
+  the snapshot queue, including one an earlier dictation left running — secure input and the app in
+  front are looked at again just before the clipboard is written and ⌘V is sent (F656), so a
+  password prompt that took focus meanwhile gets the secure pill, not the dictation.
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.

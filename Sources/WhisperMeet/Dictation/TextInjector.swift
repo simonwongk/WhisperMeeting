@@ -154,14 +154,22 @@ final class TextInjector {
     /// One serial queue, so a read blocked on a slow promise (a phone that has gone out of range)
     /// makes the next dictation's read wait rather than pile a second blocked thread beside it (F425).
     ///
-    /// Every other read and write of the pasteboard here goes through it too, with `sync` (F657):
-    /// the early read may still be running at paste time, and the main thread must not read,
-    /// clear or write the same pasteboard while the queue is inside `data(forType:)`. Waiting for
-    /// it is no slower than F516's paste-time read on the main thread, which it replaces.
+    /// Every other content read and every write of the pasteboard here goes through it too, with
+    /// `sync` (F657): the early read may still be running at paste time, and the main thread must
+    /// not read items from, clear or write the same pasteboard while the queue is inside
+    /// `data(forType:)`. Waiting for it is no slower than F516's paste-time read on the main thread,
+    /// which it replaces. (`changeCount` and `accessBehavior` are still read on the main thread:
+    /// they are properties of the pasteboard, not reads of its items.)
     nonisolated private static let snapshotQueue = DispatchQueue(
         label: "com.whispermeet.dictation.clipboard-snapshot",
         qos: .userInitiated
     )
+
+    /// How many early reads are on `snapshotQueue` and not yet finished — this dictation's, or one
+    /// an earlier dictation left running when it ended without a delivery (a cancel, a too-short
+    /// tap, an empty transcript, a secure refusal). While it is above zero, touching the pasteboard
+    /// from the main thread waits, and delivery must look again before ⌘V (F656).
+    nonisolated private static let readsOnQueue = OSAllocatedUnfairLock(initialState: 0)
 
     /// Called when a dictation starts recording: returns `target()`, and starts copying the
     /// clipboard off the main thread when this dictation will be pasted into a text field and so
@@ -187,11 +195,16 @@ final class TextInjector {
         let handle = PasteboardHandle(pasteboard: pasteboard)
         let maximumBytes = maximumSnapshotBytes
         let read = readSnapshot
+        // Counted before it is queued, and until the read itself returns: a dictation that drops
+        // this handle leaves the count up while the read still runs (F656).
+        Self.readsOnQueue.withLock { $0 += 1 }
         clipboardPrefetch = Task { [weak self] in
             let outcome = await withCheckedContinuation { continuation in
                 Self.snapshotQueue.async {
                     let changeCount = handle.pasteboard.changeCount
-                    continuation.resume(returning: (read(handle, maximumBytes), changeCount))
+                    let result = read(handle, maximumBytes)
+                    Self.readsOnQueue.withLock { $0 -= 1 }
+                    continuation.resume(returning: (result, changeCount))
                 }
             }
             guard let self, generation == self.prefetchGeneration else { return }
@@ -211,8 +224,11 @@ final class TextInjector {
     /// user started or nowhere. Nil skips both press-time checks.
     func deliver(_ text: String, autoPaste: Bool, pressedIn pressed: FocusedTextField.Probe? = nil) -> Delivery {
         let early = prefetched
-        // Started, and not yet back: anything below that touches the pasteboard waits for it (F657).
-        let earlyReadInFlight = clipboardPrefetch != nil && early == nil
+        // A read still on the snapshot queue — this dictation's, or one an earlier dictation left
+        // running — makes anything below that touches the pasteboard wait for it (F657), so it is
+        // what decides the second look (F656). Only this thread queues reads, so the count cannot
+        // rise between here and the write.
+        let readsQueued = Self.readsOnQueue.withLock { $0 } > 0
         discardClipboardPrefetch()
         let target = focusedTextField()
         // What was judged, so a real app's secure-input and text-field reading can be checked
@@ -245,7 +261,7 @@ final class TextInjector {
         // The clipboard as it is at paste time: an item that arrived while the user was speaking —
         // from the iPhone, say — is the clipboard they expect back. Only when it will be given back.
         var snapshot: PasteboardSnapshot? = nil
-        var mayHaveWaited = earlyReadInFlight
+        var mayHaveWaited = readsQueued
         if target.isTextField {
             if let carried {
                 snapshot = carried
@@ -255,10 +271,13 @@ final class TextInjector {
                 mayHaveWaited = mayHaveWaited || taken.readNow
             }
         }
-        // Seconds can pass in that read, or waiting for the early one (F657): time enough for a
+        // Seconds can pass in that read, or waiting for any read still on the queue (F657) — this
+        // dictation's early read, or one an earlier dictation left running: time enough for a
         // password prompt to take focus, or the user to switch apps. So look again before the
         // clipboard is touched and ⌘V is sent (F656) — after draining the snapshot queue, so the
-        // write below cannot wait again after this look.
+        // write below cannot wait again after this look. Between this look and ⌘V there remain the
+        // rest of this probe's Accessibility calls (each bounded at 0.25 s), the write, and
+        // `postCommandV`'s 20 ms settle.
         if mayHaveWaited {
             Self.snapshotQueue.sync {}
             let now = focusedTextField()
