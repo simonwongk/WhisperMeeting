@@ -142,12 +142,12 @@ func shredRotatesTheBackupWithoutAHistoryDirectory() throws {
     #expect(!(try String(contentsOf: backup, encoding: .utf8).contains("Secret")))
 }
 
-/// Found while fixing F665, beside the same check: the rotation saved `load()`'s value against
-/// `load()`'s token, and a load that is not complete has no token — so the rotation was an
-/// unchecked save. Over a primary that belongs to a second lineage it silently made that primary
-/// current and ended the divergence the library is meant to put to the user. The backup keeps the
-/// deleted text until the next ordinary save instead: deferred, never destructive.
-@Test("A shred never rotates over an index that did not load cleanly (F665)")
+/// F680, found beside F665's check: the rotation saved `load()`'s value against `load()`'s token,
+/// and a load that is not complete has no token — so the rotation was an unchecked save. Over a
+/// primary that belongs to a second lineage it silently made that primary current and ended the
+/// divergence the library is meant to put to the user. The backup keeps the deleted text instead,
+/// and `HistoryShred.rotation` is nil so the caller can tell (MeetingStore keeps the id queued).
+@Test("A shred never rotates over an index that did not load cleanly (F680)")
 func shredDoesNotRotateOverADivergentIndex() throws {
     let (store, root) = try makeStore()
     defer { try? FileManager.default.removeItem(at: root) }

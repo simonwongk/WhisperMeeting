@@ -287,7 +287,10 @@ can still bring it back. That is protection for the library, not an undo button:
 deleted on purpose, restore a generation by hand as above, which also undoes every change saved
 since that generation. After that week (checked at each launch and after each delete) every generation
 that held the meeting is re-recorded without it under a new name, and the backup copy is rotated if
-it still holds the meeting; generations that never held it are not touched, so the ability to undo a
+it still holds the meeting. The backup is rotated only when the index itself loads cleanly; if it
+does not (it was replaced or damaged since WhisperMeet read it), the backup keeps the meeting and the
+meeting stays queued until a check finds the index readable again (F680). Generations that never held
+it are not touched, so the ability to undo a
 bad save is kept for every other meeting. The rewrite removes only that meeting's entry: everything
 else in each generation stays as it was written, including anything a newer version of WhisperMeet
 added that this one does not understand (F552). The same removal reaches the index's other copies

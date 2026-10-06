@@ -873,7 +873,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// writing the backup directly. That save goes through `Value`, as every save does. When the
     /// backup holds none of them nothing is saved, so the shred does not re-encode the live index
     /// (F552). The check runs even with no history directory (F665), and the rotation runs only
-    /// over an index that loads as `.complete`.
+    /// over an index that loads as `.complete` (F680); when it is skipped, `rotation` is nil while
+    /// the backup still holds the elements, and the caller must keep them queued.
     ///
     /// **What this costs**, stated because F239 refused to decide it silently: for the deleted
     /// record only, the undo protection is gone — restoring an older generation no longer brings
@@ -940,10 +941,13 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             // never the rewrite itself, which is already on disk.
             _ = try? StoreLedger.write(ledger, to: ledgerURL, using: io)
         }
-        // Only over an index that loaded cleanly. Any other load has no token, so the rotation would
-        // be an unchecked save — and over a divergent primary it would make that primary current,
-        // ending without asking the choice the library is meant to put to the user (found with
-        // F665). Skipped, the backup keeps the text until the next ordinary save rotates it.
+        // Only over an index that loaded cleanly (F680). Any other load has no token, so the
+        // rotation would be an unchecked save: over a divergent primary it would make that primary
+        // current, ending without asking the choice the library is meant to put to the user, and
+        // over a primary that does not decode it would save the backup's value — the generation
+        // from before the delete — as the live index. Skipped, the backup keeps the text, and that
+        // load has copied it aside as a quarantine copy; `rotation` is nil so the caller can keep
+        // the deletion queued for a pass over a clean load (`MeetingStore.processPendingShreds`).
         guard let backup = try? io.read(backupURL, .readBackup),
               JSONArrayShred.removingElements(withIDs: ids, from: backup) != nil,
               let current = try? load(), current.health == .complete

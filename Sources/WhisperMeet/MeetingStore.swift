@@ -1921,8 +1921,19 @@ final class MeetingStore: ObservableObject {
                     meetingsToken = rotation.token
                 }
             }
+            // F680: the rotation is skipped over an index that did not load cleanly, and then the
+            // backup still holds the text. Those ids stay queued as deletions, so the next pass over
+            // a clean load rotates the backup — and cleans the quarantine copy a non-clean load
+            // makes of it — instead of the id leaving the queue with the text still on disk.
+            var heldByBackup: Set<UUID> = []
+            if shred.rotation == nil,
+               let backup = try? Data(contentsOf: rootDirectory.appendingPathComponent("meetings.backup.json")),
+               let held = JSONArrayShred.removingElements(withIDs: Set(due.map(\.uuidString)), from: backup)?.removed {
+                heldByBackup = Set(due.filter { held.contains($0.uuidString.lowercased()) })
+            }
+            let shredded = due.filter { !heldByBackup.contains($0) }
             var remaining = queue
-            for id in due {
+            for id in shredded {
                 // The history is done; the copies outside it are next, and stay queued until clean.
                 remaining.sideCopiesPending[id] = remaining.deletedAt[id]
                 remaining.deletedAt.removeValue(forKey: id)
@@ -1930,7 +1941,7 @@ final class MeetingStore: ObservableObject {
             }
             retrySideCopies(&remaining)
             pendingShredQueue = remaining
-            return due
+            return shredded
         } catch {
             storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes the saved history at once."
             return []

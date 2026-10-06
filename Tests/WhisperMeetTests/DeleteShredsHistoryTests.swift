@@ -314,6 +314,70 @@ func shredRotationOverAHandRestoredIndexIsNotAdopted() throws {
     #expect(store.conflictOffer != nil, "the stale save should have lost the race and been offered back (F642)")
 }
 
+// MARK: - F680: a rotation skipped over an index that did not load cleanly keeps the id queued
+
+/// F680's guard skips the backup rotation when the index does not load as `.complete`. The first cut
+/// still took the id out of the queue, so the backup kept the deleted text with nothing left to
+/// remove it — and the next launch's own load copied that backup aside as a quarantine copy that
+/// nothing queued either (lane C review round 2, probe P2). The id now stays queued while the backup
+/// still holds it, so the next pass over a clean load finishes the job.
+@MainActor
+@Test("A shred whose backup rotation is skipped keeps the id queued while the backup still holds it (F680)")
+func skippedRotationKeepsTheIDQueued() throws {
+    let (store, root, secret) = try makeMistakenDelete("skipped-rotation")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    let primaryURL = root.appendingPathComponent("meetings.json")
+    let backupURL = root.appendingPathComponent("meetings.backup.json")
+    let ownPrimary = try Data(contentsOf: primaryURL)
+    // A primary no save recorded, beside the ledger that still describes the last one — an index
+    // copied in by hand while this session runs. The library is divergent from here on.
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(store.meetings + [MeetingRecord(id: UUID(), title: "Written elsewhere", status: .completed)])
+        .write(to: primaryURL)
+
+    let shredded = store.processPendingShreds(now: deletedAt + week)
+
+    #expect(shredded.isEmpty, "reported as shredded while the backup still holds it")
+    #expect(store.pendingShreds[secret] == deletedAt, "the id left the queue with the text still in the backup")
+    #expect(String(decoding: try Data(contentsOf: backupURL), as: UTF8.self).contains("confidential-kestrel"),
+            "fixture: the rotation was skipped")
+    #expect(!(try historyHolds("confidential-kestrel", in: root)), "the history itself is shredded either way")
+    let relaunched = MeetingStore(rootDirectory: root)
+    #expect(relaunched.isDegraded)
+    #expect(relaunched.pendingShreds[secret] == deletedAt, "the queue did not survive the relaunch")
+
+    // The divergence resolved — here by putting this session's own save back — and the next pass
+    // rotates the backup and lets the id go.
+    try ownPrimary.write(to: primaryURL)
+    let resolved = MeetingStore(rootDirectory: root)
+    try #require(!resolved.isDegraded)
+    #expect(resolved.processPendingShreds(now: deletedAt + week + 60) == [secret])
+    #expect(!String(decoding: try Data(contentsOf: backupURL), as: UTF8.self).contains("confidential-kestrel"))
+    #expect(resolved.pendingShreds.isEmpty)
+}
+
+/// The other half of F680 (review round 2, probe P5): over a primary that does not decode, `load()`
+/// answers with the backup — the generation from BEFORE the delete — and the old unchecked rotation
+/// saved that as the live index, putting the deleted meeting back.
+@MainActor
+@Test("A shred over a primary that does not decode never puts the deleted meeting back (F680)")
+func shredOverATornPrimaryDoesNotResurrect() throws {
+    let (store, root, secret) = try makeMistakenDelete("torn-primary")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let deletedAt = try #require(store.pendingShreds[secret])
+    let primaryURL = root.appendingPathComponent("meetings.json")
+    try Data("{ torn".utf8).write(to: primaryURL)
+
+    _ = store.processPendingShreds(now: deletedAt + week)
+
+    #expect(!String(decoding: try Data(contentsOf: primaryURL), as: UTF8.self).contains("confidential-kestrel"),
+            "the shred's rotation put the deleted meeting back in the live index")
+    #expect(store.pendingShreds[secret] == deletedAt, "the backup still holds it, so it stays queued")
+}
+
 // MARK: - F603: a clock that is behind at one launch must not shorten the week
 
 /// F498 wrote `min(deletedAt, now)` back to disk at every launch, so one launch with the clock
