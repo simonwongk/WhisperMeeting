@@ -2201,6 +2201,10 @@ private struct LinkImportSheet: View {
     /// The in-flight import, held so Cancel actually stops the download instead of only closing the
     /// sheet and leaving the fetch (and the isImporting latch) running invisibly.
     @State private var importTask: Task<Void, Never>?
+    /// What the last attempt said when it declined (F539). Drawn inside this sheet because the
+    /// window's alert, where these used to go, is behind it. Cleared the moment the link is edited
+    /// or another attempt starts, so it never describes a link that is no longer in the field.
+    @State private var refusal: String?
 
     private var trimmedLink: String {
         link.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2222,6 +2226,16 @@ private struct LinkImportSheet: View {
                     .disabled(isWorking)
                     .focused($linkFieldFocused)
                     .onSubmit { start(confirmed: false) }
+                    .onChange(of: link) { refusal = nil }
+
+                // F539: beside the field it is about, never in the window's alert.
+                if let refusal {
+                    Label(refusal, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
 
                 if let progress = model.mediaDownloadProgress {
                     if let fraction = progress.fractionCompleted {
@@ -2264,7 +2278,10 @@ private struct LinkImportSheet: View {
             }
             .padding()
         }
-        .frame(width: 460, height: 340)
+        // A minimum, not a fixed height: a refusal that runs to several lines grows the sheet instead
+        // of pushing the buttons out of it (F539).
+        .frame(width: 460)
+        .frame(minHeight: 340)
         // Long media is confirmed, never capped: a legitimate 4-hour conference recording stays possible.
         .alert(
             "This is a long recording",
@@ -2285,15 +2302,27 @@ private struct LinkImportSheet: View {
     private func start(confirmed: Bool) {
         guard !trimmedLink.isEmpty, !isWorking else { return }
         isWorking = true
+        refusal = nil
         importTask = Task {
-            let id = await model.importFromURL(trimmedLink, confirmedLongDuration: confirmed)
+            let outcome = await model.importFromURL(trimmedLink, confirmedLongDuration: confirmed)
             isWorking = false
             importTask = nil
-            if let id {
+            switch outcome {
+            case let .imported(id):
                 onImported(id)
                 dismiss()
+            case let .refused(message):
+                refusal = message
+                // A sentence that appears under the field is not heard by VoiceOver on its own.
+                AccessibilityNotification.Announcement(message).post()
+            case .needsConfirmation:
+                // The sheet's own "This is a long recording" alert is up; it answers by calling
+                // `start(confirmed: true)` or clearing the pending confirmation.
+                break
+            case .cancelled:
+                // Stop was pressed: the sheet is already closing, and nothing failed.
+                break
             }
-            // A nil result that is only awaiting confirmation keeps the sheet open for the alert.
         }
     }
 

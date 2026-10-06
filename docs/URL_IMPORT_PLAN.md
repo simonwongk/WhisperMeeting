@@ -160,8 +160,8 @@ var downloadCaptions:@Sendable (String, URL) async throws -> URL?
 
 New method `importFromURL(_:)`, in this order:
 
-1. **Guard, and say why.** Same preconditions as `importRecording`, but every rejection sets
-   `alertMessage`. Reuse the existing `isImporting` flag rather than adding a new one — it already
+1. **Guard, and say why.** Same preconditions as `importRecording`, but every rejection says why (as built it is returned to the sheet as `LinkImportOutcome.refused`, F539 — the window's `alertMessage` is behind an open sheet; the plan said it would set
+   `alertMessage`). Reuse the existing `isImporting` flag rather than adding a new one — it already
    gates every relevant control in `ContentView` (`:414`, `:532`, `:1233`, `:1266`, `:1450`), so the
    new path inherits all of that with no new wiring.
 2. **Validate** the URL through `MediaSourceURL`.
@@ -292,7 +292,7 @@ with the seams stubbed, asserting **through `AppModel.importFromURL`**, never a 
 - a stubbed download produces a `MeetingRecord` carrying `source.isYouTube`, the auto tag, and the
   probed title, and enqueues transcription;
 - a throwing download leaves no orphan directory and no meeting;
-- the guards refuse while recording / importing / installing, **and set `alertMessage`**.
+- the guards refuse while recording / importing / installing, **and say why** (as built: in the returned `LinkImportOutcome`, not `alertMessage`, F539).
 
 **`Scripts/tests/`** — a script-shape test asserting yt-dlp is installed best-effort after Whisper's
 verification step, following the `WhisperHelperScriptTests` / `SummarizeLocalHelperScriptTests`

@@ -490,9 +490,13 @@ func degradedLibraryRefusesLinkImport() async throws {
         return []
     }
 
-    let imported = await model.importFromURL("https://www.youtube.com/watch?v=abc123")
+    let outcome = await model.importFromURL("https://www.youtube.com/watch?v=abc123")
 
-    #expect(imported == nil)
+    // F539: said to the sheet, which is what is on screen; the window's alert is behind it.
+    guard case let .refused(message) = outcome else {
+        Issue.record("a degraded library was not refused: \(outcome)")
+        return
+    }
     #expect(network.probes == 0)
     #expect(network.downloads == 0)
     #expect(network.captionFetches == 0)
@@ -501,10 +505,11 @@ func degradedLibraryRefusesLinkImport() async throws {
     // Nothing was laid down: no meeting folder, so no sidecar and no unindexed audio.
     let recordings = root.appendingPathComponent("Recordings", isDirectory: true)
     #expect(!FileManager.default.fileExists(atPath: recordings.path))
-    let message = try #require(model.alertMessage)
+    #expect(message == ReadOnlyLibraryNotice.actionRefused("Import"))
     #expect(message.contains("Import cannot start"))
     #expect(message.contains("read-only"))
     #expect(message.contains("recovery"))
+    #expect(model.alertMessage == nil)
 }
 
 // The segment re-run reaches the engine through `makeSegmentClip`, which reads and slices the real

@@ -22,7 +22,7 @@ func cancelDuringProbeIsSilent() async throws {
     // as an alert: the download's catch knew a cancel is not a failure, the probe's did not.
     let model = try makeModel()
     model.probeMediaURL = { _ in throw CancellationError() }
-    #expect(await model.importFromURL("https://www.youtube.com/watch?v=jNQXAC9IVRw") == nil)
+    #expect(await model.importFromURL("https://www.youtube.com/watch?v=jNQXAC9IVRw") == .cancelled)
     #expect(model.alertMessage == nil)
 }
 

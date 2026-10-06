@@ -63,7 +63,7 @@ func linkImportCreatesMeetingWithProvenance() async throws {
         title: "Quarterly review", durationSeconds: 600, uploader: "Acme", language: "en"
     ))
 
-    let id = try #require(await model.importFromURL("https://www.youtube.com/watch?v=abc123"))
+    let id = try #require(await model.importFromURL("https://www.youtube.com/watch?v=abc123").meetingID)
     let meeting = try #require(model.store.meeting(id: id))
 
     #expect(meeting.title == "Quarterly review")
@@ -114,7 +114,7 @@ func captionsSkippedWhenLanguageUnknown() async throws {
     // track would be fetched, which must never reach the transcript.
     stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "Unknown language", durationSeconds: 60))
 
-    let id = try #require(await model.importFromURL("https://youtu.be/abc"))
+    let id = try #require(await model.importFromURL("https://youtu.be/abc").meetingID)
     #expect(box.captionLangs == nil) // the caption fetch never ran
     #expect(model.store.meeting(id: id)?.referenceSegments == nil)
 }
@@ -127,10 +127,11 @@ func failedDownloadLeavesNothingBehind() async throws {
     model.probeMediaURL = { _ in MediaProbe(title: "T", durationSeconds: 60) }
     model.downloadMedia = { _, _, _ in throw MediaDownloadError.missingOutput }
 
-    let id = await model.importFromURL("https://youtu.be/abc")
-    #expect(id == nil)
+    // F539: the failure comes back to the sheet; the window's alert is behind it.
+    let outcome = await model.importFromURL("https://youtu.be/abc")
+    #expect(outcome == .refused(MediaDownloadError.missingOutput.localizedDescription))
     #expect(model.store.meetings.isEmpty)
-    #expect(model.alertMessage != nil)
+    #expect(model.alertMessage == nil)
     let recordings = root.appendingPathComponent("Recordings")
     let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: recordings.path)) ?? []
     #expect(leftovers.isEmpty)
@@ -145,9 +146,9 @@ func disabledByDefault() async throws {
     let box = SeamBox()
     stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "T", durationSeconds: 60))
 
-    #expect(await model.importFromURL("https://youtu.be/abc") == nil)
+    #expect(await model.importFromURL("https://youtu.be/abc") == .refused(AppModel.linkImportSwitchedOff))
     #expect(box.probedURL == nil)              // nothing reached the network
-    #expect(model.alertMessage?.contains("Settings") == true)
+    #expect(AppModel.linkImportSwitchedOff.contains("Settings"))
 }
 
 @MainActor
@@ -158,15 +159,16 @@ func refusesUnsupportedLinks() async throws {
     let box = SeamBox()
     stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "T", durationSeconds: 60))
 
-    #expect(await model.importFromURL("https://www.youtube.com/playlist?list=PL1") == nil)
+    #expect(await model.importFromURL("https://www.youtube.com/playlist?list=PL1")
+        == .refused(MediaDownloadError.playlistNotSupported.localizedDescription))
     #expect(box.downloadURL == nil)
-    #expect(await model.importFromURL("not a url") == nil)
+    #expect(await model.importFromURL("not a url") == .refused(AppModel.linkImportNotAWebLink))
     #expect(box.downloadURL == nil)
 
     model.probeMediaURL = { _ in MediaProbe(title: "Live", isLive: true) }
-    #expect(await model.importFromURL("https://youtu.be/live1") == nil)
+    #expect(await model.importFromURL("https://youtu.be/live1")
+        == .refused(MediaDownloadError.liveInProgress.localizedDescription))
     #expect(box.downloadURL == nil)
-    #expect(model.alertMessage?.contains("live") == true)
 }
 
 @MainActor
@@ -178,7 +180,7 @@ func videoInsidePlaylistImports() async throws {
     stubSuccessfulDownload(model, box: box, probe: MediaProbe(title: "One talk", durationSeconds: 60))
 
     let link = "https://www.youtube.com/watch?v=abc123&list=PL1"
-    let id = try #require(await model.importFromURL(link))
+    let id = try #require(await model.importFromURL(link).meetingID)
     // It reached the downloader unchanged, where `--no-playlist` picks the video out of the playlist.
     #expect(box.probedURL == link)
     #expect(box.downloadURL == link)
@@ -195,12 +197,12 @@ func longMediaRequiresConfirmation() async throws {
         title: "Long conference", durationSeconds: 3 * 3_600, language: "en"
     ))
 
-    #expect(await model.importFromURL("https://youtu.be/long1") == nil)
+    #expect(await model.importFromURL("https://youtu.be/long1") == .needsConfirmation)
     #expect(box.downloadURL == nil)                            // nothing downloaded yet
     #expect(model.pendingLongMediaConfirmation?.title == "Long conference")
 
     // Confirming proceeds — the length is a warning, never a cap.
-    let id = await model.importFromURL("https://youtu.be/long1", confirmedLongDuration: true)
+    let id = await model.importFromURL("https://youtu.be/long1", confirmedLongDuration: true).meetingID
     #expect(id != nil)
     #expect(box.downloadURL == "https://youtu.be/long1")
     #expect(model.pendingLongMediaConfirmation == nil)

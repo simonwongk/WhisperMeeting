@@ -1413,16 +1413,25 @@ final class AppModel: ObservableObject {
     /// state: the store would refuse the write the work leads up to, and a transcription started
     /// now would write its result into the restored meeting when it finished.
     private func libraryAcceptsChanges(_ action: String) -> Bool {
-        guard libraryIsNotBeingRestored(action) else { return false }
-        guard store.isDegraded else { return true }
-        alertMessage = ReadOnlyLibraryNotice.actionRefused(action)
+        guard let refusal = libraryRefusal(action) else { return true }
+        alertMessage = refusal
         return false
+    }
+
+    /// The reason `libraryAcceptsChanges(action)` would refuse, or nil when it would not — without
+    /// setting anything. For a caller whose answer is shown somewhere other than the window's alert,
+    /// which sits behind an open sheet (F539). One function, so the refusal and its order (a restore
+    /// in progress before a read-only library) cannot drift between the two kinds of caller.
+    private func libraryRefusal(_ action: String) -> String? {
+        if store.isRestoringLibrary { return Self.libraryRestoringMessage(action) }
+        if store.isDegraded { return ReadOnlyLibraryNotice.actionRefused(action) }
+        return nil
     }
 
     /// The message `libraryIsNotBeingRestored` reports, factored out so `watchedFolderImportRefusalMessage()`
     /// can precompute the identical refusal without the side effect of setting `alertMessage` itself
     /// (F454 follow-up review) — one string, so the two call sites cannot drift apart in wording.
-    private static func libraryRestoringMessage(_ action: String) -> String {
+    static func libraryRestoringMessage(_ action: String) -> String {
         "\(action) cannot start while your library is being restored. Try again when the restore finishes."
     }
 
@@ -4893,34 +4902,31 @@ final class AppModel: ObservableObject {
     /// anonymous orphan), download straight into the meeting folder (never temp-then-copy, which would
     /// double peak disk for a long video), and finish through the shared adopt path so transcription
     /// starts exactly the way it does for a file import.
+    ///
+    /// **Returns what happened, and raises no alert (F539).** The only caller is the Add-from-a-Link
+    /// sheet, and the window's alert — where every one of these refusals used to go — is behind an
+    /// open sheet, so the sheet reset with no word about why. The refusal comes back as
+    /// `.refused(message)` for the sheet to say itself. Every way this declines returns one of
+    /// `LinkImportOutcome`'s cases, so a refusal added later has nowhere to go but the sheet.
     @discardableResult
-    func importFromURL(_ raw: String, confirmedLongDuration: Bool = false) async -> UUID? {
-        guard linkImportEnabled else {
-            alertMessage = "Turn on “Import from a link” in Settings to fetch audio from a link."
-            return nil
-        }
+    func importFromURL(_ raw: String, confirmedLongDuration: Bool = false) async -> LinkImportOutcome {
+        guard linkImportEnabled else { return .refused(Self.linkImportSwitchedOff) }
         guard recordingState == .idle, !isImporting, !isPreflightTestActive else {
-            alertMessage = "Finish the current recording or import before adding from a link."
-            return nil
+            return .refused(Self.linkImportBusy)
         }
-        guard !isInstallingRecognitionRuntime else {
-            alertMessage = "Wait for the local recognition model installation to finish before importing."
-            return nil
-        }
+        guard !isInstallingRecognitionRuntime else { return .refused(Self.linkImportInstallRunning) }
         // Before the probe, let alone the download: the same unindexed-audio trap as a file import,
         // with a network transfer in front of it (F187).
-        guard libraryAcceptsChanges("Import") else { return nil }
+        if let refusal = libraryRefusal("Import") { return .refused(refusal) }
 
         let parsed: MediaSourceURL.Parsed
         do {
             parsed = try MediaSourceURL.validate(raw)
         } catch {
-            alertMessage = "That doesn't look like a web link. Paste a full https:// address to a single video."
-            return nil
+            return .refused(Self.linkImportNotAWebLink)
         }
         guard !parsed.isPlaylist else {
-            alertMessage = MediaDownloadError.playlistNotSupported.localizedDescription
-            return nil
+            return .refused(MediaDownloadError.playlistNotSupported.localizedDescription)
         }
 
         let probe: MediaProbe
@@ -4929,21 +4935,19 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             // F184: Stop while the link is still being looked up is not a failure, exactly as it
             // is not one during the download below.
-            return nil
+            return .cancelled
         } catch {
-            alertMessage = error.localizedDescription
-            return nil
+            return .refused(error.localizedDescription)
         }
         guard !probe.isLive else {
-            alertMessage = MediaDownloadError.liveInProgress.localizedDescription
-            return nil
+            return .refused(MediaDownloadError.liveInProgress.localizedDescription)
         }
         // Long media is confirmed, never capped.
         if let duration = probe.durationSeconds,
            duration > Self.longMediaDurationThreshold,
            !confirmedLongDuration {
             pendingLongMediaConfirmation = probe
-            return nil
+            return .needsConfirmation
         }
         // The storage guard needs the probe's size: the file-import guard reads `.fileSizeKey` from the
         // source, which is meaningless for a remote URL and would silently degrade to a flat margin.
@@ -4951,8 +4955,7 @@ final class AppModel: ObservableObject {
         if let available = recordingPreflight.availableStorageBytes {
             let needed = (probe.approximateBytes ?? 0) + 500_000_000
             if available < needed {
-                alertMessage = "Downloading this needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
-                return nil
+                return .refused("Downloading this needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again.")
             }
         }
 
@@ -4995,20 +4998,41 @@ final class AppModel: ObservableObject {
             let title = (probe.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
                 $0.isEmpty ? nil : $0
             } ?? "Imported from \(parsed.host)"
-            return await adoptImportedRecording(
+            return .imported(await adoptImportedRecording(
                 id: id, at: downloaded, title: title, source: source, referenceSegments: reference
-            )
+            ))
         } catch {
             isImporting = false
             mediaDownloadProgress = nil
             // No resume in v1: a failed or cancelled download leaves nothing behind.
             try? FileManager.default.removeItem(at: directory)
-            if !(error is CancellationError) {
-                alertMessage = error.localizedDescription
-            }
+            if error is CancellationError { return .cancelled }
+            return .refused(error.localizedDescription)
+        }
+    }
+
+    /// What `importFromURL` did (F539). The sheet closes on `.imported`, keeps itself open for
+    /// `.needsConfirmation` (its own alert is up), says nothing for `.cancelled` (the user pressed
+    /// Stop), and shows `.refused`'s sentence inside itself.
+    enum LinkImportOutcome: Equatable {
+        case imported(UUID)
+        case needsConfirmation
+        case cancelled
+        case refused(String)
+
+        /// The new meeting's id, when one was created.
+        var meetingID: UUID? {
+            if case let .imported(id) = self { return id }
             return nil
         }
     }
+
+    /// Why a link import declined (F539). Constants, so a test names the sentence the code uses
+    /// instead of copying it.
+    static let linkImportSwitchedOff = "Turn on “Import from a link” in Settings to fetch audio from a link."
+    static let linkImportBusy = "Finish the current recording or import before adding from a link."
+    static let linkImportInstallRunning = "Wait for the local recognition model installation to finish before importing."
+    static let linkImportNotAWebLink = "That doesn't look like a web link. Paste a full https:// address to a single video."
 
     /// The tag a link import carries so it can be found among ordinary meetings, or nil when there
     /// is no source or it suggests nothing usable.
@@ -5033,8 +5057,9 @@ final class AppModel: ObservableObject {
     /// place where a meeting becomes real (F183).
     ///
     /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
-    /// not an oversight: both `importRecording` and `importFromURL` call `libraryAcceptsChanges`
-    /// before they copy or download anything, so this is unreachable while the library is degraded.
+    /// not an oversight: `importRecording` calls `libraryAcceptsChanges` and `importFromURL` asks
+    /// `libraryRefusal` (the same check, answered to its sheet — F539) before they copy or download
+    /// anything, so this is unreachable while the library is degraded.
     /// A third caller added without that guard would reach the `upsert` below, which `MeetingStore`
     /// silently refuses — correctness is safe, but the user would have paid for the copy first. Guard
     /// any new caller up front, the way the two existing ones do (F187).

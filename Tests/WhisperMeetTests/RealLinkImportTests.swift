@@ -23,6 +23,21 @@ private func makeModel() throws -> (AppModel, URL) {
     return (model, root)
 }
 
+/// The latest outcome of an import started in a `Task`, readable from the polling loop (F539).
+private final class FinishedImport: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: AppModel.LinkImportOutcome?
+    func record(_ outcome: AppModel.LinkImportOutcome) { lock.withLock { self.outcome = outcome } }
+    func clear() { lock.withLock { outcome = nil } }
+    /// The sentence the import declined with, or nil while it runs or if it did not decline.
+    var refusal: String? {
+        lock.withLock {
+            if case let .refused(message)? = outcome { return message }
+            return nil
+        }
+    }
+}
+
 private func survivors(mentioning needle: String) -> [String] {
     let pipe = Pipe(); let ps = Process()
     ps.executableURL = URL(fileURLWithPath: "/bin/ps"); ps.arguments = ["-axo", "pid=,command="]; ps.standardOutput = pipe
@@ -39,7 +54,8 @@ func realLinkImportsEndToEnd() async throws {
     let (model, root) = try makeModel()
     defer { try? FileManager.default.removeItem(at: root) }
     // "Me at the zoo", 19 seconds: the smallest real thing there is.
-    let id = try #require(await model.importFromURL("https://www.youtube.com/watch?v=jNQXAC9IVRw"), "\(model.alertMessage ?? "no message")")
+    let outcome = await model.importFromURL("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+    let id = try #require(outcome.meetingID, "\(outcome)")
     let meeting = try #require(model.store.meetings.first { $0.id == id })
     print("REAL title=\(meeting.title) duration=\(meeting.duration) tags=\(meeting.tags ?? []) source=\(meeting.source?.host ?? "-") videoID=\(meeting.source?.videoID ?? "-") status=\(meeting.status)")
     #expect(meeting.source?.videoID == "jNQXAC9IVRw")
@@ -57,20 +73,30 @@ func realCancelLeavesNothingBehind() async throws {
     // Big Buck Bunny (Blender Foundation, CC BY), ten minutes: long enough to be caught mid-transfer.
     // The 2026-08-08 run saw transient 403s that succeed on retry, so a start that fails before any
     // progress is retried; only a download actually in flight is worth cancelling.
-    var task = Task { await model.importFromURL("https://www.youtube.com/watch?v=aqz-KE-bpKQ") }
+    // A failed start is reported by the import's returned outcome now, not by an alert (F539), so
+    // the outcome is recorded where the polling loop can see it.
+    let finished = FinishedImport()
+    func startImport() -> Task<AppModel.LinkImportOutcome, Never> {
+        finished.clear()
+        return Task {
+            let outcome = await model.importFromURL("https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+            finished.record(outcome)
+            return outcome
+        }
+    }
+    var task = startImport()
     var sawProgress = false
     attempts: for attempt in 1...4 {
         for _ in 0..<600 {
             try await Task.sleep(nanoseconds: 50_000_000)
             if let progress = model.mediaDownloadProgress, (progress.fractionCompleted ?? 0) > 0 { sawProgress = true; break attempts }
-            if !model.isImporting, model.alertMessage != nil { break }
+            if !model.isImporting, finished.refusal != nil { break }
         }
-        print("REAL attempt \(attempt) failed before progress: \(model.alertMessage ?? "-")")
+        print("REAL attempt \(attempt) failed before progress: \(finished.refusal ?? "-")")
         _ = await task.value
-        model.alertMessage = nil
-        task = Task { await model.importFromURL("https://www.youtube.com/watch?v=aqz-KE-bpKQ") }
+        task = startImport()
     }
-    #expect(sawProgress, "never reached a download in progress: \(model.alertMessage ?? "-")")
+    #expect(sawProgress, "never reached a download in progress: \(finished.refusal ?? "-")")
     let during = survivors(mentioning: root.lastPathComponent)
     print("REAL during cancel: \(during.count) process(es) working in the library")
     #expect(!during.isEmpty, "nothing was running to cancel, so this proved nothing")
@@ -79,7 +105,7 @@ func realCancelLeavesNothingBehind() async throws {
     try await Task.sleep(nanoseconds: 1_500_000_000)
     let after = survivors(mentioning: root.lastPathComponent)
     print("REAL after cancel: \(after)")
-    #expect(result == nil)
+    #expect(result == .cancelled)
     #expect(after.isEmpty)
     #expect(model.store.meetings.isEmpty)
     let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Recordings").path)) ?? []
