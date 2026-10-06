@@ -1155,6 +1155,17 @@ final class DictationController: ObservableObject {
         let refineOn = refineEnabled && refinerIsWarm && refineRuntimeAvailability()
         Task { [engine, log, refiner] in
             let started = Date()
+            // F599: nothing loud enough to be speech goes to a model. The installed Whisper turbo
+            // answers silence and quiet noise with "Thank you." and a no_speech_prob of ≈ 0, so the
+            // helper's own skip (F449) never fires. Measured off the main actor; a clip the floor
+            // cannot read is transcribed as before (`DictationSpeechFloor` errs that way).
+            let level = await Task.detached { DictationSpeechFloor.level(ofClipAt: clip.url) }.value
+            if let level, level.isBelowFloor {
+                try? FileManager.default.removeItem(at: clip.url)
+                log.notice("dictation clip below the speech floor (loudest 50 ms \(level.loudestWindowDBFS, format: .fixed(precision: 1)) dBFS); not transcribed")
+                await MainActor.run { self.finish(text: "") }
+                return
+            }
             do {
                 // A just-started optional model is cancelled on press-down. Ensure it has actually
                 // left unified memory before the recognition helper runs, even for a very short tap.
