@@ -1198,11 +1198,11 @@ final class MeetingStore: ObservableObject {
     /// `mutationIsAllowed()`, plus refusing a NEW edit while a lost race's `conflictOffer` is still
     /// outstanding (F433 follow-up, F619).
     ///
-    /// Without this, a second lost race while the first offer sits unresolved hits
-    /// `beginConflictRecovery()`'s own single-offer guard, which no-ops — leaving `writeConflict`
-    /// (and the `storageErrorMessage` `persistMeetings()` set on the failed attempt) dangling with
-    /// no offer to explain it, so the generic OK-only "could not be saved" modal this ticket removes
-    /// reappears. Refusing up front means there is no second race to lose in the first place.
+    /// Why the person's edits wait for the answer: an edit made now would be made to the other
+    /// copy's version of a meeting the banner may be about, and then Keep would put the older offered
+    /// copy back over it, or Use the Other Copy would keep it — two questions shown as one. (This
+    /// also once kept a second race from happening at all; since F662 a second race is folded into
+    /// the outstanding offer instead, because the app's own results are saved meanwhile.)
     ///
     /// Silent by design — `storageErrorMessage` is NOT set here, unlike `mutationIsAllowed()`'s own
     /// refusals: the `WriteConflictBanner` is already visible and already explains why nothing is
@@ -1210,10 +1210,47 @@ final class MeetingStore: ObservableObject {
     /// repeatedly while the banner is up, which is the very "second alert" this exists to avoid.
     ///
     /// `keepConflictedEdit()`/`discardConflictedEdit()` deliberately do NOT call this — they are how
-    /// the outstanding offer gets resolved, not a new edit to refuse against it.
+    /// the outstanding offer gets resolved, not a new edit to refuse against it. Nor does a
+    /// `WriteKind.result` write (F662).
     private func editMutationIsAllowed() -> Bool {
         guard mutationIsAllowed() else { return false }
         return conflictOffer == nil
+    }
+
+    /// Who a meeting write is for, which decides whether an outstanding conflict offer holds it back
+    /// (F662).
+    enum WriteKind: Sendable {
+        /// Something the person changed: a title, a tag, a pin, a marker, a transcript edit. Refused,
+        /// silently, while a conflict offer is outstanding (`editMutationIsAllowed()`, F619).
+        case edit
+        /// Work the app finished on its own: a stopped recording, an import, a transcription's status
+        /// or its transcript, a summary, a rebuilt recording. Saved even while an offer is
+        /// outstanding, because it is true whichever copy the person keeps — and applied to the
+        /// offered copy of the same meeting as well, so that neither answer loses it. Refusing it was
+        /// F662: Stop pressed while the banner was up left the meeting out of the list, and a
+        /// transcript or summary that finished meanwhile was thrown away, all without a word.
+        ///
+        /// Its mutation may therefore run on two copies of a record, so it must be a function of the
+        /// copy it is given. A result never renames a meeting, which is what lets the offer's message,
+        /// written when it was made, keep naming the right meetings.
+        case result
+    }
+
+    /// The gate every meeting write passes, by kind (F662). The library's own refusals — read-only,
+    /// mid-restore — hold for both: they are about whether anything may be written at all.
+    private func writeIsAllowed(_ kind: WriteKind) -> Bool {
+        switch kind {
+        case .edit: return editMutationIsAllowed()
+        case .result: return mutationIsAllowed()
+        }
+    }
+
+    /// A result written while an offer is outstanding goes into the offered copy of its meeting too,
+    /// so Keep cannot put back a copy from before it (F662). Only a `.result` can reach this with an
+    /// offer up; with none it does nothing.
+    private func applyToOfferedCopies(of id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
+        guard let offer = conflictOffer else { return }
+        conflictOffer = offer.applying(mutation, to: id)
     }
 
     /// `mutationIsAllowed()` for an edit to one list (F464): refused while the library is read-only,
@@ -1273,8 +1310,11 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    func upsert(_ meeting: MeetingRecord) {
-        guard editMutationIsAllowed() else { return }
+    /// - Parameter kind: `.result` for a meeting the app finished on its own — a stopped recording,
+    ///   an import — which is saved even while a conflict offer is outstanding (F662).
+    func upsert(_ meeting: MeetingRecord, as kind: WriteKind = .edit) {
+        guard writeIsAllowed(kind) else { return }
+        applyToOfferedCopies(of: meeting.id) { $0 = meeting }
         if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
             meetings[index] = meeting
         } else {
@@ -1289,8 +1329,12 @@ final class MeetingStore: ObservableObject {
         scheduleNotesSidecarWrite(for: meeting.id)
     }
 
-    func update(id: UUID, _ mutation: (inout MeetingRecord) -> Void) {
-        guard editMutationIsAllowed() else { return }
+    /// - Parameter kind: `.result` for work the app finished on its own — a transcription's status or
+    ///   transcript, a summary, a rebuilt recording — which is saved even while a conflict offer is
+    ///   outstanding, and applied to the offered copy of this meeting as well (F662).
+    func update(id: UUID, as kind: WriteKind = .edit, _ mutation: (inout MeetingRecord) -> Void) {
+        guard writeIsAllowed(kind) else { return }
+        applyToOfferedCopies(of: id, mutation)
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
         mutation(&meetings[index])
         // As in `upsert`: the version tracks the content, and the content just changed (F188).
@@ -1427,7 +1471,22 @@ final class MeetingStore: ObservableObject {
         /// whose recording folder the rival may already have removed. Kept only so the banner can
         /// name what was not re-applied and why.
         let deletedByOther: [MeetingRecord]
+        /// What the caller needed said that the records cannot — a delete that did not happen
+        /// (F642). Kept apart from `message` so a later race folded into this offer (F662) says it
+        /// again rather than losing it.
+        let notes: [String]
         let message: String
+
+        /// This offer with `mutation` applied to every offered copy of `id` — a result the app
+        /// finished while the offer was up (F662). `deletedByOther` is left alone: it is never
+        /// written back, only named.
+        func applying(_ mutation: (inout MeetingRecord) -> Void, to id: UUID) -> ConflictOffer {
+            var delta = delta
+            for index in delta.indices where delta[index].id == id {
+                mutation(&delta[index])
+            }
+            return ConflictOffer(delta: delta, deletedByOther: deletedByOther, notes: notes, message: message)
+        }
     }
 
     /// Set once a lost race's edit is retained for the user to resolve (F433). `nil` the rest of
@@ -1445,16 +1504,21 @@ final class MeetingStore: ObservableObject {
     /// against, which would collapse back into "diff against the rival" (the bug the delta redesign
     /// fixes).
     ///
-    /// Guarded so a second race arriving while an offer is already outstanding does not overwrite
-    /// the first one's retained snapshot with a smaller, more recent edit — see the ticket's Gaps.
-    /// `editMutationIsAllowed()` refuses new edits once an offer exists, so in practice this guard
-    /// is only ever reached by `keepConflictedEdit()`'s own re-offer on a second race (below).
+    /// A race while an offer is already outstanding is folded into it (F662). Since then the app's
+    /// own results are saved while the banner is up, and such a save can lose to another copy that
+    /// saved again in between. The offer used to be guarded single — the second race no-opped here,
+    /// leaving `writeConflict`, the generic alert and a stale token behind it (F619's original
+    /// problem). Folding keeps everything the outstanding offer held, re-judged against the newest
+    /// reload, plus whatever the losing save added; and since a result was applied to the offered
+    /// copies as well as to the list (`applyToOfferedCopies`), the offered copy of an id is the one
+    /// that carries both the person's edit and the result, so it is kept over the list's copy.
     ///
     /// Since F642 every synchronous mutator's lost race comes here too. `note` is what the caller
     /// needs said that the snapshot cannot say — a delete that did not happen — and is appended to
     /// the offer's message, or, when there is nothing to offer, becomes the alert.
     private func beginConflictRecovery(note: String? = nil) {
-        guard conflictOffer == nil, let report = writeConflict else { return }
+        guard let report = writeConflict else { return }
+        let outstanding = conflictOffer
         let losing = meetings
         // Every saved copy of each id, not one. A hand-edited index can hold one id twice, and since
         // F642 any lost save reaches this line. `uniqueKeysWithValues` trapped on that; keeping the
@@ -1473,16 +1537,21 @@ final class MeetingStore: ObservableObject {
         // This session's own edits since its last save — a record it never touched, whatever the
         // rival did to it, is excluded here regardless.
         let ownEdits = losing.filter { !(persistedByID[$0.id]?.contains($0) ?? false) }
-        guard !ownEdits.isEmpty else {
+        let held = outstanding?.delta ?? []
+        let heldIDs = Set(held.map(\.id))
+        let candidates = held + ownEdits.filter { !heldIDs.contains($0.id) }
+        let notes = (outstanding?.notes ?? []) + (note.map { [$0] } ?? [])
+        guard !candidates.isEmpty || !(outstanding?.deletedByOther.isEmpty ?? true) else {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,
             // once — the token is fresh now, so no later save repeats it.
-            if let note { storageErrorMessage = "\(report.message) \(note)" }
+            conflictOffer = nil
+            if !notes.isEmpty { storageErrorMessage = ([report.message] + notes).joined(separator: " ") }
             return
         }
         let winnerIDs = Set(meetings.map(\.id))
         var delta: [MeetingRecord] = []
-        var deletedByOther: [MeetingRecord] = []
-        for record in ownEdits {
+        var deletedByOther: [MeetingRecord] = outstanding?.deletedByOther ?? []
+        for record in candidates {
             // Deleted by the other copy only if this session had saved it and the winner no longer
             // has it. A record this session CREATED since its last save was never the other copy's
             // to delete, so it is offered back like any other edit. Before F642 one reached here
@@ -1501,8 +1570,8 @@ final class MeetingStore: ObservableObject {
                 ? " \(names) was deleted by the other copy; your edit to it was not re-applied."
                 : " \(names) were deleted by the other copy; your edits to them were not re-applied."
         }
-        if let note { message += " \(note)" }
-        conflictOffer = ConflictOffer(delta: delta, deletedByOther: deletedByOther, message: message)
+        for note in notes { message += " \(note)" }
+        conflictOffer = ConflictOffer(delta: delta, deletedByOther: deletedByOther, notes: notes, message: message)
     }
 
     /// Re-applies every record in the offer's `delta` — never `deletedByOther` — to `meetings` in

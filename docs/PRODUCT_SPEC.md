@@ -124,11 +124,11 @@ F642):
   copy deleted is named and never re-applied.
 - A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
   again works.
-- Until the offer is answered, that copy refuses further changes to its meetings — edits, new
-  meetings and deletes — without a message of its own; the offer is the explanation. That includes
-  writes nobody typed: a recording stopped, or a transcript or summary finished, while the offer is
-  up is not saved to the list and nothing says so. That is a known defect, not the intended cost
-  (F662).
+- Until the offer is answered, that copy refuses further changes the person makes to its meetings —
+  edits and deletes — without a message of its own; the offer is the explanation. Work the app
+  finishes meanwhile — a recording stopped, an import, a transcript or summary, a rebuilt recording —
+  is saved as usual and written into the offered copy of its meeting as well, so neither answer loses
+  it. If that save loses to the other copy again, it joins the offer already up (F662).
 - The pre-existing generations remain restorable — in the app while the library cannot be read, and
   by hand at any time (`docs/RECOVERY.md`).
 

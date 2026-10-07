@@ -3930,7 +3930,9 @@ final class AppModel: ObservableObject {
                 // notes.md say why this recording is short whichever way it was saved.
                 recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
             )
-            store.upsert(meeting)
+            // A result, not an edit (F662): saved even while a conflict banner is up, which used to
+            // leave the meeting out of the list with its audio on disk and nothing said.
+            store.upsert(meeting, as: .result)
             // F477: cleared here, once the meeting has been upserted with it — not by the view,
             // which only ever ran after the in-window Stop button or an import. The menu-bar Stop,
             // the ⌘R toggle, the sleep-triggered stop and the capture-loss finalize all reach this
@@ -4013,7 +4015,7 @@ final class AppModel: ObservableObject {
                         recoveryWarning: recoveryWarning,
                         recoverySource: recovered.source.rawValue,
                         recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
-                    ))
+                    ), as: .result)
                     // F477: this recovery path also upserts a meeting using `title`, so it must
                     // also clear the field the fallback read from — see the success path above.
                     recordingTitle = ""
@@ -5111,7 +5113,7 @@ final class AppModel: ObservableObject {
             tags: Self.provenanceTags(for: source),
             source: source,
             referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments
-        ))
+        ), as: .result)   // F662: the copy is done; saved even while a conflict banner is up
         isImporting = false
         refreshRuntime()
         if isSelectedEngineInstalled {
@@ -5707,7 +5709,8 @@ final class AppModel: ObservableObject {
             } ?? []
             var resolved = summary
             resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)
-            store.update(id: id) { meeting in
+            // A result (F662): saved even while a conflict banner is up, and into the offered copy.
+            store.update(id: id, as: .result) { meeting in
                 // F307: `$0.summary = resolved` replaced the whole struct, and `ActionItem` holds
                 // three fields the model never produces and the user does — `done`, `owner`, `due`,
                 // the last two documented "Optional, user-entered". So re-summarizing to try a
@@ -6589,7 +6592,8 @@ final class AppModel: ObservableObject {
         // still on the record when the result lands, so its own outcome doesn't depend on whatever
         // else did or didn't run concurrently.
         let audioDurationAtStart = meeting.duration
-        store.update(id: id) {
+        // Every transcription write is a result (F662): saved even while a conflict banner is up.
+        store.update(id: id, as: .result) {
             $0.status = .processing
             $0.errorMessage = nil
         }
@@ -6618,7 +6622,7 @@ final class AppModel: ObservableObject {
         // progress bar (transcriptionProgress isn't stored), so re-running the meeting index's
         // backup-validate + two atomic writes on every tick is pure waste.
         if store.meeting(id: id)?.status != .processing {
-            store.update(id: id) { $0.status = .processing }
+            store.update(id: id, as: .result) { $0.status = .processing }
         }
     }
 
@@ -6648,7 +6652,7 @@ final class AppModel: ObservableObject {
         let effectiveSegments = cleaned?.segments ?? []
         let cleanedText = effectiveSegments.isEmpty ? TranscriptRepetitionCleanup.cleanText(result.text) : nil
         let repeatsRemoved = (cleaned?.removedCount ?? 0) + (cleanedText?.removedCount ?? 0)
-        store.update(id: id) {
+        store.update(id: id, as: .result) {
             $0.status = .completed
             $0.transcriptText = effectiveSegments.isEmpty
                 ? (cleanedText?.text ?? result.text)
@@ -6734,7 +6738,7 @@ final class AppModel: ObservableObject {
 
     private func handleCancellation(id: UUID) {
         let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
-        store.update(id: id) {
+        store.update(id: id, as: .result) {
             $0.status = keepsTranscript ? .completed : .recorded
             $0.errorMessage = keepsTranscript
                 ? nil
@@ -6816,7 +6820,7 @@ final class AppModel: ObservableObject {
         // completed and the alert says the old one is still there.
         let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
         if keepsTranscript { message += " The previous transcript is unchanged." }
-        store.update(id: id) {
+        store.update(id: id, as: .result) {
             $0.status = keepsTranscript ? .completed : .failed
             $0.errorMessage = keepsTranscript ? nil : message
         }
@@ -6998,7 +7002,9 @@ extension AppModel {
                 return
             }
             let previousDuration = store.meeting(id: request.meetingID)?.duration ?? 0
-            store.update(id: request.meetingID) { meeting in
+            // A result (F662): the audio on disk is already the rebuilt one, so its record is saved
+            // even while a conflict banner is up, and into the offered copy too.
+            store.update(id: request.meetingID, as: .result) { meeting in
                 meeting.duration = rebuilt.duration
                 meeting.recoveryWarning = Self.recoveryWarning(for: rebuilt)
                 // A second rebuild is still a rebuild: re-declare it, so a meeting whose first
