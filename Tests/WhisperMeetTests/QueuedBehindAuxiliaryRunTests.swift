@@ -206,6 +206,9 @@ func queuedTranscriptionIsWired() throws {
     let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     #expect(entry.contains("dictation.configureActivityEnded { [weak model] in model?.resumeTranscriptionQueue() }"))
     let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    #expect(view.contains("Text(model.queuedTranscriptionWaitMessage)"))
+    // F602: the card reads `queuedStatusDetail(for:)`, which is the model's own wait message and, for
+    // a completed meeting, what the wait will do to its transcript. That it starts from
+    // `queuedTranscriptionWaitMessage` is `QueuedTranscribeAgainTests`' assertion, on the model.
+    #expect(view.contains("Text(model.queuedStatusDetail(for: meeting))"))
     #expect(!view.contains("Waiting for the current transcription to finish."))
 }
