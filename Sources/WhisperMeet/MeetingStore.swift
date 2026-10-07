@@ -1458,14 +1458,29 @@ final class MeetingStore: ObservableObject {
     /// the first follow-up's approach — pulled in any record the rival's commit merely happened to
     /// disagree with, including one this session never touched, and reapplying that overwrote the
     /// rival's own newer data with this session's stale copy). Diffing against
-    /// `lastPersistedMeetings` instead means `delta` is exactly what this session created or
-    /// modified since ITS OWN last successful save — never a record only the rival changed.
+    /// `lastPersistedMeetings` instead means `delta` is exactly what this session modified since ITS
+    /// OWN last successful save — never a record only the rival changed.
+    ///
+    /// A meeting this session ADDED since then is not in `delta` (F667): the other copy has no
+    /// version of it to prefer, so it is not a question. `beginConflictRecovery()` puts it back in the
+    /// list and saves it at once (`keptNew`), or, when that cannot happen, holds it in `unsavedNew`,
+    /// which both answers save.
     struct ConflictOffer: Equatable {
         /// Records this session modified since its own last successful persist that the rival's
-        /// commit still has under the same id, and records this session created since then (F642).
-        /// Re-applied by `keepConflictedEdit()` into `meetings` in memory and saved once as a
-        /// batch — a per-record merge, never a wholesale array replacement.
+        /// commit still has under the same id. Re-applied by `keepConflictedEdit()` into `meetings`
+        /// in memory and saved once as a batch — a per-record merge, never a wholesale array
+        /// replacement. `discardConflictedEdit()` drops them.
         let delta: [MeetingRecord]
+        /// Meetings this session added — a recording just stopped, an import, a row a delete had to
+        /// keep — that neither its last save nor the other copy has, and that could not be saved at
+        /// once: the library refused changes, or the other copy saved again in between (F667). Both
+        /// answers save them, so neither can drop the meeting that was just recorded.
+        let unsavedNew: [MeetingRecord]
+        /// The titles of meetings this session added that were put back in the reloaded list at once
+        /// (F667) — saved, or, after an ordinary save failure, listed and carried by the next save
+        /// while that failure's own message says so. Named in the banner only, so the person knows
+        /// neither answer removes them.
+        let keptNew: [String]
         /// Records this session had saved and then modified, whose id the rival's commit no longer
         /// has at all — the rival deleted them. Never reapplied: doing so would resurrect a meeting
         /// whose recording folder the rival may already have removed. Kept only so the banner can
@@ -1475,17 +1490,96 @@ final class MeetingStore: ObservableObject {
         /// (F642). Kept apart from `message` so a later race folded into this offer (F662) says it
         /// again rather than losing it.
         let notes: [String]
+        /// The banner's text: the conflict, then which meetings each answer decides (F667).
         let message: String
+
+        init(
+            delta: [MeetingRecord], unsavedNew: [MeetingRecord] = [], keptNew: [String] = [],
+            deletedByOther: [MeetingRecord], notes: [String], report: String
+        ) {
+            self.delta = delta
+            self.unsavedNew = unsavedNew
+            self.keptNew = keptNew
+            self.deletedByOther = deletedByOther
+            self.notes = notes
+            message = Self.message(
+                report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew,
+                deletedByOther: deletedByOther, notes: notes
+            )
+        }
+
+        private init(copying offer: ConflictOffer, delta: [MeetingRecord], unsavedNew: [MeetingRecord]) {
+            self.delta = delta
+            self.unsavedNew = unsavedNew
+            keptNew = offer.keptNew
+            deletedByOther = offer.deletedByOther
+            notes = offer.notes
+            message = offer.message
+        }
+
+        /// Whether there is anything for the person to answer: an edit to keep or drop, a meeting
+        /// still to save, or a meeting the other copy deleted to be told about. Notes alone, or
+        /// meetings already back in the list, are said without a banner.
+        var asksAnything: Bool { !delta.isEmpty || !unsavedNew.isEmpty || !deletedByOther.isEmpty }
 
         /// This offer with `mutation` applied to every offered copy of `id` — a result the app
         /// finished while the offer was up (F662). `deletedByOther` is left alone: it is never
-        /// written back, only named.
+        /// written back, only named. The message is kept: a result never renames a meeting.
         func applying(_ mutation: (inout MeetingRecord) -> Void, to id: UUID) -> ConflictOffer {
             var delta = delta
             for index in delta.indices where delta[index].id == id {
                 mutation(&delta[index])
             }
-            return ConflictOffer(delta: delta, deletedByOther: deletedByOther, notes: notes, message: message)
+            var unsavedNew = unsavedNew
+            for index in unsavedNew.indices where unsavedNew[index].id == id {
+                mutation(&unsavedNew[index])
+            }
+            return ConflictOffer(copying: self, delta: delta, unsavedNew: unsavedNew)
+        }
+
+        /// The banner's text (F667). It used to be the conflict alone, so nothing said which
+        /// meetings Keep My Edit and Use the Other Copy decide — and "Use the Other Copy" after a
+        /// lost save at Stop dropped the recording just made with nothing on screen naming it.
+        static func message(
+            report: String, delta: [MeetingRecord], unsavedNew: [MeetingRecord], keptNew: [String],
+            deletedByOther: [MeetingRecord], notes: [String]
+        ) -> String {
+            var sentences = [report]
+            if !delta.isEmpty {
+                sentences.append("Keep My Edit saves your changes to \(names(delta.map(\.title)).text) over the other copy's; Use the Other Copy keeps the other copy's version.")
+            }
+            if !unsavedNew.isEmpty {
+                let new = names(unsavedNew.map(\.title))
+                sentences.append(new.plural
+                    ? "\(new.text) are new in this window and not saved yet; either answer saves them."
+                    : "\(new.text) is new in this window and not saved yet; either answer saves it.")
+            }
+            if !keptNew.isEmpty {
+                let kept = names(keptNew)
+                sentences.append(kept.plural
+                    ? "\(kept.text), new in this window, stay in your list whichever you choose."
+                    : "\(kept.text), new in this window, stays in your list whichever you choose.")
+            }
+            if !deletedByOther.isEmpty {
+                let deleted = names(deletedByOther.map(\.title))
+                sentences.append(deleted.plural
+                    ? "\(deleted.text) were deleted by the other copy; your edits to them were not re-applied."
+                    : "\(deleted.text) was deleted by the other copy; your edit to it was not re-applied.")
+            }
+            return (sentences + notes).joined(separator: " ")
+        }
+
+        /// “A”, “B” and “C”, each title once, and past three "and N more" — a batch tag over fifty
+        /// meetings would otherwise fill the banner with names. `plural` counts titles, not records,
+        /// so the verb agrees with what is printed.
+        private static func names(_ raw: [String]) -> (text: String, plural: Bool) {
+            var seen = Set<String>()
+            let unique = raw.filter { seen.insert($0).inserted }.map { "“\($0)”" }
+            switch unique.count {
+            case 0, 1: return (unique.first ?? "", false)
+            case 2, 3: return (unique.dropLast().joined(separator: ", ") + " and " + unique[unique.count - 1], true)
+            default: return (unique.prefix(3).joined(separator: ", ") + " and \(unique.count - 3) more", true)
+            }
         }
     }
 
@@ -1513,10 +1607,19 @@ final class MeetingStore: ObservableObject {
     /// copies as well as to the list (`applyToOfferedCopies`), the offered copy of an id is the one
     /// that carries both the person's edit and the result, so it is kept over the list's copy.
     ///
+    /// A meeting this session added that neither its last save nor the other copy has — a recording
+    /// just stopped, an import, a row a delete had to keep — is not offered at all (F667). The other
+    /// copy has no version of it to prefer, and as an offer it was unlisted until the person
+    /// answered (so a transcription queued behind Stop found no meeting to run on) and dropped by
+    /// "Use the Other Copy". It is put onto the reloaded library and saved now, once. If that save
+    /// loses too, the recovery it starts is told not to try again (`savingNewMeetings: false`), and
+    /// holds the meeting in `unsavedNew`, which both answers save; the same happens when the reload
+    /// left the library refusing changes.
+    ///
     /// Since F642 every synchronous mutator's lost race comes here too. `note` is what the caller
     /// needs said that the snapshot cannot say — a delete that did not happen — and is appended to
     /// the offer's message, or, when there is nothing to offer, becomes the alert.
-    private func beginConflictRecovery(note: String? = nil) {
+    private func beginConflictRecovery(note: String? = nil, savingNewMeetings: Bool = true) {
         guard let report = writeConflict else { return }
         let outstanding = conflictOffer
         let losing = meetings
@@ -1537,41 +1640,84 @@ final class MeetingStore: ObservableObject {
         // This session's own edits since its last save — a record it never touched, whatever the
         // rival did to it, is excluded here regardless.
         let ownEdits = losing.filter { !(persistedByID[$0.id]?.contains($0) ?? false) }
-        let held = outstanding?.delta ?? []
+        let held = (outstanding?.delta ?? []) + (outstanding?.unsavedNew ?? [])
         let heldIDs = Set(held.map(\.id))
         let candidates = held + ownEdits.filter { !heldIDs.contains($0.id) }
         let notes = (outstanding?.notes ?? []) + (note.map { [$0] } ?? [])
-        guard !candidates.isEmpty || !(outstanding?.deletedByOther.isEmpty ?? true) else {
+        let winnerIDs = Set(meetings.map(\.id))
+        var delta: [MeetingRecord] = []
+        var added: [MeetingRecord] = []
+        var deletedByOther: [MeetingRecord] = outstanding?.deletedByOther ?? []
+        for record in candidates {
+            if winnerIDs.contains(record.id) {
+                delta.append(record)
+            } else if persistedByID[record.id] == nil {
+                // Never saved by this session and not in the other copy's commit: added here, and
+                // never the other copy's to delete (F642) or to prefer (F667).
+                added.append(record)
+            } else {
+                // Saved by this session, and gone from the other copy's commit: it deleted them.
+                deletedByOther.append(record)
+            }
+        }
+        var keptNew = outstanding?.keptNew ?? []
+        if !added.isEmpty, savingNewMeetings, !isDegraded, !isRestoringLibrary {
+            // Published first, so if this save loses as well the recovery it starts folds in what is
+            // still to decide rather than dropping it (F662's fold).
+            conflictOffer = ConflictOffer(
+                delta: delta, unsavedNew: added, keptNew: keptNew,
+                deletedByOther: deletedByOther, notes: notes, report: report.message
+            )
+            writeBack(added)
+            if persistMeetings() {
+                keptNew += added.map(\.title)
+                added = []
+            } else if writeConflict?.isRace == true {
+                beginConflictRecovery(savingNewMeetings: false)
+                return
+            } else {
+                // An ordinary failure (a full disk): they stay listed and unsaved, as any change
+                // whose save failed does, and the next save carries them. The failure's own message
+                // stands; the banner below says they stay either way.
+                keptNew += added.map(\.title)
+                added = []
+            }
+        }
+        let offer = ConflictOffer(
+            delta: delta, unsavedNew: added, keptNew: keptNew,
+            deletedByOther: deletedByOther, notes: notes, report: report.message
+        )
+        guard offer.asksAnything else {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,
             // once — the token is fresh now, so no later save repeats it.
             conflictOffer = nil
             if !notes.isEmpty { storageErrorMessage = ([report.message] + notes).joined(separator: " ") }
             return
         }
-        let winnerIDs = Set(meetings.map(\.id))
-        var delta: [MeetingRecord] = []
-        var deletedByOther: [MeetingRecord] = outstanding?.deletedByOther ?? []
-        for record in candidates {
-            // Deleted by the other copy only if this session had saved it and the winner no longer
-            // has it. A record this session CREATED since its last save was never the other copy's
-            // to delete, so it is offered back like any other edit. Before F642 one reached here
-            // only behind an earlier failed save, because the one race path edited existing
-            // records; now `upsert` — the end of every recording — brings one with every race.
-            if winnerIDs.contains(record.id) || persistedByID[record.id] == nil {
-                delta.append(record)
+        conflictOffer = offer
+    }
+
+    /// Puts `records` into `meetings`, each into its own slot: the first copy of its id not already
+    /// written this pass, or a new one — `firstIndex` alone put every edited copy of a duplicated id
+    /// into one slot, so a batch tag over both twins lost one twin's body (lane C review round 2).
+    /// Stamps only what it writes, as `upsert` does (F188, "Mark it"): an untouched twin keeps the
+    /// marker it was written under. Saving is the caller's.
+    private func writeBack(_ records: [MeetingRecord]) {
+        var written: Set<Int> = []
+        for var record in records {
+            record.schemaVersion = MeetingRecord.currentSchemaVersion
+            if let index = meetings.indices.first(where: { !written.contains($0) && meetings[$0].id == record.id }) {
+                meetings[index] = record
+                written.insert(index)
             } else {
-                deletedByOther.append(record)
+                meetings.append(record)
+                written.insert(meetings.count - 1)
             }
         }
-        var message = report.message
-        if !deletedByOther.isEmpty {
-            let names = deletedByOther.map { "\"\($0.title)\"" }.joined(separator: ", ")
-            message += deletedByOther.count == 1
-                ? " \(names) was deleted by the other copy; your edit to it was not re-applied."
-                : " \(names) were deleted by the other copy; your edits to them were not re-applied."
+        meetings = MeetingOrdering.sorted(meetings)
+        for record in records {
+            scheduleNotesSidecarWrite(for: record.id)
         }
-        for note in notes { message += " \(note)" }
-        conflictOffer = ConflictOffer(delta: delta, deletedByOther: deletedByOther, notes: notes, message: message)
     }
 
     /// Re-applies every record in the offer's `delta` — never `deletedByOther` — to `meetings` in
@@ -1585,42 +1731,39 @@ final class MeetingStore: ObservableObject {
     /// `beginConflictRecovery()`, the same path a debounced flush's own race takes, so the failure
     /// is re-offered rather than swallowed. Because nothing has been marked persisted yet
     /// (`lastPersistedMeetings` only advances on a SUCCESSFUL save), that re-offer's own diff finds
-    /// every one of these records still unsaved and re-offers them all together.
+    /// every one of these records still unsaved: the edits are re-offered together, and a new
+    /// meeting among them is put back in the list as any lost save's is (F667).
+    ///
+    /// Also saves `unsavedNew` — meetings only this window has, which either answer keeps (F667).
     func keepConflictedEdit() {
         guard mutationIsAllowed() else { return }
         guard let offer = conflictOffer else { return }
         conflictOffer = nil
-        guard !offer.delta.isEmpty else { return }
-        // Each offered record takes its own slot: the first copy of its id not already written this
-        // pass, or a new one. `firstIndex` alone put every edited copy of a duplicated id into one
-        // slot, so a batch tag over both twins lost one twin's body (lane C review round 2).
-        var written: Set<Int> = []
-        for var record in offer.delta {
-            // As `upsert` stamps a record it just wrote (F188, "Mark it") — the content just changed.
-            // Only what is written here: an untouched twin keeps the marker it was written under.
-            record.schemaVersion = MeetingRecord.currentSchemaVersion
-            if let index = meetings.indices.first(where: { !written.contains($0) && meetings[$0].id == record.id }) {
-                meetings[index] = record
-                written.insert(index)
-            } else {
-                meetings.append(record)
-                written.insert(meetings.count - 1)
-            }
-        }
-        meetings = MeetingOrdering.sorted(meetings)
-        persistMeetings()
-        for record in offer.delta {
-            scheduleNotesSidecarWrite(for: record.id)
-        }
-        guard writeConflict?.isRace == true else { return }
-        beginConflictRecovery()
+        saveBack(offer.delta + offer.unsavedNew)
     }
 
     /// Keeps the reloaded copy and discards the retained edit (F433). `meetings` already holds the
     /// winner — set by `reloadForConflictRecovery()` inside `beginConflictRecovery()` — so this only
-    /// has to stop offering the alternative.
+    /// has to stop offering the alternative, and save `unsavedNew`: a meeting only this window has
+    /// is not something the other copy has a version of, and dropping it here is what left a
+    /// recording just stopped out of the list (F667). While the library refuses changes it cannot
+    /// be saved; its folder stays on disk, unindexed, for the startup sweep to adopt once the
+    /// library can be written again.
     func discardConflictedEdit() {
+        guard let offer = conflictOffer else { return }
         conflictOffer = nil
+        guard !offer.unsavedNew.isEmpty, mutationIsAllowed() else { return }
+        saveBack(offer.unsavedNew)
+    }
+
+    /// Writes `records` back into the list and saves them as ONE write (F433); a race on that save
+    /// re-offers them all together, through the recovery every lost save takes.
+    private func saveBack(_ records: [MeetingRecord]) {
+        guard !records.isEmpty else { return }
+        writeBack(records)
+        persistMeetings()
+        guard writeConflict?.isRace == true else { return }
+        beginConflictRecovery()
     }
 
     /// Replace a meeting's tags with the normalized (trimmed/deduped/capped) form of `raw`.
@@ -2714,6 +2857,11 @@ final class MeetingStore: ObservableObject {
         return historyNoticeAwaitingDismissal
     }
 
+    /// Runs just before each index save, so a test can put another copy's commit between two saves
+    /// this store makes inside one call — the save `beginConflictRecovery()` makes for a new meeting
+    /// right after its reload (F667). Nil outside tests.
+    var beforeIndexSaveForTesting: (() -> Void)?
+
     /// Returns whether the index actually reached disk, so a caller that is about to destroy
     /// something the index references can refuse to (F190). Callers that only mutate metadata can
     /// keep ignoring it.
@@ -2722,6 +2870,7 @@ final class MeetingStore: ObservableObject {
         // `persistCount` keeps its original position and meaning — "a save was attempted" — because
         // roughly fifteen existing assertions depend on both (F190).
         persistCount += 1
+        beforeIndexSaveForTesting?()
         do {
             let outcome = try meetingFiles.save(meetings, expecting: meetingsToken)
             meetingsToken = outcome.token

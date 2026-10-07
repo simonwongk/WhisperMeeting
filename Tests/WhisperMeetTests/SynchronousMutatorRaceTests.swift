@@ -14,7 +14,8 @@ import Testing
 // One test per mutator class, each over two real `BackupJSONStore` writers on one temp root: this
 // session's store, and a rival committing through the same files (the `foreignWriterCommits` shape
 // F433's tests use). Each asserts both halves of the fix: the lost edit is offered back (or, for a
-// delete, nothing is offered and the user is told), and the session can save again afterwards.
+// delete, nothing is offered and the user is told; or, for a new meeting, it is saved onto the
+// reloaded library at once — F667), and the session can save again afterwards.
 // The tests use only surface that predates this fix, so they run — and fail — against it.
 
 private func makeRoot() throws -> URL {
@@ -77,18 +78,29 @@ private func expectOfferedAndRecoverable(
     #expect(MeetingStore(rootDirectory: root).meetings.contains { $0.title == "Saved after the race" })
 }
 
-@Test("A lost upsert is offered back and the session can save again (F642)")
+/// The end of every recording is an `upsert` of a meeting nobody else has. F642 offered it back like
+/// an edit, which hid it until the banner was answered and let "Use the Other Copy" drop it. Since
+/// F667 it is put onto the reloaded library and saved at once: the other copy has no version of it to
+/// prefer, so there is nothing to ask.
+@Test("A lost upsert of a new meeting is saved onto the reloaded library without asking, and the session can save again (F642, F667)")
 @MainActor
-func lostUpsertIsOfferedBack() throws {
-    let (store, root, _) = try sessionThatWillLoseARace("upsert")
+func lostUpsertOfANewMeetingIsSavedAtOnce() throws {
+    let (store, root, id) = try sessionThatWillLoseARace("upsert")
     defer { try? FileManager.default.removeItem(at: root) }
     let recorded = UUID()
 
-    // The end of every recording: a new meeting.
     store.upsert(meeting("Just recorded", id: recorded))
 
-    try expectOfferedAndRecoverable(store, root: root, id: recorded,
-                                    edited: { $0.title == "Just recorded" }, "upsert")
+    #expect(store.conflictOffer == nil, "a meeting only this window has was offered as a question")
+    #expect(store.writeConflict == nil, "the raw conflict was left behind")
+    #expect(store.meeting(id: id)?.title == "Standup, retitled by the other copy", "the library was not re-read")
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meeting(id: recorded)?.title == "Just recorded", "the new meeting did not reach disk")
+    #expect(reopened.meeting(id: id)?.title == "Standup, retitled by the other copy", "the other copy's commit was overwritten")
+
+    store.upsert(meeting("Saved after the race"))
+    #expect(store.writeConflict == nil, "the next save failed the same compare-and-swap")
+    #expect(MeetingStore(rootDirectory: root).meetings.contains { $0.title == "Saved after the race" })
 }
 
 @Test("A lost rename is offered back and the session can save again (F642)")
@@ -278,10 +290,12 @@ func keepStampsOnlyWhatItWrote() throws {
 
 /// `delete(ids:)` saves twice when a folder cannot be removed: once without the row, then again to
 /// put it back (F146). Another copy saving between the two used to leave the row unlisted, the
-/// token stale and the session stuck. The row is this session's to put back, so it is offered.
-@Test("A delete whose folder could not be removed, and whose save putting it back lost a race, offers the row back (F642)")
+/// token stale and the session stuck. The row is this session's to put back: F642 offered it, and
+/// since F667 — the other copy's commit has no version of it, so there is nothing to choose — it is
+/// listed again and saved at once, and the alert says why its folder is still there.
+@Test("A delete whose folder could not be removed, and whose save putting it back lost a race, lists the row again (F642, F667)")
 @MainActor
-func lostRestoringSaveOffersTheKeptRowBack() throws {
+func lostRestoringSaveListsTheKeptRowAgain() throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -308,16 +322,13 @@ func lostRestoringSaveOffersTheKeptRowBack() throws {
     #expect(store.delete(ids: [id]).isEmpty)
 
     #expect(FileManager.default.fileExists(atPath: folder.path))
-    let offer = try #require(store.conflictOffer, "the session was left on a stale token with the row unlisted")
-    #expect(offer.delta.map(\.id) == [id])
-    #expect(offer.deletedByOther.isEmpty, "a row this session put back is not one the other copy deleted")
-    #expect(offer.message.contains("could not have their recordings removed"), "\(offer.message)")
-
-    store.keepConflictedEdit()
-
-    #expect(store.writeConflict == nil)
+    #expect(store.conflictOffer == nil, "a row only this window has was offered as a question")
+    #expect(store.writeConflict == nil, "the session was left on a stale token")
+    #expect(store.meeting(id: id) != nil, "the row whose folder is still there was left unlisted")
+    let message = try #require(store.storageErrorMessage, "nothing said why the meeting is still there")
+    #expect(message.contains("could not have their recordings removed"), "\(message)")
     let reopened = MeetingStore(rootDirectory: root)
-    #expect(reopened.meeting(id: id) != nil, "keeping the offer did not list the meeting again")
+    #expect(reopened.meeting(id: id) != nil, "the row was not saved again")
     #expect(reopened.meeting(id: theirs.id) != nil, "the other copy's commit was overwritten")
 }
 

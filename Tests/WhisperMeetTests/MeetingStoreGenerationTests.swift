@@ -40,6 +40,24 @@ private func foreignWriterCommits(_ titles: [String], in root: URL) throws {
     _ = try rival.save(titles.map { meeting($0) }, expecting: existing?.token)
 }
 
+/// The rival keeping `base`'s id under its own title. The three conflict tests below race an EDIT to
+/// a meeting both copies have: since F667 a meeting only this session has — what `upsert` of a new
+/// record makes — is put back onto the reloaded library and saved, not offered, so it no longer
+/// raises the offer these tests are about.
+@MainActor
+private func foreignWriterRetitles(_ base: MeetingRecord, to title: String, in root: URL) throws {
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999",
+        recordCount: { $0.count }
+    )
+    var theirs = base
+    theirs.title = title
+    let existing = try rival.load()
+    _ = try rival.save([theirs], expecting: existing?.token)
+}
+
 @Test("A successful save refreshes the token, so consecutive saves keep working (F190)")
 @MainActor
 func aSuccessfulSaveRefreshesTheToken() throws {
@@ -72,7 +90,8 @@ func aRivalCommitIsRefusedAndTheBodyPreserved() throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let seed = MeetingStore(rootDirectory: root)
-    seed.upsert(meeting("shared base"))
+    let base = meeting("shared base")
+    seed.upsert(base)
 
     // A fresh store, holding the token for the generation it just read.
     let store = MeetingStore(rootDirectory: root)
@@ -80,9 +99,9 @@ func aRivalCommitIsRefusedAndTheBodyPreserved() throws {
     let attemptedBefore = store.persistCount
     let committedBefore = store.persistCommitCount
 
-    try foreignWriterCommits(["the rival's library"], in: root)
+    try foreignWriterRetitles(base, to: "the rival's library", in: root)
 
-    store.upsert(meeting("our edit"))
+    store.update(id: base.id) { $0.title = "our edit" }
 
     // Refused, and SAID SO. Today the most destructive save failure in the app produces no
     // user-visible message at all. Since F642 a lost race on this synchronous save is said the way
@@ -122,10 +141,11 @@ func aRecoveredSaveClearsTheConflictReport() throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let seed = MeetingStore(rootDirectory: root)
-    seed.upsert(meeting("base"))
+    let base = meeting("base")
+    seed.upsert(base)
     let store = MeetingStore(rootDirectory: root)
-    try foreignWriterCommits(["rival"], in: root)
-    store.upsert(meeting("refused"))
+    try foreignWriterRetitles(base, to: "rival", in: root)
+    store.update(id: base.id) { $0.title = "refused" }
     // Since F642 the store re-reads the library itself on a lost race and offers the edit back.
     #expect(store.conflictOffer != nil)
 
@@ -169,15 +189,16 @@ func aSaveFailureMessageSurvivesTheNextStep() throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let seed = MeetingStore(rootDirectory: root)
-    seed.upsert(meeting("base"))
+    let base = meeting("base")
+    seed.upsert(base)
     let store = MeetingStore(rootDirectory: root)
-    try foreignWriterCommits(["rival"], in: root)
+    try foreignWriterRetitles(base, to: "rival", in: root)
 
     // `delete` used to end with an unconditional `storageErrorMessage = nil`, so the most
     // destructive save failure in the app cleared its own explanation on the way out. Since F642 a
     // lost race's explanation is the conflict offer's message rather than the alert's, and the
     // property is the same: the next step must not erase it.
-    store.upsert(meeting("will be refused"))
+    store.update(id: base.id) { $0.title = "will be refused" }
     let message = try #require(store.conflictOffer?.message)
     #expect(store.meetings.isEmpty == false)
 

@@ -5570,14 +5570,16 @@ final class AppModel: ObservableObject {
     /// second is what a lost race can leave: the store re-reads the library, and when the other copy
     /// had deleted the same meeting it is gone from this one too, along with its detail view, which
     /// holds every Cancel for its jobs. Not gone is a row the conflict offer can bring back
-    /// (`conflictOffer.delta`), such as one whose folder could not be removed when the save putting it
-    /// back then lost a race (F642): it is unlisted, and Keep My Edit lists it again.
+    /// (`conflictOffer.delta`, or `unsavedNew`, which either answer saves). A row whose folder could
+    /// not be removed, when the save putting it back then lost a race (F642), is usually listed again
+    /// at once since F667; only if that save loses too is it unlisted and held by the offer.
     ///
     /// Stopping after the delete changes nothing for the ids that did go: each cancel only signals its
     /// task, whose epilogue runs later either way, and a queued job is dropped in this same turn.
     func deleteMeetings(ids: [UUID]) {
         let removed = store.delete(ids: ids)
-        let offeredBack = Set(store.conflictOffer?.delta.map(\.id) ?? [])
+        let offer = store.conflictOffer
+        let offeredBack = Set(((offer?.delta ?? []) + (offer?.unsavedNew ?? [])).map(\.id))
         let gone = Set(removed).union(ids.filter { store.meeting(id: $0) == nil && !offeredBack.contains($0) })
         for id in gone {
             cancelTranscription(id: id)

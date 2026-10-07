@@ -119,9 +119,12 @@ F642):
 - The copy that lost re-reads the library at once, so its next save is compared against what the
   other copy saved rather than refused for the same reason.
 - Whatever that copy had changed since its own last successful save is offered back beside the
-  message. *Keep My Edit* re-applies those meetings over the reloaded library and saves them in one
-  write; *Use the Other Copy* keeps the reloaded library as it is. A change to a meeting the other
-  copy deleted is named and never re-applied.
+  message, which names the meetings each answer decides. *Keep My Edit* re-applies those meetings
+  over the reloaded library and saves them in one write; *Use the Other Copy* keeps the reloaded
+  library as it is. A change to a meeting the other copy deleted is named and never re-applied.
+- A meeting that copy added and the other copy never had — a recording just stopped, an import — is
+  not a question: it is put back in the list and saved at once, and neither answer removes it
+  (F667).
 - A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
   again works.
 - Until the offer is answered, that copy refuses further changes the person makes to its meetings —

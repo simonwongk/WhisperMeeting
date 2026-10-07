@@ -304,8 +304,9 @@ func lostRaceToACopyThatAlsoDeletedItStopsTheSummaryAndSecondOpinion() async thr
 
 // The exception, and why it exists. A delete whose folder cannot be removed saves twice: once without
 // the row, then again to put it back (F146). When another copy saves between the two, the re-read
-// leaves the row unlisted and offers it back (F642), so "no longer listed" alone would stop the job
-// of a row that Keep My Edit lists again.
+// puts the row back and saves it once more (F642, F667) — and when the other copy saves AGAIN before
+// that, the row is left unlisted and held by the offer, which saves it whichever answer is given. So
+// "no longer listed" alone would stop the job of a row that either answer lists again.
 @MainActor
 @Test("A kept-folder delete whose save putting the row back lost a race leaves the offered row's transcription running (F666)")
 func lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning() async throws {
@@ -317,15 +318,25 @@ func lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning() async throws {
     try await waitUntil("the transcription to start") { probe.started }
 
     let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", recordingPath: "none", status: .recorded)
+    let alsoTheirs = MeetingRecord(id: UUID(), title: "The other copy's second meeting", recordingPath: "none", status: .recorded)
     model.store.removeRecordingDirectory = { _ in
         try foreignWriterCommits(in: root) { $0 + [theirs] }
         throw FolderStuck()
     }
+    // The saves inside this one delete: without the row, putting it back (lost to `theirs`), then
+    // the recovery's own save of the row — lost too, to the other copy's second commit (F667).
+    var saves = 0
+    model.store.beforeIndexSaveForTesting = {
+        saves += 1
+        if saves == 3 { try? foreignWriterCommits(in: root) { $0 + [alsoTheirs] } }
+    }
     model.deleteMeetings(ids: [id])
-    try #require(model.store.meeting(id: id) == nil, "the re-read was meant to leave the kept row unlisted")
-    let offeredBack = model.store.conflictOffer?.delta.map(\.id) ?? []
+    model.store.beforeIndexSaveForTesting = nil
+    try #require(saves == 3, "fixture: the recovery's save of the kept row was meant to run")
+    try #require(model.store.meeting(id: id) == nil, "the second lost save was meant to leave the kept row unlisted")
+    let offeredBack = model.store.conflictOffer?.unsavedNew.map(\.id) ?? []
     let expected: [UUID] = [id]
-    try #require(offeredBack == expected, "the kept row was meant to be offered back")
+    try #require(offeredBack == expected, "the kept row was meant to be held by the offer")
 
     model.store.keepConflictedEdit()
     try #require(model.store.meeting(id: id) != nil, "Keep My Edit did not list the row again")

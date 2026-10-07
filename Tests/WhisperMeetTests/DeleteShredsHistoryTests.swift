@@ -307,11 +307,17 @@ func shredRotationOverAHandRestoredIndexIsNotAdopted() throws {
     try #require(store.processPendingShreds(now: deletedAt + week) == [secret])
     try #require(!String(decoding: try Data(contentsOf: backupURL), as: UTF8.self).contains("confidential-kestrel"),
                  "fixture: the rotation must have run for the guard to matter")
-    store.upsert(MeetingRecord(id: UUID(), title: "This session's next meeting", status: .completed))
+    let next = MeetingRecord(id: UUID(), title: "This session's next meeting", status: .completed)
+    store.upsert(next)
 
-    #expect(MeetingStore(rootDirectory: root).meeting(id: restored.id) != nil,
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.meeting(id: restored.id) != nil,
             "this session's next save wrote its stale list over the hand-restored index")
-    #expect(store.conflictOffer != nil, "the stale save should have lost the race and been offered back (F642)")
+    // The stale save lost the race (F642) and the session re-read the restored index; the new
+    // meeting, which only this session had, was then put on top of it and saved rather than offered
+    // (F667). Both being on disk is what a lost race followed by that recovery leaves.
+    #expect(reopened.meeting(id: next.id) != nil, "the new meeting was not saved onto the restored index")
+    #expect(store.conflictOffer == nil)
 }
 
 // MARK: - F680: a rotation skipped over an index that did not load cleanly keeps the id queued
