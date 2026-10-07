@@ -80,6 +80,24 @@ func keepingTheVersionOnDiskReopensTheLibrary() throws {
     #expect(MeetingStore(rootDirectory: root).meeting(id: id)?.title == "renamed after choosing")
 }
 
+/// The manual step done while the app was still open: the ledger is already gone when the button is
+/// pressed. There is nothing left to move, and the library should still open.
+@MainActor
+@Test("Keep the Version on Disk still reopens the library when the ledger was already removed by hand (F833)")
+func keepingTheVersionOnDiskWithTheLedgerAlreadyGone() throws {
+    let root = try divergentLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root)
+    try #require(model.store.health == .divergentGenerations)
+    try FileManager.default.removeItem(at: root.appendingPathComponent("meetings.ledger.json"))
+
+    model.keepLibraryVersionOnDisk()
+
+    #expect(!model.store.isDegraded, "still read-only: \(model.store.health)")
+    #expect(model.store.meetings.map(\.title) == ["the rival's meeting"])
+    #expect(model.alertMessage?.contains("already gone") == true, "\(model.alertMessage ?? "nothing was said")")
+}
+
 @MainActor
 @Test("Keep the Version on Disk does nothing to a library that has only one version (F833)")
 func keepingTheVersionOnDiskLeavesAHealthyLibraryAlone() throws {
