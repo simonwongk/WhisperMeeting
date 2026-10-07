@@ -16,8 +16,9 @@ struct VocabularyAddition: Equatable, Sendable {
     var refusedAtLimit = 0
     /// Those terms, in the order offered, so the Add box can keep them for the user.
     var refusedTerms: [String] = []
-    /// The list or the library is read-only, so nothing was considered. The store has already said
-    /// why through `storageErrorMessage`; this only lets a caller keep the user's typing.
+    /// Nothing was added: the list or the library is read-only, or the save did not land and the list
+    /// was put back as it is on disk (F663). The store has already said why through
+    /// `storageErrorMessage`; this only lets a caller keep the user's typing.
     var wasRefused = false
 
     /// The sentence for the Add box and Import Documents… (`candidates` for an import, whose terms
@@ -66,7 +67,8 @@ enum ReplacementRuleAddition: Equatable, Sendable {
     case atLimit
     /// Empty after trimming, or `heard` equals `preferred`, so the rule could change nothing.
     case noChange
-    /// The list or the library is read-only; the store has already set `storageErrorMessage`.
+    /// The list or the library is read-only, or the save did not land (F663); the store has already
+    /// set `storageErrorMessage`.
     case refused
 
     /// The sentence beside the rule editor, or nil when there is nothing to say (added, or refused —

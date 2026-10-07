@@ -132,6 +132,10 @@ F642):
   finishes meanwhile — a recording stopped, an import, a transcript or summary, a rebuilt recording —
   is saved as usual and written into the offered copy of its meeting as well, so neither answer loses
   it. If that save loses to the other copy again, it joins the offer already up (F662).
+- The vocabulary and replacement-rule lists are compare-and-swapped the same way and recover without
+  a question: a change that lost re-reads that list alone and is made again to what the other copy
+  saved, once. If it loses again, or the save fails, the list shows what is on disk and the message
+  says the change was not saved (F663).
 - The pre-existing generations remain restorable — in the app while the library cannot be read, and
   by hand at any time (`docs/RECOVERY.md`).
 

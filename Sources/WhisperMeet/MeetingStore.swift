@@ -1297,16 +1297,24 @@ final class MeetingStore: ObservableObject {
     /// every mutator.
     ///
     /// Health becomes `.complete` only once the save has landed, because only then is the list in
-    /// memory the one on disk. A save that fails leaves the list read-only and says why.
+    /// memory the one on disk. A save that fails leaves the list read-only and says why. A save that
+    /// loses to another copy re-reads the list (F663): what that copy saved is the list now, and its
+    /// own load says whether it still needs keeping. Not reached today: a damaged list's load holds no
+    /// generation token (`BackupJSONStore.load` hands none back for anything but a clean primary), so
+    /// this save is unchecked and cannot lose a race — it is last-writer-wins.
     func keepLoadedList(_ list: EditableList) {
         guard mutationIsAllowed(), isListReadOnly(list) else { return }
-        switch list {
-        case .vocabulary:
-            guard persistVocabulary() else { return }
-            vocabularyHealth = .complete
-        case .replacementRules:
-            guard persistReplacementRules() else { return }
-            replacementRulesHealth = .complete
+        switch saveList(list) {
+        case .saved:
+            switch list {
+            case .vocabulary: vocabularyHealth = .complete
+            case .replacementRules: replacementRulesHealth = .complete
+            }
+        case let .lostRace(report):
+            reloadList(list)
+            storageErrorMessage = "\(report.message) The list now shows what the other copy saved."
+        case .failed:
+            return
         }
     }
 
@@ -2664,9 +2672,25 @@ final class MeetingStore: ObservableObject {
     /// after Latin) while the screen said "Saved 3 terms." A term the user reviewed is worth more
     /// than one they have not seen yet, and a refusal can be undone by removing something; a silent
     /// eviction cannot, because nobody knows it happened.
+    ///
+    /// Reported as refused when the save does not land (F663) — nothing was added, the store has said
+    /// why, and the Add box keeps the typing. It used to report "Saved N terms." regardless.
     @discardableResult
     func addVocabulary(_ terms: [String]) -> VocabularyAddition {
         guard listMutationIsAllowed(.vocabulary) else { return VocabularyAddition(wasRefused: true) }
+        var result = VocabularyAddition()
+        // Staged against the list as it is when it runs — again after a lost race, against what the
+        // other copy saved — so the counts describe the list the terms actually went into.
+        let saved = commitListChange(.vocabulary) {
+            result = self.stageVocabularyAddition(terms)
+            return result.added > 0
+        }
+        return saved ? result : VocabularyAddition(wasRefused: true)
+    }
+
+    /// Adds to `vocabulary`, in memory, whichever of `terms` are new and fit (F525), and says what
+    /// happened to each. Saving is `commitListChange`'s.
+    private func stageVocabularyAddition(_ terms: [String]) -> VocabularyAddition {
         let saved = Set(vocabulary)
         var result = VocabularyAddition()
         var accepted: [String] = []
@@ -2682,20 +2706,23 @@ final class MeetingStore: ObservableObject {
             }
         }
         result.added = accepted.count
-        guard !accepted.isEmpty else { return result }
-        vocabulary = Self.storedTerms(vocabulary + accepted)
-        persistVocabulary()
+        if !accepted.isEmpty {
+            vocabulary = Self.storedTerms(vocabulary + accepted)
+        }
         return result
     }
 
     func removeVocabulary(_ term: String) {
         guard listMutationIsAllowed(.vocabulary) else { return }
-        vocabulary.removeAll { $0 == term }
-        persistVocabulary()
-        if prioritizedVocabulary.contains(term) {
-            prioritizedVocabulary.remove(term)
-            persistVocabularyPriority()
+        let saved = commitListChange(.vocabulary) {
+            guard self.vocabulary.contains(term) else { return false }
+            self.vocabulary.removeAll { $0 == term }
+            return true
         }
+        // The star goes with the term, and only once the term is gone from disk.
+        guard saved, prioritizedVocabulary.contains(term) else { return }
+        prioritizedVocabulary.remove(term)
+        persistVocabularyPriority()
     }
 
     // MARK: - Which terms are sent first (F300)
@@ -2741,6 +2768,9 @@ final class MeetingStore: ObservableObject {
     /// Returns what happened (F525): the rule editor keeps the typed rule unless it was `.added`,
     /// and says why for the rest — at the limit this used to return in silence while the editor
     /// cleared both fields as if the rule had been saved.
+    ///
+    /// `.refused` too when the save does not land (F663): the store has said why, and the editor keeps
+    /// the fields. It used to return `.added` regardless, and the fields were cleared.
     @discardableResult
     func addReplacementRule(heard: String, preferred: String) -> ReplacementRuleAddition {
         guard listMutationIsAllowed(.replacementRules) else { return .refused }
@@ -2748,17 +2778,126 @@ final class MeetingStore: ObservableObject {
         let p = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty, !p.isEmpty, h != p else { return .noChange }
         let rule = ReplacementRule(heard: h, preferred: p)
-        guard !replacementRules.contains(rule) else { return .duplicate }
-        guard replacementRules.count < Self.maxReplacementRules else { return .atLimit }
-        replacementRules.append(rule)
-        persistReplacementRules()
-        return .added
+        var outcome = ReplacementRuleAddition.added
+        // Staged against the rules as they are when it runs — again after a lost race, against
+        // what the other copy saved, which may already hold this rule or be at the limit.
+        let saved = commitListChange(.replacementRules) {
+            guard !self.replacementRules.contains(rule) else { outcome = .duplicate; return false }
+            guard self.replacementRules.count < Self.maxReplacementRules else { outcome = .atLimit; return false }
+            outcome = .added
+            self.replacementRules.append(rule)
+            return true
+        }
+        return saved ? outcome : .refused
     }
 
     func removeReplacementRule(_ rule: ReplacementRule) {
         guard listMutationIsAllowed(.replacementRules) else { return }
-        replacementRules.removeAll { $0 == rule }
-        persistReplacementRules()
+        commitListChange(.replacementRules) {
+            guard self.replacementRules.contains(rule) else { return false }
+            self.replacementRules.removeAll { $0 == rule }
+            return true
+        }
+    }
+
+    // MARK: - Saving one list (F663)
+
+    /// How one list's save ended.
+    private enum ListSave {
+        case saved
+        case lostRace(WriteConflictReport)
+        case failed
+    }
+
+    /// Applies one change to `list` and saves it; returns whether the change is on disk (true when
+    /// there was nothing to save).
+    ///
+    /// `stage` makes the change in memory and says whether it changed anything. A save that loses to
+    /// another copy of the app re-reads this list alone and runs `stage` once more against what that
+    /// copy saved, then saves again — the F433/F642 shape, without an offer, because a list change is
+    /// one small known operation that can simply be made again. This used to set the meeting index's
+    /// `writeConflict`/`unsavedChanges` and the generic alert, and never refreshed the list's token,
+    /// so every later edit to that list failed the same compare-and-swap until a relaunch.
+    ///
+    /// Any other way the change does not land puts the list back as it was, so the screen shows what
+    /// is on disk, and says why in `storageErrorMessage`. A second lost race re-reads too, so the next
+    /// edit is compared against what is on disk, and is said rather than tried a third time.
+    @discardableResult
+    private func commitListChange(_ list: EditableList, _ stage: () -> Bool) -> Bool {
+        var before = (vocabulary, replacementRules)
+        guard stage() else { return true }
+        switch saveList(list) {
+        case .saved:
+            return true
+        case .failed:
+            restoreList(list, from: before)
+            return false
+        case .lostRace:
+            reloadList(list)
+        }
+        let state = health(of: list)
+        guard state.allowsMutation else {
+            storageErrorMessage = DamagedListNotice.refused(list, health: state)
+            return false
+        }
+        before = (vocabulary, replacementRules)
+        guard stage() else { return true }
+        switch saveList(list) {
+        case .saved:
+            return true
+        case .failed:
+            restoreList(list, from: before)
+            return false
+        case let .lostRace(report):
+            reloadList(list)
+            storageErrorMessage = "\(report.message) It changed the list again while this change was being saved, so this change was not saved. The list now shows what the other copy saved; make the change again."
+            return false
+        }
+    }
+
+    /// Saves `list` against the generation this store last read or wrote for it. An ordinary failure
+    /// is said here; a lost race is the caller's to recover. Neither touches `writeConflict` or
+    /// `unsavedChanges` (F663): those describe the meeting index, and are what the meeting conflict
+    /// recovery and its banner read.
+    private func saveList(_ list: EditableList) -> ListSave {
+        beforeIndexSaveForTesting?()
+        do {
+            switch list {
+            case .vocabulary:
+                vocabularyToken = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken).token
+            case .replacementRules:
+                replacementRulesToken = try replacementRulesFiles.save(
+                    replacementRules, expecting: replacementRulesToken
+                ).token
+            }
+            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
+            return .saved
+        } catch {
+            let report = WriteConflictReport(error)
+            if report.isRace { return .lostRace(report) }
+            switch list {
+            case .vocabulary:
+                storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+            case .replacementRules:
+                storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+            }
+            return .failed
+        }
+    }
+
+    private func restoreList(_ list: EditableList, from snapshot: ([String], [ReplacementRule])) {
+        switch list {
+        case .vocabulary: vocabulary = snapshot.0
+        case .replacementRules: replacementRules = snapshot.1
+        }
+    }
+
+    /// Re-reads one list from disk, and nothing else — not the meeting index, not the other list.
+    private func reloadList(_ list: EditableList) {
+        switch list {
+        case .vocabulary: readVocabulary()
+        case .replacementRules: readReplacementRules()
+        }
     }
 
     /// Not `private` (F525): `ReplacementRuleAddition.atLimit`'s sentence quotes it.
@@ -2857,9 +2996,10 @@ final class MeetingStore: ObservableObject {
         return historyNoticeAwaitingDismissal
     }
 
-    /// Runs just before each index save, so a test can put another copy's commit between two saves
-    /// this store makes inside one call — the save `beginConflictRecovery()` makes for a new meeting
-    /// right after its reload (F667). Nil outside tests.
+    /// Runs just before each save of the meeting index or of a list, so a test can put another copy's
+    /// commit between two saves this store makes inside one call — the save `beginConflictRecovery()`
+    /// makes for a new meeting right after its reload (F667), or a list's second try after a lost
+    /// race (F663). Nil outside tests.
     var beforeIndexSaveForTesting: (() -> Void)?
 
     /// Returns whether the index actually reached disk, so a caller that is about to destroy
@@ -2886,38 +3026,6 @@ final class MeetingStore: ObservableObject {
             unsavedChanges = true
             writeConflict = WriteConflictReport(error)
             storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(error.localizedDescription)"
-            return false
-        }
-    }
-
-    @discardableResult
-    private func persistVocabulary() -> Bool {
-        do {
-            let outcome = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken)
-            vocabularyToken = outcome.token
-            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
-            return true
-        } catch {
-            unsavedChanges = true
-            writeConflict = WriteConflictReport(error)
-            storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
-            return false
-        }
-    }
-
-    @discardableResult
-    private func persistReplacementRules() -> Bool {
-        do {
-            let outcome = try replacementRulesFiles.save(
-                replacementRules, expecting: replacementRulesToken
-            )
-            replacementRulesToken = outcome.token
-            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
-            return true
-        } catch {
-            unsavedChanges = true
-            writeConflict = WriteConflictReport(error)
-            storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
             return false
         }
     }
@@ -3301,6 +3409,13 @@ final class MeetingStore: ObservableObject {
     }
 
     private func loadVocabulary() {
+        readVocabulary()
+        recordDamage(to: .vocabulary)
+    }
+
+    /// `loadVocabulary` without the launch alert's notice, for a re-read after a lost race (F663) —
+    /// a mid-session reload has no launch alert to add to.
+    private func readVocabulary() {
         do {
             if let result = try vocabularyFiles.load() {
                 vocabulary = Self.storedTerms(result.value)
@@ -3319,10 +3434,15 @@ final class MeetingStore: ObservableObject {
             vocabularyToken = nil
             vocabularyHealth = Self.health(after: error)
         }
-        recordDamage(to: .vocabulary)
     }
 
     private func loadReplacementRules() {
+        readReplacementRules()
+        recordDamage(to: .replacementRules)
+    }
+
+    /// As `readVocabulary`, for the rules (F663).
+    private func readReplacementRules() {
         do {
             if let result = try replacementRulesFiles.load() {
                 replacementRules = result.value
@@ -3335,7 +3455,6 @@ final class MeetingStore: ObservableObject {
             replacementRulesToken = nil
             replacementRulesHealth = Self.health(after: error)
         }
-        recordDamage(to: .replacementRules)
     }
 
     /// Puts a damaged list's notice in the launch alert as well as beside the list (F464). The same
