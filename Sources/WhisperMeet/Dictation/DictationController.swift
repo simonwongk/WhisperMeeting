@@ -120,10 +120,22 @@ final class DictationController: ObservableObject {
     //   the front: a loss the system calls "user input", and a third loss since the last time.
 
     /// Whether an active tap can be created now. Tests assign it; none creates a real probe tap.
-    var activeTapProbe: () -> Bool = { HotkeyMonitor.canCreateActiveTap() }
+    /// Sendable since F689: the once-a-second check calls it off the main thread.
+    var activeTapProbe: @Sendable () -> Bool = { HotkeyMonitor.canCreateActiveTap() }
     /// The pause between probes while the active tap is armed. Tests step it by hand.
-    var activeTapCheckSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    var activeTapCheckSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     static let activeTapCheckInterval: Duration = .seconds(1)
+    /// Held while an active tap is armed (F689): App Nap throttles an app's timers, perhaps exactly
+    /// while the user is in System Settings revoking the grant the probe checks. Seams so a test can
+    /// count them; the defaults are `ProcessInfo`'s, which also ends an activity whose token is
+    /// released, so a controller that goes away cannot leave one held.
+    var beginAppNapExemption: (String) -> NSObjectProtocol = {
+        ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: $0)
+    }
+    var endAppNapExemption: (NSObjectProtocol) -> Void = { ProcessInfo.processInfo.endActivity($0) }
+    private var appNapExemption: NSObjectProtocol?
+    /// Whether the App Nap exemption is held — only while an active tap is armed.
+    var isHoldingAppNapExemption: Bool { appNapExemption != nil }
     /// Losses of the active tap since WhisperMeet last came to the front, at which the trigger stops
     /// trying to hold the key back.
     static let triggerTapLossLimit = 3
@@ -752,37 +764,67 @@ final class DictationController: ObservableObject {
 
     /// Re-arms the trigger if an active tap can no longer be created (F547): Accessibility was
     /// revoked or the app removed from the list, perhaps with no disable event at all. The re-arm's
-    /// own `tapCreate` then fails too, so the trigger falls back to listen-only or fails.
+    /// own `tapCreate` then fails too, so the trigger falls back to listen-only or fails. Coming to
+    /// the front runs this on the main thread, which is running then; the once-a-second check does
+    /// not (F689, `updateActiveTapCheck`).
     private func checkActiveTap() {
         guard enabled, hotkeyMonitor.isHoldingTriggerBack, !activeTapProbe() else { return }
+        hotkeyMonitor.activeTapDisarmer()
         log.error("an active tap can no longer be created; re-arming the trigger without it")
         applyHotkeyStart()
     }
 
-    /// Runs `checkActiveTap` once a second while the active tap is armed, and only then (F547).
-    /// Called after every arm and on disable.
+    /// Checks once a second, while the active tap is armed and only then (F547), that one could
+    /// still be created — and since F689, off the main thread. The probe and its pause run in a
+    /// detached task, and a failed probe disarms the tap there and then (`activeTapDisarmer`), so
+    /// neither App Nap nor a stalled main thread (F538) stands between a revoked grant and the
+    /// keyboard being let go. Only the re-arm (`activeTapRevoked`) waits for the main thread, and
+    /// with the tap gone nothing waits on it. An App Nap exemption is held for as long as the active
+    /// tap is armed. Called after every arm and on disable.
     private func updateActiveTapCheck() {
         guard enabled, hotkeyMonitor.isHoldingTriggerBack else {
             activeTapCheck?.cancel()
             activeTapCheck = nil
+            activeTapCheckGeneration &+= 1 // a revocation already on its way to main is stale
+            if let exemption = appNapExemption {
+                appNapExemption = nil
+                endAppNapExemption(exemption)
+            }
             return
+        }
+        if appNapExemption == nil {
+            appNapExemption = beginAppNapExemption(
+                "Quick Dictation's F-key trigger holds keys back; its Accessibility check must run on time"
+            )
         }
         guard activeTapCheck == nil else { return }
         activeTapCheckGeneration &+= 1
         let generation = activeTapCheckGeneration
-        activeTapCheck = Task { @MainActor [weak self] in
-            while true {
-                // A re-arm inside `checkActiveTap` can cancel this very task; stop before pausing.
-                guard !Task.isCancelled, let pause = self?.activeTapCheckSleep else { return }
-                do { try await pause(Self.activeTapCheckInterval) } catch { return }
-                guard let self, !Task.isCancelled, self.activeTapCheckGeneration == generation else { return }
-                guard self.enabled, self.hotkeyMonitor.isHoldingTriggerBack else {
-                    self.activeTapCheck = nil
-                    return
-                }
-                self.checkActiveTap()
+        let probe = activeTapProbe
+        let pause = activeTapCheckSleep
+        let disarm = hotkeyMonitor.activeTapDisarmer
+        let interval = Self.activeTapCheckInterval
+        let log = log
+        activeTapCheck = Task.detached(priority: .userInitiated) { [weak self] in
+            while !Task.isCancelled {
+                do { try await pause(interval) } catch { return }
+                guard !Task.isCancelled else { return }
+                guard !probe() else { continue }
+                disarm()
+                log.error("an active tap can no longer be created; the trigger's tap was let go off the main thread")
+                await self?.activeTapRevoked(generation: generation)
+                return
             }
         }
+    }
+
+    /// The off-main check found the grant gone and has already let go of the tap (F689). Re-arms
+    /// the trigger, which without the grant falls back to listen-only or fails, as F547's did.
+    private func activeTapRevoked(generation: Int) {
+        guard generation == activeTapCheckGeneration else { return }
+        activeTapCheck = nil
+        guard enabled else { return }
+        applyHotkeyStart()
     }
 
     /// Whether the once-a-second check of the active tap is running.

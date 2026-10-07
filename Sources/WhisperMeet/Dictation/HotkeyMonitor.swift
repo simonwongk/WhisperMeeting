@@ -31,6 +31,10 @@ protocol HotkeyMonitoring: AnyObject {
     /// The system disabled the active tap (F547). Called on the main queue after the edge the tap
     /// missed has been dispatched. The owner re-arms through `start`; nothing re-enables the old tap.
     var onTriggerTapLost: ((TriggerTapLoss) -> Void)? { get set }
+    /// Disables, removes and invalidates the armed active tap at once, from any thread (F689), so
+    /// the probe that runs off the main thread can let go of the keyboard without waiting for it.
+    /// The owner still re-arms through `start`, on the main thread. Nothing armed: does nothing.
+    var activeTapDisarmer: @Sendable () -> Void { get }
 }
 
 extension HotkeyMonitoring {
@@ -44,6 +48,8 @@ extension HotkeyMonitoring {
         get { nil }
         set {}
     }
+    /// A monitor with no active tap has nothing to disarm.
+    var activeTapDisarmer: @Sendable () -> Void { {} }
 }
 
 /// Why the system disabled an F-key trigger's active tap (F547): its callback did not answer in
@@ -83,6 +89,10 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// for the tap and released on that thread once the tap is gone, so a callback already running
     /// there never reads a freed one.
     private var triggerTap: (port: CFMachPort, source: CFRunLoopSource, context: Unmanaged<TriggerTapContext>)?
+    /// The same tap's port and source, behind a lock, so it can be disarmed from off the main
+    /// thread (F689). `triggerTap` stays the main thread's record; this only ever lets go.
+    private let activeTapSwitch = ActiveTapSwitch()
+    var activeTapDisarmer: @Sendable () -> Void { { [activeTapSwitch] in activeTapSwitch.disarm() } }
     private let log = Logger(subsystem: "com.whispermeet.app", category: "dictation")
     /// An F-key trigger fell back to the listen-only tap (F547).
     private(set) var isArmedWithoutHoldingBack = false
@@ -243,6 +253,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
         CGEvent.tapEnable(tap: port, enable: true)
         CFRunLoopWakeUp(loop)
         triggerTap = (port, source, context)
+        activeTapSwitch.arm(port: port, source: source)
         return true
     }
 
@@ -297,7 +308,8 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// grant. `AXIsProcessTrusted()` is not used: it has been reported to stay true when the app is
     /// removed from the Accessibility list rather than unchecked (Apple Developer Forums 735204).
     /// The probe is placed after every other tap, disabled and invalidated at once, and never added
-    /// to a run loop. Tests never call it; `DictationController.activeTapProbe` is the seam.
+    /// to a run loop — so no thread services it, and since F689 it is called off the main thread.
+    /// Tests never call it; `DictationController.activeTapProbe` is the seam.
     static func canCreateActiveTap() -> Bool {
         let passThrough: CGEventTapCallBack = { _, _, event, _ in Unmanaged.passUnretained(event) }
         guard let probe = CGEvent.tapCreate(
@@ -332,9 +344,8 @@ final class HotkeyMonitor: HotkeyMonitoring {
         if let triggerTap {
             let loop = TriggerTapThread.runLoop
             triggerTap.context.takeUnretainedValue().isCurrent = false
-            CFRunLoopRemoveSource(loop, triggerTap.source, .commonModes)
-            CGEvent.tapEnable(tap: triggerTap.port, enable: false)
-            CFMachPortInvalidate(triggerTap.port)
+            // Removes, disables and invalidates it, unless the off-main probe already has (F689).
+            activeTapSwitch.disarm()
             // After a callback that may be running now: the tap thread runs one thing at a time.
             let context = triggerTap.context
             CFRunLoopPerformBlock(loop, CFRunLoopMode.commonModes.rawValue) { context.release() }
@@ -548,6 +559,33 @@ struct TriggerKeyFilter: Equatable {
         default:
             return Verdict(consume: false, forward: false)
         }
+    }
+}
+
+/// The armed active tap, as something any thread may let go of (F689).
+///
+/// The once-a-second probe runs off the main thread so that App Nap or a stalled main thread cannot
+/// delay it, and when it finds the grant gone it must not then wait for the main thread to remove
+/// the tap that every key-down and key-up is waiting on. The calls are the ones `removeTap` always
+/// made from the main thread for a tap serviced on `TriggerTapThread` — remove the source from that
+/// thread's run loop, disable the tap, invalidate its port — so making them from another thread is
+/// no new kind of call. Done once: the lock hands the tap to whichever caller comes first.
+final class ActiveTapSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed: (port: CFMachPort, source: CFRunLoopSource)?
+
+    func arm(port: CFMachPort, source: CFRunLoopSource) {
+        lock.withLock { armed = (port, source) }
+    }
+
+    func disarm() {
+        guard let tap = lock.withLock({ () -> (port: CFMachPort, source: CFRunLoopSource)? in
+            defer { armed = nil }
+            return armed
+        }) else { return }
+        CFRunLoopRemoveSource(TriggerTapThread.runLoop, tap.source, .commonModes)
+        CGEvent.tapEnable(tap: tap.port, enable: false)
+        CFMachPortInvalidate(tap.port)
     }
 }
 

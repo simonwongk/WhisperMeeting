@@ -133,14 +133,22 @@ private struct Harness {
     }
 }
 
-/// What the probe tap would find, and how often it was asked.
-@MainActor
-private final class ProbeSwitch {
-    var canCreateActiveTap = true
-    private(set) var checks = 0
+/// What the probe tap would find, and how often it was asked. Locked, not main-actor: since F689 the
+/// once-a-second check calls the probe off the main thread.
+private final class ProbeSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _canCreateActiveTap = true
+    private var _checks = 0
+    var canCreateActiveTap: Bool {
+        get { lock.withLock { _canCreateActiveTap } }
+        set { lock.withLock { _canCreateActiveTap = newValue } }
+    }
+    var checks: Int { lock.withLock { _checks } }
     func check() -> Bool {
-        checks += 1
-        return canCreateActiveTap
+        lock.withLock {
+            _checks += 1
+            return _canCreateActiveTap
+        }
     }
 }
 
