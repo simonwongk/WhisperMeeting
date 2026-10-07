@@ -68,8 +68,9 @@ public enum TranscriptComparison {
 
     /// Indices, ascending, of the timed segments of `segments` sharing time with `start..<end` by
     /// `sharedSeconds` — what `CounterpartIndex.overlapping` finds, by the plain scan. The one
-    /// question `offersReplacement` asks of this transcript's lines (F658), answered by the index in
-    /// `compare` and by this in `referenceCompare`, so the rule itself is written once.
+    /// question the F658 rule asks of this transcript's lines (which lines a segment reaches),
+    /// answered by the index in `compare` and by this in `referenceCompare`, so the rule itself is
+    /// written once.
     private static func scanOverlapping(_ segments: [TranscriptSegment], start: Double, end: Double) -> [Int] {
         let probe = TranscriptSegment(speaker: nil, start: start, end: end, text: "")
         return segments.indices.filter { (sharedSeconds(probe, segments[$0]) ?? 0) > 0 }
@@ -501,7 +502,7 @@ extension TranscriptComparison {
         /// Indices, ascending, of the timed segments sharing time with `start..<end` by the scan's
         /// own test (`sharedSeconds`): the segment starts before the line ends, and ends after it
         /// starts. A NaN bound compares false both ways, so it finds nothing, as the scan does.
-        /// Also what `offersReplacement` asks of both transcripts (F658).
+        /// Also, built over this transcript's own lines, which lines a segment reaches (F658).
         func overlapping(start: Double, end: Double) -> [Int] {
             overlappingIndices(start: start, end: end)
         }

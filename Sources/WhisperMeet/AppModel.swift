@@ -6328,8 +6328,8 @@ final class AppModel: ObservableObject {
     ///
     /// Returns what to hand `undoTranscriptCorrections` (F831), or nil when nothing changed — refused,
     /// nothing to apply, corrections that match no text, or a write the store declined. Until F831
-    /// this registered nothing, so one wrong tick from any of the three correction tools was
-    /// permanent except by retyping it.
+    /// it returned nothing and no undo was registered for it, so one wrong tick from any of the three
+    /// correction tools was permanent except by retyping it; the review sheet registers one now.
     @discardableResult
     func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) -> TranscriptCorrectionApplication? {
         guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return nil }
