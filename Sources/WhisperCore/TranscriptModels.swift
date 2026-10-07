@@ -249,11 +249,17 @@ public enum TranscriptFormatter {
     /// Whether `transcriptText` has diverged from what the Whisper `segments` render to — i.e. the
     /// user edited it. Once true, segment-derived overlays (quality flags, marker context) no longer
     /// describe the shown text and should be dropped. False when there are no segments to compare
-    /// against or the text is empty.
+    /// against.
+    ///
+    /// Empty (or whitespace-only) text over segments that render to something IS an edit: the user
+    /// cleared the transcript (F837). This used to return false for empty text, so the strongest
+    /// redaction there is read as "unedited" — Ask cited the original lines, a new summary quoted
+    /// them, notes.md carried them as marker context, and the line tools rebuilt the text from them.
+    /// "Never transcribed" is told apart by having no segments, not by the text: the only write that
+    /// leaves segments under empty text is the editor's (`MeetingStore.editTranscript`).
     public static func isEdited(transcriptText: String, segments: [TranscriptSegment]) -> Bool {
         guard !segments.isEmpty else { return false }
         let shown = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !shown.isEmpty else { return false }
         return shown != timestamped(segments).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

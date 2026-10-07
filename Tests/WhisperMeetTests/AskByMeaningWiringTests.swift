@@ -22,6 +22,13 @@ private func seg(_ start: Double, _ text: String) -> TranscriptSegment {
     TranscriptSegment(speaker: nil, start: start, end: start + 5, text: text)
 }
 
+/// A completed meeting as a transcription leaves it: the text is the rendering of its lines. Lines
+/// under empty text are a transcript the user cleared (F837), which Ask rightly finds nothing in.
+private func transcribed(id: UUID, title: String, _ segments: [TranscriptSegment]) -> MeetingRecord {
+    MeetingRecord(id: id, title: title, status: .completed,
+                  transcriptText: TranscriptFormatter.timestamped(segments), segments: segments)
+}
+
 private actor Calls {
     var passageRuns = 0
     func countPassageRun() { passageRuns += 1 }
@@ -38,7 +45,7 @@ private func fakeVector(_ text: String) -> [Float] {
 func paraphraseIsFoundByMeaning() async throws {
     let model = try makeModel()
     let id = UUID()
-    model.store.upsert(MeetingRecord(id: id, title: "Planning", status: .completed, segments: [
+    model.store.upsert(transcribed(id: id, title: "Planning", [
         seg(0, "We agreed fifteen percent off the annual plan."), seg(30, "The offsite moves to May."),
     ]))
     try FileManager.default.createDirectory(at: model.store.recordingDirectoryURL(for: id), withIntermediateDirectories: true)
@@ -60,7 +67,7 @@ func paraphraseIsFoundByMeaning() async throws {
         .appendingPathComponent(SegmentEmbeddings.vectorsFilename).path))
 
     // A changed transcript makes the saved index stale, so it is rebuilt rather than trusted.
-    model.store.upsert(MeetingRecord(id: id, title: "Planning", status: .completed, segments: [seg(0, "Entirely different words now.")]))
+    model.store.upsert(transcribed(id: id, title: "Planning", [seg(0, "Entirely different words now.")]))
     _ = await model.askMeetingsByMeaning(query: "pricing", scope: MeetingScope())
     #expect(await calls.passageRuns == 2)
 }
@@ -69,12 +76,12 @@ func paraphraseIsFoundByMeaning() async throws {
 @Test("Without the model, or when it fails, the result is exactly the keyword search (F316)")
 func meaningSearchFallsBackToKeywords() async throws {
     let absent = try makeModel(installed: false)
-    absent.store.upsert(MeetingRecord(id: UUID(), title: "Pricing sync", status: .completed, segments: [seg(0, "The pricing tiers changed.")]))
+    absent.store.upsert(transcribed(id: UUID(), title: "Pricing sync", [seg(0, "The pricing tiers changed.")]))
     absent.askEmbedder = { _, _ in Issue.record("must not run without the model"); return (0, []) }
     #expect(await absent.askMeetingsByMeaning(query: "pricing", scope: MeetingScope()) == absent.askMeetings(query: "pricing", scope: MeetingScope()))
 
     let failing = try makeModel()
-    failing.store.upsert(MeetingRecord(id: UUID(), title: "Pricing sync", status: .completed, segments: [seg(0, "The pricing tiers changed.")]))
+    failing.store.upsert(transcribed(id: UUID(), title: "Pricing sync", [seg(0, "The pricing tiers changed.")]))
     failing.askEmbedder = { _, _ in throw LocalEmbedderError.unreadableOutput }
     #expect(await failing.askMeetingsByMeaning(query: "pricing", scope: MeetingScope()) == failing.askMeetings(query: "pricing", scope: MeetingScope()))
 }
@@ -100,13 +107,13 @@ func askViewIsWiredToMeaningSearch() throws {
 func realModelFindsParaphrases() async throws {
     let model = try makeModel(installed: true)
     let english = UUID(), chinese = UUID()
-    model.store.upsert(MeetingRecord(id: english, title: "Planning", status: .completed, segments: [
+    model.store.upsert(transcribed(id: english, title: "Planning", [
         seg(0, "We agreed fifteen percent off the annual plan starting in March."),
         seg(30, "Let's move the offsite to the second week of May."),
         seg(60, "Dana will own hiring for the platform group from next month."),
         seg(90, "At the current burn the cash lasts until roughly next October."),
     ]))
-    model.store.upsert(MeetingRecord(id: chinese, title: "週會", status: .completed, segments: [
+    model.store.upsert(transcribed(id: chinese, title: "週會", [
         seg(0, "金流廠商沒通過認證，所以發佈時間往後移。"),
         seg(30, "下個月起平台組的徵才由佳怡負責。"),
         seg(60, "所有密碼都要更換，管理員加上實體金鑰。"),
@@ -142,7 +149,7 @@ func realModelFindsParaphrases() async throws {
 func indexIsCachedWhenItCannotBePersisted() async throws {
     let model = try makeModel()
     let id = UUID()
-    model.store.upsert(MeetingRecord(id: id, title: "Planning", status: .completed, segments: [
+    model.store.upsert(transcribed(id: id, title: "Planning", [
         seg(0, "We agreed fifteen percent off the annual plan."), seg(30, "The offsite moves to May."),
     ]))
     // No recording directory: nothing can be written beside a recording that is not there, which is

@@ -42,6 +42,21 @@ func transcriptIsEditedDetection() {
     #expect(TranscriptFormatter.isEdited(transcriptText: canonical + " (fixed)", segments: segments))
     // No segments to compare against (e.g. dictation-style) → never "edited".
     #expect(!TranscriptFormatter.isEdited(transcriptText: "anything", segments: []))
-    // Whitespace-only text isn't an edit.
-    #expect(!TranscriptFormatter.isEdited(transcriptText: "   ", segments: segments))
+}
+
+@Test("Clearing the transcript is an edit, to nothing; empty text with no lines behind it is not (F837)")
+func clearedTranscriptIsEdited() {
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 2, text: "hello world"),
+        TranscriptSegment(speaker: nil, start: 2, end: 4, text: "second line"),
+    ]
+    // The strongest redaction there is. It used to read as "unedited", so every reader of the
+    // segments went on citing, quoting and rebuilding the text the user had just removed.
+    #expect(TranscriptFormatter.isEdited(transcriptText: "", segments: segments))
+    #expect(TranscriptFormatter.isEdited(transcriptText: "  \n\t ", segments: segments))
+    // Never transcribed: nothing was there to clear.
+    #expect(!TranscriptFormatter.isEdited(transcriptText: "", segments: []))
+    // Lines that render to nothing at all: empty text IS their rendering, not a clear.
+    let blank = [TranscriptSegment(speaker: nil, start: nil, end: nil, text: "  ")]
+    #expect(!TranscriptFormatter.isEdited(transcriptText: "", segments: blank))
 }

@@ -18,8 +18,8 @@ public enum EditedTranscript {
     /// The segments a reader of the transcript should use: the stored segments while the text is
     /// still their rendering, otherwise `segments(transcriptText:original:)`.
     ///
-    /// Empty text counts as not edited, as `TranscriptFormatter.isEdited` and every other
-    /// segment-derived feature have always treated it.
+    /// A cleared transcript is edited to nothing (F837), so it reads as no lines at all — not, as it
+    /// did until then, as every line the user cleared.
     public static func effectiveSegments(
         transcriptText: String,
         segments: [TranscriptSegment]

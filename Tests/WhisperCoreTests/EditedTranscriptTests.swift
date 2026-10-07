@@ -18,8 +18,14 @@ private let original = [
 func uneditedTranscriptIsItsSegments() {
     let text = TranscriptFormatter.timestamped(original)
     #expect(EditedTranscript.effectiveSegments(transcriptText: text, segments: original) == original)
-    // Empty text is "not edited", as `TranscriptFormatter.isEdited` has always said.
-    #expect(EditedTranscript.effectiveSegments(transcriptText: "", segments: original) == original)
+}
+
+@Test("A cleared transcript reads as no lines at all, not as the lines it was cleared of (F837)")
+func clearedTranscriptHasNoSegments() {
+    #expect(EditedTranscript.effectiveSegments(transcriptText: "", segments: original).isEmpty)
+    #expect(EditedTranscript.effectiveSegments(transcriptText: " \n\n ", segments: original).isEmpty)
+    // Never transcribed: no lines either way.
+    #expect(EditedTranscript.effectiveSegments(transcriptText: "", segments: []).isEmpty)
 }
 
 @Test("A correction inside lines that still align keeps each segment's precise timing and speaker (F455)")

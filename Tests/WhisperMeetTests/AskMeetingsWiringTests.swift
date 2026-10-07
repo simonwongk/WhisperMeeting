@@ -25,21 +25,26 @@ func askMeetingsScopesAndCites() async throws {
     let model = try makeModel()
 
     let a = UUID(), b = UUID(), c = UUID()
+    // Each with the text its lines render to, as a transcription leaves it: lines under empty text
+    // are a transcript the user cleared (F837), and would be excluded for that reason instead.
+    let aLines = [seg(0, "We discussed the pricing discount tiers."), seg(30, "Marketing owns the update.")]
     model.store.upsert(MeetingRecord(
         id: a, title: "Pricing sync", status: .completed,
-        segments: [seg(0, "We discussed the pricing discount tiers."), seg(30, "Marketing owns the update.")],
+        transcriptText: TranscriptFormatter.timestamped(aLines), segments: aLines,
         tags: ["pricing"]
     ))
     // Same keyword, different tag — excluded by the tag scope.
+    let bLines = [seg(0, "Pricing was mentioned once.")]
     model.store.upsert(MeetingRecord(
         id: b, title: "Hiring", status: .completed,
-        segments: [seg(0, "Pricing was mentioned once.")],
+        transcriptText: TranscriptFormatter.timestamped(bLines), segments: bLines,
         tags: ["hiring"]
     ))
     // Matches the tag but isn't completed — excluded by status.
+    let cLines = [seg(0, "Pricing pricing pricing.")]
     model.store.upsert(MeetingRecord(
         id: c, title: "Draft", status: .recorded,
-        segments: [seg(0, "Pricing pricing pricing.")],
+        transcriptText: TranscriptFormatter.timestamped(cLines), segments: cLines,
         tags: ["pricing"]
     ))
 

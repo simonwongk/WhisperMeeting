@@ -51,9 +51,9 @@ find-in-transcript navigation). Flagged segments get a subtle margin marker. Not
 auto-changed.
 
 The flags describe Whisper's original segments. Once you edit the transcript (its text diverges from
-the segment rendering — `TranscriptFormatter.isEdited`), the review banner and per-line markers are
-hidden, because they no longer describe the text you're looking at. Read view then notes that it
-shows the original transcription and that your edits live in Edit view.
+the segment rendering — `TranscriptFormatter.isEdited`; clearing all of it counts, F837), the review
+banner and per-line markers are hidden, because they no longer describe the text you're looking at.
+Read view then notes that it shows the original transcription and that your edits live in Edit view.
 
 ## Invariants respected
 

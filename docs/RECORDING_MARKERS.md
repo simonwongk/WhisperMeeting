@@ -24,8 +24,8 @@ recording. `RecordingMarkers` provides the pure helpers:
   stale line from minutes earlier.
 - `markdownSection(markers:segments:)` — a `## Markers` section for exported notes: one line per
   marker, `- **MM:SS** label — <transcript at that moment>`. Once the transcript has been edited
-  (`TranscriptFormatter.isEdited`), the exporter passes no segments here, so markers list without a
-  context clause that would contradict the edited body.
+  (`TranscriptFormatter.isEdited`; clearing all of it counts, F837), the exporter passes no segments
+  here, so markers list without a context clause that would contradict the edited body.
 
 `MeetingRecord` gains an optional `markers` field (optional so meeting indexes written before this
 feature still decode, exactly like `transcriptNormalized`).
