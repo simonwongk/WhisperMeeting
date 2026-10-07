@@ -70,8 +70,17 @@ in `WhisperCore`.
      (speak)
   release ⌥    ──► pill: "Transcribing…" (spinner)
      warm Whisper turbo transcribes the clip (few hundred ms once warm)
+     then optional refinement (F200), then the user's replacement rules (F821)
   success      ──► text pasted into focused field via ⌘V; pill flashes ✓, fades out
 ```
+
+**Replacement rules (F821, the user's decision of 2026-10-07).** The Business Vocabulary's exact
+`heard → preferred` rules apply to every dictation before it is pasted — after refinement, or to the
+raw text when refinement is off, skipped or refused — with no review step. They use the Improve
+sheet's word boundaries: not inside a longer Latin word, not inside an occurrence of `preferred`,
+and for Chinese not inside a word NLTokenizer keeps whole or a longer vocabulary term (F594). Every
+genuine occurrence is replaced. The history shows what was pasted; when refinement or a rule changed
+it, the entry's `rawText` keeps what the recognizer heard.
 
 Fallback / edge branches:
 - **No Accessibility permission** (or auto-paste off) → text left on clipboard + a user notification

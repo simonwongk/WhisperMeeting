@@ -101,8 +101,9 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     public let date: Date
     public let text: String
     public let outcome: Outcome
-    /// The pre-refinement transcript, recorded only when an F200 refine attempt changed the
-    /// delivered text. Optional + append-only per the persisted-schema rules.
+    /// The recognizer's transcript, before F200 refinement and the user's replacement rules (F821),
+    /// recorded only when either changed the delivered text. Optional + append-only per the
+    /// persisted-schema rules; F821 changed when it is written, not its shape.
     public let rawText: String?
     /// `DictationRefinement.rawValue` for the attempt, or nil when refinement was off/not
     /// attempted. A plain String on the wire (never the enum) so unknown future values decode

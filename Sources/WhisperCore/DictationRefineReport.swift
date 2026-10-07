@@ -88,10 +88,10 @@ public struct DictationRefineReport {
             totalConsidered += 1
 
             // The count must be of the text the POLICY saw, which is the raw transcript. `rawText`
-            // is recorded only when refinement changed the delivered text, so a refined entry's
-            // input is there and everything else's input is `text`. Counting the delivered words
-            // would move every refined entry into whichever bucket the cleanup left it in, and
-            // filler removal shortens.
+            // is recorded only when refinement or a replacement rule (F821, applied after the
+            // policy) changed the delivered text, so such an entry's input is there and everything
+            // else's input is `text`. Counting the delivered words would move every refined entry
+            // into whichever bucket the cleanup left it in, and filler removal shortens.
             let input = entry.rawText ?? entry.text
             let bucket = Bucket.containing(
                 words: DictationRefinePolicy.effectiveWordCount(of: input)

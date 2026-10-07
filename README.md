@@ -203,8 +203,9 @@ Beyond the core record → transcribe flow:
   proposed for your review, not applied automatically; the recording is never modified, and a
   transcript you have hand-edited is skipped. It reuses the same local model as summaries.
 - **Replacement rules** — in Business Vocabulary, add exact `heard → preferred` rules for a term that
-  is always misheard the same way. Rules are proposed as corrections you review and approve per
-  meeting; nothing is applied automatically and the recording is never changed.
+  is always misheard the same way. In a meeting, rules are proposed as corrections you review and
+  approve; nothing is applied automatically and the recording is never changed. Quick Dictation
+  applies them to its text before pasting.
 - **Ask Meetings** — ask a question across a chosen set of completed meetings (all of them, or scoped
   by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
   quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search

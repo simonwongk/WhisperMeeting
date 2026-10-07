@@ -129,6 +129,12 @@ struct WhisperMeetApp: App {
                     // its prompt-echo check from the same list), so it takes the prompt-capped view —
                     // the stored list is no longer trimmed to a prompt budget (F187).
                     dictation.configureVocabulary { [weak model] in model?.store.promptVocabulary ?? [] }
+                    // F821: the replacement rules apply to a dictation before it is pasted, kept out
+                    // of a longer Chinese term by the whole stored vocabulary (F594's known terms).
+                    dictation.configureReplacementRules(
+                        { [weak model] in model?.store.replacementRules ?? [] },
+                        knownTerms: { [weak model] in model?.store.vocabulary ?? [] }
+                    )
                     model.configureDictationGuard { dictation.isActive }
                     // F470: a transcription requested during a dictation queues instead of being
                     // refused; this starts it when the dictation ends.

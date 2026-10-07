@@ -147,6 +147,12 @@ final class DictationController: ObservableObject {
     private var isRecognitionRuntimeInstalling: () -> Bool = { false }
     private var isMeetingTranscriptionRunning: () -> Bool = { false }
     private var vocabularyProvider: () -> [String] = { [] }
+    /// The user's replacement rules and the vocabulary that guards their Chinese word edges (F821).
+    private var replacementRulesProvider: () -> [ReplacementRule] = { [] }
+    private var knownTermsProvider: () -> [String] = { [] }
+    /// Where a Chinese word begins and ends, for the replacement rules (F594's seam, as
+    /// `AppModel.cjkWordSegmenter`): NLTokenizer in the app; tests pin a fixed segmentation.
+    var cjkWordSegmenter: CJKWordEvidence.Segmenter = NaturalLanguageWordSegmenter.wordRanges
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
     /// A busy flash is showing and has been announced (F537): its hide is still pending. Derived,
@@ -182,6 +188,9 @@ final class DictationController: ObservableObject {
     /// A generation invalidates an old asynchronous warm-up after eviction/disable.
     private var refinerWarmTask: Task<Void, Never>?
     private var refinerIsWarm = false
+    /// Whether the optional refiner is resident, so the next dictation is offered to it. Tests wait
+    /// on this rather than on a count of yields.
+    var isRefinerReady: Bool { refinerIsWarm }
     private var refinerIsWarming = false
     private var refinerWarmGeneration = 0
     /// An asynchronous refiner teardown creates a hard boundary before the next recognition warm-up
@@ -388,6 +397,18 @@ final class DictationController: ObservableObject {
     /// `initial_prompt`) so Quick Dictation gets the same spelling nudge for proper nouns/jargon.
     func configureVocabulary(_ provider: @escaping () -> [String]) {
         self.vocabularyProvider = provider
+    }
+
+    /// Supplies the Business Vocabulary's replacement rules, which Quick Dictation applies to its
+    /// text before pasting (F821, the user's decision of 2026-10-07), and the stored vocabulary,
+    /// which keeps a Chinese rule out of a longer term the user taught the app (F594's known terms —
+    /// the same list `AppModel.cjkWordEvidence` uses for the Improve sheet).
+    func configureReplacementRules(
+        _ rules: @escaping () -> [ReplacementRule],
+        knownTerms: @escaping () -> [String]
+    ) {
+        replacementRulesProvider = rules
+        knownTermsProvider = knownTerms
     }
 
     func setEnabled(_ on: Bool) { enabled = on }
@@ -1162,6 +1183,11 @@ final class DictationController: ObservableObject {
         // A cold refiner is a nice-to-have, never a reason to hold this clip. It warms only after
         // delivery, so the first post-eviction dictation gets fast raw text rather than a timeout.
         let refineOn = refineEnabled && refinerIsWarm && refineRuntimeAvailability()
+        // F821: the rules as they are when this dictation ended, like every other setting here.
+        let rules = replacementRulesProvider()
+        let ruleEvidence = rules.isEmpty
+            ? CJKWordEvidence.none
+            : CJKWordEvidence(segmenter: cjkWordSegmenter, knownTerms: knownTermsProvider())
         Task { [engine, log, refiner] in
             let started = Date()
             // F599: nothing loud enough to be speech goes to a model. The installed Whisper turbo
@@ -1223,6 +1249,22 @@ final class DictationController: ObservableObject {
                         }
                     }
                     log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s total")
+                }
+                // F821: the user's replacement rules, last — on the refined text, or on the raw
+                // text when refinement was off, skipped or refused — so a rule has the final say
+                // over a model's spelling. Off the main actor: NLTokenizer segments the text, and a
+                // 500-rule list is checked against it. The history keeps what was pasted in `text`
+                // and, when refinement or a rule changed it, the recognizer's transcript in `rawText`.
+                if !rules.isEmpty, !cleaned.isEmpty {
+                    let recognized = rawText ?? cleaned
+                    let beforeRules = cleaned
+                    cleaned = await Task.detached {
+                        ReplacementRuleMatcher.applied(rules, to: beforeRules, evidence: ruleEvidence)
+                    }.value
+                    if cleaned != beforeRules {
+                        rawText = recognized
+                        log.notice("replacement rules changed the dictation")
+                    }
                 }
                 await MainActor.run {
                     self.finish(text: cleaned, rawText: rawText, refinement: refinement)

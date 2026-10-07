@@ -2,8 +2,10 @@ import Foundation
 
 /// A user-defined exact replacement: whenever `heard` appears in a transcript, propose replacing it
 /// with `preferred` (F179). Unlike the near-miss `GlossaryCorrector`, this is an *exact* rule the user
-/// knows recurs — persisted alongside the business vocabulary. It only ever proposes; the user reviews
-/// every proposal before it applies, and the recording is never touched.
+/// knows recurs — persisted alongside the business vocabulary. In a meeting's transcript it only ever
+/// proposes; the user reviews every proposal before it applies, and the recording is never touched.
+/// Quick Dictation applies the rules to its text before pasting, with no review (F821, the user's
+/// decision of 2026-10-07): `ReplacementRuleMatcher.applied(_:to:evidence:)`.
 public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
     public let heard: String
     public let preferred: String
@@ -27,6 +29,42 @@ public enum ReplacementRuleMatcher {
     ) -> [GlossaryCorrection] {
         let asCorrections = rules.map { TranscriptCorrection(from: $0.heard, to: $0.preferred) }
         return TranscriptCorrection.glossaryCorrections(from: asCorrections, segments: segments, evidence: evidence)
+    }
+
+    /// `text` with every rule applied, for Quick Dictation (F821), which pastes the result with no
+    /// review step.
+    ///
+    /// Rules run in list order, each over the text the previous ones left. Within one rule, every
+    /// genuine occurrence is replaced — not only the first, as one Improve proposal does per segment —
+    /// because a dictation is one piece of text and the user cannot pick occurrences afterwards.
+    /// "Genuine" is the same `ReplacementBoundary` the Improve sheet's matcher and applier use: not a
+    /// fragment of a longer Latin word ("Jon" in "Jones"), not inside an occurrence of `preferred`
+    /// (the "Jon" of an already-correct "Jonathan"), and for Chinese not part of a longer word by
+    /// `evidence` (F594). Occurrences are found in the text as it was before the rule
+    /// and never overlap, so a replacement is never matched again by the same rule. An empty or
+    /// no-op rule changes nothing.
+    public static func applied(
+        _ rules: [ReplacementRule],
+        to text: String,
+        evidence: CJKWordEvidence = .none
+    ) -> String {
+        var result = text
+        for rule in rules where !rule.heard.isEmpty && rule.heard != rule.preferred {
+            let boundary = ReplacementBoundary(heard: rule.heard, notCoveredBy: rule.preferred, evidence: evidence)
+            let ranges = boundary.genuineRanges(in: SegmentedText(result, segmenter: evidence.segmenter))
+            guard !ranges.isEmpty else { continue }
+            // Built from the unmodified string, so no index is used after a mutation.
+            var rebuilt = ""
+            var cursor = result.startIndex
+            for range in ranges {
+                rebuilt += result[cursor..<range.lowerBound]
+                rebuilt += rule.preferred
+                cursor = range.upperBound
+            }
+            rebuilt += result[cursor...]
+            result = rebuilt
+        }
+        return result
     }
 }
 
@@ -117,20 +155,35 @@ final class ReplacementBoundary {
     /// The first genuine occurrence of `heard` in the segmented text. The text carries its own word
     /// ranges, so one segmentation serves every rule checked against the same segment.
     func firstRange(in segmented: SegmentedText) -> Range<String.Index>? {
-        guard !heard.isEmpty else { return nil }
+        genuineRanges(in: segmented, stopAtFirst: true).first
+    }
+
+    /// Every genuine occurrence of `heard`, left to right and never overlapping (F821): after a
+    /// genuine one the search resumes at its end, after a refused one at its next character, exactly
+    /// as `firstRange` searches.
+    func genuineRanges(in segmented: SegmentedText) -> [Range<String.Index>] {
+        genuineRanges(in: segmented, stopAtFirst: false)
+    }
+
+    private func genuineRanges(in segmented: SegmentedText, stopAtFirst: Bool) -> [Range<String.Index>] {
+        guard !heard.isEmpty else { return [] }
         let text = segmented.text
         let preferredRanges = preferred.isEmpty ? [] : Self.allRanges(of: preferred, in: text)
+        var found: [Range<String.Index>] = []
         var searchStart = text.startIndex
         while let candidate = text.range(of: heard, range: searchStart..<text.endIndex) {
             let coveredByPreferred = preferredRanges.contains {
                 $0.contains(candidate.lowerBound) && candidate.upperBound <= $0.upperBound
             }
             if !coveredByPreferred, isWholeWord(candidate, in: segmented) {
-                return candidate
+                found.append(candidate)
+                if stopAtFirst { break }
+                searchStart = candidate.upperBound
+            } else {
+                searchStart = text.index(after: candidate.lowerBound)
             }
-            searchStart = text.index(after: candidate.lowerBound)
         }
-        return nil
+        return found
     }
 
     /// Every (possibly overlapping) range where `needle` occurs in `text`. Overlap-permissive on

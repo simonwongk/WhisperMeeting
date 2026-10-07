@@ -2661,9 +2661,10 @@ private struct DamagedListNoticeRow: View {
     }
 }
 
-/// Editor for exact `heard → preferred` replacement rules (F179). Rules are reviewed before they apply
-/// — they surface as proposals in a meeting's Improve ▸ Apply Replacement Rules and go through the same
-/// approve-then-apply sheet as vocabulary corrections; the audio is never touched.
+/// Editor for exact `heard → preferred` replacement rules (F179). In a meeting, rules are reviewed
+/// before they apply — they surface as proposals in Improve ▸ Apply Replacement Rules and go through
+/// the same approve-then-apply sheet as vocabulary corrections; the audio is never touched. Quick
+/// Dictation applies them before pasting (F821).
 private struct ReplacementRulesEditor: View {
     @ObservedObject var store: MeetingStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2680,7 +2681,7 @@ private struct ReplacementRulesEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Replacement Rules").font(.headline)
-            Text("Exact fixes for a term that is always misheard the same way. Nothing changes until you review and approve them in a meeting's Improve ▸ Apply Replacement Rules.")
+            Text("Exact fixes for a term that is always misheard the same way. Quick Dictation applies them before pasting. In a meeting, nothing changes until you review and approve them in Improve ▸ Apply Replacement Rules.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
