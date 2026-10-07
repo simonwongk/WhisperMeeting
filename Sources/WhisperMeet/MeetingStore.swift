@@ -1640,7 +1640,8 @@ final class MeetingStore: ObservableObject {
         // was carrying is in `losing`, so it is offered back below rather than lost with the timer.
         pendingIndexFlush?.cancel()
         pendingIndexFlush = nil
-        // Clears `writeConflict`/`unsavedChanges`/`storageErrorMessage` as part of the reload, all
+        // Clears `writeConflict`/`unsavedChanges` and puts `storageErrorMessage` back to its resting
+        // value (F553's unread notice, else nil — F669) as part of the reload, all
         // within this same synchronous call — SwiftUI observes only the state after this function
         // returns, so the generic "could not be saved" alert never flashes on its way to the banner
         // below, which is the one surface this conflict is meant to be resolved from.
@@ -2467,7 +2468,7 @@ final class MeetingStore: ObservableObject {
         guard mutationIsAllowed() else { return nil }
         do {
             let forgotten = try meetingFiles.forgetHistory(includingConflictBranches: includingConflictCopies)
-            storageErrorMessage = nil
+            storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
             let removedConflicts = forgotten.filter { $0.hasPrefix("conflict-") }.count
             let left = forgetHistoryInventory()
             return ForgetHistoryOutcome(
@@ -2870,7 +2871,7 @@ final class MeetingStore: ObservableObject {
                     replacementRules, expecting: replacementRulesToken
                 ).token
             }
-            storageErrorMessage = historyNoticeAwaitingDismissal   // nil unless F553's notice is up
+            storageErrorMessage = restingStorageMessage   // nil unless F553's notice is up
             return .saved
         } catch {
             let report = WriteConflictReport(error)
@@ -2914,11 +2915,22 @@ final class MeetingStore: ObservableObject {
     /// non-nil, so the alert reopened the instant it closed and every recovery control sat behind
     /// it. The standing explanation is `AppModel.libraryReadOnlyFootnote`, rendered by a banner
     /// that is not modal, the Settings library section and the Improve menu.
+    ///
+    /// The alert's OK is the acknowledgement F553's history notice waits for — but only when the
+    /// notice is what the alert showed (F669). An OK on another storage message used to release the
+    /// notice unread for the rest of the session; now the notice comes back to be read.
     func clearStorageError() {
-        storageErrorMessage = nil
-        // The alert's OK is the acknowledgement the history notice waits for (F553).
-        historyNoticeAwaitingDismissal = nil
+        if storageErrorMessage == historyNoticeAwaitingDismissal {
+            historyNoticeAwaitingDismissal = nil
+        }
+        storageErrorMessage = restingStorageMessage
     }
+
+    /// What `storageErrorMessage` shows when nothing else is being said: F553's notice while it waits
+    /// to be read, otherwise nil (F669). Every path that clears the message sets it to this rather
+    /// than nil — the notice is its own fact, held in `historyNoticeAwaitingDismissal`, and the
+    /// message only where it is shown, so a path that owns the message cannot erase the fact.
+    private var restingStorageMessage: String? { historyNoticeAwaitingDismissal }
 
     private static func normalizeTerm(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2967,13 +2979,14 @@ final class MeetingStore: ObservableObject {
     /// not being kept (F553). Once per session: the condition is usually lasting — a file squatting
     /// `meetings.history`, a permissions change — and nearly every edit saves the index.
     private var didNoticeHistoryUnavailable = false
-    /// That notice, while it waits for the alert's OK (`clearStorageError()`).
+    /// That notice, while it waits for the alert's OK on it (`clearStorageError()`).
     ///
     /// Held apart from `storageErrorMessage` because every successful save used to clear that, and
     /// the next save — as little as the transcript debounce later — would take the notice off
     /// screen before anyone read it. Successful saves put THIS back instead of nil, so the notice
     /// stays up and, being the same value, is not posted again to the windowless channel, whose
-    /// observer drops adjacent repeats.
+    /// observer drops adjacent repeats. Since F669 so does every other path that clears the message
+    /// (`restingStorageMessage`), and an OK on a different message does not release it.
     private var historyNoticeAwaitingDismissal: String?
 
     /// The user-facing words for `.historyUnavailable` (F553). Names no control: the recovery
@@ -3117,7 +3130,7 @@ final class MeetingStore: ObservableObject {
         // Only when the library really is writable again. Clearing this unconditionally asserted
         // "no storage problem" about a library the reload had just found still unreadable.
         if !isDegraded {
-            storageErrorMessage = nil
+            storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
         }
     }
 
@@ -3184,7 +3197,7 @@ final class MeetingStore: ObservableObject {
     func endLibraryRestore() {
         isRestoringLibrary = false
         if storageErrorMessage == Self.changeRefusedDuringRestore {
-            storageErrorMessage = nil
+            storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
         }
     }
 
@@ -3202,7 +3215,9 @@ final class MeetingStore: ObservableObject {
         loadMeetings()
         writeConflict = nil
         unsavedChanges = false
-        storageErrorMessage = nil
+        // Not nil (F669): this cleared F553's unread notice off screen until some later save put it
+        // back. The conflict's own message is the offer's, not this.
+        storageErrorMessage = restingStorageMessage
     }
 
     /// Worsen `health` toward `state`, and never improve it (F187).
