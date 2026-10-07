@@ -41,7 +41,7 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Eight entries, over the cap of five. (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Nine entries, over the cap of five. (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
@@ -54,6 +54,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
 | 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
 | 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
+| 11 | **F807 · F845 · F685** | ~45 min + 4 answers | Wave 3's screen checks in one sitting, one silent dictation, and four one-word questions. Nothing urgent; the batch is tested headlessly and reviewed. |
 
 ---
 
@@ -296,6 +297,48 @@ undone.
 
 Tell me what looked wrong, or "fine". One more choice is yours: 32 kbps is kept, and 24 kbps scored the same on the
 test clips while saving about 4 MB more an hour. Say "24" if you want the smaller one.
+
+---
+
+## F807 · F845 · F685 — Wave 3: one sitting at the screen, and four questions
+
+**Status:** `blocked` (F807, F845, F685, F682). The 2026-09-28 → 10-07 batch fixed about 70 tickets in recording, quit, menu
+bar, dictation paste and privacy, hotkeys, installers, backups, history and vocabulary. Each was tested headlessly and
+reviewed by a second agent; what only a person can see is collected here. Install the batch's build first (I will tell you
+when it is installed). Use bench clips or throwaway imports, never a real meeting.
+
+**What I need from you:** one sitting of about 45 minutes (split it as you like), then four short answers.
+
+1. **Quitting and the menu bar (F529, F672, F673, F543, F528, F674) — ~10 min.** Start a recording, talk for 20 s, press ⌘Q:
+   "Stop and save the recording before quitting?" should appear; choose Keep Recording, then ⌘Q again and Stop & Quit.
+   Relaunch: the meeting is saved and ready to transcribe, not "interrupted". Also try ⌘Q while "Finishing…" shows. With
+   the window closed, the menu-bar icon shows a recording; ⌘/ opens Keyboard Shortcuts.
+2. **Two windows (F564, F675) — ~3 min.** ⌘N for a second window on the same meeting; rename in one, close the other: the
+   name stays. Type notes in both: nothing is lost.
+3. **Settings (F565, F520, F567) — ~5 min.** The screen-recording row has **Allow…**. Start any model install and press its
+   **Cancel**: it says it was cancelled and the old version still works.
+4. **Dictation (F521, F523, F537, F585, F586, F600, F601, F656) — ~15 min.** Settings ▸ Quick Dictation ▸ Change: Esc cancels,
+   Tab/Space are refused. Dictate into a password field: the pill says "Not pasted — secure input" with **Copy**, and nothing
+   is on the clipboard until you press it. Dictate into Terminal, iTerm2 or Ghostty if you use them (F682 needs the log line
+   each one writes). Turn VoiceOver on (⌘F5) and dictate once: the outcome is spoken once.
+5. **One silent press (F845) — 1 min.** In a quiet room, press the dictation key and say nothing: nothing should be pasted.
+   This checks the new −60 dBFS floor against your real microphone.
+6. **Second Opinion, links, vocabulary, Ask (F605, F661, F539, F602, F536, F455, F842) — ~10 min.** A refused Replace shows
+   its alert over the sheet. Add from a Link with a bad URL shows the error inside the sheet. Correct Toward Vocabulary
+   shows a progress bar and Cancel. Edit a transcript, then Ask about the removed words: they are not found. Export SRT:
+   cue times keep their milliseconds.
+7. **Optional, with care (F685):** only if you want an F-key as your dictation trigger (yours is Right ⌘, which this does not
+   affect). Steps and the mouse-only escape are in F685.
+
+**Four questions** (one word each is enough):
+- **F821** — should your replacement rules also fix dictations, or stay meeting-only?
+- **F664** — a restore keeps a full copy of every overwritten recording in a hidden folder forever. Delete a deleted meeting's
+  copy there after the usual week (like the index), or list those folders in Settings with their size?
+- **F833** — when two versions of the library are found, may the app offer a button that sets its ledger aside (moved, not
+  deleted) and keeps the version on disk, instead of the Terminal step?
+- **F529 / F673** — two choices an agent made for you: logout/restart during a recording asks the same question (if nobody
+  answers, macOS cancels the logout); Stop & Quit leaves the meeting ready to transcribe rather than queueing it for next
+  launch. Say "fine" or which to change.
 
 ---
 
