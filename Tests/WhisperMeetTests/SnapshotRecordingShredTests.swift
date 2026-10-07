@@ -149,6 +149,28 @@ func aSnapshotFolderALiveMeetingUsesIsKept() throws {
             "the other snapshot's copy, which nothing live uses, should still go")
 }
 
+/// A restore writes real folders; a link where one should be was put there by something else, and
+/// removing through it would delete wherever it points.
+@MainActor
+@Test("A snapshot whose Recordings is a link is not followed (F664)")
+func aLinkedSnapshotRecordingsFolderIsNotFollowed() throws {
+    let library = try makeLibrary("linked")
+    defer { try? FileManager.default.removeItem(at: library.root) }
+    let elsewhere = library.root.appendingPathComponent("Elsewhere", isDirectory: true)
+    try writeRecordingCopy(elsewhere.appendingPathComponent(library.secret.uuidString), text: "not a snapshot")
+    let recordings = library.snapshots[0].appendingPathComponent("Recordings", isDirectory: true)
+    try FileManager.default.removeItem(at: recordings)
+    try FileManager.default.createSymbolicLink(at: recordings, withDestinationURL: elsewhere)
+    library.store.delete(id: library.secret)
+    let deletedAt = try #require(library.store.pendingShreds[library.secret])
+
+    _ = library.store.processPendingShreds(now: deletedAt + week)
+
+    #expect(exists(elsewhere.appendingPathComponent("\(library.secret.uuidString)/notes.md")),
+            "a folder outside the snapshot was removed through a link")
+    #expect(!exists(library.copy(of: library.secret, in: library.snapshots[1], lowercased: true)))
+}
+
 /// F498's rule reaches the snapshots too: a meeting that is in the library again is never stripped.
 @MainActor
 @Test("A meeting brought back inside its week keeps its recording copies in the restore snapshots (F664)")
