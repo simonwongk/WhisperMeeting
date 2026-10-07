@@ -250,6 +250,34 @@ def source_draft(source, generated, max_draft, window=4):
     return list(source[pos:pos + max_draft])
 
 
+def snapshot_kv_layers(cache, count, kv_cache_type, contiguous, evaluate):
+    """F630's anchor: the first `count` positions of every layer of a plain KVCache, or None for any
+    other cache type (it is not restored faithfully by setting keys/values/offset).
+
+    F851 — each kept as a COMPACT copy. A slice of an MLX array shares its source's buffer (the
+    installed MLX 0.32.0's `shared_buffer_slice`, include/mlx/backend/cpu/slicing.h:14), and a
+    KVCache's buffer runs to the next 256-step boundary past everything written into it
+    (mlx_lm 0.30.5 `KVCache.update_and_fetch`, models/cache.py:314-336). An anchor built from the
+    base is the base's slice plus one prefill, so its buffer is the shared prefix plus 256 more
+    steps. Measured on the installed Qwen3-8B (36 layers, 8 KV heads, bf16 — 144 KiB a position),
+    the four anchors after the prime (en, zh, zh + Traditional, zh + Simplified; 132-157 positions)
+    added 217 MiB, about 54 MiB each; as copies they add 88 MiB. `contiguous` copies just the
+    `count` positions (mx.contiguous: "Force an array to be row contiguous. Copy if necessary." —
+    a slice shorter than its buffer along the step axis is not row-contiguous, so it is copied), so
+    the source buffer is freed with the cache it belongs to. The values are the same, so a reply is
+    unchanged (the same five replies before and after). Collaborators are passed in so this is
+    testable without mlx.
+    """
+    if not all(type(layer) is kv_cache_type for layer in cache):
+        return None
+    layers = [
+        (contiguous(layer.keys[..., :count, :]), contiguous(layer.values[..., :count, :]))
+        for layer in cache
+    ]
+    evaluate(layers)
+    return layers
+
+
 def find_span(haystack, needle):
     """Index of `needle` as a contiguous token sub-list of `haystack`, or None."""
     if not needle or len(needle) > len(haystack):
@@ -416,15 +444,11 @@ def main() -> int:
         return _THINK_RE.sub("", text).strip()
 
     def snapshot(cache, count):
-        # F630: the first `count` positions of every layer, evaluated now. Slices are values in
-        # MLX: a later in-place write to the cache's own arrays leaves them as they are. Only the
-        # plain KVCache that make_prompt_cache builds for Qwen3 (mlx_lm/models/cache.py:306-372) is
-        # restored by setting keys/values/offset; any other cache type is not anchored (None).
-        if not all(type(layer) is KVCache for layer in cache):
-            return None
-        layers = [(layer.keys[..., :count, :], layer.values[..., :count, :]) for layer in cache]
-        mx.eval(layers)
-        return layers
+        # F630: the first `count` positions of every layer, evaluated now, unchanged by any later
+        # write to the cache's own arrays. Only the plain KVCache that make_prompt_cache builds for
+        # Qwen3 (mlx_lm/models/cache.py:306-372) is restored by setting keys/values/offset; any
+        # other cache type is not anchored (None). F851: compact copies, not views of the buffer.
+        return snapshot_kv_layers(cache, count, KVCache, mx.contiguous, mx.eval)
 
     def restore(layers, count):
         # A new cache whose arrays are new slices of the snapshot, exactly `count` long, so the

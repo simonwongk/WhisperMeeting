@@ -312,6 +312,102 @@ class AnchoredSessionTests(unittest.TestCase):
         self.assertEqual(rig.fed[-1], [5, 10, 11])
 
 
+class AnchorEvictionTests(unittest.TestCase):
+    """F851: past MAX_ANCHORS the oldest anchor is dropped, the base never is, and a dropped prompt
+    comes back exactly as it was the first time — eviction costs time, not determinism."""
+
+    @staticmethod
+    def system(i):
+        return (1, 2, 3, 4, 100 + i, 200 + i)   # shares 1, 2, 3, 4 with the generic prompt
+
+    def prefix_of(self, tokens):
+        return 6 if tokens[4] >= 100 else len(GENERIC_SYSTEM)
+
+    def test_the_oldest_anchor_is_evicted_and_rebuilt_the_same_from_the_base(self):
+        rig = AnchorRig()
+        session = rig.session()
+        rig.run(session, PRIME, len(GENERIC_SYSTEM))
+        prompts = [self.system(i) + (50 + i,) for i in range(refine.RefineSession.MAX_ANCHORS)]
+        for tokens in prompts:
+            rig.run(session, tokens, self.prefix_of(tokens))
+        # The prime's anchor and eight more is nine: the prime's — the oldest — was dropped.
+        self.assertEqual(len(session.anchors), refine.RefineSession.MAX_ANCHORS)
+        self.assertNotIn(GENERIC_SYSTEM, session.anchors)
+        self.assertEqual(session.base[0], GENERIC_SYSTEM, "the base must never be evicted")
+
+        first_build = rig.prefills[1]
+        rig.run(session, prompts[0], 6)
+        reused_before = session.cache.origins[:6]
+        prefills_so_far = len(rig.prefills)
+        rig.run(session, GENERIC, len(GENERIC_SYSTEM))   # evicted: rebuilt from the base
+        self.assertEqual(len(rig.prefills), prefills_so_far, "the generic prompt IS the base: nothing to prefill")
+        self.assertEqual(rig.fed[-1], [10, 11])
+        self.assertEqual(session.cache.origins[:5], [("prefill", GENERIC_SYSTEM)] * 5)
+        # It is back, and now another one is out: still the bound.
+        self.assertIn(GENERIC_SYSTEM, session.anchors)
+        self.assertEqual(len(session.anchors), refine.RefineSession.MAX_ANCHORS)
+        self.assertNotIn(self.system(0), session.anchors)
+
+        # The prompt evicted second comes back as its first build made it: the base's shared part
+        # plus the same one prefill of its own sentences.
+        rig.run(session, prompts[0], 6)
+        self.assertEqual(rig.prefills[-1], first_build)
+        self.assertEqual(session.cache.origins[:6], reused_before)
+
+
+class _FakeBuffer:
+    """A KV buffer `steps` long; indexing it as the snapshot does returns a VIEW of it."""
+
+    def __init__(self, steps):
+        self.steps = steps
+
+    def __getitem__(self, index):
+        return _FakeView(self, index[1].stop)
+
+
+class _FakeView:
+    def __init__(self, buffer, count):
+        self.buffer = buffer
+        self.count = count
+
+
+class _FakeCompact:
+    def __init__(self, count):
+        self.count = count
+
+
+def _fake_contiguous(array):
+    """mx.contiguous's contract for a strided slice: a copy of only the sliced positions."""
+    return _FakeCompact(array.count) if isinstance(array, _FakeView) else array
+
+
+class _FakeKVCache:
+    def __init__(self, steps):
+        self.keys = _FakeBuffer(steps)
+        self.values = _FakeBuffer(steps)
+
+
+class CompactSnapshotTests(unittest.TestCase):
+    """F851: an anchor kept as slices of its cache's buffer pins the whole buffer — measured on the
+    installed Qwen3-8B, ~54 MiB per anchor built from the base where its ~19 MiB of prompt would do.
+    The snapshot keeps compact copies of exactly the anchored positions."""
+
+    def test_an_anchor_holds_copies_of_its_positions_not_views_of_the_buffer(self):
+        cache = [_FakeKVCache(377) for _ in range(3)]
+        evaluated = []
+        layers = refine.snapshot_kv_layers(cache, 121, _FakeKVCache, _fake_contiguous, evaluated.append)
+        self.assertEqual(len(layers), 3)
+        for keys, values in layers:
+            for array in (keys, values):
+                self.assertIsInstance(array, _FakeCompact, "an anchor still references its cache's buffer")
+                self.assertEqual(array.count, 121)
+        self.assertEqual(evaluated, [layers], "the copies must be evaluated now, while the cache is intact")
+
+    def test_any_other_cache_type_is_not_anchored(self):
+        self.assertIsNone(refine.snapshot_kv_layers(
+            [_FakeKVCache(256), object()], 10, _FakeKVCache, _fake_contiguous, lambda _: None))
+
+
 class FindLastSpanTests(unittest.TestCase):
     def test_the_last_occurrence_is_the_user_turn(self):
         # A dictation that repeats words of the system prompt ("you know") is found after it.
