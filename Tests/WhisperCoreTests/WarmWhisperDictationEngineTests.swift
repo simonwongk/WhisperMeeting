@@ -74,8 +74,8 @@ private func writeParkedHelper(in directory: URL, pidFile: URL, release: URL) th
 // F647 — `warmDictationEngineEvictionWaitsAndCanRewarm` failed once in a full run with `evict()` returning
 // in 7 ms while the marker existed, against a stand-in whose TERM trap was `sleep 1; touch marker; exit 0`.
 // `evict()` was not at fault, and no window was found in which it returns before the helper has exited
-// (600 evict-versus-warm-up races at random offsets: the helper was gone every time `evict()` returned;
-// see the F647 log entry): the stand-in was.
+// (600 evict-versus-warm-up races at random offsets: no helper outlived `evict()`; see the F647 log
+// entry): the stand-in was.
 // `Process.terminate()` signals the helper's whole process group, not just its pid, and `evict()` calls it
 // twice (once off the queue, once from the queued cleanup). The stand-in's whole delay was `sleep`
 // children, so which of them the two group signals killed — the loop's, the trap's, or both — depended on
