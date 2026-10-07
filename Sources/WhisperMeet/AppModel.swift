@@ -6117,6 +6117,13 @@ final class AppModel: ObservableObject {
     /// Settable so a test can make every meeting its own run.
     var askEmbeddingChunkPassages = 2_000
 
+    /// Writes one meeting's meaning index beside its recording. Injectable only so a test can try to
+    /// land a save inside a delete of the same meeting (F849); defaults to `SegmentEmbeddings.write`.
+    /// Called on the main actor — see the save in `askIndexes` for why.
+    var askIndexSave: @Sendable (SegmentEmbeddings, URL) throws -> Void = { index, directory in
+        try index.write(to: directory)
+    }
+
     /// How many `askIndexes` calls are embedding right now. Two can overlap — a search the user just
     /// replaced is still winding down when the new one starts — and the first to finish must not
     /// clear `isIndexingForAsk` under the other.
@@ -6205,12 +6212,16 @@ final class AppModel: ObservableObject {
                     }
                 }
                 // Saved before the next run starts, so a search that cancels this one keeps every
-                // group finished so far (F538). Written off the main actor; a detached task is not
-                // cancelled with its caller, so a cancel arriving now cannot cut a save short.
-                let pending = saves
-                await Task.detached(priority: .userInitiated) {
-                    for save in pending { try? save.index.write(to: save.directory) }
-                }.value
+                // group finished so far (F538) — and saved here, on the main actor, with no
+                // suspension since the folder check above (F849). F538 wrote these from a detached
+                // task, and `MeetingStore.delete` runs on the main actor: a save landing while a
+                // delete was emptying the same folder put files back into it, the folder's own
+                // removal then failed, and F146's rollback listed the meeting again without its
+                // audio. Here a save runs wholly before a delete, which then removes the index with
+                // the folder, or wholly after one, when the folder is gone and the check skips it.
+                // Measured at about 1 ms for a 2,000-passage group and 6.5 ms for a 20,000-line
+                // meeting (3 MB and 31 MB of vectors, median, Apple M3 Pro) — under one 60 Hz frame.
+                for save in saves { try? askIndexSave(save.index, save.directory) }
             }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
