@@ -174,7 +174,9 @@ indexes together. It works while the library is read-only too, since that is the
 repair: when the index and its backup copy are unreadable and no past generation was kept, a full
 backup is the way out. Before anything is written, the files it would replace are copied into a
 hidden `.pre-restore-<time>` folder inside the library and kept afterwards, so the restore can be
-undone. While it runs, WhisperMeet takes no other changes to the library.
+undone. A meeting you delete later leaves that folder too, a week after the delete, like its text
+leaves the saved history (see [Intentional deletion](#intentional-deletion)). While it runs,
+WhisperMeet takes no other changes to the library.
 
 ### Rehearsing the restore before you need it
 
@@ -310,10 +312,14 @@ library folder rather than skipped (F668): a copy that cannot be rewritten (a pe
 stays queued and is tried again at the next launch; a copy that is not a readable index cannot have
 one meeting removed from it, so it is left as it is and named once each launch while its bytes still
 name the meeting — it may still contain the text; delete it yourself if you no longer need it. A copy
-that cannot be opened at all is named too, because WhisperMeet could not check it. The recording folders a
-restore set aside in `.pre-restore-*/`, **including each meeting's `notes.md` with its transcript
-and summary**, are not touched by any of this (F664). The queue of pending deletions is
-`meetings.pending-shred.json`.
+that cannot be opened at all is named too, because WhisperMeet could not check it. A restore also
+set aside a copy of each recording folder it overwrote, **including the meeting's `notes.md` with its
+transcript and summary**; when the meeting's week is over, its folder `Recordings/<id>/` is removed
+from every `.pre-restore-*/` folder as well, whole (F664, the user's decision of 2026-10-07). Other
+meetings' folders there are not touched, and nor is a meeting that is in the library again. A folder
+that cannot be removed is named by its path in the library folder, stays queued and is tried again at
+the next launch. Meetings deleted and shredded before this version are not revisited: nothing
+records which they were. The queue of pending deletions is `meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never

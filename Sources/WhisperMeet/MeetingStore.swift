@@ -1745,7 +1745,8 @@ final class MeetingStore: ObservableObject {
     /// deletion can have — the `now` at which this build first saw it that way. The deletion's
     /// own date is never rewritten from a later clock; see `processPendingShreds`.
     /// `sideCopiesPending` is a deletion whose history is shredded but which a copy of the index
-    /// outside the history may still hold (`shredSideCopies`), keyed to the deletion's date; it
+    /// outside the history may still hold, or whose recording folder a restore snapshot still holds
+    /// (`shredSideCopies`, F664), keyed to the deletion's date; it
     /// stays until every such copy is clean or gone, the meeting is live again, or the meeting is
     /// deleted again (which starts a new week), so a copy that could not be cleaned once is looked
     /// at again at the next launch rather than forgotten (F668). A copy that cannot be read at all
@@ -2186,6 +2187,9 @@ final class MeetingStore: ObservableObject {
             /// deletion in the queue: holding every pending id kept each later deletion queued for
             /// good and claimed text the copy may never have held (review round 2).
             case couldNotRead
+            /// A restore snapshot's copy of a deleted meeting's recording folder that could not be
+            /// removed (F664) — worth retrying, like `couldNotRewrite`.
+            case couldNotRemoveRecording
         }
         let path: String
         let ids: Set<UUID>
@@ -2196,13 +2200,22 @@ final class MeetingStore: ObservableObject {
     /// the index files in a restore's snapshot — once their week is over (F457), the same way the
     /// history is shredded (`JSONArrayShred`, F552): only those meetings' entries go, and everything
     /// else in each copy stays readable, because these copies exist so someone can recover from
-    /// them. Recording folders a snapshot set aside, `notes.md` included, are not touched (F664).
+    /// them.
+    ///
+    /// And removes each one's copy of its recording folder from every restore snapshot (F664, the
+    /// user's decision of 2026-10-07): `.pre-restore-*/Recordings/<id>/`, audio and `notes.md` —
+    /// transcript and summary — together. A restore keeps every recording it overwrote, so a meeting
+    /// deleted after a restore used to keep both there for good, out of sight in the app. Only the
+    /// deleted meeting's folder goes; a folder whose meeting is live, or that a live meeting's
+    /// recording path points into, is never touched, and neither is a snapshot or `Recordings`
+    /// folder that is a link rather than a folder of its own.
     ///
     /// Returns every copy that still holds, or may hold, one of the ids (F668): one whose cleaned bytes
     /// could not be written back (with the ids it held), one that does not parse as an index but
-    /// whose bytes name one of them (with those ids), and one that could not be read at all (with no
-    /// ids — what it holds is unknown). A copy that does not parse and names none of them is clean
-    /// for this purpose. Nothing is deleted.
+    /// whose bytes name one of them (with those ids), one that could not be read at all (with no
+    /// ids — what it holds is unknown), and a snapshot's recording folder that could not be removed
+    /// (with its id). A copy that does not parse and names none of them is clean for this purpose.
+    /// Nothing else is deleted.
     private func shredSideCopies(_ ids: Set<UUID>) -> [StuckSideCopy] {
         let side = sideCopiesOfTheIndex()
         var paths = side.quarantine
@@ -2236,6 +2249,49 @@ final class MeetingStore: ObservableObject {
                 try shredded.data.write(to: url, options: .atomic)
             } catch {
                 stuck.append(StuckSideCopy(path: path, ids: uuids(shredded.removed), reason: .couldNotRewrite))
+            }
+        }
+        stuck += shredSnapshotRecordings(ids, in: side.snapshots)
+        return stuck
+    }
+
+    /// The F664 half of `shredSideCopies`: each restore snapshot's copy of a deleted meeting's
+    /// recording folder. Matched by the id the folder is named after, in either case, as
+    /// `orphanedRecordings()` matches the library's own.
+    private func shredSnapshotRecordings(_ ids: Set<UUID>, in snapshots: [String]) -> [StuckSideCopy] {
+        // Never a meeting that is in the library: `retrySideCopies` passes only ids that are not, and
+        // this asks again rather than rely on it. A live meeting whose recording path points into a
+        // snapshot (a hand-edited index) keeps that folder too.
+        let live = Set(meetings.map(\.id))
+        let liveFolders = meetings.map { recordingURL(for: $0).standardizedFileURL.path }
+        let fileManager = FileManager.default
+        func isRealFolder(_ url: URL) -> Bool {
+            (try? fileManager.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeDirectory
+        }
+        var stuck: [StuckSideCopy] = []
+        for snapshot in snapshots {
+            let snapshotURL = rootDirectory.appendingPathComponent(snapshot, isDirectory: true)
+            let recordings = snapshotURL.appendingPathComponent("Recordings", isDirectory: true)
+            // Most snapshots hold no recordings: a restore that overwrote none. A link where a folder
+            // should be leads somewhere this code did not make, so nothing is removed through it.
+            guard isRealFolder(snapshotURL), isRealFolder(recordings) else { continue }
+            guard let names = try? fileManager.contentsOfDirectory(atPath: recordings.path) else {
+                stuck.append(StuckSideCopy(path: "\(snapshot)/Recordings", ids: [], reason: .couldNotRead))
+                continue
+            }
+            for name in names {
+                guard let id = UUID(uuidString: name), ids.contains(id), !live.contains(id) else { continue }
+                let folder = recordings.appendingPathComponent(name, isDirectory: true)
+                let folderPath = folder.standardizedFileURL.path
+                guard !liveFolders.contains(where: { $0 == folderPath || $0.hasPrefix(folderPath + "/") })
+                else { continue }
+                do {
+                    try fileManager.removeItem(at: folder)
+                } catch {
+                    stuck.append(StuckSideCopy(
+                        path: "\(snapshot)/Recordings/\(name)", ids: [id], reason: .couldNotRemoveRecording
+                    ))
+                }
             }
         }
         return stuck
@@ -2275,8 +2331,15 @@ final class MeetingStore: ObservableObject {
         let retryable = stuck.filter { $0.reason == .couldNotRewrite }.map(\.path).sorted()
         let notIndexes = stuck.filter { $0.reason == .notAnIndex }.map(\.path).sorted()
         let unopened = stuck.filter { $0.reason == .couldNotRead }.map(\.path).sorted()
+        let recordings = stuck.filter { $0.reason == .couldNotRemoveRecording }.map(\.path).sorted()
         if !retryable.isEmpty {
             sentences.append("A deleted meeting's text could not be removed from \(retryable.joined(separator: ", ")) in the library folder. WhisperMeet will try again at the next launch.")
+        }
+        if !recordings.isEmpty {
+            let folders = recordings.joined(separator: ", ")
+            sentences.append(recordings.count == 1
+                ? "A copy of a deleted meeting's recording and notes, kept by a restore, could not be removed from \(folders) in the library folder. WhisperMeet will try again at the next launch."
+                : "Copies of deleted meetings' recordings and notes, kept by a restore, could not be removed from \(folders) in the library folder. WhisperMeet will try again at the next launch.")
         }
         if !notIndexes.isEmpty {
             let files = notIndexes.joined(separator: ", ")
