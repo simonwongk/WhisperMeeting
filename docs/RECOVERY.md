@@ -175,8 +175,11 @@ repair: when the index and its backup copy are unreadable and no past generation
 backup is the way out. Before anything is written, the files it would replace are copied into a
 hidden `.pre-restore-<time>` folder inside the library and kept afterwards, so the restore can be
 undone. A meeting you delete later leaves that folder too, a week after the delete, like its text
-leaves the saved history (see [Intentional deletion](#intentional-deletion)). While it runs,
-WhisperMeet takes no other changes to the library.
+leaves the saved history (see [Intentional deletion](#intentional-deletion)). Settings → Meeting
+library lists each of these safety copies with its date and size; **Remove…** deletes one
+permanently after asking, and is unavailable while the library is read-only (one of them may be the
+way back) or while a restore runs. Nothing removes a safety copy on its own (F855). While a restore
+runs, WhisperMeet takes no other changes to the library.
 
 ### Rehearsing the restore before you need it
 
@@ -328,7 +331,8 @@ from every `.pre-restore-*/` folder as well, whole (F664, the user's decision of
 meetings' folders there are not touched, and nor is a meeting that is in the library again. A folder
 that cannot be removed is named by its path in the library folder, stays queued and is tried again at
 the next launch. Meetings deleted and shredded before this version are not revisited: nothing
-records which they were. The queue of pending deletions is `meetings.pending-shred.json`.
+records which they were, so to clear them remove the whole safety copy from Settings → Meeting library
+(F855). The queue of pending deletions is `meetings.pending-shred.json`.
 
 Bringing a deleted meeting back inside that week — restoring an earlier generation from the recovery
 list, or restoring a backup — cancels its shred: a meeting that is in the library again is never

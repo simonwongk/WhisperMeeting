@@ -577,6 +577,13 @@ final class AppModel: ObservableObject {
     /// a read-only library has no retained generation to restore — F252's dead end — and applied
     /// only by `rebuildLibraryFromFolders(confirmed: true)`.
     @Published var pendingFolderRebuild: FolderRebuild.Proposal?
+    /// The restore safety copies Settings lists (F855), newest first. Read from disk by
+    /// `refreshRestoreSnapshots()` — when Settings shows the section, after a restore, after a removal
+    /// — never in a view body, because measuring them walks every file in each.
+    @Published private(set) var restoreSnapshots: [MeetingStore.RestoreSnapshot] = []
+    /// A listed safety copy awaiting the user's answer to "remove it permanently?" (F855), in
+    /// `pendingLibraryRecovery`'s confirmation idiom: the offer and the act are separate calls.
+    @Published var pendingRestoreSnapshotRemoval: MeetingStore.RestoreSnapshot?
     /// The reviewed rebuild offer awaiting the user's answer (F267). Nil when none is pending.
     @Published var pendingSourceRebuild: SourceRebuildRequest?
     /// The meeting whose confirmed source-tracks rebuild is in flight, or nil (F459). Both raw
@@ -2944,6 +2951,9 @@ final class AppModel: ObservableObject {
         _ pending: PendingLibraryRestore, acceptingUnverifiedBackup: Bool
     ) async {
         let library = store.rootDirectory
+        // A restore writes a new safety copy, and one that fails after its snapshot leaves it too
+        // (`BackupRestore`); Settings' list must not omit it (F855).
+        defer { refreshRestoreSnapshots() }
         // The launch skips its recovery work on a read-only library (F466), so a restore that
         // repairs one has that work to resume — see below.
         let wasReadOnly = store.isDegraded
@@ -7216,6 +7226,78 @@ extension AppModel {
                 """
         }
     }
+
+    // MARK: - Restore safety copies (F855)
+    //
+    // Each backup restore keeps the library it replaced in a hidden `.pre-restore-<epoch>` folder so
+    // the restore can be undone by hand. F664 removes a deleted meeting's recording from them a week
+    // after the delete, for the deletions it sees queued; deletions made before that left no record,
+    // so their audio and notes.md stayed there out of sight. Decided 2026-10-07 by the user: Settings
+    // ▸ Meeting library lists each one with its date and size and a Remove button; nothing removes
+    // one automatically.
+
+    /// Re-reads the safety copies from disk for Settings.
+    func refreshRestoreSnapshots() {
+        restoreSnapshots = store.restoreSnapshots()
+    }
+
+    /// Asks before removing one (the dialog hangs on `pendingRestoreSnapshotRemoval`). Refused, with
+    /// the reason, while the library is read-only or a restore runs; the buttons are disabled then too.
+    func requestRestoreSnapshotRemoval(_ snapshot: MeetingStore.RestoreSnapshot) {
+        guard restoreSnapshotRemovalIsAllowed() else { return }
+        pendingRestoreSnapshotRemoval = snapshot
+    }
+
+    func cancelRestoreSnapshotRemoval() {
+        pendingRestoreSnapshotRemoval = nil
+    }
+
+    /// Removes the safety copy the user confirmed. Does nothing unless `confirmed` is true, and only
+    /// for a copy the list showed — F193's shape, so a caller cannot remove one the user never saw.
+    func removeRestoreSnapshot(confirmed: Bool) {
+        guard confirmed, let snapshot = pendingRestoreSnapshotRemoval else { return }
+        pendingRestoreSnapshotRemoval = nil
+        guard restoreSnapshots.contains(where: { $0.name == snapshot.name }) else { return }
+        // Asked again: the library can have turned read-only, or a restore begun, since the dialog opened.
+        guard restoreSnapshotRemovalIsAllowed() else { return }
+        do {
+            try store.removeRestoreSnapshot(named: snapshot.name)
+        } catch {
+            // Part of it may be gone; what is left stays where it was and is listed again below.
+            alertMessage = """
+                The safety copy \(snapshot.name) could not be removed completely. What is left of it is \
+                still in the library folder and still listed. \(error.localizedDescription)
+                """
+        }
+        refreshRestoreSnapshots()
+    }
+
+    private func restoreSnapshotRemovalIsAllowed() -> Bool {
+        guard libraryIsNotBeingRestored("Removing a safety copy") else { return false }
+        guard !store.isDegraded else {
+            alertMessage = ReadOnlyLibraryNotice.restoreSnapshotRemovalUnavailable
+            return false
+        }
+        return true
+    }
+
+    /// One row of the list: when the restore made it, and how much it holds.
+    static func restoreSnapshotLabel(_ snapshot: MeetingStore.RestoreSnapshot) -> String {
+        let size = ByteCountFormatter.string(fromByteCount: snapshot.byteCount, countStyle: .file)
+        guard let date = snapshot.createdAt else { return "Safety copy · \(size)" }
+        return "Restore of \(DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)) · \(size)"
+    }
+
+    /// The Remove confirmation's body: what goes, that it is permanent, and what it costs.
+    static func restoreSnapshotRemovalMessage(_ snapshot: MeetingStore.RestoreSnapshot) -> String {
+        let size = ByteCountFormatter.string(fromByteCount: snapshot.byteCount, countStyle: .file)
+        let when = snapshot.createdAt
+            .map { " on \(DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .short))" } ?? ""
+        return "This permanently deletes the safety copy a restore made\(when) (\(snapshot.name), \(size)): the library it replaced, including any recordings and notes it holds. That restore can then no longer be undone by hand. Your current library and recordings are not changed."
+    }
+
+    /// Under the list (F855): what these are and that nothing removes them on its own.
+    static let restoreSnapshotsCaption = "Each restore keeps the library it replaced as a safety copy inside the library folder, so the restore can be undone by hand. Safety copies are never removed automatically, except that a meeting you delete is removed from them a week after the delete. Remove deletes one permanently."
 
     /// Applies the reviewed folder rebuild. Does nothing at all unless `confirmed` is true (F289).
     ///

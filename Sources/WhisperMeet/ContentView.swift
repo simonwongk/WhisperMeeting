@@ -1774,10 +1774,53 @@ struct SettingsView: View {
                 Text(ForgetHistoryNotice.caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    // F855: always present, so it carries the safety-copy list's refresh and its
+                    // dialog — the Form already holds Forget History's confirmation, and SwiftUI
+                    // honours one presentation modifier of a kind per view (the F289 note above).
+                    .onAppear { model.refreshRestoreSnapshots() }
+                    .confirmationDialog(
+                        "Remove this safety copy permanently?",
+                        isPresented: .init(
+                            get: { model.pendingRestoreSnapshotRemoval != nil },
+                            set: { if !$0 { model.cancelRestoreSnapshotRemoval() } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        // F434: the model directly, never inside a `Task`.
+                        Button("Remove", role: .destructive) { model.removeRestoreSnapshot(confirmed: true) }
+                        Button("Cancel", role: .cancel) { model.cancelRestoreSnapshotRemoval() }
+                    } message: {
+                        if let snapshot = model.pendingRestoreSnapshotRemoval {
+                            Text(AppModel.restoreSnapshotRemovalMessage(snapshot))
+                        }
+                    }
                 if let forgotten = forgetHistoryResult {
                     Text(forgotten)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                // F855: the safety copies restores keep, each with its date and size and a Remove that
+                // asks first. Nothing removes one on its own (the user's decision of 2026-10-07).
+                // Disabled while read-only — one may be the way back — and while a restore runs. The
+                // list's refresh and its dialog hang on Forget History's caption above.
+                if !model.restoreSnapshots.isEmpty {
+                    Text(AppModel.restoreSnapshotsCaption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(model.restoreSnapshots) { snapshot in
+                        HStack {
+                            Label(AppModel.restoreSnapshotLabel(snapshot), systemImage: "clock.arrow.circlepath")
+                            Spacer()
+                            Button("Remove…", role: .destructive) { model.requestRestoreSnapshotRemoval(snapshot) }
+                                .buttonStyle(.bordered)
+                                .disabled(model.libraryReadOnlyFootnote != nil || model.isRestoringLibrary)
+                        }
+                    }
+                    if model.libraryReadOnlyFootnote != nil {
+                        Text(ReadOnlyLibraryNotice.restoreSnapshotRemovalUnavailable)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 

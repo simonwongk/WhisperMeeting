@@ -428,6 +428,12 @@ enum ReadOnlyLibraryNotice {
     static let forgetHistoryUnavailable =
         "Forget History is unavailable while the library is read-only: the saved history is what Recover Library restores from."
 
+    /// Beside the disabled Remove buttons of the restore safety copies (F855), and as the refusal
+    /// if one is pressed anyway. A safety copy is the library a restore replaced, which may be the
+    /// way back for a library that cannot be read.
+    static let restoreSnapshotRemovalUnavailable =
+        "Safety copies kept by restores cannot be removed while the library is read-only: one of them may be how it is put back."
+
     /// The one sentence shape every pre-action refusal shares. Private so the surfaces above stay the
     /// only vocabulary callers see.
     private static func refused(_ action: String, resolution: String) -> String {
@@ -637,6 +643,10 @@ enum MeetingStoreError: LocalizedError, Equatable {
     /// until it finishes (F506).
     case libraryIsBeingRestored
 
+    /// A name `removeRestoreSnapshot(named:)` refused: not a `.pre-restore-…` folder directly inside
+    /// the library, or a link rather than a folder (F855).
+    case notARestoreSnapshot(String)
+
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
@@ -645,6 +655,8 @@ enum MeetingStoreError: LocalizedError, Equatable {
             return ReadOnlyLibraryNotice.actionRefused("Transcription")
         case .libraryIsBeingRestored:
             return MeetingStore.changeRefusedDuringRestore
+        case let .notARestoreSnapshot(name):
+            return "\(name) is not a safety copy a restore made in this library, so it was not removed."
         }
     }
 }
@@ -2112,6 +2124,84 @@ final class MeetingStore: ObservableObject {
         return (quarantine.sorted(), snapshots.sorted())
     }
 
+    /// One `.pre-restore-<epoch>` safety copy a backup restore kept (F855): the library it replaced,
+    /// as `BackupRestore.apply` set it aside so the restore can be undone by hand.
+    struct RestoreSnapshot: Equatable, Identifiable, Sendable {
+        /// The folder's name inside the library, `.pre-restore-<epoch>`.
+        let name: String
+        /// When the restore made it — the epoch in its name, or the folder's own date when the name
+        /// carries none a restore would write.
+        let createdAt: Date?
+        /// The regular files inside it, added up; a link inside is not followed.
+        let byteCount: Int64
+        var id: String { name }
+    }
+
+    /// The restore safety copies in the library, newest first, for Settings to list (F855). Only real
+    /// folders: a link or a file under that name was not made by a restore, so it is neither listed
+    /// nor offered for removal. Walks each folder's file sizes — metadata only, nothing is read.
+    func restoreSnapshots() -> [RestoreSnapshot] {
+        sideCopiesOfTheIndex().snapshots.compactMap { name -> RestoreSnapshot? in
+            let url = rootDirectory.appendingPathComponent(name, isDirectory: true)
+            guard Self.isRealFolder(url) else { return nil }
+            let epoch = Int(name.dropFirst(Self.restoreSnapshotPrefix.count)).map(TimeInterval.init)
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            return RestoreSnapshot(
+                name: name,
+                createdAt: epoch.map(Date.init(timeIntervalSince1970:)) ?? modified,
+                byteCount: Self.regularFileBytes(in: url)
+            )
+        }
+        .sorted { ($0.createdAt ?? .distantPast, $0.name) > ($1.createdAt ?? .distantPast, $1.name) }
+    }
+
+    /// Removes one restore safety copy, whole, when the user asks (F855). The only way one is ever
+    /// removed: nothing does it automatically — the user's decision of 2026-10-07. F664's per-meeting
+    /// shred still removes a deleted meeting's recording from inside them after its week.
+    ///
+    /// Refused while the library is read-only, because a safety copy may be the way a library that
+    /// cannot be read is put back, and while a restore runs, which writes a new one. Only a direct
+    /// child of the library named `.pre-restore-…` that is a real folder: never a link (F664's rule,
+    /// `isRealFolder`), and never a path. Throws the removal's own error when it fails, part-way or
+    /// not at all; what is left stays where it was, and is listed again.
+    func removeRestoreSnapshot(named name: String) throws {
+        guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
+        guard !isDegraded else { throw MeetingStoreError.libraryIsReadOnly }
+        let url = rootDirectory.appendingPathComponent(name, isDirectory: true)
+        guard name.hasPrefix(Self.restoreSnapshotPrefix), !name.contains("/"),
+              Self.isRealFolder(url)
+        else { throw MeetingStoreError.notARestoreSnapshot(name) }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    /// The name `BackupRestore.apply` gives a safety copy, before its epoch.
+    nonisolated static let restoreSnapshotPrefix = ".pre-restore-"
+
+    /// Whether `url` is a folder itself rather than a link to one (F664, F855). `attributesOfItem`
+    /// does not follow the last component, so a link reports as a link.
+    nonisolated static func isRealFolder(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeDirectory
+    }
+
+    /// The bytes of the regular files under `folder`, not descending into a link.
+    nonisolated private static func regularFileBytes(in folder: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else {
+            return 0
+        }
+        var total: Int64 = 0
+        while let item = walker.nextObject() as? URL {
+            let values = try? item.resourceValues(forKeys: Set(keys))
+            if values?.isSymbolicLink == true {
+                walker.skipDescendants()
+                continue
+            }
+            guard values?.isRegularFile == true else { continue }
+            total += Int64(values?.fileSize ?? 0)
+        }
+        return total
+    }
+
     /// For the Forget History dialog, read when it opens. Reads directory listings only.
     func forgetHistoryInventory() -> ForgetHistoryInventory {
         let side = sideCopiesOfTheIndex()
@@ -2265,9 +2355,7 @@ final class MeetingStore: ObservableObject {
         let live = Set(meetings.map(\.id))
         let liveFolders = meetings.map { recordingURL(for: $0).standardizedFileURL.path }
         let fileManager = FileManager.default
-        func isRealFolder(_ url: URL) -> Bool {
-            (try? fileManager.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeDirectory
-        }
+        let isRealFolder = Self.isRealFolder
         var stuck: [StuckSideCopy] = []
         for snapshot in snapshots {
             let snapshotURL = rootDirectory.appendingPathComponent(snapshot, isDirectory: true)
