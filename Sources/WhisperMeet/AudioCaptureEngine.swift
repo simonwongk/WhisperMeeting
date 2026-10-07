@@ -1118,8 +1118,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         ))
     }
 
-    private static func availableStorageBytes(at directory: URL) -> Int64? {
-        let values = try? directory.resourceValues(forKeys: [
+    /// Free space on the volume holding `directory`, read from the file system on every call (F703).
+    ///
+    /// The tick hands this the same `sessionDirectory` for the whole recording, and a `URL` answers
+    /// `resourceValues(forKeys:)` from its own cache when it can (`NSURL.h:181`). That cache clears by
+    /// itself only for a URL used from the main thread, "the next time the main thread's run loop
+    /// runs" (`NSURL.h:172`); `captureQueue` is a dispatch queue with no run loop, so through the held
+    /// instance the first tick's figure was every tick's figure and the low-storage warning could not
+    /// see the disk fill. A new instance per call starts with an empty cache. Not
+    /// `removeCachedResourceValue(forKey:)` on a copy: measured, that re-reads the capacity but keeps
+    /// the instance's cached idea of which volume the path is on, so a fresh instance is the read
+    /// that asks the file system everything. The cost is one `URL` a second.
+    static func availableStorageBytes(at directory: URL) -> Int64? {
+        let fresh = URL(fileURLWithPath: directory.path, isDirectory: true)
+        let values = try? fresh.resourceValues(forKeys: [
             .volumeAvailableCapacityForImportantUsageKey
         ])
         return values?.volumeAvailableCapacityForImportantUsage
