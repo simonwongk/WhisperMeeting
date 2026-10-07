@@ -128,6 +128,198 @@ class RefineSessionTests(unittest.TestCase):
         self.assertEqual(rig.fed[-1], [1, 2, 3, 30])  # rebuilt from scratch
 
 
+class ProvenanceCache(FakeCache):
+    """F630: also records, per position, which feed computed it. A real KV entry's value depends
+    on the chunk it was computed in (a batched matmul does not round like a one-token one), so the
+    same tokens computed by a different feed are not the same cache."""
+
+    def __init__(self, tokens=(), origins=()):
+        super().__init__()
+        self.tokens = list(tokens)
+        self.origins = list(origins)
+
+
+class AnchorRig(FakeRig):
+    """The session's collaborators over a ProvenanceCache. Every prompt below is a system prompt
+    plus a user turn; `PREFIXES` says where each one's user turn starts, as `find_last_span` does
+    in the real helper."""
+
+    def __init__(self):
+        super().__init__()
+        self.current = None    # label of the feed in progress
+        self.prefills = []     # the token lists prefilled, in order
+        self.prefix_of = {}
+
+    def make_cache(self):
+        return ProvenanceCache()
+
+    def trim(self, cache, n):
+        n = super().trim(cache, n)
+        if n:
+            cache.origins = cache.origins[:-n]
+        return n
+
+    def generate_fn(self, tokens, max_tokens, cache):
+        text = super().generate_fn(tokens, max_tokens, cache)
+        if cache is not None:
+            cache.origins.extend([self.current] * (len(tokens) + len(self.generated)))
+        return text
+
+    def prefill(self, tokens, cache):
+        self.prefills.append(list(tokens))
+        cache.tokens.extend(tokens)
+        cache.origins.extend([("prefill", tuple(tokens))] * len(tokens))
+
+    def snapshot(self, cache, n):
+        return list(cache.tokens[:n]), list(cache.origins[:n])
+
+    def restore(self, snapshot, n):
+        tokens, origins = snapshot
+        return ProvenanceCache(tokens[:n], origins[:n])
+
+    def session(self):
+        return refine.RefineSession(
+            make_cache=self.make_cache,
+            can_trim=self.can_trim,
+            trim=self.trim,
+            offset_of=self.offset_of,
+            generate_fn=self.generate_fn,
+            prefill=self.prefill,
+            snapshot=self.snapshot,
+            restore=self.restore,
+        )
+
+    def run(self, session, tokens, prefix_length):
+        self.current = ("request", tuple(tokens))
+        return session.run(list(tokens), 8, prefix_length=prefix_length)
+
+
+GENERIC_SYSTEM = (1, 2, 3, 4, 5)        # the generic system prompt and the user header
+PINNED_SYSTEM = (1, 2, 3, 4, 6, 7)      # a longer system prompt: leaves the generic one at 4
+PRIME = GENERIC_SYSTEM + (90,)          # the app's prime: "ready" under the generic prompt
+GENERIC = GENERIC_SYSTEM + (10, 11)     # a dictation under the generic prompt
+LOOKALIKE = GENERIC_SYSTEM + (10, 12)   # shares MORE with GENERIC than the prime does
+PINNED = PINNED_SYSTEM + (20, 21)       # a dictation under the pinned prompt
+
+
+def prefix(tokens):
+    return len(PINNED_SYSTEM) if tokens[:len(PINNED_SYSTEM)] == PINNED_SYSTEM else len(GENERIC_SYSTEM)
+
+
+class AnchoredSessionTests(unittest.TestCase):
+    """F630: a request's reply must not depend on the requests before it on the same helper.
+
+    Measured on the installed Qwen3-8B-4bit: one primed helper, the same 30 requests in six seeded
+    orders — two requests came back different in two orders each, one of them translated ("Our
+    deadline is this Friday." for "我们的 deadline 是这个星期五。"). Reusing the common prefix with the
+    PREVIOUS request means a request reuses cache entries an earlier dictation computed, in a chunk
+    that dictation chose, and feeds the rest from wherever that dictation diverged. The rule now:
+    each system prompt's prefix is computed once, from a fixed base (the first prefix, alone on an
+    empty cache), and every request starts from its prefix's snapshot and feeds its own turn in
+    one chunk.
+    """
+
+    def what_generic_sees(self, history):
+        """(tokens GENERIC's request fed, who computed each cache entry it reused)."""
+        rig = AnchorRig()
+        session = rig.session()
+        for tokens in (PRIME,) + tuple(history):
+            rig.run(session, tokens, prefix(tokens))
+        rig.run(session, GENERIC, prefix(GENERIC))
+        fed = rig.fed[-1]
+        reused = len(GENERIC) - len(fed)
+        return fed, session.cache.origins[:reused]
+
+    def test_a_request_sees_the_same_cache_whatever_came_before(self):
+        fresh = self.what_generic_sees([])
+        for history in ([PINNED], [LOOKALIKE], [GENERIC], [PINNED, LOOKALIKE, PINNED]):
+            with self.subTest(history=history):
+                self.assertEqual(self.what_generic_sees(history), fresh)
+        # And what that one cache is: the prompt's own prefill, then the dictation's own turn.
+        self.assertEqual(fresh, ([10, 11], [("prefill", GENERIC_SYSTEM)] * 5))
+
+    def test_a_new_prompt_is_built_once_from_the_base_and_then_reused_whole(self):
+        rig = AnchorRig()
+        session = rig.session()
+        for tokens in (PRIME, PINNED, GENERIC, PINNED):
+            rig.run(session, tokens, prefix(tokens))
+        # The prime's prompt alone on an empty cache (the base); the pinned prompt as the base's
+        # shared part plus one prefill of its own sentences, not the whole prompt again.
+        self.assertEqual(rig.prefills, [list(GENERIC_SYSTEM), [6, 7]])
+        # The second pinned dictation reuses its whole system prompt, language sentences included.
+        self.assertEqual(rig.fed[-1], [20, 21])
+        self.assertEqual(session.cache.origins[:6],
+                         [("prefill", GENERIC_SYSTEM)] * 4 + [("prefill", (6, 7))] * 2)
+
+    def test_a_new_prompt_is_built_the_same_whatever_came_before(self):
+        def what_pinned_sees(history):
+            rig = AnchorRig()
+            session = rig.session()
+            for tokens in (PRIME,) + tuple(history) + (PINNED,):
+                rig.run(session, tokens, prefix(tokens))
+            fed = rig.fed[-1]
+            return fed, session.cache.origins[:len(PINNED) - len(fed)]
+
+        first = what_pinned_sees([])
+        for history in ([GENERIC], [LOOKALIKE, GENERIC], [GENERIC, GENERIC, LOOKALIKE]):
+            with self.subTest(history=history):
+                self.assertEqual(what_pinned_sees(history), first)
+
+    def test_an_anchor_survives_a_generation_error(self):
+        rig = AnchorRig()
+        session = rig.session()
+        rig.run(session, PRIME, prefix(PRIME))
+        rig.fail_generation = True
+        with self.assertRaises(RuntimeError):
+            rig.run(session, PINNED, prefix(PINNED))
+        rig.fail_generation = False
+        rig.run(session, GENERIC, prefix(GENERIC))
+        self.assertEqual(rig.fed[-1], [10, 11])
+        self.assertEqual(rig.prefills, [list(GENERIC_SYSTEM), [6, 7]])
+
+    def test_a_request_with_no_prefix_starts_from_an_empty_cache(self):
+        # find_last_span found no dictated text in the prompt: no reuse rather than reuse of
+        # whatever the previous request left.
+        rig = AnchorRig()
+        session = rig.session()
+        rig.run(session, PRIME, prefix(PRIME))
+        rig.run(session, GENERIC, None)
+        self.assertEqual(rig.fed[-1], list(GENERIC))
+
+    def test_forget_drops_every_anchor(self):
+        rig = AnchorRig()
+        session = rig.session()
+        rig.run(session, PRIME, prefix(PRIME))
+        session.forget()
+        rig.run(session, GENERIC, prefix(GENERIC))
+        self.assertEqual(rig.prefills, [list(GENERIC_SYSTEM), list(GENERIC_SYSTEM)])
+
+    def test_a_cache_the_snapshot_declines_falls_back_to_the_previous_rule(self):
+        # main()'s snapshot answers None for any cache type it cannot restore faithfully.
+        rig = AnchorRig()
+        rig.snapshot = lambda cache, n: None
+        session = rig.session()
+        for tokens in (PRIME, PINNED, GENERIC):
+            rig.run(session, tokens, prefix(tokens))
+        self.assertEqual(session.anchors, {})
+        self.assertEqual(rig.fed[-1], [5, 10, 11])
+
+    def test_without_the_collaborators_the_session_reuses_the_previous_request_as_before(self):
+        rig = FakeRig()
+        session = rig.session()
+        for tokens in (PRIME, PINNED, GENERIC):
+            session.run(list(tokens), 8, prefix_length=prefix(tokens))
+        self.assertEqual(rig.fed[-1], [5, 10, 11])
+
+
+class FindLastSpanTests(unittest.TestCase):
+    def test_the_last_occurrence_is_the_user_turn(self):
+        # A dictation that repeats words of the system prompt ("you know") is found after it.
+        self.assertEqual(refine.find_last_span([7, 8, 1, 2, 9, 1, 2, 3], [1, 2]), 5)
+        self.assertIsNone(refine.find_last_span([1, 2], []))
+        self.assertIsNone(refine.find_last_span([1, 2], [3]))
+
+
 EOS = 999
 
 

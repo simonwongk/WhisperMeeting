@@ -23,6 +23,13 @@ source: `stream_generate(..., prompt_cache=...)` flows through generate_step
 at warm-up with a tiny request carrying the real base system prompt (WarmRefineEngine, F203), so
 the first dictation's request already reuses the hot prefix.
 
+F630 — reuse from a per-prompt anchor, not from the previous request. Trimming back to the common
+prefix with the previous prompt made a reply depend on the requests before it (the same request
+came back translated in two of six orders). The helper now builds each system prompt's prefix once,
+from a fixed base, snapshots it, and starts every request from its own prefix's snapshot; see
+`RefineSession`. The prime above makes the base (the generic prompt's anchor) before the first
+dictation.
+
 F212 — prompt-lookup speculative decoding. Decoding one token per forward pass, the 8B refiner
 measured ~30 ms per dictated word, so every 40+ word dictation missed its 1.5 s budget. A cleanup
 reply mostly copies the dictated text, so `CopyDrafter` drafts the next few tokens from that text
@@ -66,21 +73,91 @@ class RefineSession:
     tokens and EOS bookkeeping can't drift). Any generation error resets the cache outright —
     a partially-fed cache with stale `cached_tokens` could otherwise be reused past the true
     common prefix.
+
+    F630 — one anchor per system prompt. Reusing the common prefix with the PREVIOUS request made
+    a reply depend on the requests before it: the reused entries had been computed by whichever
+    dictation came earlier, in a chunk that dictation's length decided, and the rest was fed from
+    wherever it diverged. Logically the same context; numerically not, because a batched forward
+    pass does not round like a shorter one. On the installed Qwen3-8B-4bit the same request, in six
+    seeded orders on one helper, came back translated ("Our deadline is this Friday.") in two of
+    them. Given `prefill`, `snapshot` and `restore`, and the request's `prefix_length` (where the
+    dictated text starts in the templated prompt), each prefix — system prompt and turn header — is
+    computed once and snapshotted under its own tokens; every request with that prefix starts from
+    its snapshot and feeds the rest in one chunk. So a reply depends on the request alone, and a
+    dictation still reuses its whole system prompt, the language sentences included. The first
+    prefix after `forget()` (the app's prime, in practice) is prefilled alone on an empty cache and
+    becomes the base; every later prefix is the base cut to their common prefix plus one prefill of
+    the rest. Built from a fixed base, never from whatever ran last, an anchor is the same whenever
+    it is made — and a new language prompt costs its own sentences, not the whole prompt. A request
+    with no prefix gets an empty cache: no reuse, but no history either. Without those
+    collaborators, or when the cache type cannot be snapshotted, the session reuses the previous
+    request as it always did.
     """
 
-    def __init__(self, make_cache, can_trim, trim, offset_of, generate_fn):
+    # A handful of system prompts exist (DictationRefinePrompt: generic, en, zh, zh + script); the
+    # bound only keeps an unexpected stream of distinct prompts from growing memory. An evicted
+    # anchor is rebuilt from the same base exactly as before, so evicting one costs time, not
+    # determinism; the base itself is kept apart and never evicted.
+    MAX_ANCHORS = 8
+
+    def __init__(self, make_cache, can_trim, trim, offset_of, generate_fn,
+                 prefill=None, snapshot=None, restore=None):
         self.make_cache = make_cache
         self.can_trim = can_trim
         self.trim = trim
         self.offset_of = offset_of
         self.generate_fn = generate_fn
+        # F630: prefill(tokens, cache) feeds tokens into cache without generating;
+        # snapshot(cache, n) -> its first n positions, unchanged by any later use of `cache`, or
+        # None when this cache type cannot be restored faithfully; restore(snapshot, n) -> a new
+        # trimmable cache holding exactly those n positions.
+        self.prefill = prefill
+        self.snapshot = snapshot
+        self.restore = restore
+        self.anchors = {}          # tuple(prefix tokens) -> snapshot
+        self.base = None           # (prefix tokens, snapshot): the first anchor since forget()
         self.cache = None          # None = not yet created; False = caching unusable
         self.cached_tokens = []
         # F212: the dictated tokens the cached-path generator may draft from; set per request by
         # the caller, consumed only by generate_fn(..., source_tokens=...).
         self.generate_source = None
 
-    def run(self, tokens, max_tokens):
+    def forget(self):
+        """Drops the cache, every anchor and the base."""
+        self.cache = None
+        self.cached_tokens = []
+        self.anchors = {}
+        self.base = None
+
+    def anchored(self, tokens, prefix_length):
+        """(cache, fed-from) for a request: its prefix's anchor restored (made now if new), or a
+        new empty cache when the request has no prefix — no reuse, but no history either."""
+        if not prefix_length or prefix_length >= len(tokens):
+            return self.make_cache(), 0
+        key = tuple(tokens[:prefix_length])
+        taken = self.anchors.get(key)
+        if taken is None:
+            if self.base is None:
+                cache, start = self.make_cache(), 0
+            else:
+                base_key, base_snapshot = self.base
+                start = common_prefix_length(key, base_key)
+                cache = self.restore(base_snapshot, start)
+            if start < prefix_length:
+                self.prefill(list(key[start:]), cache)
+            taken = self.snapshot(cache, prefix_length)
+            if taken is None:
+                # This cache type cannot be restored faithfully: stop anchoring for good.
+                self.prefill = None
+                return None
+            if self.base is None:
+                self.base = (key, taken)
+            if len(self.anchors) >= self.MAX_ANCHORS:
+                del self.anchors[next(iter(self.anchors))]
+            self.anchors[key] = taken
+        return self.restore(taken, prefix_length), prefix_length
+
+    def run(self, tokens, max_tokens, prefix_length=None):
         if self.cache is None:
             candidate = self.make_cache()
             if self.can_trim(candidate):
@@ -91,16 +168,22 @@ class RefineSession:
         if self.cache is False:
             return self.generate_fn(list(tokens), max_tokens, None)
 
-        common = common_prefix_length(tokens, self.cached_tokens)
-        if common >= len(tokens):
-            common = len(tokens) - 1  # identical prompt: always feed at least the final token
-        excess = self.offset_of(self.cache) - common
-        if excess > 0:
-            trimmed = self.trim(self.cache, excess)
-            if trimmed != excess:
-                self.cache = self.make_cache()
-                self.cached_tokens = []
-                common = 0
+        anchoring = None not in (self.prefill, self.snapshot, self.restore)
+        restored = self.anchored(tokens, prefix_length) if anchoring else None
+        if restored is not None:
+            # F630: from the prefix's own anchor, never from what the last request left.
+            self.cache, common = restored
+        else:
+            common = common_prefix_length(tokens, self.cached_tokens)
+            if common >= len(tokens):
+                common = len(tokens) - 1  # identical prompt: always feed at least the final token
+            excess = self.offset_of(self.cache) - common
+            if excess > 0:
+                trimmed = self.trim(self.cache, excess)
+                if trimmed != excess:
+                    self.cache = self.make_cache()
+                    self.cached_tokens = []
+                    common = 0
         try:
             if self.generate_source is None:
                 text = self.generate_fn(list(tokens[common:]), max_tokens, self.cache)
@@ -110,6 +193,7 @@ class RefineSession:
                     source_tokens=self.generate_source,
                 )
         except Exception:
+            # An anchor is a snapshot, not this cache, so it stays good; only the cache is suspect.
             self.cache = None
             self.cached_tokens = []
             raise
@@ -171,6 +255,16 @@ def find_span(haystack, needle):
     if not needle or len(needle) > len(haystack):
         return None
     for start in range(len(haystack) - len(needle) + 1):
+        if haystack[start:start + len(needle)] == needle:
+            return start
+    return None
+
+
+def find_last_span(haystack, needle):
+    """Index of the LAST occurrence of `needle` as a contiguous token sub-list, or None (F630)."""
+    if not needle or len(needle) > len(haystack):
+        return None
+    for start in range(len(haystack) - len(needle), -1, -1):
         if haystack[start:start + len(needle)] == needle:
             return start
     return None
@@ -281,6 +375,7 @@ def main() -> int:
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.models.cache import (
+        KVCache,
         can_trim_prompt_cache,
         make_prompt_cache,
         trim_prompt_cache,
@@ -320,12 +415,40 @@ def main() -> int:
         text = tokenizer.decode(generated) if generated else ""
         return _THINK_RE.sub("", text).strip()
 
+    def snapshot(cache, count):
+        # F630: the first `count` positions of every layer, evaluated now. Slices are values in
+        # MLX: a later in-place write to the cache's own arrays leaves them as they are. Only the
+        # plain KVCache that make_prompt_cache builds for Qwen3 (mlx_lm/models/cache.py:306-372) is
+        # restored by setting keys/values/offset; any other cache type is not anchored (None).
+        if not all(type(layer) is KVCache for layer in cache):
+            return None
+        layers = [(layer.keys[..., :count, :], layer.values[..., :count, :]) for layer in cache]
+        mx.eval(layers)
+        return layers
+
+    def restore(layers, count):
+        # A new cache whose arrays are new slices of the snapshot, exactly `count` long, so the
+        # first write into it reallocates (KVCache.update_and_fetch) and never touches the snapshot.
+        cache = make_prompt_cache(model)
+        for layer, (keys, values) in zip(cache, layers):
+            layer.keys = keys[..., :count, :]
+            layer.values = values[..., :count, :]
+            layer.offset = count
+        return cache
+
+    def prefill(tokens, cache):
+        # F630: the prefix's forward pass, for its cache entries only; `snapshot` evaluates them.
+        model(mx.array(tokens, mx.uint32)[None], cache=cache)
+
     session = RefineSession(
         make_cache=lambda: make_prompt_cache(model),
         can_trim=can_trim_prompt_cache,
         trim=trim_prompt_cache,
         offset_of=lambda cache: cache[0].offset,
         generate_fn=generate_fn,
+        prefill=prefill,
+        snapshot=snapshot,
+        restore=restore,
     )
 
     def refine(system_prompt, text, max_tokens):
@@ -340,7 +463,11 @@ def main() -> int:
         span = find_span(tokens, user_tokens)
         source = user_tokens if span is not None else []
         session.generate_source = source
-        return session.run(tokens, max_tokens)
+        # F630: the prompt up to the dictated text (system turn and user header) is the anchor's
+        # key. The LAST occurrence, so a dictation that repeats words of the system prompt is
+        # still found where the user turn is.
+        prefix_length = find_last_span(tokens, user_tokens)
+        return session.run(tokens, max_tokens, prefix_length=prefix_length)
 
     # Pre-warm with a real (tiny) generation so the first user request pays no kernel-compile
     # cost; only after this returns is {"ready": true} genuinely resident. The app's warm-up then
@@ -351,6 +478,8 @@ def main() -> int:
         sys.stdout.write(json.dumps({"error": "warm-up failed: " + str(error)}) + "\n")
         sys.stdout.flush()
         return 1
+    # F630: the pre-warm's prompt is never a dictation's, so its anchor would only hold memory.
+    session.forget()
 
     sys.stdout.write(json.dumps({"ready": True}) + "\n")
     sys.stdout.flush()
