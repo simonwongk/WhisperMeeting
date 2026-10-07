@@ -2660,22 +2660,21 @@ final class MeetingStore: ObservableObject {
     }
 
     /// Keeps the index on disk when the load found two versions of the library (F833): moves
-    /// `meetings.ledger.json` aside, kept beside the library, and reloads. Returns the name it was
-    /// kept under, or nil when the library is not in that state and nothing was done.
+    /// `meetings.ledger.json` aside, kept beside the library, and reloads. Returns the name the
+    /// ledger was kept under — nil when there was no ledger left to move, and the reload ran anyway.
+    /// Does nothing unless the library is in that state.
     ///
-    /// **The third action allowed while the library is read-only**, beside `restoreIndexGeneration`
-    /// and `installRebuiltIndex`, and safe for a stronger reason than either: it writes no index at
-    /// all. Both versions stay exactly where they are — the index in place, and the last save the
-    /// ledger recorded as a generation in the history — so this only stops the ledger from
-    /// contradicting the index in place, which is what `docs/RECOVERY.md`'s manual step did with
-    /// `rm`. Decided 2026-10-07 by the user: a button that moves the ledger aside, never deletes it.
-    /// Only for `.divergentGenerations`; any other read-only state is about the index itself, which
-    /// the ledger did not cause.
+    /// Allowed while the library is read-only, like `restoreIndexGeneration` and
+    /// `installRebuiltIndex`, and safe for a stronger reason than either: it writes no index at all.
+    /// Both versions stay where they are — the index in place, and the last save the ledger recorded
+    /// as a generation in the history — so this only stops the ledger contradicting the index in
+    /// place, which is what `docs/RECOVERY.md`'s manual step did with `rm`. Decided 2026-10-07 by the
+    /// user: a button that moves the ledger aside, never deletes it. Only for `.divergentGenerations`;
+    /// every other read-only state is about the index itself, which the ledger did not cause.
     func keepIndexOnDisk() throws -> String? {
         guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
-        guard health == .divergentGenerations,
-              let keptAs = try meetingFiles.setLedgerAside()
-        else { return nil }
+        guard health == .divergentGenerations else { return nil }
+        let keptAs = try meetingFiles.setLedgerAside()
         // Health only ever worsens outside a recovery; this is one (`revalidateHealth`'s rule).
         reloadAfterLibraryRestore()
         if !isDegraded {

@@ -7165,8 +7165,8 @@ extension AppModel {
     /// the last save WhisperMeet recorded; this keeps the index that is in place and moves the ledger
     /// that contradicts it aside. Decided 2026-10-07 by the user.
     ///
-    /// Not confirmed by a dialog, unlike Recover Library: it chooses nothing a person cannot undo —
-    /// no index is written, the other version stays in the history, and the ledger is kept beside
+    /// No confirmation dialog, unlike Recover Library's list: no index is written — the one kept is
+    /// the one already there — the other version stays in the history, and the ledger is kept beside
     /// the library under the name the alert gives.
     func keepLibraryVersionOnDisk() {
         guard libraryIsNotBeingRestored("Keeping the version on disk") else { return }
@@ -7175,8 +7175,10 @@ extension AppModel {
             return
         }
         do {
-            guard let keptAs = try store.keepIndexOnDisk() else { return }
-            let kept = "WhisperMeet's record of the other version was moved aside as \(keptAs) in the library folder, and the other version is still among the saved copies of the index."
+            let keptAs = try store.keepIndexOnDisk()
+            let record = keptAs.map { "was moved aside as \($0) in the library folder" }
+                ?? "was already gone from the library folder"
+            let kept = "WhisperMeet's record of the other version \(record), and the other version is still among the saved copies of the index."
             if store.isDegraded {
                 alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
                     afterWriting: "The version of the meeting library on disk was kept", store.health
