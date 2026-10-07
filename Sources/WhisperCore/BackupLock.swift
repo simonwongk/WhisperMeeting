@@ -41,6 +41,10 @@ public final class BackupLockHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var descriptor: Int32?
 
+    /// Internal, so a test can model a process that holds a duplicate of the descriptor (F646).
+    /// Never public API.
+    var descriptorForTesting: Int32? { lock.withLock { descriptor } }
+
     init(isHeld: Bool, descriptor: Int32?, unavailableReason: BackupLockUnavailableReason? = nil) {
         self.isHeld = isHeld
         self.descriptor = descriptor
@@ -48,12 +52,15 @@ public final class BackupLockHandle: @unchecked Sendable {
     }
 
     /// Idempotent, and called from `deinit` as well.
+    ///
+    /// Unlocks before it closes (F646): `close` alone releases the lock only if no other copy of
+    /// the descriptor exists, and a thread inside `posix_spawn` holds one until its child execs.
     public func release() {
         let toClose: Int32? = lock.withLock {
             defer { descriptor = nil }
             return descriptor
         }
-        if let toClose { close(toClose) }
+        if let toClose { AdvisoryLockDescriptor.unlockAndClose(toClose) }
     }
 
     deinit { release() }

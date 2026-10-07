@@ -59,7 +59,10 @@ public enum RecordingCaptureLock {
                 return descriptor
             }
             guard let toClose else { return }
-            close(toClose)
+            // Unlock, then close (F646): `close` alone leaves the folder looking written-to while
+            // any other copy of the descriptor exists, such as a thread's inside `posix_spawn`,
+            // until that child execs.
+            AdvisoryLockDescriptor.unlockAndClose(toClose)
             if removingFile { try? FileManager.default.removeItem(at: url) }
         }
 

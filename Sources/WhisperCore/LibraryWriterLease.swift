@@ -41,7 +41,9 @@ public final class LibraryWriterLeaseHandle: @unchecked Sendable {
             defer { descriptor = nil }
             return descriptor
         }
-        if let toClose { close(toClose) }
+        // Unlock, then close (F646): `close` alone leaves the lease held while any other copy of the
+        // descriptor exists, such as a thread's inside `posix_spawn`, until that child execs.
+        if let toClose { AdvisoryLockDescriptor.unlockAndClose(toClose) }
     }
 
     deinit { release() }
