@@ -7160,6 +7160,41 @@ extension AppModel {
         pendingLibraryRecovery = nil
     }
 
+    /// Settings → Meeting library → Keep the Version on Disk, offered only when the load found two
+    /// versions of the library (F833). The other way out beside Recover Library…, which goes back to
+    /// the last save WhisperMeet recorded; this keeps the index that is in place and moves the ledger
+    /// that contradicts it aside. Decided 2026-10-07 by the user.
+    ///
+    /// Not confirmed by a dialog, unlike Recover Library: it chooses nothing a person cannot undo —
+    /// no index is written, the other version stays in the history, and the ledger is kept beside
+    /// the library under the name the alert gives.
+    func keepLibraryVersionOnDisk() {
+        guard libraryIsNotBeingRestored("Keeping the version on disk") else { return }
+        guard store.health == .divergentGenerations else {
+            alertMessage = "Only one version of the meeting library was found, so there is nothing to choose between."
+            return
+        }
+        do {
+            guard let keptAs = try store.keepIndexOnDisk() else { return }
+            let kept = "WhisperMeet's record of the other version was moved aside as \(keptAs) in the library folder, and the other version is still among the saved copies of the index."
+            if store.isDegraded {
+                alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
+                    afterWriting: "The version of the meeting library on disk was kept", store.health
+                ) + " " + kept
+            } else {
+                alertMessage = "WhisperMeet kept the version of the meeting library that was on disk. \(kept)"
+                // As `recoverLibrary` does: resume the work the launch skipped while read-only.
+                didPerformStartupRecovery = false
+                Task { await performStartupRecovery() }
+            }
+        } catch {
+            alertMessage = """
+                The version on disk could not be kept, and nothing was changed. Your recordings are \
+                untouched. \(error.localizedDescription)
+                """
+        }
+    }
+
     /// Applies the reviewed folder rebuild. Does nothing at all unless `confirmed` is true (F289).
     ///
     /// F193's shape exactly, for F193's reasons: the unconfirmed call is the seam the confirmation

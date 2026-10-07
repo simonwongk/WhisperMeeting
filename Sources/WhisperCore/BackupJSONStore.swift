@@ -966,6 +966,32 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         try history.forgetAll(includingConflictBranches: includingConflictBranches)
     }
 
+    /// Moves the ledger aside — beside the store as `<stem>.ledger.set-aside-<time>.json`, kept and
+    /// never deleted — and returns that name, or nil when there is no ledger (F833).
+    ///
+    /// The in-app form of `docs/RECOVERY.md`'s way to keep the index on disk when a load finds two
+    /// versions (`.divergentGenerations`). The ledger is advisory (Invariant L): without one there is
+    /// no record for the primary to contradict, so the next load reads it as `.complete` and its first
+    /// save adopts it; the last save the ledger recorded stays in the history as a generation. Moved
+    /// rather than removed, because it is the only description of that lineage and the user may want
+    /// it back. A rename onto a fresh name, so it cannot replace a ledger set aside earlier, and the
+    /// counts it held are read back from the files by the next save (F677).
+    @discardableResult
+    public func setLedgerAside(now: Date = Date()) throws -> String? {
+        guard io.fileExists(ledgerURL) else { return nil }
+        let directory = ledgerURL.deletingLastPathComponent()
+        let stem = primaryURL.deletingPathExtension().lastPathComponent
+        let stamp = ISO8601DateFormatter.quarantineStamp.string(from: now)
+        var name = "\(stem).ledger.set-aside-\(stamp).json"
+        var attempt = 1
+        while io.fileExists(directory.appendingPathComponent(name)) {
+            attempt += 1
+            name = "\(stem).ledger.set-aside-\(stamp)-\(attempt).json"
+        }
+        try io.rename(ledgerURL, directory.appendingPathComponent(name), .commit)
+        return name
+    }
+
     /// The verified bytes of a retained generation (F295's tests read them back; `restore` uses
     /// the same path). Refuses a file whose bytes no longer match its name.
     public func data(of generation: RetainedGeneration) throws -> Data {

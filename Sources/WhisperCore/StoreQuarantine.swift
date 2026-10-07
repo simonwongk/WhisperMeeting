@@ -55,8 +55,9 @@ public enum StoreQuarantine {
     }
 }
 
-private extension ISO8601DateFormatter {
+extension ISO8601DateFormatter {
     /// Colons are legal in HFS+/APFS names but confusing in paths, so use a filename-safe stamp.
+    /// Also names a ledger `BackupJSONStore.setLedgerAside()` keeps (F833).
     static let quarantineStamp: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]

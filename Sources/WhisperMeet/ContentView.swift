@@ -1706,6 +1706,13 @@ struct SettingsView: View {
                         } message: {
                             Text("Your recordings are never changed by this. Each option is a copy of the index saved earlier; the meetings it did not know about will be missing until you restore a newer one.")
                         }
+                    // F833: the other way out of two versions, beside the first. Only for that state —
+                    // every other read-only state is about the index itself, which the ledger did not
+                    // cause — and the sentence above names this button by the same constant.
+                    if model.store.health == .divergentGenerations {
+                        Button(ReadOnlyLibraryNotice.keepVersionOnDiskButton) { model.keepLibraryVersionOnDisk() }
+                            .buttonStyle(.bordered)
+                    }
                 }
                 Text("Copies your recordings and indexes to a folder you choose as a dated snapshot, keeping the most recent backups. Unchanged files are not re-copied and every copy is checksum-verified. Your library is only ever read — never changed or deleted.")
                     .font(.caption)

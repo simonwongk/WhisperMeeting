@@ -2659,6 +2659,31 @@ final class MeetingStore: ObservableObject {
         adoptRestoredIndex(try meetingFiles.save(meetings, expecting: current?.token))
     }
 
+    /// Keeps the index on disk when the load found two versions of the library (F833): moves
+    /// `meetings.ledger.json` aside, kept beside the library, and reloads. Returns the name it was
+    /// kept under, or nil when the library is not in that state and nothing was done.
+    ///
+    /// **The third action allowed while the library is read-only**, beside `restoreIndexGeneration`
+    /// and `installRebuiltIndex`, and safe for a stronger reason than either: it writes no index at
+    /// all. Both versions stay exactly where they are — the index in place, and the last save the
+    /// ledger recorded as a generation in the history — so this only stops the ledger from
+    /// contradicting the index in place, which is what `docs/RECOVERY.md`'s manual step did with
+    /// `rm`. Decided 2026-10-07 by the user: a button that moves the ledger aside, never deletes it.
+    /// Only for `.divergentGenerations`; any other read-only state is about the index itself, which
+    /// the ledger did not cause.
+    func keepIndexOnDisk() throws -> String? {
+        guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
+        guard health == .divergentGenerations,
+              let keptAs = try meetingFiles.setLedgerAside()
+        else { return nil }
+        // Health only ever worsens outside a recovery; this is one (`revalidateHealth`'s rule).
+        reloadAfterLibraryRestore()
+        if !isDegraded {
+            storageErrorMessage = nil
+        }
+        return keptAs
+    }
+
     /// What every degraded-mode index write does after the bytes are down, shared so the two
     /// cannot drift.
     private func adoptRestoredIndex(_ outcome: BackupJSONStore<[MeetingRecord]>.SaveOutcome) {

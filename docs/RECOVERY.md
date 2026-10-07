@@ -76,7 +76,7 @@ of these index files.
 | Recording permission or startup fails before any file is created | The verified-empty meeting folder is removed automatically and is not shown as an interrupted recording. | No audio existed to preserve. Any non-empty folder remains protected. |
 | The meeting index (`meetings.json`) is damaged | The app opens its previous readable backup, which may be one save behind, and leaves the damaged primary exactly as it is. The **whole** library opens read-only — the app cannot be sure what you had, so editing, deleting, recording, importing and transcribing are all refused until recovery is resolved. At launch, in the banner and in Settings → Meeting library it says the index was damaged and that nothing was copied aside, because nothing is: the damaged file stays where it is. | The backup, the damaged primary, and every recording folder. |
 | `meetings.json` reads cleanly but is empty, while finished recordings are in `Recordings/` (the 2026-08-14 wipe shape) | The library opens read-only rather than treat those recordings as new. It says the index is empty, how many finished recordings are beside it, and that nothing was copied aside, because the index read cleanly. **Recover Library…** restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept. | Every recording folder, the empty index and its backup. |
-| The index on disk matches no save WhisperMeet recorded, and the last save it did record is still kept (something else rewrote it) | The library opens read-only and says *Two versions of the meeting library were found*. WhisperMeet does not choose: see [If the app says two versions of the library were found](#if-the-app-says-two-versions-of-the-library-were-found). | Both versions, and every recording folder. |
+| The index on disk matches no save WhisperMeet recorded, and the last save it did record is still kept (something else rewrote it) | The library opens read-only and says *Two versions of the meeting library were found*. WhisperMeet does not choose: *Recover Library…* takes the last save it recorded and *Keep the Version on Disk* takes the index in place, both in Settings → Meeting library — see [If the app says two versions of the library were found](#if-the-app-says-two-versions-of-the-library-were-found). | Both versions, and every recording folder. |
 | Neither meeting-index copy can be read | The exact bytes are copied aside as `meetings.unreadable-<timestamp>.json` and `meetings.backup.unreadable-<timestamp>.json`, the library opens read-only, and no mutation, recording, import, transcription or deletion is permitted until recovery is resolved. | Every recording folder, and both original index files. |
 | `vocabulary.json` or `replacement-rules.json` is damaged, unreadable, or was edited outside the app (F464) | Only **that list** becomes read-only; recording, importing, transcribing and every meeting stay available. The list shows its previous readable backup, the edited copy, or — when neither copy reads — nothing, with the unreadable bytes copied aside as `<name>.unreadable-<timestamp>.json`. Business Vocabulary says which, beside a *Keep This List* (or *Start a New List*) button that saves what is shown as the current copy. | The damaged or edited file is copied aside before anything replaces it, and the version the app last saved stays in `<name>.history/`. |
 | An interrupted imported file is empty or not playable | Empty files are never promoted. Other compressed candidates are verified with AVFoundation; an unverified candidate is indexed as **Needs Attention**, not as ready audio. | The original imported file and its folder remain untouched for replacement or manual inspection. |
@@ -262,13 +262,22 @@ available — so there are genuinely two versions and it will not choose for you
 To take the other version, the last save WhisperMeet recorded, open Settings → Meeting library →
 **Recover Library…** and choose it from the list; or restore it by hand as above.
 
-To take the index that is currently in place and carry on, quit WhisperMeet and:
+To take the index that is currently in place and carry on, open Settings → Meeting library →
+**Keep the Version on Disk** (F833). WhisperMeet moves `meetings.ledger.json` aside as
+`meetings.ledger.set-aside-<timestamp>.json` in the library folder — kept, never deleted — and
+re-reads the library, which then opens on the index that was in place; it says where the ledger went.
+Without a ledger nothing contradicts that index, so the library is writable again straight away —
+unless that index is the empty one beside finished recordings in the table above, which stays
+read-only for the same reason it always does. The other version, the last save WhisperMeet
+recorded, is still in `meetings.history/` as a past generation, kept or aged out by the same rules
+as any other.
+
+By hand, with WhisperMeet quit, the same step is:
 
 ```bash
-rm ~/Library/Application\ Support/WhisperMeet/meetings.ledger.json
+cd ~/Library/Application\ Support/WhisperMeet
+mv meetings.ledger.json meetings.ledger.set-aside.json
 ```
-
-There is no button for that second choice yet; the banner points here for it.
 
 ### A generation is not a backup
 

@@ -26,6 +26,11 @@ extension ReadOnlyLibraryNotice {
     /// "Meeting library".
     static let recoverLibraryPath = "Settings → Meeting library → Recover Library…"
 
+    /// The button beside Recover Library… that keeps the index on disk when two versions were found
+    /// (F833). One constant for the button and the sentences that send the user to it, so the two
+    /// cannot drift; `ContentView`'s use of it is asserted against its source.
+    static let keepVersionOnDiskButton = "Keep the Version on Disk"
+
     /// What was found, for a library in this state: the sentence the standing surfaces build on.
     /// Never ends in a next step — each surface adds its own.
     static func found(_ health: PersistedStoreHealth) -> String {
@@ -68,7 +73,7 @@ extension ReadOnlyLibraryNotice {
         case .recoveredFromBackup, .suspectEmpty:
             return "\(found(health)) Your recordings are untouched. Nothing will be changed until you choose how to recover."
         case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. Nothing will be changed until you choose which version to keep: Recover Library… in Settings goes back to the last save WhisperMeet recorded, and Recovery in the documentation says how to keep the version on disk instead."
+            return "\(found(health)) Your recordings are untouched. Nothing will be changed until you choose which version to keep, in Settings → Meeting library: Recover Library… goes back to the last save WhisperMeet recorded, and \(keepVersionOnDiskButton) keeps the index that is on disk."
         case .partiallySalvaged, .unreadable, .unavailable:
             return "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched. Nothing will be changed until you choose how to recover."
         }
@@ -79,7 +84,7 @@ extension ReadOnlyLibraryNotice {
     static func banner(for health: PersistedStoreHealth) -> String {
         switch health {
         case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. To go back to the last save WhisperMeet recorded, open \(recoverLibraryPath); to keep the version on disk instead, see Recovery in the documentation."
+            return "\(found(health)) Your recordings are untouched. To go back to the last save WhisperMeet recorded, open \(recoverLibraryPath); to keep the version on disk instead, choose \(keepVersionOnDiskButton) beside it."
         case .complete, .recoveredFromBackup, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
             return "\(found(health)) Your recordings are untouched. To recover, open \(recoverLibraryPath)"
         }
@@ -90,7 +95,7 @@ extension ReadOnlyLibraryNotice {
     static func librarySectionNotice(for health: PersistedStoreHealth) -> String {
         switch health {
         case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. Recover Library goes back to a save WhisperMeet recorded; to keep the version on disk instead, see Recovery in the documentation."
+            return "\(found(health)) Your recordings are untouched. Recover Library goes back to a save WhisperMeet recorded; \(keepVersionOnDiskButton) keeps the index that is on disk instead."
         case .complete, .recoveredFromBackup, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
             return "\(found(health)) Your recordings are untouched. Recover Library restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept."
         }
