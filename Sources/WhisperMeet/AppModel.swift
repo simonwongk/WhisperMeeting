@@ -4909,7 +4909,8 @@ final class AppModel: ObservableObject {
     /// sheet, and the window's alert — where every one of these refusals used to go — is behind an
     /// open sheet, so the sheet reset with no word about why. The refusal comes back as
     /// `.refused(message)` for the sheet to say itself. Every way this declines returns one of
-    /// `LinkImportOutcome`'s cases, so a refusal added later has nowhere to go but the sheet.
+    /// `LinkImportOutcome`'s cases, so a refusal added later should be returned like the rest —
+    /// `LinkImportSheetErrorTests` walks the existing ones and asserts the alert stays untouched.
     @discardableResult
     func importFromURL(_ raw: String, confirmedLongDuration: Bool = false) async -> LinkImportOutcome {
         guard linkImportEnabled else { return .refused(Self.linkImportSwitchedOff) }
