@@ -3105,7 +3105,7 @@ final class MeetingStore: ObservableObject {
         // Health only ever worsens outside a recovery; this is one (`revalidateHealth`'s rule).
         reloadAfterLibraryRestore()
         if !isDegraded {
-            storageErrorMessage = nil
+            storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
         }
         return keptAs
     }
