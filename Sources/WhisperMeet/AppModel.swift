@@ -1924,6 +1924,9 @@ final class AppModel: ObservableObject {
     @discardableResult
     func applySecondOpinionSpan(_ span: TranscriptComparisonSpan, to id: UUID) -> SecondOpinionReplacement {
         guard let secondary = span.secondaryText else { return .refused(Self.secondOpinionReplaceLineGone) }
+        // F658: the sheet offers no Replace on such a row; refused here as well, so no other caller
+        // can write a reading that carries a neighbour's words or leaves this line's out.
+        guard span.offersReplacement else { return .refused(Self.secondOpinionReadingOnly) }
         if store.isRestoringLibrary {
             return .refused(Self.libraryRestoringMessage(Self.secondOpinionReplaceAction))
         }
@@ -1975,6 +1978,11 @@ final class AppModel: ObservableObject {
         + "the transcript as it is now."
     /// Why Replace wrote nothing: the meeting was deleted while the sheet was open (F605).
     static let secondOpinionReplaceMeetingGone = "This meeting no longer exists, so nothing was replaced."
+    /// Said under a row whose reading is shown without Replace (F658), and why a Replace of one is
+    /// refused: writing it would duplicate a neighbouring line's words or delete some of this one's.
+    static let secondOpinionReadingOnly = "Shown for comparison only: the other engine's reading here runs into "
+        + "a neighbouring line or leaves part of this one out, so replacing the line could repeat or lose words. "
+        + "Edit the line by hand if you prefer this reading."
     /// How the sheet's message starts when a Replace's save failed (F661).
     static let secondOpinionReplaceSaveFailedLead = "The replacement could not be saved, so the line was put back as it was."
     /// Why Replace wrote nothing: the save failed (F661). The store's own reason follows the lead.

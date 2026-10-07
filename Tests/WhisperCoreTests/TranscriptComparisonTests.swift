@@ -225,10 +225,12 @@ func comparisonFastPathMatchesTheReference() {
             let texts = primary.map { TranscriptComparison.normalize($0.text) }
             let fast = TranscriptComparison.counterparts(primary, texts, secondary)
             let reference = TranscriptComparison.referenceCounterparts(primary, texts, secondary)
-            // Rows, too: kind and offered text. (Whole spans cannot be compared with `==` when a
-            // start is NaN, which never equals itself.)
-            let fastRows = TranscriptComparison.compare(primary, secondary).map { "\($0.kind) \($0.secondaryText ?? "-")" }
-            let referenceRows = TranscriptComparison.referenceCompare(primary, secondary).map { "\($0.kind) \($0.secondaryText ?? "-")" }
+            // Rows, too: kind, offered text and whether Replace is offered (F658). (Whole spans cannot
+            // be compared with `==` when a start is NaN, which never equals itself.)
+            let fastRows = TranscriptComparison.compare(primary, secondary)
+                .map { "\($0.kind) \($0.secondaryText ?? "-") \($0.offersReplacement)" }
+            let referenceRows = TranscriptComparison.referenceCompare(primary, secondary)
+                .map { "\($0.kind) \($0.secondaryText ?? "-") \($0.offersReplacement)" }
             if fast != reference || fastRows != referenceRows {
                 mismatches += 1
                 if mismatches <= 3 {
@@ -240,11 +242,14 @@ func comparisonFastPathMatchesTheReference() {
     #expect(mismatches == 0)
 }
 
-// PINNED AS IS, NOT AS INTENDED, until F658: both rows offer the whole shared segment, so a Replace
-// on either writes the other line's sentence a second time. This is what F472 did too; the test
-// keeps F572 from changing it silently, and F658 replaces this expectation.
-@Test("Two lines the other engine heard as one each offer the whole shared segment — the duplication F658 fixes (F572 control)")
-func comparisonOffersASharedSegmentToBothLinesUntilF658() {
+// F658 — F572 joins every segment sharing a quarter of the shorter span. That is the right reading to
+// SHOW, but Replace swaps the whole line for it, so it is offered only where the pieces are the line's
+// alone and cover it. Each exhibit below was offered under F572; each still shows its reading.
+
+// Until F658 this test was pinned "as is, not as intended": both rows offered the whole shared segment,
+// so a Replace on either wrote the other line's sentence a second time.
+@Test("Two lines the other engine heard as one each show the shared reading, and neither offers Replace (F658)")
+func comparisonShowsASharedSegmentToBothLinesButOffersReplaceToNeither() {
     let spans = TranscriptComparison.compare(
         [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbrs.")],
         [seg(10, 18, "We ship on Friday. Then we review the numbers.")]
@@ -254,4 +259,64 @@ func comparisonOffersASharedSegmentToBothLinesUntilF658() {
         "We ship on Friday. Then we review the numbers.", "We ship on Friday. Then we review the numbers.",
     ]
     #expect(spans.map(\.secondaryText) == expected)
+    #expect(spans.map(\.offersReplacement) == [false, false])
+}
+
+@Test("A line's own reading, split or whole, still offers Replace (F658 control)")
+func comparisonStillOffersReplaceForALinesOwnReading() {
+    // Boundaries a tenth of a second apart, as two engines put them.
+    let whole = TranscriptComparison.compare(
+        [seg(10.0, 13.2, "We should ship on Friday."), seg(13.2, 18.0, "Then we review the numbrs.")],
+        [seg(9.8, 13.3, "We should ship on Friday."), seg(13.3, 18.1, "Then we review the numbers.")]
+    )
+    #expect(whole.map(\.kind) == [.agree, .diverge])
+    #expect(whole[1].offersReplacement)
+    // The line the other engine heard as two pieces (F572's exhibit).
+    let split = TranscriptComparison.compare(
+        [seg(10, 18, "We ship on Friday. Then we review the numbrs.")],
+        [seg(10, 13, "We ship on Friday."), seg(13, 18, "Then we review the numbers.")]
+    )
+    #expect(split.first?.offersReplacement == true)
+    // Rows that offer nothing to replace say so too.
+    #expect(!whole[0].offersReplacement)
+}
+
+@Test("A short neighbour a few tenths early is shown with the line's reading, but not offered to replace it (F658, E1)")
+func comparisonWithholdsReplaceWhenAShortNeighbourIsJoined() {
+    // The other engine started "Yeah, sure." 0.4 s early: a quarter of its own span, so F572 joined
+    // it, and Replace wrote it into this line while it stayed in the next.
+    let spans = TranscriptComparison.compare(
+        [seg(10, 15, "We ship on Friday."), seg(15, 15.8, "Yeah, sure.")],
+        [seg(10.1, 14.6, "We will ship on Friday."), seg(14.6, 15.4, "Yeah sure.")]
+    )
+    #expect(spans.map(\.kind) == [.diverge, .agree])
+    #expect(spans[0].secondaryText == "We will ship on Friday. Yeah sure.")
+    #expect(!spans[0].offersReplacement)
+}
+
+@Test("A tail the line shares with a long segment withholds Replace from both lines it touches (F658, E2)")
+func comparisonWithholdsReplaceWhenATailIsLeftOut() {
+    // "Then the numbrs." is the last 1.5 s of a 10 s line, under a quarter: F572 left it out of this
+    // row, and joined it into the next — Replace deleted it here and repeated it there.
+    let spans = TranscriptComparison.compare(
+        [seg(10, 20, "We ship on Friday. Then the numbrs."), seg(20, 30, "Next item is hiring.")],
+        [seg(10, 18.5, "We ship on Friday."), seg(18.5, 30, "Then the numbers. Next item is hiring.")]
+    )
+    #expect(spans.map(\.kind) == [.diverge, .diverge])
+    #expect(spans[0].secondaryText == "We ship on Friday.")
+    #expect(spans[1].secondaryText == "Then the numbers. Next item is hiring.")
+    #expect(spans.map(\.offersReplacement) == [false, false])
+}
+
+@Test("A short straddler is not offered as the replacement for a line the other engine dropped (F658, E3)")
+func comparisonWithholdsReplaceForAStraddlerOverADroppedLine() {
+    // Nothing of "We need a decision on pricing." in the other transcript; its "Yeah." starts 0.4 s
+    // early, inside the line's last second.
+    let spans = TranscriptComparison.compare(
+        [seg(0, 5, "Let's move on."), seg(5.2, 9, "We need a decision on pricing."), seg(9.1, 9.7, "Yeah.")],
+        [seg(0, 5, "Let's move on."), seg(8.7, 9.5, "Yeah.")]
+    )
+    #expect(spans.map(\.kind) == [.agree, .diverge, .agree])
+    #expect(spans[1].secondaryText == "Yeah.")
+    #expect(!spans[1].offersReplacement)
 }

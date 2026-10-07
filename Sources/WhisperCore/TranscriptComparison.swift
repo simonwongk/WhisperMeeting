@@ -12,12 +12,18 @@ public struct TranscriptComparisonSpan: Sendable, Equatable {
     public let start: Double?
     public let primaryText: String
     public let secondaryText: String?
+    /// Whether `secondaryText` may be written over the line (F658). False for a diverging row whose
+    /// reading reaches into another line or leaves part of this one out: the sheet still shows the
+    /// reading, without Replace. Meaningful only for `.diverge`; the comparison sets it false for the
+    /// other kinds, which offer nothing to replace.
+    public let offersReplacement: Bool
 
-    public init(kind: Kind, start: Double?, primaryText: String, secondaryText: String?) {
+    public init(kind: Kind, start: Double?, primaryText: String, secondaryText: String?, offersReplacement: Bool = true) {
         self.kind = kind
         self.start = start
         self.primaryText = primaryText
         self.secondaryText = secondaryText
+        self.offersReplacement = offersReplacement
     }
 }
 
@@ -31,7 +37,11 @@ public enum TranscriptComparison {
         _ secondary: [TranscriptSegment]
     ) -> [TranscriptComparisonSpan] {
         let texts = primary.map { normalize($0.text) }
-        return spans(primary, texts, counterparts(primary, texts, secondary), in: secondary)
+        let primaryIndex = CounterpartIndex(primary)
+        return spans(
+            primary, texts, counterparts(primary, texts, secondary), in: secondary,
+            linesOverlapping: { primaryIndex.overlapping(start: $0, end: $1) }
+        )
     }
 
     /// `compare` by the simple scan: every line against every segment (F542). This is the
@@ -42,7 +52,10 @@ public enum TranscriptComparison {
         _ secondary: [TranscriptSegment]
     ) -> [TranscriptComparisonSpan] {
         let texts = primary.map { normalize($0.text) }
-        return spans(primary, texts, referenceCounterparts(primary, texts, secondary), in: secondary)
+        return spans(
+            primary, texts, referenceCounterparts(primary, texts, secondary), in: secondary,
+            linesOverlapping: { start, end in scanOverlapping(primary, start: start, end: end) }
+        )
     }
 
     /// Each line's counterpart, found through the index (F542).
@@ -51,6 +64,15 @@ public enum TranscriptComparison {
     ) -> [Counterpart?] {
         let index = CounterpartIndex(secondary)
         return zip(primary, texts).map { index.counterpart(of: $0, normalized: $1) }
+    }
+
+    /// Indices, ascending, of the timed segments of `segments` sharing time with `start..<end` by
+    /// `sharedSeconds` — what `CounterpartIndex.overlapping` finds, by the plain scan. The one
+    /// question `offersReplacement` asks of this transcript's lines (F658), answered by the index in
+    /// `compare` and by this in `referenceCompare`, so the rule itself is written once.
+    private static func scanOverlapping(_ segments: [TranscriptSegment], start: Double, end: Double) -> [Int] {
+        let probe = TranscriptSegment(speaker: nil, start: start, end: end, text: "")
+        return segments.indices.filter { (sharedSeconds(probe, segments[$0]) ?? 0) > 0 }
     }
 
     /// Each line's counterpart, by `counterpart`'s scan.
@@ -63,9 +85,143 @@ public enum TranscriptComparison {
     }
 
     private static func spans(
-        _ primary: [TranscriptSegment], _ texts: [String], _ found: [Counterpart?], in secondary: [TranscriptSegment]
+        _ primary: [TranscriptSegment], _ texts: [String], _ found: [Counterpart?], in secondary: [TranscriptSegment],
+        linesOverlapping: (Double, Double) -> [Int]
     ) -> [TranscriptComparisonSpan] {
-        primary.indices.map { span(for: primary[$0], normalized: texts[$0], found[$0], in: secondary) }
+        // How many lines each of the other engine's segments is offered to, or agrees with.
+        var claims = [Int](repeating: 0, count: secondary.count)
+        for counterpart in found {
+            for index in counterpart?.segments ?? [] { claims[index] += 1 }
+        }
+        // What of each line its own counterpart leaves uncovered.
+        let gaps = primary.indices.map { line in
+            uncoveredStretches(of: primary[line], by: (found[line]?.segments ?? []).map { secondary[$0] })
+        }
+        // The other engine's segments sharing more than the tolerance with each line: saying some
+        // of its words.
+        var saying = [[Int]](repeating: [], count: primary.count)
+        for (index, segment) in secondary.enumerated() {
+            guard let start = segment.start, let end = segment.end else { continue }
+            for line in linesOverlapping(start, end)
+            where (sharedSeconds(primary[line], segment) ?? 0) > boundaryTolerance {
+                saying[line].append(index)
+            }
+        }
+        return primary.indices.map { line in
+            let row = span(for: primary[line], normalized: texts[line], found[line], in: secondary)
+            guard row.kind == .diverge, case let .covering(pieces)? = found[line] else { return row }
+            return TranscriptComparisonSpan(
+                kind: row.kind, start: row.start, primaryText: row.primaryText, secondaryText: row.secondaryText,
+                offersReplacement: offersReplacement(
+                    line: line, pieces: pieces, primary: primary, secondary: secondary,
+                    claims: claims, gaps: gaps, saying: saying, linesOverlapping: linesOverlapping
+                )
+            )
+        }
+    }
+
+    /// How far two engines' boundaries for the same sentence may disagree, in seconds (F658).
+    ///
+    /// Within this, a segment reaching into a neighbouring line, or a line's edge its reading leaves
+    /// uncovered, is where the two engines put the same pause. Beyond it, it is words. The F572
+    /// review measured the short-neighbour duplication under boundary jitter of ±0.2, ±0.3 and
+    /// ±0.5 s; the seeded simulation in the tests holds the rule to all three.
+    static let boundaryTolerance = 0.5
+
+    /// The share of the line a reading must cover before it may replace the line (F658): "most".
+    static let minimumLineCoverage = 0.5
+
+    /// Whether a diverging row's joined reading may replace its line (F658).
+    ///
+    /// F572 joins every segment sharing a quarter of the shorter span, which is the right reading to
+    /// SHOW but not always one that may be WRITTEN, because Replace swaps the whole line for it:
+    ///
+    /// - a short neighbour a few tenths of a second early shares a quarter of its own span, is joined,
+    ///   and Replace writes its words into this line while they stay in their own (E1);
+    /// - a tail the line shares with a long segment, under a quarter of the line, is left out, and
+    ///   Replace deletes those words (E2) — and that long segment, offered to the next line, carries
+    ///   them into that one too;
+    /// - a short straddler stands in for a line the other engine dropped (E3).
+    ///
+    /// No overlap threshold fixes all three. What does is asking whether the pieces are this line's
+    /// alone and cover it. Replace is offered only when:
+    ///
+    /// - **the pieces cover the line**: at least `minimumLineCoverage` of it, no stretch of it longer
+    ///   than `boundaryTolerance` left uncovered, and no other segment sharing more than that with it
+    ///   — either is words the reading leaves out, carried by a neighbouring segment or not heard
+    ///   (E2, E3);
+    /// - **no piece is shared**: none is offered to, or agrees with, another line, where it is
+    ///   written twice whichever row replaces it (E1, and two lines the other engine heard as one);
+    /// - **no piece reaches into another line's words**: none shares more than `boundaryTolerance`
+    ///   with another line, or reaches at all into a stretch of that line its own reading leaves
+    ///   uncovered for longer than that. The second is the subtle one: a sentence too short to tell
+    ///   from boundary jitter, which the other engine joined to the end of this line's reading, is
+    ///   missing from the next line's — so the next line's gap is where this piece carries it.
+    ///
+    /// What timing alone cannot catch: a sentence no longer than `boundaryTolerance` plus the two
+    /// engines' boundary disagreement leaves too little of a gap, or of an overlap, in either line to
+    /// tell from jitter, so when the other engine joins one to a neighbouring line's reading it can
+    /// still be offered. The seeded simulation in the tests measures this on 0.25–1.5 s sentences.
+    ///
+    /// When in doubt the row shows the reading without Replace: the user can still type it in, and a
+    /// Replace that is withheld loses nothing, where one that duplicates or deletes words does.
+    ///
+    /// `gaps` and `saying` are per line: what its own counterpart leaves uncovered, and the other
+    /// engine's segments sharing more than `boundaryTolerance` with it. `linesOverlapping` answers
+    /// which lines share any time with a span — the index in `compare`, the scan in
+    /// `referenceCompare`, so this rule is written once.
+    static func offersReplacement(
+        line: Int, pieces: [Int], primary: [TranscriptSegment], secondary: [TranscriptSegment],
+        claims: [Int], gaps: [[Stretch]], saying: [[Int]], linesOverlapping: (Double, Double) -> [Int]
+    ) -> Bool {
+        let segment = primary[line]
+        guard let start = segment.start, let end = segment.end, start.isFinite, end.isFinite, end > start,
+              !pieces.isEmpty else { return false }
+        let uncovered = gaps[line]
+        guard uncovered.allSatisfy({ $0.seconds <= boundaryTolerance }),
+              uncovered.reduce(0, { $0 + $1.seconds }) <= (1 - minimumLineCoverage) * (end - start),
+              saying[line].allSatisfy(pieces.contains) else {
+            return false
+        }
+        for piece in pieces {
+            guard claims[piece] == 1 else { return false }
+            let candidate = secondary[piece]
+            guard let pieceStart = candidate.start, let pieceEnd = candidate.end else { return false }
+            for other in linesOverlapping(pieceStart, pieceEnd) where other != line {
+                if (sharedSeconds(primary[other], candidate) ?? 0) > boundaryTolerance { return false }
+                for gap in gaps[other] where gap.seconds > boundaryTolerance {
+                    if Swift.min(pieceEnd, gap.to) > Swift.max(pieceStart, gap.from) { return false }
+                }
+            }
+        }
+        return true
+    }
+
+    /// A stretch of a line, in seconds from the start of the recording.
+    struct Stretch: Equatable {
+        let from: Double
+        let to: Double
+        var seconds: Double { to - from }
+    }
+
+    /// The stretches of `line` that none of `segments` covers, in time order. Empty for a line
+    /// without finite, increasing timestamps: nothing about it can be measured.
+    static func uncoveredStretches(of line: TranscriptSegment, by segments: [TranscriptSegment]) -> [Stretch] {
+        guard let start = line.start, let end = line.end, start.isFinite, end.isFinite, end > start else { return [] }
+        // Clipped to the line; a NaN bound makes `from < to` false, so such a segment covers nothing.
+        let covered = segments.compactMap { piece -> Stretch? in
+            guard let pieceStart = piece.start, let pieceEnd = piece.end else { return nil }
+            let from = Swift.max(pieceStart, start), to = Swift.min(pieceEnd, end)
+            return from < to ? Stretch(from: from, to: to) : nil
+        }.sorted { $0.from < $1.from }
+        var stretches: [Stretch] = []
+        var reach = start
+        for piece in covered {
+            if piece.from > reach { stretches.append(Stretch(from: reach, to: piece.from)) }
+            reach = Swift.max(reach, piece.to)
+        }
+        if reach < end { stretches.append(Stretch(from: reach, to: end)) }
+        return stretches
     }
 
     /// What one line was matched with: the index of a segment that says the same thing, or else the
@@ -73,6 +229,14 @@ public enum TranscriptComparison {
     enum Counterpart: Equatable {
         case agreeing(Int)
         case covering([Int])
+
+        /// The other transcript's segments this line was matched with.
+        var segments: [Int] {
+            switch self {
+            case let .agreeing(index): return [index]
+            case let .covering(indices): return indices
+            }
+        }
     }
 
     /// A counterpart must share at least this fraction of the SHORTER of the two spans (F572).
@@ -84,12 +248,12 @@ public enum TranscriptComparison {
     /// line nobody else transcribed. Measured against the shorter span so that a short segment the
     /// line fully contains, and a long one that fully contains a short line, both count.
     ///
-    /// What this does NOT stop, because a fraction of the shorter span cannot (F658): a SHORT
-    /// neighbour a few tenths of a second early still shares a quarter of its own length, so it is
-    /// joined in and Replace writes it twice; a short straddler ("Yeah.") still stands in for a line
-    /// the other engine dropped; and a tail the line shares with a LONG segment, under a quarter of
-    /// the line, is still left out. No threshold fixes all three — raising it trades the first for
-    /// more of the third.
+    /// What this does NOT stop, because a fraction of the shorter span cannot: a SHORT neighbour a
+    /// few tenths of a second early still shares a quarter of its own length, so it is joined in; a
+    /// short straddler ("Yeah.") still stands in for a line the other engine dropped; and a tail the
+    /// line shares with a LONG segment, under a quarter of the line, is still left out. No threshold
+    /// fixes all three — raising it trades the first for more of the third. So this decides only what
+    /// the row SHOWS; whether it may replace the line is `offersReplacement`'s question (F658).
     static let minimumOverlapFraction = 0.25
 
     /// The other engine's reading of `segment` (F472, F572).
@@ -132,7 +296,8 @@ public enum TranscriptComparison {
         return covering.isEmpty ? nil : .covering(covering)
     }
 
-    /// The row for one line, given what it was matched with.
+    /// The row for one line, given what it was matched with. Never offers Replace by itself: whether
+    /// a diverging row may is a question about the other lines too, which `spans` answers (F658).
     static func span(
         for segment: TranscriptSegment,
         normalized text: String,
@@ -142,11 +307,13 @@ public enum TranscriptComparison {
         switch counterpart {
         case nil:
             return TranscriptComparisonSpan(
-                kind: .nonOverlapping, start: segment.start, primaryText: segment.text, secondaryText: nil
+                kind: .nonOverlapping, start: segment.start, primaryText: segment.text, secondaryText: nil,
+                offersReplacement: false
             )
         case let .agreeing(index):
             return TranscriptComparisonSpan(
-                kind: .agree, start: segment.start, primaryText: segment.text, secondaryText: secondary[index].text
+                kind: .agree, start: segment.start, primaryText: segment.text, secondaryText: secondary[index].text,
+                offersReplacement: false
             )
         case let .covering(indices):
             let joined = joinedInTimeOrder(indices.map { ($0, secondary[$0]) })
@@ -154,7 +321,7 @@ public enum TranscriptComparison {
             // at a different place. That is agreement, and nothing is offered to replace.
             return TranscriptComparisonSpan(
                 kind: normalize(joined) == text ? .agree : .diverge, start: segment.start,
-                primaryText: segment.text, secondaryText: joined
+                primaryText: segment.text, secondaryText: joined, offersReplacement: false
             )
         }
     }
@@ -334,6 +501,11 @@ extension TranscriptComparison {
         /// Indices, ascending, of the timed segments sharing time with `start..<end` by the scan's
         /// own test (`sharedSeconds`): the segment starts before the line ends, and ends after it
         /// starts. A NaN bound compares false both ways, so it finds nothing, as the scan does.
+        /// Also what `offersReplacement` asks of both transcripts (F658).
+        func overlapping(start: Double, end: Double) -> [Int] {
+            overlappingIndices(start: start, end: end)
+        }
+
         private func overlappingIndices(start: Double, end: Double) -> [Int] {
             // The timed segments starting before the line ends are a prefix of `order`.
             var lower = 0

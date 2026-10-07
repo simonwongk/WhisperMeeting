@@ -4973,7 +4973,9 @@ private struct SecondOpinionSheet: View {
             HStack {
                 Text(label(span.kind)).font(.caption).foregroundStyle(color(span.kind))
                 Spacer()
-                if span.kind == .diverge, span.secondaryText != nil {
+                // F658: only where the reading is this line's alone and covers it; otherwise the
+                // reading is shown below with the reason, and no Replace.
+                if span.kind == .diverge, span.secondaryText != nil, span.offersReplacement {
                     // F605: marked only when a line was written. A refused row stays pressable — a
                     // read-only library, for one, can be recovered and Replace tried again.
                     Button(replaced.contains(index) ? "Replaced" : "Replace") {
@@ -4989,6 +4991,11 @@ private struct SecondOpinionSheet: View {
             Text(span.primaryText)
             if let secondary = span.secondaryText, span.kind == .diverge {
                 Text(secondary).foregroundStyle(.secondary)
+                if !span.offersReplacement {
+                    Text(AppModel.secondOpinionReadingOnly)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .padding(.vertical, 2)
