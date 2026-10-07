@@ -863,9 +863,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// A changed generation is written under a NEW content-addressed name with the SAME sequence —
     /// the name is the fingerprint, so editing in place would make every file a liar — through a
     /// temp name and a rename, and the old file is removed only after the new one is in place. The
-    /// ledger's records follow (fingerprint, byte count, record count, name), so the recovery list
-    /// keeps its counts and dates. A generation that cannot be read or whose bytes do not match its
-    /// name is left for the user, as F236 leaves it in the list.
+    /// ledger's record for each rewritten file follows it (fingerprint, byte count, record count,
+    /// name) — matched by the file it names, never by its bytes (F649) — so the recovery list and
+    /// the high-water pin keep their counts and dates. A generation that cannot be read or whose
+    /// bytes do not match its name is left for the user, as F236 leaves it in the list.
     ///
     /// The backup copy is the previous generation, so when it still holds one of the elements — in
     /// practice, when the delete was the last save — the live value is saved once more: that
@@ -920,8 +921,22 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             try io.rename(temporary, directory.appendingPathComponent(newName), .retain)
             if newName != name { try io.remove(url, .prune) }
             if var updated = ledger {
+                // A record follows the FILE it names, not whichever file shares its bytes (F649).
+                // Two generations with equal content — A, B, A, both copies kept while A is the
+                // backup — share one record, which names the newer copy. Matched by fingerprint,
+                // the older copy's rewrite re-fingerprinted that record while leaving it named
+                // after the newer copy; the newer copy's own rewrite then found no record with the
+                // old fingerprint, and the record was left naming a file this loop had just
+                // removed. The high-water pin reads counts by name, so it lost the count and both
+                // copies were pruned — whenever the listing happened to return the older copy
+                // first. A record that names no file is not any file's, so it follows the bytes
+                // as before; every copy of them is rewritten to the same new bytes.
                 func follow(_ record: inout StoreLedger.Record) {
-                    guard record.fingerprint == oldFingerprint else { return }
+                    if let historyName = record.historyName {
+                        guard historyName == name else { return }
+                    } else {
+                        guard record.fingerprint == oldFingerprint else { return }
+                    }
                     record.fingerprint = newFingerprint
                     record.byteCount = newData.count
                     // The element count, which is what `recordCount` is for every array store;
