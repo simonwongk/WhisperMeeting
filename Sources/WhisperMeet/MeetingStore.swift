@@ -1482,7 +1482,8 @@ final class MeetingStore: ObservableObject {
         /// Meetings this session added — a recording just stopped, an import, a row a delete had to
         /// keep — that neither its last save nor the other copy has, and that could not be saved at
         /// once: the library refused changes, or the other copy saved again in between (F667). Both
-        /// answers save them, so neither can drop the meeting that was just recorded.
+        /// answers save them, so neither can drop the meeting that was just recorded — while the
+        /// library can be written; while it cannot, both are refused and the message says so.
         let unsavedNew: [MeetingRecord]
         /// The titles of meetings this session added that were put back in the reloaded list at once
         /// (F667) — saved, or, after an ordinary save failure, listed and carried by the next save
@@ -1501,9 +1502,11 @@ final class MeetingStore: ObservableObject {
         /// The banner's text: the conflict, then which meetings each answer decides (F667).
         let message: String
 
+        /// - Parameter libraryWritable: false when the reload left the library refusing changes, so
+        ///   neither answer can save `unsavedNew` now and the banner must not say it will.
         init(
             delta: [MeetingRecord], unsavedNew: [MeetingRecord] = [], keptNew: [String] = [],
-            deletedByOther: [MeetingRecord], notes: [String], report: String
+            deletedByOther: [MeetingRecord], notes: [String], report: String, libraryWritable: Bool = true
         ) {
             self.delta = delta
             self.unsavedNew = unsavedNew
@@ -1512,7 +1515,7 @@ final class MeetingStore: ObservableObject {
             self.notes = notes
             message = Self.message(
                 report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew,
-                deletedByOther: deletedByOther, notes: notes
+                deletedByOther: deletedByOther, notes: notes, libraryWritable: libraryWritable
             )
         }
 
@@ -1550,7 +1553,7 @@ final class MeetingStore: ObservableObject {
         /// lost save at Stop dropped the recording just made with nothing on screen naming it.
         static func message(
             report: String, delta: [MeetingRecord], unsavedNew: [MeetingRecord], keptNew: [String],
-            deletedByOther: [MeetingRecord], notes: [String]
+            deletedByOther: [MeetingRecord], notes: [String], libraryWritable: Bool = true
         ) -> String {
             var sentences = [report]
             if !delta.isEmpty {
@@ -1558,9 +1561,18 @@ final class MeetingStore: ObservableObject {
             }
             if !unsavedNew.isEmpty {
                 let new = names(unsavedNew.map(\.title))
-                sentences.append(new.plural
-                    ? "\(new.text) are new in this window and not saved yet; either answer saves them."
-                    : "\(new.text) is new in this window and not saved yet; either answer saves it.")
+                if libraryWritable {
+                    sentences.append(new.plural
+                        ? "\(new.text) are new in this window and not saved yet; either answer saves them."
+                        : "\(new.text) is new in this window and not saved yet; either answer saves it.")
+                } else {
+                    // Both answers are refused while the library cannot be written. The recording
+                    // folder stays on disk, and the startup sweep adopts it once the library can be
+                    // written again — after Recover Library, or at the next launch.
+                    sentences.append(new.plural
+                        ? "\(new.text) are new in this window and cannot be saved while the library cannot be written; their recordings stay on this Mac and are added back once the library is recovered."
+                        : "\(new.text) is new in this window and cannot be saved while the library cannot be written; its recording stays on this Mac and is added back once the library is recovered.")
+                }
             }
             if !keptNew.isEmpty {
                 let kept = names(keptNew)
@@ -1621,8 +1633,10 @@ final class MeetingStore: ObservableObject {
     /// answered (so a transcription queued behind Stop found no meeting to run on) and dropped by
     /// "Use the Other Copy". It is put onto the reloaded library and saved now, once. If that save
     /// loses too, the recovery it starts is told not to try again (`savingNewMeetings: false`), and
-    /// holds the meeting in `unsavedNew`, which both answers save; the same happens when the reload
-    /// left the library refusing changes.
+    /// holds the meeting in `unsavedNew`, which both answers save. When the reload left the library
+    /// refusing changes it is held there too, but neither answer can save it then, and the banner
+    /// says so: its recording folder stays on disk for the startup sweep to adopt once the library
+    /// can be written again.
     ///
     /// Since F642 every synchronous mutator's lost race comes here too. `note` is what the caller
     /// needs said that the snapshot cannot say — a delete that did not happen — and is appended to
@@ -1694,7 +1708,8 @@ final class MeetingStore: ObservableObject {
         }
         let offer = ConflictOffer(
             delta: delta, unsavedNew: added, keptNew: keptNew,
-            deletedByOther: deletedByOther, notes: notes, report: report.message
+            deletedByOther: deletedByOther, notes: notes, report: report.message,
+            libraryWritable: !isDegraded && !isRestoringLibrary
         )
         guard offer.asksAnything else {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,

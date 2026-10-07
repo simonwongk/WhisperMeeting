@@ -189,3 +189,34 @@ func newMeetingThatLosesTwiceIsSavedByEitherAnswer(keep: Bool) throws {
     #expect(onDisk(root, theirs.id) != nil, "the other copy's meeting was overwritten")
     #expect(onDisk(root, standup)?.title == theirTitle)
 }
+
+/// When the re-read itself leaves the library read-only — here the wipe shape: the other copy saved an
+/// empty list beside a finished recording, which loads as suspect-empty — nothing may be saved, so the
+/// new meeting cannot be put back. The banner must not promise that either answer saves it; it says the
+/// recording stays on this Mac until the library is recovered, and nothing is written.
+@MainActor
+@Test("A new meeting whose race leaves the library read-only is not promised a save it cannot get (F667)")
+func newMeetingOnALibraryLeftReadOnlyIsDescribedHonestly() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F667-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let imported = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(imported.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("finished import".utf8).write(to: folder.appendingPathComponent("recording.mp3"))
+    MeetingStore(rootDirectory: root).upsert(MeetingRecord(
+        id: imported, title: "Imported", recordingPath: "Recordings/\(imported.uuidString)/recording.mp3",
+        status: .completed
+    ))
+    let store = MeetingStore(rootDirectory: root)
+    try otherCopyCommits(in: root) { _ in [] }
+
+    store.upsert(MeetingRecord(id: UUID(), title: "Board call", status: .recorded), as: .result)
+
+    try #require(store.isDegraded, "fixture: the empty list beside a finished recording reloads read-only")
+    let offer = try #require(store.conflictOffer, "the new meeting was dropped without a word")
+    #expect(offer.unsavedNew.map(\.title) == ["Board call"])
+    #expect(!offer.message.contains("either answer saves"), "the banner promised a save the library refuses: \(offer.message)")
+    #expect(offer.message.contains("cannot be saved while the library cannot be written"), "\(offer.message)")
+    #expect(MeetingStore(rootDirectory: root).meetings.isEmpty, "something was written to a read-only library")
+}
