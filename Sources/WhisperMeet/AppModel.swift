@@ -5856,11 +5856,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Ask Meetings: the keyword pass (F180, F538)
 
-    /// How many results an Ask shows.
-    static let askResultLimit = 10
+    /// How many results an Ask shows. `nonisolated` because the Ask methods take it as a default
+    /// argument, and a default argument is evaluated outside the main actor — the release build's
+    /// warnings-as-errors refuses a main-actor constant there, where the debug build only warns.
+    nonisolated static let askResultLimit = 10
 
     /// How deep the keyword list is ranked when search by meaning will fuse with it (F316's 20).
-    static let askFusionDepth = 20
+    /// `nonisolated` for the same reason as `askResultLimit`.
+    nonisolated static let askFusionDepth = 20
 
     /// Cited cross-meeting retrieval (F180): rank transcript segments across the completed meetings in
     /// `scope` against `query`, returning citations (meeting + timestamp + snippet). Local-only,
