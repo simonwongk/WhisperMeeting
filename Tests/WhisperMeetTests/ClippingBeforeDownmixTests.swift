@@ -13,8 +13,8 @@ import Testing
 // (NEEDS_HUMAN, 2026-09-24) that the count belongs before the downmix.
 //
 // These drive `CaptureLevelMeter.measure` — the function `FloatTrackWriter.append` returns — with
-// buffers converted by the production `MonoDownmixConverter.make`, the same shape as
-// `StereoDownmixTests`. The dual-mono controls are the ticket's "the common case did not move".
+// buffers converted by the production `MonoDownmixConverter.averagedToMono` and
+// `MonoDownmixConverter.make`, the same shape as `StereoDownmixTests`. The dual-mono controls are the ticket's "the common case did not move".
 
 private let meterRate: Double = 48_000
 
@@ -47,11 +47,13 @@ private func measure(_ input: AVAudioPCMBuffer) throws -> (level: RecordingAudio
     let target = try #require(AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: meterRate, channels: 1, interleaved: false
     ))
-    let converter = try #require(MonoDownmixConverter.make(from: input.format, to: target))
-    let ratio = meterRate / input.format.sampleRate
+    // Averaged first, as `FloatTrackWriter.append` does since F659; the meter still reads `input`.
+    let mono = try #require(MonoDownmixConverter.averagedToMono(input))
+    let converter = try #require(MonoDownmixConverter.make(from: mono.format, to: target))
+    let ratio = meterRate / mono.format.sampleRate
     let output = try #require(AVAudioPCMBuffer(
         pcmFormat: target,
-        frameCapacity: AVAudioFrameCount(ceil(Double(input.frameLength) * ratio)) + 32
+        frameCapacity: AVAudioFrameCount(ceil(Double(mono.frameLength) * ratio)) + 32
     ))
     var supplied = false
     var error: NSError?
@@ -59,7 +61,7 @@ private func measure(_ input: AVAudioPCMBuffer) throws -> (level: RecordingAudio
         if supplied { status.pointee = .noDataNow; return nil }
         supplied = true
         status.pointee = .haveData
-        return input
+        return mono
     }
     #expect(error == nil, "conversion failed: \(String(describing: error))")
     return (CaptureLevelMeter.measure(input: input, output: output), Int(output.frameLength))

@@ -1209,25 +1209,34 @@ private final class FloatTrackWriter {
         // `UInt32(Int)` traps on a negative or oversized value (F376's sweep).
         inputBuffer.frameLength = AVAudioFrameCount(clamping: sampleBuffer.numSamples)
 
+        // Channels are averaged by hand before the converter sees them (F659). The microphone track
+        // arrives in "the selected microphone capture device's native format" (`SCStream.h`, on
+        // `SCStreamOutputTypeMicrophone`), a multi-input interface can report a layout that names no
+        // speakers, and the converter folded such a layout into silence. `inputBuffer` itself is still what the meter
+        // reads below, because clipping is counted per captured channel (F419).
+        guard let mono = MonoDownmixConverter.averagedToMono(inputBuffer) else {
+            throw AudioCaptureError.conversionFailed("Could not mix the captured channels")
+        }
+
         // Not inside the bridge (F385): `AVAudioConverter.h`'s `initFromFormat:toFormat:`
         // documents only "returns nil if the format conversion is not possible" — no sentence
         // anywhere in the header names an exception, unlike `AVAudioBuffer.h`'s two PCM
         // initializers above. `MonoDownmixConverter.make` already models that one documented
         // failure as the `nil` the `guard` below reads.
-        if converter == nil || converterInputFormat != inputFormat {
-            converter = MonoDownmixConverter.make(from: inputFormat, to: targetFormat)
-            converterInputFormat = inputFormat
+        if converter == nil || converterInputFormat != mono.format {
+            converter = MonoDownmixConverter.make(from: mono.format, to: targetFormat)
+            converterInputFormat = mono.format
         }
         guard let converter else {
             throw AudioCaptureError.conversionFailed("Could not create an audio converter")
         }
 
-        let ratio = targetFormat.sampleRate / inputFormat.sampleRate
+        let ratio = targetFormat.sampleRate / mono.format.sampleRate
         // `saturating:`, matching `DictationTapConverter` — this function's deliberate mirror,
         // which fixed the same line in F356 while this one kept the bare conversion that traps
         // (F376). An inconsistency between two copies of one function is how the next reader
         // learns the wrong rule.
-        let capacity = AVAudioFrameCount(saturating: ceil(Double(inputBuffer.frameLength) * ratio) + 32)
+        let capacity = AVAudioFrameCount(saturating: ceil(Double(mono.frameLength) * ratio) + 32)
         // Not inside the bridge (F385): `AVAudioBuffer.h` documents the SAME exception for this
         // initializer as for the bridged one above — "An exception is raised if the format is not
         // PCM" — so the header does not distinguish them; what does is `targetFormat`, built once
@@ -1254,7 +1263,7 @@ private final class FloatTrackWriter {
             }
             suppliedInput = true
             inputStatus.pointee = .haveData
-            return inputBuffer
+            return mono
         }
         guard conversionStatus != .error,
               conversionError == nil,

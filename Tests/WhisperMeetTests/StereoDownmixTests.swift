@@ -49,14 +49,16 @@ private func peak(_ samples: [Float]) -> Float {
     samples.reduce(0) { max($0, abs($1)) }
 }
 
-/// Runs one buffer through a converter built by the **production** helper.
+/// Runs one buffer through the **production** helpers, in the order the capture path calls them.
 ///
 /// The driver lives here rather than in `Sources/` on purpose. What the capture path and the
-/// dictation path genuinely share is the converter's *construction* — the surrounding plumbing
-/// differs (a `CMSampleBuffer` on one side, an `AVAudioPCMBuffer` on the other) — so the shared
-/// production code is `MonoDownmixConverter.make`, and that is what these tests exercise. A
-/// convert-for-testing entry point in the app target would be a second conversion path that
-/// production never takes, which is the seam F262 spent four attempts learning not to build.
+/// dictation path genuinely share is the channel average and the converter's *construction* — the
+/// surrounding plumbing differs (a `CMSampleBuffer` on one side, an `AVAudioPCMBuffer` on the
+/// other) — so the shared production code is `MonoDownmixConverter.averagedToMono` and
+/// `MonoDownmixConverter.make`, and that is what these tests exercise. A convert-for-testing entry
+/// point in the app target would be a second conversion path that production never takes, which is
+/// the seam F262 spent four attempts learning not to build. Since F659 the channels are averaged
+/// before the converter is built, and `make` refuses a converter that would fold them.
 private func convertToMono(
     _ input: AVAudioPCMBuffer,
     sampleRate: Double = downmixRate
@@ -64,9 +66,10 @@ private func convertToMono(
     let target = try #require(AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
     ))
-    let converter = try #require(MonoDownmixConverter.make(from: input.format, to: target))
+    let mono = try #require(MonoDownmixConverter.averagedToMono(input))
+    let converter = try #require(MonoDownmixConverter.make(from: mono.format, to: target))
     let output = try #require(AVAudioPCMBuffer(
-        pcmFormat: target, frameCapacity: input.frameLength + 32
+        pcmFormat: target, frameCapacity: mono.frameLength + 32
     ))
     var supplied = false
     var error: NSError?
@@ -74,7 +77,7 @@ private func convertToMono(
         if supplied { status.pointee = .noDataNow; return nil }
         supplied = true
         status.pointee = .haveData
-        return input
+        return mono
     }
     #expect(error == nil, "conversion failed: \(String(describing: error))")
     let channels = try #require(output.floatChannelData)
@@ -130,9 +133,9 @@ func monoInputIsNotDownmixed() throws {
     for frame in 0..<2_400 { channels[0][frame] = 0.5 }
 
     let samples = try convertToMono(buffer)
-    // `downmix` is only set when the input has more channels than the target, so a single-channel
-    // input takes the same path it always did. Asserted rather than assumed, because "mixing" one
-    // channel is exactly the kind of no-op that turns out not to be one.
+    // `averagedToMono` hands a single-channel buffer back as it is, so a mono input takes the same
+    // path it always did. Asserted rather than assumed, because "mixing" one channel is exactly the
+    // kind of no-op that turns out not to be one.
     #expect(abs(peak(samples) - 0.5) < 0.01)
 }
 
@@ -149,13 +152,22 @@ func noConverterIsBuiltWithoutTheDownmixDecision() throws {
         "Sources/WhisperMeet/Dictation/DictationTapConverter.swift",
     ] {
         let source = try SourceAssertion.uncommentedSource(path)
-        #expect(!source.contains("AVAudioConverter(from:"),
-                "\(path) should build its converter through MonoDownmixConverter, which sets downmix")
-        #expect(source.contains("MonoDownmixConverter.make("),
-                "\(path) should use the shared helper")
+        let buildsItsOwn = source.contains("AVAudioConverter(from:")
+        let usesTheHelper = source.contains("MonoDownmixConverter.make(")
+        #expect(!buildsItsOwn,
+                "\(path) should build its converter through MonoDownmixConverter, which decides the mix")
+        #expect(usesTheHelper, "\(path) should use the shared helper")
     }
-    let helper = try SourceAssertion.uncommentedSource(
-        "Sources/WhisperMeet/MonoDownmixConverter.swift"
-    )
-    #expect(helper.contains("downmix = true"), "the helper is where the decision lives")
+    // Since F659 the mix is the helper's own average, and the converter is never asked to fold
+    // channels at all: `make` refuses one that would. Asserted on behaviour, not on the helper's
+    // text — the old `downmix = true` check was a sentence the fix deleted, not a property.
+    let stereo = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: downmixRate, channels: 2, interleaved: false
+    ))
+    let mono = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: downmixRate, channels: 1, interleaved: false
+    ))
+    #expect(MonoDownmixConverter.make(from: stereo, to: mono) == nil,
+            "a converter that folds channels is the one that folds an unlabelled layout into silence")
+    #expect(MonoDownmixConverter.make(from: mono, to: mono) != nil)
 }

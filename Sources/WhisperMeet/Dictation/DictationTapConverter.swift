@@ -61,11 +61,18 @@ final class DictationTapConverter: @unchecked Sendable {
     /// failure — whether the capture as a whole yielded nothing is `MicDictationRecorder.stop()`'s
     /// call (F368).
     func convert(_ buffer: AVAudioPCMBuffer) -> DictationTapChunk? {
-        let inputFormat = buffer.format
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return nil }
+        guard buffer.format.sampleRate > 0, buffer.format.channelCount > 0 else { return nil }
+
+        // Channels are averaged by hand before the converter sees them (F659): an input whose layout
+        // names no speakers, which a multi-input interface can report, converted to silence when the
+        // converter folded it. So the converter is built from, and rebuilt on a change of, the averaged
+        // buffer's format: mono at the input's rate. A channel-count change at one rate no longer
+        // rebuilds it, and need not, since the converter never sees the channels.
+        guard let mono = MonoDownmixConverter.averagedToMono(buffer) else { return nil }
+        let inputFormat = mono.format
 
         if converter == nil || converterInputFormat != inputFormat {
-            converter = MonoDownmixConverter.make(from: inputFormat, to: targetFormat)
+            converter = MonoDownmixConverter.make(from: mono.format, to: targetFormat)
             // Recorded only on success. If the build failed there is nothing to reuse, so the next
             // buffer must try again rather than be matched against a format no converter exists for.
             converterInputFormat = converter == nil ? nil : inputFormat
@@ -77,7 +84,7 @@ final class DictationTapConverter: @unchecked Sendable {
         // `saturating:` rather than a bare conversion: `UInt32(Double)` traps on overflow, and a
         // guard that computes a capacity is exactly where this repo has found that trap before.
         let capacity = AVAudioFrameCount(
-            saturating: (Double(buffer.frameLength) * ratio).rounded(.up) + 32
+            saturating: (Double(mono.frameLength) * ratio).rounded(.up) + 32
         )
         // Belt and braces: `capacity` cannot be zero after the guard above, but a zero frame capacity
         // is one of the argument errors AVFAudio answers by raising, and this file exists because of a
@@ -95,7 +102,7 @@ final class DictationTapConverter: @unchecked Sendable {
             }
             supplied = true
             inputStatus.pointee = .haveData
-            return buffer
+            return mono
         }
         guard status != .error, error == nil, let channel = output.floatChannelData?[0] else {
             return nil
