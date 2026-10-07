@@ -54,7 +54,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
 | 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
 | 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
-| 11 | **F807 · F845 · F685** | ~45 min + 4 answers | Wave 3's screen checks in one sitting, one silent dictation, and four one-word questions. Nothing urgent; the batch is tested headlessly and reviewed. |
+| 11 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
 
 ---
 
@@ -307,7 +307,7 @@ bar, dictation paste and privacy, hotkeys, installers, backups, history and voca
 reviewed by a second agent; what only a person can see is collected here. Install the batch's build first (I will tell you
 when it is installed). Use bench clips or throwaway imports, never a real meeting.
 
-**What I need from you:** one sitting of about 45 minutes (split it as you like), then four short answers.
+**What I need from you:** one sitting of about 45 minutes (split it as you like).
 
 1. **Quitting and the menu bar (F529, F672, F673, F543, F528, F674) — ~10 min.** Start a recording, talk for 20 s, press ⌘Q:
    "Stop and save the recording before quitting?" should appear; choose Keep Recording, then ⌘Q again and Stop & Quit.
@@ -330,15 +330,10 @@ when it is installed). Use bench clips or throwaway imports, never a real meetin
 7. **Optional, with care (F685):** only if you want an F-key as your dictation trigger (yours is Right ⌘, which this does not
    affect). Steps and the mouse-only escape are in F685.
 
-**Four questions** (one word each is enough):
-- **F821** — should your replacement rules also fix dictations, or stay meeting-only?
-- **F664** — a restore keeps a full copy of every overwritten recording in a hidden folder forever. Delete a deleted meeting's
-  copy there after the usual week (like the index), or list those folders in Settings with their size?
-- **F833** — when two versions of the library are found, may the app offer a button that sets its ledger aside (moved, not
-  deleted) and keeps the version on disk, instead of the Terminal step?
-- **F529 / F673** — two choices an agent made for you: logout/restart during a recording asks the same question (if nobody
-  answers, macOS cancels the logout); Stop & Quit leaves the meeting ready to transcribe rather than queueing it for next
-  launch. Say "fine" or which to change.
+**Four questions — answered 2026-10-07:** replacement rules will also apply to Quick Dictation (F821); a deleted meeting's
+copy in the restore safety folders is wiped after its week (F664); the "two versions" screen gets a "Keep the version on disk"
+button (F833); and both quit choices stay as they are — logout asks first, Stop & Quit leaves the meeting ready to transcribe
+(F529, F673). The three changes are on the board for the next batch.
 
 ---
 
