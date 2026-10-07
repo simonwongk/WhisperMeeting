@@ -3287,7 +3287,9 @@ private struct TranscriptDetailView: View {
                 set: { if $0 == nil { proposalReviews.close() } }
             ), onDismiss: { proposalReviews.advance() }) { review in
                 GlossarySuggestionSheet(review: review, protectedTerms: store.vocabulary) { accepted in
-                    model.applyGlossaryCorrections(accepted, to: meetingID)
+                    // F831: Edit ▸ Undo puts the lines back, as it does for a line removal (F423).
+                    guard let applied = model.applyGlossaryCorrections(accepted, to: meetingID) else { return }
+                    registerCorrectionUndo(applied, model: model, undoManager: undoManager)
                 }
             }
             .sheet(item: $languageRemovalOffer) { offer in
@@ -4669,6 +4671,22 @@ private func registerLineRemovalUndo(
         MainActor.assumeIsolated { _ = model.undoTranscriptLineRemoval(removal) }
     }
     undoManager.setActionName(actionName)
+}
+
+/// Registers Edit ▸ Undo for an Apply in the corrections review (F831), in the line removal's shape:
+/// `undoTranscriptCorrections` refuses once the transcript has changed again, so a stale undo does
+/// nothing rather than overwrite.
+@MainActor
+private func registerCorrectionUndo(
+    _ applied: AppModel.TranscriptCorrectionApplication,
+    model: AppModel,
+    undoManager: UndoManager?
+) {
+    guard let undoManager else { return }
+    undoManager.registerUndo(withTarget: model) { model in
+        MainActor.assumeIsolated { _ = model.undoTranscriptCorrections(applied) }
+    }
+    undoManager.setActionName("Apply Corrections")
 }
 
 /// The lines Remove Lines in Another Language offers (F424), captured when the sheet opens.

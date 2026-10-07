@@ -6304,16 +6304,60 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Everything an Apply in the corrections review changed, so it can be undone exactly — and only
+    /// while nothing else has changed the transcript since (F831, in F423's shape).
+    struct TranscriptCorrectionApplication: Equatable {
+        let meetingID: UUID
+        let segmentsBefore: [TranscriptSegment]
+        let textBefore: String
+        let segmentsAfter: [TranscriptSegment]
+        let textAfter: String
+    }
+
     /// Applies the user-accepted corrections to a meeting's transcript, rebuilding the timestamped
     /// text from the corrected segments. Skipped when the transcript was hand-edited (segment-derived
     /// text no longer matches what's shown). The recording is never opened (F82).
-    func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) {
-        guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return }
+    ///
+    /// Returns what to hand `undoTranscriptCorrections` (F831), or nil when nothing changed — refused,
+    /// nothing to apply, corrections that match no text, or a write the store declined. Until F831
+    /// this registered nothing, so one wrong tick from any of the three correction tools was
+    /// permanent except by retyping it.
+    @discardableResult
+    func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) -> TranscriptCorrectionApplication? {
+        guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return nil }
         let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments, evidence: cjkWordEvidence)
+        guard corrected != meeting.segments else { return nil }
+        let text = TranscriptFormatter.timestamped(corrected)
         store.update(id: id) {
             $0.segments = corrected
-            $0.transcriptText = TranscriptFormatter.timestamped(corrected)
+            $0.transcriptText = text
         }
+        guard let written = store.meeting(id: id), written.segments == corrected, written.transcriptText == text else {
+            return nil
+        }
+        return TranscriptCorrectionApplication(
+            meetingID: id,
+            segmentsBefore: meeting.segments, textBefore: meeting.transcriptText,
+            segmentsAfter: corrected, textAfter: text
+        )
+    }
+
+    /// Puts an Apply back, but only if the transcript is exactly as the Apply left it (F831), the
+    /// rule `undoTranscriptLineRemoval` follows: a later edit, removal, Replace, re-transcription or
+    /// second Apply wins, because restoring the older lines over it would silently undo that too.
+    @discardableResult
+    func undoTranscriptCorrections(_ application: TranscriptCorrectionApplication) -> Bool {
+        guard libraryReadOnlyFootnote == nil,
+              let meeting = store.meeting(id: application.meetingID),
+              meeting.status == .completed,
+              meeting.segments == application.segmentsAfter,
+              meeting.transcriptText == application.textAfter else { return false }
+        store.update(id: application.meetingID) {
+            $0.segments = application.segmentsBefore
+            $0.transcriptText = application.textBefore
+        }
+        guard let restored = store.meeting(id: application.meetingID) else { return false }
+        return restored.segments == application.segmentsBefore && restored.transcriptText == application.textBefore
     }
 
     // MARK: - Removing transcript lines (F422, F423, F424)
