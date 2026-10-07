@@ -4956,7 +4956,7 @@ final class AppModel: ObservableObject {
         // source, which is meaningless for a remote URL and would silently degrade to a flat margin.
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
-            let needed = (probe.approximateBytes ?? 0) + 500_000_000
+            let needed = Self.linkImportStorageNeeded(approximateBytes: probe.approximateBytes)
             if available < needed {
                 return .refused("Downloading this needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again.")
             }
@@ -5200,8 +5200,19 @@ final class AppModel: ObservableObject {
         AppModel.sourceVersion(of: url.resolvingSymlinksInPath())?.size
     }
 
+    /// The free space Import from a link needs: the size the probe reports plus the same 500 MB
+    /// margin, through the same saturating sum the file imports use (F462). The size is whatever
+    /// yt-dlp read off the page (`filesize_approx`/`filesize`), so a page can claim a number within
+    /// 500 MB of `Int64.max`, and the bare `+` `importFromURL` used to do trapped on it. A negative
+    /// size is no size: it must not eat into the margin, or make the need negative so that every
+    /// volume passes.
+    nonisolated static func linkImportStorageNeeded(approximateBytes: Int64?) -> Int64 {
+        importStorageNeeded(forFileSizes: [max(0, approximateBytes ?? 0)])
+    }
+
     /// The free space importing files of these sizes needs: their bytes plus a 500 MB margin. One
-    /// sum for both free-space checks, `importOne`'s and the watched folder's, so they cannot drift.
+    /// sum for every free-space check — `importOne`'s, the watched folder's, and Import from a link's
+    /// (`linkImportStorageNeeded`, F462) — so they cannot drift.
     /// It saturates at `Int64.max` instead of trapping (F494): `Int64` addition traps on overflow,
     /// and the watched folder's copy of this sum did, once per file and once for the margin. A need
     /// past `Int64.max` is no volume's free space, so it is refused as too big, which it is.

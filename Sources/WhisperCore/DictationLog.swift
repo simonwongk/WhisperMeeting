@@ -236,16 +236,31 @@ public struct DictationLog: Codable, Sendable, Equatable {
     public private(set) var entries: [DictationLogEntry]
     public var limit: Int
 
-    public init(entries: [DictationLogEntry] = [], limit: Int = 100) {
+    public init(entries: [DictationLogEntry] = [], limit: Int = DictationLog.defaultLimit) {
         self.entries = entries
         self.limit = limit
     }
 
-    /// Returns a new log with `entry` prepended (most recent first), capped to `limit`.
+    /// The cap this build writes, and the one it applies when the stored `limit` is negative (F462).
+    public static let defaultLimit = 100
+
+    /// The cap `adding` applies: `limit`, or `defaultLimit` when `limit` is negative (F462).
+    ///
+    /// `limit` is a plain persisted `Int`, so `"limit": -1` — a hand edit, a bad restore, or a later
+    /// build's sentinel — decodes cleanly, and `removeLast(count - limit)` then trapped on the next
+    /// dictation ("Can't remove more items from a collection than it contains"; `Int.min` overflowed
+    /// the subtraction first). I chose the default cap over clamping to 0 or 1: both of those delete
+    /// the user's history on the next dictation, and a number nobody chose is no reason to. Zero keeps
+    /// its old meaning, keep nothing, because it never trapped. The stored value is left alone and
+    /// written back as found; this only decides what is applied.
+    public var effectiveLimit: Int { limit >= 0 ? limit : Self.defaultLimit }
+
+    /// Returns a new log with `entry` prepended (most recent first), capped to `effectiveLimit`.
     public func adding(_ entry: DictationLogEntry) -> DictationLog {
         var updated = [entry] + entries
-        if updated.count > limit {
-            updated.removeLast(updated.count - limit)
+        let cap = effectiveLimit
+        if updated.count > cap {
+            updated.removeLast(updated.count - cap)
         }
         return DictationLog(entries: updated, limit: limit)
     }

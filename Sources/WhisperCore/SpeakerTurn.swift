@@ -59,6 +59,9 @@ public enum SpeakerTurnValidationError: LocalizedError, Sendable, Equatable {
     case reversedInterval
     case exceedsDuration
     case negativeCluster
+    /// A speaker number this app's analysis never assigns: `densify` numbers clusters `0..<n` with
+    /// `n <= maximumClusterCount`, so anything at or past that bound came from somewhere else (F462).
+    case clusterOutOfRange
     case unsortedTurns
     case tooManyTurns
     /// More distinct voices than a meeting can have — a clustering failure, not a crowd (F342).
@@ -79,6 +82,7 @@ public enum SpeakerTurnValidationError: LocalizedError, Sendable, Equatable {
         case .reversedInterval: return "a turn ends before it starts"
         case .exceedsDuration: return "a turn runs past the end of the recording"
         case .negativeCluster: return "a turn was given a negative speaker number"
+        case .clusterOutOfRange: return "a turn was given a speaker number the analysis never assigns"
         case .unsortedTurns: return "the turns are not in time order"
         case .tooManyTurns: return "there are more turns than a meeting can plausibly contain"
         case .tooManyClusters: return "more distinct voices were found than a meeting can have, which is a clustering failure rather than a crowd"
@@ -162,6 +166,11 @@ public enum SpeakerTurns {
             }
             guard turn.endSeconds <= limit else { throw SpeakerTurnValidationError.exceedsDuration }
             guard turn.clusterID >= 0 else { throw SpeakerTurnValidationError.negativeCluster }
+            // An upper bound as well (F462). Every speaker label is `clusterID + 1`
+            // (`TranscriptExporter.anonymousSpeakerName`), which traps at Int.max, and a sidecar that
+            // decodes cleanly can carry Int.max. `densify` numbers clusters `0..<n` and the count
+            // check above caps n at `maximumClusterCount`, so nothing this app wrote is at or past it.
+            guard turn.clusterID < maximumClusterCount else { throw SpeakerTurnValidationError.clusterOutOfRange }
             guard turn.startSeconds >= previousStart else {
                 throw SpeakerTurnValidationError.unsortedTurns
             }

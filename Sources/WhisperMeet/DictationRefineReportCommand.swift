@@ -96,7 +96,7 @@ enum DictationRefineReportCommand {
             let format = Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day()
             header += ", between \(first.formatted(format)) and \(last.formatted(format))"
         }
-        header += ". The log keeps at most \(log.limit) entries, so older dictations have already rolled off."
+        header += ". The log keeps at most \(log.effectiveLimit) entries, so older dictations have already rolled off."
         if let cut {
             let n = report.excludedAsEarlier
             header += " \(n) earlier entr\(n == 1 ? "y was" : "ies were") left out by \(sinceFlag) \(cut.label)."

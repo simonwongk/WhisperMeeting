@@ -82,9 +82,11 @@ public struct LocalEmbedder: Sendable {
         struct Metadata: Decodable { let count: Int; let dimension: Int }
         guard let raw = try? Data(contentsOf: URL(fileURLWithPath: output.path + ".json")),
               let metadata = try? JSONDecoder().decode(Metadata.self, from: raw),
-              metadata.count == texts.count, metadata.dimension > 0,
+              metadata.count == texts.count,
+              // Checked, not multiplied bare (F462): the helper's answer is a JSON file too.
+              let byteCount = SegmentEmbeddings.vectorByteCount(count: metadata.count, dimension: metadata.dimension),
               let data = try? Data(contentsOf: output),
-              data.count == metadata.count * metadata.dimension * MemoryLayout<Float>.size
+              data.count == byteCount
         else { throw LocalEmbedderError.unreadableOutput }
         // Alignment-safe, for the reason `SegmentEmbeddings.floats(from:count:)` documents (F333).
         return (metadata.dimension,

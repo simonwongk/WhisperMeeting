@@ -184,3 +184,26 @@ func reportHeaderDatesAgreeWithSince() throws {
     #expect(result.message.contains("between 2026-09-24 and 2026-09-24"))
     #expect(!result.message.contains("2026-09-23"))
 }
+
+@Test("A log whose stored limit is negative reports the cap that applies, not the stored number (F462)")
+func reportStatesTheAppliedCapForANegativeLimit() throws {
+    // The file as a hand edit leaves it: well-formed, `"limit": -1`. `adding` applies the default cap
+    // to it (F462), so the header must say that cap, not "at most -1 entries".
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    var object = try #require(
+        JSONSerialization.jsonObject(
+            with: encoder.encode(DictationLog(entries: [entry(30, .refined)]))
+        ) as? [String: Any]
+    )
+    object["limit"] = -1
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RefineReportLimit-\(UUID().uuidString).json")
+    try JSONSerialization.data(withJSONObject: object).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let result = DictationRefineReportCommand.run(logURL: url)
+    #expect(result.status == 0)
+    #expect(result.message.contains("The log keeps at most \(DictationLog.defaultLimit) entries"),
+            "\(result.message.prefix(200))")
+}

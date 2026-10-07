@@ -202,7 +202,12 @@ public enum DiarizationArtifactCodec {
             // later `aliases[String(clusterID)]` lookup then MISSES — the file is certified
             // trustworthy and the name the user typed silently never appears. "7" and "007" could
             // also coexist as two keys for one cluster, one of them permanently shadowed.
-            guard let clusterID = Int(key), clusterID >= 0, String(clusterID) == key else {
+            //
+            // And inside the range `SpeakerTurns.validate` holds turns to (F462): an alias is only
+            // ever written for a speaker on screen, so a key at or past `maximumClusterCount` names
+            // a speaker this app never numbered.
+            guard let clusterID = Int(key), clusterID >= 0, clusterID < SpeakerTurns.maximumClusterCount,
+                  String(clusterID) == key else {
                 throw DiarizationArtifactError.malformed("aliasKey")
             }
             // `.count` is grapheme clusters: one Character can be 40 KB of combining marks, so 64

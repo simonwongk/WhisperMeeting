@@ -46,6 +46,23 @@ public struct SegmentEmbeddings: Sendable, Equatable {
         return values
     }
 
+    /// The byte length of `count × dimension` float32 values, or nil when either multiplication
+    /// overflows `Int`, the count is negative, or the dimension is not positive (F462; the last is
+    /// the `dimension > 0` both callers already checked).
+    ///
+    /// Both numbers come from a JSON file — `ask-embeddings.json`, or the helper's own answer in
+    /// `LocalEmbedder.embed` — so a damaged or foreign one can carry a dimension like 2^62 that is
+    /// positive, decodes cleanly, and made the bare `count * dimension * 4` trap: the size check that
+    /// exists to turn a bad file into "no index" crashed the app instead. Shared, so the two checks
+    /// cannot drift apart.
+    static func vectorByteCount(count: Int, dimension: Int) -> Int? {
+        guard count >= 0, dimension > 0 else { return nil }
+        let (values, valuesOverflowed) = count.multipliedReportingOverflow(by: dimension)
+        let (bytes, bytesOverflowed) = values.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
+        guard !valuesOverflowed, !bytesOverflowed else { return nil }
+        return bytes
+    }
+
     private struct Metadata: Codable {
         let modelID: String
         let fingerprint: String
@@ -73,11 +90,13 @@ public struct SegmentEmbeddings: Sendable, Equatable {
     public static func read(from directory: URL, modelID: String, texts: [String]) -> SegmentEmbeddings? {
         guard let raw = try? Data(contentsOf: directory.appendingPathComponent(metadataFilename)),
               let metadata = try? JSONDecoder().decode(Metadata.self, from: raw),
-              metadata.modelID == modelID, metadata.count == texts.count, metadata.dimension > 0,
+              metadata.modelID == modelID, metadata.count == texts.count,
               metadata.fingerprint == fingerprint(of: texts),
+              let byteCount = vectorByteCount(count: metadata.count, dimension: metadata.dimension),
               let data = try? Data(contentsOf: directory.appendingPathComponent(vectorsFilename)),
-              data.count == metadata.count * metadata.dimension * MemoryLayout<Float>.size
+              data.count == byteCount
         else { return nil }
+        // `count × dimension` cannot overflow here: `byteCount`, four times it, did not.
         let vectors = Self.floats(from: data, count: metadata.count * metadata.dimension)
         return SegmentEmbeddings(modelID: modelID, fingerprint: metadata.fingerprint,
                                  dimension: metadata.dimension, vectors: vectors)
