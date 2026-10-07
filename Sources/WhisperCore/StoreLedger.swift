@@ -37,6 +37,8 @@ public struct StoreLedger: Codable, Sendable, Equatable {
         public var sequence: UInt64
         public var fingerprint: String
         public var byteCount: Int
+        /// The process that wrote the generation; `"unknown"` on a record a save wrote for a
+        /// generation it found on disk without one (F677).
         public var writer: String
         public var wroteAtEpochSeconds: Int
         /// nil for an adopted or bootstrap generation.
@@ -75,11 +77,14 @@ public struct StoreLedger: Codable, Sendable, Equatable {
     public var previous: Record?
     /// Newest first, includes `current`. While the folder can be listed: the newest 64 records,
     /// plus one for every older generation whose file is still under `<stem>.history/` (F517) —
-    /// which retention bounds. A save that cannot list the folder keeps every record naming a file
-    /// rather than guess (F648). That adds at most the 64 records that were inside the window when
-    /// the listing began to fail, as long as retention fails too (a squatted or unwritable folder);
-    /// a folder that can be written but not listed gains a file and a record per save until it can
-    /// be listed again, and each such save reports `.historyUnavailable` (F688).
+    /// which retention bounds. That includes generations the ledger had lost track of (a lost or
+    /// set-aside ledger, a history folder put back): a save that lists one records it, with the
+    /// count read from the file, after everything the ledger already held (F677). A save that
+    /// cannot list the folder keeps every record naming a file rather than guess (F648). That adds
+    /// at most the 64 records that were inside the window when the listing began to fail, as long
+    /// as retention fails too (a squatted or unwritable folder); a folder that can be written but
+    /// not listed gains a file and a record per save until it can be listed again, and each such
+    /// save reports `.historyUnavailable` (F688).
     public var history: [Record]
     /// False when this writer could not create or use `<stem>.history/`. A load NEVER declares
     /// divergence while this is false — without history there is no evidence to be sure with.

@@ -149,6 +149,43 @@ private final class DecodableFileMemory: @unchecked Sendable {
     }
 }
 
+/// The record counts of retained generations this process has learned, by file name (F677).
+///
+/// A generation's name carries its fingerprint, and a count is only ever learned from bytes verified
+/// against that fingerprint (or written by this process under it), so a name's count cannot change
+/// while the file exists. Remembering it is what keeps a ledger this build may not write — a newer
+/// build's, which F190 leaves exactly as it is — from making every save re-read every generation it
+/// cannot record. `nil` is remembered too: a generation that could not be counted is tried once per
+/// launch, not once per save.
+///
+/// A reference type for `DecodableFileMemory`'s reason: every copy of a `BackupJSONStore` addresses
+/// the same files.
+private final class ArchivedCountMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int?] = [:]
+
+    /// `.some(nil)` when the generation is known to be uncountable; `nil` when it was never tried.
+    func count(of name: String) -> Int?? {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[name]
+    }
+
+    func remember(_ name: String, count: Int?) {
+        lock.lock()
+        counts[name] = .some(count)
+        lock.unlock()
+    }
+
+    /// Forgets every name not in `names`, so the memory is bounded by what is on disk rather than by
+    /// how many saves a session makes.
+    func keepOnly(_ names: Set<String>) {
+        lock.lock()
+        counts = counts.filter { names.contains($0.key) }
+        lock.unlock()
+    }
+}
+
 public struct BackupJSONStore<Value: Codable & Sendable> {
     public struct LoadResult {
         public let value: Value
@@ -226,6 +263,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// Optional element-wise recovery so one bad record costs one record, not the whole library (F187).
     private let salvage: (@Sendable (Data) -> SalvagedValue<Value>?)?
     private let decodableMemory = DecodableFileMemory()
+    private let archivedCounts = ArchivedCountMemory()
 
     public init(
         primaryURL: URL,
@@ -530,6 +568,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             verified: true
         )
 
+        // The generations on disk the ledger does not describe get a record, so the high-water pin
+        // can see their counts again (F677). Never fatal, and after the install, so nothing here
+        // can stand between the user's value and the disk.
+        let valueCount = recordCount?(value)
+        if let retainedName {
+            archivedCounts.remember(retainedName, count: valueCount)
+        }
+        let rediscovered = recordsForUndescribedGenerations(archivedNames: archivedNames, ledger: ledger)
+        if let archivedNames {
+            archivedCounts.keepOnly(Set(archivedNames + [retainedName].compactMap { $0 }))
+        }
+
         // 10. commit — the ledger's atomic rename is the commit point. NEVER fatal.
         let ledgerLagged = commitLedger(
             token: token,
@@ -538,8 +588,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             identityBeforeWrite: ledgerIdentityBeforeWrite,
             retainedName: retainedName,
             historyAvailable: historyAvailable,
-            recordCount: recordCount?(value),
+            recordCount: valueCount,
             archivedNames: archivedNames,
+            rediscovered: rediscovered,
             now: now,
             phases: &phases
         )
@@ -548,6 +599,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         //     already computed rather than re-reading anything.
         let pruned = pruneHistory(
             ledger: StoreLedger.read(at: ledgerURL, using: io),
+            rediscovered: rediscovered,
             liveFingerprints: [newFingerprint, primaryFingerprint].compactMap { $0 },
             indexBytes: newData.count,
             now: now
@@ -708,6 +760,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         historyAvailable: Bool,
         recordCount: Int?,
         archivedNames: [String]?,
+        rediscovered: [StoreLedger.Record],
         now: Int,
         phases: inout [StoreWritePhase]
     ) -> Bool {
@@ -731,6 +784,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         entries.append(contentsOf: (previousLedger?.history ?? []).filter {
             $0.fingerprint != record.fingerprint
         })
+        // After everything the ledger already held: they describe older generations it had lost
+        // track of (F677), and each names a file this save's listing showed, so the rule below
+        // keeps them exactly as long as their file is on disk.
+        let named = Set(entries.compactMap(\.historyName))
+        entries.append(contentsOf: rediscovered.filter { $0.historyName.map { !named.contains($0) } ?? false })
         // Which records survive (F517). The newest `recentLedgerRecords` stay, exactly as before —
         // they are the fingerprints `isDivergent` recognises a hand-restore of a recently pruned
         // generation by, so dropping them would turn a rollback into a false read-only library.
@@ -776,13 +834,17 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
 
     private func pruneHistory(
         ledger: StoreLedger?,
+        rediscovered: [StoreLedger.Record],
         liveFingerprints: [String],
         indexBytes: Int,
         now: Int
     ) -> [String] {
         var counts: [String: Int] = [:]
         var times: [String: Int] = [:]
-        for record in ledger?.history ?? [] {
+        // The rediscovered records first, so the committed ledger's own records win where both
+        // describe a file; they still count when the commit lagged or was refused (F677) — a ledger
+        // another copy just wrote, or a newer build's that this one must leave alone.
+        for record in rediscovered + (ledger?.history ?? []) {
             guard let name = record.historyName else { continue }
             if let count = record.recordCount { counts[name] = count }
             times[name] = record.wroteAtEpochSeconds
@@ -793,6 +855,80 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             policy: retention, now: now, recordCounts: counts, writtenAt: times,
             liveFingerprints: liveFingerprints, indexBytes: indexBytes
         )
+    }
+
+    /// What `writer` says on a record a save wrote for a generation it found on disk rather than
+    /// wrote (F677). Nothing reads a history record's writer; this says, to whoever opens the ledger,
+    /// that its author is not known.
+    private static var rediscoveredWriter: String { "unknown" }
+
+    /// Ledger records for the generations this save's listing shows on disk and the ledger does not
+    /// describe, so the high-water pin can see their counts again (F677).
+    ///
+    /// The pin reads a generation's count only from the ledger (`StoreHistory.entries()` reports nil
+    /// for every file), so every way of losing the ledger's record of a file used to take the pin's
+    /// protection with it: the ledger deleted (`docs/RECOVERY.md`'s manual exit) or unreadable, set
+    /// aside by a backup restore (F463), or a history folder moved aside for two saves and put back
+    /// (F648's review). After any of them the largest library on disk was pruned by the ordinary
+    /// rules. The count is in the file itself, so it is read back from there — once: the record is
+    /// committed with this save, and `ArchivedCountMemory` covers a ledger that cannot be written.
+    ///
+    /// In order of cost: a record of the same bytes under another name (content-addressed, so the
+    /// same count — the older copy of A, B, A, which `commitLedger` keeps no record for), the
+    /// memory, then the file: read, verified against the fingerprint in its name, and parsed as a
+    /// JSON array. The element count is what `recordCount` is for every array store, as the shred
+    /// already relies on. A file that cannot be counted gets no record, so it is tried again at the
+    /// next launch. Without a listing (F648) there is nothing to describe, and a store that keeps
+    /// no counts has nothing for the pin to read.
+    private func recordsForUndescribedGenerations(
+        archivedNames: [String]?, ledger: StoreLedger?
+    ) -> [StoreLedger.Record] {
+        guard recordCount != nil, let archivedNames else { return [] }
+        let records = ledger?.history ?? []
+        let described = Set(records.compactMap(\.historyName))
+        var countsByContent: [String: Int] = [:]
+        for record in records {
+            guard let count = record.recordCount, countsByContent[record.fingerprint] == nil else { continue }
+            countsByContent[record.fingerprint] = count
+        }
+        var found: [StoreLedger.Record] = []
+        for name in archivedNames where !described.contains(name) {
+            guard let parsed = StoreHistory.parse(name) else { continue }
+            let url = history.directoryURL.appendingPathComponent(name)
+            guard let identity = io.identity(url) else { continue }
+            let count: Int?
+            if let known = countsByContent[parsed.fingerprint] {
+                count = known
+            } else if let remembered = archivedCounts.count(of: name) {
+                count = remembered
+            } else {
+                count = elementCount(at: url, fingerprint: parsed.fingerprint)
+                archivedCounts.remember(name, count: count)
+            }
+            guard let count else { continue }
+            found.append(StoreLedger.Record(
+                sequence: parsed.sequence,
+                fingerprint: parsed.fingerprint,
+                byteCount: Int(clamping: identity.size),
+                writer: Self.rediscoveredWriter,
+                // The file's own mtime: what `prune` already falls back to for a file the ledger
+                // does not describe (F234), so recording it changes no age anchor.
+                wroteAtEpochSeconds: identity.modifiedSeconds,
+                recordCount: count,
+                historyName: name
+            ))
+        }
+        return found.sorted { $0.sequence > $1.sequence }
+    }
+
+    /// The number of top-level elements in a retained generation, or nil when it cannot be read,
+    /// its bytes do not match the fingerprint in its name, or it is not a JSON array.
+    private func elementCount(at url: URL, fingerprint: String) -> Int? {
+        guard let bytes = try? io.read(url, .readHistoryEntry),
+              io.fingerprint(bytes) == fingerprint,
+              let elements = (try? JSONSerialization.jsonObject(with: bytes)) as? [Any]
+        else { return nil }
+        return elements.count
     }
 
     /// Sweeps only OUR OWN stale temporaries — Foundation cleans up its own `.atomic` temps, and

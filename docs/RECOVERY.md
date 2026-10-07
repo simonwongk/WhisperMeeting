@@ -114,7 +114,10 @@ little-endian floating-point audio.
 ## The index and its history (F190)
 
 Beside `meetings.json` and `meetings.backup.json` the library now keeps three more things. All of
-them are **advisory**: delete any of them and the library still opens exactly as it did before.
+them are **advisory**: delete any of them and the library still opens exactly as it did before. A
+lost or set-aside ledger does not cost the protection for the largest copy of the index either: the
+next save reads each generation in `meetings.history/` that the ledger no longer describes, once, to
+learn how many meetings it holds (F677).
 
 ```text
 ~/Library/Application Support/WhisperMeet/
