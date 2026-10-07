@@ -70,7 +70,8 @@ public struct SummarizerRuntime: Sendable {
 
     /// Whether the runtime is installed AND carries the F165 correction helper. Kept separate from
     /// `isInstalled` so an F164-era summarizer install (which predates `correct_local.py`) still reports
-    /// installed for summaries; correction just asks the user to update the model.
+    /// installed for summaries; correction is gated until the helper reaches disk, which the launch
+    /// helper-sync does (F643) — no model update is needed, only a launch of a build that bundles it.
     public static func isCorrectionHelperInstalled(applicationSupport: URL? = nil) -> Bool {
         isInstalled(applicationSupport: applicationSupport)
             && FileManager.default.fileExists(
