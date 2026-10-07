@@ -178,11 +178,15 @@ def format_text(source):
 
 
 def targets():
-    """Every editable Markdown guide: docs/ except the append-only ticket evidence log."""
+    """Every editable Markdown guide: docs/ except the local-only ticket board and evidence log.
+
+    Both are gitignored agent state (AGENTS.md "Version control"): the log is append-only, and the board
+    holds whatever any session filed, so its content made this repo's own test depend on one Mac (F848).
+    """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     paths = sorted(
         path for path in glob.glob(os.path.join(root, "docs", "*.md"))
-        if os.path.basename(path) != "TICKET_LOG.md"
+        if os.path.basename(path) not in ("TICKET_LOG.md", "TICKETS.md")
     )
     paths += [os.path.join(root, name) for name in ("README.md", "AGENTS.md")]
     return [p for p in paths if os.path.exists(p)]
