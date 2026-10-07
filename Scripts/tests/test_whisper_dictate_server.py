@@ -651,6 +651,8 @@ class MainCacheHandlingTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(len(lines), 1)
         self.assertIn("the model download stopped at 5 of 10 bytes", lines[0]["error"])
+        self.assertIs(lines[0]["downloadFailed"], True,
+                      "the app must be able to tell a failed download from a helper that cannot run (F827)")
         self.assertTrue(os.path.exists(self.partial), "a failed download must leave the partial file for the next start")
 
     def test_a_caller_that_forbids_the_network_gets_no_download(self):

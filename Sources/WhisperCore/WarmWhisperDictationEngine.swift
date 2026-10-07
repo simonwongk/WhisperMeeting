@@ -370,6 +370,12 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // (not a generic message) so the self-test / diagnostics show WHY it failed.
         if let response = try? DictationWireProtocol.decodeResponse(line: readyLine),
            let error = response.error {
+            // F827: a download that failed is a reason to retry, which the next warm-up does by
+            // resuming the partial file — not a reason for `FallbackDictationEngine` to switch the
+            // session to an engine that downloads a second model.
+            if response.downloadFailed == true {
+                throw DictationModelDownloadError(error)
+            }
             throw processFailure(error)
         }
         throw processFailure("Dictation helper failed to start.\(stderrSuffix())")
@@ -425,8 +431,10 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             let chunk = stdout.availableData
             if chunk.isEmpty {
                 if let stalledFor = watchdog.expiredStallWindow {
-                    throw processFailure(
-                        "The dictation model download made no progress for \(Int(stalledFor.rounded())) seconds and was stopped. "
+                    // `DictationModelDownloadError`, not `processFailure`: the stall is the download's,
+                    // and `FallbackDictationEngine` must be able to tell it from "cannot run here" (F827).
+                    throw DictationModelDownloadError(
+                        "The dictation model download made no progress for \(Int(saturating: stalledFor.rounded())) seconds and was stopped. "
                             + "Check your connection and try again; a download continues from where it stopped when it can."
                     )
                 }
@@ -801,6 +809,12 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
 /// without MLX, or a broken MLX install. The choice is made at warm-up: if the primary's `warmUp()`
 /// throws, the fallback is used for the rest of the session. Without this, those machines lose Quick
 /// Dictation entirely even though a working (slower) engine is available.
+///
+/// It is **not** for a primary whose model is still downloading (F827): `DictationModelDownloadError`
+/// propagates instead. The batch engine would download a second model on the same link and cannot
+/// resume it, and the choice sticks for the session; the primary's helper keeps its partial download
+/// (on its resumable path), so telling the user and letting the next warm-up resume costs less and
+/// keeps the fast engine.
 public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable {
     private let primary: DictationEngine
     private let fallback: DictationEngine
@@ -816,6 +830,10 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
         do {
             try await primary.warmUp()
             setChosen(primary)
+        } catch let download as DictationModelDownloadError {
+            // Nothing is chosen, so the next `warmUp` — or the `transcribe` that triggers one — tries
+            // the primary again and resumes the download.
+            throw download
         } catch {
             try await fallback.warmUp()
             setChosen(fallback)

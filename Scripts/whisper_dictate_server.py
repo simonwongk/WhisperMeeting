@@ -684,7 +684,13 @@ def main() -> int:
         try:
             download_dictation_model(args.mlx_repo, hub_dir)
         except Exception as error:
-            sys.stdout.write(json.dumps({"error": "model download failed: " + str(error)}) + "\n")
+            # `downloadFailed` is what tells the app this is the model's download and not "this helper
+            # cannot run here" (F827): the first is retried (the partial file resumes), the second
+            # falls back to the batch engine.
+            sys.stdout.write(json.dumps({
+                "error": "model download failed: " + str(error),
+                "downloadFailed": True,
+            }) + "\n")
             sys.stdout.flush()
             return 1
         if model_fully_cached(hub_dir, args.mlx_repo):

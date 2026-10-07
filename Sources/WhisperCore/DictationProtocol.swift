@@ -18,12 +18,38 @@ public struct DictationResponse: Codable, Equatable, Sendable {
     /// Lowest per-segment `no_speech_prob` the helper saw (most speech-like segment). Used to tell a
     /// real dictation from a silence-driven prompt echo. Absent from older helpers → decodes to nil.
     public var noSpeechProb: Double?
-    public init(text: String?, language: String?, error: String?, noSpeechProb: Double? = nil) {
+    /// True on a warm-up `error` whose cause is the model's first-run download (F827), so the app can
+    /// tell "the model is still downloading" from "this helper cannot run here". Absent from every
+    /// older helper and every other reply → nil.
+    public var downloadFailed: Bool?
+    public init(
+        text: String?, language: String?, error: String?, noSpeechProb: Double? = nil,
+        downloadFailed: Bool? = nil
+    ) {
         self.text = text
         self.language = language
         self.error = error
         self.noSpeechProb = noSpeechProb
+        self.downloadFailed = downloadFailed
     }
+}
+
+/// The warm dictation engine's model could not be downloaded: the helper reported the download
+/// failed, or reported progress and then none for the stall window (F827).
+///
+/// A **reason to try again, not a reason to fall back**. `FallbackDictationEngine` exists for "the
+/// warm helper cannot run on this machine"; the batch engine it falls back to downloads a second
+/// ~1.5 GB model of its own, on the same link, with no way to resume it. Falling back on this error
+/// switched the whole session to the slow engine, and since F522 it did so after minutes, not 30.
+/// On the helper's resumable path the partial download is kept, so the next warm-up resumes it.
+public struct DictationModelDownloadError: LocalizedError, Equatable, Sendable {
+    public let message: String
+
+    public init(_ message: String) {
+        self.message = message
+    }
+
+    public var errorDescription: String? { message }
 }
 
 /// One dictation-refinement request to `refine_server.py` (F200). The system prompt travels with

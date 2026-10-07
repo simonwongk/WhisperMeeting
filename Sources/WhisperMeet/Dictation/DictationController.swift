@@ -557,6 +557,15 @@ final class DictationController: ObservableObject {
                       self.engineWarmGeneration == generation else { return }
                 self.engineWarmTask = nil
                 log.error("warm-up failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
+                // F827: the model's first-run download stalled or failed. Nothing falls back to
+                // another engine for it any more, so this is the user's only notice that dictation
+                // is not ready — the same pill and history entry a failed dictation gets, while
+                // nothing is in flight to overwrite (`isActive`). A press retries (and resumes the
+                // download).
+                if let download = error as? DictationModelDownloadError, self.enabled, !self.isActive {
+                    _ = self.session.handle(.engineFailed(download.message))
+                    self.fail(download.message)
+                }
             }
         }
         engineWarmTask = task

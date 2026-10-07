@@ -352,7 +352,9 @@ func warmQwenDictationEngineUsesLocalModel() async throws {
 // 1 800 s to print `{"ready":true}`, so a link slower than ~7 Mbit/s could never finish, however
 // steadily it was progressing. The helper now prints `{"downloading":true}` lines as bytes arrive,
 // and while it does the wait is "no progress for `downloadStallTimeout`" instead. The windows are
-// shortened here; every assertion is on the outcome, never on how long it took.
+// shortened here, and every wait is a poll of the subject under a 30 s wall-clock cap that is
+// `#require`d (F645's rule). The one elapsed-time condition is the claim itself — that a helper which
+// keeps reporting outlives the flat limit — and it is the test that waits for it, not the helper.
 
 private final class ThrownMessage: @unchecked Sendable {
     private let lock = NSLock()
@@ -369,14 +371,15 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
     try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    // Five seconds of steady progress, measured by the helper's own clock so a slow host cannot
-    // shorten it, against a three-second flat limit — then ready. The heartbeats are
-    // protocol-shaped JSON objects, which `readLine` used to return as the reply.
+    // The helper reports progress until the test releases it, so it can only be stopped by the
+    // engine; the test lets the flat limit pass twice over and only then releases it. The heartbeats
+    // are protocol-shaped JSON objects, which `readLine` used to return as the reply.
+    let release = tmp.appendingPathComponent("release")
+    defer { try? Data().write(to: release) } // a failing run must not leave the helper polling
     let script = tmp.appendingPathComponent("downloading.sh")
     let helper = """
     printf '{"downloading":true}\\n'
-    end=$((SECONDS + 5))
-    while [ "$SECONDS" -lt "$end" ]; do
+    while [ -d "\(tmp.path)" ] && [ ! -e "\(release.path)" ]; do
       sleep 0.25
       printf '{"downloading":true}\\n'
     done
@@ -392,10 +395,24 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
         modelDirectory: tmp
     )
     defer { engine.shutdown() }
-    engine.warmUpTimeout = 3
+    engine.warmUpTimeout = 5
     engine.downloadStallTimeout = 60 // far above the 0.25 s heartbeat gap: only a real stall reaches it
 
-    try await engine.warmUp()
+    let completion = EvictionCompletion()
+    let outcome = ThrownMessage()
+    Task {
+        do { try await engine.warmUp() } catch { outcome.set("\(error)") }
+        completion.markFinished()
+    }
+    let began = ContinuousClock.now
+    try await waitUntil("the flat warm-up limit to pass twice over") {
+        completion.isFinished || ContinuousClock.now - began > .seconds(10)
+    }
+    #expect(!completion.isFinished, "the warm-up ended while the helper was still reporting progress: \(outcome.value)")
+
+    try Data().write(to: release)
+    try await waitUntil("the warm-up to finish once released") { completion.isFinished }
+    #expect(outcome.value.isEmpty, "the warm-up failed instead of finishing: \(outcome.value)")
 }
 
 @Test("A download that stops reporting progress is stopped, and the error says why (F522)")
