@@ -22,6 +22,9 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
 final class DictationOverlay {
     enum Phase: Equatable {
         case listening, transcribing, refining, done, copied, empty, error, busy
+        /// The dictation model's first-run download is running (F823): a press is refused with it,
+        /// and a dictation already waiting on the model shows it instead of "Transcribing…".
+        case modelDownloading
         /// Pasted, but no text field could be seen to take it, so it is on the clipboard too (F600).
         case pastedUnconfirmed
         /// Copied rather than pasted: the app in front is not the one the key was pressed in (F445).
@@ -235,6 +238,7 @@ private struct DictationPill: View {
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
         case .error: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .busy: Image(systemName: "hourglass").foregroundStyle(.white)
+        case .modelDownloading: Image(systemName: "arrow.down.circle").foregroundStyle(.white)
         }
     }
 
@@ -251,6 +255,7 @@ private struct DictationPill: View {
         case .empty: "Didn’t catch that"
         case .error: "Dictation failed"
         case .busy: "Busy…"
+        case .modelDownloading: "Downloading model…"
         }
     }
 }

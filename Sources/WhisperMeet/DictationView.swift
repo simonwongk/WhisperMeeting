@@ -36,6 +36,19 @@ struct DictationView: View {
                             .bannerSurface(.orange)
                             .accessibilityElement(children: .combine)
                     }
+                    // F823: the first-run model download was silent for its whole 1.6 GB, so a
+                    // press looked broken. Under the hotkey sentence, which it qualifies, as above.
+                    if dictation.isDownloadingModel {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(DictationController.modelDownloadNotice)
+                        }
+                        .font(.callout)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .bannerSurface(.blue)
+                        .accessibilityElement(children: .combine)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -44,7 +57,7 @@ struct DictationView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         statusRow("\(diag.engineName) runtime", diag.runtimeInstalled)
                         statusRow("Dictation helper installed", diag.helperInstalled)
-                        statusRow("Selected model ready", diag.modelReady)
+                        modelRow
                         statusRow("Microphone permission", diag.microphoneGranted)
                         statusRow("Accessibility permission", diag.accessibilityGranted)
                         statusRow("Hotkey listening", diag.hotkeyActive)
@@ -54,9 +67,10 @@ struct DictationView: View {
                                 if dictation.isSelfTesting { ProgressView().controlSize(.small) }
                                 else { Text("Run self-test") }
                             }
-                            .disabled(dictation.isSelfTesting)
+                            // A self-test during the first download would wait for all of it (F823).
+                            .disabled(dictation.isSelfTesting || dictation.isDownloadingModel)
                             Button("Refresh") { diag = dictation.diagnostics() }
-                            if !diag.runtimeInstalled || !diag.helperInstalled || !diag.modelReady {
+                            if diag.offersRepair {
                                 if dictation.selectedEngine == .qwenBalanced {
                                     Button("Install / Repair Qwen3-ASR") { model.installQwenASR() }
                                         .disabled(model.recognitionRuntimeInstallBlockedReason != nil)
@@ -73,7 +87,7 @@ struct DictationView: View {
                         // explains rather than inside either one (the F306 lesson: a control or its
                         // message nested inside something else is what a later restructuring deletes
                         // without meaning to).
-                        if !diag.runtimeInstalled || !diag.helperInstalled || !diag.modelReady,
+                        if diag.offersRepair,
                            let reason = model.recognitionRuntimeInstallBlockedReason {
                             Text(reason)
                                 .font(.caption)
@@ -96,6 +110,8 @@ struct DictationView: View {
                 .padding(16)
                 .cardSurface()
                 .onChange(of: dictation.isSelfTesting) { _, testing in if !testing { diag = dictation.diagnostics() } }
+                // F823: the model row turns ✓ the moment the first download finishes.
+                .onChange(of: dictation.isDownloadingModel) { _, _ in diag = dictation.diagnostics() }
 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -200,6 +216,28 @@ struct DictationView: View {
         // changes — otherwise the tab shows the previous engine's runtime label and a wrong-target
         // Install/Repair button until the user presses Refresh (F26).
         .onChange(of: dictation.selectedEngine) { _, _ in diag = dictation.diagnostics() }
+    }
+
+    /// The "Selected model ready" row (F823): downloading while the first download runs, and on a
+    /// Mac where Repair cannot fetch the model (`modelRepairable` false) a neutral "downloads on
+    /// first dictation" instead of a ✗ beside a Repair that could never change it.
+    @ViewBuilder private var modelRow: some View {
+        if dictation.isDownloadingModel {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Selected model downloading…")
+                Spacer()
+            }
+        } else if !diag.modelReady && !diag.modelRepairable {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(.secondary)
+                Text("Selected model downloads on first dictation")
+                Spacer()
+            }
+        } else {
+            statusRow("Selected model ready", diag.modelReady)
+        }
     }
 
     private func statusRow(_ label: String, _ ok: Bool) -> some View {

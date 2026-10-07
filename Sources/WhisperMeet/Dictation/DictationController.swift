@@ -6,15 +6,25 @@ import UserNotifications
 import WhisperCore
 import os
 
-/// Snapshot of the dictation feature's health, gathered on demand for a future diagnostics UI.
+/// Snapshot of the dictation feature's health, gathered on demand for the Dictation tab.
 struct DictationDiagnostics: Equatable {
     var engineName: String
     var runtimeInstalled: Bool
     var helperInstalled: Bool
     var modelReady: Bool
+    /// Whether Install / Repair can make `modelReady` true (F823). Not for Whisper Turbo on a Mac
+    /// the warm MLX helper cannot run on (Intel): dictation there runs openai-whisper's own turbo
+    /// checkpoint, which no installer fetches — whisper downloads it on the first dictation — so the
+    /// row used to stay ✗ beside a Repair that could never change it.
+    var modelRepairable: Bool = true
     var microphoneGranted: Bool
     var accessibilityGranted: Bool
     var hotkeyActive: Bool
+
+    /// Whether the tab offers Install / Repair: something it can fix is missing (F823).
+    var offersRepair: Bool {
+        !runtimeInstalled || !helperInstalled || (!modelReady && modelRepairable)
+    }
 }
 
 /// Owns the quick-dictation feature end to end: hotkey → capture → selected local model → paste,
@@ -27,6 +37,10 @@ final class DictationController: ObservableObject {
     }
 
     @Published private(set) var status: Status = .disabled { didSet { noteActivityChange() } }
+    /// The dictation model's first-run download is running (F823), as the engine reports it. Kept
+    /// apart from `status`, which is a dictation's own state and drives `isActive`: a download is
+    /// not a dictation in flight, and a meeting may still transcribe beside it.
+    @Published private(set) var isDownloadingModel = false
     @Published var enabled: Bool { didSet { persist(); apply() } }
     @Published var hotkey: DictationHotkey {
         didSet {
@@ -282,6 +296,13 @@ final class DictationController: ObservableObject {
         refineEnabled = defaults.object(forKey: Self.refineEnabledKey) as? Bool ?? false
         armedHotkey = hotkey
         self.overlay.onCopy = { [weak self] in self?.copyHeldSecureDictation() }
+        // F823. The engine reports from its own queue. `DispatchQueue.main` keeps the reports in
+        // the order they were made, so an engine's "stopped" can never land after the next "started".
+        self.engine.observeModelDownload { [weak self] downloading in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.modelDownloadChanged(downloading) }
+            }
+        }
 
         hotkeyMonitor.onPressStart = { [weak self] in self?.handlePressStart() }
         hotkeyMonitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
@@ -1006,6 +1027,15 @@ final class DictationController: ObservableObject {
             hotkeyMonitor.resetToggleState()
             return
         }
+        if isDownloadingModel, session.state == .idle {
+            // F823: a press now would wait for the whole download — minutes on a slow link — with
+            // the microphone's words held behind it. Refused before anything is recorded, and said
+            // so, rather than listening and then making the user wait with no end in sight.
+            log.notice("dictation press ignored — the dictation model is still downloading")
+            flashBusy(.modelDownloading, announcing: Self.modelDownloadRefusal, for: 2.5)
+            hotkeyMonitor.resetToggleState()
+            return
+        }
         switch session.handle(.startPressed) {
         case .startCapture:
             guard startCapture() else { return }
@@ -1342,9 +1372,17 @@ final class DictationController: ObservableObject {
     /// Announced once per flash (F537): more presses while it shows extend it silently. Putting the
     /// pill back afterwards is `overlay.show`, not `showPhase`, so whatever it restores is not
     /// announced a second time.
-    private func flashBusy() {
-        if !isFlashingBusy, let text = Self.announcement(for: .busy) { announce(text) }
-        overlay.show(.busy)
+    ///
+    /// A press refused because the model is still downloading (F823) flashes its own phase, for
+    /// long enough to read, and says why.
+    private func flashBusy(
+        _ phase: DictationOverlay.Phase = .busy,
+        announcing announcement: String? = nil,
+        for seconds: TimeInterval = 0.8
+    ) {
+        // nil: the phase's own announcement.
+        if !isFlashingBusy, let text = announcement ?? Self.announcement(for: phase) { announce(text) }
+        overlay.show(phase)
         busyHideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -1353,7 +1391,31 @@ final class DictationController: ObservableObject {
             if let phase = self.shownPhase { self.overlay.show(phase) } else { self.overlay.hide() }
         }
         busyHideWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    /// What is said when a press is refused because the model is still downloading (F823).
+    static let modelDownloadRefusal =
+        "Dictation is not ready yet: its model is still downloading. That press was not used."
+
+    /// The Dictation tab's and the menu's line while the model downloads (F823). The size is the
+    /// pinned large-v3-turbo MLX weights F522 measured (1,613,977,612 bytes).
+    static let modelDownloadNotice =
+        "Downloading the dictation model (about 1.6 GB, once). Quick Dictation is ready when it finishes; until then a press is not used."
+
+    /// The engine started or stopped downloading the model (F823). A dictation already waiting on
+    /// it — its key was pressed before the download began — shows the download in its pill instead
+    /// of "Transcribing…", and goes back to "Transcribing…" when the model is ready.
+    private func modelDownloadChanged(_ downloading: Bool) {
+        guard downloading != isDownloadingModel else { return }
+        isDownloadingModel = downloading
+        log.notice("dictation model download \(downloading ? "started" : "ended", privacy: .public)")
+        guard enabled, status == .transcribing else { return }
+        if downloading {
+            showPhase(.modelDownloading)
+        } else if shownPhase == .modelDownloading {
+            showPhase(.transcribing)
+        }
     }
 
     /// Shows a phase in the pill and, when it is an outcome, announces it (F537): the pill is a
@@ -1470,7 +1532,7 @@ final class DictationController: ObservableObject {
         case .secureInput: "Dictation not pasted, because a secure field has focus. Use Copy to copy it."
         case let .secureKeyboardEntry(app):
             "Dictation not pasted, because Secure Keyboard Entry is on in \(app). Use Copy to copy it."
-        case .listening, .transcribing, .refining: nil
+        case .listening, .transcribing, .refining, .modelDownloading: nil
         }
     }
 
@@ -1484,27 +1546,35 @@ final class DictationController: ObservableObject {
 
     // MARK: - Diagnostics / self-test
 
-    func diagnostics() -> DictationDiagnostics {
+    /// `applicationSupport` is the runtime paths' own seam (the installers' and tests'): a test asks
+    /// about a temporary library, never the user's.
+    func diagnostics(applicationSupport: URL? = nil) -> DictationDiagnostics {
+        let support = applicationSupport
         let files = FileManager.default
         let runtimeInstalled: Bool
         let helperInstalled: Bool
         let modelReady: Bool
+        var modelRepairable = true
         switch selectedEngine {
         case .whisperTurbo:
             runtimeInstalled = files.isExecutableFile(
-                atPath: LocalWhisperRuntime.pythonExecutable().path
+                atPath: LocalWhisperRuntime.pythonExecutable(applicationSupport: support).path
             )
             helperInstalled = files.fileExists(
-                atPath: LocalWhisperRuntime.dictationServerScript().path
+                atPath: LocalWhisperRuntime.dictationServerScript(applicationSupport: support).path
             )
-            modelReady = LocalWhisperRuntime.mlxModelCached()
+            (modelReady, modelRepairable) = Self.whisperTurboModelState(
+                warmHelperRuns: warmWhisperHelperRunsHere,
+                mlxModelCached: { LocalWhisperRuntime.mlxModelCached(applicationSupport: support) },
+                checkpointCached: { LocalWhisperRuntime.checkpointCached(.turbo, applicationSupport: support) }
+            )
         case .qwenBalanced:
-            runtimeInstalled = QwenASRRuntime.isInstalled()
+            runtimeInstalled = QwenASRRuntime.isInstalled(applicationSupport: support)
             helperInstalled = files.fileExists(
-                atPath: QwenASRRuntime.dictationHelperScript().path
+                atPath: QwenASRRuntime.dictationHelperScript(applicationSupport: support).path
             )
             modelReady = files.fileExists(
-                atPath: QwenASRRuntime.modelDirectory()
+                atPath: QwenASRRuntime.modelDirectory(applicationSupport: support)
                     .appendingPathComponent("model.safetensors").path
             )
         }
@@ -1513,10 +1583,34 @@ final class DictationController: ObservableObject {
             runtimeInstalled: runtimeInstalled,
             helperInstalled: helperInstalled,
             modelReady: modelReady,
+            modelRepairable: modelRepairable,
             microphoneGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibilityGranted: HotkeyMonitor.isAccessibilityTrusted,
             hotkeyActive: hotkeyActive
         )
+    }
+
+    /// Whether the warm MLX helper can run on this Mac — Apple silicon (F823). Elsewhere
+    /// `FallbackDictationEngine` runs openai-whisper's batch CLI instead. A seam so a test can ask
+    /// what an Intel Mac's Dictation tab would say.
+    var warmWhisperHelperRunsHere: Bool = {
+        #if arch(arm64)
+        true
+        #else
+        false
+        #endif
+    }()
+
+    /// The "Selected model ready" row for Whisper Turbo, and whether Repair can fix it (F823). With
+    /// the warm helper, the model is the MLX weights, which Install / Repair fetches (F483).
+    /// Without it, dictation runs the batch CLI's turbo checkpoint, which openai-whisper downloads
+    /// on first use and no installer fetches — so Repair is never offered for it.
+    static func whisperTurboModelState(
+        warmHelperRuns: Bool,
+        mlxModelCached: () -> Bool,
+        checkpointCached: () -> Bool
+    ) -> (ready: Bool, repairable: Bool) {
+        warmHelperRuns ? (mlxModelCached(), true) : (checkpointCached(), false)
     }
 
     func runSelfTest() {

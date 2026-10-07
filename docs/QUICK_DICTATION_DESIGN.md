@@ -108,6 +108,13 @@ Fallback / edge branches:
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
+- **First-run model download** (Whisper Turbo on Apple silicon, about 1.6 GB, F522) → the Dictation
+  tab and the menu-bar menu say the model is downloading, and the model row shows it; a press is
+  refused with "Downloading model…" in the pill, before anything is recorded; a dictation whose key
+  went down before the download began shows "Downloading model…" until the model is ready, then is
+  transcribed; Install / Repair Local Whisper waits until the download ends (F823). On Intel the
+  batch engine's turbo checkpoint is downloaded by openai-whisper on the first dictation, which no
+  Repair can do, so the model row says so instead of offering one.
 - **Trigger used in a shortcut** (a modifier trigger held while another key goes down or the mouse
   is clicked: ⌘-Tab, ⌥-click, a character typed with Right ⌥) → the capture is dropped unheard;
   nothing is transcribed, pasted or logged (F448).

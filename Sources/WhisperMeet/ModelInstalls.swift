@@ -57,6 +57,12 @@ extension AppModel {
         if diarizationRunningID != nil { return "Wait for speaker analysis to finish." }
         if isRunningAuxiliaryEngine { return "Wait for the second opinion or segment re-run to finish." }
         if isDictationActive() { return "Wait for Quick Dictation to finish." }
+        // F823: Install / Repair Local Whisper moves the dictation model's folder aside, which made
+        // a download in progress start again from zero. `.whisper`'s reason also gates the Qwen
+        // button (`recognitionRuntimeInstallBlockedReason`), which only waits a little longer.
+        if component == .whisper, isDictationModelDownloading() {
+            return "Wait for the Quick Dictation model to finish downloading."
+        }
         if isMicrophoneBusy { return "Wait for the current recording to finish." }
         if isImporting { return "Wait for the import to finish." }
         return nil

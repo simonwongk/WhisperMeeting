@@ -136,6 +136,8 @@ struct WhisperMeetApp: App {
                         knownTerms: { [weak model] in model?.store.vocabulary ?? [] }
                     )
                     model.configureDictationGuard { dictation.isActive }
+                    // F823: no Local Whisper install while its dictation model downloads.
+                    model.configureDictationModelDownload { dictation.isDownloadingModel }
                     // F470: a transcription requested during a dictation queues instead of being
                     // refused; this starts it when the dictation ends.
                     dictation.configureActivityEnded { [weak model] in model?.resumeTranscriptionQueue() }
@@ -262,6 +264,10 @@ struct RecordingMenu: View {
             get: { dictation.enabled },
             set: { dictation.setEnabled($0) }
         ))
+        // F823: the menu bar said nothing while 1.6 GB downloaded, so a press looked broken.
+        if dictation.isDownloadingModel {
+            Text("Downloading the dictation model…")
+        }
         Divider()
         SettingsLink { Text("Settings…") }
         Button("Quit WhisperMeet") { NSApplication.shared.terminate(nil) }

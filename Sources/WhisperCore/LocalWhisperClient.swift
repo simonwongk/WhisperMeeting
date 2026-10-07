@@ -142,6 +142,29 @@ public struct LocalWhisperRuntime: Sendable {
         }
     }
 
+    /// The file openai-whisper's CLI keeps `model` in under `--model_dir` (F823). `_download` saves
+    /// a checkpoint as the basename of its `_MODELS` URL — `os.path.join(root, os.path.basename(url))`
+    /// — and the CLI passes `--model_dir` as that root. `_MODELS` maps "turbo" to
+    /// `…/large-v3-turbo.pt` and "large" to `…/large-v3.pt`: checked in the pinned
+    /// openai-whisper 20250625 (`whisper/__init__.py:29-31`, `:58` as installed by
+    /// `setup-local-whisper.sh`) and on github.com/openai/whisper main, 2026-10-07.
+    public static func checkpointFileName(for model: WhisperModel) -> String {
+        switch model {
+        case .large: "large-v3.pt"
+        case .turbo: "large-v3-turbo.pt"
+        }
+    }
+
+    /// Whether the openai-whisper checkpoint for `model` is in the app's model directory — the
+    /// model the batch dictation engine runs where the warm MLX helper cannot (F823). Presence, as
+    /// `mlxModelCached` checks presence: whisper itself re-verifies the checksum when it loads.
+    public static func checkpointCached(_ model: WhisperModel, applicationSupport: URL? = nil) -> Bool {
+        FileManager.default.fileExists(
+            atPath: modelDirectory(applicationSupport: applicationSupport)
+                .appendingPathComponent(checkpointFileName(for: model)).path
+        )
+    }
+
     public static func dictationServerScript(applicationSupport: URL? = nil) -> URL {
         managedDirectory(applicationSupport: applicationSupport)
             .appendingPathComponent("whisper_dictate_server.py")

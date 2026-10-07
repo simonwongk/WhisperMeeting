@@ -1044,6 +1044,10 @@ final class AppModel: ObservableObject {
     /// Readable outside this file for `installBlockedReason(for:)` (F567); set only through
     /// `configureDictationGuard`.
     private(set) var isDictationActive: () -> Bool = { false }
+    /// Whether Quick Dictation's model is downloading (F823), for `installBlockedReason(for:)`: the
+    /// Local Whisper installer replaces that model's folder, which costs the download its progress
+    /// (F522's Gaps, F826). Set only through `configureDictationModelDownload`.
+    private(set) var isDictationModelDownloading: () -> Bool = { false }
     /// AppEntry wires this to `DictationController.releaseIdleModelsForMeetingTranscription`.
     /// Kept as a headless seam so tests can prove the release completes before an engine starts.
     var releaseIdleDictationModels: @Sendable () async -> Void = {}
@@ -1289,6 +1293,11 @@ final class AppModel: ObservableObject {
     /// start while dictation currently owns the microphone. See `AppEntry`'s `.task` for the call site.
     func configureDictationGuard(_ isActive: @escaping () -> Bool) {
         isDictationActive = isActive
+    }
+
+    /// Wires `isDictationModelDownloading` (F823); see `AppEntry`'s `.task` for the call site.
+    func configureDictationModelDownload(_ isDownloading: @escaping () -> Bool) {
+        isDictationModelDownloading = isDownloading
     }
 
     /// Lets a meeting ASR pass release inactive Quick Dictation helpers before it claims unified

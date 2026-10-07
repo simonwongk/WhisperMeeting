@@ -134,6 +134,23 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     /// but "no progress for this long". Internal so a test can shorten it.
     var downloadStallTimeout: TimeInterval = 180
 
+    /// Told when the helper's first-run model download starts and ends (F823). Guarded by
+    /// `liveLock`, because the controller sets it from the main thread while `queue` reads it.
+    private var downloadObserver: DictationModelDownloadObserver?
+
+    public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
+        liveLock.lock()
+        downloadObserver = observer
+        liveLock.unlock()
+    }
+
+    private func reportDownload(_ downloading: Bool) {
+        liveLock.lock()
+        let observer = downloadObserver
+        liveLock.unlock()
+        observer?(downloading)
+    }
+
     public init(
         python: URL,
         script: URL,
@@ -388,7 +405,13 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     /// `{"downloading":false}` line moves it back to `timeout` from now; neither is returned.
     /// Everything else — chatter, and every request read, which passes no `stallTimeout` — is
     /// exactly as before: chatter and unrecognised lines never move the deadline.
+    ///
+    /// The download observer (F823) hears the first `true` of a run of reports and its end: the
+    /// helper's `false`, or this read ending any other way — the reply, a stall, the helper dying or
+    /// being stopped — so a download can never be left showing after the wait is over.
     private func readLine(timeout: TimeInterval, stallTimeout: TimeInterval? = nil) throws -> Data {
+        var reportedDownloading = false
+        defer { if reportedDownloading { reportDownload(false) } }
         // `availableData` blocks until data or EOF. A silent-but-alive helper would otherwise hang
         // this read (and, since all work is serialized on `queue`, the whole engine) forever. An
         // off-queue watchdog terminates the process after `timeout`; termination closes stdout, so
@@ -414,6 +437,10 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
                         watchdog.arm(after: stallTimeout, inStallWindow: true)
                     } else {
                         watchdog.arm(after: timeout, inStallWindow: false)
+                    }
+                    if downloading != reportedDownloading {
+                        reportedDownloading = downloading
+                        reportDownload(downloading)
                     }
                     continue
                 }
@@ -779,6 +806,12 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
         try await runner.warmUp()
     }
 
+    /// Qwen's model is a pinned local snapshot run offline, so this is never called today; it is
+    /// forwarded so the shared runner's reports could not go unheard if that changed.
+    public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
+        runner.observeModelDownload(observer)
+    }
+
     public func transcribe(
         wavAt url: URL,
         language: WhisperLanguage,
@@ -824,6 +857,13 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
     public init(primary: DictationEngine, fallback: DictationEngine) {
         self.primary = primary
         self.fallback = fallback
+    }
+
+    /// Both engines report (F823): the batch engine has nothing to say today, but the observer is
+    /// not this type's to drop.
+    public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
+        primary.observeModelDownload(observer)
+        fallback.observeModelDownload(observer)
     }
 
     public func warmUp() async throws {

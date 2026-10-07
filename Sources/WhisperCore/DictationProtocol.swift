@@ -127,7 +127,15 @@ public protocol DictationEngine: Sendable {
     /// Permanently stops this instance and waits until queued process work has drained. Model
     /// selection uses this stronger lifecycle boundary so two resident models cannot overlap.
     func retire() async
+    /// Tells `observer` when the engine's model starts (`true`) and stops (`false`) downloading
+    /// (F823), or stops telling anyone when it is nil. Only the warm Whisper helper downloads; every
+    /// other engine never calls it. Called from the engine's own queue, never the main thread.
+    func observeModelDownload(_ observer: DictationModelDownloadObserver?)
 }
+
+/// Receives a dictation engine's model-download state (F823): `true` when the first-run download
+/// starts reporting progress, `false` when it ends — finished, failed, stalled or stopped.
+public typealias DictationModelDownloadObserver = @Sendable (Bool) -> Void
 
 public extension DictationEngine {
     func evict() async {
@@ -137,6 +145,9 @@ public extension DictationEngine {
     func retire() async {
         shutdown()
     }
+
+    /// An engine with no model download of its own has nothing to report.
+    func observeModelDownload(_ observer: DictationModelDownloadObserver?) {}
 }
 
 /// Stable engine boundary for Quick Dictation. The recorder always produces the same WAV; replacing
@@ -145,6 +156,8 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
     private let lock = NSLock()
     private var engine: DictationEngine
     private var pendingReplace: Task<Void, Never>?
+    /// Handed to every engine installed later too (F823), so a model switch keeps reporting.
+    private var downloadObserver: DictationModelDownloadObserver?
 
     public init(engine: DictationEngine) {
         self.engine = engine
@@ -173,8 +186,18 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
 
     private func install(_ replacement: DictationEngine) {
         lock.lock()
+        defer { lock.unlock() }
         engine = replacement
-        lock.unlock()
+        // Under the lock, so an `observeModelDownload` racing this cannot be overwritten by the
+        // observer read here. An engine's own `observeModelDownload` only stores the closure.
+        replacement.observeModelDownload(downloadObserver)
+    }
+
+    public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
+        lock.lock()
+        defer { lock.unlock() }
+        downloadObserver = observer
+        engine.observeModelDownload(observer)
     }
 
     public func warmUp() async throws {
