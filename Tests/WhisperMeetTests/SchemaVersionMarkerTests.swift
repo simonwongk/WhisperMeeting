@@ -122,6 +122,58 @@ func editingAnOldRecordMarksIt() throws {
     _ = store
 }
 
+// F441 part 4 — the guard used to let a line through on two loose tests: `code.contains("case ")` together
+// with `schemaVersion` (meant for the CodingKeys `case schemaMarker = "schemaVersion"`), and any line that
+// merely contained `var schemaVersion`. So `if case let v? = record.schemaVersion, v > 1 { … }` and
+// `var schemaVersionIsNewer = record.schemaVersion ?? 0 > 1` both passed while production branched on
+// the marker — measured by injecting exactly those two lines into `MeetingStore.update` and watching the old
+// guard stay green. Every permitted use is now a WHOLE line matching one exact shape, so a line that
+// does something else with the marker is an offender whatever words it happens to contain.
+
+/// Every shape of line that may mention the marker, anchored at both ends.
+private let permittedMarkerLines: [(name: String, pattern: String)] = [
+    // The constant this build writes, and the record's two views of the marker.
+    ("declaration of the current version", #"^static let currentSchemaVersion = [0-9]+$"#),
+    ("the public accessor's declaration", #"^var schemaVersion: Int\? \{$"#),
+    ("the accessor's getter", #"^get \{ schemaMarker\?\.version \}$"#),
+    ("the accessor's setter", #"^set \{ schemaMarker = newValue\.map\(SchemaMarker\.init\) \}$"#),
+    ("the stored form", #"^private var schemaMarker: SchemaMarker\? = SchemaMarker\(MeetingRecord\.currentSchemaVersion\)$"#),
+    ("the stored form's type", #"^struct SchemaMarker: Codable, Equatable, Sendable \{$"#),
+    // The on-disk key.
+    ("the coding key", #"^case schemaMarker = "schemaVersion"$"#),
+    ("the plain coding key", #"^case schemaVersion$"#),
+    // Stamping: a write of this build's version onto a record the build just wrote, and nothing else.
+    ("a stamp", #"^[A-Za-z_][A-Za-z0-9_]*(\[[A-Za-z_][A-Za-z0-9_]*\])?\.schemaVersion = MeetingRecord\.currentSchemaVersion$"#),
+]
+
+/// F552's lowering: the one place the value decides anything, and what it decides is what the WRITER vouches
+/// for, never how a reader treats the record. Counted, so a second site is a decision somebody has to make
+/// here rather than slip in.
+private let markerLoweringLine = #"^try container\.encode\(min\(version, MeetingRecord\.currentSchemaVersion\)\)$"#
+
+private func lineMatches(_ line: String, _ pattern: String) -> Bool {
+    line.range(of: pattern, options: .regularExpression) != nil
+}
+
+/// Scans one file's comment-stripped source for lines that mention the marker without being a permitted shape.
+private func markerUses(in source: String, fileName: String) -> (offenders: [String], lowerings: [String]) {
+    var offenders: [String] = []
+    var lowerings: [String] = []
+    for (number, line) in SourceAssertion.numbered(source) {
+        let code = line.trimmingCharacters(in: .whitespaces)
+        // Case-insensitive on purpose: `currentSchemaVersion` and `SchemaMarker` are the marker's names too,
+        // and a decision made from either is the same decision.
+        let lowered = code.lowercased()
+        guard lowered.contains("schemaversion") || lowered.contains("schemamarker") else { continue }
+        if lineMatches(code, markerLoweringLine) {
+            lowerings.append("\(fileName):\(number)")
+        } else if !permittedMarkerLines.contains(where: { lineMatches(code, $0.pattern) }) {
+            offenders.append("\(fileName):\(number): \(code)")
+        }
+    }
+    return (offenders, lowerings)
+}
+
 @Test("The marker is never read to make a decision, which is what keeps it a marker (F188)")
 func markerIsNeverReadToMakeADecision() throws {
     // "Mark it" was chosen over "Flag day" on the reasoning that no format change can make an
@@ -130,39 +182,72 @@ func markerIsNeverReadToMakeADecision() throws {
     var offenders: [String] = []
     var lowerings: [String] = []
     for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
+        let text = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8))
         // `DiarizationArtifact` has its own, unrelated `schemaVersion`, and it genuinely **is** a
         // fence: it throws `malformed` on a mismatch. It can be, and this cannot, for a reason
         // worth keeping in view — that file is a sidecar this app wholly owns, and refusing it
         // costs one re-run of the analysis. Refusing `meetings.json` costs the user their library.
-        // Same field name, opposite correct answer.
-        guard url.lastPathComponent != "DiarizationArtifact.swift" else { continue }
-        let text = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8))
-        for (number, line) in SourceAssertion.numbered(text) {
-            let code = line.trimmingCharacters(in: .whitespaces)
-            // F552's lowering: the one place the value decides anything, and what it decides is
-            // what the WRITER vouches for, never how a reader treats the record. Counted, so a
-            // second site is a decision somebody has to make here rather than slip in.
-            if code.contains("min(version, MeetingRecord.currentSchemaVersion)") {
-                lowerings.append("\(url.lastPathComponent):\(number)")
-                continue
-            }
-            // A comment line is already blank, so the `contains` below skips it — the two
-            // `hasPrefix` guards this replaced said the same thing one layer later (F375).
-            // `schemaMarker` is the stored form since F552; a read of it is a read of the marker.
-            guard code.contains("schemaVersion") || code.contains("schemaMarker") else { continue }
-            // Declaring it, and stamping it, are the only permitted uses — plus, since F552, the
-            // stored form's declaration and the two accessors that are `schemaVersion` itself.
-            let declares = code.contains("var schemaVersion") || code.contains("currentSchemaVersion =")
-                || code.hasPrefix("private var schemaMarker: SchemaMarker?")
-            let stamps = code.contains("schemaVersion = MeetingRecord.currentSchemaVersion")
-            let names = code.contains("case ") && code.contains("schemaVersion")
-            let accessor = code == "get { schemaMarker?.version }"
-                || code == "set { schemaMarker = newValue.map(SchemaMarker.init) }"
-            if !(declares || stamps || names || accessor) {
-                offenders.append("\(url.lastPathComponent):\(number): \(code)")
-            }
+        // Same field name, opposite correct answer. The exemption is that file's own property, so it
+        // holds only while the file has nothing to do with meetings: a read of a meeting's marker
+        // cannot hide in it.
+        if url.lastPathComponent == "DiarizationArtifact.swift" {
+            #expect(!text.contains("MeetingRecord") && !text.contains("meetings.json"),
+                    "DiarizationArtifact.swift is exempt as a separate sidecar; it now mentions meetings")
+            continue
         }
+        let found = markerUses(in: text, fileName: url.lastPathComponent)
+        offenders += found.offenders
+        lowerings += found.lowerings
     }
     #expect(offenders.isEmpty, "the marker is being read, so it is no longer only a marker:\n\(offenders.joined(separator: "\n"))")
     #expect(lowerings.count == 1, "the encoder's lowering is the one sanctioned use (F552): \(lowerings)")
+}
+
+// F441 part 4 — the guard itself, proven able to fail. A guard over source text cannot be shown to work
+// by the real tree staying clean, so these run it over snippets: the decisions it must refuse, and the
+// uses it must allow.
+@Test("The marker guard refuses every way of reading the marker and allows the sanctioned shapes (F441)")
+func markerGuardCanFail() {
+    let decisions = [
+        "if case let v? = record.schemaVersion, v > 1 { return }",
+        "var schemaVersionIsNewer = record.schemaVersion ?? 0 > 1",
+        "let newer = (record.schemaVersion ?? 0) > MeetingRecord.currentSchemaVersion",
+        "guard record.schemaVersion == nil else { continue }",
+        "switch meeting.schemaVersion { case 1?: break default: break }",
+        "if record.schemaVersion == MeetingRecord.currentSchemaVersion { x() }",
+        "var currentSchemaVersion = record.schemaVersion",
+        "let isCurrent = a.currentSchemaVersion == b",
+        "case let schemaVersion = v",
+        "let m = record.schemaMarker",
+        // The lowering, altered: still the marker, no longer the sanctioned shape.
+        "try container.encode(min(version, MeetingRecord.currentSchemaVersion + 1))",
+        // A stamp with something else going on in the same line is a decision about when to stamp.
+        "if flag { record.schemaVersion = MeetingRecord.currentSchemaVersion }",
+    ]
+    for line in decisions {
+        let found = markerUses(in: line, fileName: "Synthetic.swift")
+        #expect(!found.offenders.isEmpty, "the guard let a marker decision through: \(line)")
+    }
+
+    let sanctioned = [
+        "static let currentSchemaVersion = 2",
+        "var schemaVersion: Int? {",
+        "get { schemaMarker?.version }",
+        "set { schemaMarker = newValue.map(SchemaMarker.init) }",
+        "private var schemaMarker: SchemaMarker? = SchemaMarker(MeetingRecord.currentSchemaVersion)",
+        "struct SchemaMarker: Codable, Equatable, Sendable {",
+        "case schemaMarker = \"schemaVersion\"",
+        "meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion",
+        "record.schemaVersion = MeetingRecord.currentSchemaVersion",
+    ]
+    for line in sanctioned {
+        let found = markerUses(in: line, fileName: "Synthetic.swift")
+        #expect(found.offenders.isEmpty, "the guard refused a sanctioned shape: \(line)")
+    }
+
+    let lowering = markerUses(
+        in: "try container.encode(min(version, MeetingRecord.currentSchemaVersion))", fileName: "Synthetic.swift"
+    )
+    #expect(lowering.offenders.isEmpty)
+    #expect(lowering.lowerings == ["Synthetic.swift:1"])
 }

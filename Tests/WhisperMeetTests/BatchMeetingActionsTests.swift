@@ -138,18 +138,83 @@ func batchRemoveTagWritesOnce() throws {
     #expect(store.meeting(id: ids[2])?.tags == ["keep"])
 }
 
+/// A transcription held open until it is cancelled or released, recording which of the two ended it
+/// (F441): "the job finished" and "the job was stopped" must not be mistakable for each other.
+private final class CancellableRun: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _started = false
+    private var _cancelled = false
+    private var _released = false
+    var started: Bool { lock.withLock { _started } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
+    func release() { lock.withLock { _released = true } }
+
+    struct NeverEnded: Error {}
+
+    func run() async throws {
+        lock.withLock { _started = true }
+        do {
+            for _ in 0..<6_000 {
+                if lock.withLock({ _released }) { return }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+        } catch {
+            lock.withLock { _cancelled = true }
+            throw error
+        }
+        throw NeverEnded()
+    }
+}
+
+@MainActor
+private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+    var ticks = 0
+    while !condition(), ticks < 6_000 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+        ticks += 1
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
+// F441: this seeded `.completed` meetings, queued nothing, and asserted nobody was queued — true before
+// and after the call whatever `deleteMeetings` did, so removing the `cancelTranscription` loop left it
+// green. It now has one transcription running and one waiting, deletes both, and requires the running
+// one to have been cancelled and the waiting one dropped. (F666's `standingDeleteStopsRunningAndQueued
+// Transcriptions` reaches the same path with a full fixture library; this one is the batch-delete
+// path the library view calls, on the plain batch fixture.)
 @Test("Deleting a selection cancels each meeting's transcription first")
 @MainActor
-func batchDeleteCancelsTranscriptions() throws {
+func batchDeleteCancelsTranscriptions() async throws {
     let (store, root, ids) = try makeLibrary(count: 2)
     defer { try? FileManager.default.removeItem(at: root) }
     let defaults = try #require(UserDefaults(suiteName: "BatchDelete-\(UUID().uuidString)"))
-    let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
+    // Pinned installed, so both requests reach the queue on any host.
+    let model = AppModel(
+        store: store, recorder: AudioCaptureEngine(), defaults: defaults,
+        whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
+    )
+    model.selectedEngine = .whisperLarge
+    // The fixture's meetings are `.completed`; a transcription needs them waiting for one.
+    for id in ids { store.update(id: id) { $0.status = .recorded; $0.transcriptText = "" } }
+    let (running, waiting) = (ids[0], ids[1])
+    let run = CancellableRun()
+    defer { run.release() }
+    model.runTranscriptionEngineOverride = { _, _ in
+        try await run.run()
+        return TranscriptionResult(id: "stub", text: "hello", languageCode: "en", audioDuration: 1, confidence: nil, segments: [])
+    }
+
+    model.beginTranscription(id: running)
+    try await waitUntil("the first transcription to start") { run.started }
+    model.beginTranscription(id: waiting)
+    try #require(model.hasActiveTranscription, "the first transcription is not the running job")
+    try #require(model.isQueuedForTranscription(waiting), "the second meeting never queued")
 
     model.deleteMeetings(ids: ids)
 
-    #expect(store.meetings.isEmpty)
-    for id in ids {
-        #expect(!model.isQueuedForTranscription(id))
-    }
+    try #require(store.meetings.isEmpty, "the delete was meant to stand")
+    #expect(!model.isQueuedForTranscription(waiting), "a deleted meeting is still waiting to be transcribed")
+    try await waitUntil("the running transcription to end") { !model.hasActiveTranscription }
+    #expect(run.cancelled, "the deleted meeting's running transcription was not stopped")
+    #expect(!model.hasQueuedTranscriptions)
 }
