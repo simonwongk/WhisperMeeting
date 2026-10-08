@@ -88,10 +88,10 @@ Two things are in place so the next slow one explains itself:
   Above 75 % it also skips the polishing pass, which could only have added its full 0.8–1.5 s
   budget and then been killed and reloaded — so a slow dictation under a busy GPU is now up to
   1.5 s shorter and the refiner stays resident for the next one.
-- Until you launch the new build, the installed Qwen helper carries a tagged timing trace
-  (`[DEBUG-f890]`, backed up as `qwen_dictate_server.py.pre-F890-trace`; the app's launch sync
-  restores the shipped file), and a sampler writes the GPU share every 2 s to my scratchpad. If
-  you dictate before relaunching, the next slow one is already on record.
+- That build is installed and running since 14:00 on 2026-10-08 (the app was idle; quit, installed,
+  relaunched; its log shows "dictation enabled (hotkey 54 mode hold)" with no tap error). The
+  tagged timing trace I had put in the installed Qwen helper while measuring was removed by the
+  launch sync, which copies the shipped helper back; the backup copy is deleted too.
 
 **What I need from you:** tell me what was open or running at 11:27 and 12:05–12:11 today (a
 call? a video? another local model?), or just dictate a few times with the new build installed and
