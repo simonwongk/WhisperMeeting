@@ -107,6 +107,12 @@ Fallback / edge branches:
   password prompt that took focus meanwhile gets the secure pill, not the dictation.
 - **Clip too short** (< ~0.35 s, an accidental tap) → discarded silently, pill dismissed.
 - **Empty transcript** (silence) → pill shows "Didn't catch that", fades; nothing pasted.
+- **Nothing said** → never sent to a model, the same "Didn't catch that". Two checks, in order: a
+  clip whose loudest 50 ms stays under −60 dBFS (F599), then, for Whisper Turbo only, a clip in
+  which the Silero voice-activity model finds no 256 ms chunk of speech at probability 0.5 or more
+  (F846; Turbo answers noise with invented text such as "Thank you.", Qwen3-ASR does not). The model
+  (about 1 MB, MIT) is shipped inside the app, pinned by SHA-256, and runs on this Mac; if it is
+  missing, altered or cannot load, the clip is transcribed as it would have been without it.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
 - **First-run model download** (Whisper Turbo on Apple silicon, about 1.6 GB, F522) → the Dictation
   tab and the menu-bar menu say the model is downloading, and the model row shows it; a press is

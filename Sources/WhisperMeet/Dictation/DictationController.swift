@@ -179,6 +179,9 @@ final class DictationController: ObservableObject {
     /// Where a Chinese word begins and ends, for the replacement rules (F594's seam, as
     /// `AppModel.cjkWordSegmenter`): NLTokenizer in the app; tests pin a fixed segmentation.
     var cjkWordSegmenter: CJKWordEvidence.Segmenter = NaturalLanguageWordSegmenter.wordRanges
+    /// The voice-activity check before Whisper Turbo (F846): the Silero model shipped in the app.
+    /// Tests assign a scripted one.
+    var speechDetector: any DictationSpeechDetecting = SileroDictationSpeechDetector()
     private var dismissWorkItem: DispatchWorkItem?
     private var busyHideWorkItem: DispatchWorkItem?
     /// A busy flash is showing and has been announced (F537): its hide is still pending. Derived,
@@ -1260,6 +1263,8 @@ final class DictationController: ObservableObject {
         let ruleEvidence = rules.isEmpty
             ? CJKWordEvidence.none
             : CJKWordEvidence(segmenter: cjkWordSegmenter, knownTerms: knownTermsProvider())
+        // F846: the voice-activity check, for the engine this dictation was made with.
+        let detector = DictationVoiceActivity.gates(selection) ? speechDetector : nil
         Task { [engine, log, refiner] in
             let started = Date()
             // F599: nothing loud enough to be speech goes to a model. The installed Whisper turbo
@@ -1270,6 +1275,17 @@ final class DictationController: ObservableObject {
             if let level, level.isBelowFloor {
                 try? FileManager.default.removeItem(at: clip.url)
                 log.notice("dictation clip below the speech floor (loudest 50 ms \(level.loudestWindowDBFS, format: .fixed(precision: 1)) dBFS); not transcribed")
+                await MainActor.run { self.finish(text: "") }
+                return
+            }
+            // F846: noise louder than that floor still reached Whisper Turbo, which answers it with
+            // invented text, and a level cannot tell noise from quiet speech. A speech detector can:
+            // a clip with no chunk of speech takes the same "nothing heard" path. Whisper Turbo only
+            // (`DictationVoiceActivity.gates`); nil — no model, or it cannot tell — transcribes.
+            if let detector, let peak = await detector.peakSpeechProbability(ofClipAt: clip.url),
+               !DictationVoiceActivity.isSpeech(peakProbability: peak) {
+                try? FileManager.default.removeItem(at: clip.url)
+                log.notice("dictation clip holds no speech (voice-activity peak \(peak, format: .fixed(precision: 3))); not transcribed")
                 await MainActor.run { self.finish(text: "") }
                 return
             }

@@ -3,10 +3,11 @@ WhisperMeet — Third-party notices
 
 WhisperMeet's optional speaker-turn analysis uses third-party software and machine-learning
 models. They are downloaded only when you choose to install that feature, they run entirely on
-your Mac, and they send nothing anywhere. This file reproduces their licences and required
-attributions in full.
+your Mac, and they send nothing anywhere. Quick Dictation also uses one small third-party model,
+Silero VAD (section 7), which is shipped inside the app and likewise runs only on your Mac. This
+file reproduces their licences and required attributions in full.
 
-Nothing in this file applies to recording or transcription, which use separate components.
+Nothing else in this file applies to recording or transcription, which use separate components.
 
 Contents
 --------
@@ -16,10 +17,12 @@ Contents
   4. VBx ............................................ Apache License 2.0
   5. fastcluster .................................... BSD 2-Clause License
   6. The full Apache License 2.0 text
+  7. Silero VAD — Core ML model weights ............. MIT License
 
 Component 1 is compiled into WhisperMeet itself; 4 and 5 are reimplemented inside it. Component 2
 is the set of Core ML model files downloaded by the installer; component 3 is the neural
-architecture one of those files realises.
+architecture one of those files realises. Component 7 is a Core ML model file shipped inside the
+app, in Contents/Resources/DictationVAD.
 
 
 ==============================================================================
@@ -368,3 +371,45 @@ Applies to FluidAudio, WeSpeaker, and VBx, as noted above.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+
+==============================================================================
+
+7. Silero VAD — Core ML model weights
+-------------------------------------
+
+Quick Dictation's voice-activity check: before a dictation is sent to Whisper Turbo, this model
+decides whether the clip holds any speech, so a press with nothing said in a noisy room pastes
+nothing instead of text the speech model invented. It is shipped inside the app
+(Contents/Resources/DictationVAD/silero-vad-unified-256ms-v6.2.1.mlmodelc), unmodified, and is
+run by FluidAudio (section 1).
+
+    Core ML conversion: FluidInference/silero-vad-coreml, revision
+    b419383c55c110e2c9271fa6ee0ea83d03c70d96, file silero-vad-unified-256ms-v6.2.1.mlmodelc
+    https://huggingface.co/FluidInference/silero-vad-coreml
+    Licensed MIT (the repository's model card; it ships no separate licence file)
+
+    Original work: Silero VAD, by the Silero Team
+    https://github.com/snakers4/silero-vad
+
+MIT License
+
+Copyright (c) 2020-present Silero Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

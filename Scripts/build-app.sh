@@ -52,6 +52,12 @@ chmod +x "$app_dir/Contents/Resources/setup-speaker-diarization.sh"
 # The notices are a build product, not documentation: the diarization installer reads this file from
 # beside itself and refuses to activate a runtime it cannot ship the attributions for (F219).
 cp "Resources/THIRD-PARTY-NOTICES.txt" "$app_dir/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+# Quick Dictation's voice-activity model (F846): FluidAudio's Silero VAD, pinned by SHA-256 in
+# SileroDictationSpeechDetector.pinnedFiles and shipped in the app so it never has to be downloaded.
+# Removed first, as the resource bundles above are: a signed copy is read-only, and `cp -R` into an
+# existing directory would nest a second copy inside it.
+rm -rf "$app_dir/Contents/Resources/DictationVAD"
+cp -R "Resources/DictationVAD" "$app_dir/Contents/Resources/DictationVAD"
 # Sign with a stable identity when one exists, so macOS TCC keeps the user's permission grants
 # across rebuilds — an ad-hoc signature's identity changes every build, which resets microphone,
 # screen-recording, and accessibility grants each time (F127). Override with
