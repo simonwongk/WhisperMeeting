@@ -648,6 +648,19 @@ class MetadataFailureTests(DownloaderTestCase):
         self.assertEqual([name for name in self.blobs() if name.endswith((".part", ".incomplete"))], [])
         self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
 
+    def test_a_library_download_that_fails_the_pin_keeps_the_resumable_partial(self):
+        """Review mutant M8 (round 2): the library's bad blob is discarded BEFORE the sweep that
+        removes a `.part` beside its blob, so the resumable partial survives a library download that
+        fails verification. Swapping the two calls passed every test until this one."""
+        self.interrupt_after(120_000)
+        self.hub.unusable_metadata = True
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.orchestrate([], fallback=self.library([], weights=WEIGHTS[:-1] + b"\x00"))
+
+        self.assertTrue(os.path.exists(self.weights_part()), "a library download that failed the pin cost the partial")
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+
     def test_a_failed_library_download_keeps_the_partial_for_a_later_resume(self):
         self.interrupt_after(120_000)
         self.hub.unusable_metadata = True
