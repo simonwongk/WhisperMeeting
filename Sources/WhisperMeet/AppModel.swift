@@ -7060,9 +7060,18 @@ extension AppModel {
             alertMessage = "Wait for this meeting's transcription to finish, or remove it from the queue, before rebuilding its audio. The transcription has already opened (or is about to open) the current recording, and its result would describe audio this rebuild would replace."
             return nil
         }
+        // F870: the rebuild writes the new recording and moves the old one aside in this meeting's
+        // folder, off the main actor, so the meeting is held until it finishes and a delete of it
+        // meanwhile is refused rather than racing it. A delete runs synchronously on the main
+        // actor, so none is under way here and `begin` does not fail; the guard is for its contract.
+        guard store.folderWriters.begin(request.meetingID) else {
+            alertMessage = "This meeting is being deleted, so its audio was not rebuilt."
+            return nil
+        }
         sourceRebuildRunningID = request.meetingID
         return Task {
             await applySourceRebuild(request)
+            store.folderWriters.end(request.meetingID)
             sourceRebuildRunningID = nil
         }
     }

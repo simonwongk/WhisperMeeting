@@ -997,13 +997,19 @@ final class MeetingStore: ObservableObject {
     /// snapshot record whose file is stale and returns how many files were written. Injectable only
     /// so a test can land an edit and its flush while the pass is running (F496); defaults to
     /// `runNotesBackfillPass`.
-    var notesBackfillPass: @Sendable ([MeetingRecord], URL) async -> Int = { snapshot, root in
-        await MeetingStore.runNotesBackfillPass(snapshot, root: root)
+    lazy var notesBackfillPass: @Sendable ([MeetingRecord], URL) async -> Int = { [folderWriters = self.folderWriters] snapshot, root in
+        await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: folderWriters)
     }
 
-    nonisolated static func runNotesBackfillPass(_ snapshot: [MeetingRecord], root: URL) async -> Int {
+    nonisolated static func runNotesBackfillPass(
+        _ snapshot: [MeetingRecord], root: URL, writers: MeetingFolderWriters
+    ) async -> Int {
         await Task.detached(priority: .utility) {
             snapshot.reduce(into: 0) { count, meeting in
+                // F870: held while its notes.md is checked and written, so a delete of this meeting
+                // meanwhile is refused; one already under way turns this write away.
+                guard writers.begin(meeting.id) else { return }
+                defer { writers.end(meeting.id) }
                 if Self.writeSidecarIfStale(for: meeting, root: root) { count += 1 }
             }
         }.value
@@ -1966,6 +1972,18 @@ final class MeetingStore: ObservableObject {
     }
 
     /// Removes a recording directory. Injectable so the failure path is testable (F146).
+    /// The meetings something is writing into off the main actor — Shrink, Rebuild Audio, the launch
+    /// notes.md backfill — which a delete refuses rather than racing (F870).
+    nonisolated let folderWriters = MeetingFolderWriters()
+
+    /// Why a delete left these meetings listed: something is still writing into their folders (F870).
+    static func busyFolderDeleteMessage(_ titles: [String]) -> String {
+        let names = titles.map { "“\($0)”" }.joined(separator: ", ")
+        return titles.count == 1
+            ? "\(names) was not deleted: its recording folder is still being written — its audio being compressed or rebuilt, or its notes updated. Delete it again once that has finished."
+            : "\(titles.count) meetings were not deleted because their recording folders are still being written — audio being compressed or rebuilt, or notes updated: \(names). Delete them again once that has finished."
+    }
+
     var removeRecordingDirectory: (URL) throws -> Void = { url in
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
@@ -2303,6 +2321,31 @@ final class MeetingStore: ObservableObject {
             if let meeting = meeting(id: id) { doomed.append(meeting) }
         }
         guard !doomed.isEmpty else { return [] }
+
+        // F870: a meeting whose folder Shrink, Rebuild Audio or the notes backfill is writing into
+        // off the main actor is not deleted now. Removing the folder under a writer is F849's race —
+        // a file landing between the contents and the folder itself fails the removal, and the
+        // rollback below lists the meeting again without its audio — so it is refused and said, and
+        // deleting it again once the writer is done works. The rest are claimed for the length of
+        // this call, which turns a writer arriving meanwhile away.
+        let claim = folderWriters.claimForDeletion(doomed.map(\.id))
+        defer { folderWriters.endDeletion(claim.claimed) }
+        // Said once the rest is done: a successful save below resets the storage message.
+        var busyMessage: String?
+        if !claim.held.isEmpty {
+            let held = Set(claim.held)
+            busyMessage = Self.busyFolderDeleteMessage(doomed.filter { held.contains($0.id) }.map(\.title))
+            doomed.removeAll { held.contains($0.id) }
+            guard !doomed.isEmpty else {
+                storageErrorMessage = busyMessage
+                return []
+            }
+        }
+        defer {
+            if let busyMessage {
+                storageErrorMessage = [storageErrorMessage, busyMessage].compactMap { $0 }.joined(separator: " ")
+            }
+        }
 
         // Classified before anything changes, so the save below is the first effect.
         var folders: [UUID: URL] = [:]
