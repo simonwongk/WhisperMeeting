@@ -23,8 +23,10 @@ import Foundation
 /// characters a string.
 ///
 /// **Free text is cut, not only redacted.** An `asi` entry and the exception subtype can carry
-/// interpolated runtime text, and `redactPaths` recognises only ASCII path components with no space
-/// in them. So before that cleaning, those two fields lose:
+/// interpolated runtime text, and `redactPaths` — which until F791 recognised only ASCII path
+/// components with no space in them — still leaves quoted names, and keeps the text after a path
+/// whose end it recognises. A crash message is the last place to bet on either. So before that
+/// cleaning, those two fields lose:
 ///
 /// - what is between each pair of quotes — `"…"`, `“…”`, `'…'`, `‘…’`, `«…»`, `「…」`, `『…』` —
 ///   which becomes `<name>`, the quotes kept. A quote that never closes takes the rest of the string
@@ -222,10 +224,11 @@ public struct CrashReportDigest: Sendable, Equatable {
     /// exception subtype — after their quoted names and everything from their first path-like word
     /// on are taken out (the type's doc lists exactly what).
     ///
-    /// `redactPaths` alone is not enough here: it recognises only ASCII path components with no
+    /// `redactPaths` alone was not enough here: it recognised only ASCII path components with no
     /// space in them, so it turned "/Users/jane/Movies/会议记录/季度规划会议.mov" into
-    /// "<path>/会议记录/季度规划会议.mov", and kept a quoted file name whole. A file name can be a
-    /// meeting title, which the bundle never carries (F70).
+    /// "<path>/会议记录/季度规划会议.mov" (fixed for every consumer by F791), and it still keeps a
+    /// quoted file name whole. A file name can be a meeting title, which the bundle never carries
+    /// (F70).
     static func cleanFreeText(_ text: String) -> String {
         clean(scrubbingFreeText(text))
     }
@@ -261,11 +264,9 @@ public struct CrashReportDigest: Sendable, Equatable {
         "\"": "\"", "“": "”", "'": "'", "‘": "’", "«": "»", "「": "」", "『": "』",
     ]
 
-    /// Characters that end a word for the path search: whitespace and these.
-    private static let wordBreaks: Set<Character> = [
-        "=", ":", ",", ";", "(", ")", "[", "]", "{", "}", "<", ">", "|",
-        "\"", "'", "“", "”", "‘", "’", "«", "»", "「", "」", "『", "』",
-    ]
+    /// Characters that end a word for the path search: whitespace and these — the same set
+    /// `redactPaths` widens a path back to (F791), so the two agree on where a path's word starts.
+    private static let wordBreaks = DiagnosticsBundleBuilder.pathWordBreaks
 
     /// Quoted names out, then cut at the first path-like word. `cut` says whether the end of `text`
     /// was dropped, so a caller stitching pieces together stops there.

@@ -131,8 +131,8 @@ func crashReportDigestCarriesOnlyItsAllowlist() throws {
     }
 }
 
-// F389 review: `DiagnosticsBundleBuilder.redactPaths` only recognises ASCII path components with no
-// space in them, so on its own it left "<path>/会议记录/季度规划会议.mov" and
+// F389 review: `DiagnosticsBundleBuilder.redactPaths` recognised only ASCII path components with no
+// space in them until F791, so on its own it left "<path>/会议记录/季度规划会议.mov" and
 // "<path> Support<path> Meeting Q3.m4a" in the digest, and kept a quoted file name whole. A file name
 // can be a meeting title, which F70 says the bundle never carries. These fixtures are the probes that
 // found it plus the other shapes a path or a name takes in a crash message.
