@@ -99,7 +99,7 @@ func unreadableBufferFormatThrowsInsteadOfCrashing() throws {
     // in for it: `CMFormatDescription.h` says the audio getters "return NULL if used with a non-audio
     // format description", and before the fix this buffer crashed `append` with SIGSEGV at the same
     // line as the 4-channel case (measured). A throw from `append` is what the sample handler
-    // already treats as one failed write: `_streamError` plus `recordWriteOutcome(succeeded: false)`
+    // already treats as one failed write: `_streamError` plus `recordWriteOutcome(track, succeeded: false)`
     // (F363, F386), while the other track keeps recording.
     var video: CMVideoFormatDescription?
     let made = CMVideoFormatDescriptionCreate(

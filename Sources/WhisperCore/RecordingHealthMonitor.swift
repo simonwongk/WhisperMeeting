@@ -348,19 +348,26 @@ public final class RecordingHealthMonitor {
     /// session could stage. The reasoning it rests on instead: one failure is a transient and is
     /// already recorded as a stream error; three in a row with no success between them is not.
     /// The asymmetry decides it — a false warning costs a banner, a missed one costs the whole
-    /// recording — and `consecutiveWriteFailures` resetting on any success is what stops the low
-    /// threshold turning into noise.
+    /// recording — and each track's count resetting on that track's next success is what stops the
+    /// low threshold turning into noise.
     private let writeFailureThreshold: Int
     private var microphone = ChannelState()
     private var systemAudio = ChannelState()
 
-    /// Consecutive failed appends, reset by any success (F386).
+    /// Consecutive failed appends per track, each reset by that track's next success (F386, F876).
     ///
     /// **Consecutive, not cumulative, and that is the property that makes it safe to warn on.** A
     /// running total would creep past any threshold over a long recording and raise an alarm
     /// about a capture that is working; a consecutive count can only be high while nothing is
     /// landing right now.
-    private var consecutiveWriteFailures = 0
+    ///
+    /// **Per track, because the tracks fail independently (F876).** F386 kept one count for both,
+    /// and the sample handler reports both into it, so while one track kept landing, each of its
+    /// successes reset the other's failures: a microphone failing every buffer beside working
+    /// system audio never reached the threshold, and the user was told to check the microphone
+    /// connection instead of that audio was not being saved.
+    private var microphoneWriteFailures = 0
+    private var systemAudioWriteFailures = 0
 
     // Accumulated across the capture for the post-meeting report (F58).
     private var seenWarnings: Set<RecordingHealthWarning> = []
@@ -530,14 +537,22 @@ public final class RecordingHealthMonitor {
         return time - lastReceivedAt > staleAfter
     }
 
-    /// One append's outcome (F386). Called from the capture queue, like `receive`.
-    public func recordWriteOutcome(succeeded: Bool) {
-        consecutiveWriteFailures = succeeded ? 0 : consecutiveWriteFailures + 1
+    /// One append's outcome on one track (F386, F876). Called from the capture queue, like `receive`.
+    public func recordWriteOutcome(_ channel: RecordingChannel, succeeded: Bool) {
+        switch channel {
+        case .microphone:
+            microphoneWriteFailures = succeeded ? 0 : microphoneWriteFailures + 1
+        case .systemAudio:
+            systemAudioWriteFailures = succeeded ? 0 : systemAudioWriteFailures + 1
+        }
     }
 
-    /// Whether writes are failing persistently right now — the live half of the warning, for a
-    /// caller that has to decide something rather than display it.
-    public var writesAreFailing: Bool { consecutiveWriteFailures >= writeFailureThreshold }
+    /// Whether either track's writes are failing persistently right now — the live half of the
+    /// warning, for a caller that has to decide something rather than display it. Either track:
+    /// a recording that keeps one track and loses the other has still lost audio (F876).
+    public var writesAreFailing: Bool {
+        microphoneWriteFailures >= writeFailureThreshold || systemAudioWriteFailures >= writeFailureThreshold
+    }
 
     private func recentlyClipped(_ channel: ChannelState, at time: TimeInterval) -> Bool {
         guard let lastClippedAt = channel.lastClippedAt else { return false }

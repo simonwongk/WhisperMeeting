@@ -31,11 +31,11 @@ func persistentWriteFailureIsSurfaced() {
     monitor.receive(.systemAudio, level: quiet, at: 1)
     monitor.receive(.microphone, level: quiet, at: 1)
 
-    for _ in 0..<2 { monitor.recordWriteOutcome(succeeded: false) }
+    for _ in 0..<2 { monitor.recordWriteOutcome(.microphone, succeeded: false) }
     #expect(!tick(monitor, at: 2).warnings.contains(.captureWritesFailing),
             "two failures is a blip, and a warning on every blip is a warning nobody reads")
 
-    monitor.recordWriteOutcome(succeeded: false)
+    monitor.recordWriteOutcome(.microphone, succeeded: false)
     #expect(tick(monitor, at: 3).warnings.contains(.captureWritesFailing),
             "the live snapshot is what the HUD and the menu bar read")
     let report = monitor.report()
@@ -52,18 +52,18 @@ func oneSuccessResetsTheCount() {
     monitor.receive(.systemAudio, level: quiet, at: 1)
     monitor.receive(.microphone, level: quiet, at: 1)
     for _ in 0..<200 {
-        monitor.recordWriteOutcome(succeeded: false)
-        monitor.recordWriteOutcome(succeeded: false)
-        monitor.recordWriteOutcome(succeeded: true)
+        monitor.recordWriteOutcome(.microphone, succeeded: false)
+        monitor.recordWriteOutcome(.microphone, succeeded: false)
+        monitor.recordWriteOutcome(.microphone, succeeded: true)
     }
     #expect(!monitor.writesAreFailing)
     #expect(!tick(monitor, at: 2).warnings.contains(.captureWritesFailing))
 
     // And the LIVE warning recovers: writes that start working clear it rather than latching, so a
     // volume that comes back does not leave a red banner on a healthy recording.
-    for _ in 0..<5 { monitor.recordWriteOutcome(succeeded: false) }
+    for _ in 0..<5 { monitor.recordWriteOutcome(.microphone, succeeded: false) }
     #expect(tick(monitor, at: 3).warnings.contains(.captureWritesFailing))
-    monitor.recordWriteOutcome(succeeded: true)
+    monitor.recordWriteOutcome(.microphone, succeeded: true)
     #expect(!tick(monitor, at: 4).warnings.contains(.captureWritesFailing))
 
     // The completed-meeting REPORT keeps it, and that difference is deliberate: the banner is
@@ -119,7 +119,7 @@ func aHealthyCaptureIsUnchanged() {
     let monitor = RecordingHealthMonitor(startedAt: 0)
     monitor.receive(.systemAudio, level: quiet, at: 1)
     monitor.receive(.microphone, level: quiet, at: 1)
-    for _ in 0..<500 { monitor.recordWriteOutcome(succeeded: true) }
+    for _ in 0..<500 { monitor.recordWriteOutcome(.microphone, succeeded: true) }
     tick(monitor, at: 2)
     let report = monitor.report()
     #expect(!report.warnings.contains(.captureWritesFailing))

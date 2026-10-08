@@ -21,8 +21,11 @@ func aFailedAppendIsReported() throws {
     let source = try SourceAssertion.uncommentedSource(engineSource)
     // The catch that F363 left as the only record of a write failure, and which surfaced nowhere.
     let handler = try #require(source.range(of: "_streamError = error"))
-    let window = source[handler.lowerBound...].prefix(240)
-    #expect(window.contains("healthMonitor?.recordWriteOutcome(succeeded: false)"), "\(window)")
+    let window = source[handler.lowerBound...].prefix(400)
+    // Per track since F876, attributed by the output type the buffer came in on.
+    #expect(window.contains("healthMonitor?.recordWriteOutcome(track, succeeded: false)"), "\(window)")
+    #expect(source.contains("case .audio: .systemAudio"), "system audio buffers are the system track")
+    #expect(source.contains("case .microphone: .microphone"), "microphone buffers are the microphone track")
 }
 
 @Test("A successful append is reported too, so the count cannot latch (F386)")
@@ -31,12 +34,15 @@ func aSuccessfulAppendIsReported() throws {
     // resets it; a path that never reports success turns a threshold of three into "three write
     // failures ever, in any order, for the rest of the recording".
     let source = try SourceAssertion.uncommentedSource(engineSource)
-    let successes = source.components(separatedBy: "healthMonitor?.recordWriteOutcome(succeeded: true)").count - 1
+    let successes = source.components(separatedBy: "succeeded: true)").count - 1
     #expect(successes == 2, "expected one per channel, found \(successes)")
-    for channel in ["_systemWriter?.append(sampleBuffer)", "_microphoneWriter?.append(sampleBuffer)"] {
-        let call = try #require(source.range(of: channel))
-        let window = source[call.upperBound...].prefix(120)
-        #expect(window.contains("recordWriteOutcome(succeeded: true)"), "\(channel): \(window)")
+    // Each track reports its OWN success (F876): a success credited to the wrong track would reset
+    // the other track's failures, which is the defect F876 fixed.
+    for (call, track) in [("_systemWriter?.append(sampleBuffer)", ".systemAudio"),
+                          ("_microphoneWriter?.append(sampleBuffer)", ".microphone")] {
+        let found = try #require(source.range(of: call))
+        let window = source[found.upperBound...].prefix(140)
+        #expect(window.contains("recordWriteOutcome(\(track), succeeded: true)"), "\(call): \(window)")
     }
 }
 

@@ -462,6 +462,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         of outputType: SCStreamOutputType
     ) {
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
+        // Which track a failure below belongs to (F876): the health monitor counts each track's
+        // consecutive failures on its own. Only `.audio` and `.microphone` outputs are added
+        // (`makeStream`), so nil never meets a write.
+        let track: RecordingChannel? = switch outputType {
+        case .audio: .systemAudio
+        case .microphone: .microphone
+        default: nil
+        }
         do {
             // F292: a restarted capture's first buffer must land AFTER the silence for the gap.
             try applyPendingRestartPaddingIfNeeded()
@@ -469,14 +477,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             switch outputType {
             case .audio:
                 if let level = try _systemWriter?.append(sampleBuffer) {
-                    healthMonitor?.recordWriteOutcome(succeeded: true)
+                    healthMonitor?.recordWriteOutcome(.systemAudio, succeeded: true)
                     healthMonitor?.receive(.systemAudio, level: level, at: now)
                     levelMeter.receive(.systemAudio, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
                 }
             case .microphone:
                 if let level = try _microphoneWriter?.append(sampleBuffer) {
-                    healthMonitor?.recordWriteOutcome(succeeded: true)
+                    healthMonitor?.recordWriteOutcome(.microphone, succeeded: true)
                     healthMonitor?.receive(.microphone, level: level, at: now)
                     levelMeter.receive(.microphone, level: level, at: now)
                     emitLevelsIfNeeded(at: now)
@@ -494,9 +502,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             // F386. Since F363 stopped a failed write tearing the stream down, a persistent
             // failure drops every buffer while the recording looks alive: the HUD counts, the
             // level meter moves, and nothing lands. `_streamError` alone does not surface —
-            // three consecutive failures raise an at-risk warning, which the risk announcer and
-            // the menu-bar title already carry.
-            healthMonitor?.recordWriteOutcome(succeeded: false)
+            // three consecutive failures on one track raise an at-risk warning, which the risk
+            // announcer and the menu-bar title already carry. Counted per track (F876), so the
+            // other track landing does not hide this one failing.
+            if let track {
+                healthMonitor?.recordWriteOutcome(track, succeeded: false)
+            }
         }
     }
 
