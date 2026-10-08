@@ -229,7 +229,7 @@ func aResultThatLosesWithNoOfferIsSavedWithoutAsking() throws {
 func failureWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F662-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F662.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer {
         defaults.removePersistentDomain(forName: suite)
