@@ -41,7 +41,7 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Nine entries, over the cap of five. (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Ten entries, over the cap of five. (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
@@ -55,6 +55,7 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
 | 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
 | 11 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
+| 12 | **F889 · F857** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
 
 ---
 
@@ -334,6 +335,39 @@ when it is installed). Use bench clips or throwaway imports, never a real meetin
 copy in the restore safety folders is wiped after its week (F664); the "two versions" screen gets a "Keep the version on disk"
 button (F833); and both quit choices stay as they are — logout asks first, Stop & Quit leaves the meeting ready to transcribe
 (F529, F673). The three changes are on the board for the next batch.
+
+---
+
+## F889 · F857 — Wave 4: one sitting at the screen, and one optional hardware check
+
+**Status:** `blocked` (F889, F857). The 2026-10-07 → 10-08 batch fixed 33 tickets in the library's recovery and restore
+safety copies, two copies of the app on one library, transcripts and Ask, dictation and recording. Each was tested headlessly
+and reviewed by a second agent; what only a person can see is collected here. Most steps use a **scratch library**, never your
+real one — when you are ready, tell me "set up the Wave 4 sitting" and I will prepare a scratch copy of the app you can open
+with one command.
+
+**What I need from you:** one sitting of about 40 minutes on the installed Wave 4 build (split it as you like), and step 6
+only if you own a multi-input audio interface.
+
+1. **Claude key (F442) — 1 min, on your real app.** Settings ▸ Claude: if a key is saved it reads "API key saved"; quit and
+   relaunch, and it still does. (The tests now never touch your Keychain; this proves the shipped app still does.)
+2. **Two versions and safety copies (F833, F855) — ~10 min, scratch.** A library whose index was swapped for another copy's
+   shows "Two versions of the meeting library were found"; **Keep the Version on Disk** in Settings opens it again. After a
+   Restore…, Settings ▸ Meeting library lists "Restore of <date> · <size>" with **Remove…**, which asks before deleting.
+3. **Two copies of the app (F662, F667, F669) — ~10 min, scratch.** With the conflict banner up in one copy, a recording you
+   stop there appears in the list at once and the banner stays.
+4. **Transcripts (F831, F658, F873, F870) — ~8 min.** Improve ▸ Apply Replacement Rules… → Apply → Edit ▸ Undo puts the line
+   back. Second Opinion shows no Replace on a row whose reading runs into its neighbour. A meeting from before 17 September that
+   you never edited shows its quality flags again. Deleting a meeting while Shrink runs on it says it is still being written.
+5. **Dictation (F821, F823, F846) — ~8 min.** Add a replacement rule "Jon → Jonathan" and dictate "ask Jon about it":
+   "Jonathan" is pasted; dictate an email address containing "jon": it is left alone. In a noisy room, hold the key and say
+   nothing: "Didn’t catch that", nothing pasted. (The first-download pill needs a library
+   without the dictation model; I will include it in the scratch setup.)
+6. **Optional hardware (F857):** only if you own a multi-input audio interface (or a microphone that sends two or more
+   channels). Record ~30 s into its second or later input and dictate once: both should be audible and transcribed. Before this
+   batch an interleaved multi-channel microphone recorded nothing at all (F875). With one live input on an N-input interface the
+   level is about 1/N — please note the level, not just whether it is audible. If you have no such device, say so and I close
+   F857 as not planned.
 
 ---
 
