@@ -75,6 +75,9 @@ final class DictationTriggerChooser: ObservableObject {
         hint = nil
         capture = DictationTriggerCapture()
         self.dictation = dictation
+        // F683: the trigger is paused while a key is chosen, so the current one reaches this window
+        // instead of starting a dictation.
+        dictation.beginChoosingTrigger(by: self)
         let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         keyMonitor = monitors.addLocal(clicks.union([.keyDown, .flagsChanged])) { [weak self] event in
             guard let self else { return event }
@@ -91,7 +94,9 @@ final class DictationTriggerChooser: ObservableObject {
                     keyCode: event.keyCode,
                     isShortcut: !event.modifierFlags.intersection([.command, .control]).isEmpty
                 )
-            return self.receive(input) ? event : nil
+            // `isARepeat` raises for anything but a key event, and `.flagsChanged` is not one.
+            let isRepeat = event.type == .keyDown && event.isARepeat
+            return self.receive(input, isRepeat: isRepeat) ? event : nil
         }
         clickMonitor = monitors.addGlobal(clicks) { [weak self] _ in
             self?.receive(.click)
@@ -117,9 +122,16 @@ final class DictationTriggerChooser: ObservableObject {
 
     /// One event while choosing, by `DictationTriggerCapture`'s rules (F521). Returns whether the
     /// event goes on to the app. Internal so a test can choose a key without a window.
+    ///
+    /// A key's autorepeat decides nothing (F683): its press already did, or was made before the
+    /// choice began. A toggle dictation ended by its F-key while Settings is choosing pauses the
+    /// trigger under that key-down, so the rest of the hold repeats into this window — and each
+    /// repeat chose that key again and ended the choice. A shortcut's repeats still reach the app;
+    /// any other repeat is held back, as a refused key's repeats always were.
     @discardableResult
-    func receive(_ input: DictationTriggerCapture.Input) -> Bool {
+    func receive(_ input: DictationTriggerCapture.Input, isRepeat: Bool = false) -> Bool {
         guard isChoosing else { return true }
+        if isRepeat, case let .keyDown(_, isShortcut) = input { return isShortcut }
         switch capture.handle(input) {
         case let .choose(code):
             if let dictation {
@@ -153,7 +165,10 @@ final class DictationTriggerChooser: ObservableObject {
             monitors.remove(clickMonitor)
             self.clickMonitor = nil
         }
-        if isChoosing { isChoosing = false }
         if hint != nil { hint = nil }
+        guard isChoosing else { return }
+        isChoosing = false
+        // Last, so a key chosen a moment ago (`receive` sets `hotkey` first) is the one armed.
+        dictation?.endChoosingTrigger(by: self)
     }
 }

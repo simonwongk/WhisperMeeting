@@ -146,6 +146,23 @@ final class DictationController: ObservableObject {
     private var activeTapCheck: Task<Void, Never>?
     private var activeTapCheckGeneration = 0
 
+    // MARK: - Choosing a trigger in Settings (F683)
+    //
+    // Since F547 an armed F-key trigger is held back from every app, WhisperMeet's own Settings
+    // window included, so Change never saw it: pressing the current trigger there started a
+    // dictation instead of choosing the key again. A modifier trigger reached Settings, and also
+    // started a dictation on its way. So while a trigger is being chosen it is paused — not armed —
+    // and the key goes to the chooser like any other.
+
+    /// The choosers now choosing a trigger: one per Settings view that pressed Change.
+    private var triggerChoosers: Set<ObjectIdentifier> = []
+    /// Whether a trigger is being chosen in Settings (F683).
+    var isChoosingTrigger: Bool { !triggerChoosers.isEmpty }
+    /// The trigger is not armed because one is being chosen. Set and cleared by `applyHotkeyStart`,
+    /// the one place that arms it, and cleared when dictation is switched off.
+    private(set) var isTriggerPausedForChoosing = false
+    private var resignActiveObserver: NSObjectProtocol?
+
     /// True while dictation owns the microphone/result path or is retiring a resident model. Used by
     /// `AppModel` to avoid microphone and large-model contention with meeting recording.
     var isActive: Bool {
@@ -244,6 +261,7 @@ final class DictationController: ObservableObject {
         // cleared or the next press fires a no-op end edge instead of a fresh start (F78). No-op in
         // hold mode, which never reads toggledOn.
         self.hotkeyMonitor.resetToggleState()
+        self.pauseTriggerIfChoosing()
     }
 
     private let idleEvictSeconds: TimeInterval // 5 min default; injectable for tests
@@ -341,6 +359,16 @@ final class DictationController: ObservableObject {
                 MainActor.assumeIsolated { self?.applicationBecameActive() }
             } else {
                 Task { @MainActor in self?.applicationBecameActive() }
+            }
+        }
+        // F683: the bound on a paused trigger. Every chooser ends its choice here too (F691).
+        resignActiveObserver = activationNotifications.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.endEveryTriggerChoice() }
+            } else {
+                Task { @MainActor in self?.endEveryTriggerChoice() }
             }
         }
         if activateOnInit {
@@ -658,8 +686,27 @@ final class DictationController: ObservableObject {
     /// A dictation in flight owns `status` until it settles (F446). Writing `.idle` over a live
     /// `.listening` made `isActive` false with the microphone on — so the meeting guard stopped
     /// guarding — and disarmed the capture watchdog, which finalizes only a `.listening` status.
+    ///
+    /// While Settings is choosing a trigger the trigger is paused instead (F683), so every path that
+    /// arms it — a key or mode changed, Accessibility granted, a lost tap, coming to the front —
+    /// leaves it paused until the choice ends. Not under a dictation that is listening: only its
+    /// trigger can end it, so it keeps the trigger until it stops listening
+    /// (`pauseTriggerIfChoosing`).
     private func applyHotkeyStart() {
         armedHotkey = hotkey
+        if isChoosingTrigger, session.state != .listening {
+            if !isTriggerPausedForChoosing {
+                hotkeyMonitor.stop()
+                isTriggerPausedForChoosing = true
+                log.notice("dictation trigger paused while Settings chooses one")
+            }
+            hotkeyActive = false
+            updateActiveTapCheck()
+            guard session.state == .idle else { return }
+            status = settledStatus
+            return
+        }
+        isTriggerPausedForChoosing = false
         let started = hotkeyMonitor.start(hotkey: hotkey)
         hotkeyActive = started
         hotkeyTapFailed = !started
@@ -678,6 +725,43 @@ final class DictationController: ObservableObject {
         updateActiveTapCheck()
         guard session.state == .idle else { return }
         status = settledStatus
+    }
+
+    /// Settings' Change started choosing a trigger (F683): the trigger is paused, unless a dictation
+    /// is listening, which keeps it — not even re-armed, which is what loses a release (F446) —
+    /// until it stops. Idempotent per chooser.
+    func beginChoosingTrigger(by chooser: AnyObject) {
+        let wasChoosing = isChoosingTrigger
+        triggerChoosers.insert(ObjectIdentifier(chooser))
+        guard !wasChoosing, enabled, session.state != .listening else { return }
+        applyHotkeyStart()
+    }
+
+    /// The choice ended — a key chosen, Escape, Change again, or Settings left (F683). The trigger
+    /// is armed again once no chooser is choosing: the chosen one, since `hotkey` was set first.
+    /// A trigger that was never paused, because a dictation was listening throughout, is left alone.
+    func endChoosingTrigger(by chooser: AnyObject) {
+        guard triggerChoosers.remove(ObjectIdentifier(chooser)) != nil, !isChoosingTrigger else { return }
+        guard enabled, isTriggerPausedForChoosing else { return }
+        applyHotkeyStart()
+    }
+
+    /// WhisperMeet went to the background (F683): every choice is over, as each chooser also
+    /// decides (F691). This is the bound on a paused trigger: a chooser that went away without
+    /// ending its choice cannot leave the trigger paused past the user's next switch to another app.
+    private func endEveryTriggerChoice() {
+        guard isChoosingTrigger else { return }
+        triggerChoosers.removeAll()
+        guard enabled, isTriggerPausedForChoosing else { return }
+        applyHotkeyStart()
+    }
+
+    /// A dictation that was listening when the choice began kept its trigger (F683). Once it stops
+    /// listening the trigger is paused like any other. Called where a dictation stops listening
+    /// without re-arming the trigger itself.
+    private func pauseTriggerIfChoosing() {
+        guard enabled, isChoosingTrigger, !isTriggerPausedForChoosing, session.state != .listening else { return }
+        applyHotkeyStart()
     }
 
     /// What `status` says while the trigger's tap cannot be created.
@@ -856,6 +940,7 @@ final class DictationController: ObservableObject {
             hotkeyMonitor.stop()
             hotkeyActive = false
             hotkeyTapFailed = false
+            isTriggerPausedForChoosing = false
             accessibilityPoll?.cancel()
             accessibilityPoll = nil
             updateActiveTapCheck()
@@ -1049,6 +1134,7 @@ final class DictationController: ObservableObject {
 
     deinit {
         if let activationObserver { activationNotifications.removeObserver(activationObserver) }
+        if let resignActiveObserver { activationNotifications.removeObserver(resignActiveObserver) }
         accessibilityPoll?.cancel()
         activeTapCheck?.cancel()
         hotkeyMonitor.stop()
@@ -1065,7 +1151,12 @@ final class DictationController: ObservableObject {
     func handlePressStart() {
         // Every refusal below must clear toggle mode's latched state; otherwise the monitor keeps
         // believing dictation is "on" and the next press fires an end edge that silently no-ops (F38).
-        guard enabled, !isSwitchingModel else { hotkeyMonitor.resetToggleState(); return }
+        // A press the paused trigger heard just before it was paused starts nothing (F683): no key
+        // could end that dictation until the choice ends.
+        guard enabled, !isSwitchingModel, !isTriggerPausedForChoosing else {
+            hotkeyMonitor.resetToggleState()
+            return
+        }
         if isMicrophoneBusy() {
             log.notice("dictation press ignored — microphone busy (meeting or mic test)")
             flashBusy()
@@ -1113,6 +1204,7 @@ final class DictationController: ObservableObject {
 
     private func handlePressEnd() {
         _ = beginTranscriptionIfNeeded()
+        pauseTriggerIfChoosing()
     }
 
     /// The press that started this capture was half of a shortcut (F448): ⌘-Tab, ⌥-click, a
@@ -1131,6 +1223,7 @@ final class DictationController: ObservableObject {
         // Toggle mode latched "on" at this press; the next press must start a dictation, not end one.
         hotkeyMonitor.resetToggleState()
         scheduleIdleEviction()
+        pauseTriggerIfChoosing()
     }
 
     private func startCapture() -> Bool {
@@ -1195,6 +1288,7 @@ final class DictationController: ObservableObject {
         // must be cleared or the next press fires a no-op end edge instead of a fresh start (F78).
         hotkeyMonitor.resetToggleState()
         fail(reason.message)
+        pauseTriggerIfChoosing()
     }
 
     private func beginTranscriptionIfNeeded() -> Bool {
