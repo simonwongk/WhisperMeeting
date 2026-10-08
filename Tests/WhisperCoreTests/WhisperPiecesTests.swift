@@ -1,0 +1,471 @@
+import Foundation
+import Testing
+@testable import WhisperCore
+
+// F533 — Whisper Large used to get the whole multi-hour WAV in one call, and openai-whisper builds
+// the log-mel spectrogram of the ENTIRE file before decoding starts (`transcribe.py:139`,
+// `mel = log_mel_spectrogram(audio, model.dims.n_mels, padding=N_SAMPLES)`), about 3 GB an hour on
+// top of the weights. The user's decision (2026-10-08): a recording over ~45 minutes is transcribed
+// in pieces of at most 45 minutes, cut at quiet moments, with the times offset and joined.
+//
+// The pure parts — where to cut, how to offset and join, how progress maps — are tested directly.
+// The client is tested end to end with a stub `whisper` and a stub `ffmpeg`, so the pieces it writes
+// and the arguments it passes are observed rather than assumed.
+
+private let rate = WhisperPiecePlanner.sampleRate
+private let frame = WhisperPiecePlanner.frameSamples
+
+/// A 10-second profile at the planner's 100 ms frames: loud everywhere, silent in `quiet`.
+private func energies(frames count: Int, quiet: Set<Int> = []) -> [Double] {
+    (0..<count).map { quiet.contains($0) ? 0 : 1 }
+}
+
+/// Four-second pieces searched ±0.5 s: small enough that a ten-second fixture splits in three.
+private let smallPolicy = WhisperPiecePolicy(maximumPieceSeconds: 4, quietSearchSeconds: 0.5)
+
+// MARK: - Cut planning
+
+@Test("A recording no longer than the bound stays one piece (F533)")
+func recordingWithinTheBoundIsOnePiece() {
+    let total = 4 * rate
+    #expect(WhisperPiecePlanner.pieces(totalSamples: total, frameEnergies: energies(frames: 40), policy: smallPolicy)
+        == [0..<total])
+}
+
+@Test("A long recording is cut at the quietest moment near each target, never past the bound (F533)")
+func longRecordingIsCutAtQuietMoments() {
+    // Targets for 10 s at a 4 s bound: three pieces, the first aimed at 3.33 s and the second at
+    // 6.58 s. The silent frames 30–31 (3.0–3.2 s) and 64–65 (6.4–6.6 s) are inside the ±0.5 s
+    // windows; of each silent pair the cut takes the frame centre nearer its target.
+    let pieces = WhisperPiecePlanner.pieces(
+        totalSamples: 10 * rate, frameEnergies: energies(frames: 100, quiet: [30, 31, 64, 65]), policy: smallPolicy
+    )
+    let expected: [Range<Int>] = [0..<50_400, 50_400..<104_800, 104_800..<160_000]
+    #expect(pieces == expected)
+}
+
+@Test("With no quiet moment the cut is a hard one, and still no piece is longer than the bound (F533)")
+func noQuietMomentStillHonoursTheBound() {
+    let bound = 4 * rate
+    let cases: [(profile: [Double], policy: WhisperPiecePolicy, count: Int?)] = [
+        (energies(frames: 100), smallPolicy, 3),
+        ([], smallPolicy, 3),                                                          // no profile at all
+        (energies(frames: 100), WhisperPiecePolicy(maximumPieceSeconds: 4, quietSearchSeconds: 30), nil),  // a window wider than a piece
+    ]
+    for (profile, policy, count) in cases {
+        let pieces = WhisperPiecePlanner.pieces(totalSamples: 10 * rate, frameEnergies: profile, policy: policy)
+        if let count { #expect(pieces.count == count, "\(pieces)") }
+        #expect(pieces.allSatisfy { $0.count <= bound && !$0.isEmpty }, "\(pieces)")
+        #expect(pieces.first?.lowerBound == 0 && pieces.last?.upperBound == 10 * rate)
+        #expect(zip(pieces, pieces.dropFirst()).allSatisfy { $0.upperBound == $1.lowerBound }, "a gap or an overlap: \(pieces)")
+    }
+}
+
+@Test("Three hours at the standard policy is five pieces of 30 to 45 minutes (F533)")
+func threeHoursAtTheStandardPolicy() {
+    let total = 3 * 3_600 * rate
+    let pieces = WhisperPiecePlanner.pieces(
+        totalSamples: total, frameEnergies: energies(frames: total / frame), policy: .standard
+    )
+    #expect(pieces.count == 5, "\(pieces.map { Double($0.count) / Double(rate) / 60 })")
+    #expect(pieces.allSatisfy { $0.count >= 30 * 60 * rate && $0.count <= 45 * 60 * rate })
+    #expect(pieces.last?.upperBound == total)
+}
+
+// MARK: - Energy profile
+
+@Test("The energy profile is the same however the decoded bytes arrive (F533)")
+func energyProfileIgnoresChunkBoundaries() {
+    // One full frame at half scale (mean square 0.25), then a partial frame of silence and one sample.
+    var samples = [Int16](repeating: 16_384, count: frame)
+    samples += [Int16](repeating: 0, count: 99)
+    samples.append(-32_768)
+    let bytes = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+
+    var whole = WhisperAudioEnergy()
+    whole.consume(bytes)
+    var split = WhisperAudioEnergy()
+    split.consume(bytes.prefix(3))           // ends mid-sample
+    split.consume(bytes.dropFirst(3).prefix(1_001))
+    split.consume(bytes.dropFirst(1_004))
+
+    #expect(whole.sampleCount == frame + 100)
+    #expect(split.sampleCount == whole.sampleCount)
+    let expected: [Double] = [0.25, 1.0 / 100]
+    #expect(whole.frameEnergies() == expected)
+    #expect(split.frameEnergies() == expected)
+}
+
+// MARK: - Joining
+
+private func segment(_ text: String, _ start: Double, _ end: Double) -> TranscriptSegment {
+    TranscriptSegment(speaker: nil, start: start, end: end, text: text)
+}
+
+@Test("Joined pieces carry the recording's own times, in order, with the first piece's language (F533)")
+func joinOffsetsTimesAndKeepsOrder() throws {
+    let result = try WhisperPieceJoin.join([
+        (0, WhisperPieceTranscript(text: " First part.", language: "en",
+                                   segments: [segment("First part.", 0.5, 2)])),
+        (2_700, WhisperPieceTranscript(text: "", language: "en", segments: [])),   // a silent piece
+        (5_400.25, WhisperPieceTranscript(text: " Second part. Third.", language: "en",
+                                          segments: [segment("Second part.", 0, 1.5), segment("Third.", 1.5, 3)])),
+    ], id: "meeting.wav")
+
+    #expect(result.id == "meeting.wav")
+    #expect(result.text == "First part. Second part. Third.")
+    #expect(result.languageCode == "en")
+    let starts = result.segments.map(\.start)
+    let ends = result.segments.map(\.end)
+    #expect(starts == [0.5, 5_400.25, 5_401.75])
+    #expect(ends == [2, 5_401.75, 5_403.25])
+    #expect(result.segments.map(\.text) == ["First part.", "Second part.", "Third."])
+    #expect(result.audioDuration == 5_403.25)
+}
+
+@Test("Pieces join with no space between two Chinese characters and a space anywhere else (F533)")
+func joinFollowsTheQwenHelpersBoundaryRule() throws {
+    func text(_ parts: [String]) throws -> String {
+        try WhisperPieceJoin.join(parts.enumerated().map { index, part in
+            (Double(index) * 10, WhisperPieceTranscript(text: part, language: "zh", segments: [segment(part, 0, 1)]))
+        }, id: "x").text
+    }
+    #expect(try text(["我们开会。", "下午三点。"]) == "我们开会。下午三点。")
+    #expect(try text(["我们的 deadline", "是周五。"]) == "我们的 deadline 是周五。")
+    #expect(try text(["客户", "wants it"]) == "客户 wants it")
+}
+
+@Test("Pieces that are all silent are no speech, exactly as one silent pass is (F533)")
+func allSilentPiecesAreNoSpeech() {
+    #expect(throws: LocalWhisperError.emptyTranscript) {
+        try WhisperPieceJoin.join([
+            (0, WhisperPieceTranscript(text: " ", language: "en", segments: [])),
+            (2_700, WhisperPieceTranscript(text: "", language: "en", segments: [])),
+        ], id: "meeting.wav")
+    }
+}
+
+// MARK: - Progress
+
+@Test("A piece's progress is reported as progress through the whole recording (F533)")
+func pieceProgressMapsToTheWholeRecording() {
+    let pieces: [Range<Int>] = [0..<40, 40..<70, 70..<100]
+    let halfway = WhisperPieceProgress.overall(
+        LocalTranscriptionProgress(phase: .transcribing, fractionCompleted: 0.5, estimatedSecondsRemaining: 10),
+        pieceIndex: 1, pieces: pieces
+    )
+    #expect(halfway.phase == .transcribing)
+    #expect(halfway.fractionCompleted == 0.55)
+    // 15 units left in this piece took 10 s, so the 45 units left in the recording take 30 s.
+    #expect(halfway.estimatedSecondsRemaining == 30)
+
+    let download = LocalTranscriptionProgress(phase: .downloadingModel, fractionCompleted: 0.3)
+    #expect(WhisperPieceProgress.overall(download, pieceIndex: 0, pieces: pieces) == download)
+}
+
+// MARK: - The client, end to end with stubs
+
+/// A stub `whisper` that copies each audio file it is given to `captured/`, logs its arguments, and
+/// writes the JSON openai-whisper would: piece N says "piece N" at 0.5–1.0 s of its own time, in the
+/// language it was pinned to, or "zh" when it had to detect one.
+private struct PieceFixture {
+    let directory: URL
+    let whisper: URL
+    let ffmpeg: URL
+    let recording: URL
+    let models: URL
+    let scratch: URL
+    let captured: URL
+    let invocationLog: URL
+    let ffmpegLog: URL
+
+    init(failPiece: Int? = nil, hangPiece: Int? = nil, ffmpegFails: Bool = false, recordingName: String = "meeting.wav") throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperPiecesTests-\(UUID().uuidString)", isDirectory: true)
+        whisper = directory.appendingPathComponent("whisper")
+        ffmpeg = directory.appendingPathComponent("ffmpeg")
+        recording = directory.appendingPathComponent(recordingName)
+        models = directory.appendingPathComponent("Models", isDirectory: true)
+        scratch = directory.appendingPathComponent("scratch", isDirectory: true)
+        captured = directory.appendingPathComponent("captured", isDirectory: true)
+        invocationLog = directory.appendingPathComponent("whisper.log")
+        ffmpegLog = directory.appendingPathComponent("ffmpeg.log")
+        try FileManager.default.createDirectory(at: captured, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+
+        let fail = failPiece.map(String.init) ?? "none"
+        let hang = hangPiece.map(String.init) ?? "none"
+        try writeExecutable(whisper, #"""
+        #!/bin/zsh
+        set -euo pipefail
+        audio="$1"
+        shift
+        { print -r -- "---"; print -r -- "$audio"; printf '%s\n' "$@"; } >> "\#(invocationLog.path)"
+        name="${audio:t:r}"
+        cp "$audio" "\#(captured.path)/${name}.wav"
+        output_dir=""; language=""
+        while (( $# > 0 )); do
+          case "$1" in
+            --output_dir) output_dir="$2"; shift ;;
+            --language) language="$2"; shift ;;
+          esac
+          shift
+        done
+        number="${name##*-}"
+        [[ "$number" == <-> ]] || number=0
+        if [[ "$number" == "\#(hang)" ]]; then touch "\#(directory.path)/hung"; exec sleep 120; fi
+        if [[ "$number" == "\#(fail)" ]]; then print "Skipping $audio due to RuntimeError: out of memory"; exit 0; fi
+        print -r -- " 50%|#####     | 50/100 [00:01<00:01, 50.00frames/s]"
+        print -r -- "100%|##########| 100/100 [00:02<00:00, 50.00frames/s]"
+        [[ -n "$language" ]] || language="zh"
+        printf '{"text":" piece %s","language":"%s","segments":[{"start":0.5,"end":1.0,"text":" piece %s"}]}' \
+          "$number" "$language" "$number" > "$output_dir/${name}.json"
+        """#)
+        // Stands in for ffmpeg's decode to 16 kHz mono s16le: the fixture is already that, behind a
+        // canonical 44-byte header, so the decode is the bytes after it.
+        try writeExecutable(ffmpeg, #"""
+        #!/bin/zsh
+        set -euo pipefail
+        printf '%s\n' "$@" >> "\#(ffmpegLog.path)"
+        \#(ffmpegFails ? "print -u2 'Invalid data found when processing input'; exit 1" : "")
+        input=""; previous=""
+        for argument in "$@"; do
+          [[ "$previous" == "-i" ]] && input="$argument"
+          previous="$argument"
+        done
+        tail -c +45 "$input" > "${@[-1]}"
+        """#)
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: directory) }
+
+    func client(policy: WhisperPiecePolicy = smallPolicy) -> LocalWhisperClient {
+        LocalWhisperClient(
+            executableURL: whisper, modelDirectory: models, piecePolicy: policy,
+            ffmpegExecutableURL: ffmpeg, scratchDirectory: scratch
+        )
+    }
+
+    /// Each whisper run's audio path followed by its arguments.
+    func invocations() throws -> [[String]] {
+        guard FileManager.default.fileExists(atPath: invocationLog.path) else { return [] }
+        return try String(contentsOf: invocationLog, encoding: .utf8)
+            .components(separatedBy: "---\n")
+            .filter { !$0.isEmpty }
+            .map { $0.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).filter { !$0.isEmpty } }
+    }
+
+    func scratchIsEmpty() throws -> Bool {
+        try FileManager.default.contentsOfDirectory(atPath: scratch.path).isEmpty
+    }
+}
+
+private func writeExecutable(_ url: URL, _ script: String) throws {
+    try Data(script.utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
+/// Ten seconds of 16 kHz 16-bit mono: a 440 Hz tone, silent at 3.0–3.2 s and 6.4–6.6 s — the quiet
+/// moments `longRecordingIsCutAtQuietMoments` cuts at.
+private func tenSecondSamples() -> [Int16] {
+    (0..<(10 * rate)).map { index in
+        let seconds = Double(index) / Double(rate)
+        if (3.0..<3.2).contains(seconds) || (6.4..<6.6).contains(seconds) { return 0 }
+        return Int16(clampedAudioSample: Float(0.37 * sin(2 * Double.pi * 440 * seconds)))
+    }
+}
+
+private func writeWAV(_ samples: [Int16], to url: URL) throws {
+    var data = WAVWriter.header(sampleRate: UInt32(rate), dataByteCount: UInt32(samples.count * 2))
+    samples.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    try data.write(to: url)
+}
+
+private func pcm(of url: URL) throws -> Data {
+    try Data(contentsOf: url).dropFirst(44)
+}
+
+private extension Array where Element == String {
+    func has(_ pair: [String]) -> Bool {
+        indices.dropLast(pair.count - 1).contains { Array(self[$0..<($0 + pair.count)]) == pair }
+    }
+}
+
+@Test("A long recording is transcribed in pieces cut at its quiet moments and joined on its own clock (F533)")
+func longRecordingIsTranscribedInPieces() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    let samples = tenSecondSamples()
+    try writeWAV(samples, to: fixture.recording)
+    let original = try Data(contentsOf: fixture.recording)
+
+    let result = try await fixture.client().transcribe(
+        recordingAt: fixture.recording,
+        options: .accuracyFirst(model: .large, language: .automatic, keyterms: ["WhisperMeet"])
+    )
+
+    let runs = try fixture.invocations()
+    try #require(runs.count == 3, "whisper ran \(runs.count) time(s); a ten-second recording at a four-second bound is three pieces")
+    // Each piece is exactly its slice of the recording — no sample lost, repeated or resampled.
+    let whole = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+    let cuts = [0, 50_400, 104_800, 160_000]
+    for index in 0..<3 {
+        let piece = try pcm(of: fixture.captured.appendingPathComponent("whispermeet-piece-\(index + 1).wav"))
+        #expect(piece == whole.subdata(in: (cuts[index] * 2)..<(cuts[index + 1] * 2)), "piece \(index + 1)")
+    }
+    // The language is detected once, from the start of the recording, as one pass does — then pinned.
+    #expect(!runs[0].contains("--language"))
+    #expect(runs[1].has(["--language", "zh"]) && runs[2].has(["--language", "zh"]))
+    for run in runs {
+        #expect(run.has(["--model", "large"]) && run.has(["--task", "transcribe"]))
+        #expect(run.has(["--initial_prompt", "WhisperMeet"]) && run.has(["--carry_initial_prompt", "True"]))
+    }
+
+    #expect(result.text == "piece 1 piece 2 piece 3")
+    #expect(result.languageCode == "zh")
+    let starts = result.segments.map(\.start)
+    let ends = result.segments.map(\.end)
+    #expect(starts == [0.5, 3.65, 7.05])
+    #expect(ends == [1.0, 4.15, 7.55])
+    #expect(result.audioDuration == 7.55)
+    #expect(try fixture.scratchIsEmpty(), "the pieces and the decoded audio must not outlive the run")
+    #expect(try Data(contentsOf: fixture.recording) == original, "the recording is the source of truth")
+}
+
+@Test("A pinned language and Turbo reach every piece (F533)")
+func pinnedLanguageAndTurboReachEveryPiece() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+
+    let result = try await fixture.client().transcribe(
+        recordingAt: fixture.recording, options: .accuracyFirst(model: .turbo, language: .english)
+    )
+
+    let runs = try fixture.invocations()
+    try #require(runs.count == 3, "whisper ran \(runs.count) time(s)")
+    #expect(runs.allSatisfy { $0.has(["--language", "English"]) && $0.has(["--model", "turbo"]) })
+    #expect(runs.allSatisfy { !$0.contains("--initial_prompt") })
+    #expect(result.languageCode == "en")
+}
+
+@Test("A recording within the bound is still one Whisper call on the original file, with no decode (F533)")
+func shortRecordingIsUnchanged() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    try writeWAV(Array(tenSecondSamples().prefix(3 * rate)), to: fixture.recording)
+
+    _ = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    let runs = try fixture.invocations()
+    #expect(runs.count == 1)
+    #expect(runs.first?.first == fixture.recording.path)
+    #expect(!FileManager.default.fileExists(atPath: fixture.ffmpegLog.path), "a short WAV needs no decode to be measured")
+}
+
+@Test("A recording whose length the header cannot tell is decoded to measure it, and a short one runs whole (F533)")
+func nonWAVRecordingIsMeasuredByDecoding() async throws {
+    let fixture = try PieceFixture(recordingName: "meeting.m4a")
+    defer { fixture.remove() }
+    // The stub "decodes" by dropping 44 bytes, so the stand-in container is 44 bytes of something
+    // that is not a RIFF header (an MP4 `ftyp` box's start) followed by the PCM.
+    var container = Data(repeating: 0x20, count: 44)
+    container.replaceSubrange(4..<8, with: Data("ftyp".utf8))
+    Array(tenSecondSamples().prefix(3 * rate)).withUnsafeBufferPointer { container.append(Data(buffer: $0)) }
+    try container.write(to: fixture.recording)
+
+    _ = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    let decode = try String(contentsOf: fixture.ffmpegLog, encoding: .utf8).split(separator: "\n").map(String.init)
+    // openai-whisper's own `load_audio` decode (`audio.py:45-55`), so the pieces hold the samples one
+    // pass would have seen.
+    #expect(decode.has(["-nostdin", "-threads", "0", "-i", fixture.recording.path, "-f", "s16le", "-ac", "1",
+                        "-acodec", "pcm_s16le", "-ar", "16000"]))
+    let runs = try fixture.invocations()
+    #expect(runs.count == 1)
+    #expect(runs.first?.first == fixture.recording.path)
+    #expect(try fixture.scratchIsEmpty())
+}
+
+@Test("A piece that fails fails the whole transcription; no partial transcript comes back (F533)")
+func failedPieceFailsTheWhole() async throws {
+    let fixture = try PieceFixture(failPiece: 2)
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+
+    do {
+        let result = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+        Issue.record("a transcript came back with a piece missing: \(result.text)")
+    } catch let LocalWhisperError.processFailed(message) {
+        #expect(message.contains("out of memory"), "\(message)")
+    }
+    #expect(try fixture.invocations().count == 2, "nothing runs after the failed piece")
+    #expect(try fixture.scratchIsEmpty())
+}
+
+@Test("A recording that cannot be decoded for splitting fails clearly before Whisper starts (F533)")
+func undecodableRecordingFailsBeforeWhisper() async throws {
+    let fixture = try PieceFixture(ffmpegFails: true)
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+
+    do {
+        _ = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+        Issue.record("expected the decode failure to throw")
+    } catch let LocalWhisperError.processFailed(message) {
+        #expect(message.contains("Invalid data found when processing input"), "\(message)")
+    }
+    #expect(try fixture.invocations().isEmpty)
+    #expect(try fixture.scratchIsEmpty())
+}
+
+@Test("Cancelling between or during pieces stops the run (F533)")
+func cancellingAPieceStopsTheRun() async throws {
+    let fixture = try PieceFixture(hangPiece: 2)
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+    let client = fixture.client()
+    let recording = fixture.recording
+    let task = Task { try await client.transcribe(recordingAt: recording, options: .accuracyFirst()) }
+
+    let hung = fixture.directory.appendingPathComponent("hung")
+    var waited = 0
+    while !FileManager.default.fileExists(atPath: hung.path), waited < 600 {
+        try await Task.sleep(for: .milliseconds(50))
+        waited += 1
+    }
+    try #require(FileManager.default.fileExists(atPath: hung.path), "piece 2 never started")
+    task.cancel()
+
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect(try fixture.invocations().count == 2)
+    #expect(try fixture.scratchIsEmpty())
+}
+
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [LocalTranscriptionProgress] = []
+    func append(_ progress: LocalTranscriptionProgress) { lock.withLock { entries.append(progress) } }
+    var snapshot: [LocalTranscriptionProgress] { lock.withLock { entries } }
+}
+
+@Test("Progress across pieces only moves forward and ends at the whole recording (F533)")
+func progressAcrossPiecesMovesForward() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+    let log = ProgressLog()
+
+    _ = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst()) { progress in
+        log.append(progress)
+    }
+
+    let fractions = log.snapshot.filter { $0.phase == .transcribing }.compactMap(\.fractionCompleted)
+    #expect(zip(fractions, fractions.dropFirst()).allSatisfy { $0 <= $1 }, "progress went backwards: \(fractions)")
+    // Each piece's own 100% is where it ends in the recording: 3.15 s, 6.55 s and 10 s of 10. (Its
+    // 50% line may arrive in the same read as its 100% one, and then only the newer is reported.)
+    for end in [0.315, 0.655, 1.0] {
+        #expect(fractions.contains { abs($0 - end) < 0.000_1 }, "no \(end) in \(fractions)")
+    }
+    #expect(fractions.last == 1)
+}

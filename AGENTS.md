@@ -730,7 +730,11 @@ follow the **Upstream documentation** rules above: fetch the current official do
 https://github.com/openai/whisper and verify against the live source — do not guess flags or model
 names. Current contract: models `large` (accuracy default) and `turbo`; `--task transcribe`;
 `--output_format json`; `--model_dir` points at the app's local model cache; omit `--language` for
-auto-detect.
+auto-detect. A recording longer than 45 minutes is run as pieces (F533, `WhisperPieces.swift`): one
+`whisper` process per piece of at most 45 minutes, decoded with Whisper's own `load_audio` command
+and cut at quiet moments; the first piece detects the language and the rest are pinned to it with
+`--language <code>`. `--clip_timestamps` is not a substitute — the mel of the whole file is built
+before it is read.
 
 ### Storage layout
 

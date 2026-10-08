@@ -1645,6 +1645,15 @@ final class AppModel: ObservableObject {
     /// `executeEngine` performs the real Qwen/Whisper dispatch.
     var runTranscriptionEngineOverride: ((MeetingTranscriptionSelection, URL) async throws -> TranscriptionResult)?
 
+    /// Builds the Whisper client `executeEngine` runs (F533). Production is the standard client: the
+    /// app's model folder, the standard piece policy (a recording over 45 minutes is transcribed in
+    /// pieces), and the `ffmpeg` Whisper itself would find. A seam, unlike
+    /// `runTranscriptionEngineOverride`, so a headless test keeps the REAL client — the splitting is
+    /// the behaviour under test — while giving it a stub `ffmpeg`, a scratch folder and a short piece.
+    var makeWhisperClient: @Sendable (URL) -> LocalWhisperClient = { executableURL in
+        LocalWhisperClient(executableURL: executableURL, modelDirectory: LocalWhisperRuntime.modelDirectory())
+    }
+
     /// Lines up the stored transcript with the other engine's (F542). Injectable so a test can see
     /// where it runs; defaults to the real comparison.
     var compareTranscripts: @Sendable ([TranscriptSegment], [TranscriptSegment]) -> [TranscriptComparisonSpan] = {
@@ -1777,10 +1786,7 @@ final class AppModel: ObservableObject {
                   let whisperModel = selection.engine.whisperModel else {
                 throw LocalWhisperError.runtimeNotInstalled
             }
-            let client = LocalWhisperClient(
-                executableURL: executableURL,
-                modelDirectory: LocalWhisperRuntime.modelDirectory()
-            )
+            let client = makeWhisperClient(executableURL)
             // F509: an older Homebrew/pipx `whisper` predates `--carry_initial_prompt`, which
             // `commandArguments` adds unconditionally the moment `keyterms` is non-empty — that
             // flag exits argparse with status 2 on every such meeting. Omitting the vocabulary

@@ -176,12 +176,43 @@ public struct LocalWhisperClient: Sendable {
 
     private let executableURL: URL
     private let modelDirectory: URL
+    /// Where a long recording is cut (F533). Internal so a test can see what the app builds.
+    let piecePolicy: WhisperPiecePolicy
+    /// The `ffmpeg` that decodes a recording to measure and cut it; nil finds the one Whisper itself
+    /// would run, on the same `PATH` (`subprocessPATH`).
+    private let ffmpegExecutableURL: URL?
+    /// Where each run's working folder goes; nil is the system temporary directory.
+    private let scratchDirectory: URL?
 
-    public init(executableURL: URL, modelDirectory: URL) {
+    /// `piecePolicy`, `ffmpegExecutableURL` and `scratchDirectory` exist for tests (F533); the app
+    /// passes none of them.
+    public init(
+        executableURL: URL,
+        modelDirectory: URL,
+        piecePolicy: WhisperPiecePolicy = .standard,
+        ffmpegExecutableURL: URL? = nil,
+        scratchDirectory: URL? = nil
+    ) {
         self.executableURL = executableURL
         self.modelDirectory = modelDirectory
+        self.piecePolicy = piecePolicy
+        self.ffmpegExecutableURL = ffmpegExecutableURL
+        self.scratchDirectory = scratchDirectory
     }
 
+    /// Transcribes a recording in its original language.
+    ///
+    /// **A recording longer than `piecePolicy.maximumPieceSeconds` is transcribed in pieces (F533).**
+    /// It is decoded once — with openai-whisper's own `load_audio` command, so every piece holds the
+    /// exact samples one pass would have seen — measured, cut at quiet moments, and each piece is
+    /// written to the run's working folder and given to its own `whisper` process, so no process
+    /// ever builds the spectrogram of more than one piece. Language detection runs on the first
+    /// piece only, which starts where the recording does, and its answer is pinned for the rest —
+    /// one pass also detects once, from the first 30 seconds. Times are offset back onto the
+    /// recording's clock and the pieces are joined (`WhisperPieceJoin`). Any piece failing fails
+    /// the whole run; nothing partial is returned. The recording itself is only ever read.
+    ///
+    /// A recording within the bound is one call on the original file, exactly as before.
     public func transcribe(
         recordingAt fileURL: URL,
         options: LocalTranscriptionOptions = .accuracyFirst(),
@@ -198,7 +229,7 @@ public struct LocalWhisperClient: Sendable {
         }
         try Task.checkCancellation()
 
-        let workingDirectory = FileManager.default.temporaryDirectory
+        let workingDirectory = (scratchDirectory ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("WhisperMeet-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: workingDirectory,
@@ -208,31 +239,158 @@ public struct LocalWhisperClient: Sendable {
             at: modelDirectory,
             withIntermediateDirectories: true
         )
+        // Removes the decoded audio and every piece with it, however the run ends.
         defer { try? FileManager.default.removeItem(at: workingDirectory) }
 
         await onProgress(.preparing)
-        let arguments = commandArguments(
-            recordingAt: fileURL,
-            outputDirectory: workingDirectory,
-            options: options
-        )
-        // Whisper loads (and on first use downloads) the model before it transcribes; the parser
-        // upgrades the phase as soon as the CLI starts reporting a progress bar.
-        await onProgress(.loadingModel)
+        guard let decoded = try await decodeForPieces(fileURL, in: workingDirectory) else {
+            // Whisper loads (and on first use downloads) the model before it transcribes; the parser
+            // upgrades the phase as soon as the CLI starts reporting a progress bar.
+            await onProgress(.loadingModel)
+            let transcript = try await transcribePiece(
+                fileURL, outputDirectory: workingDirectory, options: options, pinnedLanguage: nil,
+                onProgress: onProgress
+            )
+            return try WhisperPieceJoin.join([(0, transcript)], id: fileURL.lastPathComponent)
+        }
+
+        let pieces = decoded.pieces
+        var transcripts: [(offsetSeconds: Double, transcript: WhisperPieceTranscript)] = []
+        var detectedLanguage: String?
+        for (index, piece) in pieces.enumerated() {
+            try Task.checkCancellation()
+            let pieceURL = workingDirectory.appendingPathComponent("whispermeet-piece-\(index + 1).wav")
+            try WhisperPieceAudio.writePiece(piece, from: decoded.audioURL, to: pieceURL)
+            let mapped: ProgressHandler = { progress in
+                await onProgress(WhisperPieceProgress.overall(progress, pieceIndex: index, pieces: pieces))
+            }
+            await mapped(.loadingModel)
+            let transcript = try await transcribePiece(
+                pieceURL, outputDirectory: workingDirectory, options: options,
+                pinnedLanguage: detectedLanguage, onProgress: mapped
+            )
+            try? FileManager.default.removeItem(at: pieceURL)
+            if index == 0, options.language.commandLineValue == nil {
+                detectedLanguage = transcript.language
+            }
+            transcripts.append((Double(piece.lowerBound) / Double(WhisperPiecePlanner.sampleRate), transcript))
+        }
+        return try WhisperPieceJoin.join(transcripts, id: fileURL.lastPathComponent)
+    }
+
+    /// The recording decoded to 16 kHz mono 16-bit PCM, and where to cut it.
+    private struct DecodedRecording {
+        let audioURL: URL
+        let pieces: [Range<Int>]
+    }
+
+    /// Decodes and plans a recording that may be longer than the bound, or returns nil when it is
+    /// to be transcribed whole as before (F533):
+    ///
+    /// - a WAV whose header puts it within the bound — the common case, measured without a decode;
+    /// - a `.wav` that `WAVInspection` — which reads every WAV the app itself writes, RIFF and
+    ///   RF64 — cannot read: it is given to Whisper exactly as before, failures and all;
+    /// - no `ffmpeg` on Whisper's `PATH`: Whisper cannot decode anything either and fails at
+    ///   `load_audio`, before any spectrogram exists, with the error it always gave;
+    /// - a decode that turns out to be within the bound after all.
+    ///
+    /// A decode that fails throws, before Whisper runs: the meeting stays retryable.
+    private func decodeForPieces(_ fileURL: URL, in workingDirectory: URL) async throws -> DecodedRecording? {
+        let wavSeconds = WhisperPieceAudio.wavDurationSeconds(at: fileURL)
+        if let wavSeconds, wavSeconds <= piecePolicy.maximumPieceSeconds { return nil }
+        if wavSeconds == nil, fileURL.pathExtension.lowercased() == "wav",
+           WAVInspection.header(at: fileURL) == nil {
+            return nil
+        }
+        guard let ffmpeg = ffmpegExecutableURL ?? Self.findFFmpeg(path: Self.subprocessPATH()) else { return nil }
+
+        let audioURL = workingDirectory.appendingPathComponent("whispermeet-decoded.s16le")
         let log = try await run(
+            executable: ffmpeg,
+            arguments: Self.decodeArguments(input: fileURL, output: audioURL),
+            onProgress: { _ in },
+            failure: { status, diagnostic in
+                LocalWhisperError.processFailed(
+                    "the recording could not be decoded to transcribe it in pieces"
+                        + (diagnostic.isEmpty ? " (ffmpeg exited with status \(status))." : ": \(diagnostic)")
+                )
+            }
+        )
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            throw LocalWhisperError.processFailed(
+                "the recording could not be decoded to transcribe it in pieces: "
+                    + SubprocessLogSummary.summarize(log.isEmpty ? "ffmpeg wrote no audio." : log)
+            )
+        }
+        let energy = try WhisperPieceAudio.measure(audioURL)
+        let pieces = WhisperPiecePlanner.pieces(
+            totalSamples: energy.sampleCount, frameEnergies: energy.frameEnergies(), policy: piecePolicy
+        )
+        guard pieces.count > 1 else {
+            try? FileManager.default.removeItem(at: audioURL)
+            return nil
+        }
+        return DecodedRecording(audioURL: audioURL, pieces: pieces)
+    }
+
+    /// openai-whisper's own decode, `load_audio` (`whisper/audio.py:45-55`, identical in the pinned
+    /// 20250625 and on main, 2026-10-08), writing to a file instead of a pipe: the same input
+    /// options, format, channel count, codec and rate, so the samples are the ones one pass would
+    /// have transcribed. `-hide_banner -loglevel error` keep the log to errors and change no sample;
+    /// `-y` because the path is this run's own.
+    static func decodeArguments(input: URL, output: URL) -> [String] {
+        [
+            "-hide_banner", "-loglevel", "error",
+            "-nostdin", "-threads", "0", "-i", input.path,
+            "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le", "-ar", String(WhisperPiecePlanner.sampleRate),
+            "-y", output.path,
+        ]
+    }
+
+    /// The `PATH` every subprocess here runs with: Homebrew first, then whatever the app was given.
+    /// Whisper's `load_audio` runs a bare `ffmpeg`, so this is also where it finds one.
+    static func subprocessPATH(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        "/opt/homebrew/bin:/usr/local/bin:\(environment["PATH"] ?? "/usr/bin:/bin")"
+    }
+
+    /// The first executable `ffmpeg` on `path`, as a `PATH` search finds it.
+    static func findFFmpeg(path: String) -> URL? {
+        path.split(separator: ":").lazy
+            .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("ffmpeg") }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    /// One `whisper` run over one file, read back as a piece transcript (times relative to `audio`).
+    private func transcribePiece(
+        _ audio: URL,
+        outputDirectory: URL,
+        options: LocalTranscriptionOptions,
+        pinnedLanguage: String?,
+        onProgress: @escaping ProgressHandler
+    ) async throws -> WhisperPieceTranscript {
+        let arguments = commandArguments(
+            recordingAt: audio,
+            outputDirectory: outputDirectory,
+            options: options,
+            pinnedLanguage: pinnedLanguage
+        )
+        let log = try await run(
+            executable: executableURL,
             arguments: arguments,
-            workingDirectory: workingDirectory,
-            onProgress: onProgress
+            onProgress: onProgress,
+            failure: { status, diagnostic in
+                LocalWhisperError.processFailed(diagnostic.isEmpty ? "Whisper exited with status \(status)." : diagnostic)
+            }
         )
         try Task.checkCancellation()
 
-        let outputURL = workingDirectory
-            .appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent)
+        let outputURL = outputDirectory
+            .appendingPathComponent(audio.deletingPathExtension().lastPathComponent)
             .appendingPathExtension("json")
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
             // Whisper's normal failure mode (an ffmpeg decode error or OOM mid-file) is caught
             // inside its own cli(), printed as a traceback, and followed by exit 0 — so this
-            // branch, not the non-zero-exit one below, is what a real failure usually hits.
+            // branch, not the non-zero-exit one in `run`, is what a real failure usually hits.
             // Summarized the same way (F511): the full accumulated log can run to ~200 KB, all of
             // which would otherwise land in the alert and in meetings.json's errorMessage.
             if !log.isEmpty { throw LocalWhisperError.processFailed(SubprocessLogSummary.summarize(log)) }
@@ -244,9 +402,6 @@ public struct LocalWhisperClient: Sendable {
         ) else {
             throw LocalWhisperError.unreadableOutput
         }
-
-        let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw LocalWhisperError.emptyTranscript }
         let segments = payload.segments.compactMap { segment -> TranscriptSegment? in
             let segmentText = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !segmentText.isEmpty else { return nil }
@@ -260,14 +415,7 @@ public struct LocalWhisperClient: Sendable {
                 compressionRatio: segment.compressionRatio
             )
         }
-        return TranscriptionResult(
-            id: fileURL.lastPathComponent,
-            text: text,
-            languageCode: payload.language,
-            audioDuration: segments.compactMap(\.end).max(),
-            confidence: nil,
-            segments: segments
-        )
+        return WhisperPieceTranscript(text: payload.text, language: payload.language, segments: segments)
     }
 
     /// Every flag the installed `whisper` CLI accepts, as a guard on what we may pass (F264).
@@ -306,10 +454,17 @@ public struct LocalWhisperClient: Sendable {
 
     /// Internal rather than private so `WhisperCLIFlagAllowlistTests` can check what we actually
     /// pass (F264). It was private and entirely untested.
+    ///
+    /// `pinnedLanguage` is what the first piece of a long recording detected (F533), passed to the
+    /// pieces after it so the recording is transcribed in one language, as a single pass would be. A
+    /// language the user chose always wins. It is the JSON `language` openai-whisper wrote — a key
+    /// of `LANGUAGES` — and `--language` accepts every key (`transcribe.py:538`, `choices=sorted(
+    /// LANGUAGES.keys()) + …`).
     func commandArguments(
         recordingAt fileURL: URL,
         outputDirectory: URL,
-        options: LocalTranscriptionOptions
+        options: LocalTranscriptionOptions,
+        pinnedLanguage: String? = nil
     ) -> [String] {
         var arguments = [
             fileURL.path,
@@ -321,7 +476,7 @@ public struct LocalWhisperClient: Sendable {
             "--task", "transcribe",
             "--fp16", "False"
         ]
-        if let language = options.language.commandLineValue {
+        if let language = options.language.commandLineValue ?? pinnedLanguage {
             arguments += ["--language", language]
         }
         let prompt = VocabularyPrompt.build(options.keyterms)
@@ -334,23 +489,25 @@ public struct LocalWhisperClient: Sendable {
         return arguments
     }
 
-    /// Runs the CLI, streaming its merged stdout+stderr so `tqdm` progress bars can be parsed live,
-    /// while still accumulating the full output for error diagnostics. Both streams share one pipe
-    /// to avoid the classic two-pipe fill-buffer deadlock.
+    /// Runs `executable` (the `whisper` CLI, or the `ffmpeg` decode before a split), streaming its
+    /// merged stdout+stderr so `tqdm` progress bars can be parsed live, while still accumulating the
+    /// full output for error diagnostics. Both streams share one pipe to avoid the classic two-pipe
+    /// fill-buffer deadlock. A non-zero exit throws what `failure` makes of its status and the last
+    /// 4,000 characters of output.
     private func run(
+        executable: URL,
         arguments: [String],
-        workingDirectory: URL,
-        onProgress: @escaping ProgressHandler
+        onProgress: @escaping ProgressHandler,
+        failure: (Int32, String) -> LocalWhisperError
     ) async throws -> String {
         let pipe = Pipe()
         let process = Process()
-        process.executableURL = executableURL
+        process.executableURL = executable
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
-        let existingPath = environment["PATH"] ?? "/usr/bin:/bin"
-        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(existingPath)"
+        environment["PATH"] = Self.subprocessPATH(environment)
         environment["PYTHONUNBUFFERED"] = "1"
         process.environment = environment
         let cancellation = ProcessCancellationController(process: process)
@@ -398,9 +555,7 @@ public struct LocalWhisperClient: Sendable {
             guard status == 0 else {
                 let diagnostic = String(log.suffix(4_000))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw LocalWhisperError.processFailed(
-                    diagnostic.isEmpty ? "Whisper exited with status \(status)." : diagnostic
-                )
+                throw failure(status, diagnostic)
             }
             return log
         } onCancel: {
