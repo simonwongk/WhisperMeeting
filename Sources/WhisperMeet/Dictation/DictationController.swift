@@ -139,6 +139,10 @@ final class DictationController: ObservableObject {
     private var appNapExemption: NSObjectProtocol?
     /// Whether the App Nap exemption is held — only while an active tap is armed.
     var isHoldingAppNapExemption: Bool { appNapExemption != nil }
+    /// An F-key trigger is armed, but only listened to (F684): its active tap was refused —
+    /// Accessibility missing — or could not be vouched for (F547), so the key also reaches the app
+    /// in front. Read from the monitor after every arm, for Settings' caption.
+    @Published private(set) var isTriggerListenOnly = false
     /// Losses of the active tap since WhisperMeet last came to the front, at which the trigger stops
     /// trying to hold the key back.
     static let triggerTapLossLimit = 3
@@ -701,6 +705,7 @@ final class DictationController: ObservableObject {
                 log.notice("dictation trigger paused while Settings chooses one")
             }
             hotkeyActive = false
+            isTriggerListenOnly = false
             updateActiveTapCheck()
             guard session.state == .idle else { return }
             status = settledStatus
@@ -710,6 +715,7 @@ final class DictationController: ObservableObject {
         let started = hotkeyMonitor.start(hotkey: hotkey)
         hotkeyActive = started
         hotkeyTapFailed = !started
+        isTriggerListenOnly = started && hotkeyMonitor.isArmedWithoutHoldingBack
         if !started {
             log.error("event tap could not be created — Accessibility/Input Monitoring off")
             if session.state == .listening {
@@ -762,6 +768,39 @@ final class DictationController: ObservableObject {
     private func pauseTriggerIfChoosing() {
         guard enabled, isChoosingTrigger, !isTriggerPausedForChoosing, session.state != .listening else { return }
         applyHotkeyStart()
+    }
+
+    /// Settings' caption under the trigger row: how the key is used, and what reaches the app in
+    /// front (F547) — from the tap actually armed (F684). It used to say an F-key was kept from that
+    /// app whenever the key was an F-key, so on the listen-only fallback it promised what the tap
+    /// was not doing, and only the log and the Accessibility row said otherwise.
+    nonisolated static func triggerKeyCaption(
+        for hotkey: DictationHotkey,
+        isListenOnly: Bool,
+        accessibilityGranted: Bool
+    ) -> String {
+        let use = hotkey.mode == .hold
+            ? "Hold this key to talk."
+            : "Press this key to start dictating, and again to stop."
+        guard DictationKeyName.functionKeyCodes.contains(hotkey.keyCode) else {
+            return use + " A modifier key still reaches the app you are typing in; using it in a shortcut cancels the dictation. An F-key is kept from that app instead."
+        }
+        guard isListenOnly else {
+            return use + " While Quick Dictation is on, the app you are typing in does not receive it, unless ⌘ ⌃ ⌥ or ⇧ is held with it."
+        }
+        // With the grant, it is listen-only because a lost tap could not be vouched for (F547), or
+        // because the tap is refused although the grant reads as given (reported for an app removed
+        // from the Accessibility list, F547). Either way, coming to the front arms it again.
+        return use + (accessibilityGranted
+            ? " For now the app you are typing in receives it too: WhisperMeet is only listening to the key, and tries again to keep it from that app when WhisperMeet next comes to the front."
+            : " For now the app you are typing in receives it too: without Accessibility, WhisperMeet can only listen to the key. Allow WhisperMeet under Accessibility to keep it from that app.")
+    }
+
+    /// The caption for the trigger as it is armed now.
+    var triggerKeyCaption: String {
+        Self.triggerKeyCaption(
+            for: hotkey, isListenOnly: isTriggerListenOnly, accessibilityGranted: isAccessibilityTrusted
+        )
     }
 
     /// What `status` says while the trigger's tap cannot be created.
@@ -941,6 +980,7 @@ final class DictationController: ObservableObject {
             hotkeyActive = false
             hotkeyTapFailed = false
             isTriggerPausedForChoosing = false
+            isTriggerListenOnly = false
             accessibilityPoll?.cancel()
             accessibilityPoll = nil
             updateActiveTapCheck()

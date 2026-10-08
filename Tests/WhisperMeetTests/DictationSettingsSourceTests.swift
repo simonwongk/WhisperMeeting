@@ -84,16 +84,29 @@ func settingsChangeDrivesTheTriggerChooser() throws {
 
 @Test("The trigger row no longer promises F-keys type nothing, and warns about keys macOS uses (F547)")
 func triggerRowDescribesWhatTheKeyReallyDoes() throws {
-    // Literals kept: the claim being removed is copy.
+    // Literals kept: the claim being removed is copy. The caption itself is the controller's since
+    // F684, so both files are read.
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    #expect(
-        !source.contains("they don’t type text while held") && !source.contains("they don't type text while held"),
-        "Settings still says an F-key does not reach the app in front"
-    )
+    let caption = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/DictationController.swift")
+    for text in [source, caption] {
+        #expect(
+            !text.contains("they don’t type text while held") && !text.contains("they don't type text while held"),
+            "Settings still says an F-key does not reach the app in front"
+        )
+    }
     #expect(
         source.contains("DictationKeyName.systemShortcut(for: dictation.hotkey.keyCode)"),
         "the trigger row does not warn about an F-key macOS already uses"
     )
+}
+
+@Test("Settings' trigger caption is the controller's, which knows the tap it armed (F684)")
+func triggerCaptionComesFromTheArmedTap() throws {
+    let settings = body(following: "struct SettingsView: View", in: try contentViewSource())
+    #expect(settings.contains("Text(dictation.triggerKeyCaption)"), "the trigger row does not show the controller's caption")
+    // A second copy of the claim in the view is one that cannot see whether the key is held back.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(!source.contains("does not receive it"), "the view still writes its own caption for an F-key")
 }
 
 // F537 part 2 — the review sheets had no Return or Escape: no `.cancelAction` anywhere in the app, and
