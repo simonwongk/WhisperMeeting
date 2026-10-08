@@ -41,6 +41,13 @@ _engine_spec = _importlib_util.spec_from_file_location(
 qwen_meeting_engine = _importlib_util.module_from_spec(_engine_spec)
 _engine_spec.loader.exec_module(qwen_meeting_engine)
 
+# F438 — the Summary table, for the same reason: its accounting is what gets quoted, so it is tested.
+_summary_spec = _importlib_util.spec_from_file_location(
+    "asr_summary", Path(__file__).resolve().parent / "asr_summary.py"
+)
+asr_summary = _importlib_util.module_from_spec(_summary_spec)
+_summary_spec.loader.exec_module(asr_summary)
+
 T2S = OpenCC("t2s")
 BENCH = Path(__file__).resolve().parent
 CLIPS = Path(sys.argv[1]) if len(sys.argv) > 1 else BENCH / "clips"
@@ -256,14 +263,6 @@ def main() -> int:
                 rows.append(dict(clip=cid, lang=lang, sec=dt, det=det, metric=metric, val=val, hyp=hyp))
             results[name] = rows
 
-        def avg(rows, pred):
-            xs = [r["val"] for r in rows if pred(r) and r["val"] == r["val"]]
-            return sum(xs) / len(xs) if xs else float("nan")
-
-        def avgsec(rows):
-            xs = [r["sec"] for r in rows if r["sec"] >= 0]
-            return sum(xs) / len(xs) if xs else float("nan")
-
         # The scope caveat is EMITTED here, not hand-written into results.md.
         #
         # It used to live in the file, and this function rewrites results.md from scratch on every
@@ -304,15 +303,7 @@ def main() -> int:
              "Warm release→text latency (model resident) + accuracy. Lower is better everywhere.",
              "CER normalized 繁→簡 (OpenCC) with punctuation/spaces stripped.\n",
              *scope,
-             "## Summary\n",
-             "| engine | avg sec | EN WER | 中文 CER | code-switch CER |",
-             "|---|---|---|---|---|"]
-        for name in results:
-            rows = results[name]
-            L.append(f"| {name} | {avgsec(rows):.2f} | "
-                     f"{avg(rows, lambda r: r['lang']=='en'):.3f} | "
-                     f"{avg(rows, lambda r: r['lang']=='zh'):.3f} | "
-                     f"{avg(rows, lambda r: r['lang']=='cs'):.3f} |")
+             *asr_summary.summary_lines(results)]
         for name in results:
             L.append(f"\n## {name} — per clip\n")
             L.append("| clip | lang | sec | detected | metric | value | transcript |")
@@ -324,6 +315,12 @@ def main() -> int:
         (BENCH / "results.md").write_text(md)
         result_path.write_text(json.dumps(results, ensure_ascii=False, indent=2))
         print(md)
+        # F438: a run that lost clips is not a complete result, whatever its averages say.
+        errored = asr_summary.errored_clips(results)
+        if errored:
+            print(f"{len(errored)} clip(s) errored: "
+                  + ", ".join(f"{engine} {clip}" for engine, clip in errored), file=sys.stderr)
+            return 1
         return 0
 
 

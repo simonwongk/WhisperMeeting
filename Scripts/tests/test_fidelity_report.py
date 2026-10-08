@@ -594,5 +594,71 @@ class PastedAlterationTests(unittest.TestCase):
         self.assertTrue(report.is_alteration(altered))
 
 
+def _pasted_column(text, surface="refinement"):
+    """The Pasted cell of `surface`'s row, located by the header so a new column cannot shift it."""
+    lines = text.splitlines()
+    header = next(line for line in lines if line.startswith("| Surface |"))
+    column = [cell.strip() for cell in header.split("|")].index("Pasted")
+    row = next(line for line in lines if line.startswith(f"| {surface} |"))
+    return [cell.strip() for cell in row.split("|")][column]
+
+
+class UnmeasuredPastedTests(unittest.TestCase):
+    """F438 part 1 — an unmeasured Pasted must never print as 0.
+
+    Pasted is the one absolute refinement rule: a harmful alteration that passes the shipped guard.
+    Without `REFINE_GUARD_VERDICTS` every record's guard is `unknown`, and the column counted only
+    `accepted` — so a run that never consulted the guard printed `0`, which reads as a pass, beside a
+    header promising that a dash, not a zero, means "not measured".
+    """
+
+    def setUp(self):
+        self.header = {"model": "m", "corpus": "items.jsonl",
+                       "corpus_sha256": "a" * 64, "prompts_sha256": "b" * 64}
+
+    def _drift(self, item_id, guard_verdicts=None):
+        """A Traditional source the model converted to Simplified: an alteration either way."""
+        record = _record(id=item_id, surface="refinement", lang="zh",
+                         input={"text": "倫敦辦公室"}, output={"text": "伦敦办公室"})
+        item = _item(id=item_id, surface="refinement", lang="zh", text="倫敦辦公室",
+                      protected_terms=[], claims=[], expected_fixes=[])
+        return report.score_record(record, item, [], guard_verdicts=guard_verdicts)
+
+    def test_an_alteration_with_no_guard_verdict_prints_a_dash_not_zero(self):
+        text = report.scorecard_markdown(self.header, report.aggregate([self._drift("r1")]))
+        self.assertEqual(_pasted_column(text), "—", text)
+        self.assertIn("REFINE_GUARD_VERDICTS", text)
+
+    def test_a_partly_guarded_cell_prints_a_lower_bound(self):
+        """One alteration the guard accepted and one nobody asked it about: at least one."""
+        verdicts = [self._drift("r1", {"r1": {"status": "accepted"}}), self._drift("r2")]
+        text = report.scorecard_markdown(self.header, report.aggregate(verdicts))
+        self.assertEqual(_pasted_column(text), "≥1", text)
+
+    def test_a_fully_guarded_cell_still_prints_its_count(self):
+        verdicts = [self._drift("r1", {"r1": {"status": "accepted"}}),
+                    self._drift("r2", {"r2": {"status": "rejected"}})]
+        text = report.scorecard_markdown(self.header, report.aggregate(verdicts))
+        self.assertEqual(_pasted_column(text), "1", text)
+        self.assertNotIn("REFINE_GUARD_VERDICTS", text)
+
+    def test_a_clean_refinement_with_no_guard_verdict_is_a_measured_zero(self):
+        """Nothing altered means nothing harmful to paste, whatever the guard would say."""
+        record = _record(id="r1", surface="refinement", lang="en",
+                         input={"text": "um we shipped"}, output={"text": "We shipped."})
+        item = _item(id="r1", surface="refinement", lang="en", text="um we shipped",
+                     protected_terms=[], claims=[], expected_fixes=[])
+        verdict = report.score_record(record, item, [])
+        text = report.scorecard_markdown(self.header, report.aggregate([verdict]))
+        self.assertEqual(_pasted_column(text), "0", text)
+
+    def test_a_surface_the_guard_does_not_judge_prints_a_dash(self):
+        """The guard is the refinement guard. A summary's Pasted was never measured, so it is not 0."""
+        text = report.scorecard_markdown(
+            self.header, report.aggregate([report.score_record(_record(), _item(), [])])
+        )
+        self.assertEqual(_pasted_column(text, surface="summary"), "—", text)
+
+
 if __name__ == "__main__":
     unittest.main()

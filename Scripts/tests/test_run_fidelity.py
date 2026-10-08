@@ -345,5 +345,103 @@ class ContentionTests(unittest.TestCase):
         self.assertEqual(runner.other_mlx_processes("  501 1 /sbin/launchd\n", own_pid=999), [])
 
 
+class ResumeInputsTests(unittest.TestCase):
+    """F438 part 2 — a resumed run must not mix records from different inputs under one header.
+
+    Every run rewrote `header.json` with the current digests, and resume skipped every id already
+    recorded whatever produced it. Change `prompts.json` (or a corpus item, or `--model-dir` under
+    the same `--model-name`), resume with the same `--run-id`, and the header names inputs that did
+    not produce most of the records it describes — while `report.py` trusts it to say which run
+    may be compared with which.
+
+    Driven through `main()` with the model calls stubbed, because the defect was in what `main()`
+    did with a directory it found, not in any one helper.
+    """
+
+    def setUp(self):
+        self._saved = {name: getattr(runner, name) for name in ("warn_on_contention", "run_surface")}
+        self.calls = []
+
+        def fake_run_surface(items, surface, prompts, invoke, sink, already=frozenset(), **_):
+            self.calls.append((surface, set(already)))
+            return {"completed": 0, "failed": 0, "skipped": len(already)}
+
+        runner.warn_on_contention = lambda *a, **k: []
+        runner.run_surface = fake_run_surface
+        self._temp = tempfile.TemporaryDirectory()
+        root = self._temp.name
+        self.results = os.path.join(root, "results")
+        self.python = os.path.join(root, "python3")
+        self.model_dir = os.path.join(root, "model")
+        os.makedirs(self.model_dir)
+        with open(self.python, "w", encoding="utf-8") as handle:
+            handle.write("")
+        self.out = os.path.join(self.results, "run", "m")
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(runner, name, value)
+        self._temp.cleanup()
+
+    def _argv(self):
+        return ["--corpus", _SMOKE, "--prompts", _PROMPTS, "--results", self.results,
+                "--run-id", "run", "--model-name", "m", "--model-dir", self.model_dir,
+                "--python", self.python, "--surfaces", "summary"]
+
+    def _seed(self, **header_overrides):
+        """A directory an earlier run left: its header, and one finished record."""
+        header = runner.run_header(_SMOKE, _PROMPTS, "m")
+        header["model_dir"] = os.path.abspath(self.model_dir)
+        header.update(header_overrides)
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "header.json"), "w", encoding="utf-8") as handle:
+            json.dump(header, handle, indent=2, sort_keys=True)
+        with open(os.path.join(self.out, "summary.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": "done-1", "error": None}) + "\n")
+        return header
+
+    def _header_on_disk(self):
+        with open(os.path.join(self.out, "header.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_a_resume_after_the_prompts_changed_is_refused_and_keeps_the_old_header(self):
+        old = self._seed(prompts_sha256="0" * 64)
+        with self.assertRaises(SystemExit) as caught:
+            runner.main(self._argv())
+        self.assertIn("prompts_sha256", str(caught.exception))
+        self.assertEqual(self._header_on_disk(), old, "the header was rewritten over records it does not describe")
+        self.assertEqual(self.calls, [], "the run resumed over records from other inputs")
+
+    def test_a_resume_with_another_model_directory_is_refused(self):
+        self._seed(model_dir="/somewhere/else")
+        with self.assertRaises(SystemExit) as caught:
+            runner.main(self._argv())
+        self.assertIn("model_dir", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_a_resume_with_the_same_inputs_skips_what_is_done(self):
+        old = self._seed()
+        self.assertEqual(runner.main(self._argv()), 0)
+        self.assertEqual(self.calls, [("summary", {"done-1"})])
+        self.assertEqual(self._header_on_disk(), old)
+
+    def test_a_directory_with_a_header_and_no_records_starts_fresh(self):
+        """Nothing was produced under the old inputs, so there is nothing to mix."""
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "header.json"), "w", encoding="utf-8") as handle:
+            json.dump({"model": "old", "prompts_sha256": "0" * 64}, handle)
+        self.assertEqual(runner.main(self._argv()), 0)
+        self.assertEqual(self._header_on_disk()["model"], "m")
+
+    def test_records_with_no_header_are_refused(self):
+        """Nothing says what produced them, so nothing can say they match."""
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "summary.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": "done-1", "error": None}) + "\n")
+        with self.assertRaises(SystemExit) as caught:
+            runner.main(self._argv())
+        self.assertIn("header.json", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

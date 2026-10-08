@@ -21,7 +21,9 @@ SHA-256 of the corpus and of `prompts.json`: the corpus is untracked, so those d
 record of what produced a number, and two runs may only be compared when they match.
 
 Resumable: re-running skips items already recorded *without* an error. A failed item is unfinished
-work and runs again, because counting it as done would shrink the sample on every retry.
+work and runs again, because counting it as done would shrink the sample on every retry. Only the
+same inputs resume (F438): a directory whose records came from another corpus, `prompts.json`,
+`--model-name` or `--model-dir` is refused, so its header always describes the records under it.
 
 No third-party imports at module scope — the tests and `--dry-run` must work under the plain system
 python3 that `Scripts/quality-check.sh` provides. Only the real model calls need the app's venv, and
@@ -216,6 +218,63 @@ def completed_ids(path):
             if record.get("id") and not record.get("error"):
                 done.add(record["id"])
     return done
+
+
+#: What a run's records depend on. A resume may only add to records produced from the same values.
+RESUME_FIELDS = ("model", "model_dir", "corpus", "corpus_sha256", "prompts_sha256")
+
+
+def _has_records(out_dir):
+    """Whether any surface's record file in `out_dir` holds a line. Errored records count: they
+    were produced from that directory's inputs too, and report.py reads them."""
+    for name in SURFACES:
+        path = os.path.join(out_dir, f"{name}.jsonl")
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as handle:
+            if any(line.strip() for line in handle):
+                return True
+    return False
+
+
+def _shown(value):
+    """A digest is shortened for the message; anything else is shown as it is."""
+    if isinstance(value, str) and len(value) == 64:
+        return value[:12] + "…"
+    return repr(value)
+
+
+def resume_conflict(out_dir, header):
+    """Why `out_dir` cannot take records for `header`, or None (F438).
+
+    Every run used to rewrite `header.json` with its own digests while resume kept every record
+    already there, so after a prompt, corpus or model change the header named inputs that had not
+    produced most of the records under it — and the header is what `report.py` and anyone comparing
+    two runs trust. A directory with no records has nothing to mix, so it is always fine; one with
+    records must have been produced from the same `RESUME_FIELDS`, and records whose header is
+    missing or unreadable cannot be shown to match, so they are refused too.
+    """
+    if not _has_records(out_dir):
+        return None
+    try:
+        with open(os.path.join(out_dir, "header.json"), encoding="utf-8") as handle:
+            existing = json.load(handle)
+    except (OSError, ValueError):
+        return (
+            f"{out_dir} holds records but no readable header.json, so nothing says which corpus, "
+            "prompts and model produced them. Use a new --run-id rather than adding to them."
+        )
+    changed = [key for key in RESUME_FIELDS if existing.get(key) != header.get(key)]
+    if not changed:
+        return None
+    details = "; ".join(
+        f"{key} {_shown(existing.get(key))} → {_shown(header.get(key))}" for key in changed
+    )
+    return (
+        f"{out_dir} holds records produced from other inputs ({details}). Resuming would put them "
+        "under a header that did not produce them. Use a new --run-id, or move the old records "
+        "away first."
+    )
 
 
 class JsonlSink:
@@ -499,6 +558,11 @@ def main(argv=None):
     python, model = _runtime_paths(args.python, args.model_dir)
     run_id = args.run_id or ("smoke" if args.smoke else "run")
     out_dir = os.path.join(args.results, run_id, args.model_name)
+    # Before the header is written: the old header is the only record of what produced the old
+    # records, and a refused resume must leave it as it was (F438).
+    conflict = resume_conflict(out_dir, header)
+    if conflict:
+        raise SystemExit(conflict)
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "header.json"), "w", encoding="utf-8") as handle:
         json.dump(header, handle, indent=2, sort_keys=True)

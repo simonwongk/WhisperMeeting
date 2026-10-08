@@ -441,6 +441,15 @@ def aggregate(verdicts):
                 1 for verdict in measured
                 if verdict["guard"] == "accepted" and is_alteration(verdict)
             ),
+            # F438: an alteration nobody asked the guard about. Counting only `accepted` above made
+            # a run without REFINE_GUARD_VERDICTS print Pasted 0 — a pass on the one absolute rule,
+            # from a guard that was never consulted. `_pasted` renders the cell from both numbers.
+            "pasted_unknown": sum(
+                1 for verdict in measured
+                if verdict["surface"] == "refinement"
+                and verdict["guard"] not in ("accepted", "rejected")
+                and is_alteration(verdict)
+            ),
             "core_claim_retention": core,
             "all_claim_retention": all_claims,
             "actor_retention": actor,
@@ -469,6 +478,21 @@ def _number(value):
     return "—" if value is None else f"{value:.2f}"
 
 
+def _pasted(surface, cell):
+    """The Pasted cell (F438). A count only where every alteration has the shipped guard's verdict.
+
+    - Another surface: a dash. The guard is the refinement guard; a summary's or a correction's
+      Pasted was never measured, so it is not 0.
+    - Alterations with no verdict: a dash when none is known to be pasted, `≥n` when n are. Either
+      way the number cannot be read as a pass, and the scorecard says how to get the real one.
+    """
+    if surface != "refinement":
+        return "—"
+    if cell.get("pasted_unknown"):
+        return f"≥{cell['pasted_alterations']}" if cell["pasted_alterations"] else "—"
+    return str(cell["pasted_alterations"])
+
+
 def _arms_are_comparable(cells):
     """Matched pairs are the whole design: a difference can be attributed to the topic only when
     both arms were measured. With one arm the run says nothing about the topic."""
@@ -494,6 +518,10 @@ def scorecard_markdown(header, aggregates):
         "`score.core_claim_retention` is defined over every claim, so both are printed rather than "
         "one reading being chosen here.",
         "",
+        "**Pasted** counts refinement alterations the app's guard accepts, so they would reach the "
+        "user. It is measured only for refinement, and only where the guard's verdicts were "
+        "recorded.",
+        "",
     ]
     if not _arms_are_comparable(cells):
         arms = sorted({arm for (_s, arm, _l) in cells}) or ["none"]
@@ -516,11 +544,20 @@ def scorecard_markdown(header, aggregates):
             f"{cell['errors']} | {cell['flagged']} | {cell['altered_terms']} | "
             f"{cell['script_drift']} | {cell['inserted_framing']} | {cell['dropped_content']} | "
             f"{cell['unrequested_corrections']} | {cell['missed_fixes']} | "
-            f"{cell['pasted_alterations']} | "
+            f"{_pasted(surface, cell)} | "
             f"{_number(cell['core_claim_retention'])} | "
             f"{_number(cell['all_claim_retention'])} | {_number(cell['actor_retention'])} | "
             f"{cell['mean_latency_ms'] if cell['mean_latency_ms'] is not None else '—'} |"
         )
+    unguarded = sum(cell.get("pasted_unknown", 0) for cell in cells.values())
+    if unguarded:
+        lines += [
+            "",
+            f"**Pasted is not measured for {unguarded} refinement alteration(s):** the app's guard "
+            "was not asked about them, so their cells show a dash (none known) or ≥n (at least n). "
+            "Run the Swift guard emitter (`REFINE_GUARD_VERDICTS=<run dir>`) and report again for "
+            "the count.",
+        ]
     overall = aggregates["overall"]
     lines += [
         "",
