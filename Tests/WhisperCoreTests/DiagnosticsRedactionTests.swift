@@ -117,3 +117,31 @@ func redactionKeepsATracebackReadable() {
     RuntimeError: model missing
     """, "\(redacted)")
 }
+
+// MARK: - F791 review: two ways a path still got past the scanner
+
+@Test("A known extension followed by punctuation does not end a path that goes on (F791)")
+func redactionPunctuationAfterAnExtensionStillChecksForALaterSlash() {
+    // The whitespace case already refused to end at an extension with a later `/` on the line; the
+    // punctuation case did not, so a folder whose name holds ".wav," leaked every name after it.
+    #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3.wav, notes/Board Meeting Q3.wav: denied")
+            == "open <path>: denied")
+    #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3.wav: Board Meeting Q3/x.wav: denied")
+            == "open <path>: denied")
+    #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3 (draft.txt)/Board Meeting.wav failed")
+            == "open <path> failed")
+}
+
+@Test("An absolute path whose first folder has a space, or with one slash, is a path too (F791)")
+func redactionCatchesAbsolutePathsTheTwoComponentRuleMissed() {
+    // A path started only at a `/` followed by a space-free component and another `/`, so these
+    // were never seen at all, by this scanner or by the F141 pattern before it.
+    #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /My Files/Board Q3/x.wav: denied")
+            == "Could not open <path>: denied")
+    #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /Board Q3 Review.wav: denied")
+            == "Could not open <path>: denied")
+    // Still not paths: a `/` inside a word, and one followed by a space.
+    for text in ["ratio 3/4 and read/write ok", "50%| 5/10 [00:01<00:01, 3.2it/s]", "and/or", "a / b"] {
+        #expect(DiagnosticsBundleBuilder.redactPaths(text) == text)
+    }
+}

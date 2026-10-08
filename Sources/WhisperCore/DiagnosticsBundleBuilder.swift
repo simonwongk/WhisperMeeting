@@ -64,9 +64,10 @@ public enum DiagnosticsBundleBuilder {
     /// afconvert stderr, recovery text — cannot carry a home folder, a folder name or a file name
     /// (which can be a meeting title) into the "path-free" bundle or a `.public` log line (F141, F791).
     ///
-    /// **Where a path starts:** at a `file:` URL, a `~/`, or a `/` that begins two components
-    /// ("/Users/…", "Recordings/<id>/…"), widened back to the start of its word. "3/4" and
-    /// "read/write" are not paths and are left alone.
+    /// **Where a path starts:** at a `file:` URL, a `~/`, a `/` at the start of a word followed by a
+    /// name ("/Users/…", "/My Files/…", "/Board Q3.wav"), or a `/` anywhere that begins two
+    /// space-free components ("Recordings/<id>/…"), widened back to the start of its word. "3/4"
+    /// and "read/write" are not paths and are left alone.
     ///
     /// **Where it ends — fail closed (F791).** A name can hold spaces and any script, so where a path
     /// ends in free text is a guess, and a guess that stops too early leaks the rest of the name: the
@@ -75,14 +76,17 @@ public enum DiagnosticsBundleBuilder {
     /// early in one case only: at a component ending in an extension this app's paths end in
     /// (`recognisedExtensions`) that is followed by the end of the line, by punctuation that cannot be
     /// more of a name (`pathEndPunctuation`), or by whitespace — or a `.`, `!` or `?` ending a
-    /// sentence — with no further `/` on the line (a later `/` means the component may be a folder
-    /// in the middle of a longer path). Anything else is redacted from the
-    /// path to the end of its line, as `<path>…`. The line is the limit, so a traceback keeps its
-    /// later lines, and its final error with them.
+    /// sentence — and with no further `/` on the line (a later `/` means the component may be a
+    /// folder in the middle of a longer path, whatever followed its extension). Anything else is
+    /// redacted from the path to the end of its line, as `<path>…` — plain `<path>` when what was cut
+    /// holds no whitespace. The line is the limit, so a traceback keeps its later lines, and its
+    /// final error with them.
     ///
     /// What this cannot see: a name that itself has a recognised extension followed by a space or
-    /// punctuation in the middle ("notes.txt draft") ends early, and a name with a line break in it
-    /// is cut at the break. A bare file name with no `/` is not a path and is kept.
+    /// punctuation in the middle ("notes.txt draft"), with no `/` after it on the line, ends early; a
+    /// name with a line break in it is cut at the break. A bare file name with no `/` is not a path
+    /// and is kept, and neither is a relative path whose first folder holds a space ("My
+    /// Meetings/Board Q3/…") or a `~/` inside a word (F896).
     public static func redactPaths(_ text: String) -> String {
         var output = ""
         var line: [Character] = []
@@ -146,13 +150,21 @@ public enum DiagnosticsBundleBuilder {
     }
 
     /// The first index at or after `position` where a path starts: `file:` not inside a word, `~/`
-    /// at the start of one, or a `/` followed by a component, another `/` and the start of a second.
+    /// at the start of one, a `/` at the start of one followed by a name, or a `/` anywhere followed
+    /// by a component, another `/` and the start of a second.
     private static func firstPathTrigger(in line: [Character], from position: Int) -> Int? {
         let count = line.count
         var index = position
         while index < count {
             let character = line[index]
             if character == "/" {
+                // An absolute path needs only one component (F791 review): its first folder may hold
+                // a space ("/My Files/…") or it may be a lone name ("/Board Q3.wav"). At the start of
+                // a word only, so "3/4" and "read/write" stay text.
+                if index + 1 < count, line[index + 1] != "/", !line[index + 1].isWhitespace,
+                   index == 0 || isPathWordBreak(line[index - 1]) {
+                    return index
+                }
                 var next = index + 1
                 while next < count, line[next] != "/", !line[next].isWhitespace { next += 1 }
                 if next > index + 1, next + 1 < count, line[next] == "/",
@@ -188,10 +200,10 @@ public enum DiagnosticsBundleBuilder {
             guard end < count else { return end }
             let next = line[end]
             let endsASentence = ".!?".contains(next) && (end + 1 == count || line[end + 1].isWhitespace)
-            if next.isWhitespace || endsASentence {
-                // A later `/` means this may be a folder in the middle of a longer path.
-                if !line[end...].contains("/") { return end }
-            } else if pathEndPunctuation.contains(next) {
+            // A later `/` means this may be a folder in the middle of a longer path, whatever follows
+            // the extension: a name can hold punctuation as well as spaces ("Q3.wav, notes/…").
+            if next.isWhitespace || endsASentence || pathEndPunctuation.contains(next),
+               !line[end...].contains("/") {
                 return end
             }
         }
