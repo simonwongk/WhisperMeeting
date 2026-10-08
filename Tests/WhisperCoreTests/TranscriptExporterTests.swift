@@ -64,8 +64,46 @@ func escapesSubtitleCueText() {
     #expect(vtt.components(separatedBy: "-->").count - 1 == 1)
 
     let srt = TranscriptExporter.render(.srt, request)
-    #expect(srt.contains("R&D &lt;plan&gt;")) // SRT escapes < >, leaves & literal
+    // SubRip decodes no entities (F743): `<` is kept with an invisible word joiner after it, so no
+    // tag can open, and `-->` carries one before its `>`.
+    #expect(srt.contains("R&D <\u{2060}plan> --\u{2060}> done"))
     #expect(srt.components(separatedBy: "-->").count - 1 == 1)
+}
+
+/// The text a SubRip player puts on screen for a cue: neither ffmpeg's decoder (mpv, IINA, ffplay —
+/// run against ffmpeg 8.1.2) nor VLC 3's `subsdec.c` decodes a character reference, and a word
+/// joiner (U+2060) is invisible. Measured in the F743 entry.
+private func subRipScreenText(_ srt: String) -> [String] {
+    srt.components(separatedBy: "\n\n").compactMap { block in
+        let lines = block.trimmingCharacters(in: .newlines)
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count >= 3, lines[1].contains(" --> ") else { return nil }
+        return lines[2...].joined(separator: "\n").replacingOccurrences(of: "\u{2060}", with: "")
+    }
+}
+
+@Test("A SubRip cue shows '<', '>', '&' and a literal '&lt;' exactly as the transcript has them (F743)")
+func subRipCueTextDisplaysAsWritten() throws {
+    let lines = ["a < b and c > d", "write &lt; for <", "<i>not italic</i> & <br> <foo bar>", "x<y>z --> R&D"]
+    let segments = lines.enumerated().map {
+        TranscriptSegment(speaker: nil, start: Double($0.offset), end: Double($0.offset + 1), text: $0.element)
+    }
+    let request = TranscriptExportRequest(
+        title: "t", languageCode: "en", durationSeconds: 4,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    )
+    let srt = TranscriptExporter.render(.srt, request)
+
+    #expect(subRipScreenText(srt) == lines)
+    // No reference is introduced: the only `&lt;` is the one the transcript says.
+    #expect(srt.components(separatedBy: "&lt;").count - 1 == 1)
+    #expect(!srt.contains("&gt;") && !srt.contains("&amp;"))
+    // Every `<` is followed by the joiner, which is not a letter, `/` or space — so neither player
+    // reads a tag (ffmpeg dropped `<foo bar>` and `<br>`, and italicised `<i>`, when written raw).
+    let everyOpenerIsBroken = srt.indices.allSatisfy { index in
+        srt[index] != "<" || srt[srt.index(after: index)...].hasPrefix("\u{2060}")
+    }
+    #expect(everyOpenerIsBroken)
 }
 
 @Test("Plain-text export strips the leading timestamps from each line")

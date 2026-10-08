@@ -421,7 +421,7 @@ public enum TranscriptExporter {
             blocks.append("""
             \(index)
             \(subtitleTimestamp(start, millisecondSeparator: ",")) --> \(subtitleTimestamp(end, millisecondSeparator: ","))
-            \(escapeCueText(text, escapeAmpersand: false))
+            \(escapeSubRipCueText(text))
             """)
             index += 1
         }
@@ -435,7 +435,7 @@ public enum TranscriptExporter {
             guard !text.isEmpty, let start = segment.start else { continue }
             let end = segment.end ?? start
             lines.append("\(subtitleTimestamp(start, millisecondSeparator: ".")) --> \(subtitleTimestamp(end, millisecondSeparator: "."))")
-            lines.append(escapeCueText(text, escapeAmpersand: true))
+            lines.append(escapeVTTCueText(text))
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -563,18 +563,32 @@ public enum TranscriptExporter {
         return string
     }
 
-    /// Escape characters that would make subtitle cue text invalid or mis-render. WebVTT decodes
-    /// entities and forbids a literal `-->` in a cue, so it needs `&`, `<`, `>` escaped (escaping `>`
-    /// also neutralizes any `-->`). SubRip does not decode `&`, so only `<`/`>` are escaped there to
-    /// avoid a stray `<tag>` being interpreted (F44). Order matters: `&` first.
-    private static func escapeCueText(_ text: String, escapeAmpersand: Bool) -> String {
-        var escaped = text
-        if escapeAmpersand {
-            escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
-        }
-        escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
-        escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
-        return escaped
+    /// WebVTT cue text: WebVTT decodes character references and forbids a literal `-->` in a cue, so
+    /// `&`, `<` and `>` are escaped (escaping `>` also neutralizes any `-->`). Order matters: `&` first.
+    private static func escapeVTTCueText(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// An invisible character that is not a letter, `/` or space (U+2060 WORD JOINER), written after
+    /// every `<` of SubRip cue text; `SubtitleParser` removes it again.
+    static let subRipTagBreaker = "\u{2060}"
+
+    /// SubRip cue text, which the players show with NO character reference decoded (F743). F44
+    /// wrote `<` and `>` as `&lt;`/`&gt;`, which was ambiguous with a transcript that says `&lt;`
+    /// and showed on screen as the entity. Measured, not assumed: ffmpeg 8.1.2's SubRip decoder
+    /// (mpv, IINA, ffplay) passes `&lt;`, `&amp;` and `&#60;` through as text, and so does VLC 3's
+    /// `subsdec.c`, which has no decoding step at all. A raw `<` is no answer either — ffmpeg turned
+    /// `x<y>z` into `xz`, `a<b and c>d` into bold `d`, and `<i>` into italics.
+    ///
+    /// So `<` stays `<` with a word joiner after it: VLC's `GetTag` needs a letter (after an
+    /// optional `/` and spaces) and ffmpeg keeps an unknown non-ASCII tag as text, so no tag can open,
+    /// and the joiner is invisible. `-->` gets one before its `>` so no line of cue text can read as
+    /// a timing line. `&` and everything else is written as it is.
+    private static func escapeSubRipCueText(_ text: String) -> String {
+        text.replacingOccurrences(of: "<", with: "<" + subRipTagBreaker)
+            .replacingOccurrences(of: "-->", with: "--" + subRipTagBreaker + ">")
     }
 
     /// `HH:MM:SS,mmm` (SRT) or `HH:MM:SS.mmm` (WebVTT).

@@ -1,14 +1,15 @@
 import Foundation
 
 /// Parses WebVTT / SRT captions into `[TranscriptSegment]` (F183). It reads what `TranscriptExporter`
-/// writes: that exporter entity-escapes `&`, `<` and `>` in cue text (F44), and this parser decodes
-/// those three references back, so the exporter's character escaping round-trips (F491). Only the
-/// escaping does. Cue text is otherwise cleaned on the way in, so an exported line that begins like a
-/// speaker label (`JOHN: `, `- `, `[x]`) loses that prefix, a multi-line cue comes back joined with
-/// spaces, and consecutive cues whose texts repeat or extend each other are merged into one. The one
-/// escaping exception is SubRip text that itself contains a literal `&lt;`, `&gt;` or `&amp;`: the
-/// exporter leaves `&` raw there, so that output is ambiguous and decodes to the character the
-/// reference names.
+/// writes, and the exporter's character escaping round-trips (F491): in WebVTT the exporter
+/// entity-escapes `&`, `<` and `>` and this parser decodes those three references back; in SubRip,
+/// which has no character references (F743 — the players show `&lt;` as written), it writes `<`
+/// with an invisible word joiner after it so no tag opens, and this parser keeps every reference as
+/// text and removes that joiner. A file is WebVTT when it begins with the `WEBVTT` header, as the
+/// format requires; anything else is read as SubRip. Only the escaping round-trips. Cue text is
+/// otherwise cleaned on the way in, so an exported line that begins like a speaker label (`JOHN: `,
+/// `- `, `[x]`) loses that prefix, a multi-line cue comes back joined with spaces, and consecutive
+/// cues whose texts repeat or extend each other are merged into one.
 ///
 /// Where its output goes today: `MediaDownloadClient` parses a link import's caption track, and
 /// `AppModel.importFromURL` → `adoptImportedRecording` stores the result as
@@ -30,6 +31,8 @@ public enum SubtitleParser {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
+        let isWebVTT = lines.first?.trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+            .hasPrefix("WEBVTT") ?? false
 
         var segments: [TranscriptSegment] = []
         var index = 0
@@ -51,7 +54,7 @@ public enum SubtitleParser {
             // The joined pass strips labels only: tags and entities were handled per line, and running
             // either again would strip a decoded `<b>` as a tag or decode a `&amp;lt;` twice (F491).
             let cleaned = stripSpeakerLabels(
-                textLines.map(cleanCueText).filter { !$0.isEmpty }.joined(separator: " ")
+                textLines.map { cleanCueText($0, isWebVTT: isWebVTT) }.filter { !$0.isEmpty }.joined(separator: " ")
             )
             guard !cleaned.isEmpty else { continue }
             // Rolling-caption dedup: auto-captions re-emit the same line across consecutive cues with
@@ -99,18 +102,28 @@ public enum SubtitleParser {
         return total
     }
 
-    /// Strips inline tags (`<c>`, `<00:00:01.000>`, `<v Name>`), decodes the `&lt;` / `&gt;` / `&amp;`
-    /// character references, then strips any leading speaker labels, so no speaker identity survives
-    /// into a segment. The order matters: tags first, so an escaped `&lt;b&gt;` is kept as text rather
-    /// than removed as a tag; decoding before labels, so an escaped `&gt;&gt;` chevron is still a
-    /// chevron (F491). Whitespace-collapsed.
-    static func cleanCueText(_ text: String) -> String {
+    /// Strips inline tags (`<c>`, `<00:00:01.000>`, `<v Name>`, SubRip's `<i>`), decodes WebVTT's
+    /// `&lt;` / `&gt;` / `&amp;` character references, then strips any leading speaker labels, so no
+    /// speaker identity survives into a segment. The order matters: tags first, so an escaped
+    /// `&lt;b&gt;` is kept as text rather than removed as a tag; decoding before labels, so an escaped
+    /// `&gt;&gt;` chevron is still a chevron (F491). Whitespace-collapsed.
+    ///
+    /// SubRip decodes no references (F743), so its `&lt;` stays text. A `<` followed by the
+    /// exporter's word joiner is text, not a tag, and the joiner goes — after `-->`'s too.
+    static func cleanCueText(_ text: String, isWebVTT: Bool) -> String {
         // Remove every angle-bracket tag (timing cues, <c> color spans, <v Name> voice spans).
-        let untagged = text.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+        let untagged = text.replacingOccurrences(of: #"<(?!\x{2060})[^>]*>"#, with: "", options: .regularExpression)
+        guard isWebVTT else {
+            let breaker = TranscriptExporter.subRipTagBreaker
+            return stripSpeakerLabels(
+                untagged.replacingOccurrences(of: "<" + breaker, with: "<")
+                    .replacingOccurrences(of: "--" + breaker + ">", with: "-->")
+            )
+        }
         return stripSpeakerLabels(decodeCharacterReferences(untagged))
     }
 
-    /// The three references `TranscriptExporter.escapeCueText` writes. `&amp;` goes last so each
+    /// The three references `TranscriptExporter.escapeVTTCueText` writes. `&amp;` goes last so each
     /// reference decodes exactly once: `&amp;lt;` becomes the text `&lt;`, not `<`. Other named or
     /// numeric references are left as written.
     static func decodeCharacterReferences(_ text: String) -> String {

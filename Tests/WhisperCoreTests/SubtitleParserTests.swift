@@ -112,7 +112,20 @@ func roundTripsTranscriptExporterCueText() {
     }
     #expect(roundTrip(.vtt, "AT&T said <b> --> ok") == ["AT&T said <b> --> ok"])
     #expect(roundTrip(.srt, "AT&T said <b> --> ok") == ["AT&T said <b> --> ok"])
-    // WebVTT escapes `&` too, so a literal entity in the text decodes exactly once. (SubRip leaves `&`
-    // raw, so the same text cannot round-trip through .srt — the exporter's output is ambiguous there.)
+    // WebVTT escapes `&` too, so a literal entity in the text decodes exactly once. SubRip has no
+    // character references at all (F743): the exporter writes `<` with a word joiner after it, and
+    // a literal `&lt;` comes back as the text it is.
     #expect(roundTrip(.vtt, "write &lt; for <") == ["write &lt; for <"])
+    #expect(roundTrip(.srt, "write &lt; for <") == ["write &lt; for <"])
+    #expect(roundTrip(.srt, "x<y>z and <i>not a tag</i>") == ["x<y>z and <i>not a tag</i>"])
+}
+
+@Test("A SubRip file's character references are text, as SubRip players show them; WebVTT's are decoded (F743)")
+func subRipReferencesAreText() {
+    let srt = "1\n00:00:00,000 --> 00:00:02,000\nR&amp;D said &lt;b&gt; <i>quietly</i>\n"
+    #expect(SubtitleParser.parse(srt).map(\.text) == ["R&amp;D said &lt;b&gt; quietly"])
+    let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nR&amp;D said &lt;b&gt; <i>quietly</i>\n"
+    #expect(SubtitleParser.parse(vtt).map(\.text) == ["R&D said <b> quietly"])
+    // A byte-order mark before the header is still WebVTT.
+    #expect(SubtitleParser.parse("\u{FEFF}" + vtt).map(\.text) == ["R&D said <b> quietly"])
 }
