@@ -24,9 +24,12 @@ import Testing
 // vocabulary, say nothing, never block to find out.
 
 /// A bounded poll whose own success is the assertion's subject (never a stand-in for a fixed
-/// sleep) — the `QueuedBehindAuxiliaryRunTests` precedent.
+/// sleep) — the `QueuedBehindAuxiliaryRunTests` precedent. The cap is a ceiling, not a budget: the
+/// probe lands on a `.utility` detached task, and after ~570 other tests on a loaded Mac it took
+/// longer than the former 3 s, failing a correct test (F866). A passing run still returns as soon
+/// as the condition holds.
 @MainActor
-private func waitUntil(_ what: String, timeoutSeconds: Double = 3, _ condition: () -> Bool) async throws {
+private func waitUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeoutSeconds)
     while !condition(), Date() < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)

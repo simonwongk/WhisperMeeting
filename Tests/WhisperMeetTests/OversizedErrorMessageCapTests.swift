@@ -18,7 +18,7 @@ import Testing
 // `handle` persisting — the real call path, not a direct call into a private method.
 
 @MainActor
-private func waitUntil(_ what: String, timeoutSeconds: Double = 3, _ condition: () -> Bool) async throws {
+private func waitUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeoutSeconds)
     while !condition(), Date() < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
