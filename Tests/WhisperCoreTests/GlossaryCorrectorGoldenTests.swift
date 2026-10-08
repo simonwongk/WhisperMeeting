@@ -10,9 +10,11 @@ import Testing
 // Amended since, deliberately and only where marked `amended`, for tickets that changed the
 // English answer on purpose — each switchable, so a test can show the corpus exercises it:
 // - F819: a proposal's phrase leaves the punctuation stuck to its outer words in the transcript.
+// - F820: a term equal to any window of the segment, not only to one word, is present already.
 
 private struct Amendments {
     var f819 = true
+    var f820 = true
 }
 
 private enum PreF536GlossaryCorrector {
@@ -36,9 +38,11 @@ private enum PreF536GlossaryCorrector {
                 if normalizedWords.contains(termNormalized) { continue }
 
                 var best: (similarity: Double, phrase: String)?
+                var presentAsAWindow = false // amended
                 for size in 1...maxWindow where size <= words.count {
                     for start in 0...(words.count - size) {
                         let windowNormalized = normalizedWords[start..<(start + size)].joined()
+                        if windowNormalized == termNormalized { presentAsAWindow = true } // amended
                         guard !windowNormalized.isEmpty, windowNormalized != termNormalized else { continue }
                         let score = similarity(windowNormalized, termNormalized)
                         if score >= similarityThreshold, score > (best?.similarity ?? 0) {
@@ -46,6 +50,7 @@ private enum PreF536GlossaryCorrector {
                         }
                     }
                 }
+                if amended.f820, presentAsAWindow { continue } // amended
                 if let best {
                     let phrase = amended.f819 ? trimmedF819(best.phrase) : best.phrase // amended
                     results.append(GlossaryCorrection(segmentIndex: index, from: phrase, to: term))
@@ -192,11 +197,18 @@ func englishGoldenSet() {
         TranscriptSegment(speaker: nil, start: 1, end: 2, text: "Priya said the Kestrol release is ready"),
         TranscriptSegment(speaker: nil, start: 2, end: 3, text: "Fairhaeven will test it on Thursday"),
         TranscriptSegment(speaker: nil, start: 3, end: 4, text: "We use Kubernetes and Kestrel daily"),
+        TranscriptSegment(speaker: nil, start: 4, end: 5, text: "Priya Raman said so"),
     ]
     let expected = PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
     // Readable pins for the three mishearings, then the whole list against the oracle.
     #expect(expected.contains(GlossaryCorrection(segmentIndex: 0, from: "cooper netties", to: "Kubernetes")))
     #expect(expected.contains(GlossaryCorrection(segmentIndex: 1, from: "Kestrol", to: "Kestrel")))
     #expect(expected.contains(GlossaryCorrection(segmentIndex: 2, from: "Fairhaeven", to: "Fairhaven")))
+    // F820's amendment, written out: the old code proposed deleting "said" from a correct name.
+    var withoutF820 = Amendments()
+    withoutF820.f820 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF820)
+        .contains(GlossaryCorrection(segmentIndex: 4, from: "Priya Raman said", to: "Priya Raman")))
+    #expect(!expected.contains { $0.segmentIndex == 4 })
     #expect(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments) == expected)
 }

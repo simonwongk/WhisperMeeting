@@ -72,3 +72,28 @@ func glossaryCorrectionKeepsPunctuationThroughAppModel() async throws {
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Ship the Kestrel, then tell Priya.")
 }
+
+@MainActor
+@Test("Correct Toward Vocabulary proposes nothing for a two-word name already spelled right (F820)")
+func glossaryCorrectionLeavesACorrectTwoWordTermAlone() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GlossaryWiringTests-F820-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 1, text: "Priya Raman said the release is ready."),
+        TranscriptSegment(speaker: nil, start: 1, end: 2, text: "Ask Priya Ramen about it."),
+    ]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    model.store.addVocabulary(["Priya Raman"])
+
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
+    // Only the real mishearing, on the second line.
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "Priya Ramen", to: "Priya Raman")])
+}

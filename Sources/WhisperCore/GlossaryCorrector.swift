@@ -22,7 +22,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// whitespace-separated words — as in F65, and pinned against a copy of the old code by
 /// `GlossaryCorrectorGoldenTests`, amended only where a later ticket changed the answer on purpose:
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
-/// proposed as "Kestrol"). A term containing Chinese is compared with windows of
+/// proposed as "Kestrol"), and a term equal to a window of several words is already present (F820,
+/// "Priya Raman said" proposes nothing for "Priya Raman"). A term containing Chinese is compared with windows of
 /// exactly its own length, slid character by character along each run of letters and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
@@ -135,12 +136,14 @@ public enum GlossaryCorrector {
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
     /// window with the highest ratio at or above the threshold, not equal to the term, unless the
-    /// term already stands as a token. The phrase returned is the window's without its outer
+    /// term already stands as a window — one token or, since F820, several: F65 asked only whether
+    /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
+    /// proposed as it, deleting "said". The phrase returned is the window's without its outer
     /// punctuation (F819).
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, scratch: inout LCSScratch
     ) -> String? {
-        if windows.normalizedTokens.contains(term.normalized) { return nil }
+        if windows.normalizedWindows.contains(term.normalized) { return nil }
         var best: (similarity: Double, phrase: String)?
         for window in windows.all where !window.containsCJK && !window.ids.isEmpty && window.ids != term.ids {
             let longer = max(window.ids.count, term.ids.count)
@@ -243,13 +246,15 @@ public enum GlossaryCorrector {
             let containsCJK: Bool
         }
 
-        let normalizedTokens: Set<String>
+        /// Every window's normalized text, one to three tokens — a term equal to any of them is
+        /// already in the segment (F820).
+        let normalizedWindows: Set<String>
         /// In F65's order: every one-token window, then every two-token window, then three.
         let all: [Window]
 
         init(tokens: [Token], table: CharacterTable) {
             let normalized = tokens.map { GlossaryCorrector.normalize($0.text) }
-            normalizedTokens = Set(normalized)
+            var normalizedWindows: Set<String> = []
             var windows: [Window] = []
             for size in 1...GlossaryCorrector.maxWindow where size <= tokens.count {
                 for start in 0...(tokens.count - size) {
@@ -258,15 +263,18 @@ public enum GlossaryCorrector {
                     for index in (start + 1)..<(start + size) {
                         phrase += (tokens[index].joinsPrevious ? "" : " ") + tokens[index].text
                     }
+                    // Joined as strings first, as F65 did, so the character count is the same.
+                    let joined = normalized[slice].joined()
+                    normalizedWindows.insert(joined)
                     windows.append(Window(
-                        // Joined as strings first, as F65 did, so the character count is the same.
-                        ids: table.ids(normalized[slice].joined()),
+                        ids: table.ids(joined),
                         phrase: GlossaryCorrector.trimmingAttachedPunctuation(phrase),
                         containsCJK: tokens[slice].contains(where: \.isCJK)
                     ))
                 }
             }
             all = windows
+            self.normalizedWindows = normalizedWindows
         }
     }
 

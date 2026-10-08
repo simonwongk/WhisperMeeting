@@ -4,7 +4,8 @@ import Testing
 
 // Correct Toward Vocabulary's Latin windows are whitespace-separated words (F65, kept by F536).
 // F819: a window's phrase kept the punctuation attached to its words, so applying "Kestrol," →
-// "Kestrel" deleted the comma.
+// "Kestrel" deleted the comma. F820: a multi-word term already present in the segment was only
+// recognised when it was a single token, so "Priya Raman said" was proposed as "Priya Raman".
 
 private func seg(_ text: String) -> TranscriptSegment {
     TranscriptSegment(speaker: nil, start: 0, end: 1, text: text)
@@ -21,4 +22,16 @@ func latinProposalKeepsAttachedPunctuation() {
     ])
     let applied = GlossaryCorrector.apply(corrections, to: segments).map(\.text)
     #expect(applied == ["the Kestrel, release", "(Kestrel) shipped", "we deployed Kubernetes."])
+}
+
+@Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
+func multiWordTermAlreadyPresentProposesNothing() {
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("Priya Raman said the release is ready")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("ask Priya\tRaman, she knows")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Café Noir Paris"], segments: [seg("dinner at Café Noir Paris tonight")]).isEmpty)
+    // A real mishearing of the same term is still proposed.
+    #expect(
+        GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("Priya Ramen said so")])
+            == [GlossaryCorrection(segmentIndex: 0, from: "Priya Ramen", to: "Priya Raman")]
+    )
 }
