@@ -3222,7 +3222,7 @@ private struct TranscriptDetailView: View {
                 .animation(reduceMotion ? nil : .uiSpring, value: meeting.status)
             }
             .navigationTitle(meeting.title)
-            .onAppear { normalizeTranscriptIfNeeded(meeting) }
+            .onAppear { store.normalizeTranscriptIfNeeded(id: meeting.id) }
             // F180: consume a "jump to this cited moment" request once this (freshly recreated) detail
             // view for the requested meeting appears, feeding the F177 seek path. `.task(id:)` runs on
             // (re)appear for this meeting id; the seek is a one-shot cleared from the model.
@@ -4206,27 +4206,6 @@ private struct TranscriptDetailView: View {
                 )
             }
         )
-    }
-
-    /// Upgrades meetings transcribed before the unified-transcript change exactly once: if a
-    /// completed meeting still has plain text plus segments, rebuild its transcript with inline
-    /// timestamps. After this runs (or is skipped) the meeting is marked normalized and its text is
-    /// never rebuilt again, so subsequent user edits — including removing the first timestamp — are
-    /// never overwritten.
-    private func normalizeTranscriptIfNeeded(_ meeting: MeetingRecord) {
-        guard meeting.status == .completed, meeting.transcriptNormalized != true else { return }
-        if !meeting.segments.isEmpty,
-           !TranscriptFormatter.isTimestamped(meeting.transcriptText) {
-            let rebuilt = TranscriptFormatter.timestamped(meeting.segments)
-            if !rebuilt.isEmpty {
-                store.update(id: meeting.id) {
-                    $0.transcriptText = rebuilt
-                    $0.transcriptNormalized = true
-                }
-                return
-            }
-        }
-        store.update(id: meeting.id) { $0.transcriptNormalized = true }
     }
 
     private func currentTranscript() -> String {

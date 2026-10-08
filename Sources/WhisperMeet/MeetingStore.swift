@@ -1204,13 +1204,18 @@ final class MeetingStore: ObservableObject {
     /// not fully load writes over the index it could not read, and `delete` removes audio once its
     /// save has landed.
     private func mutationIsAllowed() -> Bool {
-        if isRestoringLibrary {
-            storageErrorMessage = Self.changeRefusedDuringRestore
-            return false
-        }
-        guard isDegraded else { return true }
-        storageErrorMessage = ReadOnlyLibraryNotice.mutationRefused
+        guard let refusal = mutationRefusal else { return true }
+        storageErrorMessage = refusal
         return false
+    }
+
+    /// Why `mutationIsAllowed()` would refuse right now, or nil — without saying so (F479). Saying
+    /// so is for a change the person asked for; a write the app makes on its own, such as the
+    /// transcript upgrade when a meeting is opened, asks this instead and skips silently.
+    private var mutationRefusal: String? {
+        if isRestoringLibrary { return Self.changeRefusedDuringRestore }
+        if isDegraded { return ReadOnlyLibraryNotice.mutationRefused }
+        return nil
     }
 
     /// `mutationIsAllowed()`, plus refusing a NEW edit while a lost race's `conflictOffer` is still
@@ -1476,6 +1481,35 @@ final class MeetingStore: ObservableObject {
         meetings[index].notes = text.isEmpty ? nil : text
         scheduleDebouncedPersist()
         scheduleNotesSidecarWrite(for: id)
+    }
+
+    /// Upgrades meetings transcribed before the unified-transcript change exactly once: if a
+    /// completed meeting still has plain text plus segments, rebuild its transcript with inline
+    /// timestamps. After this runs (or is skipped) the meeting is marked normalized and its text is
+    /// never rebuilt again, so subsequent user edits — including removing the first timestamp — are
+    /// never overwritten. The meeting detail view calls this when a meeting is opened.
+    ///
+    /// **Silent where it cannot be saved (F479).** Nobody asked for this write. On a read-only
+    /// library, or mid-restore, `update`'s refusal set `storageErrorMessage`, which the window shows
+    /// as a modal — so merely opening such a meeting raised the read-only alert, again on every open,
+    /// since the upgrade could never be saved. It is skipped instead and runs on the first open once
+    /// the library is writable. (An outstanding conflict offer already refuses an `.edit` silently.)
+    func normalizeTranscriptIfNeeded(id: UUID) {
+        guard mutationRefusal == nil else { return }
+        guard let meeting = meeting(id: id),
+              meeting.status == .completed, meeting.transcriptNormalized != true else { return }
+        if !meeting.segments.isEmpty,
+           !TranscriptFormatter.isTimestamped(meeting.transcriptText) {
+            let rebuilt = TranscriptFormatter.timestamped(meeting.segments)
+            if !rebuilt.isEmpty {
+                update(id: meeting.id) {
+                    $0.transcriptText = rebuilt
+                    $0.transcriptNormalized = true
+                }
+                return
+            }
+        }
+        update(id: meeting.id) { $0.transcriptNormalized = true }
     }
 
     /// Cancel any pending flush and schedule a single trailing one `transcriptWriteDebounce` later, so
