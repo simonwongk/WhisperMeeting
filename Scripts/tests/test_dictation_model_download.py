@@ -709,6 +709,32 @@ class PinTests(DownloaderTestCase):
 
         self.assertEqual(self.read("snapshots", COMMIT, "config.json"), CONFIG)
 
+    def test_a_blob_that_hashes_to_its_pin_is_kept_whatever_size_the_hub_advertises(self):
+        """Review probe P2 (round 2). A pass that is not fully cached — here `refs/main` is missing, as
+        after a kill between the last link and the ref — met a Hub whose weights carry the pinned
+        sha256 but a size one byte off. The existing-blob check compared the Hub's size before it
+        hashed, so the verified 1.6 GB blob was deleted, and the re-fetch then failed (a 416): a pass
+        that only needed to write a ref cost the model. The pin decides, and nothing else."""
+        self.download()
+        blob = os.path.join(self.repo_cache, "blobs", WEIGHTS_SHA256)
+        before = os.stat(blob)
+        os.remove(os.path.join(self.repo_cache, "refs", "main"))
+        self.hub.advertised_extra = 1
+        fetched_before = len([1 for method, path in self.hub.requests if method == "GET" and path.startswith("/cdn/")])
+
+        try:
+            self.download()
+        except server.ModelDownloadError as error:
+            self.fail("a pass that needed only its ref failed (%s); the verified blob is %s"
+                      % (error, "still there" if os.path.exists(blob) else "gone"))
+
+        after = os.stat(blob)
+        self.assertEqual((after.st_ino, after.st_size), (before.st_ino, before.st_size),
+                         "a blob that verifies against its pin was deleted on the Hub's word")
+        fetched_after = len([1 for method, path in self.hub.requests if method == "GET" and path.startswith("/cdn/")])
+        self.assertEqual(fetched_after, fetched_before, "a verified blob was fetched again")
+        self.assertEqual(self.read("refs", "main").decode(), COMMIT)
+
     def test_a_repository_with_no_pin_is_not_downloaded(self):
         with self.assertRaises(server.ModelDownloadError):
             server.ensure_dictation_model("someone/else", self.hub_dir, endpoint=self.hub.endpoint,

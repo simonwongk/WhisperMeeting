@@ -487,8 +487,8 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
     for leftover in os.listdir(blobs):
         # The library never reuses its own `.incomplete` files, and a `.part` for an etag the hub no
         # longer serves cannot be resumed; either can be 1.6 GB. Completed blobs are not touched here;
-        # the loop below replaces only a blob under one of the pinned files' names that is not that
-        # file (F830).
+        # the loop below removes only a blob under one of the pinned files' names that does not hash
+        # to its pin (F830).
         if leftover.endswith(".incomplete") or (leftover.endswith(".part") and leftover not in wanted_parts):
             try:
                 os.remove(os.path.join(blobs, leftover))
@@ -511,11 +511,12 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
             else:
                 on_disk = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             heartbeat.start_file(offset, on_disk)
-        if os.path.isfile(blob_path) and not (
-            os.path.getsize(blob_path) == size and _sha256_of(blob_path, chunk_size, heartbeat) == pinned_sha256
-        ):
+        if os.path.isfile(blob_path) and _sha256_of(blob_path, chunk_size, heartbeat) != pinned_sha256:
             # A blob under this name that is not the pinned file — a download from before F830 that
-            # only a size vouched for, or bytes damaged since — is not kept as the model.
+            # only a size vouched for, or bytes damaged since — is not kept as the model. The pinned
+            # sha256 alone decides: a blob that hashes to it is the model whatever size the Hub
+            # advertises today (review probe P2: comparing that size first deleted a verified 1.6 GB
+            # blob unhashed, and the re-fetch then failed).
             os.remove(blob_path)
         if not os.path.isfile(blob_path):
             _fetch_blob(_resolve_url(endpoint, mlx_repo, revision, name), blob_path, size, pinned_sha256,
