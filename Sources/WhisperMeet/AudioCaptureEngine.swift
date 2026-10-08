@@ -165,6 +165,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var healthMonitor: RecordingHealthMonitor?
     private var healthUpdate: (@Sendable (RecordingHealthSnapshot) -> Void)?
     private var healthTimer: DispatchSourceTimer?
+    /// The health tick's free-space figure, read on the sampler's own queue at most every ten
+    /// seconds, never on `captureQueue` (F877). Thread-safe by itself, so not one of the `_` fields
+    /// the capture queue protects.
+    private let freeSpace = FreeSpaceSampler()
     private var recordingActivity: NSObjectProtocol?
     private var injectedStopCapture: (() async throws -> Void)?
     private var injectedFinishTracks: (() throws -> Void)?
@@ -1122,7 +1126,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // Force a low-frequency meter snapshot as a fallback so stale levels decay even if both
         // capture channels stop producing buffers entirely.
         emitLevelsIfNeeded(at: now, force: true)
-        let availableBytes = sessionDirectory.flatMap(Self.availableStorageBytes)
+        // Not read here (F877): `availableStorageBytes` is an uncached query of 7–50 ms, and this
+        // runs on `captureQueue`. The sampler hands back its latest figure and reads elsewhere.
+        let availableBytes = sessionDirectory.flatMap { freeSpace.latest(for: $0, at: now) }
         healthUpdate(healthMonitor.snapshot(
             at: now,
             availableStorageBytes: availableBytes
@@ -1139,7 +1145,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// see the disk fill. A new instance per call starts with an empty cache. Not
     /// `removeCachedResourceValue(forKey:)` on a copy: measured, that re-reads the capacity but keeps
     /// the instance's cached idea of which volume the path is on, so a fresh instance is the read
-    /// that asks the file system everything. The cost is one `URL` a second.
+    /// that asks the file system everything.
+    ///
+    /// **Uncached is not cheap (F877).** Each call is a full volume-capacity query, measured on this
+    /// Mac at 7.4–24 ms spaced a second apart and up to 50 ms in a tight loop (the lane X review and
+    /// F877's re-run of its probe), against 0.007 ms for the plain `volumeAvailableCapacityKey`. So nothing calls it on `captureQueue`:
+    /// `FreeSpaceSampler` calls it on its own utility queue, at most every ten seconds.
     static func availableStorageBytes(at directory: URL) -> Int64? {
         let fresh = URL(fileURLWithPath: directory.path, isDirectory: true)
         let values = try? fresh.resourceValues(forKeys: [

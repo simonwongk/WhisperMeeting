@@ -4,8 +4,9 @@ import Testing
 
 // F703 — the recording health tick read the volume's free space through one long-lived `URL`.
 //
-// `emitHealthSnapshot` runs once a second on `captureQueue` and passes `sessionDirectory` — the same
-// `URL` for the whole recording — to `availableStorageBytes(at:)`. `URL.resourceValues(forKeys:)`
+// `emitHealthSnapshot` ran once a second on `captureQueue` and passed `sessionDirectory` — the same
+// `URL` for the whole recording — to `availableStorageBytes(at:)` (since F877 it goes through
+// `FreeSpaceSampler`, on another queue, with the same held URL). `URL.resourceValues(forKeys:)`
 // answers from that instance's cache when it can (`NSURL.h:181`: "This method first checks if the URL
 // object already caches the resource values. If so, it returns the cached resource values"), and the
 // cache is cleared by itself only for a URL used from the MAIN thread, "the next time the main
@@ -66,10 +67,14 @@ func healthTickFreeSpaceReadIsNotFrozenByTheURLCache() throws {
 func healthTickReadsFreeSpaceOnlyThroughTheFreshReader() throws {
     // `healthTickFreeSpaceReadIsNotFrozenByTheURLCache` drives the reader; this pins that the tick
     // uses it, and that no second read of the key in this file goes back through a held URL. The
-    // timer's queue and the capture session it needs are not drivable headlessly.
-    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
-    let tickReadsTheReader = source.contains("sessionDirectory.flatMap(Self.availableStorageBytes)")
-    let readsOfTheKey = source.components(separatedBy: ".volumeAvailableCapacityForImportantUsageKey").count - 1
-    #expect(tickReadsTheReader, "emitHealthSnapshot no longer reads free space through availableStorageBytes")
+    // timer's queue and the capture session it needs are not drivable headlessly. Since F877 the tick
+    // reaches the reader through `FreeSpaceSampler`, whose default reader is this one
+    // (`healthTickReadsFreeSpaceThroughTheSampler` pins the tick's side).
+    let engine = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
+    let sampler = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/FreeSpaceSampler.swift")
+    let samplerReadsTheReader = sampler.contains("AudioCaptureEngine.availableStorageBytes(at: $0)")
+    let readsOfTheKey = engine.components(separatedBy: ".volumeAvailableCapacityForImportantUsageKey").count - 1
+        + sampler.components(separatedBy: ".volumeAvailableCapacityForImportantUsageKey").count - 1
+    #expect(samplerReadsTheReader, "FreeSpaceSampler no longer reads free space through availableStorageBytes")
     #expect(readsOfTheKey == 1, "found \(readsOfTheKey) reads of the free-space key; only the fresh reader may read it")
 }
