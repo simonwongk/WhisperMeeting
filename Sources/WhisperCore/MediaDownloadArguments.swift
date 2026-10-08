@@ -65,11 +65,30 @@ public enum MediaDownloadArguments {
             // (F224, F435, F471); the flags stay as defence in depth, and the 16-bit mono part is still
             // what the per-segment re-run requires.
             "--postprocessor-args",
-            "ExtractAudio+ffmpeg:-ar 16000 -ac 1 -sample_fmt s16 -map_metadata -1 -fflags +bitexact",
+            "ExtractAudio+ffmpeg:" + extractionFFmpegArguments.joined(separator: " "),
             "-o", template,
             "--",
             url,
         ]
+    }
+
+    /// The ffmpeg options the import's audio extraction is given (`--postprocessor-args` above), as
+    /// one list so recovery's own extraction (F453) cannot drift from the import's.
+    public static let extractionFFmpegArguments = [
+        "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", "-map_metadata", "-1", "-fflags", "+bitexact",
+    ]
+
+    /// ffmpeg's arguments to finish an extraction yt-dlp was interrupted in (F453): what yt-dlp's
+    /// `FFmpegExtractAudioPP` runs for `--audio-format wav` (yt-dlp 2026.08.19,
+    /// `postprocessor/ffmpeg.py`: `-y -loglevel repeat+info -i file:<in> -vn -movflags +faststart
+    /// <ExtractAudio args> file:<out>`), with three deliberate differences: `-nostdin`, because nothing
+    /// feeds this process; `-f wav`, so the muxer does not depend on the output's name; and no
+    /// `-movflags`, a MOV/MP4 muxer option the WAV muxer does not use. Both paths carry `file:` as
+    /// yt-dlp does, so a name with a `:` or a leading `-` is never read as a protocol or an option.
+    public static func finishExtraction(input: String, output: String) -> [String] {
+        ["-nostdin", "-y", "-loglevel", "repeat+info", "-i", "file:\(input)", "-vn"]
+            + extractionFFmpegArguments
+            + ["-f", "wav", "file:\(output)"]
     }
 
     /// Best-effort caption fetch, pinned to `subLangs` (the video's own language from the probe) so an

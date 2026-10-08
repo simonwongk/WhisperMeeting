@@ -34,9 +34,11 @@ public enum RecordingFolderLiveness {
     private static let trackNames = ["system-audio.f32", "microphone-audio.f32"]
 
     /// What a link import writes (F453): yt-dlp's `recording.<ext>.part` while it downloads, then
-    /// `recording.<ext>`, then ffmpeg's `recording.wav` while it extracts. Both run in their own
-    /// process group, so a crash of the app does not stop them, and a folder they are still writing
-    /// is as live as a capture's.
+    /// `recording.<ext>`, then ffmpeg's `recording.wav` while it extracts — and recovery's own
+    /// conversion writes `recording.extracting.wav`. A crash of the app sends them no signal: yt-dlp
+    /// leads its own process group and ffmpeg is its child. ffmpeg, writing to yt-dlp's pipes, runs
+    /// on to the end; yt-dlp itself may die at its next write to the app's closed pipe, which is
+    /// unverified (F893). A folder one of them is still writing is as live as a capture's.
     private static let importFilePrefix = "recording."
 
     /// The sizes of what is being written, at one instant: the raw tracks, and any import file.

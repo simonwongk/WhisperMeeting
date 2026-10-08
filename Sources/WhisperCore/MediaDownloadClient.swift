@@ -10,6 +10,9 @@ public enum MediaDownloadError: LocalizedError, Equatable {
     /// A classified `yt-dlp` failure — carries the plain-language explanation for the UI.
     case failed(MediaDownloadFailureInfo)
     case stalled
+    /// Recovery's own run of the audio extraction an interrupted import was in (F453) did not
+    /// produce a WAV.
+    case extractionFailed
 
     public var errorDescription: String? {
         switch self {
@@ -29,6 +32,8 @@ public enum MediaDownloadError: LocalizedError, Equatable {
             return info.explanation
         case .stalled:
             return "The download stopped making progress, so it was cancelled. Check your connection and try again."
+        case .extractionFailed:
+            return "FFmpeg could not convert the downloaded file into audio WhisperMeet can play."
         }
     }
 }

@@ -1481,6 +1481,18 @@ final class AppModel: ObservableObject {
         RecordingFolderLiveness.sample(in: $0)
     }
 
+    /// Converts an interrupted link import's download into the `recording.wav` the import was
+    /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
+    /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg, and in a test
+    /// process refuses as if none were installed (F442), so an unstubbed test never runs a real
+    /// subprocess or depends on what the host has installed.
+    var finishInterruptedLinkImportExtraction: @Sendable (URL) async throws -> URL = { download in
+        guard TestProcess.allowsRealAccess(to: "ffmpeg") else { throw MediaDownloadError.ffmpegMissing }
+        return try await InterruptedLinkImportExtraction.finish(
+            download: download, ffmpeg: MediaDownloadRuntime.findFFmpeg()
+        )
+    }
+
     /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as
     /// `recoverInterruptedRecording` above, so a test can hold the (real, detached) work open long
     /// enough to observe `sourceRebuildRunningID` while it runs. Defaults to the real rebuild.
@@ -3388,7 +3400,7 @@ final class AppModel: ObservableObject {
                 // can never fail one.
                 let mediaSource = MediaSource.read(in: orphan.directory)
                 let provenanceTags = Self.provenanceTags(for: mediaSource)
-                guard let recovered else {
+                guard var recovered else {
                     if let imported = InterruptedRecordingRecovery.importedRecordingCandidate(
                         in: orphan.directory
                     ) {
@@ -3468,9 +3480,54 @@ final class AppModel: ObservableObject {
                 // blank row, indistinguishable from a bug in the sidebar.
                 let userTitle = session?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let title = userTitle.isEmpty ? synthesizedTitle : userTitle
-                let duration = recovered.duration > 0
+                var duration = recovered.duration > 0
                     ? recovered.duration
                     : await Self.loadDuration(of: recovered.recordingURL)
+                // F453 (review): a link import interrupted while ffmpeg converted its download is
+                // recovered from the download, and AVFoundation cannot open the format YouTube's
+                // audio usually is (Opus in WebM). Listed as it is, that was an Unverified Import
+                // inviting deletion — of the folder holding the only complete copy. So the
+                // conversion the import was running is finished here, with its own ffmpeg options.
+                // Only for a link import (`source.json`): a file import's `recording.<ext>` is the
+                // user's own file, with no conversion in progress. The download is never touched.
+                var unfinishedConversion: String?
+                if recovered.source == .importedRecording, duration <= 0, let mediaSource,
+                   recovered.recordingURL.pathExtension.lowercased() != "wav" {
+                    do {
+                        let finished = try await finishInterruptedLinkImportExtraction(recovered.recordingURL)
+                        let measured = await Self.loadDuration(of: finished)
+                        if measured > 0 {
+                            recovered = RecoveredRecording(
+                                recordingURL: finished, duration: measured, source: .importedRecording
+                            )
+                            duration = measured
+                        } else {
+                            unfinishedConversion = MediaDownloadError.extractionFailed.localizedDescription
+                        }
+                    } catch is CancellationError {
+                        // Nothing is indexed, so the next launch finds the folder as it was.
+                        continue
+                    } catch {
+                        unfinishedConversion = error.localizedDescription
+                    }
+                    if let reason = unfinishedConversion {
+                        let failedTitle = Self.unfinishedLinkImportTitle(host: mediaSource.host)
+                        let message = Self.unfinishedLinkImportMessage(reason: reason)
+                        store.upsert(MeetingRecord(
+                            id: orphan.id,
+                            title: failedTitle,
+                            createdAt: orphan.createdAt,
+                            recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                            status: .failed,
+                            errorMessage: message,
+                            tags: provenanceTags,
+                            recoverySource: recovered.source.rawValue,
+                            source: mediaSource
+                        ))
+                        messages.append("\(failedTitle) needs attention. \(message)")
+                        continue
+                    }
+                }
                 if recovered.source == .importedRecording, duration <= 0 {
                     let failedTitle = "Unverified Import \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
                     let message = "WhisperMeet preserved this interrupted import, but macOS could not verify it as playable audio or video. The original file remains on this Mac; replace it with a valid recording or delete this entry."
@@ -5108,6 +5165,16 @@ final class AppModel: ObservableObject {
     /// inside an outage as well as one actively appending, and a sleeping capture is not being
     /// written to.
     static let recordingStillInProgress = "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
+
+    /// The entry for a link import recovered from a download macOS cannot open, whose conversion
+    /// could not be finished (F453). Says where the complete download is and how to get a meeting
+    /// that can be transcribed; never suggests deleting the entry, because deleting it removes the
+    /// folder, and that folder holds the only complete copy of the download.
+    static func unfinishedLinkImportTitle(host: String) -> String { "Unfinished import from \(host)" }
+
+    static func unfinishedLinkImportMessage(reason: String) -> String {
+        "This link import was interrupted while its download was being converted into audio WhisperMeet can play, and the conversion could not be finished. \(reason) The complete download is kept in this meeting's folder, and the link is kept with it: import that link again to get a meeting you can transcribe."
+    }
 
     /// Startup recovery's word for a link import's folder that something is still writing (F453).
     /// The capture's own sentence says it will be added "when that recording stops", which nothing

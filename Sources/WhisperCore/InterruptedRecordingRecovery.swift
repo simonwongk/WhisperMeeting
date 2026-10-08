@@ -477,10 +477,18 @@ public enum InterruptedRecordingRecovery {
     /// `FFmpegExtractAudioPP` writes straight into the final name and deletes the original only
     /// when ffmpeg has finished. This used to return whichever the directory listed first, which
     /// indexed the meeting against the partial file while the complete one sat beside it. The order
-    /// is now: a WAV whose header is complete (the extraction finished; the original simply was not
-    /// deleted yet), then a non-empty file in any other format (the download), then the first by
-    /// name — so a lone file is still returned whatever it holds, which is what the "Needs
-    /// attention" entry relies on. Nothing is deleted: the partial WAV stays where it is.
+    /// is now: a WAV whose header is complete (what a finished extraction leaves; the original simply
+    /// was not deleted yet), then a non-empty file in any other format (the download), then the first
+    /// by name — so a lone file is still returned whatever it holds, which is what the "Needs
+    /// attention" entry relies on. Nothing is deleted here. (A link import's download that macOS cannot
+    /// open is converted afterwards by `InterruptedLinkImportExtraction`, whose finished WAV replaces
+    /// the partial one; the download itself is never touched.)
+    ///
+    /// A complete header is not proof that the extraction finished, though. ffmpeg also writes its
+    /// trailer when it is stopped by SIGTERM — which is what a shutdown, restart or logout sends it —
+    /// so an extraction stopped that way leaves a shorter WAV whose header reads as finished, and
+    /// this returns it ahead of the complete download (measured with ffmpeg 8.1.2: SIGTERM two
+    /// seconds into an hour's download left a consistent header declaring 1,813 s).
     ///
     /// A folder something is still writing must not reach this at all — the download chosen here
     /// is the one yt-dlp deletes when ffmpeg finishes — which is `RecordingFolderLiveness`'s job.
