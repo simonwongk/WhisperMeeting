@@ -73,7 +73,13 @@ public enum EditedTranscript {
                 // 31, and was read as retimed. One such line was enough for SRT/VTT to drop every
                 // segment's own timing for whole-second starts and guessed ends — on an UNEDITED
                 // transcript too, since the exporter reads its lines either way.
-                return TranscriptFormatter.timestamp(editedStart) == TranscriptFormatter.timestamp(originalStart)
+                //
+                // Or as a build before F287 wrote it, rounded down (F873): a meeting transcribed
+                // before then shows "00:30" for a segment at 30.7 s, and a correction inside its lines
+                // — or no edit at all, for the exporter — lost every line's own timing.
+                let shown = TranscriptFormatter.timestamp(editedStart)
+                return shown == TranscriptFormatter.timestamp(originalStart)
+                    || shown == TranscriptFormatter.legacyTimestamp(originalStart)
             default:
                 // One side has a timestamp and the other does not — genuine drift (an edit added or
                 // removed a line's timestamp), not F263's untimed-by-design case.

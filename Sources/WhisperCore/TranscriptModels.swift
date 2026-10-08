@@ -236,11 +236,21 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
 public enum TranscriptFormatter {
     /// Renders segments as one line per segment, each prefixed with an `MM:SS` timestamp.
     public static func timestamped(_ segments: [TranscriptSegment]) -> String {
+        timestamped(segments, stamp: timestamp)
+    }
+
+    /// `segments` as a build before F287 (`9bfd595`, 2026-09-17) wrote them, every start rounded
+    /// down (`legacyTimestamp`). Only ever compared with stored text, never written (F873).
+    static func legacyTimestamped(_ segments: [TranscriptSegment]) -> String {
+        timestamped(segments, stamp: legacyTimestamp)
+    }
+
+    private static func timestamped(_ segments: [TranscriptSegment], stamp: (Double) -> String) -> String {
         segments
             .map { segment -> String in
                 let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard let start = segment.start else { return text }
-                return "\(timestamp(start))  \(text)"
+                return "\(stamp(start))  \(text)"
             }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
@@ -257,10 +267,19 @@ public enum TranscriptFormatter {
     /// them, notes.md carried them as marker context, and the line tools rebuilt the text from them.
     /// "Never transcribed" is told apart by having no segments, not by the text: the only write that
     /// leaves segments under empty text is the editor's (`MeetingStore.editTranscript`).
+    ///
+    /// Text that matches the segments as a build before F287 rendered them — every start rounded
+    /// down — is not an edit either (F873). F287 (`9bfd595`, 2026-09-17) made `timestamp` round to
+    /// the nearest second, but a meeting transcribed before then keeps the text it was written with,
+    /// so a line starting at 30.7 s reads "00:30" in it and "00:31" in today's rendering. Comparing
+    /// only with today's rendering called every such untouched meeting hand-edited — its quality
+    /// flags hidden, its Improve tools refused, and Ask reading its lines instead of its segments.
+    /// The stored text is never rewritten to today's format; both renderings are accepted instead.
     public static func isEdited(transcriptText: String, segments: [TranscriptSegment]) -> Bool {
         guard !segments.isEmpty else { return false }
         let shown = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return shown != timestamped(segments).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard shown != timestamped(segments).trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return shown != legacyTimestamped(segments).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whether the text already begins (on its first non-empty line) with an `MM:SS` prefix.
@@ -316,6 +335,15 @@ public enum TranscriptFormatter {
         let total = wholeSeconds(seconds)
         // `%02ld` for the same reason as `clock` below: the minute field here is unbounded, because
         // this format has no hours component at all.
+        return String(format: "%02ld:%02d", total / 60, total % 60)
+    }
+
+    /// `timestamp` as it was before F287: whole seconds rounded DOWN, so 30.7 s reads "00:30" where
+    /// `timestamp` now says "00:31" (F873). Text stored by those builds is written this way, and is
+    /// compared with it, never rewritten. Through the same clamp as `timestamp`, so it cannot trap
+    /// where the original `max(0, Int(seconds))` did.
+    static func legacyTimestamp(_ seconds: Double) -> String {
+        let total = wholeSeconds(seconds.rounded(.down))
         return String(format: "%02ld:%02d", total / 60, total % 60)
     }
 
