@@ -73,6 +73,9 @@ func stopDuringCaptionsImportsNothing() async throws {
 
     #expect(outcome == .cancelled, "the sheet would have navigated to \(String(describing: outcome.meetingID))")
     #expect(model.store.meetings.isEmpty, "a stopped import was added to the library")
+    // Asserted directly, not only implied by "no meeting": the engine stub records any run (review of
+    // F453 found the meeting-status check alone could not fire, because the stub fails at once).
+    #expect(!box.transcriptionStarted, "a stopped import was transcribed")
     if let id = outcome.meetingID {
         #expect(!model.isQueuedForTranscription(id) && model.store.meeting(id: id)?.status != .processing,
                 "a stopped import was sent to transcription")
