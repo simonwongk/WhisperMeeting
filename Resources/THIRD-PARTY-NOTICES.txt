@@ -7,7 +7,8 @@ your Mac, and they send nothing anywhere. Quick Dictation also uses one small th
 Silero VAD (section 7), which is shipped inside the app and likewise runs only on your Mac. This
 file reproduces their licences and required attributions in full.
 
-Nothing else in this file applies to recording or transcription, which use separate components.
+Apart from section 7 and the FluidAudio library (section 1) that runs it, nothing in this file
+applies to recording or transcription, which use separate components.
 
 Contents
 --------
