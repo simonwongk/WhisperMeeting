@@ -24,7 +24,7 @@ private func makeModel(_ label: String) throws -> (AppModel, URL, posts: Locked<
             stoppingCapture: {}, finishingTracks: {}, preservingPartialTracks: {},
             startingCapture: { _, _, _ in }, directory: root
         ),
-        defaults: UserDefaults(suiteName: "F528.\(label).\(UUID().uuidString)")!,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
         whisperExecutable: { nil }, qwenInstalled: { false }
     )
     let posts = Locked<[String]>([])

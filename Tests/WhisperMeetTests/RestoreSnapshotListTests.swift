@@ -47,7 +47,7 @@ private func makeLibrary(_ label: String, healthy: Bool = true) throws -> Librar
     try writeFile(older.appendingPathComponent("Recordings/\(UUID().uuidString)/notes.md"), bytes: 500)
     let newer = root.appendingPathComponent(".pre-restore-1790000500", isDirectory: true)
     try writeFile(newer.appendingPathComponent("meetings.json"), bytes: 2_000)
-    let defaults = try #require(UserDefaults(suiteName: "F855.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     return Library(root: root, model: model)
 }
@@ -204,7 +204,7 @@ func aRestoreListsItsOwnSafetyCopy() async throws {
     let library = root.appendingPathComponent("Library", isDirectory: true)
     try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F855.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(store: MeetingStore(rootDirectory: library), recorder: AudioCaptureEngine(), defaults: defaults)

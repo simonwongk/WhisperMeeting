@@ -94,7 +94,7 @@ func transcriptionKeepsProvenanceAndClearsStaleness() throws {
     try WAVWriter.wavData(from: [Float](repeating: 0.2, count: 48_000), sampleRate: 48_000)
         .write(to: folder.appendingPathComponent("meeting-recovered.wav"))
 
-    let suite = "WhisperMeet.Provenance.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
@@ -199,7 +199,7 @@ func unverifiableImportCarriesProvenance() async throws {
     try Data("not audio, but not empty either".utf8)
         .write(to: folder.appendingPathComponent("recording.m4a"))
 
-    let suite = "F303.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
@@ -271,7 +271,7 @@ func emptyImportCarriesProvenance() async throws {
     // Zero bytes: the candidate exists and is protected, but there is nothing to recover.
     try Data().write(to: folder.appendingPathComponent("recording.m4a"))
 
-    let suite = "F303.empty.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),

@@ -61,7 +61,7 @@ private func recording(seconds: Double = 0.2) -> Data {
 func watchedFolderSurvivesARelaunch() throws {
     let folder = try makeWatchedFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let defaults = try #require(UserDefaults(suiteName: "F327.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     try recording().write(to: folder.appendingPathComponent("already-here.wav"))
 
     let first = WatchingRun(folder: folder, defaults: defaults)
@@ -86,7 +86,7 @@ func watchedFolderSurvivesARelaunch() throws {
 func fileCopiedInWhileClosedIsImportedOnRelaunch() throws {
     let folder = try makeWatchedFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let defaults = try #require(UserDefaults(suiteName: "F320.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     try recording().write(to: folder.appendingPathComponent("already-here.wav"))
     let first = WatchingRun(folder: folder, defaults: defaults)
     #expect(first.look().isEmpty)
@@ -112,7 +112,7 @@ func fileCopiedInWhileClosedIsImportedOnRelaunch() throws {
 func fileStillSettlingAtQuitIsNewNextLaunch() throws {
     let folder = try makeWatchedFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let defaults = try #require(UserDefaults(suiteName: "F320.settle.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let first = WatchingRun(folder: folder, defaults: defaults)
     #expect(first.look().isEmpty)
     let arriving = folder.appendingPathComponent("mid-copy.wav")
@@ -153,7 +153,7 @@ func unreadableFolderIsReported() throws {
 @Test("A folder that cannot be read leaves the saved record alone (F325)")
 func unreadableFolderDoesNotWipeTheRecord() throws {
     let folder = try makeWatchedFolder()
-    let defaults = try #require(UserDefaults(suiteName: "F325.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     try recording().write(to: folder.appendingPathComponent("already-here.wav"))
     let run = WatchingRun(folder: folder, defaults: defaults)
     #expect(run.look().isEmpty)

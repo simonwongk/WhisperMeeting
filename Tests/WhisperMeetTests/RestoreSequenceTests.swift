@@ -21,7 +21,7 @@ func postRestoreSavesAreNumberedAboveTheLiveHistory() async throws {
     let library = root.appendingPathComponent("Library", isDirectory: true)
     try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F604.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(store: MeetingStore(rootDirectory: library), recorder: AudioCaptureEngine(), defaults: defaults)

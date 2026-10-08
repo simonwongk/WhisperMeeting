@@ -12,7 +12,7 @@ private func makeModel(_ tag: String) throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("F536-\(tag)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F536.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return (AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults), root)
 }
 

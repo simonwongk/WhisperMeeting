@@ -52,7 +52,7 @@ private func settle() async {
 private func makeModel() throws -> (model: AppModel, id: UUID, gate: Gate) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F510-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F510.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
     let id = UUID()
@@ -142,7 +142,7 @@ func installGuardsDeriveFromTheSharedReason() throws {
 @Test("recognitionRuntimeInstallBlockedReason is nil on an idle model (F514)")
 func recognitionRuntimeInstallBlockedReasonIsNilWhenIdle() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F514-idle-\(UUID().uuidString)")
-    let defaults = try #require(UserDefaults(suiteName: "F514.idle.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     #expect(model.recognitionRuntimeInstallBlockedReason == nil)
 }
@@ -166,7 +166,7 @@ func recognitionRuntimeInstallBlockedReasonNamesTheAuxiliaryRun() async throws {
 @Test("recognitionRuntimeInstallBlockedReason names Quick Dictation (F514)")
 func recognitionRuntimeInstallBlockedReasonNamesDictation() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F514-dictation-\(UUID().uuidString)")
-    let defaults = try #require(UserDefaults(suiteName: "F514.dictation.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.configureDictationGuard { true }
 

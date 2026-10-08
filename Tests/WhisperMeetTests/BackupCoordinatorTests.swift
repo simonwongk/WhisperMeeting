@@ -155,7 +155,7 @@ func appModelBackUpLibraryReachesCoordinator() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BackupWiring-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F90.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.backupRetention = 3
 

@@ -31,7 +31,7 @@ private func makeTruncatedMeeting(in root: URL) throws -> (AppModel, UUID, URL) 
     try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
         .write(to: folder.appendingPathComponent("meeting-recovered.wav"))   // 0.1s indexed
 
-    let suite = "WhisperMeet.SourceRebuildAction.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let model = makeModel(root: root, suite: suite)
     model.store.upsert(MeetingRecord(
         id: id,
@@ -148,7 +148,7 @@ func untranscribedRebuildSaysNothingAboutTheTranscript() async throws {
     try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
         .write(to: folder.appendingPathComponent("meeting-recovered.wav"))
 
-    let model = makeModel(root: root, suite: "WhisperMeet.RebuildNoText.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     model.store.upsert(MeetingRecord(
         id: id,
         title: "Never transcribed",
@@ -184,7 +184,7 @@ private func makeTranscribedMeeting(
             from: [Float](repeating: 0.1, count: Int(indexedSeconds * 48_000)), sampleRate: 48_000
         ).write(to: folder.appendingPathComponent("meeting-recovered.wav"))
     }
-    let model = makeModel(root: root, suite: "WhisperMeet.RebuildDirection.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     model.store.upsert(MeetingRecord(
         id: id,
         title: "Roadmap review",
@@ -334,7 +334,7 @@ func finishedCaptureExplainsTheRefusal() throws {
     try WAVWriter.wavData(from: samples, sampleRate: 48_000)
         .write(to: folder.appendingPathComponent("meeting.wav"))
 
-    let model = makeModel(root: root, suite: "WhisperMeet.RebuildFinished.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     model.store.upsert(MeetingRecord(
         id: id,
         title: "Finished normally",
@@ -387,7 +387,7 @@ func missingRecordingConfirmationOmitsTheCost() throws {
     let samples = [Float](repeating: 0.3, count: 96_000)
     try samples.withUnsafeBytes { try Data($0).write(to: folder.appendingPathComponent("system-audio.f32")) }
 
-    let model = makeModel(root: root, suite: "WhisperMeet.RebuildNoCost.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     model.store.upsert(MeetingRecord(
         id: id,
         title: "Lost audio",
@@ -688,7 +688,7 @@ private func makeRebuildableTranscribableMeeting(in root: URL) throws -> (model:
 
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "WhisperMeet.RebuildVsTranscription.\(UUID().uuidString)")!,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
     )
     model.selectedEngine = .whisperLarge
@@ -808,7 +808,7 @@ func applyResultKeepsAStaleWarningWhenDurationChangedMidRun() throws {
         .appendingPathComponent("ApplyKeepsStale-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let model = makeModel(root: root, suite: "WhisperMeet.ApplyKeepsStale.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     let id = UUID()
     // The meeting's CURRENT duration (5.0) already reflects a rebuild that happened after this run
     // started — `requestSourceRebuild`/`performSourceRebuild` refuse to let that happen, so this is
@@ -838,7 +838,7 @@ func applyResultClearsStaleWarningWhenDurationMatches() throws {
         .appendingPathComponent("ApplyClearsStale-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let model = makeModel(root: root, suite: "WhisperMeet.ApplyClearsStale.\(UUID().uuidString)")
+    let model = makeModel(root: root, suite: testSuiteName())
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "Not raced", duration: 2.0, recordingPath: "Recordings/\(id.uuidString)/meeting.wav",

@@ -132,7 +132,7 @@ func deleteRemovesOnlyTheMeetingsOwnFolder(recordingPath template: String, throu
     store.upsert(doomed)
 
     if throughTheUI {
-        let defaults = try #require(UserDefaults(suiteName: "F452-\(UUID().uuidString)"))
+        let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
         AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
             .deleteMeetings(ids: [doomed.id])
     } else {

@@ -29,7 +29,7 @@ private func waitUntil(_ what: String, timeoutSeconds: Double = 3, _ condition: 
 @MainActor
 @Test("An oversized helper failure is capped in the persisted MeetingRecord.errorMessage (F511)")
 func oversizedHelperLogIsCappedInPersistedErrorMessage() async throws {
-    let suite = "F511.cappedError.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defaults.removePersistentDomain(forName: suite)
     defer { defaults.removePersistentDomain(forName: suite) }

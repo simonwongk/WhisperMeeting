@@ -223,6 +223,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var transcriptionProgress: [UUID: LocalTranscriptionProgress] = [:]
     @Published private(set) var activeSummarizationID: UUID?
     @Published private(set) var hasClaudeAPIKey: Bool = false
+    /// Where the Claude API key is read and written (F442). Fixed at construction.
+    let claudeKeyStore: ClaudeKeyStore
     @Published private(set) var runtimeExecutableURL: URL?
     /// Whether `runtimeExecutableURL` accepts `--carry_initial_prompt` (F509). `true` whenever no
     /// executable is installed at all — there is nothing to warn about yet, and the "not installed"
@@ -315,8 +317,12 @@ final class AppModel: ObservableObject {
     /// `~/Library/Logs/DiagnosticReports`, which a test must never read: it is real crash data
     /// about real applications, and the F70 rule against touching a user's own files covers it as
     /// much as it covers their meetings.
+    ///
+    /// A test process that does not inject gets no reports rather than the real directory: the default
+    /// refuses there, and records that it did (`TestProcess`, F442).
     var crashReportsSince: @Sendable (Date) -> [CrashReportRecord] = { since in
-        CrashReportInventory.reports(in: CrashReportInventory.defaultDirectory(), newerThan: since)
+        guard TestProcess.allowsRealAccess(to: "DiagnosticReports") else { return [] }
+        return CrashReportInventory.reports(in: CrashReportInventory.defaultDirectory(), newerThan: since)
     }
 
     /// Notices a crash that happened while the app was not running, and says so once (F370).
@@ -1064,7 +1070,6 @@ final class AppModel: ObservableObject {
 
     private static let modelKey = "localWhisperModel"
     private static let languageKey = "localWhisperLanguage"
-    private static let claudeAPIKeyAccount = "claudeAPIKey"
     private static let summarizationEngineKey = "summarizationEngine"
 
     /// The app's own model. Its settings come from the same place as its library (F550): the
@@ -1099,9 +1104,13 @@ final class AppModel: ObservableObject {
         },
         // F566: injected so a test can cover a Mac without local summaries; the real value is a
         // compile-time `#if arch(arm64)`.
-        localSummariesSupported: Bool = SummarizerRuntime.isSupportedOnCurrentMac
+        localSummariesSupported: Bool = SummarizerRuntime.isSupportedOnCurrentMac,
+        // F442: where the Claude API key lives. The real Keychain by default, which `KeychainStore`
+        // refuses to touch in a test process; a test that needs a key present passes `.inMemory`.
+        claudeKeyStore: ClaudeKeyStore = .keychain
     ) {
         self.store = store
+        self.claudeKeyStore = claudeKeyStore
         self.recorder = recorder
         self.defaults = defaults
         // Adopt the injected probes as the seams, so `refreshRuntime()` keeps using them instead of
@@ -1154,7 +1163,7 @@ final class AppModel: ObservableObject {
         isSummarizerInstalled = isSummarizerModelInstalled()
         isAskEmbeddingInstalled = isAskEmbeddingModelInstalled()
         isDiarizationInstalled = isDiarizationModelInstalled()
-        hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
+        hasClaudeAPIKey = claudeKeyStore.read() != nil
         refreshRecordingPreflight()
     }
 
@@ -1357,8 +1366,8 @@ final class AppModel: ObservableObject {
     }
 
     func setClaudeAPIKey(_ key: String?) {
-        KeychainStore.set(key, for: Self.claudeAPIKeyAccount)
-        hasClaudeAPIKey = KeychainStore.string(for: Self.claudeAPIKeyAccount) != nil
+        claudeKeyStore.write(key)
+        hasClaudeAPIKey = claudeKeyStore.read() != nil
     }
 
 
@@ -5643,7 +5652,7 @@ final class AppModel: ObservableObject {
                     + "confirmation first. Nothing was sent."
                 return
             }
-            guard let key = KeychainStore.string(for: Self.claudeAPIKeyAccount) else {
+            guard let key = claudeKeyStore.read() else {
                 alertMessage = SummarizerError.missingAPIKey.localizedDescription
                 return
             }

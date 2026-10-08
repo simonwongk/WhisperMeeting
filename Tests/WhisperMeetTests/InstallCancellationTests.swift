@@ -95,7 +95,7 @@ func cancellingTheInstallTaskStopsTheScript() async throws {
 @MainActor
 private func makeModel(_ label: String) throws -> (model: AppModel, root: URL) {
     let root = try makeDirectory(label)
-    let defaults = try #require(UserDefaults(suiteName: "F520.\(label).\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root.appendingPathComponent("Library")),
                          recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })

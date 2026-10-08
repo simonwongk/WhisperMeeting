@@ -13,7 +13,7 @@ private func makeModel() throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("BatchTranscribeTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F185.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }

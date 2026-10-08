@@ -66,7 +66,7 @@ private func makeModel(segments: [TranscriptSegment] = original) throws -> (AppM
     var wav = WAVWriter.header(sampleRate: sampleRate, dataByteCount: bytes)
     wav.append(Data(count: Int(bytes)))
     try wav.write(to: directory.appendingPathComponent("meeting.wav"))
-    let defaults = try #require(UserDefaults(suiteName: "F512.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
     model.store.upsert(MeetingRecord(

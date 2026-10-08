@@ -38,7 +38,7 @@ private func makeFixture(installedBefore: Bool) throws -> Fixture {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("F567-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Runtime"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F567.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(
         store: MeetingStore(rootDirectory: root.appendingPathComponent("Library")),
         recorder: AudioCaptureEngine(),

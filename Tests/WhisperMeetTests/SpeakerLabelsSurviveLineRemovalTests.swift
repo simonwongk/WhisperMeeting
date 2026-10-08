@@ -39,7 +39,7 @@ private func analysedMeeting(
     try FileManager.default.createDirectory(
         at: root.appendingPathComponent("Recordings/\(id.uuidString)"), withIntermediateDirectories: true
     )
-    let defaults = UserDefaults(suiteName: "F426.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.store.upsert(MeetingRecord(
         id: id, title: "Lecture", duration: 10,

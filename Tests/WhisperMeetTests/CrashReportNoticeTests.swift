@@ -149,7 +149,7 @@ func theLaunchNoticeFiresOnceAndStamps() async throws {
         .appendingPathComponent("CrashNotice-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F370.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -200,7 +200,7 @@ func theStampAdvancesUnconditionally() throws {
         .appendingPathComponent("CrashStamp-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F370.stamp.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
 

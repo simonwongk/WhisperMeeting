@@ -56,7 +56,7 @@ private func makeFixture() throws -> Fixture {
             at: root.appendingPathComponent("Recordings/\(id.uuidString)"), withIntermediateDirectories: true
         )
     }
-    let defaults = try #require(UserDefaults(suiteName: "F602.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.store.upsert(MeetingRecord(
         id: busyID, title: "Busy", recordingPath: "Recordings/\(busyID.uuidString)/meeting.wav", status: .recorded

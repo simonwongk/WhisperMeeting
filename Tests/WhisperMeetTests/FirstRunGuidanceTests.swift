@@ -27,7 +27,7 @@ private func makeModel() throws -> (AppModel, URL) {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "F565.\(UUID().uuidString)")!,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
         whisperExecutable: { nil }, qwenInstalled: { false }
     )
     return (model, root)

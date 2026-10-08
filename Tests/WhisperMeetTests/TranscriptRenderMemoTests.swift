@@ -20,7 +20,7 @@ private func makeModel() -> AppModel {
         at: root.appendingPathComponent("Recordings", isDirectory: true),
         withIntermediateDirectories: true
     )
-    let defaults = UserDefaults(suiteName: "WhisperMeet.TranscriptRenderMemoTests.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

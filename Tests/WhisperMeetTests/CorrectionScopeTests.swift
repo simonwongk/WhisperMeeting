@@ -11,7 +11,7 @@ private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("CorrectionScopeTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F173.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

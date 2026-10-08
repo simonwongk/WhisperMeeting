@@ -36,7 +36,7 @@ private func makeModel(_ label: String) -> (AppModel, URL, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F389-\(label)-\(UUID().uuidString)")
     let reports = root.appendingPathComponent("DiagnosticReports", isDirectory: true)
     try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
-    let suite = "F389.\(label).\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.diagnosticsCrashReports = { CrashReportInventory.reportsForDiagnostics(in: reports) }

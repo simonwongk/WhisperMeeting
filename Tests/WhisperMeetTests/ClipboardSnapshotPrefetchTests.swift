@@ -178,7 +178,7 @@ func nothingIsReadEarlyWithoutAPasteToRestoreAfter() throws {
 func hotkeyDictationCopiesTheClipboardOffTheMainThread() async throws {
     let harness = try PrefetchHarness()
     let injector = harness.makeInjector()
-    let suite = "WhisperMeet.ClipboardSnapshotPrefetchTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

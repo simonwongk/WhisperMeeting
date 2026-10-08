@@ -17,7 +17,7 @@ func glossaryCorrectionsApplyThroughAppModel() async throws {
         withIntermediateDirectories: true
     )
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F82.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 
     let segments = [

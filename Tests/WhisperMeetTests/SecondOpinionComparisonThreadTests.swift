@@ -27,7 +27,7 @@ private final class ComparisonProbe: @unchecked Sendable {
 private func makeModel() throws -> (AppModel, UUID, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F542-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F542.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     let id = UUID()
     let stored = [seg("hello world", 0, 1), seg("second segment", 1, 2)]

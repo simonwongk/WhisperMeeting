@@ -33,7 +33,7 @@ private func makeDeadEndLibrary(folders count: Int, label: String) throws -> (Ap
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "F289.\(label).\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     try #require(model.store.isDegraded, "the fixture must be the read-only dead end")
     try #require(try model.store.indexGenerations().isEmpty, "the fixture must have nothing to restore")

@@ -646,7 +646,7 @@ private func makeInterruptibleController(
 @MainActor
 @Test("A device change mid-capture leaves a stated failure, not a listening overlay (F357)")
 func aDeviceChangeEndsTheSessionInAStatedState() async throws {
-    let suite = "WhisperMeet.DictationInterruption.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -690,7 +690,7 @@ func aDeviceChangeEndsTheSessionInAStatedState() async throws {
 @MainActor
 @Test("A capture that dropped every buffer is reported as a failure, not as silence (F368)")
 func aBrokenCaptureIsNotReportedAsNothingHeard() async throws {
-    let suite = "WhisperMeet.DictationDropped.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -730,7 +730,7 @@ func aBrokenCaptureIsNotReportedAsNothingHeard() async throws {
 func silenceIsStillSilence() async throws {
     // The control. F368's change is only worth having if it did not turn every quiet press into
     // an error dialog — which is the obvious way to over-fix it.
-    let suite = "WhisperMeet.DictationSilent.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

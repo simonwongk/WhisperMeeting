@@ -19,7 +19,7 @@ private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
 @MainActor
 @Test("A missed dictation release stops recording and recovers the controller to idle")
 func missedReleaseRecoversController() async throws {
-    let suite = "WhisperMeet.DictationControllerWatchdogTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory

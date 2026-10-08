@@ -43,7 +43,7 @@ private func makeLibraryWithMidRunBackup(
     let model = AppModel(
         store: MeetingStore(rootDirectory: library),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "WhisperMeet.RestoreInterrupted.\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     // Startup recovery runs below; nothing in it may spawn an installer from a test.
     model.runWhisperInstallRecovery = { _ in 0 }

@@ -35,7 +35,7 @@ private struct Fixture {
         try Self.writeCapture(in: folder, recordingName: recordingName, wavSeconds: wavSeconds)
         for (name, size) in extraFiles { try Data(count: size).write(to: folder.appendingPathComponent(name)) }
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "ShrinkFlow.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
         model.store.upsert(MeetingRecord(
             id: id, title: "Weekly sync", duration: duration,
             recordingPath: recordingPath ?? "Recordings/\(id.uuidString)/\(recordingName)",

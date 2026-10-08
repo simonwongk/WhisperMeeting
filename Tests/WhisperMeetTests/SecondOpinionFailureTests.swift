@@ -11,7 +11,7 @@ private func seg(_ text: String, _ start: Double, _ end: Double) -> TranscriptSe
 private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("SecondOpFail-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F142.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

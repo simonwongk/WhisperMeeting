@@ -15,7 +15,7 @@ private func makeRecordingModel() throws -> (AppModel, URL, UserDefaults, String
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("RecordingSessionPersistenceTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F258.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
 
     // The engine's injected `startingCapture` returns before any permission prompt or SCStream, so a
@@ -90,7 +90,7 @@ func failedStopLeavesTheSidecar() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("RecordingSessionPersistenceTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F258.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer {
         defaults.removePersistentDomain(forName: suite)

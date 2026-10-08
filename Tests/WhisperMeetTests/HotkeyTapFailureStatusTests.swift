@@ -26,7 +26,7 @@ private struct Harness {
     let cleanUp: () -> Void
 
     init(hotkey: DictationHotkey) throws {
-        let suite = "WhisperMeet.HotkeyTapFailureStatusTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HotkeyTapFailureStatusTests-\(UUID().uuidString)")

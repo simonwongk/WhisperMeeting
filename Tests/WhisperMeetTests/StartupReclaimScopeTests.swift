@@ -30,7 +30,7 @@ private final class Recorder: @unchecked Sendable {
 
 @MainActor
 private func makeModel(libraryRoot: URL) throws -> AppModel {
-    let defaults = try #require(UserDefaults(suiteName: "F655.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     return AppModel(store: MeetingStore(rootDirectory: libraryRoot), recorder: AudioCaptureEngine(), defaults: defaults,
                     whisperExecutable: { nil }, qwenInstalled: { false })
 }

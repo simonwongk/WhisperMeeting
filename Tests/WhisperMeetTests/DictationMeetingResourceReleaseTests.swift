@@ -191,7 +191,7 @@ func meetingTranscriptionReleasesIdleDictationModelsFirst() async throws {
         .appendingPathComponent("DictationMeetingResourceReleaseTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "DictationMeetingResourceReleaseTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -223,7 +223,7 @@ func meetingTranscriptionReleasesIdleDictationModelsFirst() async throws {
 @MainActor
 @Test("Meeting preparation waits for both idle dictation helpers to evict (F206)")
 func meetingPreparationEvictsBothIdleHelpers() async throws {
-    let suite = "DictationMeetingResourceReleaseTests.Controller.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -255,7 +255,7 @@ func meetingPreparationEvictsBothIdleHelpers() async throws {
 @MainActor
 @Test("Meeting preparation starts both independent dictation evictions before awaiting either (F206)")
 func meetingPreparationEvictsIdleHelpersConcurrently() async throws {
-    let suite = "DictationMeetingResourceReleaseTests.concurrent.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -292,7 +292,7 @@ func meetingPreparationEvictsIdleHelpersConcurrently() async throws {
 @MainActor
 @Test("Meeting preparation prevents an already queued idle warm-up from starting later (F206)")
 func meetingPreparationCancelsQueuedWarmUp() async throws {
-    let suite = "DictationMeetingResourceReleaseTests.queued.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -330,7 +330,7 @@ func executeEngineRefusesActiveDictation() async throws {
         .appendingPathComponent("DictationMeetingResourceReleaseTests-guard-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "DictationMeetingResourceReleaseTests.guard.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -369,7 +369,7 @@ func auxiliaryMeetingCompletionRewarmsDictationRecognition() async throws {
         .appendingPathComponent("DictationMeetingResourceReleaseTests-rewarm-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "DictationMeetingResourceReleaseTests.rewarm.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
 

@@ -54,7 +54,7 @@ private func makeMeetingDirectory(_ id: UUID, in root: URL) throws -> URL {
 
 @MainActor
 private func headyModel(root: URL) -> AppModel {
-    let suite = "WhisperMeet.LibraryIntegrityTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }

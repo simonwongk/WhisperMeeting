@@ -62,7 +62,7 @@ private func makeModel(
 ) throws -> (AppModel, URL, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F292-wiring-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F292.wiring.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: stopping, finishingTracks: {}, preservingPartialTracks: {},

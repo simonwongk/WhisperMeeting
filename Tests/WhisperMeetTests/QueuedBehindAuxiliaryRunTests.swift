@@ -51,7 +51,7 @@ private func makeModel(
     root: URL = FileManager.default.temporaryDirectory.appendingPathComponent("F470-\(UUID().uuidString)")
 ) throws -> (model: AppModel, heldID: UUID, gate: Gate) {
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F470.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: recorder, defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
     model.selectedEngine = .whisperLarge
@@ -161,7 +161,7 @@ func transcriptionDuringDictationIsQueuedThenResumed() async throws {
 @MainActor
 @Test("Quick Dictation reports the moment it stops being active, once per dictation (F470)")
 func dictationReportsWhenItsActivityEnds() async throws {
-    let suite = "F470.dictation.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("F470-dictation-\(UUID().uuidString)")

@@ -20,7 +20,7 @@ private func makeTitleModel() throws -> (AppModel, URL, UserDefaults, String) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("RecordingTitleDurability-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F298.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     // The capture seams stand in for a display and a microphone, as `CaptureRestartWiringTests`
     // does: this is about what reaches disk beside the audio, not about the audio.
@@ -157,7 +157,7 @@ func recoveryPrefersTheSidecarTitle() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = try makeInterruptedFolder(in: root, title: "Q3 planning with Priya")
 
-    let suite = "F298.recovery.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
@@ -182,7 +182,7 @@ func recoveryWithoutATitleStillNamesTheMeeting() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = try makeInterruptedFolder(in: root, title: "")
 
-    let suite = "F298.recoveryEmpty.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
@@ -206,7 +206,7 @@ func whitespaceTitleIsNotATitle() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = try makeInterruptedFolder(in: root, title: "   \n ")
 
-    let suite = "F298.recoveryBlank.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),

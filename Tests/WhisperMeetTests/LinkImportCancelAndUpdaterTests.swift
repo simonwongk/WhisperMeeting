@@ -9,7 +9,7 @@ import Testing
 private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("LinkImportCancel-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F184b.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.linkImportEnabled = true
     return model

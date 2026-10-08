@@ -53,7 +53,7 @@ private func makeModel(brokenIndex: Bool = false) throws -> (AppModel, URL) {
         try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
         try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
     }
-    let defaults = try #require(UserDefaults(suiteName: "F539.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }

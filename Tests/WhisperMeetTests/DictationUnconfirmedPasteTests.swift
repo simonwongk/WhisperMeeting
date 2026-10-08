@@ -62,7 +62,7 @@ private final class RecordingOverlay: DictationOverlayPresenting {
 private func dictate(
     _ harness: UnconfirmedPasteHarness, autoPaste: Bool = true
 ) async throws -> (entry: DictationLogEntry, cleanup: () -> Void) {
-    let suite = "WhisperMeet.DictationUnconfirmedPasteTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("DictationUnconfirmedPasteTests-\(UUID().uuidString)")

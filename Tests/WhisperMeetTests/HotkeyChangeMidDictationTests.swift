@@ -184,7 +184,7 @@ private struct Harness {
         autoPaste: Bool = false,
         enabled: Bool = true
     ) throws {
-        let suite = "WhisperMeet.HotkeyChangeMidDictationTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HotkeyChangeMidDictationTests-\(UUID().uuidString)")

@@ -36,7 +36,7 @@ private actor Gate {
 private func makeModel(stopFails: Bool = false, stopGate: Gate? = nil, engineInstalled: Bool = false) throws -> (AppModel, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F529-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F529.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: {

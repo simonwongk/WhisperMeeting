@@ -24,7 +24,7 @@ private func makeModel(degraded: Bool) throws -> (AppModel, URL) {
         try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
         try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
     }
-    let defaults = UserDefaults(suiteName: "F194.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),

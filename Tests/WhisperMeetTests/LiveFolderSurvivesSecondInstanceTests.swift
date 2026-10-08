@@ -53,7 +53,7 @@ func secondInstanceLeavesTheLiveFolderAlone() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeLiveFolder(in: root)
 
-    let suite = "WhisperMeet.LiveFolderGated.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     // Instance A owns the library. Acquired BEFORE the store is built: a store constructed first
@@ -92,7 +92,7 @@ func finishedRecordingIsPreferredOverARebuild() async throws {
     try WAVWriter.wavData(from: [Float](repeating: 0.25, count: 96_000), sampleRate: 48_000)
         .write(to: folder.appendingPathComponent("meeting.wav"))
 
-    let suite = "WhisperMeet.LiveFolderFinished.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     try #require(model.store.mayRebuildInterruptedRecordings)
@@ -125,7 +125,7 @@ func secondInstanceDoesNotNagOverACleanLibrary() async throws {
         withIntermediateDirectories: true
     )
 
-    let suite = "WhisperMeet.LiveFolderCleanNag.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     let instanceA = LibraryWriterLock.acquire(root: root)
@@ -172,7 +172,7 @@ func liveFolderIsSkippedDespiteHoldingTheLease() async throws {
     let writer = TrackWriter(appendingTo: folder.appendingPathComponent("system-audio.f32"))
     defer { writer.stop() }
 
-    let suite = "WhisperMeet.LiveProbe.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     try #require(model.store.mayRebuildInterruptedRecordings, "the lease gate must be open")
@@ -198,7 +198,7 @@ func deadFolderIsStillRebuiltImmediately() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeLiveFolder(in: root)
 
-    let suite = "WhisperMeet.DeadProbe.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
 
@@ -246,7 +246,7 @@ func midOutageFolderIsNotRebuilt() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeMidOutageFolder(in: root, outageBeganAt: Date().addingTimeInterval(-240))
 
-    let suite = "WhisperMeet.MidOutage.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     try #require(model.store.mayRebuildInterruptedRecordings, "the lease gate must be open")
@@ -279,7 +279,7 @@ func expiredOutageIsStillRebuilt() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeMidOutageFolder(in: root, outageBeganAt: Date().addingTimeInterval(-3_600))
 
-    let suite = "WhisperMeet.ExpiredOutage.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
 
@@ -306,7 +306,7 @@ func sidecarWithoutAnOutageDoesNotDefer() async throws {
         in: folder
     )
 
-    let suite = "WhisperMeet.NoOutage.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
 

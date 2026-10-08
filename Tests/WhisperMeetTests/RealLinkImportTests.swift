@@ -17,7 +17,7 @@ private let enabled = ProcessInfo.processInfo.environment["REAL_LINK_IMPORT"] ==
 private func makeModel() throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("RealLinkImport-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F184.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.linkImportEnabled = true
     return (model, root)

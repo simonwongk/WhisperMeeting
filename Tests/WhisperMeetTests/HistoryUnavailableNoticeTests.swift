@@ -23,7 +23,7 @@ private func makeModel(squattingHistory: Bool) throws -> (model: AppModel, root:
         // The ticket's reproduction: a plain FILE where the history folder should be.
         try Data("not a directory".utf8).write(to: root.appendingPathComponent("meetings.history"))
     }
-    let suite = "F553.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.observeStorageErrors()

@@ -34,15 +34,16 @@ private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
 /// `#if arch(arm64)`, so a test that relied on it would assert this Mac's architecture (F566).
 @MainActor
 private func makeModel(
-    defaults: UserDefaults = UserDefaults(suiteName: "F164.\(UUID().uuidString)")!,
-    localSummariesSupported: Bool = true
+    defaults: UserDefaults = UserDefaults(suiteName: testSuiteName())!,
+    localSummariesSupported: Bool = true,
+    claudeKeyStore: ClaudeKeyStore = .inMemory()
 ) throws -> AppModel {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("SummarizationEngineWiringTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     return AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
-        localSummariesSupported: localSummariesSupported
+        localSummariesSupported: localSummariesSupported, claudeKeyStore: claudeKeyStore
     )
 }
 
@@ -59,7 +60,7 @@ func summarizationDefaultsToLocal() throws {
 @MainActor
 @Test("On a Mac without local summaries, a missing preference defaults to Claude and is not persisted (F566)")
 func summarizationDefaultsToClaudeWithoutLocalSupport() throws {
-    let defaults = UserDefaults(suiteName: "F566.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = try makeModel(defaults: defaults, localSummariesSupported: false)
     #expect(model.summarizationEngine == .claude)
     // A default is not a choice: nothing is written, so the user's first pick is still theirs.
@@ -69,7 +70,7 @@ func summarizationDefaultsToClaudeWithoutLocalSupport() throws {
 @MainActor
 @Test("A stored local choice on a Mac without local summaries is kept, and Summarize says why it cannot run (F566)")
 func storedLocalChoiceOnUnsupportedMacRefusesHonestly() throws {
-    let defaults = UserDefaults(suiteName: "F566.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     defaults.set("local", forKey: "summarizationEngine")
     let model = try makeModel(defaults: defaults, localSummariesSupported: false)
     #expect(model.summarizationEngine == .local)
@@ -162,9 +163,9 @@ func localSummarizeRequiresInstalledModel() throws {
 // F499 — the "Send to Claude?" confirmation used to live only in ContentView's button switch, so
 // AppModel.summarize(id:) itself would send to Claude whenever the engine was `.claude` and a key
 // existed, with no confirmation parameter of its own. These pin the gate headlessly, without ever
-// touching the real Keychain: the refusal fires from the confirmation check alone, before
-// `KeychainStore.string(for:)` is reached at all, so it cannot depend on — or be defeated by —
-// whatever the developer's own login keychain happens to hold.
+// touching the real Keychain: the refusal fires from the confirmation check alone, before the
+// key is read at all, so it cannot depend on — or be defeated by — whatever the developer's own login
+// keychain happens to hold.
 
 @MainActor
 @Test("Claude summarization refuses without AppModel's own confirmation, before it even checks for a key (F499)")
@@ -182,14 +183,75 @@ func claudeSummarizeRefusesWithoutConfirmation() throws {
     #expect(model.store.meeting(id: id)?.summary == nil)
 }
 
-// Deliberately no "confirmed → proceeds" AppModel test: `summarize(id:)`'s `.claude` branch reads
-// the REAL system Keychain (`KeychainStore.string(for:)`, no injection seam) with no way to fake a
-// key. A confirmed call on a machine that happens to have a real Claude key saved would start an
-// actual background Task against the real Claude API with real credentials — unbounded by this
-// test's own lifetime. `claudeSummarizeRefusesWithoutConfirmation` above proves the gate refuses
-// before that lookup ever runs; the source assertion below proves the one call site that can pass
-// `cloudUploadConfirmed: true` is gated behind the user's own confirmation press. Between the two,
-// the pre-existing (and unrelated) key check needs no new test of its own here.
+// The positive half (F442). There used to be deliberately no "confirmed → proceeds" test here: the `.claude`
+// branch read the REAL system Keychain, so on a machine with a Claude key saved it would have started a
+// background task against the real API with real credentials. The key now comes from the model's own
+// `ClaudeKeyStore`, so these hand it an in-memory one: a key that exists only in the test, and a summarizer
+// that never leaves the process.
+
+@MainActor
+@Test("A confirmed Claude summarize with a saved key reaches the summarizer with that key (F499)")
+func confirmedClaudeSummarizeUsesTheSavedKey() async throws {
+    let model = try makeModel(claudeKeyStore: .inMemory("sk-ant-fixture"))
+    model.summarizationEngine = .claude
+    let recorder = RecordingSummarizer()
+    let box = EngineBox()
+    model.makeSummarizer = { engine, apiKey in
+        box.engine = engine
+        box.apiKey = apiKey
+        return recorder
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+
+    model.summarize(id: id, cloudUploadConfirmed: true)
+    try await waitUntil("the summary to be stored") { model.store.meeting(id: id)?.summary != nil }
+
+    #expect(box.engine == .claude)
+    #expect(box.apiKey == "sk-ant-fixture", "the saved key is what reaches the summarizer")
+    #expect(model.store.meeting(id: id)?.summary == recorder.stub)
+    #expect(model.alertMessage == nil)
+}
+
+@MainActor
+@Test("A confirmed Claude summarize with no saved key is refused and nothing is sent (F499)")
+func confirmedClaudeSummarizeWithoutAKeyIsRefused() throws {
+    let model = try makeModel(claudeKeyStore: .inMemory())
+    model.summarizationEngine = .claude
+    let box = EngineBox()
+    model.makeSummarizer = { engine, apiKey in
+        box.engine = engine
+        return RecordingSummarizer()
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+
+    model.summarize(id: id, cloudUploadConfirmed: true)
+
+    #expect(model.alertMessage == SummarizerError.missingAPIKey.localizedDescription)
+    #expect(model.activeSummarizationID == nil)
+    #expect(box.engine == nil, "a summarizer was made although there was no key to send with")
+}
+
+@MainActor
+@Test("A saved key does not stand in for the confirmation: unconfirmed Claude summarize sends nothing (F499)")
+func aSavedKeyDoesNotReplaceTheConfirmation() throws {
+    let model = try makeModel(claudeKeyStore: .inMemory("sk-ant-fixture"))
+    model.summarizationEngine = .claude
+    let box = EngineBox()
+    model.makeSummarizer = { engine, _ in
+        box.engine = engine
+        return RecordingSummarizer()
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+
+    model.summarize(id: id)   // cloudUploadConfirmed defaults to false
+
+    #expect(model.alertMessage?.contains("confirmation") == true)
+    #expect(model.activeSummarizationID == nil)
+    #expect(box.engine == nil, "a transcript was handed to a Claude summarizer without the user's confirmation")
+}
 
 @Test("The confirmation dialog's own button is the one call site that passes AppModel's confirmation (F499)")
 func onlyTheConfirmationButtonPassesCloudUploadConfirmed() throws {

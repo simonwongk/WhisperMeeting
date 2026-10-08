@@ -59,7 +59,7 @@ private func makeFixture(_ label: String) throws -> (root: URL, model: AppModel,
         .appendingPathComponent(summary.generation, isDirectory: true)
     try Data(indexSinceThen.utf8).write(to: library.appendingPathComponent("meetings.json"))
 
-    let suite = "WhisperMeet.RestoreFlow.\(UUID().uuidString)"
+    let suite = testSuiteName()
     return (root, makeModel(root: library, suite: suite), generation)
 }
 

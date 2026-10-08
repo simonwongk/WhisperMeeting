@@ -77,7 +77,7 @@ private func seg(_ text: String, _ start: Double, _ end: Double) -> TranscriptSe
 @MainActor
 private func makeModel(_ statuses: [MeetingStatus]) throws -> (AppModel, URL, [UUID]) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F666-\(UUID().uuidString)")
-    let defaults = try #require(UserDefaults(suiteName: "F666.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
     var ids: [UUID] = []

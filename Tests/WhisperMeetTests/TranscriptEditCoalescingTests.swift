@@ -47,7 +47,7 @@ func flushPendingWritesPersistsBeforeTermination() throws {
         .appendingPathComponent("FlushOnQuitTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F138.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60), recorder: AudioCaptureEngine(), defaults: defaults)
 
     let id = UUID()

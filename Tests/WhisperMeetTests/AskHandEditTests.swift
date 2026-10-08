@@ -28,7 +28,7 @@ private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AskHandEdit-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F455.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.isAskEmbeddingModelInstalled = { true }
     model.refreshRuntime()
     return model

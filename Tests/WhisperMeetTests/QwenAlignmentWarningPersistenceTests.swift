@@ -16,7 +16,7 @@ private func headyModel() -> AppModel {
         at: root.appendingPathComponent("Recordings", isDirectory: true),
         withIntermediateDirectories: true
     )
-    let suite = "WhisperMeet.QwenAlignmentWarningPersistenceTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }

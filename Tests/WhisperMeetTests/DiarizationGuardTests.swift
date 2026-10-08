@@ -91,7 +91,7 @@ private func makeGuardFixture(
         try Data("truncated-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
     }
 
-    let defaults = UserDefaults(suiteName: "F219guard.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.isDiarizationModelInstalled = { true }
     let fixture = GuardFixture(model: model, id: id, root: root)

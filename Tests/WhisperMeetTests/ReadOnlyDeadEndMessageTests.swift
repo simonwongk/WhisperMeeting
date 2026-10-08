@@ -23,7 +23,7 @@ func deadEndNamesTheSurvivingText() throws {
     try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
     try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
 
-    let suite = "WhisperMeet.DeadEnd.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),

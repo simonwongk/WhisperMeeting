@@ -244,7 +244,7 @@ private final class FallbackReportingMonitor: HotkeyMonitoring {
 @MainActor
 @Test("An F-key armed listen-only for want of Accessibility is re-armed to hold back when WhisperMeet comes to the front (F547)")
 func aListenOnlyFKeyIsRearmedOnActivation() throws {
-    let suite = "WhisperMeet.HotkeyTriggerHoldBackTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("HotkeyTriggerHoldBackTests-\(UUID().uuidString)")

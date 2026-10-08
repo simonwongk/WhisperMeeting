@@ -38,7 +38,7 @@ private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("F520-reclaim-store-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F520.reclaim.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

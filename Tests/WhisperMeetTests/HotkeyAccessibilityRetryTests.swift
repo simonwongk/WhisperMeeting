@@ -43,7 +43,7 @@ private struct Harness {
 
     /// Enabled at launch with the tap failing, as it does without Accessibility.
     init() throws {
-        let suite = "WhisperMeet.HotkeyAccessibilityRetryTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HotkeyAccessibilityRetryTests-\(UUID().uuidString)")

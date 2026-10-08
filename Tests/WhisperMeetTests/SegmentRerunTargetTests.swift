@@ -27,7 +27,7 @@ private func makeMeeting() throws -> (AppModel, UUID, URL) {
     var wav = WAVWriter.header(sampleRate: 16_000, dataByteCount: 96_000)
     wav.append(Data(count: 96_000))
     try wav.write(to: dir.appendingPathComponent("meeting.wav"))
-    let defaults = try #require(UserDefaults(suiteName: "F573.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",

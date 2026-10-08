@@ -35,7 +35,7 @@ private struct Harness {
     let cleanUp: () -> Void
 
     init(engineText: String, refineEnabled: Bool = false) throws {
-        let suite = "WhisperMeet.DictationReplacementRuleTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationReplacementRuleTests-\(UUID().uuidString)")
@@ -177,7 +177,7 @@ func appWiresReplacementRulesIntoDictation() throws {
     #expect(code.contains("model?.store.replacementRules"))
     #expect(code.contains("knownTerms: { [weak model] in model?.store.vocabulary"))
 
-    let suite = "WhisperMeet.F821.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let controller = DictationController(

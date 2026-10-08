@@ -9,7 +9,7 @@ import WhisperCore
 @MainActor
 @Test("Changing the dictation hotkey re-syncs status from the re-tap result")
 func changingHotkeyResyncsStatus() async throws {
-    let suite = "WhisperMeet.HotkeyChangeResyncTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -81,7 +81,7 @@ private final class WatchdogGate: @unchecked Sendable {
 @MainActor
 @Test("Re-choosing the trigger mid-dictation leaves the capture listening and watched (F446)")
 func rechoosingTheTriggerMidDictationKeepsTheCaptureWatched() async throws {
-    let suite = "WhisperMeet.HotkeyChangeResyncTests.midCapture.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory

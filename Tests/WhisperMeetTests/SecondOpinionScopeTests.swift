@@ -29,7 +29,7 @@ func secondOpinionRunningStateIsScopedToMeeting() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("SecondOpScope-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F88scope.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 
     let id1 = UUID(), id2 = UUID()

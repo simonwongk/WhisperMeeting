@@ -34,7 +34,7 @@ func throwingOrphanDoesNotAbortRecovery() async throws {
         try await Task.sleep(for: .milliseconds(20))
     }
 
-    let suite = "WhisperMeet.StartupRecoveryResilienceTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
 

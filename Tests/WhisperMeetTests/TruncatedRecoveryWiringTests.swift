@@ -39,7 +39,7 @@ func truncatedRecoveryCarriesItsWarning() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     _ = try makeOrphanFolder(in: root)
 
-    let suite = "WhisperMeet.TruncatedRecoveryWiring.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     // 12 of an expected 20 minutes: short, but most of the meeting survived.
@@ -73,7 +73,7 @@ func severelyTruncatedRecoveryIsFailed() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     _ = try makeOrphanFolder(in: root)
 
-    let suite = "WhisperMeet.SevereTruncationWiring.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     // 4 seconds of an expected 20 minutes. Titling this "Recovered Meeting" would be a lie the
@@ -112,7 +112,7 @@ func cleanRecoveryCarriesNoWarning() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     _ = try makeOrphanFolder(in: root)
 
-    let suite = "WhisperMeet.CleanRecoveryWiring.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     model.recoverInterruptedRecording = { directory in
@@ -147,7 +147,7 @@ func failedStopReportsTruncation() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     struct StopFailure: Error {}
-    let suite = "WhisperMeet.FailedStopTruncation.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
@@ -197,7 +197,7 @@ func failedStopWithoutTruncationIsUnchanged() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     struct StopFailure: Error {}
-    let suite = "WhisperMeet.FailedStopClean.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),

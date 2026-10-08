@@ -19,7 +19,7 @@ private func makeModel() throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("F462-link-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F462.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }

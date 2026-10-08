@@ -38,7 +38,7 @@ private func divergentLibrary() throws -> URL {
 
 @MainActor
 private func makeModel(_ root: URL) throws -> AppModel {
-    let defaults = try #require(UserDefaults(suiteName: "F833.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

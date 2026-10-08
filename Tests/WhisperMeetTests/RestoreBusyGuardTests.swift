@@ -71,7 +71,7 @@ private func makeFixture(_ label: String, latch: Latch) throws -> (root: URL, mo
             startingCapture: { _, _, _ in },
             directory: library
         ),
-        defaults: UserDefaults(suiteName: "WhisperMeet.RestoreBusy.\(UUID().uuidString)")!,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
         whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") },
         qwenInstalled: { true }
     )

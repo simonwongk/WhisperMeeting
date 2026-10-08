@@ -123,7 +123,7 @@ private struct ChordHarness {
     let cleanup: () -> Void
 
     init(mode: DictationHotkey.Mode) throws {
-        let suite = "WhisperMeet.HotkeyChordTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HotkeyChordTests-\(UUID().uuidString)")

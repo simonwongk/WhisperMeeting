@@ -24,7 +24,7 @@ private struct StreamDied: Error {}
 private func makeModel() throws -> (AppModel, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F477-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F477.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: {}, finishingTracks: {}, preservingPartialTracks: {},

@@ -26,7 +26,7 @@ private func makeLiveLibrary(_ label: String) throws -> (root: URL, library: URL
     let model = AppModel(
         store: MeetingStore(rootDirectory: library),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "WhisperMeet.RestoreLineage.\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     let id = UUID()
     model.store.upsert(MeetingRecord(id: id, title: "Live, first", status: .recorded))

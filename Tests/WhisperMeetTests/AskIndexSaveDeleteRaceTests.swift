@@ -43,7 +43,7 @@ private func makeModel() throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F849-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F849.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.isAskEmbeddingModelInstalled = { true }
     model.refreshRuntime()
     return (model, root)

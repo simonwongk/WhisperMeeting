@@ -25,7 +25,7 @@ private let otherEngine = TranscriptionResult(
 private func makeComparedMeeting() async throws -> (AppModel, UUID, TranscriptComparisonSpan, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F605-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F605.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     let id = UUID()
     model.store.upsert(MeetingRecord(
@@ -84,7 +84,7 @@ func secondOpinionReplaceReportsAReadOnlyLibrary() async throws {
     // Corrupt only the primary index: the reopened library loads from its backup, read-only, with
     // the meeting still in it (DegradedLibraryTests' `.recoveredFromBackup` shape).
     try Data("truncated-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
-    let defaults = try #require(UserDefaults(suiteName: "F605ro.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     try #require(model.store.isDegraded)
     try #require(model.store.meeting(id: id) != nil, "the meeting is still there to be refused")

@@ -66,7 +66,7 @@ private struct Harness {
     let cleanup: () -> Void
 
     init(engine: any DictationEngine) throws {
-        let suite = "WhisperMeet.DictationRepressTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationRepressTests-\(UUID().uuidString)")

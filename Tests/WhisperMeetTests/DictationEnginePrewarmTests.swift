@@ -80,7 +80,7 @@ private final class MeetingActivity: @unchecked Sendable {
 @MainActor
 @Test("Press-down that starts capture prewarms the transcription engine")
 func pressDownPrewarmsEngine() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -101,7 +101,7 @@ func pressDownPrewarmsEngine() async throws {
 @MainActor
 @Test("A refused press (microphone busy) does not prewarm the engine")
 func refusedPressDoesNotPrewarm() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.busy.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -121,7 +121,7 @@ func refusedPressDoesNotPrewarm() async throws {
 @MainActor
 @Test("A failed microphone start does not prewarm the dictation model (F206)")
 func failedCaptureStartDoesNotPrewarm() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.startFailure.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -158,7 +158,7 @@ func failedCaptureStartDoesNotPrewarm() async throws {
 @MainActor
 @Test("A meeting transcription blocks a new dictation before it warms another local model (F206)")
 func meetingTranscriptionPreventsDictationPrewarm() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.meeting.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -178,7 +178,7 @@ func meetingTranscriptionPreventsDictationPrewarm() async throws {
 @MainActor
 @Test("Enabling dictation during a meeting defers background recognition warm-up (F206)")
 func enablingDuringMeetingDefersRecognitionWarmUp() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.enable.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -198,7 +198,7 @@ func enablingDuringMeetingDefersRecognitionWarmUp() async throws {
 @MainActor
 @Test("A queued recognition warm-up rechecks meeting admission before it launches (F206)")
 func queuedRecognitionWarmUpRechecksMeetingAdmission() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.queuedRecognition.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -222,7 +222,7 @@ func queuedRecognitionWarmUpRechecksMeetingAdmission() async throws {
 @MainActor
 @Test("A queued refiner warm-up rechecks meeting admission before it launches (F206)")
 func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.queuedRefiner.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -267,7 +267,7 @@ func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
 @MainActor
 @Test("Turning on refinement waits for an in-flight recognition warm-up (F206)")
 func refinementToggleWaitsForRecognitionWarmUp() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.refine.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set(true, forKey: "dictationEnabled")
@@ -312,7 +312,7 @@ func refinementToggleWaitsForRecognitionWarmUp() async throws {
 @MainActor
 @Test("A meeting transcription blocks the dictation self-test before it starts ASR (F206)")
 func meetingTranscriptionPreventsDictationSelfTest() async throws {
-    let suite = "WhisperMeet.DictationEnginePrewarmTests.selfTest.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

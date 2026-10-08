@@ -109,7 +109,7 @@ private func makeLibrary(_ shape: Shape) throws -> URL {
 @MainActor
 private func launch(_ shape: Shape) async throws -> (model: AppModel, root: URL, message: String) {
     let root = try makeLibrary(shape)
-    let defaults = try #require(UserDefaults(suiteName: "F540.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     // Nothing for the launch reclaims to find: they look in this library's own Runtime (F655).
     await model.performStartupRecovery()
@@ -301,7 +301,7 @@ func restoringAnEmptyCopySaysTheWipeShape() async throws {
     try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
     try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
 
-    let defaults = try #require(UserDefaults(suiteName: "F540restore.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     try #require(model.store.isDegraded)
     model.requestLibraryRecovery()

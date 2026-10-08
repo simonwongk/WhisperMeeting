@@ -18,7 +18,7 @@ func readingOnlyRowIsNeverWritten() async throws {
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F658.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     let id = UUID()
     let stored = [seg("We ship on Friday.", 10, 15), seg("Yeah, sure.", 15, 15.8)]
     model.store.upsert(MeetingRecord(

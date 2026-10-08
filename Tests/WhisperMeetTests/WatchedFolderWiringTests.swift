@@ -12,7 +12,7 @@ import Testing
 private func makeModel() throws -> (AppModel, UserDefaults) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("WatchedFolder-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F318.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return (AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults), defaults)
 }
 
@@ -25,7 +25,7 @@ private func makeDegradedModel() throws -> (AppModel, URL) {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
     try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
-    let defaults = UserDefaults(suiteName: "F321.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return (AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults), root)
 }
 
@@ -75,7 +75,7 @@ func recordSurvivesARelaunch() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("WatchedFolderRelaunch-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F318.relaunch.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let first = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     first.watchedFolderPath = "/inbox"
     first.watchedFolderLooked(snapshot: ["/inbox/old.m4a": version(7)], ready: [])

@@ -11,7 +11,7 @@ import WhisperCore
 @MainActor
 @Test("A newer build's hotkey mode keeps the user's key, and saving other settings leaves it stored (F548)")
 func newerBuildsHotkeyModeKeepsTheUsersKey() async throws {
-    let suite = "WhisperMeet.DictationHotkeyPersistenceTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory

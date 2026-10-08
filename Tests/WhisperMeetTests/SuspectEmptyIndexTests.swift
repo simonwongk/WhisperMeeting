@@ -111,7 +111,7 @@ func suspectEmptyLeavesAnInterruptedRecordingRecoverable() async throws {
     try writeInterruptedCapture(in: folder)
 
     let store = MeetingStore(rootDirectory: root)
-    let suite = "F187.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)

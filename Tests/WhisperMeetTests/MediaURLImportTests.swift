@@ -18,7 +18,7 @@ private func makeModel() throws -> (AppModel, URL) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("MediaURLImportTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F183.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     // Pin the runtime probes (F262) so these tests do not depend on what the host has installed:
     // both engines read as present, so the import path posts no engine notice on a dev Mac or on CI.
     //

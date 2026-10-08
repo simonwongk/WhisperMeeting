@@ -11,7 +11,7 @@ private func seg(_ text: String, _ start: Double, _ end: Double) -> TranscriptSe
 private func makeModel() throws -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("TxGuard-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "TxGuard.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 
@@ -60,7 +60,7 @@ func applyKeepsSegmentsWhenTheyCoverText() throws {
 func beginTranscriptionNeverStartsDuringAuxiliaryRun() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("TxGuard-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "TxGuard.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     // Pinned installed, so the request reaches the queue on any host — including a runner with no
     // engine, where it would otherwise stop at the install gate and pass for the wrong reason.
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,

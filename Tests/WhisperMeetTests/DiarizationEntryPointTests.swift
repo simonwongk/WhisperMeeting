@@ -69,7 +69,7 @@ private func makeEntryFixture(
         try Data("truncated-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
     }
 
-    let defaults = UserDefaults(suiteName: "F220entry.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.isDiarizationModelInstalled = { installed }
     // The menu reads the published flag rather than re-probing 21 model files on every render, so the

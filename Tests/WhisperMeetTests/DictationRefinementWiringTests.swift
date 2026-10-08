@@ -22,7 +22,7 @@ private struct Harness {
         runtimeAvailable: Bool = true,
         idleEvictSeconds: TimeInterval = 300
     ) throws {
-        suite = "WhisperMeet.DictationRefinementWiringTests.\(UUID().uuidString)"
+        suite = testSuiteName()
         defaults = UserDefaults(suiteName: suite)!
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationRefinementWiringTests-\(UUID().uuidString)")

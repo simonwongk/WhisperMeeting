@@ -44,7 +44,7 @@ private struct Harness {
     /// `samples` is what the microphone captured; it is written where the fake recorder says the
     /// clip is, in the recorder's own format.
     init(samples: [Float]) throws {
-        let suite = "WhisperMeet.DictationSpeechFloorWiringTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationSpeechFloorWiringTests-\(UUID().uuidString)")

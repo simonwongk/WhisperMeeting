@@ -188,7 +188,7 @@ func degradedIndexReportsNoOrphans() throws {
 func degradedLibraryRefusesRecording() async throws {
     let (store, root) = try makeDegradedStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = UserDefaults(suiteName: "F187.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     await model.startRecording()
@@ -231,7 +231,7 @@ func startupRecoverySuppressedWhileDegraded() async throws {
         let directory = root.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
-    let defaults = try #require(UserDefaults(suiteName: "DegradedLibraryTests-\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     await model.performStartupRecovery()
@@ -261,7 +261,7 @@ func degradedLibraryRefusesImport() async throws {
         .appendingPathComponent("F187-import-source-\(UUID().uuidString).wav")
     try Data("source audio".utf8).write(to: source)
     defer { try? FileManager.default.removeItem(at: source) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     let imported = await model.importRecording(from: source, title: "Imported")
@@ -284,7 +284,7 @@ func degradedLibraryRefusesImport() async throws {
 func degradedLibraryRefusesTranscription() throws {
     let (store, root, meeting) = try makeBackupRecoveredStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     model.beginTranscription(id: meeting.id)
@@ -305,7 +305,7 @@ func degradedLibraryRefusesTranscription() throws {
 func degradedLibraryRefusesTranscribeAll() throws {
     let (store, root, meeting) = try makeBackupRecoveredStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     try #require(model.readyToTranscribeMeetings.map(\.id) == [meeting.id])
 
@@ -326,7 +326,7 @@ func degradedLibraryRefusesTranscribeAll() throws {
 func degradedLibraryRefusesSummarize() throws {
     let (store, root, meeting) = try makeBackupRecoveredStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     model.summarizationEngine = .local
     model.isSummarizerModelInstalled = { true }
@@ -376,7 +376,7 @@ func degradedLibraryRefusesSecondOpinionRequest() throws {
         segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "the original transcript")]
     )
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     model.requestSecondOpinion(id: meeting.id)
@@ -399,7 +399,7 @@ func degradedLibraryRefusesSecondOpinionWork() async throws {
         segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "the original transcript")]
     )
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     let counter = EngineCallCounter()
     stubEngine(model, counter: counter)
@@ -428,7 +428,7 @@ func degradedLibraryRefusesSecondOpinionWork() async throws {
 func degradedLibraryRefusesEveryEngineRun() async throws {
     let (store, root, meeting) = try makeBackupRecoveredStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     let counter = EngineCallCounter()
     stubEngine(model, counter: counter)
@@ -471,7 +471,7 @@ private final class NetworkSeamCounter: @unchecked Sendable {
 func degradedLibraryRefusesLinkImport() async throws {
     let (store, root) = try makeDegradedStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     model.linkImportEnabled = true // off by default; opt in so the feature flag cannot be the refusal
     let network = NetworkSeamCounter()
@@ -530,7 +530,7 @@ func degradedLibraryRefusesSegmentReTranscription() async throws {
         status: .completed, segments: segments, recordingBytes: wav
     )
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     let counter = EngineCallCounter()
     stubEngine(model, counter: counter)
@@ -605,7 +605,7 @@ func degradedLibraryRefusesBackUp() async throws {
     try Data().write(to: existing.appendingPathComponent(BackupCoordinator.completionMarker))
     let before = try snapshot(of: destination)
 
-    let defaults = try #require(UserDefaults(suiteName: "F187.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
     // One more generation is one too many: a real run at this retention prunes generation 1000.
     model.backupRetention = 1

@@ -63,7 +63,7 @@ private struct Harness {
     let cleanUp: () -> Void
 
     init(downloadsOnWarmUp: Bool) throws {
-        let suite = "WhisperMeet.DictationModelDownloadProgress.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationModelDownloadProgress-\(UUID().uuidString)")
@@ -217,7 +217,7 @@ func localWhisperInstallWaitsForTheDictationDownload() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F823-install-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F823.install.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)

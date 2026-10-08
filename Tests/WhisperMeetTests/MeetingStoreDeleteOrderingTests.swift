@@ -139,7 +139,7 @@ func uiDeleteDoesNotDestroyAudioWhenTheIndexCannotBeSaved() throws {
     }
     let store = MeetingStore(rootDirectory: root)
     let ids = try seedMeetings(["Budget review", "Hiring sync"], in: root, store: store)
-    let defaults = try #require(UserDefaults(suiteName: "F451-\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     // From here the index cannot be written; the Recordings folder itself still can be.

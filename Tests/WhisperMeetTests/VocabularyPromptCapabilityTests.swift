@@ -176,7 +176,7 @@ func missingRuntimeReportsNoVocabularyCaveat() {
 @MainActor
 @Test("The --carry_initial_prompt probe runs once across many queued beginTranscription calls (F509)")
 func probeRunsOnceAcrossManyBeginTranscriptionCalls() async throws {
-    let suite = "F509.probeOnce.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let root = FileManager.default.temporaryDirectory
@@ -225,7 +225,7 @@ func probeRunsOnceAcrossManyBeginTranscriptionCalls() async throws {
 @MainActor
 @Test("beginTranscription returns without waiting for a slow --carry_initial_prompt probe (F509)")
 func beginTranscriptionDoesNotBlockOnASlowProbe() async throws {
-    let suite = "F509.notBlocking.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let latch = ProbeLatch()
     let (model, id, defaults) = try makeQueueableModel(
         suite: suite,

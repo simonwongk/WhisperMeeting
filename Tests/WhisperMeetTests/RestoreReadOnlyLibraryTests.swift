@@ -49,7 +49,7 @@ private func makeDamagedLibrary(_ label: String) throws -> (root: URL, model: Ap
     let model = AppModel(
         store: MeetingStore(rootDirectory: library),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "WhisperMeet.RestoreReadOnly.\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     // Startup recovery runs below; nothing in it may spawn an installer from a test. Since F655 the
     // reclaims look only in this temp library's Runtime/, so they could not reach the real one

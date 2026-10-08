@@ -90,7 +90,7 @@ private func failedEntry(in directory: URL) async throws -> String {
 @MainActor
 @Test("A warm-up that cannot download the model tells the user, with the helper's own sentence (F827)")
 func warmUpDownloadFailureReachesTheUser() async throws {
-    let suite = "WhisperMeet.DictationModelDownloadSurface.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -113,7 +113,7 @@ func warmUpDownloadFailureReachesTheUser() async throws {
 @MainActor
 @Test("A dictation whose transcription hits the stalled download records that sentence (F827)")
 func transcriptionDownloadFailureIsRecordedWithItsSentence() async throws {
-    let suite = "WhisperMeet.DictationModelDownloadSurface.press.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory
@@ -137,7 +137,7 @@ func transcriptionDownloadFailureIsRecordedWithItsSentence() async throws {
 @MainActor
 @Test("The next press after a download failure starts a dictation instead of staying failed (F827)")
 func nextPressAfterADownloadFailureStartsListening() async throws {
-    let suite = "WhisperMeet.DictationModelDownloadSurface.retry.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

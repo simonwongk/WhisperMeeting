@@ -101,7 +101,7 @@ private final class TimedOutRefiner: DictationTextRefining, @unchecked Sendable 
 @MainActor
 @Test("A timed-out refiner is evicted before a rapid next dictation warms recognition (F206)")
 func timedOutRefinerReleasesBeforeNextRecognitionWarmUp() async throws {
-    let suite = "WhisperMeet.DictationRefinerReleaseOrderingTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("DictationRefinerReleaseOrderingTests-\(UUID().uuidString)")

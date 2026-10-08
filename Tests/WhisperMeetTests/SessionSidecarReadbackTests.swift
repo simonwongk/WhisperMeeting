@@ -58,7 +58,7 @@ func recoveredMeetingCarriesItsMarkers() async throws {
         RecordingMarker(offset: 90, label: nil),
     ])
 
-    let suite = "WhisperMeet.SidecarReadback.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()
@@ -82,7 +82,7 @@ func noMarkersMeansNil() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = try makeInterruptedFolder(in: root, markers: [])
 
-    let suite = "WhisperMeet.SidecarNoMarkers.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()
@@ -114,7 +114,7 @@ func sleepInterruptionIsExplained() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = try makeInterruptedFolder(in: root, markers: [], sleptAt: Date().addingTimeInterval(-60))
 
-    let suite = "WhisperMeet.SidecarSleep.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()
@@ -149,7 +149,7 @@ func missingSidecarIsNotAFailure() async throws {
         try Data($0).write(to: folder.appendingPathComponent("system-audio.f32"))
     }
 
-    let suite = "WhisperMeet.SidecarAbsent.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()

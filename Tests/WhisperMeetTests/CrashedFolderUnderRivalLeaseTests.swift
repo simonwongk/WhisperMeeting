@@ -38,11 +38,15 @@ private func makeCrashedFolder(in root: URL) throws -> URL {
 
 @MainActor
 private func makeModel(root: URL, suite: String) -> AppModel {
-    AppModel(
+    let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),
         defaults: UserDefaults(suiteName: suite)!
     )
+    // F442 part 4: a second launch on one suite finds the first launch's stamp, so its startup sweep
+    // reads the crash directory. This one never reads the user's real ~/Library/Logs/DiagnosticReports.
+    model.crashReportsSince = { _ in [] }
+    return model
 }
 
 @Test("A crashed recording is rebuilt while another copy of the app is open (F297)")
@@ -56,7 +60,7 @@ func crashedFolderIsRebuiltUnderARivalLease() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeCrashedFolder(in: root)
-    let suite = "WhisperMeet.CrashedUnderRival.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     let instanceA = LibraryWriterLock.acquire(root: root)
@@ -88,7 +92,7 @@ func unlockedFolderStillWaitsUnderARivalLease() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let crashed = try makeCrashedFolder(in: root)
     let unknown = try makeDeadLookingFolder(in: root)
-    let suite = "WhisperMeet.MixedUnderRival.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     let instanceA = LibraryWriterLock.acquire(root: root)
@@ -115,7 +119,7 @@ func heldLockRefusesRebuildDespiteTheLease() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeDeadLookingFolder(in: root)
     let writer = try #require(RecordingCaptureLock.acquire(in: folder))
-    let suite = "WhisperMeet.HeldDespiteLease.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     let model = makeModel(root: root, suite: suite)
@@ -135,7 +139,7 @@ private func makeRecordingModel() throws -> (AppModel, URL, String) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("CaptureLockWriter-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F297.writer.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let recorder = AudioCaptureEngine(
         stoppingCapture: {},
         finishingTracks: {},
@@ -204,7 +208,7 @@ func recoveryRebuildsAfterTheRivalQuitsWithoutRelaunching() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = try makeDeadLookingFolder(in: root)
-    let suite = "WhisperMeet.RivalQuitThenRecover.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     let instanceA = LibraryWriterLock.acquire(root: root)
@@ -260,7 +264,7 @@ func degradedLaunchThenRestoreRebuildsAfterTheRivalQuits() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let interrupted = try makeDeadEndLibraryWithInterruption(in: root)
-    let suite = "WhisperMeet.DeadEndUnderRival.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
 
     // The rival holds the lease BEFORE B is constructed, exactly as the F297 fixtures require.

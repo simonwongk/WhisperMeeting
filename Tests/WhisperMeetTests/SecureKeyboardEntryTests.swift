@@ -198,7 +198,7 @@ private final class SecureEntryPhaseLog: DictationOverlayPresenting {
 
 @MainActor
 private func dictateThroughTheController(_ harness: SecureEntryHarness) async throws -> (DictationController, SecureEntryPhaseLog, () -> Void) {
-    let suite = "WhisperMeet.SecureKeyboardEntryTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("SecureKeyboardEntryTests-\(UUID().uuidString)")

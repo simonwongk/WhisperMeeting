@@ -124,7 +124,7 @@ private final class BlockingColdRefiner: DictationTextRefining, @unchecked Senda
 @MainActor
 @Test("A cold optional refiner delivers raw text first and keeps warming for the next dictation")
 func coldRefinerNeverBlocksFirstDictation() async throws {
-    let suite = "WhisperMeet.DictationColdRefinementTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("DictationColdRefinementTests-\(UUID().uuidString)")
@@ -184,7 +184,7 @@ func coldRefinerNeverBlocksFirstDictation() async throws {
 @MainActor
 @Test("A rapid next dictation evicts a still-cold optional refiner before ASR starts")
 func rapidNextDictationCancelsColdRefiner() async throws {
-    let suite = "WhisperMeet.DictationColdRefinementTests.rapid.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("DictationColdRefinementTests-rapid-\(UUID().uuidString)")

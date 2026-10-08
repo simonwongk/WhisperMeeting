@@ -80,7 +80,7 @@ func damagedListLeavesTheLibraryWritable(file: DamagedFile, damage: ListDamage) 
     let primary = root.appendingPathComponent("\(file.stem).json")
     let damagedBytes = try Data(contentsOf: primary)
     let store = MeetingStore(rootDirectory: root)
-    let defaults = try #require(UserDefaults(suiteName: "F464-\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
     #expect(!store.isDegraded, "only the \(file.rawValue) list is damaged")

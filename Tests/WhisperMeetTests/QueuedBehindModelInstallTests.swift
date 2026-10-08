@@ -51,7 +51,7 @@ private struct Fixture {
 private func makeFixture(whisperInstalled: Bool, failInstall: Bool = false) throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F582-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F582.\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { whisperInstalled ? URL(fileURLWithPath: "/usr/bin/true") : nil },
                          qwenInstalled: { true })

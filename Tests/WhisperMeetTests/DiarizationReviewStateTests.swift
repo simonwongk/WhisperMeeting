@@ -62,7 +62,7 @@ private func makeReviewFixture(
     ))
     try #require(!seed.isDegraded, "the seed store must be writable, or nothing was persisted")
 
-    let defaults = UserDefaults(suiteName: "F220review.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.isDiarizationModelInstalled = { true }
     model.refreshRuntime()

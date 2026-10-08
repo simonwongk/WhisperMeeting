@@ -60,7 +60,7 @@ private func makeFixture(
     let wavURL = directory.appendingPathComponent(recordingFileName)
     try writeSilentWav(seconds: 4, to: wavURL)
 
-    let defaults = UserDefaults(suiteName: "F219.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.isDiarizationModelInstalled = { true }
     model.store.upsert(MeetingRecord(

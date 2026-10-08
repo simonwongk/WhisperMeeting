@@ -17,7 +17,7 @@ import Testing
 private func makeModel() throws -> (AppModel, URL, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F667-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F667.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let recorder = AudioCaptureEngine(
         stoppingCapture: {}, finishingTracks: {}, preservingPartialTracks: {},

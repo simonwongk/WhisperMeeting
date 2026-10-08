@@ -20,7 +20,7 @@ private final class Posted {
 private func makeModel(_ label: String) -> (AppModel, URL, Posted, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F513-\(label)-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F513.\(label).\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.diagnosticsCrashReports = { [] }

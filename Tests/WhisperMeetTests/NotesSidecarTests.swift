@@ -156,7 +156,7 @@ func startupRecoveryBackfillsTheSidecar() async throws {
     let (store, root) = try makeStore()
     defer { try? FileManager.default.removeItem(at: root) }
     let meeting = try seedMeeting(in: store, root: root, transcript: "pre-existing transcript")
-    let suite = "F198.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)

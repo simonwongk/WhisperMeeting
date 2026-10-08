@@ -38,7 +38,7 @@ private func recoverImportFolder(
     let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "F308.\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     await model.performStartupRecovery()
     return (model, id, root)

@@ -187,7 +187,7 @@ private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
 func batchDeleteCancelsTranscriptions() async throws {
     let (store, root, ids) = try makeLibrary(count: 2)
     defer { try? FileManager.default.removeItem(at: root) }
-    let defaults = try #require(UserDefaults(suiteName: "BatchDelete-\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     // Pinned installed, so both requests reach the queue on any host.
     let model = AppModel(
         store: store, recorder: AudioCaptureEngine(), defaults: defaults,

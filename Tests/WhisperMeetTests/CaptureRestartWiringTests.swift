@@ -69,7 +69,7 @@ private func makeRestartModel(
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("CaptureRestartWiringTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F275.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: {},
@@ -396,7 +396,7 @@ func stopWaitsForAnInFlightRestart() async throws {
     let hold = Hold()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F292-race-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F292.race.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer {
         defaults.removePersistentDomain(forName: suite)

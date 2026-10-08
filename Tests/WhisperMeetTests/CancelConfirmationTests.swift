@@ -6,7 +6,7 @@ import Testing
 private func makeModel() -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("Cancel-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F139.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
 }
 

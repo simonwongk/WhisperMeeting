@@ -33,7 +33,7 @@ func segmentReRunSplicesWithoutTouchingAudio() async throws {
     let manifestURL = dir.appendingPathComponent("source-tracks.json")
     try Data("{\"stub\":true}".utf8).write(to: manifestURL)
 
-    let defaults = UserDefaults(suiteName: "F92.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     let segments = [seg("first", 0, 1), seg("second wrong", 1, 2), seg("third", 2, 3)]
     model.store.upsert(MeetingRecord(
@@ -81,7 +81,7 @@ func segmentReRunWithEmptyResultPreservesOriginal() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     try writeSilentWav(seconds: 3, to: dir.appendingPathComponent("meeting.wav"))
 
-    let defaults = UserDefaults(suiteName: "F92e.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     let segments = [seg("first", 0, 1), seg("keep me", 1, 2), seg("third", 2, 3)]
     model.store.upsert(MeetingRecord(
@@ -115,7 +115,7 @@ func segmentReRunRefusesNonWavRecording() async throws {
     let recURL = dir.appendingPathComponent("meeting.m4a")
     try Data(repeating: 0x41, count: 4_096).write(to: recURL)
 
-    let defaults = UserDefaults(suiteName: "F92n.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     let segments = [seg("first", 0, 1), seg("second", 1, 2)]
     model.store.upsert(MeetingRecord(

@@ -9,7 +9,7 @@ import WhisperCore
 @MainActor
 @Test("A refused toggle-mode start does not invert the hotkey; the next press still starts capture")
 func refusedToggleStartStillStartsOnNextPress() async throws {
-    let suite = "WhisperMeet.DictationToggleRecoveryTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -70,7 +70,7 @@ private final class FirstArmFiresOnce: @unchecked Sendable {
 @MainActor
 @Test("After the capture watchdog auto-finalizes a toggle dictation, the next press starts a new one")
 func watchdogFinalizeDoesNotInvertToggle() async throws {
-    let suite = "WhisperMeet.DictationToggleRecoveryTests.watchdog.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -126,7 +126,7 @@ func watchdogFinalizeDoesNotInvertToggle() async throws {
 @MainActor
 @Test("Dictation is paused while a recognition runtime is installing, then resumes")
 func dictationPausesDuringRuntimeInstall() async throws {
-    let suite = "WhisperMeet.DictationInstallGuardTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     let temporaryDirectory = FileManager.default.temporaryDirectory

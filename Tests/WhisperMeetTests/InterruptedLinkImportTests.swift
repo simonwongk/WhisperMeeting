@@ -19,11 +19,15 @@ import Testing
 
 @MainActor
 private func makeModel(root: URL, suite: String) -> AppModel {
-    AppModel(
+    let model = AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),
         defaults: UserDefaults(suiteName: suite)!
     )
+    // F442 part 4: a second launch on one suite finds the first launch's stamp, so its startup sweep
+    // reads the crash directory. This one never reads the user's real ~/Library/Logs/DiagnosticReports.
+    model.crashReportsSince = { _ in [] }
+    return model
 }
 
 /// A folder as a crash mid-download leaves it: the sidecar, and optionally the partial file.
@@ -57,7 +61,7 @@ func theWarningRepeatsOnEveryLaunch() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let (id, _) = try makeInterruptedDownload(in: root, withPartFile: true)
 
-    let suite = "F311.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
 
@@ -93,7 +97,7 @@ func theInterruptedImportKeepsItsLink() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let (id, source) = try makeInterruptedDownload(in: root, withPartFile: false)
 
-    let suite = "F311.keep.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()
@@ -121,7 +125,7 @@ func aCaptureFolderWithNoAudioIsUntouched() async throws {
     // Not empty, not audio, and no sidecar: `removeIfEmpty` refuses and there is nothing to index.
     try Data("stray".utf8).write(to: folder.appendingPathComponent("notes.txt"))
 
-    let suite = "F311.capture.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()
@@ -144,7 +148,7 @@ func deletingTheInterruptedImportDoesNotBringItBack() async throws {
     let (id, _) = try makeInterruptedDownload(in: root, withPartFile: true)
     let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
 
-    let suite = "F576.\(UUID().uuidString)"
+    let suite = testSuiteName()
     defer { UserDefaults().removePersistentDomain(forName: suite) }
     let model = makeModel(root: root, suite: suite)
     await model.performStartupRecovery()

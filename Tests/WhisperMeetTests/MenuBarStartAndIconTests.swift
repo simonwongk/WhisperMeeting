@@ -47,7 +47,7 @@ private func makeModel(_ label: String) throws -> (AppModel, URL) {
             stoppingCapture: {}, finishingTracks: {}, preservingPartialTracks: {},
             startingCapture: { _, _, _ in }, directory: root
         ),
-        defaults: UserDefaults(suiteName: "F543.\(label).\(UUID().uuidString)")!,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
         whisperExecutable: { URL(fileURLWithPath: "/tmp/whisper-stub") },
         qwenInstalled: { true }
     )

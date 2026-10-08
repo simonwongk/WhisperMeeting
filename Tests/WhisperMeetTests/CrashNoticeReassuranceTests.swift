@@ -31,7 +31,7 @@ private func makeModel(_ label: String, orphanFolders: Int = 0, degraded: Bool =
         try Data("broken-primary".utf8).write(to: root.appendingPathComponent("meetings.json"))
         try Data("broken-backup".utf8).write(to: root.appendingPathComponent("meetings.backup.json"))
     }
-    let suite = "F640.\(label).\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     // A previous launch, so the crash sweep asks (a first launch is silent by design, F370), and one

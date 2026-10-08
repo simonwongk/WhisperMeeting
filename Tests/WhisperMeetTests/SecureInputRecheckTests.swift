@@ -122,7 +122,7 @@ func aHotkeyDictationThatTurnsSecureEndsInTheSecurePill() async throws {
     // The press starts the early read (read 1). Something is copied while the user speaks, so that
     // read is stale and delivery reads again (read 2) — which is when the prompt takes focus.
     let injector = harness.makeInjector(onRead: 2) { $0.passwordPromptTakesFocus() }
-    let suite = "WhisperMeet.SecureInputRecheckTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

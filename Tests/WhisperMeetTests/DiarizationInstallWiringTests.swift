@@ -79,7 +79,7 @@ private func makeInstallFixture() throws -> InstallFixture {
         .appendingPathComponent("DiarizationInstall-runtime-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: runtimeParent, withIntermediateDirectories: true)
 
-    let defaults = UserDefaults(suiteName: "F219install.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(
         store: MeetingStore(rootDirectory: storeRoot),
         recorder: AudioCaptureEngine(),

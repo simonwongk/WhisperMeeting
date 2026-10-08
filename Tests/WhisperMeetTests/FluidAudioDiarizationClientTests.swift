@@ -268,7 +268,7 @@ private func makeWiringFixture() throws -> WiringFixture {
         TranscriptSegment(speaker: nil, start: 0, end: 2, text: "one"),
         TranscriptSegment(speaker: nil, start: 2, end: 4, text: "two")
     ]
-    let defaults = UserDefaults(suiteName: "F216.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults
     )

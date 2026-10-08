@@ -33,7 +33,7 @@ private func makeModel() throws -> AppModel {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 999),
                          recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F837.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.isAskEmbeddingModelInstalled = { true }
     model.refreshRuntime()
     return model

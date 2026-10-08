@@ -15,7 +15,7 @@ private func makeModel() throws -> AppModel {
         .appendingPathComponent("ImportNextStep-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F551.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     // Pinned off, so adopting a file never starts a real transcription on a machine that has one.
     model.findWhisperExecutable = { nil }
     model.checkQwenInstalled = { false }

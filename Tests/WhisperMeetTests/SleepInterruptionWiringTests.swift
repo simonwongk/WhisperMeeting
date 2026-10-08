@@ -18,7 +18,7 @@ private func makeSleepModel() throws -> (AppModel, URL, UserDefaults, String) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("SleepInterruptionWiringTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F253.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: {},

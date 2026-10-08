@@ -18,7 +18,7 @@ private struct CaptureWouldNotStop: Error {}
 private func makeModel(stopFails: Bool) throws -> (AppModel, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F641-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F641.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: { if stopFails { throw CaptureWouldNotStop() } },

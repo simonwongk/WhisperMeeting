@@ -148,7 +148,7 @@ func aNaNProgressIsSanitizedAtBothEnds() {
         store: MeetingStore(rootDirectory: FileManager.default.temporaryDirectory
             .appendingPathComponent("NaNProgress-\(UUID().uuidString)", isDirectory: true)),
         recorder: AudioCaptureEngine(),
-        defaults: UserDefaults(suiteName: "WhisperMeet.NaNProgress.\(UUID().uuidString)")!
+        defaults: UserDefaults(suiteName: testSuiteName())!
     )
     model.apply(diarizationProgress: .nan)
     let published = model.diarizationProgress

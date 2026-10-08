@@ -64,7 +64,7 @@ private struct Harness {
     /// `samples` is the capture, written where the fake recorder says the clip is. The default is
     /// loud enough to pass F599's level floor, so only the detector can stop it.
     init(peak: Float?, samples: [Float] = hum(dBFS: DictationSpeechFloor.floorDBFS + 20, seconds: 2)) throws {
-        let suite = "WhisperMeet.DictationVoiceActivityGateTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationVoiceActivityGateTests-\(UUID().uuidString)")

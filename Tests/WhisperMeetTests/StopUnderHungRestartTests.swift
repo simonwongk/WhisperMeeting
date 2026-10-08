@@ -68,7 +68,7 @@ private func makeModel(
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("StopUnderHungRestart-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let suite = "F365.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     let recorder = AudioCaptureEngine(
         stoppingCapture: {},

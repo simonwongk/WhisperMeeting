@@ -38,7 +38,7 @@ func menuBarIconIsNotAtRiskWhileStopping() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F337.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     let dying = RecordingHealthSnapshot(
         microphoneLevel: RecordingAudioLevel(rms: 0, peak: 0),
         systemAudioLevel: RecordingAudioLevel(rms: 0, peak: 0),

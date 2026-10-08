@@ -52,7 +52,7 @@ func stopWhileStartingIsReported() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F344.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.setActiveMeetingIDForTesting(UUID())
     model.setRecordingStateForTesting(.starting)
 

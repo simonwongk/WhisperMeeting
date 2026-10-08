@@ -19,7 +19,7 @@ private func model(in defaults: UserDefaults) -> AppModel {
 @MainActor
 @Test("Choosing a retention survives a relaunch instead of resetting to 5 (F461)")
 func chosenRetentionSurvivesARelaunch() {
-    let suite = "WhisperMeet.BackupRetentionPersistenceTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -36,7 +36,7 @@ func chosenRetentionSurvivesARelaunch() {
 @MainActor
 @Test("An unrecognised stored value falls back to the default rather than being trusted (F461)")
 func unrecognisedStoredValueFallsBackToTheDefault() {
-    let suite = "WhisperMeet.BackupRetentionPersistenceTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
     // Not one of the picker's offered values (3/5/10/20) — a hand-edited default, or a future

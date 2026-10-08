@@ -63,7 +63,7 @@ private struct Harness {
     private let box: AnnouncementBox
 
     init() throws {
-        let suite = "WhisperMeet.DictationAnnouncementTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationAnnouncementTests-\(UUID().uuidString)")

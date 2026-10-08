@@ -52,7 +52,7 @@ func finishingSegmentRerunRewarmsDictationRecognition() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     try writeSegmentRerunFixtureWAV(to: recordingDirectory.appendingPathComponent("meeting.wav"))
 
-    let suite = "SegmentRerunDictationRewarmTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let model = AppModel(

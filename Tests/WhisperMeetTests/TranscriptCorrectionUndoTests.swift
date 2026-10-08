@@ -14,7 +14,7 @@ private func makeModel() throws -> (AppModel, UUID, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F831-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F831.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "Standup", recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed,

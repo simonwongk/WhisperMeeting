@@ -17,7 +17,7 @@ import Testing
 
 @MainActor
 private func makeModel(rootDirectory: URL) -> AppModel {
-    let defaults = UserDefaults(suiteName: "LibraryRecoveryFlow.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(
         store: MeetingStore(rootDirectory: rootDirectory),
         recorder: AudioCaptureEngine(),

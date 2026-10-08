@@ -280,7 +280,7 @@ func clipboardIsNotReadWhereTheSystemWouldAskOrRefuse() {
 func hotkeyDictationRestoresClipboard() async throws {
     let harness = try ClipboardHarness()
     let injector = harness.makeInjector()
-    let suite = "WhisperMeet.DictationClipboardRestoreTests.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let directory = FileManager.default.temporaryDirectory

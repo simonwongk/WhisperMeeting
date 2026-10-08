@@ -132,7 +132,7 @@ private struct SecureCopyController {
     private(set) var notices: () -> Int
 
     init(secureCopyWindow: TimeInterval? = nil) throws {
-        let suite = "WhisperMeet.DictationSecureCopyTests.\(UUID().uuidString)"
+        let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationSecureCopyTests-\(UUID().uuidString)")

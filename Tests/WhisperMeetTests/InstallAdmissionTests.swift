@@ -51,7 +51,7 @@ private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
 private func makeModel(_ label: String) throws -> (model: AppModel, root: URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F567-\(label)-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = try #require(UserDefaults(suiteName: "F567.\(label).\(UUID().uuidString)"))
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
     return (model, root)

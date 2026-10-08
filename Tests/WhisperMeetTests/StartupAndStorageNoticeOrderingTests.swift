@@ -34,7 +34,7 @@ private func makeDegradedStore() throws -> (MeetingStore, URL) {
 func crashNoticeSurvivesTheStartupSummary() async throws {
     let (store, root) = try makeDegradedStore()
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F476.crash.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -68,7 +68,7 @@ func repeatedStorageFailureReachesTheWindowlessChannelTwice() throws {
         .appendingPathComponent("F476-Storage-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "F476.storage.\(UUID().uuidString)"
+    let suite = testSuiteName()
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
 

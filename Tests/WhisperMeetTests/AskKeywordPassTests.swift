@@ -15,7 +15,7 @@ private func makeModel(installed: Bool) throws -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AskKeywordPass-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F538.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.isAskEmbeddingModelInstalled = { installed }
     model.refreshRuntime()
     return model

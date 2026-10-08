@@ -18,7 +18,7 @@ private func makeModel() -> AppModel {
         .appendingPathComponent("SummarizerInstallRecovery-store-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let defaults = UserDefaults(
-        suiteName: "WhisperMeet.SummarizerInstallRecovery.\(UUID().uuidString)")!
+        suiteName: testSuiteName())!
     return AppModel(
         store: MeetingStore(rootDirectory: root),
         recorder: AudioCaptureEngine(),

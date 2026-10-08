@@ -54,7 +54,7 @@ private func attachActivityBox(to model: AppModel) -> ActivityBox {
 private func makeModel() -> AppModel {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F560-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: root.appendingPathComponent("Recordings"), withIntermediateDirectories: true)
-    let defaults = UserDefaults(suiteName: "F560.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     return AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
@@ -204,7 +204,7 @@ private func makeSegmentRerunModel() throws -> (AppModel, UUID) {
     var wav = WAVWriter.header(sampleRate: sampleRate, dataByteCount: bytes)
     wav.append(Data(count: Int(bytes)))
     try wav.write(to: directory.appendingPathComponent("meeting.wav"))
-    let defaults = UserDefaults(suiteName: "F560SegRerun.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(
         store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults,
         whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
@@ -249,7 +249,7 @@ private func makeDiarizationModel() throws -> (AppModel, UUID) {
     var wav = WAVWriter.header(sampleRate: sampleRate, dataByteCount: sampleRate * 2 * 4)
     wav.append(Data(count: Int(sampleRate) * 2 * 4))
     try wav.write(to: directory.appendingPathComponent("meeting.wav"))
-    let defaults = UserDefaults(suiteName: "F560Diarization.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.isDiarizationModelInstalled = { true }
     let segments = [seg("one", 0, 2), seg("two", 2, 4)]

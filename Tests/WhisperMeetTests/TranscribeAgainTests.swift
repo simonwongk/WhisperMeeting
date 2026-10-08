@@ -23,7 +23,7 @@ private func completedMeeting(
     try FileManager.default.createDirectory(
         at: root.appendingPathComponent("Recordings/\(id.uuidString)"), withIntermediateDirectories: true
     )
-    let defaults = UserDefaults(suiteName: "F515.\(UUID().uuidString)")!
+    let defaults = UserDefaults(suiteName: testSuiteName())!
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
     model.store.upsert(MeetingRecord(
         id: id, title: "Day 4 2", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",

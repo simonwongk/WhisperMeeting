@@ -46,7 +46,7 @@ func aShrunkFolderLooksHealthy() throws {
 func speakerAnalysisAcceptsAShrunkCapture() throws {
     let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "Shrunk.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     let id = UUID()
     let meeting = MeetingRecord(id: id, title: "Sync", duration: 3, recordingPath: "Recordings/\(id)/meeting.m4a",
                                 status: .completed, transcriptText: "Hi.",
