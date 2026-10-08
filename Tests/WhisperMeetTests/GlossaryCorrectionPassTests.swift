@@ -227,6 +227,29 @@ func reviewSheetIsKeyedBySet() throws {
     #expect(!bareProposalState)
 }
 
+@MainActor
+@Test("A two-character term is proposed for a homophone mishearing through the app, unticked, never inside a longer word (F817)")
+func twoCharacterHomophonesThroughTheApp() async throws {
+    let (model, root) = try makeModel("two-character")
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.cjkWordSegmenter = dictionarySegmenterForApp(["明天", "的", "会意", "改到", "下午", "我们", "见", "公事公办", "这", "是", "公事"])
+    model.store.addVocabulary(["会议", "周五", "公式"])
+    let id = addMeeting(model, lines: ["明天的会意改到下午", "我们周无见", "公事公办", "这是公事"])
+
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
+
+    // 公事 (business) reads gong shi like 公式 (formula): a homophone that is another word, which
+    // is why a Chinese near-miss arrives unticked. Inside 公事公办 it would cut a word, so it is not.
+    let expected: [GlossaryCorrection] = [
+        GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议"),
+        GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五"),
+        GlossaryCorrection(segmentIndex: 3, from: "公事", to: "公式"),
+    ]
+    #expect(proposals == expected)
+    let review = ProposalReview(proposals: proposals, source: .vocabulary)
+    #expect(review.preselected(touching: []).isEmpty, "a Chinese near-miss must arrive unticked")
+}
+
 @Test("Correct Toward Vocabulary goes through the background pass and its status line has Cancel (F536)")
 func menuUsesTheBackgroundPass() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")

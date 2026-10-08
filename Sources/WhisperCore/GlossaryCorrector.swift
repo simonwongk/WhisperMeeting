@@ -23,18 +23,23 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// `GlossaryCorrectorGoldenTests`, amended only where a later ticket changed the answer on purpose:
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
 /// proposed as "Kestrol"), and a term equal to a window of several words is already present (F820,
-/// "Priya Raman said" proposes nothing for "Priya Raman"). A term containing Chinese is compared with windows of
-/// exactly its own length, slid character by character along each run of letters and digits: Chinese
+/// "Priya Raman said" proposes nothing for "Priya Raman"). A term containing Chinese is compared
+/// with windows of exactly its own length, slid character by character along each run of letters
+/// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
 /// inside an ordinary sentence was never found. A term already present in the segment is correct and
-/// proposes nothing. A window must match MORE than half the term's characters, position for
-/// position — at exactly half, a two-character term would match every word sharing one character
-/// with it (计算 for 预算), so a two-character term is never proposed — and every character it gets
-/// wrong must sound like the term's (`MandarinSound`): matching two of three characters in place also
-/// fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536 found pre-ticked in seven of
-/// eight ordinary sentences. A Chinese window is only proposed where `GlossaryCorrector.apply` would
-/// apply it — `ReplacementBoundary` with the caller's `CJKWordEvidence` (F594) — so a window cutting
+/// proposes nothing. A window must match at least half the term's characters, position for
+/// position, and every character it gets wrong must sound like the term's (`MandarinSound`):
+/// matching two of three characters in place also fits 王经理 for 张经理 and 数据集 for 数据库,
+/// which the review of F536 found pre-ticked in seven of eight ordinary sentences. F536 asked for
+/// more than half, so a two-character term was never proposed; since F817 half is enough, because
+/// the sound rule is what keeps 计算 from being proposed for 预算 (ji is not yu), and a
+/// two-character mishearing (会意 for 会议) is one character in two. A homophone can still be a
+/// different real word (公事 for 公式), which is why a Chinese near-miss arrives unticked
+/// (`ProposalReview.uncheckedByDefault`). A Chinese window is only proposed where
+/// `GlossaryCorrector.apply` would apply it — `ReplacementBoundary` with the caller's
+/// `CJKWordEvidence` (F594) — so a window cutting
 /// through a word is not offered. A Latin term's windows split a token where Latin meets Chinese
 /// ("这个Kubernets集群"), so the proposal replaces "Kubernets", not the Chinese on either side; text
 /// without Chinese splits as it did.
@@ -160,19 +165,27 @@ public enum GlossaryCorrector {
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
-    /// when the term is already present, no window matches more than half its characters position
-    /// for position, or the only such windows cut through a word.
+    /// when the term is already present, no window matches at least half its characters position
+    /// for position with every other character a homophone, or the only such windows cut through a
+    /// word.
     ///
     /// Position for position rather than an LCS: a Chinese mishearing substitutes a character for a
     /// homophone and keeps the length (张经理 → 张经里), and an LCS also credits the window one
     /// character to the left — 请张经 shares 张经 with 张经理 as a subsequence, and comes first.
+    ///
+    /// At least half, since F817; F536 asked for more than half, which kept every two-character
+    /// term from ever being proposed (会意 for 会议, 周无 for 周五: one substitution is half the
+    /// word). F536 set "more than" before the homophone rule existed, to stop 计算 being proposed
+    /// for 预算; the homophone rule now does that (ji is not yu). Half in place is still required, so
+    /// a word that only sounds like the term — 攻势 for 公式, gong shi both — is not proposed. Only
+    /// even-length terms are affected: for an odd length, at least half is more than half.
     private static func bestCJKWindow(
         for term: PreparedTerm, in runs: CJKRuns, text: String, segmented: SegmentedText,
         evidence: () -> CJKWordEvidence, sounds: inout [Character: String]
     ) -> String? {
         let length = term.ids.count
         // Cheap upper bound first: every matched character must occur in the segment somewhere.
-        guard term.ids.count(where: runs.characterSet.contains) * 2 > length else { return nil }
+        guard term.ids.count(where: runs.characterSet.contains) * 2 >= length else { return nil }
         if runs.contains(term.ids) { return nil }
         var best: (score: Int, phrase: String)?
         for run in runs.runs where run.ids.count >= length {
@@ -181,8 +194,8 @@ public enum GlossaryCorrector {
                 for offset in 0..<length where run.ids[start + offset] == term.ids[offset] {
                     common += 1
                 }
-                // More than half, strictly, and better than the best genuine window so far.
-                guard common * 2 > length, common > (best?.score ?? 0) else { continue }
+                // At least half (F817), and better than the best genuine window so far.
+                guard common * 2 >= length, common > (best?.score ?? 0) else { continue }
                 // And every character it gets wrong sounds like the one it should be: 张经里 for
                 // 张经理, not 王经理 — a different person who matches just as many characters.
                 let soundsAlike = (0..<length).allSatisfy { offset in

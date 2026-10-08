@@ -48,8 +48,28 @@ func chineseTermAlreadyPresentIsCorrect() {
 
 @Test("A two-character term is not matched by every word sharing one character with it (F536)")
 func twoCharacterTermNeedsMoreThanHalf() {
-    // At exactly half, 预算 would be proposed for 计算 (calculate) and 预计 (expect).
+    // 计算 (calculate) and 预计 (expect) share one character with 预算, but the other does not sound
+    // like the term's: ji is not yu, ji is not suan. Since F817 that sound is the whole test.
     #expect(GlossaryCorrector.corrections(vocabulary: ["预算"], segments: [seg("我们计算一下预计的时间")]).isEmpty)
+}
+
+@Test("A two-character term is proposed for a homophone mishearing of one character (F817)")
+func twoCharacterHomophoneMishearingIsProposed() {
+    let segments = [seg("明天的会意改到下午"), seg("我们周无见"), seg("这个预选不够")]
+    let corrections = GlossaryCorrector.corrections(vocabulary: ["会议", "周五", "预算"], segments: segments)
+    // 会意 (hui yi) and 周无 (zhou wu) read exactly as the terms do, tones aside. 预选 (yu xuan) does
+    // not read as 预算 (yu suan), so it is not proposed: matching by sound is matching by sound.
+    #expect(corrections == [
+        GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议"),
+        GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五"),
+    ])
+    #expect(GlossaryCorrector.apply(corrections, to: segments).map(\.text) == ["明天的会议改到下午", "我们周五见", "这个预选不够"])
+}
+
+@Test("A two-character window sharing no character with the term is not proposed, however alike it sounds (F817)")
+func twoCharacterTermNeedsOneCharacterOfItsOwn() {
+    // 攻势 (attack) reads gong shi exactly as 公式 (formula) does, and is a different word.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["公式"], segments: [seg("他们的攻势很猛")]).isEmpty)
 }
 
 @Test("A Latin term written against Chinese proposes only the Latin word (F536)")
