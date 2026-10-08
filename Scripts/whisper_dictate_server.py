@@ -129,9 +129,10 @@ class ModelDownloadError(Exception):
 
 class ResumableDownloadUnavailable(Exception):
     """The resumable path could not even start: the Hub's metadata is in a shape this code cannot
-    read, or TLS failed in this Python. Nothing on disk was changed, so the library's own downloader
-    is a safe fallback. An unreachable Hub is not this (F828): that is retried, then a
-    `ModelDownloadError`, because the library would ask the same Hub and could not resume."""
+    read, or this Python cannot verify the Hub's certificate. Nothing on disk was changed, so the
+    library's own downloader is a safe fallback. An unreachable Hub is not this (F828): that is
+    retried, then a `ModelDownloadError`, because the library would ask the same Hub and could not
+    resume."""
 
 
 def dictation_model_pin(mlx_repo):
@@ -248,10 +249,14 @@ def _head(url, timeout):
 
 
 def _is_tls_failure(error):
-    """Whether a transport error is the TLS handshake (a certificate the runtime's own store cannot
-    verify, say). That is a property of this Python, not of the moment, so retrying cannot help; the
-    library's downloader brings its own certificate bundle and may succeed where urllib cannot."""
-    return isinstance(error, ssl.SSLError) or isinstance(getattr(error, "reason", None), ssl.SSLError)
+    """Whether a transport error is a certificate this Python's own store cannot verify. That is a
+    property of this Python, not of the moment, so retrying cannot help; the library's downloader
+    brings its own certificate bundle (httpx builds its context from `certifi.where()`) and may
+    succeed where urllib cannot. Every other TLS error — a handshake cut short (`SSLEOFError`), a
+    reset mid-handshake — is the moment's, and is retried like any network error (review R2)."""
+    return isinstance(error, ssl.SSLCertVerificationError) or isinstance(
+        getattr(error, "reason", None), ssl.SSLCertVerificationError
+    )
 
 
 def _head_following_same_host_redirects(url, timeout):
@@ -283,10 +288,11 @@ def _file_metadata(endpoint, repo, revision, filename, timeout, retries=DOWNLOAD
     307 to a relative path whose own Content-Length is the REDIRECT body's (276, where the file is
     268): read as the size, every download of the real model was a size mismatch.
 
-    A network error, a timeout, a 5xx or a 429 is retried with the transfer's back-off, and then is
-    a failed download (F828) — not a reason to use the library's downloader, which asks the same
-    Hub, cannot resume, and ignores the partial file beside it. `ResumableDownloadUnavailable` is
-    kept for what only the library might get past: metadata this code cannot read, and TLS."""
+    A network error (a TLS handshake cut short included), a timeout, a 5xx or a 429 is retried with
+    the transfer's back-off, and then is a failed download (F828) — not a reason to use the library's
+    downloader, which asks the same Hub, cannot resume, and ignores the partial file beside it.
+    `ResumableDownloadUnavailable` is kept for what only the library might get past: metadata this
+    code cannot read, and a certificate this Python cannot verify (`_is_tls_failure`)."""
     url = _resolve_url(endpoint, repo, revision, filename)
     failures = 0
     while True:

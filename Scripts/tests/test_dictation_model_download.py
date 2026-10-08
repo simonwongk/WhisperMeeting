@@ -674,6 +674,48 @@ class MetadataFailureTests(DownloaderTestCase):
         self.assertEqual(len(sleeps), 1)
         self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
 
+    def head_failing_with(self, reason, times):
+        """`_head` raising `URLError(reason)` for its first `times` calls, then asking the FakeHub."""
+        import urllib.error
+
+        real_head = server._head
+        state = {"calls": 0}
+
+        def flaky(url, timeout):
+            state["calls"] += 1
+            if state["calls"] <= times:
+                raise urllib.error.URLError(reason)
+            return real_head(url, timeout)
+
+        server._head = flaky
+        self.addCleanup(setattr, server, "_head", real_head)
+
+    def test_a_tls_handshake_cut_short_is_retried_like_any_network_error(self):
+        """Review probe P3 (round 2): one `SSLEOFError` — a handshake cut short on a flaky link —
+        counted as "this Python cannot do TLS" and sent the download to the library, from zero."""
+        import ssl
+
+        self.interrupt_after(120_000)
+        self.head_failing_with(ssl.SSLEOFError(8, "EOF occurred in violation of protocol"), times=1)
+        calls = []
+
+        self.orchestrate(calls)
+
+        self.assertEqual(calls, [], "a one-off TLS EOF sent the download to the library, from zero")
+        self.assertEqual(self.hub.ranges[-1], "bytes=120000-")
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_certificate_this_python_cannot_verify_still_goes_to_the_library(self):
+        """What the library's own certificate bundle can get past and urllib's store cannot."""
+        import ssl
+
+        self.head_failing_with(ssl.SSLCertVerificationError(1, "certificate verify failed"), times=1000)
+        calls = []
+
+        self.orchestrate(calls)
+
+        self.assertEqual(calls, [REPO])
+
     def test_a_part_beside_its_published_blob_is_removed(self):
         """Probe P1: a `.part` beside a complete blob of the same etag survived a whole pass."""
         self.download()
