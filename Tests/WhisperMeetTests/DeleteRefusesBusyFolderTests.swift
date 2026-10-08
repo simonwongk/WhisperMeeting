@@ -86,7 +86,7 @@ private func makeModel(_ name: String) throws -> (AppModel, UUID, URL, URL) {
     try writeCapture(in: folder)
     let model = AppModel(store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 999),
                          recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F870.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     model.store.upsert(MeetingRecord(
         id: id, title: "Weekly sync", duration: 60, recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
         status: .completed, transcriptText: "Hi."

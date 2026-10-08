@@ -15,7 +15,7 @@ func preF287MeetingIsNotHandEdited() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: "F873.\(UUID().uuidString)")!)
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
     let segments = [
         TranscriptSegment(speaker: nil, start: 30.7, end: 34.7, text: "We'll ship on Friday.", avgLogprob: -1.6),
         TranscriptSegment(speaker: nil, start: 35.2, end: 39.2, text: "Sounds good.", avgLogprob: -0.2),
