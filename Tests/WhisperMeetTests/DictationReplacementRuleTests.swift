@@ -185,6 +185,21 @@ func dictationLeavesAnEmailAddressAlone() async throws {
 }
 
 @MainActor
+@Test("A lower-case rule fixes the name the recognizer capitalised at the start of the dictation (F858)")
+func dictationRuleMatchesASentenceInitialCapital() async throws {
+    let harness = try Harness(engineText: "Jon said the build is green")
+    defer { harness.cleanUp() }
+    harness.controller.configureReplacementRules(
+        { [ReplacementRule(heard: "jon", preferred: "Jonathan")] }, knownTerms: { [] }
+    )
+
+    let entry = try await harness.dictate()
+
+    #expect(entry.text == "Jonathan said the build is green")
+    #expect(entry.rawText == "Jon said the build is green")
+}
+
+@MainActor
 @Test("The app hands dictation its replacement rules and stored vocabulary, and the default segmenter is NLTokenizer's (F821)")
 func appWiresReplacementRulesIntoDictation() throws {
     let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")

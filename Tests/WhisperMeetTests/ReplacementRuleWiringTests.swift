@@ -63,3 +63,26 @@ func ruleCorrectionsReachApplyPath() throws {
     #expect(model.store.meeting(id: id)?.segments.first?.text == "We use Sequoya for infra.")
     #expect(model.store.meeting(id: id)?.transcriptText.contains("Sequoya") == true)
 }
+
+@MainActor
+@Test("Improve proposes a lower-case rule for the sentence-initial capital, and Apply writes it (F858)")
+func ruleCorrectionsMatchASentenceInitialCapital() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-capital-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+
+    model.store.addReplacementRule(heard: "jon", preferred: "Jonathan")
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "Jon said the build is green.")]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+
+    let proposals = model.replacementRuleCorrections(for: id)
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan")])
+
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "Jonathan said the build is green.")
+}
