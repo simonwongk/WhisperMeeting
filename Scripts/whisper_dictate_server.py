@@ -370,6 +370,44 @@ def _sha256_of(path, chunk_size, heartbeat):
                 heartbeat.tick()
 
 
+def _restart_beside(url, part_path, have, size, timeout, chunk_size, heartbeat):
+    """One download of the whole file from the start, into `<part>.fresh` beside the partial, which
+    it replaces only once it holds more bytes than the partial does (F829, review R4). Returns None
+    when the partial was replaced, else why not; the partial is untouched then, and the copy goes.
+
+    For a server that answers every `Range` request with 416 but serves a plain GET (a proxy, say):
+    the partial is never deleted on a 416, so without this a run of 416s was a defer with no expiry —
+    every start spent its retry budget and failed, on that network for good."""
+    fresh_path = part_path + ".fresh"
+    problem = None
+    try:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"}
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            length = _int_or_none(response.headers.get("Content-Length"))
+            if length is not None and length != size:
+                raise OSError("the server sent %d bytes that are not the file" % length)
+            written = 0
+            with open(fresh_path, "wb") as out:
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    written += len(chunk)
+                    heartbeat.tick(max(have, written))
+    except _TRANSIENT_ERRORS as error:
+        problem = str(error)
+    fresh = os.path.getsize(fresh_path) if os.path.exists(fresh_path) else 0
+    if fresh > have:
+        os.replace(fresh_path, part_path)
+        return None
+    if os.path.exists(fresh_path):
+        os.remove(fresh_path)
+    return problem or "a download from the start stopped at %d bytes, short of the %d already on disk" % (fresh, have)
+
+
 def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeout, heartbeat):
     """Bring `blob_path` into existence as exactly the pinned file — `size` bytes hashing to
     `sha256` — resuming `<blob>.part`."""
@@ -381,6 +419,8 @@ def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeou
     # forever — which the first run against the live Hub did, when a 416 still deleted the partial
     # (it no longer does, F829; the size and checksum checks below still can).
     best = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+    refused = 0  # of those failed attempts, how many in a row were a 416 (F829, review R4)
+    restarted = False
     while True:
         have = os.path.getsize(part_path) if os.path.exists(part_path) else 0
         if have > size:
@@ -388,6 +428,7 @@ def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeou
             have = 0
         if have < size:
             problem = None
+            range_refused = False
             try:
                 _stream_once(url, part_path, have, size, timeout, chunk_size, heartbeat)
             except urllib.error.HTTPError as error:
@@ -395,10 +436,12 @@ def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeou
                     raise ModelDownloadError("HTTP %d downloading %s" % (error.code, url))
                 # A 416 is a failed attempt like any other (F829); it used to delete the partial. The
                 # partial is shorter than the advertised size (checked above), so a server that
-                # cannot serve the rest of it disagrees with its own metadata, and starting over
-                # would meet the same server. The next start's metadata request is the re-check: a
-                # partial longer than the size it advertises, a `.part` for an etag no longer served,
-                # and the final size/sha256 check still discard bytes shown to be wrong.
+                # cannot serve the rest of it disagrees with its own metadata. The next start's
+                # metadata request is the re-check: a partial longer than the size it advertises, a
+                # `.part` for an etag no longer served, and the final size/sha256 check still discard
+                # bytes shown to be wrong. A run of 416s that spends the whole retry budget gets one
+                # download from the start beside the partial (`_restart_beside`, above).
+                range_refused = error.code == 416
                 problem = error
             except _TRANSIENT_ERRORS as error:
                 if getattr(error, "errno", None) == errno.ENOSPC:
@@ -410,9 +453,17 @@ def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeou
             now = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             if now < size:
                 if now > best:
-                    best, failures = now, 0
+                    best, failures, refused = now, 0, 0
                 else:
                     failures += 1
+                    refused = refused + 1 if range_refused else 0
+                if failures > retries and refused >= failures and not restarted:
+                    # The expiry of the 416 defer (review R4), derived from the retry budget that ends
+                    # every other failure: once per run, and the partial stays until it is passed.
+                    restarted = True
+                    problem = _restart_beside(url, part_path, now, size, timeout, chunk_size, heartbeat)
+                    if problem is None:
+                        continue
                 if failures > retries:
                     raise ModelDownloadError(
                         "the model download stopped at %d of %d bytes: %s" % (now, size, problem or "short read")
@@ -489,7 +540,8 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
         # longer serves cannot be resumed; either can be 1.6 GB. Completed blobs are not touched here;
         # the loop below removes only a blob under one of the pinned files' names that does not hash
         # to its pin (F830).
-        if leftover.endswith(".incomplete") or (leftover.endswith(".part") and leftover not in wanted_parts):
+        # A `.fresh` copy (F829, review R4) is never resumed: one a killed process left goes too.
+        if leftover.endswith((".incomplete", ".fresh")) or (leftover.endswith(".part") and leftover not in wanted_parts):
             try:
                 os.remove(os.path.join(blobs, leftover))
             except OSError:

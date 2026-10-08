@@ -519,7 +519,7 @@ class BadResponseTests(DownloaderTestCase):
         self.hub.range_replies = [416]
 
         with self.assertRaises(FAILED_ATTEMPT):
-            self.download(sleep=die)
+            self.download(sleep=die, retries=1)
 
         self.assertTrue(os.path.exists(self.weights_part()), "one 416 deleted the partial file (P4)")
         self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
@@ -553,16 +553,70 @@ class BadResponseTests(DownloaderTestCase):
         self.download()
         self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
 
-    def test_a_server_that_keeps_answering_416_ends_in_an_error_with_the_partial_kept(self):
-        """Never deleting on a 416 must not become retrying forever: it is a failed attempt, so the
-        retry budget ends it, and the partial is still there for the next start."""
+    def plain_gets(self):
+        """CDN requests for the weights that asked for the whole file (no Range)."""
+        return self.hub.ranges.count(None)
+
+    def test_a_server_that_answers_every_resume_with_416_gets_one_download_from_the_start(self):
+        """Review R4 (round 2). A proxy that answers every Range request with 416 but serves a plain
+        GET used to fail every start, the partial kept, on that network for good: a defer with no
+        expiry. The expiry is the retry budget itself — once a run of 416s with no progress has spent
+        it, one download from the start runs beside the partial, which it replaces only once it holds
+        more."""
         self.interrupt_after(120_000)
-        self.hub.range_replies = [416] * 10
+        self.hub.range_replies = [416] * 50
+        gets_before = self.plain_gets()
+
+        self.download(retries=2)
+
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+        self.assertEqual(self.plain_gets() - gets_before, 1, "one download from the start, no more")
+        self.assertEqual([n for n in self.blobs() if n.endswith((".part", ".fresh"))], [])
+
+    def test_that_download_leaves_the_partial_as_it_was_until_it_has_passed_it(self):
+        self.interrupt_after(120_000)
+        self.hub.range_replies = [416] * 50
+        self.hub.drop_after = [50_000]  # the download from the start is cut short of the partial
 
         with self.assertRaises(server.ModelDownloadError):
             self.download(retries=2)
 
         self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+        self.assertEqual([n for n in self.blobs() if n.endswith(".fresh")], [], "its unfinished copy is not kept")
+
+    def test_that_download_replaces_the_partial_once_it_holds_more(self):
+        self.interrupt_after(120_000)
+        self.hub.range_replies = [416] * 50
+        self.hub.drop_after = [200_000]  # past the partial, then cut
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download(retries=2)
+
+        self.assertEqual(self.read("blobs", WEIGHTS_SHA256 + ".part"), WEIGHTS[:200_000])
+        self.assertEqual(self.plain_gets(), 2, "the interrupted first attempt, and one from the start: once per run")
+
+    def test_a_download_from_the_start_is_tried_only_after_a_run_of_416s(self):
+        """Any other failure — a dropped connection — is the ordinary retry, resuming."""
+        self.interrupt_after(120_000)
+        self.hub.drop_after = [0] * 10
+        gets_before = self.plain_gets()
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download(retries=2)
+
+        self.assertEqual(self.plain_gets(), gets_before)
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+
+    def test_an_unfinished_download_from_the_start_left_by_a_killed_process_is_swept(self):
+        blobs = os.path.join(self.repo_cache, "blobs")
+        os.makedirs(blobs)
+        leftover = os.path.join(blobs, WEIGHTS_SHA256 + ".part.fresh")
+        with open(leftover, "wb") as handle:
+            handle.write(b"x" * 1000)
+
+        self.download()
+
+        self.assertFalse(os.path.exists(leftover))
 
 
 class MetadataFailureTests(DownloaderTestCase):
