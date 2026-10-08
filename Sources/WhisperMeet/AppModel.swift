@@ -5039,8 +5039,18 @@ final class AppModel: ObservableObject {
             let title = (probe.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
                 $0.isEmpty ? nil : $0
             } ?? "Imported from \(parsed.host)"
+            // F453: the last chance to honour Stop, and it has to be checked rather than caught. The
+            // caption fetch swallows its own CancellationError — a caption failure must never fail
+            // an import — so a Stop pressed while captions were fetched came back as "no captions",
+            // and the import went on to create the meeting, start its transcription and navigate
+            // to it after the sheet had closed. The duration is measured first, so that once this
+            // check passes `adoptImportedRecording` reaches its upsert with no suspension point in
+            // between: past here the import is finished, not stoppable.
+            let duration = await Self.loadDuration(of: downloaded)
+            try Task.checkCancellation()
             return .imported(await adoptImportedRecording(
-                id: id, at: downloaded, title: title, source: source, referenceSegments: reference
+                id: id, at: downloaded, title: title, source: source, referenceSegments: reference,
+                knownDuration: duration
             ))
         } catch {
             isImporting = false
@@ -5113,8 +5123,8 @@ final class AppModel: ObservableObject {
         referenceSegments: [TranscriptSegment]? = nil,
         knownDuration: TimeInterval? = nil
     ) async -> UUID {
-        // `knownDuration` is the file import's already-measured length (F326); every other caller
-        // measures here.
+        // `knownDuration` is the file import's already-measured length (F326), and the link import's,
+        // measured before its last cancellation check (F453); every other caller measures here.
         let duration: TimeInterval
         if let knownDuration {
             duration = knownDuration
