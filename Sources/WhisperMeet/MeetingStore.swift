@@ -2933,7 +2933,7 @@ final class MeetingStore: ObservableObject {
             return false
         case let .lostRace(report):
             reloadList(list)
-            storageErrorMessage = "\(report.message) It changed the list again while this change was being saved, so this change was not saved. The list now shows what the other copy saved; make the change again."
+            storageErrorMessage = "\(report.message) The other copy changed the list again while this change was being saved, so this change was not saved. The list now shows what the other copy saved; make the change again."
             return false
         }
     }
