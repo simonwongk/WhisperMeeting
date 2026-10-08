@@ -211,6 +211,10 @@ struct ContentView: View {
                 get: {
                     model.alertMessage != nil || store.storageErrorMessage != nil
                 },
+                // The one place a dismissal clears (F669). SwiftUI writes `false` here after any
+                // action — OK, Return, Escape — so the button below does nothing itself: clearing in
+                // both ran `clearStorageError()` twice per OK, and the second call counted F553's
+                // history notice as read the moment the first had brought it back.
                 set: {
                     if !$0 {
                         model.alertMessage = nil
@@ -219,10 +223,7 @@ struct ContentView: View {
                 }
             )
         ) {
-            Button("OK") {
-                model.alertMessage = nil
-                store.clearStorageError()
-            }
+            Button("OK") { }
         } message: {
             Text([model.alertMessage, store.storageErrorMessage]
                 .compactMap { $0 }

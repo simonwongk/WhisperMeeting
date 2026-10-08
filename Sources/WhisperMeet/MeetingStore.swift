@@ -2934,11 +2934,28 @@ final class MeetingStore: ObservableObject {
     /// The alert's OK is the acknowledgement F553's history notice waits for — but only when the
     /// notice is what the alert showed (F669). An OK on another storage message used to release the
     /// notice unread for the rest of the session; now the notice comes back to be read.
+    ///
+    /// One call is one dismissal, and the window's alert makes exactly one (its `isPresented`
+    /// setter; the OK button itself does nothing — pinned by `alertClearsStorageOncePerDismissal`).
+    /// It once made two per OK, and the second found the notice the first had just put back and
+    /// released it. So the notice is not put back inside the dismissal: the message goes to nil
+    /// and the notice returns on the next turn (`reshowPendingNotice`). A second call in the same
+    /// turn therefore finds nil, not the notice, and cannot count it as read; and the alert is
+    /// presented afresh rather than asked to re-present while it is still being dismissed.
     func clearStorageError() {
-        if storageErrorMessage == historyNoticeAwaitingDismissal {
+        if let notice = historyNoticeAwaitingDismissal, storageErrorMessage == notice {
             historyNoticeAwaitingDismissal = nil
         }
-        storageErrorMessage = restingStorageMessage
+        storageErrorMessage = nil
+        guard historyNoticeAwaitingDismissal != nil else { return }
+        Task { [weak self] in self?.reshowPendingNotice() }
+    }
+
+    /// Shows F553's unread notice again once a dismissal of something else has finished (F669) —
+    /// unless something else is being said by then, whose own dismissal brings it back in turn.
+    private func reshowPendingNotice() {
+        guard storageErrorMessage == nil, let notice = historyNoticeAwaitingDismissal else { return }
+        storageErrorMessage = notice
     }
 
     /// What `storageErrorMessage` shows when nothing else is being said: F553's notice while it waits
