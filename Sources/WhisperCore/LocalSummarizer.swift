@@ -290,6 +290,12 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// from `mlx_lm`'s `stream_generate`, which reports `"length"` when it stopped at `--max-tokens`
     /// rather than at an end-of-turn token.
     static func answerRefusal(warning: String?, finishReason: String?) -> SummarizerError? {
+        // F755: the helper's F475 pre-flight refused the prompt before loading the model. Before the
+        // warning check, which wrapped it as "the answer could not be read cleanly" — and with no
+        // warning, nothing matched and the empty summary was returned as the answer.
+        if finishReason == Self.tooLongFinishReason {
+            return .localInputTooLong(warning ?? Self.tooLongFallback)
+        }
         // F598: before the warning check, which would otherwise wrap it as a degraded answer.
         if finishReason == Self.modelUnreadableFinishReason {
             return .localModelUnreadable(warning ?? Self.modelUnreadableFallback)
@@ -312,8 +318,8 @@ public struct LocalSummarizer: MeetingSummarizer {
         // and the model's context window) — a different situation from a warning about output the
         // model actually produced, and `.localInputTooLong`'s copy is the detail verbatim, not
         // wrapped in "the model's output could not be read cleanly (…)".
-        if finishReason == "too_long" {
-            return .localInputTooLong(warning ?? "This transcript is too long for the on-device model.")
+        if finishReason == Self.tooLongFinishReason {
+            return .localInputTooLong(warning ?? Self.tooLongFallback)
         }
         // F598: the helper could not read the model's own files, so it never ran the model either;
         // "try again" (`.localOutputDegraded`'s advice) cannot help a broken install.
@@ -333,6 +339,13 @@ public struct LocalSummarizer: MeetingSummarizer {
     /// write both.
     static let modelUnreadableFallback = "The on-device model's files could not be read. Use "
         + "Repair or Update under Summaries in Settings, then try again."
+
+    /// `summarize_local.py`/`correct_local.py`'s F475 pre-flight: the prompt needs more tokens than
+    /// the model's context window leaves room for, so the model was never loaded. Ask runs through
+    /// `summarize_local.py` too, so summarize, correct and Ask all read it.
+    static let tooLongFinishReason = "too_long"
+    /// Only for a payload without its warning; the helper always writes the measured detail.
+    static let tooLongFallback = "This transcript is too long for the on-device model."
 
     static let answerFormatInstruction = """
     Respond with ONLY a JSON object with exactly these keys: "summary" (a string holding your \

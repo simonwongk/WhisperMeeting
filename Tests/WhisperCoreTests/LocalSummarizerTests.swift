@@ -227,6 +227,33 @@ func unreadableModelRefusalIsSharedByEveryLocalPath() {
     #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "model_unreadable") == fallback)
 }
 
+@Test("Ask names a too-long prompt as too long, not as an answer that could not be read (F755)")
+func answerRefusalNamesATooLongPrompt() async throws {
+    let detail = "This transcript needs about 41200 tokens, more than the 40560 available. Try a shorter selection."
+    // The pure rule, both ways round: the summarize path already said this.
+    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long") == .localInputTooLong(detail))
+    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long")
+            == LocalSummarizer.localOutputRefusal(warning: detail, finishReason: "too_long"))
+    #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "too_long")
+            == LocalSummarizer.localOutputRefusal(warning: nil, finishReason: "too_long"))
+
+    // And through `answerText`, from the helper's own pre-flight payload.
+    let fixture = try LocalSummaryFixture(outputJSON: """
+    {"summary":"","keyPoints":[],"actionItems":[],"warning":\(String(reflecting: detail)),\
+    "finishReason":"too_long","generatedTokens":0}
+    """)
+    defer { fixture.remove() }
+    let summarizer = LocalSummarizer(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory
+    )
+    let passage = CitedResult(meetingID: UUID(), meetingTitle: "M", segmentIndex: 0, timestamp: nil, snippet: "We agreed.", score: 1)
+    await #expect(throws: SummarizerError.localInputTooLong(detail)) {
+        _ = try await summarizer.answerText(question: "What did we agree?", passages: [passage])
+    }
+}
+
 @Test("Local summarizer surfaces a helper failure as helperFailed")
 func localSummarizerSurfacesHelperFailure() async throws {
     let fixture = try LocalSummaryFixture(script: "#!/bin/zsh\nprint -u2 'model load blew up'\nexit 1\n")
