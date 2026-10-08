@@ -826,7 +826,10 @@ final class MeetingStore: ObservableObject {
             backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json"),
             recordCount: { $0.count },
             // One bad record costs one record, not the library (F187) — see `salvageMeetings(from:)`.
-            salvage: MeetingStore.salvageMeetings(from:)
+            salvage: MeetingStore.salvageMeetings(from:),
+            // Every edit re-encodes the whole index on the main actor: ~1.95 s at 1,000 meetings
+            // with one encoder, ~0.35 s spread over every core, and the same bytes (F526).
+            encodesElementsConcurrently: true
         )
         vocabularyFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("vocabulary.json"),

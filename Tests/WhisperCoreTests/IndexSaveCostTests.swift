@@ -1,0 +1,260 @@
+import Foundation
+import Testing
+@testable import WhisperCore
+
+// F526 — what a save costs after a load, and how the meeting index is encoded.
+//
+// Measured on a 1,000-meeting library (274 MB, `IndexSaveCostMeasurementTests` in WhisperMeetTests):
+// a steady save was ~2.0 s, nearly all of it one `JSONEncoder` pass over the whole index, and the first
+// save after launch ~6.4 s, because it also decoded the primary — which `load()` had just decoded and
+// never recorded in F211's memory — and the backup, which nothing had ever proved. These pin the two
+// mechanisms that remove that: what a load proves, a save does not decode again; and an opted-in
+// array store encodes its elements one at a time (so they can be encoded on every core), with bytes
+// identical to the whole-array encoder's.
+
+// MARK: - Counting decodes
+
+/// Decodes per test run, keyed by a run id carried in every element, so tests running in parallel
+/// cannot read each other's counts.
+private final class DecodeTally: @unchecked Sendable {
+    static let shared = DecodeTally()
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    func record(_ run: String) { lock.withLock { counts[run, default: 0] += 1 } }
+    func count(_ run: String) -> Int { lock.withLock { counts[run] ?? 0 } }
+}
+
+private struct CountedEntry: Codable, Equatable {
+    let run: String
+    let title: String
+
+    init(run: String, title: String) {
+        self.run = run
+        self.title = title
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        run = try container.decode(String.self, forKey: .run)
+        title = try container.decode(String.self, forKey: .title)
+        DecodeTally.shared.record(run)
+    }
+}
+
+private struct Library {
+    let directory: URL
+    var primaryURL: URL { directory.appendingPathComponent("meetings.json") }
+    var backupURL: URL { directory.appendingPathComponent("meetings.backup.json") }
+
+    func store(io: StoreFileIO = .live) -> BackupJSONStore<[CountedEntry]> {
+        BackupJSONStore<[CountedEntry]>(
+            primaryURL: primaryURL, backupURL: backupURL, io: io, recordCount: { $0.count }
+        )
+    }
+}
+
+/// A library with a primary AND a decodable backup, as every library has after its second save.
+private func seededLibrary(run: String) throws -> Library {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("IndexSaveCost-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let library = Library(directory: directory)
+    let writer = library.store()
+    try writer.save((0..<5).map { CountedEntry(run: run, title: "entry \($0)") })
+    try writer.save((0..<6).map { CountedEntry(run: run, title: "entry \($0)") })
+    return library
+}
+
+@Test("The first save after a load decodes neither copy again (F526)")
+func theFirstSaveAfterALoadDecodesNothing() throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+
+    // A fresh store is a new launch: nothing in its memory.
+    let launched = library.store()
+    let loaded = try #require(try launched.load())
+    let decodedByLoad = DecodeTally.shared.count(run)
+
+    try launched.save(loaded.value + [CountedEntry(run: run, title: "edited")], expecting: loaded.token)
+
+    let decodedBySave = DecodeTally.shared.count(run) - decodedByLoad
+    #expect(decodedBySave == 0, "the first save after a load decoded \(decodedBySave) records again")
+}
+
+@Test("A copy that changed after the load is decoded again, and quarantined if it does not decode (F526)")
+func aCopyChangedAfterTheLoadIsNotTrusted() throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+    let launched = library.store()
+    let loaded = try #require(try launched.load())
+
+    // Rewritten IN PLACE after the load proved it: same inode, so only the identity's ctime moves.
+    let damaged = Data("{ not an index".utf8)
+    try damaged.write(to: library.backupURL)
+
+    let outcome = try launched.save(loaded.value, expecting: loaded.token)
+
+    #expect(!outcome.quarantined.isEmpty, "a backup that no longer decodes was overwritten without a copy")
+    let kept = try outcome.quarantined.map { try Data(contentsOf: library.directory.appendingPathComponent($0)) }
+    #expect(kept.contains(damaged))
+}
+
+@Test("A backup replaced while the load was proving it is not recorded as proved (F526)")
+func aBackupReplacedDuringTheProofIsNotTrusted() throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+
+    // Same length on purpose: a record taken after the decode, checking only that two stats agree
+    // and the size matches, would attribute these bytes to the decode of the old ones.
+    let original = try Data(contentsOf: library.backupURL)
+    let swapped = Data(repeating: UInt8(ascii: "x"), count: original.count)
+    let backupPath = library.backupURL.path
+    let swaps = SwapOnce()
+    var io = StoreFileIO.live
+    io.read = { url, phase in
+        let bytes = try StoreFileIO.live.read(url, phase)
+        // The load's read of the backup returns the old bytes; another writer then replaces the file.
+        if url.path == backupPath, swaps.take() { try swapped.write(to: url, options: .atomic) }
+        return bytes
+    }
+    let launched = library.store(io: io)
+    let loaded = try #require(try launched.load())
+    #expect(!swaps.available, "the load never read the backup, so this test proved nothing")
+
+    let outcome = try launched.save(loaded.value, expecting: loaded.token)
+
+    let kept = try outcome.quarantined.map { try Data(contentsOf: library.directory.appendingPathComponent($0)) }
+    #expect(kept.contains(swapped), "the replaced backup was overwritten without being copied aside")
+}
+
+private final class SwapOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining = true
+    var available: Bool { lock.withLock { remaining } }
+    func take() -> Bool {
+        lock.withLock {
+            defer { remaining = false }
+            return remaining
+        }
+    }
+}
+
+// MARK: - Element-wise encoding
+
+/// Every shape the meeting index has: nested objects and arrays, empty ones, optionals both ways,
+/// keyed maps (sorted), dates, and strings with everything `JSONEncoder` escapes.
+private struct Shape: Codable, Equatable {
+    struct Inner: Codable, Equatable {
+        var label: String?
+        var values: [Double]
+    }
+    var id: Int
+    var title: String
+    var note: String?
+    var when: Date
+    var amount: Double
+    var flags: [Bool]
+    var children: [Inner]
+    var empty: [Inner]
+    var map: [String: Int]
+    var nested: Inner?
+}
+
+private func shapes(_ count: Int) -> [Shape] {
+    let awkward = [
+        "", "plain", "line one\nline two", "tab\tand\r\nCRLF", "quote \" and backslash \\",
+        "slash / and control \u{01}\u{1F}", "中文 and emoji 🎙️", "e\u{301} decomposed", "\u{2028}\u{2029}",
+    ]
+    let amounts: [Double] = [0, -0.0, 1e300, -2.5e-300, 0.1, 1.0 / 7]
+    return (0..<count).map { i in
+        let children: [Shape.Inner] = (0..<(i % 4)).map { c in
+            Shape.Inner(label: c.isMultiple(of: 2) ? "c\(c)" : nil, values: [Double(c), 0.5])
+        }
+        let map: [String: Int] = i.isMultiple(of: 5) ? [:] : ["zeta": i, "alpha": -i, "Mid": 0]
+        let nested: Shape.Inner? = i.isMultiple(of: 2) ? Shape.Inner(label: nil, values: []) : nil
+        return Shape(
+            id: i,
+            title: awkward[i % awkward.count],
+            note: i.isMultiple(of: 3) ? nil : awkward[(i + 1) % awkward.count],
+            // Whole seconds: `.iso8601` drops fractions, so a fractional date could not round-trip.
+            when: Date(timeIntervalSince1970: 1_700_000_000 + Double(i) * 3_601),
+            amount: amounts[i % amounts.count],
+            flags: i.isMultiple(of: 2) ? [] : [true, false],
+            children: children,
+            empty: [],
+            map: map,
+            nested: nested
+        )
+    }
+}
+
+@Test("Element-wise encoding is byte-identical to the whole-array encoder (F526)", arguments: [0, 1, 2, 3, 17, 257])
+func elementwiseEncodingIsByteIdentical(count: Int) throws {
+    let value = shapes(count)
+    let whole = try BackupJSONStore<[Shape]>.makeEncoder().encode(value)
+    let elementwise = try ConcurrentArrayEncoding.encode(value, makeEncoder: BackupJSONStore<[Shape]>.makeEncoder)
+    #expect(elementwise == whole)
+    // And whatever the bytes, the value is the same one.
+    #expect(try JSONDecoder.store.decode([Shape].self, from: elementwise) == value)
+}
+
+@Test("Element-wise encoding matches the whole-array encoder without pretty-printing too (F526)")
+func elementwiseCompactEncodingIsByteIdentical() throws {
+    let value = shapes(40)
+    let compact: () -> JSONEncoder = {
+        let encoder = BackupJSONStore<[Shape]>.makeEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+    #expect(try ConcurrentArrayEncoding.encode(value, makeEncoder: compact) == compact().encode(value))
+}
+
+/// Records, per run, how deep in the document each element was when it encoded itself.
+private final class DepthTally: @unchecked Sendable {
+    static let shared = DepthTally()
+    private let lock = NSLock()
+    private var depths: [String: [Int]] = [:]
+    func record(_ run: String, _ depth: Int) { lock.withLock { depths[run, default: []].append(depth) } }
+    func depths(_ run: String) -> [Int] { lock.withLock { depths[run] ?? [] } }
+}
+
+private struct DepthWitness: Codable {
+    let run: String
+    func encode(to encoder: Encoder) throws {
+        DepthTally.shared.record(run, encoder.codingPath.count)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(run, forKey: .run)
+    }
+}
+
+@Test("A store opted into element-wise encoding encodes each element as its own document (F526)", arguments: [true, false])
+func optedInStoresEncodeElementwise(optedIn: Bool) throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("Elementwise-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let run = UUID().uuidString
+    let store = BackupJSONStore<[DepthWitness]>(
+        primaryURL: directory.appendingPathComponent("index.json"),
+        backupURL: directory.appendingPathComponent("index.backup.json"),
+        encodesElementsConcurrently: optedIn
+    )
+
+    try store.save((0..<8).map { _ in DepthWitness(run: run) })
+
+    // At the top of its own document an element's coding path is empty; inside the whole array it
+    // is its index. Only the first can be encoded on another thread.
+    let expected: [Int] = Array(repeating: optedIn ? 0 : 1, count: 8)
+    #expect(DepthTally.shared.depths(run) == expected)
+}
+
+private extension JSONDecoder {
+    static var store: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}

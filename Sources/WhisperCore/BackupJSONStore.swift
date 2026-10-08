@@ -134,6 +134,21 @@ private final class DecodableFileMemory: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Records bytes that were read after `before` was taken — only if the file is still exactly
+    /// that identity, so nothing written between the read and now is credited to their decode
+    /// (F526). A mismatch records nothing and forgets nothing: whatever is remembered for the path
+    /// is still true of the identity it names.
+    func remember(path: String, byteCount: Int, unchangedSince before: Identity?) {
+        guard let before,
+              let now = Identity(path: path),
+              now == before,
+              now.size == Int64(byteCount)
+        else { return }
+        lock.lock()
+        proven[path] = now
+        lock.unlock()
+    }
+
     /// Whether the file is still, byte for byte, one this process already decoded successfully.
     func isProvenDecodable(path: String) -> Bool {
         guard let current = Identity(path: path) else { return false }
@@ -147,6 +162,12 @@ private final class DecodableFileMemory: @unchecked Sendable {
         proven.removeValue(forKey: path)
         lock.unlock()
     }
+}
+
+/// The primary's value as one lane of `readPrimaryProvingBackup` decodes it (F526). Written by that
+/// lane before `concurrentPerform` returns and read only after: the join is the synchronisation.
+private final class DecodedValue<Value>: @unchecked Sendable {
+    var value: Value?
 }
 
 /// The record counts of retained generations this process has learned, by file name (F677).
@@ -264,6 +285,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     private let salvage: (@Sendable (Data) -> SalvagedValue<Value>?)?
     private let decodableMemory = DecodableFileMemory()
     private let archivedCounts = ArchivedCountMemory()
+    /// Encode an array value's elements on every core (F526, `ConcurrentArrayEncoding`). Opt-in: it
+    /// pays only for a large array, and the meeting index is the one store that is.
+    private let encodesElementsConcurrently: Bool
 
     public init(
         primaryURL: URL,
@@ -273,8 +297,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         writer: String = StoreWriterNonce.forThisProcess,
         retention: RetentionPolicy = .init(),
         recordCount: (@Sendable (Value) -> Int?)? = nil,
-        salvage: (@Sendable (Data) -> SalvagedValue<Value>?)? = nil
+        salvage: (@Sendable (Data) -> SalvagedValue<Value>?)? = nil,
+        encodesElementsConcurrently: Bool = false
     ) {
+        self.encodesElementsConcurrently = encodesElementsConcurrently
         self.primaryURL = primaryURL
         self.backupURL = backupURL
         self.fileManager = fileManager
@@ -293,9 +319,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         var repairs: [StoreRepair] = []
         if ledger == nil, io.fileExists(ledgerURL) { repairs.append(.ledgerUnreadable) }
 
-        if primaryExists,
-           let data = try? io.read(primaryURL, .readPrimary),
-           let value = try? decoder.decode(Value.self, from: data) {
+        if primaryExists, let primary = readPrimaryProvingBackup(backupExists: backupExists) {
+            let (data, value) = primary
             if isDivergent(primaryBytes: data, ledger: ledger) {
                 // Preserve BOTH data files before reporting, so whichever branch the user does not
                 // choose still exists. Copies, never moves — the live files stay exactly as found,
@@ -368,6 +393,46 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         )
     }
 
+    /// The primary's bytes and value for `load()`, nil when it cannot be read or decoded — and, beside
+    /// them, the proof that both copies decode, recorded in F211's memory so the next save decodes
+    /// neither again (F526).
+    ///
+    /// The first save after a launch used to decode the whole index twice more: the primary, which
+    /// the load had just decoded and never recorded, and the backup, which nothing had proved. At
+    /// 1,000 meetings that was ~3.3 s on the main actor on top of the save itself. The backup is
+    /// proved concurrently with the primary's decode, so the load still takes about one decode.
+    /// Its verdict is only recorded, never reported: an undecodable backup is simply not
+    /// remembered, `health` is decided exactly as before, and the save that would replace that
+    /// backup decodes it and quarantines it (F187).
+    private func readPrimaryProvingBackup(backupExists: Bool) -> (data: Data, value: Value)? {
+        // Taken BEFORE the read, so a write between the read and the record cannot be credited
+        // to this decode (`DecodableFileMemory.remember(path:byteCount:unchangedSince:)`).
+        let primaryBefore = DecodableFileMemory.Identity(path: primaryURL.path)
+        guard let data = try? io.read(primaryURL, .readPrimary) else { return nil }
+        let proveBackup = backupExists && !decodableMemory.isProvenDecodable(path: backupURL.path)
+        let decoded = DecodedValue<Value>()
+        DispatchQueue.concurrentPerform(iterations: proveBackup ? 2 : 1) { lane in
+            if lane == 0 {
+                decoded.value = try? decoder.decode(Value.self, from: data)
+            } else {
+                proveDecodable(backupURL, phase: .readBackup)
+            }
+        }
+        guard let value = decoded.value else { return nil }
+        decodableMemory.remember(path: primaryURL.path, byteCount: data.count, unchangedSince: primaryBefore)
+        return (data, value)
+    }
+
+    /// Reads and decodes `url` only to record, in F211's memory, that it decodes (F526).
+    private func proveDecodable(_ url: URL, phase: StoreWritePhase) {
+        let before = DecodableFileMemory.Identity(path: url.path)
+        guard before != nil,
+              let data = try? io.read(url, phase),
+              (try? decoder.decode(Value.self, from: data)) != nil
+        else { return }
+        decodableMemory.remember(path: url.path, byteCount: data.count, unchangedSince: before)
+    }
+
     /// Returns normally **if and only if** `value` is durable at `primaryURL` (F190).
     ///
     /// Every existing call site is `try store.save(x); errorMessage = nil`, so anything weaker than
@@ -399,7 +464,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         sweepOurOwnStaleTemporaries()
 
         // 2. encode — no IO, so an encoding failure changes nothing on disk.
-        let newData = try encoder.encode(value)
+        let newData = try encode(value)
         let newFingerprint = io.fingerprint(newData)
 
         // 3. classify — read-only, and read each file AT MOST ONCE.
@@ -420,7 +485,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         }
         let primaryFingerprint = primaryBytes.map { io.fingerprint($0) }
 
-        // The backup is NOT read when this process has already proved it decodable. Its *bytes* are
+        // The backup is NOT read when this process has already proved it decodable — by a save's
+        // rotation, or since F526 by the load, which proves it beside the primary. Its *bytes* are
         // never used any more — the rotation is a clone of the primary — so only the *proof* is
         // needed, and the identity tuple is exactly that proof. A genuine extension of F211, and it
         // is safe for the same reason: a foreign write moves the inode or the ctime and misses.
@@ -1364,7 +1430,21 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         return data
     }
 
-    private var encoder: JSONEncoder {
+    private var encoder: JSONEncoder { Self.makeEncoder() }
+
+    /// The value's bytes (F526): element by element on every core when this store opted in and holds
+    /// an array (`ConcurrentArrayEncoding`), the whole value at once otherwise. The same bytes
+    /// either way.
+    private func encode(_ value: Value) throws -> Data {
+        if encodesElementsConcurrently, let elements = value as? any ConcurrentlyEncodableArray {
+            return try elements.encodedConcurrently(makeEncoder: Self.makeEncoder)
+        }
+        return try encoder.encode(value)
+    }
+
+    /// The one configuration every store writes with. A function rather than a shared instance:
+    /// element-wise encoding gives each lane its own encoder.
+    static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
