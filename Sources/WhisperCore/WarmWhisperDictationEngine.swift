@@ -959,9 +959,27 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
 
 /// Cold fallback: one `whisper` CLI run per clip. No warm model — used only when the helper
 /// cannot start. Reuses the existing, battle-tested `LocalWhisperClient`.
-public struct BatchWhisperDictationEngine: DictationEngine {
+///
+/// **Its model's first-use download is reported, and bounded (F860).** On a Mac without the warm
+/// helper (Intel), openai-whisper downloads the turbo checkpoint (about 1.6 GB) inside the first
+/// dictation's CLI run, and that was silent under "Transcribing…" with no limit: its `_download`
+/// calls `urllib.request.urlopen(url)` with no timeout (`whisper/__init__.py:73` in the pinned
+/// 20250625, and on github.com/openai/whisper main, 2026-10-08), so a stalled connection waited
+/// forever. The CLI's download bar (`unit="iB"`, `:74-80`) is already read by
+/// `WhisperProgressParser` as `.downloadingModel`, so this engine now tells the same observers the
+/// warm engine tells (F823, F859) — the app then shows the download in the pill, the Dictation tab
+/// and the menu, as it does on Apple silicon — and stops the run once the bar has not moved for
+/// `downloadStallTimeout`, as F522's window does for the helper. The CLI contract is unchanged.
+public final class BatchWhisperDictationEngine: DictationEngine, @unchecked Sendable {
     private let client: LocalWhisperClient
     private let model: WhisperModel
+    private let lock = NSLock()
+    private var downloadObserver: DictationModelDownloadObserver?
+    private var downloadProgressObserver: DictationModelDownloadProgressObserver?
+
+    /// How long the download bar may stand still before the run is stopped — the warm engine's
+    /// `downloadStallTimeout` (F522). Internal so a test can shorten it.
+    var downloadStallTimeout: TimeInterval = 180
 
     public init(client: LocalWhisperClient, model: WhisperModel = .turbo) {
         self.client = client
@@ -969,6 +987,14 @@ public struct BatchWhisperDictationEngine: DictationEngine {
     }
 
     public func warmUp() async throws {}
+
+    public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
+        lock.withLock { downloadObserver = observer }
+    }
+
+    public func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {
+        lock.withLock { downloadProgressObserver = observer }
+    }
 
     public func transcribe(
         wavAt url: URL,
@@ -980,7 +1006,31 @@ public struct BatchWhisperDictationEngine: DictationEngine {
             language: language,
             keyterms: initialPrompt.map { [$0] } ?? []
         )
-        let result = try await client.transcribe(recordingAt: url, options: options)
+        let watch = lock.withLock {
+            CheckpointDownloadWatch(
+                observer: downloadObserver,
+                progressObserver: downloadProgressObserver,
+                stallTimeout: downloadStallTimeout
+            )
+        }
+        // However the run ends — the reply, the stall, an error, a cancellation — a download that
+        // was shown is ended, so the app can never be left showing one (F823's rule).
+        defer { watch.end() }
+        let client = self.client
+        let result = try await withThrowingTaskGroup(of: TranscriptionResult?.self) { group in
+            group.addTask {
+                try await client.transcribe(recordingAt: url, options: options) { watch.observe($0) }
+            }
+            group.addTask {
+                try await watch.waitForStall()
+                return nil
+            }
+            defer { group.cancelAll() }
+            while let finished = try await group.next() {
+                if let finished { return finished }
+            }
+            throw CancellationError()
+        }
         return DictationResult(
             text: result.text,
             languageCode: result.languageCode,
@@ -989,4 +1039,82 @@ public struct BatchWhisperDictationEngine: DictationEngine {
     }
 
     public func shutdown() {}
+}
+
+/// One CLI run's view of its checkpoint download (F860): whether the download bar is showing, when
+/// it last moved, and the figure last reported.
+private final class CheckpointDownloadWatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private let observer: DictationModelDownloadObserver?
+    private let progressObserver: DictationModelDownloadProgressObserver?
+    private let stallTimeout: TimeInterval
+    private var downloading = false
+    private var lastMoved = ContinuousClock.now
+    private var lastPercent: Int?
+
+    init(
+        observer: DictationModelDownloadObserver?,
+        progressObserver: DictationModelDownloadProgressObserver?,
+        stallTimeout: TimeInterval
+    ) {
+        self.observer = observer
+        self.progressObserver = progressObserver
+        self.stallTimeout = stallTimeout
+    }
+
+    /// One parsed progress update from the CLI. The parser reports a bar only when it changed, so
+    /// each download update is movement.
+    func observe(_ progress: LocalTranscriptionProgress) {
+        var started = false
+        var ended = false
+        var figure: DictationModelDownloadProgress?
+        lock.withLock {
+            if progress.phase == .downloadingModel {
+                lastMoved = ContinuousClock.now
+                if !downloading { downloading = true; started = true }
+                // Whole percent only: the bar redraws ten times a second, the app needs a percent.
+                if let fraction = progress.fractionCompleted {
+                    let next = DictationModelDownloadProgress(fractionCompleted: fraction)
+                    if next.percent != lastPercent {
+                        lastPercent = next.percent
+                        figure = next
+                    }
+                }
+            } else if downloading, progress.phase != .preparing, progress.phase != .loadingModel {
+                downloading = false
+                ended = true
+            }
+        }
+        // Outside the lock, in order: the start before its first figure.
+        if started { observer?(true) }
+        if let figure { progressObserver?(figure) }
+        if ended { observer?(false) }
+    }
+
+    /// Ends a download that is still showing. Idempotent.
+    func end() {
+        let wasDownloading = lock.withLock {
+            defer { downloading = false }
+            return downloading
+        }
+        if wasDownloading { observer?(false) }
+    }
+
+    /// Returns only by throwing: `DictationModelDownloadError` once a showing download has not moved
+    /// for `stallTimeout`, or `CancellationError` when the run ends first.
+    func waitForStall() async throws {
+        let check = Duration.seconds(min(1, max(0.05, stallTimeout / 4)))
+        while true {
+            try await Task.sleep(for: check)
+            let stalled = lock.withLock {
+                downloading && ContinuousClock.now - lastMoved >= .seconds(stallTimeout)
+            }
+            if stalled {
+                throw DictationModelDownloadError(
+                    "The dictation model download made no progress for \(Int(saturating: stallTimeout.rounded())) seconds and was stopped. "
+                        + "Check your connection and try again."
+                )
+            }
+        }
+    }
 }
