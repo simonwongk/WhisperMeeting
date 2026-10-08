@@ -1230,9 +1230,15 @@ final class MeetingStore: ObservableObject {
         /// F662: Stop pressed while the banner was up left the meeting out of the list, and a
         /// transcript or summary that finished meanwhile was thrown away, all without a word.
         ///
-        /// Its mutation may therefore run on two copies of a record, so it must be a function of the
-        /// copy it is given. A result never renames a meeting, which is what lets the offer's message,
-        /// written when it was made, keep naming the right meetings.
+        /// When its own save loses to the other copy, `update` makes it again to the copy the re-read
+        /// found and saves that (`saveResult`), rather than leaving it in the offer as the person's
+        /// change for Use the Other Copy to drop; only a second loss leaves it offered.
+        ///
+        /// Its mutation may therefore run on more than one copy of a record, so it must decide from
+        /// the copy it is given, never from a value read off the list beforehand — the review found
+        /// three that did (cancellation, failure, rebuild) and they now read their own copy. A result
+        /// never renames a meeting, which is what lets the offer's message, written when it was made,
+        /// keep naming the right meetings.
         case result
     }
 
@@ -1340,15 +1346,58 @@ final class MeetingStore: ObservableObject {
     /// - Parameter kind: `.result` for work the app finished on its own — a transcription's status or
     ///   transcript, a summary, a rebuilt recording — which is saved even while a conflict offer is
     ///   outstanding, and applied to the offered copy of this meeting as well (F662).
+    ///
+    ///   A result whose save loses a race is made again to the copy the re-read found, and saved
+    ///   (see `saveResult`) — never left for the recovery to offer as the person's change.
     func update(id: UUID, as kind: WriteKind = .edit, _ mutation: (inout MeetingRecord) -> Void) {
         guard writeIsAllowed(kind) else { return }
+        let offerBefore = conflictOffer
         applyToOfferedCopies(of: id, mutation)
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        let recordBefore = meetings[index]
         mutation(&meetings[index])
         // As in `upsert`: the version tracks the content, and the content just changed (F188).
         meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
-        persistMeetingsOrRecover()
+        if kind == .result {
+            saveResult(id: id, at: index, before: recordBefore, offerBefore: offerBefore, mutation)
+        } else {
+            persistMeetingsOrRecover()
+        }
         scheduleNotesSidecarWrite(for: id)
+    }
+
+    /// Saves a `.result` already applied to `meetings[index]` (and to the offered copies), and, when
+    /// that save loses to another copy, makes the result again to the copy the re-read found and
+    /// saves once more (F662, the lane-Q review's follow-up A).
+    ///
+    /// Left to `persistMeetingsOrRecover()`, the re-read replaced the list's copy that carried the
+    /// result, so the result survived only as an "edit" in the offer — named "your changes" in the
+    /// banner — and Use the Other Copy erased a finished transcript. A result is true of the meeting
+    /// whichever copy is kept, so it is taken out before the recovery (which then offers only the
+    /// person's own changes, and folds an outstanding offer as before) and put on the re-read copy and
+    /// every offered copy afterwards — the shape F667 gives a new meeting. If that second save loses
+    /// too, the recovery it starts sees the result as this session's change and offers it: a bounded
+    /// fallback that is deferred rather than lost.
+    private func saveResult(
+        id: UUID, at index: Int, before recordBefore: MeetingRecord, offerBefore: ConflictOffer?,
+        _ mutation: (inout MeetingRecord) -> Void
+    ) {
+        guard !persistMeetings() else { return }
+        // An ordinary failure (a full disk) keeps the result in memory for the next save, as any
+        // failed change is kept; only a race replaces the list's copy.
+        guard writeConflict?.isRace == true else { return }
+        meetings[index] = recordBefore
+        conflictOffer = offerBefore
+        beginConflictRecovery()
+        applyToOfferedCopies(of: id, mutation)
+        // Nothing more is written when the re-read left the library refusing changes — the result
+        // then survives only in an offered copy, if there is one — or when the other copy deleted
+        // the meeting, whose result has nothing left to describe.
+        guard !isDegraded, !isRestoringLibrary,
+              let reloaded = meetings.firstIndex(where: { $0.id == id }) else { return }
+        mutation(&meetings[reloaded])
+        meetings[reloaded].schemaVersion = MeetingRecord.currentSchemaVersion
+        persistMeetingsOrRecover()
     }
 
     /// Repoints a meeting at a new recording file and reports whether the index save landed (F795).

@@ -6811,8 +6811,10 @@ final class AppModel: ObservableObject {
     }
 
     private func handleCancellation(id: UUID) {
-        let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
+        // Judged on the copy being written, not the list's (F662): while a conflict banner is up a
+        // result also runs on the offered copy, and the two can disagree on holding a transcript.
         store.update(id: id, as: .result) {
+            let keepsTranscript = Self.holdsTranscript($0)
             $0.status = keepsTranscript ? .completed : .recorded
             $0.errorMessage = keepsTranscript
                 ? nil
@@ -6891,12 +6893,17 @@ final class AppModel: ObservableObject {
             if recordingIsSafe { message += " The recording is safe on this Mac." }
         }
         // F515: a failed re-run keeps the transcript it would have replaced, so the meeting stays
-        // completed and the alert says the old one is still there.
-        let keepsTranscript = store.meeting(id: id).map(Self.holdsTranscript) ?? false
-        if keepsTranscript { message += " The previous transcript is unchanged." }
+        // completed and the alert says the old one is still there. The record is judged on the copy
+        // being written (F662) — a banner's offered copy can hold a transcript the list's does not —
+        // and the alert on the list's copy, which is the one on screen.
+        let stored = message
+        if store.meeting(id: id).map(Self.holdsTranscript) ?? false {
+            message += " The previous transcript is unchanged."
+        }
         store.update(id: id, as: .result) {
+            let keepsTranscript = Self.holdsTranscript($0)
             $0.status = keepsTranscript ? .completed : .failed
-            $0.errorMessage = keepsTranscript ? nil : message
+            $0.errorMessage = keepsTranscript ? nil : stored
         }
         transcriptionProgress[id] = nil
         alertMessage = message
@@ -7075,10 +7082,11 @@ extension AppModel {
                 alertMessage = "The source tracks for this meeting held no audio to rebuild. Nothing was changed."
                 return
             }
-            let previousDuration = store.meeting(id: request.meetingID)?.duration ?? 0
             // A result (F662): the audio on disk is already the rebuilt one, so its record is saved
-            // even while a conflict banner is up, and into the offered copy too.
+            // even while a conflict banner is up, and into the offered copy too — each copy compared
+            // against its own previous duration, read before it is replaced.
             store.update(id: request.meetingID, as: .result) { meeting in
+                let previousDuration = meeting.duration
                 meeting.duration = rebuilt.duration
                 meeting.recoveryWarning = Self.recoveryWarning(for: rebuilt)
                 // A second rebuild is still a rebuild: re-declare it, so a meeting whose first

@@ -160,10 +160,13 @@ func summaryDuringAnOfferIsSaved() async throws {
 /// A result saved while the banner is up can itself lose: the other copy saved again in between.
 /// Before F662 there was no such save; with one, `beginConflictRecovery()`'s single-offer guard would
 /// have left the raw conflict and the generic "could not be saved" alert dangling over a stale token —
-/// F619's original problem. It is folded into the offer that is already up instead.
+/// F619's original problem. The race folds into the offer already up — and the result itself is made
+/// again to the copy the re-read found and saved, not offered as the person's change. The first cut
+/// offered it ("Keep My Edit saves your changes to “Review”"), so Use the Other Copy erased a finished
+/// transcript (the lane-Q review's probe, now this test).
 @MainActor
-@Test("A result whose own save loses while the banner is up is folded into that offer, not dropped (F662)")
-func aResultThatLosesAgainIsFoldedIntoTheOffer() throws {
+@Test("A result whose own save loses while the banner is up is saved onto the re-read copy, and neither answer drops it (F662)", arguments: [true, false])
+func aResultThatLosesAgainIsSavedOntoTheReloadedCopy(keep: Bool) throws {
     let (model, root, cleanup) = try makeModel()
     defer { cleanup() }
     let store = model.store
@@ -179,16 +182,92 @@ func aResultThatLosesAgainIsFoldedIntoTheOffer() throws {
     #expect(store.writeConflict == nil, "the second race was left raw instead of folded into the offer")
     let offer = try #require(store.conflictOffer)
     #expect(offer.delta.contains { $0.id == standup && $0.title == renamedHere }, "the first offer's edit was lost")
-    #expect(offer.delta.contains { $0.id == review && $0.transcriptText == transcript.text }, "the result was dropped")
+    #expect(!offer.delta.contains { $0.id == review }, "the result was offered as the person's change: \(offer.message)")
     #expect(store.meeting(id: third) != nil, "the library was not re-read")
+    #expect(store.meeting(id: review)?.transcriptText == transcript.text, "the result is not in the list")
+    #expect(onDisk(root, review)?.transcriptText == transcript.text, "the result was not saved onto the re-read library")
 
-    store.keepConflictedEdit()
+    if keep { store.keepConflictedEdit() } else { store.discardConflictedEdit() }
 
     #expect(store.writeConflict == nil)
     #expect(store.conflictOffer == nil)
-    #expect(onDisk(root, standup)?.title == renamedHere)
-    #expect(onDisk(root, review)?.transcriptText == transcript.text)
-    #expect(onDisk(root, third) != nil, "Keep overwrote the other copy's meeting")
+    #expect(onDisk(root, standup)?.title == (keep ? renamedHere : renamedThere))
+    #expect(onDisk(root, review)?.transcriptText == transcript.text, keep ? "Keep lost the transcript" : "Use the Other Copy erased the transcript")
+    #expect(store.meeting(id: review)?.transcriptText == transcript.text)
+    #expect(onDisk(root, third) != nil, "an answer overwrote the other copy's meeting")
+}
+
+/// The same without a banner: a transcript whose save loses to the other copy is made again to the
+/// re-read copy and saved, rather than raising a banner that offers it as the person's change.
+@MainActor
+@Test("A result whose save loses with no banner up is saved onto the re-read copy without asking (F662)")
+func aResultThatLosesWithNoOfferIsSavedWithoutAsking() throws {
+    let (model, root, cleanup) = try makeModel()
+    defer { cleanup() }
+    let store = model.store
+    let review = UUID()
+    store.upsert(MeetingRecord(id: review, title: "Review", status: .processing))
+    try otherCopyCommits(in: root) { $0.map { var r = $0; r.title = "Review, renamed by the other copy"; return r } }
+
+    model.apply(result: transcript, to: review)
+
+    #expect(store.conflictOffer == nil, "a result was offered as a question: \(store.conflictOffer?.message ?? "")")
+    #expect(store.writeConflict == nil)
+    let saved = try #require(onDisk(root, review))
+    #expect(saved.title == "Review, renamed by the other copy", "the other copy's rename was overwritten")
+    #expect(saved.transcriptText == transcript.text, "the transcript was not saved onto the re-read copy")
+    #expect(saved.status == .completed)
+}
+
+/// Follow-up B of the lane-Q review: a result's mutation runs on two copies while the banner is up —
+/// the list's (the other copy's version) and the offered one (this window's). Cancellation and failure
+/// decided "does it still hold a transcript?" from the list's copy and wrote that answer into both, so
+/// when the two disagreed Keep saved `.failed` and an error over a transcript the person had kept.
+/// Each copy is now judged by itself.
+@MainActor
+@Test("A transcription failing while the banner is up judges each copy by its own transcript (F662)")
+func failureWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F662-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let suite = "F662.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60), recorder: AudioCaptureEngine(),
+        defaults: defaults, whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
+    )
+    struct EngineFailed: Error {}
+    model.runTranscriptionEngineOverride = { _, _ in throw EngineFailed() }
+    let store = model.store
+    let id = UUID()
+    store.upsert(MeetingRecord(id: id, title: "Standup", recordingPath: "none", status: .recorded))
+    // This window types a transcript; the other copy renames the meeting first, so the typing is
+    // offered back — the offered copy holds a transcript, the list's copy does not.
+    try otherCopyCommits(in: root) { $0.map { var r = $0; r.title = renamedThere; return r } }
+    store.editTranscript(id: id, text: "What I typed while it was recorded.")
+    store.flushPendingEdits()
+    let offer = try #require(store.conflictOffer, "fixture: the typed transcript lost and was offered back")
+    try #require(offer.delta.first { $0.id == id }?.transcriptText == "What I typed while it was recorded.")
+    try #require(store.meeting(id: id)?.transcriptText.isEmpty == true)
+
+    model.beginTranscription(id: id)
+    let deadline = Date().addingTimeInterval(30)
+    while model.hasActiveTranscription || model.hasQueuedTranscriptions || store.meeting(id: id)?.status == .processing,
+          Date() < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    try #require(store.meeting(id: id)?.status == .failed, "fixture: the run failed and the list's copy, with no transcript, says so")
+
+    let kept = try #require(store.conflictOffer?.delta.first { $0.id == id })
+    #expect(kept.status == .completed, "the copy holding a transcript was marked \(kept.status) from the other copy's")
+    #expect(kept.errorMessage == nil, "the copy holding a transcript was given the failure as if it had none")
+    store.keepConflictedEdit()
+    let saved = try #require(onDisk(root, id))
+    #expect(saved.transcriptText == "What I typed while it was recorded.")
+    #expect(saved.status == .completed, "Keep saved a kept transcript as \(saved.status)")
 }
 
 /// The behavioural tests above drive three of the app's result writers. The rest — an import, a
