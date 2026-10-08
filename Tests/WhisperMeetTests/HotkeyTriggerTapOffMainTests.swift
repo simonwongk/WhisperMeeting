@@ -249,9 +249,33 @@ func theRealMonitorRoutesItsActiveTapThroughTheSwitch() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/HotkeyMonitor.swift")
     #expect(source.contains("activeTapSwitch.arm(port: port, source: source)"))
     #expect(source.contains("var activeTapDisarmer: @Sendable () -> Void { { [activeTapSwitch] in activeTapSwitch.disarm() } }"))
-    // `removeTap` lets go through the switch, so a tap the probe already let go of is not torn down twice.
+    // `removeTap` lets go through the switch, so a tap the probe already let go of is not torn down
+    // twice, and one the probe is letting go of is waited for (`disarmDetachesTheTapInsideItsLock`).
     let removeTap = try #require(source.range(of: "private func removeTap()"))
     let body = source[removeTap.upperBound...].prefix(900)
     #expect(body.contains("activeTapSwitch.disarm()"))
     #expect(!body.contains("CFMachPortInvalidate(triggerTap.port)"))
+}
+
+/// The review of lane W (2026-10-07, MUST-FIX): `disarm()` claimed the tap under its lock and let
+/// the lock go before detaching it, so a second caller — `removeTap` on main, racing the off-main
+/// probe — found nothing armed, returned at once, and queued the context's release while the tap's
+/// source was still on the run loop: the next key event would read freed memory. No test can make a
+/// real tap, so the shape is pinned: all three calls inside the lock, nothing after it.
+@Test("disarm detaches the tap while it holds the lock, so a second caller waits until the tap is really gone (F689)")
+func disarmDetachesTheTapInsideItsLock() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/HotkeyMonitor.swift")
+    let start = try #require(source.range(of: "func disarm() {"))
+    let rest = source[start.upperBound...]
+    let end = try #require(rest.range(of: "\n    }\n"), "disarm()'s closing brace")
+    let body = String(rest[..<end.lowerBound])
+    let lockOpens = try #require(body.range(of: "lock.withLock {"), "disarm() does not detach inside lock.withLock { … }")
+    for call in ["CFRunLoopRemoveSource(", "CGEvent.tapEnable(", "CFMachPortInvalidate("] {
+        let at = try #require(body.range(of: call), "disarm() no longer calls \(call)")
+        #expect(lockOpens.upperBound <= at.lowerBound, "\(call) runs after the lock is let go")
+    }
+    // After the last call, only the closures' closing braces: nothing outside the lock.
+    let last = try #require(body.range(of: "CFMachPortInvalidate("))
+    let after = body[last.upperBound...].filter { !$0.isWhitespace }
+    #expect(after == "tap.port)}", "something runs after the lock in disarm(): \(after)")
 }

@@ -813,6 +813,9 @@ final class DictationController: ObservableObject {
                 do { try await pause(interval) } catch { return }
                 guard !Task.isCancelled else { return }
                 guard !probe() else { continue }
+                // Cancelled while probing (the trigger was re-armed or switched off): the tap this
+                // check was for may already be replaced, and the new one has a check of its own.
+                guard !Task.isCancelled else { return }
                 disarm()
                 log.error("an active tap can no longer be created; the trigger's tap was let go off the main thread")
                 await self?.activeTapRevoked(generation: generation)

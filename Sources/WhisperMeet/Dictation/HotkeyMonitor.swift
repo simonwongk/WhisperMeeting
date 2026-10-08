@@ -344,7 +344,9 @@ final class HotkeyMonitor: HotkeyMonitoring {
         if let triggerTap {
             let loop = TriggerTapThread.runLoop
             triggerTap.context.takeUnretainedValue().isCurrent = false
-            // Removes, disables and invalidates it, unless the off-main probe already has (F689).
+            // Removes, disables and invalidates it, unless the off-main probe already has (F689) —
+            // and if the probe is doing so right now, returns only once it has, so the release
+            // queued below can never run while the tap's source is still on the run loop.
             activeTapSwitch.disarm()
             // After a callback that may be running now: the tap thread runs one thing at a time.
             let context = triggerTap.context
@@ -569,7 +571,12 @@ struct TriggerKeyFilter: Equatable {
 /// the tap that every key-down and key-up is waiting on. The calls are the ones `removeTap` always
 /// made from the main thread for a tap serviced on `TriggerTapThread` — remove the source from that
 /// thread's run loop, disable the tap, invalidate its port — so making them from another thread is
-/// no new kind of call. Done once: the lock hands the tap to whichever caller comes first.
+/// no new kind of call. Done once, and done INSIDE the lock: a second caller returns only once the
+/// tap is really gone. `removeTap` relies on that — it queues the tap context's release as soon as
+/// `disarm()` returns — and when the lock was let go before detaching, a `removeTap` racing the
+/// off-main probe found nothing armed, returned at once, and the release could run while the
+/// source was still on the run loop (the review of lane W). Nothing in the region can wait on this
+/// lock: the tap's callback never takes it, and none of the three calls runs a callback of ours.
 final class ActiveTapSwitch: @unchecked Sendable {
     private let lock = NSLock()
     private var armed: (port: CFMachPort, source: CFRunLoopSource)?
@@ -579,13 +586,13 @@ final class ActiveTapSwitch: @unchecked Sendable {
     }
 
     func disarm() {
-        guard let tap = lock.withLock({ () -> (port: CFMachPort, source: CFRunLoopSource)? in
-            defer { armed = nil }
-            return armed
-        }) else { return }
-        CFRunLoopRemoveSource(TriggerTapThread.runLoop, tap.source, .commonModes)
-        CGEvent.tapEnable(tap: tap.port, enable: false)
-        CFMachPortInvalidate(tap.port)
+        lock.withLock {
+            guard let tap = armed else { return }
+            armed = nil
+            CFRunLoopRemoveSource(TriggerTapThread.runLoop, tap.source, .commonModes)
+            CGEvent.tapEnable(tap: tap.port, enable: false)
+            CFMachPortInvalidate(tap.port)
+        }
     }
 }
 
