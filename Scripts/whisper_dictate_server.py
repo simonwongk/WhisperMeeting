@@ -87,7 +87,8 @@ def go_offline() -> None:
 # While bytes arrive it prints `{"downloading": true}` (at most once a second) and closes with
 # `{"downloading": false}`; the app reads the first as "the wait is now no-progress-for-N-seconds"
 # rather than a flat budget. Only the resumable path is responsible for those reports being honest —
-# they are printed as chunks are written, never from a timer.
+# they are printed as chunks are written, never from a timer. Since F859 they also carry
+# `downloadedBytes`/`totalBytes` when the resumable path knows them, for the app's percentage.
 
 DICTATION_MODEL_FILES = ("config.json", "weights.safetensors")
 
