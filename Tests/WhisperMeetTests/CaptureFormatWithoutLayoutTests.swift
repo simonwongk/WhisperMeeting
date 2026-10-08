@@ -22,93 +22,29 @@ import Testing
 // could not: the writer was file-private. Its own `append` is what is under test here; the
 // SCStream handler around it is unchanged and still not driven (F402's reachability note).
 
-private let captureRate: Double = 48_000
+private let captureRate: Double = CapturedSampleBuffer.rate
 private let toneAmplitude: Float = 0.5
 
 /// A captured buffer as ScreenCaptureKit hands one over: float32, deinterleaved, `channels` wide,
 /// a 440 Hz tone in the last channel and silence in the rest, and — unless `layoutTag` is given — a
-/// format description with no channel layout at all.
+/// format description with no channel layout at all. Built by the shared `CapturedSampleBuffer`.
 private func capturedBuffer(
     channels: UInt32,
     frames: Int,
     startFrame: Int = 0,
     layoutTag: AudioChannelLayoutTag? = nil
 ) throws -> CMSampleBuffer {
-    var asbd = AudioStreamBasicDescription(
-        mSampleRate: captureRate, mFormatID: kAudioFormatLinearPCM,
-        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
-        mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
-        mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0
+    try CapturedSampleBuffer.make(
+        channels: channels, frames: frames, startFrame: startFrame, layoutTag: layoutTag, amplitude: toneAmplitude
     )
-    var description: CMAudioFormatDescription?
-    let created: OSStatus
-    if let layoutTag {
-        var layout = AudioChannelLayout(
-            mChannelLayoutTag: layoutTag, mChannelBitmap: [], mNumberChannelDescriptions: 0,
-            mChannelDescriptions: AudioChannelDescription()
-        )
-        created = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: MemoryLayout<AudioChannelLayout>.size,
-            layout: &layout, magicCookieSize: 0, magicCookie: nil, extensions: nil,
-            formatDescriptionOut: &description
-        )
-    } else {
-        created = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
-            magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &description
-        )
-    }
-    try #require(created == noErr, "CMAudioFormatDescriptionCreate: \(created)")
-    let format = try #require(description)
-
-    var sampleBuffer: CMSampleBuffer?
-    let made = CMAudioSampleBufferCreateWithPacketDescriptions(
-        allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false, makeDataReadyCallback: nil,
-        refcon: nil, formatDescription: format, sampleCount: frames,
-        presentationTimeStamp: CMTime(value: CMTimeValue(startFrame), timescale: CMTimeScale(captureRate)),
-        packetDescriptions: nil, sampleBufferOut: &sampleBuffer
-    )
-    try #require(made == noErr, "CMAudioSampleBufferCreateWithPacketDescriptions: \(made)")
-    let buffer = try #require(sampleBuffer)
-
-    // One `AudioBuffer` per channel, deinterleaved. `CMSampleBufferSetDataBufferFromAudioBufferList`
-    // copies the data into a new block buffer (`CMSampleBuffer.h`: "Buffer list whose data will be
-    // copied into the new CMBlockBuffer"), so the arrays only need to outlive the call.
-    var channelData: [[Float]] = (0..<Int(channels)).map { _ in [Float](repeating: 0, count: frames) }
-    for frame in 0..<frames {
-        let t = Double(startFrame + frame) / captureRate
-        channelData[Int(channels) - 1][frame] = toneAmplitude * Float(sin(2 * Double.pi * 440 * t))
-    }
-    let list = AudioBufferList.allocate(maximumBuffers: Int(channels))
-    defer { free(list.unsafeMutablePointer) }
-    var copies: [UnsafeMutableRawPointer] = []
-    defer { copies.forEach { $0.deallocate() } }
-    for index in 0..<Int(channels) {
-        let raw = UnsafeMutableRawPointer.allocate(byteCount: frames * 4, alignment: 16)
-        copies.append(raw)
-        channelData[index].withUnsafeBytes { source in
-            raw.copyMemory(from: source.baseAddress!, byteCount: frames * 4)
-        }
-        list[index] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4), mData: raw)
-    }
-    let status = CMSampleBufferSetDataBufferFromAudioBufferList(
-        buffer, blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
-        flags: 0, bufferList: list.unsafePointer
-    )
-    try #require(status == noErr, "CMSampleBufferSetDataBufferFromAudioBufferList: \(status)")
-    return buffer
 }
 
 private func temporaryTrackURL() throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("F856-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory.appendingPathComponent("microphone-audio.f32")
+    try CapturedSampleBuffer.temporaryTrackURL("F856")
 }
 
 private func samples(of track: FloatTrack) throws -> [Float] {
-    let data = try Data(contentsOf: track.url)
-    return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    try CapturedSampleBuffer.samples(of: track)
 }
 
 @Test("A 4-channel buffer with no channel layout is recorded, averaged, not a crash (F856)")

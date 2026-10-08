@@ -1186,20 +1186,48 @@ final class FloatTrackWriter {
             throw AudioCaptureError.conversionFailed("Could not read the captured audio's format")
         }
 
-        let maximumBuffers = max(1, Int(inputFormat.channelCount))
-        let bufferList = AudioBufferList.allocate(maximumBuffers: maximumBuffers)
-        defer { bufferList.unsafeMutablePointer.deallocate() }
+        // The list is sized by asking CoreMedia, not by counting channels (F875). `CMSampleBuffer.h:875`:
+        // `bufferListOut` is "Allocated by the caller, sized as specified by bufferListSizeNeededOut".
+        // One buffer per channel is right only for a deinterleaved buffer. An interleaved one has ONE
+        // buffer holding every channel, and CoreMedia answers any other size, larger included, with
+        // `kCMSampleBufferError_ArrayTooSmall` (-12737; the header's "insufficient" undersells it). So
+        // an interleaved microphone with 2 or more channels threw on every buffer and recorded nothing.
+        // Both calls pass the same flags, so the size asked about is the size used.
+        let listFlags = UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment)
+        var bufferListSize = 0
+        let sizeStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: &bufferListSize,
+            bufferListOut: nil,
+            bufferListSize: 0,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: listFlags,
+            blockBufferOut: nil
+        )
+        guard sizeStatus == noErr, bufferListSize >= MemoryLayout<AudioBufferList>.size else {
+            throw AudioCaptureError.conversionFailed("Could not read captured audio (\(sizeStatus))")
+        }
+        let listStorage = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferListSize, alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { listStorage.deallocate() }
+        let bufferList = listStorage.bindMemory(to: AudioBufferList.self, capacity: 1)
         var retainedBlockBuffer: CMBlockBuffer?
         let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sampleBuffer,
             bufferListSizeNeededOut: nil,
-            bufferListOut: bufferList.unsafeMutablePointer,
-            bufferListSize: AudioBufferList.sizeInBytes(maximumBuffers: maximumBuffers),
+            bufferListOut: bufferList,
+            bufferListSize: bufferListSize,
             blockBufferAllocator: kCFAllocatorDefault,
             blockBufferMemoryAllocator: kCFAllocatorDefault,
-            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
+            flags: listFlags,
             blockBufferOut: &retainedBlockBuffer
         )
+        // Checked before anything reads the list: on failure CoreMedia has filled nothing in.
+        guard status == noErr else {
+            throw AudioCaptureError.conversionFailed("Could not read captured audio (\(status))")
+        }
         // Inside the bridge (F385): `AVAudioBuffer.h` documents `initWithPCMFormat:bufferListNoCopy:`
         // as raising "if the format is not PCM" — and `inputFormat` is not a format this code
         // chooses, it is whatever `CMAudioFormatDescription` the captured buffer carries, a device
@@ -1211,7 +1239,7 @@ final class FloatTrackWriter {
         let completed = WMRunCatchingObjCExceptions({
             rawInputBuffer = AVAudioPCMBuffer(
                 pcmFormat: inputFormat,
-                bufferListNoCopy: bufferList.unsafePointer,
+                bufferListNoCopy: bufferList,
                 deallocator: nil
             )
         }, &raised)
@@ -1220,8 +1248,8 @@ final class FloatTrackWriter {
                 "Could not read captured audio (\(raised?.localizedDescription ?? "the format was rejected"))"
             )
         }
-        guard status == noErr, let inputBuffer = rawInputBuffer else {
-            throw AudioCaptureError.conversionFailed("Could not read captured audio (\(status))")
+        guard let inputBuffer = rawInputBuffer else {
+            throw AudioCaptureError.conversionFailed("Could not read captured audio (the buffer list was refused)")
         }
         // `clamping:`, not a bare conversion: `numSamples` is a signed `CMItemCount` and
         // `UInt32(Int)` traps on a negative or oversized value (F376's sweep).
