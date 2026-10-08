@@ -2428,13 +2428,12 @@ final class MeetingStore: ObservableObject {
         let quarantine = names.filter {
             $0.hasPrefix("meetings.unreadable-") || $0.hasPrefix("meetings.backup.unreadable-")
         }
+        // Real folders only (F664, the lane review's follow-up): `fileExists(isDirectory:)` follows a
+        // link, so a `.pre-restore-*` link to a folder elsewhere was admitted, and the week-later
+        // shred rewrote the `meetings.json` it pointed at. A restore never writes a link.
         let snapshots = names.filter { name in
-            var isDirectory: ObjCBool = false
-            return name.hasPrefix(".pre-restore-")
-                && FileManager.default.fileExists(
-                    atPath: rootDirectory.appendingPathComponent(name).path, isDirectory: &isDirectory
-                )
-                && isDirectory.boolValue
+            name.hasPrefix(Self.restoreSnapshotPrefix)
+                && Self.isRealFolder(rootDirectory.appendingPathComponent(name, isDirectory: true))
         }
         return (quarantine.sorted(), snapshots.sorted())
     }
@@ -2638,7 +2637,8 @@ final class MeetingStore: ObservableObject {
     /// deleted after a restore used to keep both there for good, out of sight in the app. Only the
     /// deleted meeting's folder goes; a folder whose meeting is live, or that a live meeting's
     /// recording path points into, is never touched, and neither is a snapshot or `Recordings`
-    /// folder that is a link rather than a folder of its own.
+    /// folder that is a link rather than a folder of its own — for the index files as for the
+    /// recordings, since `sideCopiesOfTheIndex()` admits only real snapshot folders.
     ///
     /// Returns every copy that still holds, or may hold, one of the ids (F668): one whose cleaned bytes
     /// could not be written back (with the ids it held), one that does not parse as an index but
@@ -2693,7 +2693,6 @@ final class MeetingStore: ObservableObject {
         // this asks again rather than rely on it. A live meeting whose recording path points into a
         // snapshot (a hand-edited index) keeps that folder too.
         let live = Set(meetings.map(\.id))
-        let liveFolders = meetings.map { recordingURL(for: $0).standardizedFileURL.path }
         let fileManager = FileManager.default
         let isRealFolder = Self.isRealFolder
         var stuck: [StuckSideCopy] = []
@@ -2710,9 +2709,8 @@ final class MeetingStore: ObservableObject {
             for name in names {
                 guard let id = UUID(uuidString: name), ids.contains(id), !live.contains(id) else { continue }
                 let folder = recordings.appendingPathComponent(name, isDirectory: true)
-                let folderPath = folder.standardizedFileURL.path
-                guard !liveFolders.contains(where: { $0 == folderPath || $0.hasPrefix(folderPath + "/") })
-                else { continue }
+                // Compared without case, as F855's Remove compares (`liveMeetings`).
+                guard liveMeetings(withRecordingsInside: folder).isEmpty else { continue }
                 do {
                     try fileManager.removeItem(at: folder)
                 } catch {

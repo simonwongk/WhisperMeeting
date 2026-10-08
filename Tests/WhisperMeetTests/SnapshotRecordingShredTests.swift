@@ -171,6 +171,31 @@ func aLinkedSnapshotRecordingsFolderIsNotFollowed() throws {
     #expect(!exists(library.copy(of: library.secret, in: library.snapshots[1], lowercased: true)))
 }
 
+/// The lane review's F664 follow-up: the older half of the same pass — F457's rewrite of a snapshot's
+/// index files — admitted a `.pre-restore-*` name through `fileExists(isDirectory:)`, which follows a
+/// link, and rewrote `meetings.json` wherever the link pointed.
+@MainActor
+@Test("A restore snapshot that is a link has no index file rewritten through it (F664)")
+func aLinkedSnapshotsIndexIsNotRewrittenThroughIt() throws {
+    let library = try makeLibrary("linked-index")
+    defer { try? FileManager.default.removeItem(at: library.root) }
+    let elsewhere = library.root.appendingPathComponent("Elsewhere", isDirectory: true)
+    try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+    let index = try Data(contentsOf: library.root.appendingPathComponent("meetings.json"))
+    try index.write(to: elsewhere.appendingPathComponent("meetings.json"))
+    try FileManager.default.createSymbolicLink(
+        at: library.root.appendingPathComponent(".pre-restore-1790000900"), withDestinationURL: elsewhere
+    )
+    library.store.delete(id: library.secret)
+    let deletedAt = try #require(library.store.pendingShreds[library.secret])
+
+    _ = library.store.processPendingShreds(now: deletedAt + week)
+
+    #expect(try Data(contentsOf: elsewhere.appendingPathComponent("meetings.json")) == index,
+            "a file outside the library was rewritten through a link")
+    #expect(!exists(library.copy(of: library.secret, in: library.snapshots[0])), "the real snapshots were not cleaned")
+}
+
 /// F498's rule reaches the snapshots too: a meeting that is in the library again is never stripped.
 @MainActor
 @Test("A meeting brought back inside its week keeps its recording copies in the restore snapshots (F664)")
