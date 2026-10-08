@@ -6325,6 +6325,21 @@ final class AppModel: ObservableObject {
     /// in a few seconds and is as many citations as three sentences can carry.
     static let answerPassageLimit = 5
 
+    /// The question a written answer may be asked for (F850): the one the passages on screen were
+    /// found for, and only while the Ask field still says it (whitespace aside). Nil otherwise, and
+    /// Write an Answer is disabled until Ask is pressed again.
+    ///
+    /// The view used to send the field's text, so typing new words without pressing Ask and then
+    /// pressing Write an Answer answered the new words from passages ranked for the old ones. I chose
+    /// disabling over silently answering the old question: an answer to words that are no longer in
+    /// the field would be just as confusing to read.
+    nonisolated static func answerableQuestion(retrievedFor: String?, typed: String) -> String? {
+        guard let retrievedFor else { return nil }
+        let asked = retrievedFor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !asked.isEmpty, asked == typed.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return retrievedFor
+    }
+
     /// Runs the on-device model. Injectable so the decision around it is tested without a model.
     var meetingAnswerRunner: @Sendable (_ question: String, _ passages: [CitedResult]) async throws -> String = {
         try await LocalSummarizer().answerText(question: $0, passages: $1)

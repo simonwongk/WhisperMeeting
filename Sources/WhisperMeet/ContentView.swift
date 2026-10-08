@@ -2407,6 +2407,14 @@ private struct AskMeetingsView: View {
     /// A keyword pass is running (F538). The previous results stay up meanwhile, but cannot be
     /// answered from: the question above them may already be the new one.
     @State private var isSearching = false
+    /// The question the results on screen were found for (F850) — not the field, which the user may
+    /// have changed since without pressing Ask.
+    @State private var resultsQuestion: String?
+
+    /// What Write an Answer would ask: `resultsQuestion`, while the field still says it (F850).
+    private var answerQuestion: String? {
+        AppModel.answerableQuestion(retrievedFor: resultsQuestion, typed: query)
+    }
 
     private var libraryTags: [String] {
         MeetingTags.distinct(across: store.meetings.map { $0.tags ?? [] })
@@ -2608,8 +2616,10 @@ private struct AskMeetingsView: View {
                     }
                 } else {
                     Button("Write an Answer from These Passages") { writeAnswer() }
-                        .disabled(!model.canWriteMeetingAnswer || isSearching)
-                        .help("Uses the local summary model on this Mac. Nothing is uploaded.")
+                        .disabled(!model.canWriteMeetingAnswer || isSearching || answerQuestion == nil)
+                        .help(answerQuestion == nil
+                              ? "These passages were found for the question you asked before. Press Ask to find passages for what the field says now."
+                              : "Uses the local summary model on this Mac. Nothing is uploaded.")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2619,7 +2629,8 @@ private struct AskMeetingsView: View {
     }
 
     private func writeAnswer() {
-        let question = query
+        // F850: the question these passages were found for, never the field's newer words.
+        guard let question = AppModel.answerableQuestion(retrievedFor: resultsQuestion, typed: query) else { return }
         let passages = results
         answerTask = Task {
             let outcome = await model.writeMeetingAnswer(question: question, passages: passages)
@@ -2671,6 +2682,7 @@ private struct AskMeetingsView: View {
             guard let pass = await model.askKeywordPass(query: asked, scope: askedScope),
                   !Task.isCancelled else { return }
             results = pass.top(AppModel.askResultLimit)
+            resultsQuestion = asked
             isSearching = false
             guard model.isAskEmbeddingInstalled else { return }
             let fused = await model.askMeetingsByMeaning(pass, limit: AppModel.askResultLimit)
