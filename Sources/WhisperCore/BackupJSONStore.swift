@@ -786,7 +786,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         })
         // After everything the ledger already held: they describe older generations it had lost
         // track of (F677), and each names a file this save's listing showed, so the rule below
-        // keeps them exactly as long as their file is on disk.
+        // keeps them at least as long as their file is on disk (longer only while one is still
+        // among the newest 64 positions, like any record).
         let named = Set(entries.compactMap(\.historyName))
         entries.append(contentsOf: rediscovered.filter { $0.historyName.map { !named.contains($0) } ?? false })
         // Which records survive (F517). The newest `recentLedgerRecords` stay, exactly as before —
