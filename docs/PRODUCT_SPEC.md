@@ -124,7 +124,9 @@ F642):
   library as it is. A change to a meeting the other copy deleted is named and never re-applied.
 - A meeting that copy added and the other copy never had — a recording just stopped, an import — is
   not a question: it is put back in the list and saved at once, and neither answer removes it
-  (F667).
+  (F667). If that save loses as well, the meeting waits in the offer, unlisted, and either answer
+  saves it. If the re-read leaves the library read-only, it cannot be saved until the library is
+  recovered; its recording stays on this Mac and is added back then.
 - A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
   again works.
 - Until the offer is answered, that copy refuses further changes the person makes to its meetings —

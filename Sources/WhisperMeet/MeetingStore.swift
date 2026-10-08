@@ -1638,6 +1638,14 @@ final class MeetingStore: ObservableObject {
             return (sentences + notes).joined(separator: " ")
         }
 
+        /// For the alert when nothing is asked (F667): the meetings `beginConflictRecovery` put back
+        /// are in the list again, which the store report's "these changes were not applied" does not
+        /// say. True whether their save landed or an ordinary failure left them listed for the next.
+        static func backInTheList(_ titles: [String]) -> String {
+            let kept = names(titles)
+            return "\(kept.text) \(kept.plural ? "are" : "is") in your list again."
+        }
+
         /// “A”, “B” and “C”, each title once, and past three "and N more" — a batch tag over fifty
         /// meetings would otherwise fill the banner with names. `plural` counts titles, not records,
         /// so the verb agrees with what is printed.
@@ -1764,7 +1772,16 @@ final class MeetingStore: ObservableObject {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,
             // once — the token is fresh now, so no later save repeats it.
             conflictOffer = nil
-            if !notes.isEmpty { storageErrorMessage = ([report.message] + notes).joined(separator: " ") }
+            guard !notes.isEmpty else { return }
+            var said = [report.message]
+            // The report says "these changes were not applied"; a meeting put back above was (F667).
+            if !keptNew.isEmpty { said.append(ConflictOffer.backInTheList(keptNew)) }
+            said += notes
+            // And an ordinary failure putting it back keeps its own words beside these.
+            if let failure = writeConflict, !failure.isRace, let shown = storageErrorMessage {
+                said.append(shown)
+            }
+            storageErrorMessage = said.joined(separator: " ")
             return
         }
         conflictOffer = offer
@@ -2325,8 +2342,9 @@ final class MeetingStore: ObservableObject {
                 storageErrorMessage = Self.batchDeleteFailureMessage(kept.map(\.title))
             } else if writeConflict?.isRace == true {
                 // Lost to another copy between the two saves (F642): re-read, so the session is
-                // not stuck. The kept rows are absent from this session's last save, so they are
-                // offered back as rows it added, and keeping them lists them again.
+                // not stuck. The kept rows are in neither this session's last save nor the other
+                // copy's, so the recovery puts them back in the list and saves them at once (F667);
+                // only if that save loses too are they held by the offer, which either answer saves.
                 beginConflictRecovery(note: Self.keptFoldersNote(kept.map(\.title)))
             }
         } else if entryOnly > 0 {

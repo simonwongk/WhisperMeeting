@@ -327,6 +327,8 @@ func lostRestoringSaveListsTheKeptRowAgain() throws {
     #expect(store.meeting(id: id) != nil, "the row whose folder is still there was left unlisted")
     let message = try #require(store.storageErrorMessage, "nothing said why the meeting is still there")
     #expect(message.contains("could not have their recordings removed"), "\(message)")
+    // The store's report says "these changes were not applied"; the row was, and the alert says so.
+    #expect(message.contains("“Stubborn” is in your list again."), "\(message)")
     let reopened = MeetingStore(rootDirectory: root)
     #expect(reopened.meeting(id: id) != nil, "the row was not saved again")
     #expect(reopened.meeting(id: theirs.id) != nil, "the other copy's commit was overwritten")
