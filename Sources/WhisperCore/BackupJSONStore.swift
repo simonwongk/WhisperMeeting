@@ -378,7 +378,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     ///
     /// `expecting: nil` means unchecked — today's last-writer-wins — and is the compatibility
     /// default every pre-F190 caller relies on. It is an accepted hole, not an oversight: a
-    /// production caller should thread the token from `load()` or the previous `SaveOutcome`.
+    /// production caller should thread the token from `load()` or the previous `SaveOutcome` — and,
+    /// when `load()` found no file at all, `GenerationToken.absent` (F864), so that its first save
+    /// cannot replace another writer's.
     @discardableResult
     public func save(
         _ value: Value,
@@ -648,6 +650,29 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         guard let primaryFingerprint, let primaryByteCount else { return CASDecision(parent: nil) }
         // 3 — undecodable and already quarantined: the F187 ladder, not a race.
         guard primaryDecodable else { return CASDecision(parent: nil) }
+        // 3a — the caller found no file (F864), and a decodable one is here now: another writer made
+        //      the first save. A conflict whatever the ledger says, because every adoption rule below
+        //      explains the primary as descending from what the caller read — no ledger as a pre-F190
+        //      parent, an unrecorded history entry as our own install, the legacy rotation as our
+        //      generation in the backup — and none of that can be true of a caller that read nothing.
+        if expecting.expectsNoFile {
+            // The ledger names the file's writer only when it describes these exact bytes; a file
+            // with no ledger, or one it does not describe, has an author nobody recorded.
+            let recorded = ledger.flatMap { $0.current.fingerprint == primaryFingerprint ? $0.current : nil }
+            try refuse(
+                expecting: expecting,
+                found: GenerationToken(
+                    sequence: recorded?.sequence ?? 0,
+                    fingerprint: primaryFingerprint,
+                    byteCount: primaryByteCount,
+                    writer: recorded?.writer ?? Self.rediscoveredWriter,
+                    verified: recorded != nil
+                ),
+                newData: newData,
+                newFingerprint: newFingerprint,
+                phases: &phases
+            )
+        }
         // 4 — the common case: the primary is exactly what the caller read.
         if expecting.matches(fingerprint: primaryFingerprint, byteCount: primaryByteCount) {
             return CASDecision(parent: expecting)
@@ -687,16 +712,32 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             }
         }
 
-        // 6 and 9 — CONFLICT. Fails closed: the losing body is copied aside, or the error says
-        // plainly that it was not. Either way nothing else on disk changed, so the winner's
-        // generation is untouched.
-        let found = GenerationToken(
-            sequence: ledger.current.sequence,
-            fingerprint: primaryFingerprint,
-            byteCount: primaryByteCount,
-            writer: ledger.current.writer,
-            verified: true
+        // 6 and 9 — CONFLICT.
+        try refuse(
+            expecting: expecting,
+            found: GenerationToken(
+                sequence: ledger.current.sequence,
+                fingerprint: primaryFingerprint,
+                byteCount: primaryByteCount,
+                writer: ledger.current.writer,
+                verified: true
+            ),
+            newData: newData,
+            newFingerprint: newFingerprint,
+            phases: &phases
         )
+    }
+
+    /// A lost race. Fails closed: the losing body is copied aside as a conflict branch, or the error
+    /// says plainly that it was not. Either way nothing else on disk changed, so the winner's
+    /// generation is untouched.
+    private func refuse(
+        expecting: GenerationToken,
+        found: GenerationToken,
+        newData: Data,
+        newFingerprint: String,
+        phases: inout [StoreWritePhase]
+    ) throws -> Never {
         let name = "conflict-\(String(format: "%09llu", Self.sequence(after: expecting.sequence)))-\(writer)-\(newFingerprint).json"
         do {
             try io.createDirectory(history.directoryURL, .createHistoryDirectory)
@@ -860,7 +901,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
 
     /// What `writer` says on a record a save wrote for a generation it found on disk rather than
     /// wrote (F677). Nothing reads a history record's writer; this says, to whoever opens the ledger,
-    /// that its author is not known.
+    /// that its author is not known. Also the `found` writer of a conflict over a file no ledger
+    /// record describes (F864), for the same reason.
     private static var rediscoveredWriter: String { "unknown" }
 
     /// Ledger records for the generations this save's listing shows on disk and the ledger does not

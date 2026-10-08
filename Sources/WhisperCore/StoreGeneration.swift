@@ -39,6 +39,26 @@ public struct GenerationToken: Codable, Sendable, Equatable {
     public func matches(fingerprint: String, byteCount: Int) -> Bool {
         self.fingerprint == fingerprint && self.byteCount == byteCount
     }
+
+    /// The token for "I looked, and there was no file" (F864).
+    ///
+    /// `BackupJSONStore.load()` returns nil when neither copy exists, so a store opened on a fresh
+    /// library has read no generation — and with no token its first save was unchecked, so the
+    /// second of two copies to save replaced the first copy's index. A caller that found no file
+    /// passes this instead: a save over no file installs exactly as before, with no parent, and a
+    /// file that appeared meanwhile is a lost race (`BackupJSONStore`'s compare-and-swap, rule 3a).
+    ///
+    /// A value rather than a new stored field, so the type's shape is unchanged. Its fingerprint is
+    /// not sixteen hex digits and its byte count is negative, so it matches no bytes, empty ones
+    /// included. It is never written to a ledger: a save over no file has no parent.
+    public static let absent = GenerationToken(
+        sequence: 0, fingerprint: "absent", byteCount: -1, writer: "none", verified: false
+    )
+
+    /// Whether this is `absent` — compared on content, like every other question asked of a token.
+    public var expectsNoFile: Bool {
+        fingerprint == Self.absent.fingerprint && byteCount == Self.absent.byteCount
+    }
 }
 
 /// One writer identity per process (F190).

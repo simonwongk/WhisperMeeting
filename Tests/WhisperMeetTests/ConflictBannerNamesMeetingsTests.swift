@@ -107,7 +107,8 @@ func lostStopWithNothingToDecideRaisesNoBanner() async throws {
     let (model, root, cleanup) = try makeModel()
     defer { cleanup() }
     let store = model.store
-    // A library that already has an index: a store with no token saves unchecked (`expecting: nil`).
+    // A library that already has an index. (Written when a store opened on a library with no index
+    // saved unchecked; since F864 it expects none, so a race on that first save is caught too.)
     store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed))
     let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", status: .recorded)
     let id = try await recordTwoSeconds(model, title: "Board call")

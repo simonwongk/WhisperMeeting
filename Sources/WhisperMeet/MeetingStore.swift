@@ -810,7 +810,8 @@ final class MeetingStore: ObservableObject {
     private var lastPersistedMeetings: [MeetingRecord] = []
 
     /// The generation each store last read or wrote, threaded into the next `save(expecting:)`.
-    /// Without these the compare-and-swap never fires.
+    /// Without these the compare-and-swap never fires. `.absent` when that store's load found no
+    /// file, so its first save cannot replace another copy's first save (F864).
     private var meetingsToken: GenerationToken?
     private var vocabularyToken: GenerationToken?
     private var replacementRulesToken: GenerationToken?
@@ -3583,7 +3584,12 @@ final class MeetingStore: ObservableObject {
 
     private func loadMeetings() {
         do {
-            guard let result = try meetingFiles.load() else { return }
+            guard let result = try meetingFiles.load() else {
+                // No index on disk, as in a fresh library. The next save expects to find none, so
+                // another copy's first save made meanwhile is a lost race, not overwritten (F864).
+                meetingsToken = .absent
+                return
+            }
             meetings = MeetingOrdering.sorted(result.value.map(Self.withLanguageCodeNormalized))
             // What this session now believes is persisted (F433 follow-up) — a load establishes a
             // fresh baseline, whether at launch or after a conflict's reload.
@@ -3666,6 +3672,9 @@ final class MeetingStore: ObservableObject {
                 // is (F187, and what `docs/RECOVERY.md` promises). The old `save()` ran during
                 // `init`, bypassing every mutation guard.
                 vocabularyHealth = result.health
+            } else {
+                // No list on disk yet: its first save expects none (F864), as the index's does.
+                vocabularyToken = .absent
             }
         } catch {
             // The same state `init` starts from, so the notice's "the list is empty" is true on a
@@ -3690,6 +3699,8 @@ final class MeetingStore: ObservableObject {
                 replacementRulesToken = result.token
                 // As `loadVocabulary`: its own health, and no silent re-persist (F187, F464).
                 replacementRulesHealth = result.health
+            } else {
+                replacementRulesToken = .absent   // as `readVocabulary` (F864)
             }
         } catch {
             replacementRules = []
