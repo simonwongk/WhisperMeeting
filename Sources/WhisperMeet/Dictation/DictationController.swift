@@ -1075,7 +1075,7 @@ final class DictationController: ObservableObject {
             hotkeyMonitor.resetToggleState()
             return
         }
-        if isDownloadingModel, session.state == .idle {
+        if isDownloadingModel, sessionWouldStartCapture {
             // F823: a press now would wait for the whole download — minutes on a slow link — with
             // the microphone's words held behind it. Refused before anything is recorded, and said
             // so, rather than listening and then making the user wait with no end in sight.
@@ -1235,7 +1235,9 @@ final class DictationController: ObservableObject {
             return true
         case .transcribe:
             status = .transcribing
-            showPhase(.transcribing)
+            // F823: a press that started or resumed the download (its prewarm did) waits for all of
+            // it; say so from the release on, not "Transcribing…".
+            showPhase(isDownloadingModel ? .modelDownloading : .transcribing)
             transcribe(clip: clip)
             return true
         default:
@@ -1453,6 +1455,16 @@ final class DictationController: ObservableObject {
         }
         busyHideWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    /// Whether a press now would start a capture: idle, or over the last result or error pill
+    /// (`DictationSession`'s `.done`/`.failed` start a new dictation, F443). A press while one is in
+    /// flight is the busy path instead.
+    private var sessionWouldStartCapture: Bool {
+        switch session.state {
+        case .idle, .done, .failed: true
+        case .listening, .transcribing, .delivering: false
+        }
     }
 
     /// What is said when a press is refused because the model is still downloading (F823).

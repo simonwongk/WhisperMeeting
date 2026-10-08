@@ -3596,8 +3596,8 @@ final class AppModel: ObservableObject {
     }
 
     func installLocalWhisper() {
-        // F510/F514: `recognitionRuntimeInstallBlockedReason` is this same six-condition guard,
-        // asked once — a second opinion or segment re-run may be running Whisper's own CLI right
+        // F510/F514: `recognitionRuntimeInstallBlockedReason` is this same guard (every condition
+        // `installBlockedReason(for: .whisper)` lists, F823's dictation download among them), asked once — a second opinion or segment re-run may be running Whisper's own CLI right
         // now, and installing atop it can move or delete the venv a live process is using (F140's
         // guarantee, which `installQwenASR` already carried).
         guard recognitionRuntimeInstallBlockedReason == nil else { return }

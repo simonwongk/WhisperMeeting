@@ -9,34 +9,63 @@ import WhisperCore
 // Repair that could not fix it, and a Repair during the download restarted it. Driven through the
 // real controller with an engine that reports a download the test controls.
 
-/// An engine whose model download the test starts and finishes. `warmUp` downloads when
-/// `downloadsOnWarmUp`; otherwise `transcribe` does, as a press made before the download began finds.
+/// An engine whose model download the test starts and finishes. `.warmUp`: the warm-up downloads,
+/// and a transcription waits for that download, as the real engine's serial queue makes it.
+/// `.transcribe`: the transcription downloads, as a press made before the download began finds.
+/// `.never`: nothing downloads unless the test `report`s one.
 private final class ControlledDownloadEngine: DictationEngine, @unchecked Sendable {
+    enum DownloadAt { case warmUp, transcribe, never }
     private let lock = NSLock()
     private var observer: DictationModelDownloadObserver?
     private var released = false
-    let downloadsOnWarmUp: Bool
+    private var ended = false
+    let downloadAt: DownloadAt
+    let transcribeThrows: Bool
 
-    init(downloadsOnWarmUp: Bool) { self.downloadsOnWarmUp = downloadsOnWarmUp }
+    init(downloadAt: DownloadAt, transcribeThrows: Bool = false) {
+        self.downloadAt = downloadAt
+        self.transcribeThrows = transcribeThrows
+    }
 
     func release() { lock.withLock { released = true } }
     private var isReleased: Bool { lock.withLock { released } }
 
     func observeModelDownload(_ observer: DictationModelDownloadObserver?) { lock.withLock { self.observer = observer } }
 
-    private func download() async throws {
-        lock.withLock { observer }?(true)
+    /// A download reported from outside a warm-up or transcription — a model switch's, or one a
+    /// meeting pass's re-warm starts.
+    func report(_ downloading: Bool) { lock.withLock { observer }?(downloading) }
+
+    private func waitForRelease() async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while !isReleased, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        lock.withLock { observer }?(false)
+    }
+
+    private func download() async throws {
+        report(true)
+        try await waitForRelease()
+        report(false)
+        lock.withLock { ended = true }
+    }
+
+    /// The real engine runs a transcription on the same serial queue, after the warm-up — so after
+    /// the warm-up's download has reported its end.
+    private func waitForDownloadToEnd() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !lock.withLock({ ended }), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
     }
 
     func warmUp() async throws {
-        if downloadsOnWarmUp { try await download() }
+        if downloadAt == .warmUp { try await download() }
     }
 
     func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult {
-        if !downloadsOnWarmUp { try await download() }
+        switch downloadAt {
+        case .transcribe: try await download()
+        case .warmUp: try await waitForDownloadToEnd()
+        case .never: break
+        }
+        if transcribeThrows { throw DictationModelDownloadError("The dictation model download failed.") }
         return DictationResult(text: "hello after the download", languageCode: "en")
     }
 
@@ -63,6 +92,10 @@ private struct Harness {
     let cleanUp: () -> Void
 
     init(downloadsOnWarmUp: Bool) throws {
+        try self.init(downloadAt: downloadsOnWarmUp ? .warmUp : .transcribe)
+    }
+
+    init(downloadAt: ControlledDownloadEngine.DownloadAt, transcribeThrows: Bool = false) throws {
         let suite = testSuiteName()
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory
@@ -70,7 +103,7 @@ private struct Harness {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defaults.set(true, forKey: "dictationEnabled")
         defaults.set(false, forKey: "dictationAutoPaste")
-        let engine = ControlledDownloadEngine(downloadsOnWarmUp: downloadsOnWarmUp)
+        let engine = ControlledDownloadEngine(downloadAt: downloadAt, transcribeThrows: transcribeThrows)
         self.engine = engine
         recorder = FakeDictationRecorder(outputURL: directory.appendingPathComponent("clip.wav"))
         let announcements = AnnouncementLog()
@@ -244,4 +277,59 @@ func theDownloadIsShownWhereTheUserLooks() throws {
     let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     #expect(entry.contains("model.configureDictationModelDownload { dictation.isDownloadingModel }"))
     #expect(entry.contains("if dictation.isDownloadingModel {"), "the menu-bar menu says nothing while the model downloads")
+}
+
+// The review of lane W (2026-10-07): the refusal held only for an idle session, so a press while
+// the last result or error pill was still up started the microphone during a download; and a
+// press that itself started the download recorded, then waited under "Transcribing…".
+
+@MainActor
+@Test("A press during the download while the last result or error pill is still up is refused like an idle one (F823)")
+func aPressDuringTheDownloadOverAResultOrErrorPillIsRefused() async throws {
+    for failing in [false, true] {
+        let harness = try Harness(downloadAt: .never, transcribeThrows: failing)
+        defer { harness.cleanUp() }
+        let what = failing ? "error pill (.failed)" : "result pill (.done)"
+
+        harness.monitor.onPressStart?()
+        try #require(harness.controller.status == .listening)
+        harness.monitor.onPressEnd?()
+        try await harness.waitUntil("the first dictation to end") { !harness.controller.logStore.log.entries.isEmpty }
+        // Still inside the pill's 1.1-1.6 s: the session is .done or .failed, not .idle.
+        try #require(harness.controller.status == (failing ? .error("The dictation model download failed.") : .delivering),
+                     "the \(what) had already gone; the window this test is about was missed")
+
+        harness.engine.report(true)
+        try await harness.waitUntil("the download to be reported") { harness.controller.isDownloadingModel }
+        harness.monitor.onPressStart?()
+
+        #expect(!harness.recorder.isRecording, "\(what): the microphone started during the download")
+        #expect(harness.controller.status != .listening, "\(what)")
+        #expect(harness.overlay.phases.last == .modelDownloading, "\(what): \(harness.overlay.phases)")
+        #expect(harness.announcements.said.last == DictationController.modelDownloadRefusal, "\(what)")
+    }
+}
+
+@MainActor
+@Test("A press that starts the download is recorded, and on release its pill shows the download, not Transcribing (F823)")
+func aPressThatStartsTheDownloadShowsItOnRelease() async throws {
+    let harness = try Harness(downloadAt: .warmUp)
+    defer { harness.cleanUp() }
+
+    // Nothing is downloading yet, so the press records; its prewarm starts the download.
+    harness.monitor.onPressStart?()
+    try #require(harness.controller.status == .listening)
+    try await harness.waitUntil("the press's warm-up to report the download") { harness.controller.isDownloadingModel }
+    harness.monitor.onPressEnd?()
+    try #require(harness.controller.status == .transcribing)
+    #expect(harness.overlay.phases.last == .modelDownloading, "\(harness.overlay.phases)")
+
+    harness.engine.release()
+    try await harness.waitUntil("the dictation to be delivered") { !harness.controller.logStore.log.entries.isEmpty }
+    #expect(harness.controller.logStore.log.entries.first?.text == "hello after the download")
+    let phases = harness.overlay.phases
+    let downloading = try #require(phases.lastIndex(of: .modelDownloading))
+    let transcribing = try #require(phases.lastIndex(of: .transcribing))
+    let delivered = try #require(phases.lastIndex(of: .copied))
+    #expect(downloading < transcribing && transcribing < delivered, "\(phases)")
 }
