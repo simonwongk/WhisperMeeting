@@ -1474,6 +1474,13 @@ final class AppModel: ObservableObject {
         try InterruptedRecordingRecovery.recover(in: $0)
     }
 
+    /// One sample of what is being written in an orphaned folder, taken twice by startup recovery to
+    /// refuse a folder that is growing (F279). Injectable so a writer can be simulated without one
+    /// racing a clock (F453); defaults to the real sample.
+    var sampleRecordingFolderLiveness: @Sendable (URL) -> RecordingFolderLiveness.Sample = {
+        RecordingFolderLiveness.sample(in: $0)
+    }
+
     /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as
     /// `recoverInterruptedRecording` above, so a test can hold the (real, detached) work open long
     /// enough to observe `sourceRebuildRunningID` while it runs. Defaults to the real rebuild.
@@ -3322,24 +3329,29 @@ final class AppModel: ObservableObject {
                 }
                 let sampled = candidates.filter { !live.contains($0.directory) }
                 let before = sampled.map {
-                    ($0.directory, RecordingFolderLiveness.sample(in: $0.directory))
+                    ($0.directory, sampleRecordingFolderLiveness($0.directory))
                 }
                 if !before.isEmpty {
                     try? await Task.sleep(for: .milliseconds(400))
                     for (directory, first) in before {
-                        let second = RecordingFolderLiveness.sample(in: directory)
+                        let second = sampleRecordingFolderLiveness(directory)
                         if RecordingFolderLiveness.isGrowing(from: first, to: second) {
                             live.insert(directory)
                         }
                     }
                 }
                 if !live.isEmpty {
-                    messages.append(
-                        // "in progress" rather than "being written": after F283 this covers a
-                        // capture that is paused inside an outage as well as one actively
-                        // appending, and a sleeping capture is not being written to.
-                        "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
-                    )
+                    // F453: since the probe also watches an import's files, a live folder can be a
+                    // link import whose downloader outlived the app — told apart by the provenance
+                    // sidecar only a link import writes. Nothing adds it "when that recording
+                    // stops"; the next launch after it finishes does, so it gets its own sentence.
+                    let liveImports = live.filter { MediaSource.read(in: $0) != nil }
+                    if liveImports.count < live.count {
+                        messages.append(Self.recordingStillInProgress)
+                    }
+                    if !liveImports.isEmpty {
+                        messages.append(Self.linkImportStillBeingWritten)
+                    }
                 }
             }
             for orphan in candidates where !live.contains(orphan.directory) {
@@ -5084,6 +5096,17 @@ final class AppModel: ObservableObject {
     static let linkImportBusy = "Finish the current recording or import before adding from a link."
     static let linkImportInstallRunning = "Wait for the local recognition model installation to finish before importing."
     static let linkImportNotAWebLink = "That doesn't look like a web link. Paste a full https:// address to a single video."
+
+    /// Startup recovery's word for a capture folder it left alone because it is live (F279, F283).
+    /// "In progress" rather than "being written": after F283 this covers a capture that is paused
+    /// inside an outage as well as one actively appending, and a sleeping capture is not being
+    /// written to.
+    static let recordingStillInProgress = "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
+
+    /// Startup recovery's word for a link import's folder that something is still writing (F453).
+    /// The capture's own sentence says it will be added "when that recording stops", which nothing
+    /// does for an import: it is picked up by the next launch after the writer finishes.
+    static let linkImportStillBeingWritten = "A link import on this Mac is still being written, so it was left alone. Nothing was changed, and it will be added to your history the next time WhisperMeet opens after it finishes."
 
     /// The tag a link import carries so it can be found among ordinary meetings, or nil when there
     /// is no source or it suggests nothing usable.

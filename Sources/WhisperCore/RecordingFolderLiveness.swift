@@ -33,7 +33,14 @@ import Foundation
 public enum RecordingFolderLiveness {
     private static let trackNames = ["system-audio.f32", "microphone-audio.f32"]
 
-    /// The raw tracks' sizes at one instant. `nil` for a track that is not there.
+    /// What a link import writes (F453): yt-dlp's `recording.<ext>.part` while it downloads, then
+    /// `recording.<ext>`, then ffmpeg's `recording.wav` while it extracts. Both run in their own
+    /// process group, so a crash of the app does not stop them, and a folder they are still writing
+    /// is as live as a capture's.
+    private static let importFilePrefix = "recording."
+
+    /// The sizes of what is being written, at one instant: the raw tracks, and any import file.
+    /// Absent for a file that is not there.
     public struct Sample: Sendable, Equatable {
         public let trackBytes: [String: Int64]
 
@@ -42,12 +49,14 @@ public enum RecordingFolderLiveness {
         }
     }
 
-    /// Reads both track sizes. A pure read: opens nothing, writes nothing, and never throws — a
-    /// track it cannot stat is simply absent from the sample, which `isGrowing` then treats the
-    /// same as a track that is not there.
+    /// Reads both track sizes and every import file's. A pure read: opens nothing, writes nothing,
+    /// and never throws — a file it cannot stat is simply absent from the sample, which `isGrowing`
+    /// then treats the same as a file that is not there.
     public static func sample(in directory: URL) -> Sample {
+        let importFiles = ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+            .filter { $0.hasPrefix(importFilePrefix) }
         var bytes: [String: Int64] = [:]
-        for name in trackNames {
+        for name in trackNames + importFiles {
             let path = directory.appendingPathComponent(name).path
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
                   let size = attributes[.size] as? NSNumber else { continue }
@@ -59,18 +68,18 @@ public enum RecordingFolderLiveness {
     /// Whether anything was appended between the two samples.
     ///
     /// Either track growing is enough — one channel can fail while the other keeps recording, and
-    /// the folder is live either way. A track that *appears* between samples counts as growth:
+    /// the folder is live either way. A file that *appears* between samples counts as growth:
     /// a capture that has just started has written one file and not yet the other, and that is the
-    /// narrowest window in a recording's life to leave unprotected.
+    /// narrowest window in a recording's life to leave unprotected; an import's download renamed
+    /// from its `.part` appears under its new name the same way (F453).
     ///
     /// Shrinking does not count. Nothing in the app truncates a track mid-capture, so that is a
     /// corrupt or externally edited folder rather than a live one, and reading it as live would
-    /// defer its recovery forever — the one outcome worse than rebuilding it.
+    /// defer its recovery forever — the one outcome worse than rebuilding it. A file that
+    /// disappears does not count either, for the same reason.
     public static func isGrowing(from before: Sample, to after: Sample) -> Bool {
-        trackNames.contains { name in
-            let then = before.trackBytes[name]
-            guard let now = after.trackBytes[name] else { return false }
-            guard let then else { return true }   // absent, then present
+        after.trackBytes.contains { name, now in
+            guard let then = before.trackBytes[name] else { return true }   // absent, then present
             return now > then
         }
     }

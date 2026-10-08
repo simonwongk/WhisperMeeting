@@ -470,6 +470,20 @@ public enum InterruptedRecordingRecovery {
     /// Returns the protected imported file even when it is empty or otherwise not recoverable. The
     /// app uses this to create one persistent "Needs attention" entry instead of repeating a
     /// startup warning while still preserving the file for inspection.
+    ///
+    /// **Which one, when there are several (F453).** A link import interrupted while ffmpeg
+    /// extracts its audio holds the complete download (`recording.webm`, say) and a `recording.wav`
+    /// whose header still carries ffmpeg's 0xFFFFFFFF placeholder sizes: yt-dlp's
+    /// `FFmpegExtractAudioPP` writes straight into the final name and deletes the original only
+    /// when ffmpeg has finished. This used to return whichever the directory listed first, which
+    /// indexed the meeting against the partial file while the complete one sat beside it. The order
+    /// is now: a WAV whose header is complete (the extraction finished; the original simply was not
+    /// deleted yet), then a non-empty file in any other format (the download), then the first by
+    /// name — so a lone file is still returned whatever it holds, which is what the "Needs
+    /// attention" entry relies on. Nothing is deleted: the partial WAV stays where it is.
+    ///
+    /// A folder something is still writing must not reach this at all — the download chosen here
+    /// is the one yt-dlp deletes when ffmpeg finishes — which is `RecordingFolderLiveness`'s job.
     public static func importedRecordingCandidate(in directory: URL) -> URL? {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -477,7 +491,7 @@ public enum InterruptedRecordingRecovery {
         ) else {
             return nil
         }
-        return contents.first { url in
+        let candidates = contents.filter { url in
             guard url.deletingPathExtension().lastPathComponent == "recording",
                   !url.pathExtension.isEmpty,
                   let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else {
@@ -485,6 +499,18 @@ public enum InterruptedRecordingRecovery {
             }
             return values.isRegularFile == true
         }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard candidates.count > 1 else { return candidates.first }
+        func isWAV(_ url: URL) -> Bool { url.pathExtension.lowercased() == "wav" }
+        if let finished = candidates.first(where: { isWAV($0) && wavDuration(at: $0) != nil }) {
+            return finished
+        }
+        if let download = candidates.first(where: { url in
+            !isWAV(url) && ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) > 0
+        }) {
+            return download
+        }
+        return candidates.first
     }
 
     /// Frames in a raw `.f32` track: 0 when absent, a throw when present but unstattable (F280).
