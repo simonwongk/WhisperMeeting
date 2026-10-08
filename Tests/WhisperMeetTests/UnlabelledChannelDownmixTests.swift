@@ -168,14 +168,15 @@ func captureAveragesAnUnlabelledLayout(_ fixture: UnlabelledLayoutCase) throws {
             "\(fixture.name): peak \(measured), expected \(fixture.expectedPeak), the average of every channel")
 }
 
-// MARK: - The wiring, which no headless test can drive for capture
+// MARK: - The wiring, pinned as source beside the end-to-end tests
 
 @Test("Both capture paths average their channels before the converter sees them (F659)")
 func theCapturePathMixesBeforeItConverts() throws {
-    // A source assertion for the meeting path, whose entry point is a `CMSampleBuffer` handler on a
-    // private queue (F402's reachability note): `captureAveragesAnUnlabelledLayout` drives the
-    // production pieces, and this pins that `FloatTrackWriter.append` is what calls them, on the
-    // mixed buffer. The dictation path is driven end to end above; it is listed too, so the two
+    // A source assertion for the meeting path. Its entry point is a `CMSampleBuffer` handler on a
+    // private queue, which no headless test can call (F402's reachability note). `append` itself
+    // has been driven with hand-built buffers since F856 and F875 (`CaptureFormatWithoutLayoutTests`,
+    // `InterleavedCaptureTests`); `captureAveragesAnUnlabelledLayout` drives the production pieces;
+    // and this pins that `FloatTrackWriter.append` is what calls them, on the mixed buffer. The dictation path is driven end to end above; it is listed too, so the two
     // copies of this conversion cannot drift apart again (F376's shape).
     for path in [
         "Sources/WhisperMeet/AudioCaptureEngine.swift",
