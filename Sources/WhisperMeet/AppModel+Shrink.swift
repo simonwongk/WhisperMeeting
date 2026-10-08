@@ -176,7 +176,7 @@ extension AppModel {
         // refused rather than racing it. A delete runs synchronously on the main actor, so none can
         // be under way at this point and `begin` does not fail here; the guard is for its contract.
         guard store.folderWriters.begin(id) else {
-            return .failed(title: meeting.title, message: "It is no longer in the library.")
+            return .failed(title: meeting.title, message: "It is being deleted.")
         }
         defer { store.folderWriters.end(id) }
         shrinkRunningID = id

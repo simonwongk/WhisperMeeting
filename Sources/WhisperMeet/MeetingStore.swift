@@ -1971,7 +1971,6 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    /// Removes a recording directory. Injectable so the failure path is testable (F146).
     /// The meetings something is writing into off the main actor — Shrink, Rebuild Audio, the launch
     /// notes.md backfill — which a delete refuses rather than racing (F870).
     nonisolated let folderWriters = MeetingFolderWriters()
@@ -1984,6 +1983,7 @@ final class MeetingStore: ObservableObject {
             : "\(titles.count) meetings were not deleted because their recording folders are still being written — audio being compressed or rebuilt, or notes updated: \(names). Delete them again once that has finished."
     }
 
+    /// Removes a recording directory. Injectable so the failure path is testable (F146).
     var removeRecordingDirectory: (URL) throws -> Void = { url in
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
