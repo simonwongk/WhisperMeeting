@@ -60,6 +60,9 @@ class FakeHub:
         self.ranges = []                # Range header of every weights request that reached the CDN
         self.requests = []              # (method, path)
         self.fail_head_with = None      # status for every HEAD, to model an unusable metadata path
+        # F829: how the CDN answers the next Range requests, one entry each — 416, "wrong-offset" (a
+        # 206 that resumes at byte 0), or "portal" (a 200 whose body is not the file at all).
+        self.range_replies = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -132,6 +135,28 @@ class FakeHub:
                 hub.requests.append((self.command, self.path))
                 range_header = self.headers.get("Range")
                 hub.ranges.append(range_header)
+                scripted = hub.range_replies.pop(0) if range_header and hub.range_replies else None
+                if scripted == 416:
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % len(hub.weights))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if scripted == "portal":
+                    page = b"<html>sign in to the network</html>" * 8000  # 280 000 bytes, not the file
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(page)))
+                    self.end_headers()
+                    self.wfile.write(page)
+                    return
+                if scripted == "wrong-offset":
+                    self.send_response(206)
+                    self.send_header("Content-Length", str(len(hub.weights)))
+                    self.send_header("Content-Range", "bytes 0-%d/%d" % (len(hub.weights) - 1, len(hub.weights)))
+                    self.end_headers()
+                    self.wfile.write(hub.weights)
+                    hub.served += len(hub.weights)
+                    return
                 start = 0
                 status = 200
                 if range_header and not hub.ignore_range:
@@ -183,6 +208,11 @@ def die(_seconds):
     raise Killed()
 
 
+# How a test's attempt ends when it made no progress: with `retries=0` the downloader gives up at once
+# (ModelDownloadError); an attempt that brought bytes in sleeps first, and `die` ends it there.
+FAILED_ATTEMPT = (Killed, server.ModelDownloadError)
+
+
 class Beats:
     """Records every tick the downloader makes, so a test can say bytes were flowing."""
 
@@ -228,6 +258,17 @@ class DownloaderTestCase(unittest.TestCase):
     def read(self, *parts):
         with open(os.path.join(self.repo_cache, *parts), "rb") as handle:
             return handle.read()
+
+    def weights_part(self):
+        return os.path.join(self.repo_cache, "blobs", WEIGHTS_SHA256 + ".part")
+
+    def interrupt_after(self, received):
+        """A first attempt that is cut after `received` weight bytes, and a process that then dies:
+        the partial file the next attempt is meant to resume."""
+        self.hub.drop_after = [received]
+        with self.assertRaises(Killed):
+            self.download(sleep=die)
+        self.assertEqual(os.path.getsize(self.weights_part()), received)
 
 
 class ResumeTests(DownloaderTestCase):
@@ -295,10 +336,11 @@ class ResumeTests(DownloaderTestCase):
 
     def test_a_hub_that_overstates_the_size_ends_the_retries_instead_of_looping(self):
         """The same live run found the loop itself. The Hub claims 10 bytes more than it serves and
-        answers a Range past the end with 416; the downloader removes the partial file, and the next
-        attempt rewrites the whole file — which, measured against the file it had just removed,
+        answers a Range past the end with 416; the downloader then removed the partial file, and the
+        next attempt rewrote the whole file — which, measured against the file it had just removed,
         looked like progress, and reset the retry budget, every time. Progress is measured against
-        the most bytes ever held, so a rewrite of what was already there is not progress."""
+        the most bytes ever held, so a rewrite of what was already there is not progress. (Since F829
+        a 416 no longer removes the partial at all; it is a failed attempt, and the budget ends it.)"""
         self.hub.advertised_extra = 10
 
         with self.assertRaises(server.ModelDownloadError):
@@ -310,7 +352,7 @@ class ResumeTests(DownloaderTestCase):
         real_stream = server._stream_once
         attempts = []
 
-        def full_disk_after_some_bytes(url, part_path, have, timeout, chunk_size, heartbeat):
+        def full_disk_after_some_bytes(url, part_path, have, *_rest):
             attempts.append(have)
             with open(part_path, "ab") as handle:
                 handle.write(b"x" * 1000)
@@ -402,6 +444,84 @@ class ResumeTests(DownloaderTestCase):
         with self.assertRaises(server.ResumableDownloadUnavailable):
             self.download()
         self.assertFalse(os.path.exists(self.repo_cache))
+
+
+class BadResponseTests(DownloaderTestCase):
+    """F829 — one misbehaving response must not cost the partial file. The review of F522 showed a
+    200 reply to a `Range` request cutting a 200 000-byte partial to 0 bytes before a single new byte
+    had arrived (P3), and one 416 deleting it outright (P4); a 206 that resumed at the wrong offset
+    deleted it too. Each is now a failed attempt like a dropped connection: the bytes on disk stay,
+    and the next attempt resumes them. Only bytes shown to be wrong — the final size or sha256 check —
+    are discarded."""
+
+    def test_a_whole_file_reply_to_a_resume_request_never_shortens_the_partial(self):
+        self.interrupt_after(200_000)
+        self.hub.ignore_range = True
+
+        self.hub.drop_after = [0]  # the 200 arrives, then the connection drops before any byte
+        with self.assertRaises(FAILED_ATTEMPT):
+            self.download(sleep=die)
+        self.assertEqual(os.path.getsize(self.weights_part()), 200_000,
+                         "a 200 to a Range request emptied the partial before any new byte arrived (P3)")
+
+        self.hub.drop_after = [150_000]  # cut while it is still resending bytes already on disk
+        with self.assertRaises(FAILED_ATTEMPT):
+            self.download(sleep=die)
+        self.assertEqual(os.path.getsize(self.weights_part()), 200_000)
+
+        self.download()  # a whole-file reply that runs to the end completes it
+
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_416_to_a_resume_request_keeps_the_partial(self):
+        self.interrupt_after(120_000)
+        self.hub.range_replies = [416]
+
+        with self.assertRaises(FAILED_ATTEMPT):
+            self.download(sleep=die)
+
+        self.assertTrue(os.path.exists(self.weights_part()), "one 416 deleted the partial file (P4)")
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+        self.download()
+        self.assertEqual(self.hub.ranges[-1], "bytes=120000-", "the next attempt resumes the same bytes")
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_resume_at_the_wrong_offset_keeps_the_partial(self):
+        self.interrupt_after(120_000)
+        self.hub.range_replies = ["wrong-offset"]
+
+        with self.assertRaises(FAILED_ATTEMPT):
+            self.download(sleep=die)
+
+        self.assertTrue(os.path.exists(self.weights_part()), "a 206 at another offset deleted the partial file")
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+        self.download()
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_whole_reply_that_is_not_the_file_is_refused_before_it_touches_the_partial(self):
+        """A captive portal answers anything with its own page and a 200. Its length is not the
+        file's, so it is refused as a failed attempt; appended after the bytes on disk, it would have
+        failed the final checksum and cost the whole partial."""
+        self.interrupt_after(120_000)
+        self.hub.range_replies = ["portal"]
+
+        with self.assertRaises(FAILED_ATTEMPT):
+            self.download(sleep=die)
+
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+        self.download()
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_server_that_keeps_answering_416_ends_in_an_error_with_the_partial_kept(self):
+        """Never deleting on a 416 must not become retrying forever: it is a failed attempt, so the
+        retry budget ends it, and the partial is still there for the next start."""
+        self.interrupt_after(120_000)
+        self.hub.range_replies = [416] * 10
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download(retries=2)
+
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
 
 
 class OrchestrationTests(DownloaderTestCase):

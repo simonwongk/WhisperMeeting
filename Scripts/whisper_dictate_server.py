@@ -219,28 +219,43 @@ def _file_metadata(endpoint, repo, revision, filename, timeout):
     return commit, etag, size
 
 
-def _stream_once(url, part_path, have, timeout, chunk_size, heartbeat):
+def _stream_once(url, part_path, have, size, timeout, chunk_size, heartbeat):
     """One request for the rest of the file, appended to `part_path`. Raises on any transport error;
-    the caller decides from the file's size whether it made progress."""
+    the caller decides from the file's size whether it made progress.
+
+    No reply can shorten the partial file (F829). A server that ignores `Range` and sends the whole
+    file with a 200 used to have the partial truncated the moment its headers arrived — before a byte
+    of the replacement had — and a 206 at another offset deleted it. Now the whole-file reply's first
+    `have` bytes are read and dropped and only what follows is appended, so a reply that ends early
+    costs nothing; a whole-file reply whose length is not the file's (a captive portal's page) and a
+    206 at another offset are failed attempts that leave the partial as it was. The final check —
+    the size, and the sha256 where the Hub advertises one — covers the bytes already on disk too."""
     headers = {"User-Agent": DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"}
     if have:
         headers["Range"] = "bytes=%d-" % have
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
+        skip = 0
         if have and response.status != 206:
-            have = 0  # the server ignored Range and is sending the whole file: start the file over
+            length = _int_or_none(response.headers.get("Content-Length"))
+            if length is not None and length != size:
+                raise OSError("the server answered a resume with %d bytes that are not the file" % length)
+            skip = have  # the server ignored Range and is sending the whole file
         elif have:
             match = re.match(r"^bytes (\d+)-", response.headers.get("Content-Range") or "")
             if not match or int(match.group(1)) != have:
-                have = 0
-                os.remove(part_path)
                 raise OSError("the server resumed at a different offset than requested")
-        with open(part_path, "ab" if have else "wb") as out:
+        with open(part_path, "ab") as out:
             while True:
                 chunk = response.read(chunk_size)
                 if not chunk:
                     return
-                out.write(chunk)
+                if skip:
+                    dropped = min(skip, len(chunk))
+                    skip -= dropped
+                    chunk = chunk[dropped:]
+                if chunk:
+                    out.write(chunk)
                 heartbeat.tick()
 
 
@@ -260,9 +275,10 @@ def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout,
     part_path = blob_path + ".part"
     failures = 0  # consecutive failed attempts that did not get past `best`
     # The most bytes this call has ever held. Progress is measured against it, never against the
-    # file as the last attempt found it: an attempt that deletes the partial file (a 416) and a next
-    # one that rewrites the same bytes would otherwise each look like progress, reset the budget,
-    # and retry forever — which the first run against the live Hub did.
+    # file as the last attempt found it: an attempt that loses the partial file and a next one that
+    # rewrites the same bytes would otherwise each look like progress, reset the budget, and retry
+    # forever — which the first run against the live Hub did, when a 416 still deleted the partial
+    # (it no longer does, F829; the size and checksum checks below still can).
     best = os.path.getsize(part_path) if os.path.exists(part_path) else 0
     while True:
         have = os.path.getsize(part_path) if os.path.exists(part_path) else 0
@@ -272,12 +288,16 @@ def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout,
         if have < size:
             problem = None
             try:
-                _stream_once(url, part_path, have, timeout, chunk_size, heartbeat)
+                _stream_once(url, part_path, have, size, timeout, chunk_size, heartbeat)
             except urllib.error.HTTPError as error:
                 if error.code in (401, 403, 404):
                     raise ModelDownloadError("HTTP %d downloading %s" % (error.code, url))
-                if error.code == 416 and os.path.exists(part_path):
-                    os.remove(part_path)  # the partial file no longer matches the source
+                # A 416 is a failed attempt like any other (F829); it used to delete the partial. The
+                # partial is shorter than the advertised size (checked above), so a server that
+                # cannot serve the rest of it disagrees with its own metadata, and starting over
+                # would meet the same server. The next start's metadata request is the re-check: a
+                # partial longer than the size it advertises, a `.part` for an etag no longer served,
+                # and the final size/sha256 check still discard bytes shown to be wrong.
                 problem = error
             except _TRANSIENT_ERRORS as error:
                 if getattr(error, "errno", None) == errno.ENOSPC:
