@@ -14,6 +14,29 @@ private let original = [
     seg(30.7, "We'll sue Acme next week.", speaker: "A"),
 ]
 
+@Test("A transcript with no segments at all is searched as its sentences, untimed (F839)")
+func segmentlessTranscriptIsSearchedAsItsSentences() {
+    // A Qwen result whose alignment failed keeps its text on one line with no segments.
+    let text = "We agreed to move the launch to Friday. Dana will email the vendor about pricing? "
+        + "3.5 percent is the cap.\n预算还没批。我们周五再谈"
+    let passages = EditedTranscript.searchablePassages(transcriptText: text, segments: [])
+    #expect(passages.map(\.text) == [
+        "We agreed to move the launch to Friday.", "Dana will email the vendor about pricing?",
+        "3.5 percent is the cap.", "预算还没批。", "我们周五再谈",
+    ])
+    #expect(passages.allSatisfy { $0.start == nil && $0.end == nil && $0.speaker == nil })
+    // A clock-like token stays prose (F42): nothing times an untimed transcript.
+    #expect(EditedTranscript.searchablePassages(transcriptText: "3:00 PM call with Acme.", segments: [])
+        .map(\.text) == ["3:00 PM call with Acme."])
+    #expect(EditedTranscript.searchablePassages(transcriptText: " \n ", segments: []).isEmpty)
+    // With segments it is exactly the edited-transcript reading, edited or not.
+    let unedited = TranscriptFormatter.timestamped(original)
+    #expect(EditedTranscript.searchablePassages(transcriptText: unedited, segments: original) == original)
+    let edited = "00:00  Kick off the quarterly review.\n00:30  We'll see Acme next week."
+    #expect(EditedTranscript.searchablePassages(transcriptText: edited, segments: original)
+        == EditedTranscript.effectiveSegments(transcriptText: edited, segments: original))
+}
+
 @Test("An unedited transcript reads exactly its stored segments, metrics and all (F455)")
 func uneditedTranscriptIsItsSegments() {
     let text = TranscriptFormatter.timestamped(original)

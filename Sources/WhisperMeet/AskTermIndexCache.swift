@@ -21,12 +21,14 @@ struct AskCorpusSource: Sendable, Equatable {
     /// transcript — the lines they left, so a deleted or corrected sentence is not a passage, an
     /// answer's grounding, or a row in the meaning index. A line keeps its segment's precise time
     /// while the lines still align and its visible MM:SS otherwise; one with neither is still
-    /// searched, just without a timestamp.
+    /// searched, just without a timestamp. A transcript with no segments at all — a Qwen meeting
+    /// whose alignment failed — is searched as its sentences, untimed (F839,
+    /// `EditedTranscript.searchablePassages`).
     ///
     /// Worked out where the index is built, off the main actor: deciding "edited" renders the whole
     /// transcript, which is the cost this cache exists to pay once.
     var searchable: SearchableMeeting {
-        let effective = EditedTranscript.effectiveSegments(transcriptText: transcriptText, segments: segments)
+        let effective = EditedTranscript.searchablePassages(transcriptText: transcriptText, segments: segments)
         return SearchableMeeting(
             id: id,
             title: title,

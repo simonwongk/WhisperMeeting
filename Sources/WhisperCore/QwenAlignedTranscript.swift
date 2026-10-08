@@ -211,7 +211,8 @@ public enum QwenAlignedTranscript {
         }
     }
 
-    /// The transcript cut into sentences at `.`, `?`, `!`, `。`, `？`, `！` and newlines.
+    /// The transcript cut into sentences at `.`, `?`, `!`, `。`, `？`, `！` and newlines. Also how Ask
+    /// reads a transcript that has no segments at all (F839, `EditedTranscript.searchablePassages`).
     ///
     /// A run of those marks, in either width — "...", "?!", "？！" — is one ending, cut after its last
     /// mark (F429, F608). Cutting at each mark left lines of bare "." or "！" that no aligner word can
@@ -231,7 +232,7 @@ public enum QwenAlignedTranscript {
     /// `split_segment_with_chinese` and `tokenize_chinese_mixed`), so a cut in front of one is always
     /// on a word boundary, and Chinese puts no space after a sentence, so declining the cut would run
     /// sentences together. `。`, `？`, `！` and the newline never take the letter, digit or clause rule.
-    private static func sentenceSlices(_ text: String) -> [String] {
+    static func sentenceSlices(_ text: String) -> [String] {
         let characters = Array(text)
         var current = ""
         var result: [String] = []

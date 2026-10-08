@@ -149,3 +149,31 @@ func actionItemQuotesReadTheEditedTranscript() async throws {
     #expect(items[1].quote == nil, "the only line that supported it was deleted")
     #expect(items[1].timestamp == nil)
 }
+
+@MainActor
+@Test("Ask finds a meeting whose transcript has no segments, sentence by sentence and untimed, by keyword and by meaning (F839)")
+func askSearchesAMeetingWithNoSegments() async throws {
+    let model = try makeModel()
+    let id = UUID()
+    // What a Qwen meeting whose alignment failed stores: the complete text, one line, no segments.
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Launch", status: .completed,
+        transcriptText: "We agreed to move the launch to Friday. Dana will email the vendor about pricing.",
+        segments: []
+    ))
+    try FileManager.default.createDirectory(at: model.store.recordingDirectoryURL(for: id), withIntermediateDirectories: true)
+
+    let found = await model.askMeetings(query: "vendor pricing", scope: MeetingScope())
+    #expect(found.map(\.snippet) == ["Dana will email the vendor about pricing."])
+    #expect(found.first?.meetingID == id)
+    #expect(found.first?.timestamp == nil)
+
+    let log = PassageLog()
+    model.askEmbedder = { texts, kind in
+        if kind == .passage { await log.record(texts) }
+        return (2, texts.flatMap { _ in [Float(1), 0] })
+    }
+    let fused = await model.askMeetingsByMeaning(query: "who contacts suppliers", scope: MeetingScope())
+    #expect(await log.texts == ["We agreed to move the launch to Friday.", "Dana will email the vendor about pricing."])
+    #expect(fused.contains { $0.meetingID == id })
+}

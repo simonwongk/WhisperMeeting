@@ -30,6 +30,31 @@ public enum EditedTranscript {
         return self.segments(transcriptText: transcriptText, original: segments)
     }
 
+    /// The passages Ask searches, embeds and grounds an answer in: `effectiveSegments`, or — for a
+    /// transcript with text and no segments at all — its sentences, untimed (F839).
+    ///
+    /// A Qwen result whose alignment failed keeps its complete text and no segments
+    /// (`QwenASRClient.makeResult`), and `effectiveSegments` read that as nothing — not edited,
+    /// because there are no segments to have edited — so Ask never found anything in a completed
+    /// meeting. Its lines are no answer: the helper joins its chunks with spaces, so the text is one
+    /// line, which would be one passage the length of the meeting — a useless citation, a meaning
+    /// vector of its first 256 tokens (`embed_local.py` truncates there), and a grounding prompt that
+    /// can outgrow the model (F755). So it is cut where the aligner cuts it, by `QwenAlignedTranscript.sentenceSlices`
+    /// (sentence marks and newlines, "3.5" and "A.D.," kept whole). Nothing is parsed as a timestamp:
+    /// with no timed segment, a leading clock is prose (F42). The action-item quotes and the
+    /// exporter keep their own readings.
+    public static func searchablePassages(
+        transcriptText: String,
+        segments: [TranscriptSegment]
+    ) -> [TranscriptSegment] {
+        guard segments.isEmpty else {
+            return effectiveSegments(transcriptText: transcriptText, segments: segments)
+        }
+        return QwenAlignedTranscript.sentenceSlices(transcriptText).map {
+            TranscriptSegment(speaker: nil, start: nil, end: nil, text: $0)
+        }
+    }
+
     /// The edited text as segments, one per non-empty line, so nothing the user removed survives.
     ///
     /// - When the lines still align one-for-one with `original` (same count, same visible whole
