@@ -6,12 +6,22 @@ import Testing
 // in parallel) and changed how it treats Chinese. Neither may change a single English suggestion.
 // The oracle below is GlossaryCorrector.corrections as it stood at 8748e23, verbatim; the new pass
 // must return exactly what it returns on text without Chinese — same proposals, same order.
+//
+// Amended since, deliberately and only where marked `amended`, for tickets that changed the
+// English answer on purpose — each switchable, so a test can show the corpus exercises it:
+// - F819: a proposal's phrase leaves the punctuation stuck to its outer words in the transcript.
+
+private struct Amendments {
+    var f819 = true
+}
 
 private enum PreF536GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3
 
-    static func corrections(vocabulary: [String], segments: [TranscriptSegment]) -> [GlossaryCorrection] {
+    static func corrections(
+        vocabulary: [String], segments: [TranscriptSegment], amended: Amendments = Amendments()
+    ) -> [GlossaryCorrection] {
         var results: [GlossaryCorrection] = []
         for (index, segment) in segments.enumerated() {
             let words = segment.text
@@ -37,11 +47,26 @@ private enum PreF536GlossaryCorrector {
                     }
                 }
                 if let best {
-                    results.append(GlossaryCorrection(segmentIndex: index, from: best.phrase, to: term))
+                    let phrase = amended.f819 ? trimmedF819(best.phrase) : best.phrase // amended
+                    results.append(GlossaryCorrection(segmentIndex: index, from: phrase, to: term))
                 }
             }
         }
         return results
+    }
+
+    /// F819, written here independently of `GlossaryCorrector.trimmingAttachedPunctuation`: drop
+    /// outer characters with no letter, mark or digit in them, stopping at an ASCII word character
+    /// (an underscore stays, as `LatinTokenBoundary` reads it as part of the word).
+    static func trimmedF819(_ phrase: String) -> String {
+        func keeps(_ character: Character) -> Bool {
+            (character.isASCII && (character.isLetter || character.isNumber || character == "_"))
+                || character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        }
+        var characters = Array(phrase)
+        while let first = characters.first, !keeps(first) { characters.removeFirst() }
+        while let last = characters.last, !keeps(last) { characters.removeLast() }
+        return characters.isEmpty ? phrase : String(characters)
     }
 
     static func normalize(_ text: String) -> String {
@@ -132,8 +157,12 @@ func englishSuggestionsMatchThePreF536Oracle() {
     let expected = PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
     let actual = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
 
-    // The premise: the transcript is rich enough to exercise the search.
+    // The premise: the transcript is rich enough to exercise the search, and each amendment.
     #expect(expected.count >= 20, "only \(expected.count) proposals — the corpus exercises too little")
+    var withoutF819 = Amendments()
+    withoutF819.f819 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF819) != expected,
+            "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
 }

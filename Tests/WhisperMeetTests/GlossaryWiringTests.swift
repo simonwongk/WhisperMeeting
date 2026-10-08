@@ -48,3 +48,27 @@ func glossaryCorrectionsApplyThroughAppModel() async throws {
     // A text-only correction never creates or opens the recording.
     #expect(!FileManager.default.fileExists(atPath: model.store.recordingURL(for: updated!).path))
 }
+
+@MainActor
+@Test("Correct Toward Vocabulary keeps the comma after the word it corrects (F819)")
+func glossaryCorrectionKeepsPunctuationThroughAppModel() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GlossaryWiringTests-F819-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "Ship the Kestrol, then tell Priya.")]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    model.store.addVocabulary(["Kestrel"])
+
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")])
+
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "Ship the Kestrel, then tell Priya.")
+}

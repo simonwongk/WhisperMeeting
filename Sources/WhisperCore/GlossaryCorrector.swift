@@ -19,8 +19,10 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// reviews every proposal before it applies; nothing auto-applies (F65).
 ///
 /// **Two kinds of window (F536).** A Latin term is compared with windows of one to three
-/// whitespace-separated words — unchanged from F65, and pinned against a verbatim copy of the old
-/// code by `GlossaryCorrectorGoldenTests`. A term containing Chinese is compared with windows of
+/// whitespace-separated words — as in F65, and pinned against a copy of the old code by
+/// `GlossaryCorrectorGoldenTests`, amended only where a later ticket changed the answer on purpose:
+/// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
+/// proposed as "Kestrol"). A term containing Chinese is compared with windows of
 /// exactly its own length, slid character by character along each run of letters and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
@@ -44,7 +46,7 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// isCancelled:progress:)`). Measured at -O in a scratch package outside the repository, on a
 /// 700-segment synthetic meeting against 5,000 terms: 78.9 s before, 1.2 s after, with the same
 /// 167,128 English proposals. What the repository pins is smaller: `GlossaryCorrectorGoldenTests`
-/// compares 80 terms × 60 segments against the old code.
+/// compares 80 terms × 60 segments against the old code (as amended, above).
 public enum GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3
@@ -131,9 +133,10 @@ public enum GlossaryCorrector {
         return results
     }
 
-    /// F65's search, unchanged in what it returns for text without Chinese: the first 1–3-token
+    /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
     /// window with the highest ratio at or above the threshold, not equal to the term, unless the
-    /// term already stands as a token.
+    /// term already stands as a token. The phrase returned is the window's without its outer
+    /// punctuation (F819).
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, scratch: inout LCSScratch
     ) -> String? {
@@ -258,7 +261,7 @@ public enum GlossaryCorrector {
                     windows.append(Window(
                         // Joined as strings first, as F65 did, so the character count is the same.
                         ids: table.ids(normalized[slice].joined()),
-                        phrase: phrase,
+                        phrase: GlossaryCorrector.trimmingAttachedPunctuation(phrase),
                         containsCJK: tokens[slice].contains(where: \.isCJK)
                     ))
                 }
@@ -448,6 +451,21 @@ public enum GlossaryCorrector {
             result[correction.segmentIndex].text.replaceSubrange(range, with: correction.to)
         }
         return result
+    }
+
+    /// A Latin window's phrase without the punctuation stuck to its outer words (F819): "Kestrol,"
+    /// is proposed as "Kestrol", so applying it keeps the comma. Only what `normalize` already
+    /// ignores is trimmed — nothing the window was scored on — and never an underscore, which
+    /// `ReplacementBoundary` reads as part of the word: trimmed off, `apply` would no longer find
+    /// the word at all. Punctuation inside the phrase ("Kestrol, release") stays.
+    static func trimmingAttachedPunctuation(_ phrase: String) -> String {
+        let isPartOfAWord: (Character) -> Bool = { character in
+            LatinTokenBoundary.isConnector(character)
+                || character.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
+        }
+        guard let first = phrase.firstIndex(where: isPartOfAWord),
+              let last = phrase.lastIndex(where: isPartOfAWord) else { return phrase }
+        return String(phrase[first...last])
     }
 
     /// Alphanumerics-lowercase, separator-free — CJK-safe (ideographs are alphanumeric).
