@@ -969,7 +969,9 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
 /// `WhisperProgressParser` as `.downloadingModel`, so this engine now tells the same observers the
 /// warm engine tells (F823, F859) — the app then shows the download in the pill, the Dictation tab
 /// and the menu, as it does on Apple silicon — and stops the run once the bar has not moved for
-/// `downloadStallTimeout`, as F522's window does for the helper. The CLI contract is unchanged.
+/// `downloadStallTimeout`, as F522's window does for the helper. A bar at 100 % ends the download and
+/// the window: what openai-whisper does next (hash the file, load it) is not the download's to time.
+/// The CLI contract is unchanged.
 public final class BatchWhisperDictationEngine: DictationEngine, @unchecked Sendable {
     private let client: LocalWhisperClient
     private let model: WhisperModel
@@ -1049,6 +1051,10 @@ private final class CheckpointDownloadWatch: @unchecked Sendable {
     private let progressObserver: DictationModelDownloadProgressObserver?
     private let stallTimeout: TimeInterval
     private var downloading = false
+    /// A bar reached 100 % (review R6): the download is over, and anything after it — openai-whisper
+    /// re-reading and hashing the file, loading it, the first window — is not the download's to time.
+    /// One CLI run downloads one checkpoint, so later download bars (tqdm's closing redraw) are ignored.
+    private var finished = false
     private var lastMoved = ContinuousClock.now
     private var lastPercent: Int?
 
@@ -1070,6 +1076,7 @@ private final class CheckpointDownloadWatch: @unchecked Sendable {
         var figure: DictationModelDownloadProgress?
         lock.withLock {
             if progress.phase == .downloadingModel {
+                guard !finished else { return }
                 lastMoved = ContinuousClock.now
                 if !downloading { downloading = true; started = true }
                 // Whole percent only: the bar redraws ten times a second, the app needs a percent.
@@ -1078,6 +1085,12 @@ private final class CheckpointDownloadWatch: @unchecked Sendable {
                     if next.percent != lastPercent {
                         lastPercent = next.percent
                         figure = next
+                    }
+                    // 100 %: the download is over, and so is its stall window (review R6).
+                    if next.percent == 100 {
+                        finished = true
+                        downloading = false
+                        ended = true
                     }
                 }
             } else if downloading, progress.phase != .preparing, progress.phase != .loadingModel {
