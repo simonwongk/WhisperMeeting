@@ -14,6 +14,7 @@ Meetings still use openai/whisper via LocalWhisperClient; this MLX path is dicta
 import argparse
 import contextlib
 import errno
+import fcntl
 import hashlib
 import http.client
 import json
@@ -105,6 +106,12 @@ PINNED_DICTATION_MODELS = {
 }
 
 DOWNLOAD_REPORT_INTERVAL_SECONDS = 1.0
+# F826: how long a start waits for another process's hold on the download lock before saying so —
+# enough for a helper the app has just stopped (a model switch, Quick Dictation turned off and on)
+# to have exited, which releases its lock.
+DOWNLOAD_LOCK_WAIT_SECONDS = 10
+DOWNLOAD_BUSY_MESSAGE = ("another WhisperMeet process is downloading the dictation model right now; "
+                         "try again when it has finished")
 DOWNLOAD_CHUNK_BYTES = 1 << 20
 DOWNLOAD_RETRIES = 5
 DOWNLOAD_REQUEST_TIMEOUT_SECONDS = 60
@@ -542,10 +549,59 @@ def adopt_library_download(repo_cache, pin, files=DICTATION_MODEL_FILES, chunk_s
     _write_ref(repo_cache, "main", revision)
 
 
+def download_lock_path(hub_dir, mlx_repo):
+    """The file the dictation model's download is locked on (F826). Under the hub's `.locks/`,
+    beside the library's own per-repo locks, and OUTSIDE `models--org--repo/`: the installer swaps
+    that whole directory, and a lock inside it would move with it. `setup-local-whisper.sh` probes
+    the same path."""
+    return os.path.join(hub_dir, ".locks", "models--" + mlx_repo.replace("/", "--"),
+                        "whispermeet-dictation-download.lock")
+
+
+@contextlib.contextmanager
+def download_lock(hub_dir, mlx_repo, wait=DOWNLOAD_LOCK_WAIT_SECONDS, sleep=time.sleep, clock=time.monotonic):
+    """Hold the model's download lock — `flock(2)`, released by the kernel when this process exits
+    however it exits — or raise `ModelDownloadError` once `wait` seconds have passed without it.
+
+    Two helpers on one model directory (two copies of the app) used to append to the same `.part`;
+    the sha256 check discarded most interleavings, but a writer that opened the `.part` before the
+    other's verify-then-replace could append to the already-published blob. And a Repair during the
+    download moved the `.part` into the installer's backup and deleted it. Now the second helper
+    waits briefly and then says why it cannot download, and the installer leaves a model alone while
+    this lock is held. (The installer only probes the lock; it does not hold it while it downloads.)"""
+    path = download_lock_path(hub_dir, mlx_repo)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline = clock() + wait
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    raise
+                if clock() >= deadline:
+                    raise ModelDownloadError(DOWNLOAD_BUSY_MESSAGE)
+                sleep(0.25)
+        yield
+    finally:
+        os.close(descriptor)  # releases the lock
+
+
 def download_dictation_model(mlx_repo, hub_dir, emit=emit_download_report, fallback=hub_snapshot_download,
-                             **options):
-    """The first-run download, bracketed by the reports the app reads. The closing report is always
-    sent, so a failure cannot leave the app waiting in "no progress for N seconds" mode."""
+                             lock_wait=None, **options):
+    """The first-run download, under the model's download lock (F826), bracketed by the reports the
+    app reads. The closing report is always sent, so a failure cannot leave the app waiting in "no
+    progress for N seconds" mode. `lock_wait` defaults to `DOWNLOAD_LOCK_WAIT_SECONDS`, read now."""
+    wait = DOWNLOAD_LOCK_WAIT_SECONDS if lock_wait is None else lock_wait
+    with download_lock(hub_dir, mlx_repo, wait=wait):
+        if model_fully_cached(hub_dir, mlx_repo):
+            return  # another process finished it while this one waited for the lock
+        _download_dictation_model_locked(mlx_repo, hub_dir, emit, fallback, **options)
+
+
+def _download_dictation_model_locked(mlx_repo, hub_dir, emit, fallback, **options):
     heartbeat = DownloadHeartbeat(emit)
     emit(True)
     try:

@@ -778,6 +778,124 @@ class PinSourceTests(unittest.TestCase):
         self.assertEqual(defaults - set(server.PINNED_DICTATION_MODELS), set())
 
 
+# F826: where the dictation model's download lock lives, as both the helper and
+# `setup-local-whisper.sh` must agree — `LockTests.test_the_lock_is_where_the_installer_probes_it`
+# checks each of them against it.
+LOCK_RELATIVE_PATH = os.path.join(".locks", "models--mlx-community--whisper-large-v3-turbo",
+                                  "whispermeet-dictation-download.lock")
+
+# A second process holding a flock on a path until its stdin closes. Plain `fcntl`, the same
+# primitive as the helper's and lockf(1)'s (BSD `flock(2)`).
+_HOLD_PLAIN = """
+import fcntl, os, sys
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+sys.stdin.read()
+"""
+
+# The same, through the helper's own lock: a second helper downloading the same model.
+_HOLD_AS_HELPER = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+with helper.download_lock(sys.argv[2], sys.argv[3], wait=0):
+    print("held", flush=True)
+    sys.stdin.read()
+"""
+
+
+class LockTests(DownloaderTestCase):
+    """F826 — two helper processes on one model directory (two copies of the app) appended to the
+    same `.part` with nothing between them, and a Repair during the download moved the helper's
+    `.part` away and deleted it. The download now runs under a lock outside the model's directory:
+    a second helper waits briefly, then says why it cannot download and touches nothing, and the
+    installer leaves a model alone while the lock is held (`HelperDownloadLockTests` in
+    `test_f626_f627_dictation_cache_pin.py`)."""
+
+    def setUp(self):
+        super().setUp()
+        saved_wait = getattr(server, "DOWNLOAD_LOCK_WAIT_SECONDS", None)
+        server.DOWNLOAD_LOCK_WAIT_SECONDS = 0
+        self.addCleanup(setattr, server, "DOWNLOAD_LOCK_WAIT_SECONDS", saved_wait)
+        self.lock_path = os.path.join(self.hub_dir, LOCK_RELATIVE_PATH)
+
+    def hold(self, program, *args):
+        """Start a second process that holds the lock, and wait until it says it does."""
+        import subprocess
+        import sys
+
+        holder = subprocess.Popen([sys.executable, "-c", program] + list(args),
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+        def release():
+            holder.stdin.close()
+            holder.wait(timeout=30)
+
+        self.addCleanup(release)
+        self.assertEqual(holder.stdout.readline().strip(), "held", "the second process never took the lock")
+        return holder
+
+    def orchestrate(self, reports):
+        return server.download_dictation_model(
+            REPO, self.hub_dir, emit=reports.append, fallback=self.library([]),
+            endpoint=self.hub.endpoint, retries=0, sleep=self.bounded_sleep, chunk_size=16 * 1024,
+        )
+
+    def test_another_process_holding_the_download_lock_stops_this_download_before_it_touches_anything(self):
+        self.interrupt_after(120_000)
+        requests_before = len(self.hub.requests)
+        self.hold(_HOLD_PLAIN, self.lock_path)
+        reports = []
+
+        with self.assertRaises(server.ModelDownloadError) as caught:
+            self.orchestrate(reports)
+
+        self.assertIn("another WhisperMeet process", str(caught.exception))
+        self.assertEqual(len(self.hub.requests), requests_before, "a second writer reached the Hub")
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000, "a second writer touched the partial")
+        self.assertEqual(reports, [], "a download that never started was reported")
+
+    def test_a_second_helper_cannot_download_while_the_first_holds_the_model(self):
+        """Both sides the helper's own code, in two processes."""
+        self.hold(_HOLD_AS_HELPER, os.path.abspath(server.__file__), self.hub_dir, REPO)
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.orchestrate([])
+
+        self.assertEqual(self.hub.requests, [])
+
+    def test_once_the_lock_is_free_the_download_runs(self):
+        holder = self.hold(_HOLD_PLAIN, self.lock_path)
+        holder.stdin.close()
+        holder.wait(timeout=30)
+
+        self.orchestrate([])
+
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_start_that_finds_the_model_finished_by_the_time_it_holds_the_lock_downloads_nothing(self):
+        """What a helper that waited for another one finds: the model is there."""
+        self.download()
+        requests_before = len(self.hub.requests)
+        reports = []
+
+        self.orchestrate(reports)
+
+        self.assertEqual(len(self.hub.requests), requests_before)
+        self.assertEqual(reports, [])
+
+    def test_the_lock_is_where_the_installer_probes_it(self):
+        self.assertEqual(server.download_lock_path(self.hub_dir, REPO), self.lock_path)
+        installer = os.path.join(os.path.dirname(__file__), "..", "setup-local-whisper.sh")
+        with open(installer, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn('"$hub_directory/.locks/$dictation_repo_directory_name/whispermeet-dictation-download.lock"',
+                      source)
+
+
 class OrchestrationTests(DownloaderTestCase):
     def test_the_library_downloader_is_only_the_fallback_for_an_unavailable_resumable_path(self):
         self.hub.unusable_metadata = True

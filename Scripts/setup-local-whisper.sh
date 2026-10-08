@@ -259,8 +259,23 @@ if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
   mkdir -p "$hub_directory"
   rm -rf "$dictation_staging"
 
+  # F826: while the dictation helper downloads the model it holds a flock(2) lock on this file
+  # (`download_lock` in whisper_dictate_server.py, which names the same path). A Repair during that
+  # download used to move the helper's partial file into the backup below and delete it. lockf -t 0
+  # takes the lock only if it is free, and gives it straight back: 0 means no download is running;
+  # 75 (EX_TEMPFAIL) means one is; anything else means it cannot be told, and the model is left
+  # alone then too — the helper downloads it on first use, at this same pin (F830).
+  dictation_download_lock="$hub_directory/.locks/$dictation_repo_directory_name/whispermeet-dictation-download.lock"
+  mkdir -p "${dictation_download_lock:h}" 2>/dev/null || true
+  dictation_lock_status=0
+  /usr/bin/lockf -s -k -t 0 "$dictation_download_lock" /usr/bin/true || dictation_lock_status=$?
+
   # F626: an intact pinned model is kept; anything else falls through to the verified download.
-  if dictation_cache_matches_pin "$hub_directory/$dictation_repo_directory_name"; then
+  if (( dictation_lock_status == 75 )); then
+    print "Quick Dictation is downloading its model right now; it is left to finish there."
+  elif (( dictation_lock_status != 0 )); then
+    print -u2 "Note: could not check whether Quick Dictation is downloading its model (lockf $dictation_lock_status); left it alone — it downloads on first use (meetings unaffected)."
+  elif dictation_cache_matches_pin "$hub_directory/$dictation_repo_directory_name"; then
     print "The Quick Dictation model already matches the pinned revision; kept."
   elif DICTATION_STAGE="$dictation_staging" DICTATION_REPOSITORY="$dictation_repository" \
      DICTATION_REVISION="$dictation_revision" \
@@ -290,16 +305,23 @@ PY
       mkdir -p "$dictation_staging/$dictation_repo_directory_name/refs"
       print -n "$dictation_revision" > "$dictation_staging/$dictation_repo_directory_name/refs/main"
 
-      dictation_target="$hub_directory/$dictation_repo_directory_name"
-      dictation_backup="$hub_directory/.dictation-model-backup-$$"
-      rm -rf "$dictation_backup"
-      if [[ -e "$dictation_target" ]]; then
-        mv "$dictation_target" "$dictation_backup"
-      fi
-      if mv "$dictation_staging/$dictation_repo_directory_name" "$dictation_target"; then
+      # F826: the helper may have started downloading while this one ran; checked again here, just
+      # before the swap. (A download that starts between this check and the `mv` is not seen — a
+      # window of milliseconds, against the minutes of the download above.)
+      if ! /usr/bin/lockf -s -k -t 0 "$dictation_download_lock" /usr/bin/true; then
+        print "Quick Dictation started downloading its model during this install; it is left to finish there."
+      else
+        dictation_target="$hub_directory/$dictation_repo_directory_name"
+        dictation_backup="$hub_directory/.dictation-model-backup-$$"
         rm -rf "$dictation_backup"
-      elif [[ -e "$dictation_backup" ]]; then
-        mv "$dictation_backup" "$dictation_target"
+        if [[ -e "$dictation_target" ]]; then
+          mv "$dictation_target" "$dictation_backup"
+        fi
+        if mv "$dictation_staging/$dictation_repo_directory_name" "$dictation_target"; then
+          rm -rf "$dictation_backup"
+        elif [[ -e "$dictation_backup" ]]; then
+          mv "$dictation_backup" "$dictation_target"
+        fi
       fi
     else
       print -u2 "Note: the Quick Dictation model failed verification; it will download on first use (meetings unaffected)."

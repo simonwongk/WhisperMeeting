@@ -241,6 +241,114 @@ class RepairReverifiesTheCacheTests(InstallerBlockCase):
         self.assertEqual(self.downloads(), 1)
 
 
+class HelperDownloadLockTests(InstallerBlockCase):
+    """F826 — a Repair (or the installer run from Terminal, or a second copy of the app) during the
+    dictation helper's first-run download moved the helper's partial download into
+    `.dictation-model-backup-$$` and deleted it. The helper now holds a `flock(2)` lock while it
+    downloads (`download_lock` in `whisper_dictate_server.py`; `LockTests` there pins the path to
+    this one), and the block leaves the model alone while it is held — checked before anything is
+    downloaded, and again just before the swap."""
+
+    LOCK = os.path.join(".locks", REPOSITORY_FOLDER, "whispermeet-dictation-download.lock")
+
+    def write_partial_download(self):
+        """What a helper part-way through its download has on disk: a finished config blob, a
+        `.part` for the weights, no `refs/main`."""
+        blobs = os.path.join(self.target, "blobs")
+        os.makedirs(blobs)
+        self.part = os.path.join(blobs, FAKE_WEIGHTS_SHA + ".part")
+        with open(self.part, "wb") as handle:
+            handle.write(FAKE_WEIGHTS[:100])
+        with open(os.path.join(blobs, hashlib.sha256(FAKE_CONFIG).hexdigest()), "wb") as handle:
+            handle.write(FAKE_CONFIG)
+
+    def hold_lock(self):
+        import sys
+
+        path = os.path.join(self.hub, self.LOCK)
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl, os, sys\n"
+             "os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)\n"
+             "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)\n"
+             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+             "print('held', flush=True)\n"
+             "sys.stdin.read()\n",
+             path],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+
+        def release():
+            holder.stdin.close()
+            holder.wait(timeout=30)
+
+        self.addCleanup(release)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+
+    def test_a_model_the_helper_is_downloading_is_left_alone(self):
+        self.write_partial_download()
+        self.hold_lock()
+
+        result = self.run_block()
+
+        self.assertEqual(self.downloads(), 0, "the installer downloaded beside a helper that was downloading")
+        self.assertTrue(os.path.exists(self.part), "the helper's partial download was swapped away and deleted")
+        self.assertIn("left to finish there", result.stdout)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_download_the_helper_starts_during_the_install_is_not_swapped_away(self):
+        """The helper can start its download while the installer's own is running; the second check,
+        just before the swap, sees it. The fake download step starts a holder of the lock itself."""
+        self.write_partial_download()
+        lock = os.path.join(self.hub, self.LOCK)
+        pid_file = os.path.join(self.tmp, "holder.pid")
+        python = os.path.join(self.venv, "bin", "python")
+        with open(python) as handle:
+            original = handle.read()
+        import sys
+
+        hold = ("import fcntl, os, sys, time; os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); "
+                "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644); fcntl.flock(fd, fcntl.LOCK_EX); "
+                "time.sleep(60)")
+        holder_start = (
+            'mkdir -p "%s"\n' % os.path.dirname(lock)
+            + "'%s' -c '%s' '%s' </dev/null >/dev/null 2>&1 &\n" % (sys.executable, hold, lock)
+            + 'echo $! > "%s"\n' % pid_file
+            + "i=0\n"
+            # until the holder has the lock (lockf -t 0 succeeds only while it is free), bounded
+            + 'while /usr/bin/lockf -s -k -t 0 "%s" /usr/bin/true && [ $i -lt 1000 ]; do i=$((i+1)); sleep 0.01; done\n' % lock
+        )
+        with open(python, "w") as handle:
+            handle.write(original.replace("cat > /dev/null\n", "cat > /dev/null\n" + holder_start))
+        self.addCleanup(self.stop_holder, pid_file)
+
+        result = self.run_block()
+
+        self.assertEqual(self.downloads(), 1, "the installer's own download ran: the lock was free then")
+        self.assertTrue(os.path.exists(self.part), "the helper's partial download was swapped away and deleted")
+        self.assertIn("during this install", result.stdout)
+        self.assertEqual(self.leftovers(), [], "the installer's unused copy must not be left behind")
+
+    @staticmethod
+    def stop_holder(pid_file):
+        import signal
+
+        try:
+            with open(pid_file) as handle:
+                os.kill(int(handle.read().strip()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+
+    def test_with_the_lock_free_the_block_runs_as_before(self):
+        self.write_partial_download()
+
+        self.run_block()
+
+        self.assertEqual(self.downloads(), 1)
+        self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS)
+        self.assertEqual(self.ref(), FAKE_REVISION)
+
+
 class FunctionResultTests(unittest.TestCase):
     """`dictation_cache_matches_pin` on its own: its exit status is the contract the block relies on."""
 
