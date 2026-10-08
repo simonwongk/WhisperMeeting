@@ -43,6 +43,12 @@ public enum ReplacementRuleMatcher {
     /// `evidence` (F594). Occurrences are found in the text as it was before the rule
     /// and never overlap, so a replacement is never matched again by the same rule. An empty or
     /// no-op rule changes nothing.
+    ///
+    /// Nor does a rule touch a dictated email address, URL or dotted host name
+    /// (`liesInsideAnAddress`): `@ . / :` are word edges to `ReplacementBoundary`, so "jon → Jonathan"
+    /// turned `jon@jon.dev` into `Jonathan@Jonathan.dev`, and dictation pastes with no review to catch
+    /// it (the review of lane W). The Improve sheet keeps proposing those occurrences — the user sees
+    /// every one there before it applies.
     public static func applied(
         _ rules: [ReplacementRule],
         to text: String,
@@ -52,6 +58,7 @@ public enum ReplacementRuleMatcher {
         for rule in rules where !rule.heard.isEmpty && rule.heard != rule.preferred {
             let boundary = ReplacementBoundary(heard: rule.heard, notCoveredBy: rule.preferred, evidence: evidence)
             let ranges = boundary.genuineRanges(in: SegmentedText(result, segmenter: evidence.segmenter))
+                .filter { !liesInsideAnAddress($0, in: result) }
             guard !ranges.isEmpty else { continue }
             // Built from the unmodified string, so no index is used after a mutation.
             var rebuilt = ""
@@ -65,6 +72,34 @@ public enum ReplacementRuleMatcher {
             result = rebuilt
         }
         return result
+    }
+
+    /// Whether `range` lies inside an email address, a URL or a dotted host or file name: the run of
+    /// ASCII address characters around it holds an `@`, a `://`, or a `.` with a letter or digit on
+    /// both sides. A sentence's own full stop ("ask Jon.") has nothing after it, and Chinese text is
+    /// not ASCII, so a run never crosses into it ("版本1.2发布" keeps 会议 in the next clause free).
+    static func liesInsideAnAddress(_ range: Range<String.Index>, in text: String) -> Bool {
+        var start = range.lowerBound
+        while start > text.startIndex, isAddressCharacter(text[text.index(before: start)]) {
+            start = text.index(before: start)
+        }
+        var end = range.upperBound
+        while end < text.endIndex, isAddressCharacter(text[end]) {
+            end = text.index(after: end)
+        }
+        let token = Array(text[start..<end])
+        if token.contains("@") || String(token).contains("://") { return true }
+        return token.indices.dropFirst().dropLast().contains { index in
+            token[index] == "." && isASCIIAlphanumeric(token[index - 1]) && isASCIIAlphanumeric(token[index + 1])
+        }
+    }
+
+    private static func isAddressCharacter(_ character: Character) -> Bool {
+        isASCIIAlphanumeric(character) || "@.:/-_~%+?=&#".contains(character)
+    }
+
+    private static func isASCIIAlphanumeric(_ character: Character) -> Bool {
+        character.isASCII && (character.isLetter || character.isNumber)
     }
 }
 

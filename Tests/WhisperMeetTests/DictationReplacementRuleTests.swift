@@ -170,6 +170,21 @@ func dictationWithoutAMatchingRuleIsUnchanged() async throws {
 }
 
 @MainActor
+@Test("A dictated email address keeps its spelling; the rule still fixes the name around it (F821, review)")
+func dictationLeavesAnEmailAddressAlone() async throws {
+    let harness = try Harness(engineText: "send it to jon@jon.dev and tell Jon")
+    defer { harness.cleanUp() }
+    harness.controller.configureReplacementRules(
+        { [ReplacementRule(heard: "jon", preferred: "jonathan"), ReplacementRule(heard: "Jon", preferred: "Jonathan")] },
+        knownTerms: { [] }
+    )
+
+    let entry = try await harness.dictate()
+
+    #expect(entry.text == "send it to jon@jon.dev and tell Jonathan")
+}
+
+@MainActor
 @Test("The app hands dictation its replacement rules and stored vocabulary, and the default segmenter is NLTokenizer's (F821)")
 func appWiresReplacementRulesIntoDictation() throws {
     let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")

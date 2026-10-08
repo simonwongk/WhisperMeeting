@@ -58,3 +58,21 @@ func firstRangeIsTheFirstOfTheGenuineRanges() throws {
     let first = try #require(ReplacementBoundary.firstRange(of: "会议", notCoveredBy: "会议室", in: text, evidence: evidence))
     #expect(first == all.first)
 }
+
+@Test("A rule leaves a dictated email address, URL or dotted host alone, and still fixes the word beside it (F821)")
+func appliedLeavesAddressesAlone() {
+    let rules = [ReplacementRule(heard: "jon", preferred: "jonathan"), ReplacementRule(heard: "Jon", preferred: "Jonathan")]
+    #expect(
+        ReplacementRuleMatcher.applied(rules, to: "mail jon@jon.dev or see jon.example.com/jon and https://jon.dev, then ask Jon.")
+            == "mail jon@jon.dev or see jon.example.com/jon and https://jon.dev, then ask Jonathan."
+    )
+    // A sentence's own full stop, a comma or an apostrophe is not an address.
+    #expect(ReplacementRuleMatcher.applied(rules, to: "Jon. Jon, and Jon's") == "Jonathan. Jonathan, and Jonathan's")
+}
+
+@Test("Chinese text with a version number in it is not taken for an address (F821)")
+func appliedDoesNotTakeChineseTextForAnAddress() {
+    let rules = [ReplacementRule(heard: "会议", preferred: "会议室")]
+    let evidence = CJKWordEvidence(segmenter: dictionarySegmenter(chineseWords), knownTerms: [])
+    #expect(ReplacementRuleMatcher.applied(rules, to: "版本1.2发布，明天开会议", evidence: evidence) == "版本1.2发布，明天开会议室")
+}

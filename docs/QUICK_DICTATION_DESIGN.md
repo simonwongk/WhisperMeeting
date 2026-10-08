@@ -78,8 +78,9 @@ in `WhisperCore`.
 `heard → preferred` rules apply to every dictation before it is pasted — after refinement, or to the
 raw text when refinement is off, skipped or refused — with no review step. They use the Improve
 sheet's word boundaries: not inside a longer Latin word, not inside an occurrence of `preferred`,
-and for Chinese not inside a word NLTokenizer keeps whole or a longer vocabulary term (F594). Every
-genuine occurrence is replaced. The history shows what was pasted; when refinement or a rule changed
+and for Chinese not inside a word NLTokenizer keeps whole or a longer vocabulary term (F594) — and
+never inside a dictated email address, URL or dotted host name. Every genuine occurrence is
+replaced. The history shows what was pasted; when refinement or a rule changed
 it, the entry's `rawText` keeps what the recognizer heard.
 
 Fallback / edge branches:
