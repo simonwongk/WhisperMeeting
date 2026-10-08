@@ -186,7 +186,7 @@ private func logEntry(_ index: Int) -> DictationLogEntry {
                       text: "entry \(index)", outcome: .pasted)
 }
 
-@Test("A negative persisted log limit keeps the default cap, keeps the history, and is written back as found (F462)")
+@Test("A negative persisted log limit applies the default cap of 100, and is written back as found (F462)")
 func negativeDictationLogLimitKeepsTheDefaultCap() throws {
     for stored in [-1, Int.min] {
         let entries = (0..<3).map(logEntry)
@@ -202,7 +202,7 @@ func negativeDictationLogLimitKeepsTheDefaultCap() throws {
         let log = try decoder.decode(DictationLog.self, from: JSONSerialization.data(withJSONObject: object))
         #expect(log.limit == stored, "the fixture decodes cleanly, which is the point")
 
-        // The next dictation is recorded, and nothing already in the history is lost.
+        // The next dictation is recorded, and a history under the default cap loses nothing.
         let updated = log.adding(logEntry(3))
         #expect(updated.entries.count == 4, "limit \(stored): \(updated.entries.count) entries kept")
         #expect(updated.entries.first?.text == "entry 3")
@@ -212,8 +212,9 @@ func negativeDictationLogLimitKeepsTheDefaultCap() throws {
         let full = DictationLog(entries: (0..<DictationLog.defaultLimit).map(logEntry), limit: stored)
         #expect(full.adding(logEntry(999)).entries.count == DictationLog.defaultLimit)
 
-        // The stored value is a fact about the file, not this build's to rewrite (a later build may
-        // have meant something by it), so it goes back to disk as it came.
+        // The stored value is a fact about the file, not this build's to rewrite, so it goes back to
+        // disk as it came. (The history itself is still trimmed to 100 above: if a later build meant
+        // -1 as "unlimited", entries past 100 do not survive a dictation in this build.)
         let written = try #require(
             JSONSerialization.jsonObject(with: encoder.encode(updated)) as? [String: Any]
         )

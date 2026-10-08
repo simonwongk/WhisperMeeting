@@ -252,8 +252,10 @@ public struct DictationLog: Codable, Sendable, Equatable {
     /// dictation ("Can't remove more items from a collection than it contains"; `Int.min` overflowed
     /// the subtraction first). I chose the default cap over clamping to 0 or 1: both of those delete
     /// the user's history on the next dictation, and a number nobody chose is no reason to. Zero keeps
-    /// its old meaning, keep nothing, because it never trapped. The stored value is left alone and
-    /// written back as found; this only decides what is applied.
+    /// its old meaning, keep nothing, because it never trapped. The stored value is written back as
+    /// found; this only decides what is applied. What it keeps is "up to 100", not "everything": a
+    /// history longer than 100 entries is trimmed to 100 on the next dictation, so if a later build
+    /// meant -1 as "unlimited", this build still trims to the default cap.
     public var effectiveLimit: Int { limit >= 0 ? limit : Self.defaultLimit }
 
     /// Returns a new log with `entry` prepended (most recent first), capped to `effectiveLimit`.
