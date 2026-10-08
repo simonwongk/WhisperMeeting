@@ -266,7 +266,7 @@ struct RecordingMenu: View {
         ))
         // F823: the menu bar said nothing while 1.6 GB downloaded, so a press looked broken.
         if dictation.isDownloadingModel {
-            Text("Downloading the dictation model…")
+            Text(dictation.modelDownloadMenuText)
         }
         Divider()
         SettingsLink { Text("Settings…") }

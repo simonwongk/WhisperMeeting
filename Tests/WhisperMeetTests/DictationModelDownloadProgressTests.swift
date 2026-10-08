@@ -270,7 +270,8 @@ func localWhisperInstallWaitsForTheDictationDownload() throws {
 func theDownloadIsShownWhereTheUserLooks() throws {
     let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/DictationView.swift")
     #expect(view.contains("if dictation.isDownloadingModel {"))
-    #expect(view.contains("DictationController.modelDownloadNotice"))
+    // Since F859 the banner shows the figure: the notice is read through the controller.
+    #expect(view.contains("dictation.modelDownloadNoticeText"))
     #expect(view.contains("if diag.offersRepair {"))
     #expect(!view.contains("!diag.modelReady {"), "the Repair offer must not ignore whether Repair can fix the model")
 

@@ -151,6 +151,23 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         observer?(downloading)
     }
 
+    /// Told how far the download has got (F859), from the byte counts a current helper puts on its
+    /// reports. Guarded by `liveLock`, like `downloadObserver`.
+    private var downloadProgressObserver: DictationModelDownloadProgressObserver?
+
+    public func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {
+        liveLock.lock()
+        downloadProgressObserver = observer
+        liveLock.unlock()
+    }
+
+    private func reportDownloadProgress(_ progress: DictationModelDownloadProgress) {
+        liveLock.lock()
+        let observer = downloadProgressObserver
+        liveLock.unlock()
+        observer?(progress)
+    }
+
     public init(
         python: URL,
         script: URL,
@@ -432,15 +449,20 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
         while true {
             if let line = DictationWireProtocol.takeLine(&stdoutBuffer) {
-                if let stallTimeout, let downloading = Self.downloadReport(in: line) {
-                    if downloading {
+                if let stallTimeout, let report = Self.downloadReport(in: line) {
+                    if report.downloading {
                         watchdog.arm(after: stallTimeout, inStallWindow: true)
                     } else {
                         watchdog.arm(after: timeout, inStallWindow: false)
                     }
-                    if downloading != reportedDownloading {
-                        reportedDownloading = downloading
-                        reportDownload(downloading)
+                    if report.downloading != reportedDownloading {
+                        reportedDownloading = report.downloading
+                        reportDownload(report.downloading)
+                    }
+                    // After the `true` above, so the app never hears a figure for a download it has
+                    // not been told about (F859). A helper that sends no counts sends no figure.
+                    if report.downloading, let progress = report.progress {
+                        reportDownloadProgress(progress)
                     }
                     continue
                 }
@@ -471,13 +493,25 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         }
     }
 
-    /// `true`/`false` for a helper's `{"downloading": …}` progress line (any other fields are
-    /// ignored), nil for everything else. A line that also carries `ready` or `error` is a reply, so
-    /// it is never mistaken for progress.
-    private static func downloadReport(in line: Data) -> Bool? {
+    /// A helper's `{"downloading": …}` progress line, nil for everything else. A line that also
+    /// carries `ready` or `error` is a reply, so it is never mistaken for progress.
+    ///
+    /// `downloadedBytes`/`totalBytes` (F859) are optional: a helper from before F859 sends neither,
+    /// and its reports read exactly as before, with no figure. Counts that are not whole numbers,
+    /// are negative, or have a total of zero are no figure either; the line still reports a
+    /// download. (An app from before F859 reads `downloading` alone and never looks at the counts.)
+    static func downloadReport(in line: Data) -> (downloading: Bool, progress: DictationModelDownloadProgress?)? {
         guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-              object["ready"] == nil, object["error"] == nil else { return nil }
-        return object["downloading"] as? Bool
+              object["ready"] == nil, object["error"] == nil,
+              let downloading = object["downloading"] as? Bool else { return nil }
+        // `as? Int64` bridges a JSON number only when it is exactly representable, so a huge or
+        // fractional count is nil here rather than a trap or a silent truncation.
+        let progress = (object["downloadedBytes"] as? Int64).flatMap { downloaded in
+            (object["totalBytes"] as? Int64).flatMap {
+                DictationModelDownloadProgress(downloadedBytes: downloaded, totalBytes: $0)
+            }
+        }
+        return (downloading, progress)
     }
 
     /// Every message in this protocol is a JSON object, so a line that does not start with `{` is
@@ -812,6 +846,10 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
         runner.observeModelDownload(observer)
     }
 
+    public func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {
+        runner.observeModelDownloadProgress(observer)
+    }
+
     public func transcribe(
         wavAt url: URL,
         language: WhisperLanguage,
@@ -864,6 +902,11 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
     public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
         primary.observeModelDownload(observer)
         fallback.observeModelDownload(observer)
+    }
+
+    public func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {
+        primary.observeModelDownloadProgress(observer)
+        fallback.observeModelDownloadProgress(observer)
     }
 
     public func warmUp() async throws {

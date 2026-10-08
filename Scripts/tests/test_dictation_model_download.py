@@ -235,7 +235,7 @@ class Beats:
     def __init__(self):
         self.count = 0
 
-    def tick(self):
+    def tick(self, *_position):
         self.count += 1
 
 
@@ -840,7 +840,7 @@ class LockTests(DownloaderTestCase):
 
     def orchestrate(self, reports):
         return server.download_dictation_model(
-            REPO, self.hub_dir, emit=reports.append, fallback=self.library([]),
+            REPO, self.hub_dir, emit=lambda *report: reports.append(report[0]), fallback=self.library([]),
             endpoint=self.hub.endpoint, retries=0, sleep=self.bounded_sleep, chunk_size=16 * 1024,
         )
 
@@ -902,7 +902,7 @@ class OrchestrationTests(DownloaderTestCase):
         calls = []
         reports = []
         server.download_dictation_model(
-            REPO, self.hub_dir, emit=reports.append, fallback=self.library(calls),
+            REPO, self.hub_dir, emit=lambda *report: reports.append(report[0]), fallback=self.library(calls),
             endpoint=self.hub.endpoint, retries=0, sleep=lambda _s: None,
         )
         self.assertEqual(calls, [REPO])
@@ -915,12 +915,64 @@ class OrchestrationTests(DownloaderTestCase):
         reports = []
         with self.assertRaises(server.ModelDownloadError):
             server.download_dictation_model(
-                REPO, self.hub_dir, emit=reports.append,
+                REPO, self.hub_dir, emit=lambda *report: reports.append(report[0]),
                 fallback=lambda *args: calls.append(args),
                 endpoint=self.hub.endpoint, retries=1, sleep=lambda _s: None,
             )
         self.assertEqual(calls, [], "falling back would download from zero and lose the partial file")
         self.assertEqual(reports[-1], False)
+
+
+class ProgressFigureTests(DownloaderTestCase):
+    """F859 — the reports said "downloading" and nothing more, so the app could not say how far the
+    1.6 GB download had got, though the downloader knew. A report now carries the bytes on disk and
+    the whole model's size, counted across both files so the figure never goes backwards."""
+
+    def counted(self, **overrides):
+        emitted = []
+        beat = server.DownloadHeartbeat(lambda *report: emitted.append(report), interval=0)  # every tick
+        self.download(heartbeat=beat, **overrides)
+        return [report[1] for report in emitted if len(report) == 2]
+
+    def test_reports_count_the_bytes_of_the_whole_model(self):
+        counted = self.counted()
+
+        total = len(CONFIG) + len(WEIGHTS)
+        self.assertTrue(counted, "no report carried a figure")
+        self.assertEqual(set(t for _done, t in counted), {total})
+        done = [d for d, _t in counted]
+        self.assertEqual(done, sorted(done), "a figure went backwards")
+        self.assertEqual(done[-1], total)
+
+    def test_a_resumed_download_counts_the_bytes_already_on_disk(self):
+        self.interrupt_after(120_000)
+
+        counted = self.counted()
+
+        # The config blob already on disk is re-hashed first (F830), which reports its own 16 bytes;
+        # after it, the weights' figure starts at the bytes already on disk, never below them.
+        self.assertTrue(counted)
+        resumed_from = len(CONFIG) + 120_000
+        self.assertEqual([d for d, _t in counted if len(CONFIG) < d < resumed_from], [],
+                         "the resume counted the weights from zero")
+        self.assertEqual(counted[-1][0], len(CONFIG) + len(WEIGHTS))
+
+    def test_the_librarys_download_reports_no_figure(self):
+        """The fallback's progress is the library's own, which this code does not count."""
+        self.hub.unusable_metadata = True
+        reports = []
+        stand_in = self.library([])
+
+        def ticking_library(repo, hub_dir, heartbeat, revision=None):
+            heartbeat.tick()
+            stand_in(repo, hub_dir, heartbeat, revision)
+
+        server.download_dictation_model(REPO, self.hub_dir, emit=lambda *report: reports.append(report),
+                                        fallback=ticking_library, endpoint=self.hub.endpoint, retries=0,
+                                        sleep=self.bounded_sleep)
+
+        self.assertIn((True,), reports)
+        self.assertTrue(all(len(report) == 1 for report in reports), reports)
 
 
 class HeartbeatTests(unittest.TestCase):
@@ -953,6 +1005,28 @@ class HeartbeatTests(unittest.TestCase):
             sys.stdout = original
         lines = [json.loads(line) for line in captured.getvalue().splitlines()]
         self.assertEqual(lines, [{"downloading": True}, {"downloading": False}])
+
+    def test_the_wire_line_carries_the_byte_counts_only_when_they_are_known(self):
+        """F859. Optional fields: a line without them is what every older helper sends, and the app
+        reads it as "downloading" with no figure."""
+        import io
+        import sys
+
+        captured = io.StringIO()
+        original = sys.stdout
+        sys.stdout = captured
+        try:
+            server.emit_download_report(True, (677870710, 1613977880))
+            server.emit_download_report(True)
+            server.emit_download_report(False, (1, 2))
+        finally:
+            sys.stdout = original
+        lines = [json.loads(line) for line in captured.getvalue().splitlines()]
+        self.assertEqual(lines, [
+            {"downloading": True, "downloadedBytes": 677870710, "totalBytes": 1613977880},
+            {"downloading": True},
+            {"downloading": False},
+        ])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,9 @@ final class DictationController: ObservableObject {
     /// apart from `status`, which is a dictation's own state and drives `isActive`: a download is
     /// not a dictation in flight, and a meeting may still transcribe beside it.
     @Published private(set) var isDownloadingModel = false
+    /// How far that download has got (F859), when the engine can say; nil before its first figure,
+    /// for an engine that sends none, and whenever no download is running.
+    @Published private(set) var modelDownloadProgress: DictationModelDownloadProgress?
     @Published var enabled: Bool { didSet { persist(); apply() } }
     @Published var hotkey: DictationHotkey {
         didSet {
@@ -316,6 +319,12 @@ final class DictationController: ObservableObject {
         self.engine.observeModelDownload { [weak self] downloading in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.modelDownloadChanged(downloading) }
+            }
+        }
+        // F859. The same queue, so a figure is never applied before the "started" it follows.
+        self.engine.observeModelDownloadProgress { [weak self] progress in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.modelDownloadProgressed(progress) }
             }
         }
 
@@ -1488,12 +1497,49 @@ final class DictationController: ObservableObject {
     static let modelDownloadNotice =
         "Downloading the dictation model (about 1.6 GB, once). Quick Dictation is ready when it finishes; until then a press is not used."
 
+    /// The Dictation tab's line with how far the download has got (F859): "42 % of 1.61 GB" when the
+    /// engine knows the size, "42 %" when it knows only a fraction (openai-whisper's own download,
+    /// F860), and `modelDownloadNotice` before the first figure or from a helper that sends none.
+    static func modelDownloadNotice(progress: DictationModelDownloadProgress?) -> String {
+        guard let progress else { return modelDownloadNotice }
+        let size = progress.totalBytes.map {
+            " of " + ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+        } ?? ""
+        return "Downloading the dictation model: \(progress.percent) %\(size) (once). "
+            + "Quick Dictation is ready when it finishes; until then a press is not used."
+    }
+
+    /// The menu-bar menu's line (F823), with the figure when there is one (F859).
+    static func modelDownloadMenuLine(progress: DictationModelDownloadProgress?) -> String {
+        guard let progress else { return "Downloading the dictation model…" }
+        return "Downloading the dictation model… \(progress.percent) %"
+    }
+
+    /// The model row's label while the download runs (F823), with the figure when there is one.
+    static func modelDownloadRowLabel(progress: DictationModelDownloadProgress?) -> String {
+        guard let progress else { return "Selected model downloading…" }
+        return "Selected model downloading… \(progress.percent) %"
+    }
+
+    var modelDownloadNoticeText: String { Self.modelDownloadNotice(progress: modelDownloadProgress) }
+    var modelDownloadMenuText: String { Self.modelDownloadMenuLine(progress: modelDownloadProgress) }
+    var modelDownloadRowText: String { Self.modelDownloadRowLabel(progress: modelDownloadProgress) }
+
+    /// A new figure for the running download (F859). One that arrives with no download running is
+    /// dropped: the reports keep their order, so it can only be a stale one.
+    private func modelDownloadProgressed(_ progress: DictationModelDownloadProgress) {
+        guard isDownloadingModel, progress != modelDownloadProgress else { return }
+        modelDownloadProgress = progress
+    }
+
     /// The engine started or stopped downloading the model (F823). A dictation already waiting on
     /// it — its key was pressed before the download began — shows the download in its pill instead
     /// of "Transcribing…", and goes back to "Transcribing…" when the model is ready.
     private func modelDownloadChanged(_ downloading: Bool) {
         guard downloading != isDownloadingModel else { return }
         isDownloadingModel = downloading
+        // A new download starts with no figure, and an ended one keeps none (F859).
+        modelDownloadProgress = nil
         log.notice("dictation model download \(downloading ? "started" : "ended", privacy: .public)")
         guard enabled, status == .transcribing else { return }
         if downloading {

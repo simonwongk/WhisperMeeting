@@ -41,7 +41,7 @@ struct DictationView: View {
                     if dictation.isDownloadingModel {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text(DictationController.modelDownloadNotice)
+                            Text(dictation.modelDownloadNoticeText)
                         }
                         .font(.callout)
                         .padding(10)
@@ -225,7 +225,7 @@ struct DictationView: View {
         if dictation.isDownloadingModel {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Selected model downloading…")
+                Text(dictation.modelDownloadRowText)
                 Spacer()
             }
         } else if !diag.modelReady && !diag.modelRepairable {

@@ -131,11 +131,48 @@ public protocol DictationEngine: Sendable {
     /// (F823), or stops telling anyone when it is nil. Only the warm Whisper helper downloads; every
     /// other engine never calls it. Called from the engine's own queue, never the main thread.
     func observeModelDownload(_ observer: DictationModelDownloadObserver?)
+    /// Tells `observer` how far that download has got (F859), between its `true` and its `false`,
+    /// whenever the engine learns a new figure; nil stops telling anyone. An engine that cannot
+    /// measure its download (a helper too old to send byte counts) never calls it, and the download
+    /// is then shown without a figure, as before.
+    func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?)
 }
 
 /// Receives a dictation engine's model-download state (F823): `true` when the first-run download
 /// starts reporting progress, `false` when it ends — finished, failed, stalled or stopped.
 public typealias DictationModelDownloadObserver = @Sendable (Bool) -> Void
+
+/// Receives how far a dictation engine's model download has got (F859).
+public typealias DictationModelDownloadProgressObserver = @Sendable (DictationModelDownloadProgress) -> Void
+
+/// How far a dictation model's download has got (F859): a fraction, and the download's size when
+/// the engine knows it. The warm helper reports bytes; openai-whisper's own download (the batch
+/// engine, F860) is read off its progress bar, which gives a percentage only.
+public struct DictationModelDownloadProgress: Equatable, Sendable {
+    /// In `0...1`.
+    public let fractionCompleted: Double
+    /// The whole download's size in bytes, or nil when the engine does not know it.
+    public let totalBytes: Int64?
+
+    /// From a byte count, or nil for one that is not a measurement (a total of zero or less, or a
+    /// negative count) — a helper's numbers are input, not facts.
+    public init?(downloadedBytes: Int64, totalBytes: Int64) {
+        guard totalBytes > 0, downloadedBytes >= 0 else { return nil }
+        self.fractionCompleted = min(1, Double(downloadedBytes) / Double(totalBytes))
+        self.totalBytes = totalBytes
+    }
+
+    /// From a fraction, clamped to `0...1` (NaN is 0).
+    public init(fractionCompleted: Double, totalBytes: Int64? = nil) {
+        self.fractionCompleted = fractionCompleted.isNaN ? 0 : min(1, max(0, fractionCompleted))
+        self.totalBytes = totalBytes.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// Whole percent, rounded down so 100 means finished: `0...100`.
+    public var percent: Int {
+        min(100, max(0, Int(saturating: (fractionCompleted * 100).rounded(.down))))
+    }
+}
 
 public extension DictationEngine {
     func evict() async {
@@ -148,6 +185,9 @@ public extension DictationEngine {
 
     /// An engine with no model download of its own has nothing to report.
     func observeModelDownload(_ observer: DictationModelDownloadObserver?) {}
+
+    /// Nor any progress to report (F859).
+    func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {}
 }
 
 /// Stable engine boundary for Quick Dictation. The recorder always produces the same WAV; replacing
@@ -158,6 +198,8 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
     private var pendingReplace: Task<Void, Never>?
     /// Handed to every engine installed later too (F823), so a model switch keeps reporting.
     private var downloadObserver: DictationModelDownloadObserver?
+    /// The same for the download's progress (F859).
+    private var downloadProgressObserver: DictationModelDownloadProgressObserver?
 
     public init(engine: DictationEngine) {
         self.engine = engine
@@ -191,6 +233,7 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
         // Under the lock, so an `observeModelDownload` racing this cannot be overwritten by the
         // observer read here. An engine's own `observeModelDownload` only stores the closure.
         replacement.observeModelDownload(downloadObserver)
+        replacement.observeModelDownloadProgress(downloadProgressObserver)
     }
 
     public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
@@ -198,6 +241,13 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
         defer { lock.unlock() }
         downloadObserver = observer
         engine.observeModelDownload(observer)
+    }
+
+    public func observeModelDownloadProgress(_ observer: DictationModelDownloadProgressObserver?) {
+        lock.lock()
+        defer { lock.unlock() }
+        downloadProgressObserver = observer
+        engine.observeModelDownloadProgress(observer)
     }
 
     public func warmUp() async throws {

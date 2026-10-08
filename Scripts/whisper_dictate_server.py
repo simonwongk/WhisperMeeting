@@ -143,13 +143,27 @@ def dictation_model_pin(mlx_repo):
     return pin
 
 
-def emit_download_report(active) -> None:
-    sys.stdout.write(json.dumps({"downloading": bool(active)}) + "\n")
+def emit_download_report(active, progress=None) -> None:
+    """One report line. `progress` is `(downloaded_bytes, total_bytes)` when the download knows them
+    (F859): `downloadedBytes`/`totalBytes` are added to the line. Both are optional on the wire — the
+    app reads a line without them as "downloading, no figure", which is every line a helper from
+    before F859 sends — and an app from before F859 reads `downloading` alone."""
+    report = {"downloading": bool(active)}
+    if active and progress is not None:
+        report["downloadedBytes"], report["totalBytes"] = int(progress[0]), int(progress[1])
+    sys.stdout.write(json.dumps(report) + "\n")
     sys.stdout.flush()
 
 
 class DownloadHeartbeat:
-    """Reports that bytes are arriving, at most once per `interval`. Called per chunk written."""
+    """Reports that bytes are arriving, at most once per `interval`. Called per chunk written (and per
+    chunk hashed, and per library progress update in the fallback).
+
+    It also knows how far the download has got (F859) once the resumable path has told it: `total`,
+    the bytes of every file the model needs; `offset`, the bytes of the files before the one being
+    fetched; and the position in that file, which each written chunk passes to `tick`. A report then
+    carries `offset + position` of `total`. The library fallback tells it nothing, so its reports
+    carry no figure, as before."""
 
     def __init__(self, emit=emit_download_report, clock=time.monotonic,
                  interval=DOWNLOAD_REPORT_INTERVAL_SECONDS):
@@ -157,12 +171,32 @@ class DownloadHeartbeat:
         self._clock = clock
         self._interval = interval
         self._last = None
+        self.total = None
+        self.offset = 0
+        self._position = None
 
-    def tick(self) -> None:
+    def start_file(self, offset, position):
+        """The file about to be fetched begins at `offset` bytes into the download, and `position`
+        bytes of it are already on disk."""
+        self.offset = offset
+        self._position = position
+
+    def progress(self):
+        if self.total is None or self._position is None:
+            return None
+        return min(self.offset + self._position, self.total), self.total
+
+    def tick(self, position=None) -> None:
+        if position is not None:
+            self._position = position
         now = self._clock()
         if self._last is None or now - self._last >= self._interval:
             self._last = now
-            self._emit(True)
+            progress = self.progress()
+            if progress is None:
+                self._emit(True)
+            else:
+                self._emit(True, progress)
 
 
 def offline_requested() -> bool:
@@ -307,6 +341,7 @@ def _stream_once(url, part_path, have, size, timeout, chunk_size, heartbeat):
             match = re.match(r"^bytes (\d+)-", response.headers.get("Content-Range") or "")
             if not match or int(match.group(1)) != have:
                 raise OSError("the server resumed at a different offset than requested")
+        position = have
         with open(part_path, "ab") as out:
             while True:
                 chunk = response.read(chunk_size)
@@ -318,7 +353,8 @@ def _stream_once(url, part_path, have, size, timeout, chunk_size, heartbeat):
                     chunk = chunk[dropped:]
                 if chunk:
                     out.write(chunk)
-                heartbeat.tick()
+                    position += len(chunk)
+                heartbeat.tick(position)
 
 
 def _sha256_of(path, chunk_size, heartbeat):
@@ -458,9 +494,22 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
             except OSError:
                 pass
 
+    # F859: what the reports count against — every file's size, so a figure never goes backwards
+    # from one file to the next. (A test's stand-in heartbeat may not count at all.)
+    counts = hasattr(heartbeat, "start_file")
+    if counts:
+        heartbeat.total = sum(size for _etag, size, _sha in metadata.values())
+    offset = 0
     for name in files:
         etag, size, pinned_sha256 = metadata[name]
         blob_path = os.path.join(blobs, etag)
+        if counts:
+            part_path = blob_path + ".part"
+            if os.path.isfile(blob_path):
+                on_disk = size  # hashed below, and kept if it is the pinned file
+            else:
+                on_disk = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+            heartbeat.start_file(offset, on_disk)
         if os.path.isfile(blob_path) and not (
             os.path.getsize(blob_path) == size and _sha256_of(blob_path, chunk_size, heartbeat) == pinned_sha256
         ):
@@ -471,6 +520,7 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
             _fetch_blob(_resolve_url(endpoint, mlx_repo, revision, name), blob_path, size, pinned_sha256,
                         retries, sleep, chunk_size, timeout, heartbeat)
         _link_snapshot_file(repo_cache, revision, name, etag)
+        offset += size
     drop_superseded_partials(repo_cache)
     _write_ref(repo_cache, "main", revision)
 
@@ -611,6 +661,7 @@ def _download_dictation_model_locked(mlx_repo, hub_dir, emit, fallback, **option
             sys.stderr.write("resumable model download unavailable (%s); using the library's\n" % unavailable)
             pin = dictation_model_pin(mlx_repo)
             repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
+            heartbeat.total = None  # the library's progress is not counted here (F859)
             fallback(mlx_repo, hub_dir, heartbeat, pin["revision"])
             adopt_library_download(repo_cache, pin)
             # Only once the library has finished: until then the partial file is the one thing a
