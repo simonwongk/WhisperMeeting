@@ -116,12 +116,17 @@ Fallback / edge branches:
   missing, altered or cannot load, the clip is transcribed as it would have been without it.
 - **Press while busy** (a dictation still transcribing/delivering) → ignored; brief "busy" flash.
 - **First-run model download** (Whisper Turbo on Apple silicon, about 1.6 GB, F522) → the Dictation
-  tab and the menu-bar menu say the model is downloading, and the model row shows it; a press is
-  refused with "Downloading model…" in the pill, before anything is recorded; a dictation whose key
-  went down before the download began shows "Downloading model…" until the model is ready, then is
-  transcribed; Install / Repair Local Whisper waits until the download ends (F823). On Intel the
-  batch engine's turbo checkpoint is downloaded by openai-whisper on the first dictation, which no
-  Repair can do, so the model row says so instead of offering one.
+  tab and the menu-bar menu say the model is downloading, with how far it has got ("42 % of
+  1.61 GB", F859), and the model row shows it; a press is refused with "Downloading model…" in the
+  pill, before anything is recorded; a dictation whose key went down before the download began
+  shows "Downloading model…" until the model is ready, then is transcribed; Install / Repair Local
+  Whisper waits until the download ends (F823). The helper downloads only the pinned revision and
+  checks it against the pinned SHA-256s (F830), resumes a partial file after a bad reply or an
+  unreachable Hub instead of starting over (F828, F829), and holds a lock while it downloads, so a
+  second copy of the app says why it cannot and the installer leaves the model alone (F826). On
+  Intel the batch engine's turbo checkpoint is downloaded by openai-whisper on the first dictation,
+  which no Repair can do, so the model row says so instead of offering one; that download is shown
+  the same way (a percentage, no size) and is stopped after 180 s without progress (F860).
 - **Trigger used in a shortcut** (a modifier trigger held while another key goes down or the mouse
   is clicked: ⌘-Tab, ⌥-click, a character typed with Right ⌥) → the capture is dropped unheard;
   nothing is transcribed, pasted or logged (F448).
