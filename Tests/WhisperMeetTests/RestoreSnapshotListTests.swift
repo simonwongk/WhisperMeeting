@@ -180,6 +180,41 @@ func aSafetyCopyThatCannotBeRemovedIsReported() throws {
             "what is left of it is no longer listed")
 }
 
+/// The lane review's MUST-FIX (probe P1): a live meeting whose recording path points into a safety
+/// copy — a hand-edited or foreign index, the case F664 already guards — lost its audio to Remove,
+/// after a dialog saying the current recordings are not changed. F664's "pointed" fixture, driven
+/// through the confirmation. The second meeting's path differs only in case, which names the same
+/// file on the default (case-insensitive) volume.
+@MainActor
+@Test("Remove refuses a safety copy a live meeting's recording is inside, and names the meeting (F855)")
+func removeRefusesASafetyCopyALiveMeetingUses() throws {
+    let library = try makeLibrary("pointed")
+    defer { try? FileManager.default.removeItem(at: library.root) }
+    let inside = UUID()
+    let path = ".pre-restore-1790000000/Recordings/\(inside.uuidString)/meeting.wav"
+    try writeFile(library.root.appendingPathComponent(path), bytes: 10)
+    library.store.upsert(MeetingRecord(id: inside, title: "Points into the safety copy", recordingPath: path,
+                                       status: .completed))
+    library.store.upsert(MeetingRecord(id: UUID(), title: "Points in, other case",
+                                       recordingPath: ".PRE-RESTORE-1790000500/meeting.wav", status: .completed))
+    library.model.refreshRestoreSnapshots()
+    let older = try #require(library.model.restoreSnapshots.first { $0.name == ".pre-restore-1790000000" })
+    let newer = try #require(library.model.restoreSnapshots.first { $0.name == ".pre-restore-1790000500" })
+
+    library.model.requestRestoreSnapshotRemoval(older)
+    library.model.removeRestoreSnapshot(confirmed: true)
+
+    #expect(exists(library.root.appendingPathComponent(path)), "a live meeting's audio was deleted")
+    #expect(library.model.alertMessage?.contains("Points into the safety copy") == true,
+            "\(library.model.alertMessage ?? "nothing was said")")
+    #expect(library.model.restoreSnapshots.contains(older))
+    #expect(throws: (any Error).self, "the store removed it") { try library.store.removeRestoreSnapshot(named: older.name) }
+    #expect(throws: (any Error).self, "a path differing only in case was not recognised") {
+        try library.store.removeRestoreSnapshot(named: newer.name)
+    }
+    #expect(exists(library.snapshot(1_790_000_500)))
+}
+
 @MainActor
 @Test("Remove is offered only for a safety copy the list showed (F855)")
 func removeActsOnlyOnAListedSafetyCopy() throws {

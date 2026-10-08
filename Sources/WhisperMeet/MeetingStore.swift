@@ -647,6 +647,10 @@ enum MeetingStoreError: LocalizedError, Equatable {
     /// the library, or a link rather than a folder (F855).
     case notARestoreSnapshot(String)
 
+    /// A safety copy `removeRestoreSnapshot(named:)` refused because a live meeting's recording is
+    /// inside it (F855).
+    case restoreSnapshotHoldsALiveRecording(snapshot: String, meeting: String)
+
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
@@ -657,6 +661,8 @@ enum MeetingStoreError: LocalizedError, Equatable {
             return MeetingStore.changeRefusedDuringRestore
         case let .notARestoreSnapshot(name):
             return "\(name) is not a safety copy a restore made in this library, so it was not removed."
+        case let .restoreSnapshotHoldsALiveRecording(snapshot, meeting):
+            return "The safety copy \(snapshot) was not removed: the recording of “\(meeting)” is inside it, and removing it would delete that meeting's audio. Nothing was changed."
         }
     }
 }
@@ -2465,8 +2471,9 @@ final class MeetingStore: ObservableObject {
     /// Refused while the library is read-only, because a safety copy may be the way a library that
     /// cannot be read is put back, and while a restore runs, which writes a new one. Only a direct
     /// child of the library named `.pre-restore-…` that is a real folder: never a link (F664's rule,
-    /// `isRealFolder`), and never a path. Throws the removal's own error when it fails, part-way or
-    /// not at all; what is left stays where it was, and is listed again.
+    /// `isRealFolder`), and never a path. Never one a live meeting's recording is inside. Throws the
+    /// removal's own error when it fails, part-way or not at all; what is left stays where it was, and
+    /// is listed again.
     func removeRestoreSnapshot(named name: String) throws {
         guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
         guard !isDegraded else { throw MeetingStoreError.libraryIsReadOnly }
@@ -2474,7 +2481,31 @@ final class MeetingStore: ObservableObject {
         guard name.hasPrefix(Self.restoreSnapshotPrefix), !name.contains("/"),
               Self.isRealFolder(url)
         else { throw MeetingStoreError.notARestoreSnapshot(name) }
+        // A live meeting whose recording is inside it — a hand-edited or foreign index, the case
+        // F664's shred already spares — would lose its audio with the folder (the lane review's
+        // MUST-FIX). Refused, naming the meeting, so the confirmation's "your recordings are not
+        // changed" stays true.
+        if let meeting = meetingUsingRestoreSnapshot(named: name) {
+            throw MeetingStoreError.restoreSnapshotHoldsALiveRecording(snapshot: name, meeting: meeting)
+        }
         try FileManager.default.removeItem(at: url)
+    }
+
+    /// The title of a live meeting whose recording is inside the safety copy `name`, or nil (F855).
+    func meetingUsingRestoreSnapshot(named name: String) -> String? {
+        liveMeetings(withRecordingsInside: rootDirectory.appendingPathComponent(name, isDirectory: true)).first?.title
+    }
+
+    /// The live meetings whose recording is `folder` or anything under it (F664, F855). Compared
+    /// without regard to case: the default macOS volume is case-insensitive, so a hand-edited path
+    /// that differs only in case names the same file, and treating it as the same costs nothing but
+    /// a refusal.
+    private func liveMeetings(withRecordingsInside folder: URL) -> [MeetingRecord] {
+        let prefix = folder.standardizedFileURL.path.lowercased()
+        return meetings.filter { meeting in
+            let path = recordingURL(for: meeting).standardizedFileURL.path.lowercased()
+            return path == prefix || path.hasPrefix(prefix + "/")
+        }
     }
 
     /// The name `BackupRestore.apply` gives a safety copy, before its epoch.

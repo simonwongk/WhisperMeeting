@@ -7333,6 +7333,14 @@ extension AppModel {
     /// the reason, while the library is read-only or a restore runs; the buttons are disabled then too.
     func requestRestoreSnapshotRemoval(_ snapshot: MeetingStore.RestoreSnapshot) {
         guard restoreSnapshotRemovalIsAllowed() else { return }
+        // Before the dialog, which says the current recordings are not changed: a live meeting whose
+        // recording is inside this copy would lose its audio with it (the lane review's MUST-FIX).
+        if let meeting = store.meetingUsingRestoreSnapshot(named: snapshot.name) {
+            alertMessage = MeetingStoreError.restoreSnapshotHoldsALiveRecording(
+                snapshot: snapshot.name, meeting: meeting
+            ).localizedDescription
+            return
+        }
         pendingRestoreSnapshotRemoval = snapshot
     }
 
@@ -7350,6 +7358,10 @@ extension AppModel {
         guard restoreSnapshotRemovalIsAllowed() else { return }
         do {
             try store.removeRestoreSnapshot(named: snapshot.name)
+        } catch let refusal as MeetingStoreError {
+            // Refused before anything was removed — a live meeting's recording is inside it, or it is
+            // not a safety copy at all — and its own sentence says so.
+            alertMessage = refusal.localizedDescription
         } catch {
             // Part of it may be gone; what is left stays where it was and is listed again below.
             alertMessage = """
