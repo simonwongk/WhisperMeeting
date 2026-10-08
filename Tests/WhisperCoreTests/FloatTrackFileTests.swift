@@ -10,7 +10,8 @@ import Testing
 //    untestable, which is F278. So 'the sync happens' rests on the code being three lines long."
 //
 // Three lines is not the problem; being unobservable is. `FloatTrackWriter.append` takes a
-// `CMSampleBuffer`, which no test can build without a live `SCStream`, so the durability guarantee
+// `CMSampleBuffer`, which no test built then (F856's `CaptureFormatWithoutLayoutTests` later built one
+// by hand, for the format path; the file half stays here), so the durability guarantee
 // and the format conversion were welded together and neither could be checked. `FloatTrackFile`
 // takes the second half — the file, the byte accounting, the flush cadence — and injects the sync,
 // so what these tests observe is the actual call, not a constant that a call happens to read.

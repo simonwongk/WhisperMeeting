@@ -4,8 +4,8 @@ import WhisperCore
 /// The level and clipping measurement for one captured buffer (F346, F419).
 ///
 /// Lifted out of `FloatTrackWriter.append` so a test can drive the production computation with an
-/// `AVAudioPCMBuffer` it built itself — `append` takes a `CMSampleBuffer`, which no test here
-/// constructs (`FloatTrackFileTests`).
+/// `AVAudioPCMBuffer` it built itself — `append` takes a `CMSampleBuffer`, which tests construct
+/// only by hand and only for the format path (F856's `CaptureFormatWithoutLayoutTests`).
 enum CaptureLevelMeter {
     /// `input` is the buffer as captured; `output` is the same audio after `MonoDownmixConverter`.
     static func measure(input: AVAudioPCMBuffer, output: AVAudioPCMBuffer) -> RecordingAudioLevel {

@@ -1141,11 +1141,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
 /// Converts captured `CMSampleBuffer`s to mono float32 and hands them to a `FloatTrackFile`.
 ///
-/// The split is F278's: everything AVFoundation-shaped stays here, where it needs a live capture to
-/// exercise, and the file — the writes, the flush cadence, the frame count — sits in
+/// The split is F278's: everything AVFoundation-shaped stays here, exercised by a live capture or by
+/// a hand-built `CMSampleBuffer` (F856), and the file — the writes, the flush cadence, the frame count — sits in
 /// `FloatTrackFile`, where `FloatTrackFileTests` can observe the durability behaviour F276 shipped
 /// without being able to test.
-private final class FloatTrackWriter {
+final class FloatTrackWriter {
     private let targetFormat: AVAudioFormat
     private let track: FloatTrackFile
     private var converter: AVAudioConverter?
@@ -1178,7 +1178,13 @@ private final class FloatTrackWriter {
               let description = sampleBuffer.formatDescription else {
             return nil
         }
-        let inputFormat = AVAudioFormat(cmAudioFormatDescription: description)
+        // Built by `inputFormat(of:)`, which can say no, and a no is one failed write (F856): the
+        // sample handler records it like any other (`_streamError`, `recordWriteOutcome`) and the
+        // other track keeps recording. Never `AVAudioFormat(cmAudioFormatDescription:)`, whose nil
+        // nothing could check — see `inputFormat(of:)`.
+        guard let inputFormat = Self.inputFormat(of: description) else {
+            throw AudioCaptureError.conversionFailed("Could not read the captured audio's format")
+        }
 
         let maximumBuffers = max(1, Int(inputFormat.channelCount))
         let bufferList = AudioBufferList.allocate(maximumBuffers: maximumBuffers)
@@ -1316,6 +1322,53 @@ private final class FloatTrackWriter {
         // The level and the clipping count are `CaptureLevelMeter`'s, so a test can drive the
         // production computation without a `CMSampleBuffer` (F419).
         return CaptureLevelMeter.measure(input: inputBuffer, output: outputBuffer)
+    }
+
+    /// The audio format a captured buffer's description describes, or nil when it describes none
+    /// (F856).
+    ///
+    /// **Why not `AVAudioFormat(cmAudioFormatDescription:)`.** `AVAudioFormat.h:149` says it "fails
+    /// (returns nil)" for an invalid description, but it is imported into Swift as non-optional, so
+    /// the nil came back as an object no `guard` could see. A description with more than 2 channels
+    /// and no channel layout is invalid to it, since "Only formats with more than 2 channels are
+    /// required to have channel layouts" (`AVAudioFormat.h:203`), and the microphone track arrives in
+    /// the device's native format (`SCStream.h:26`). Measured: the nil read as 0 channels, and the
+    /// buffer built on it crashed with SIGSEGV inside `AVAudioPCMBuffer`'s initializer, which the
+    /// exception bridge around it cannot catch. AGENTS.md: make the crash impossible rather than plan
+    /// to handle it. So the format is built here, from parts each of which can say no:
+    ///
+    /// - `CMAudioFormatDescriptionGetStreamBasicDescription` returns NULL for a non-audio description
+    ///   (`CMFormatDescription.h`), and a stream with no channels or no rate is no stream.
+    /// - `CMAudioFormatDescriptionGetChannelLayout`: "AudioChannelLayouts are optional; this API will
+    ///   return NULL if one does not exist." A layout is kept only when it names exactly the
+    ///   stream's channel count. Reading `channelCount` also catches `AVAudioChannelLayout(layout:)`
+    ///   returning its own unchecked nil, which reads as 0. It is another non-optional initializer.
+    /// - With no usable layout and more than 2 channels, `DiscreteInOrder | N`. The labels cost
+    ///   nothing: `MonoDownmixConverter.averagedToMono` averages every channel and reads none of
+    ///   them (F659). `AVAudioChannelLayout.h`: `initWithLayoutTag:` returns nil only for the
+    ///   `UseChannelDescriptions` and `UseChannelBitmap` tags.
+    /// - `AVAudioFormat(streamDescription:channelLayout:)` is the failable initializer:
+    ///   `AVAudioFormat.h:74`, it "fails (returns nil) unless layout is non-nil" for more than 2
+    ///   channels. No exception is documented for any of these calls.
+    ///
+    /// Wherever the old initializer produced a format, this one has the same channel count, sample
+    /// format and interleaving, and the same layout tag (measured on mono, stereo with and without a
+    /// layout, interleaved Int16, and 4 channels with `DiscreteInOrder` and `Unknown`).
+    static func inputFormat(of description: CMAudioFormatDescription) -> AVAudioFormat? {
+        guard let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description) else {
+            return nil
+        }
+        let channels = streamDescription.pointee.mChannelsPerFrame
+        guard channels > 0, streamDescription.pointee.mSampleRate > 0 else { return nil }
+        var layout = CMAudioFormatDescriptionGetChannelLayout(description, sizeOut: nil)
+            .map { AVAudioChannelLayout(layout: $0) }
+        if let given = layout, given.channelCount != channels {
+            layout = nil
+        }
+        if layout == nil, channels > 2 {
+            layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels)
+        }
+        return AVAudioFormat(streamDescription: streamDescription, channelLayout: layout)
     }
 
     /// Writes a gap the capture could not record as silence, keeping offsets honest (F275).

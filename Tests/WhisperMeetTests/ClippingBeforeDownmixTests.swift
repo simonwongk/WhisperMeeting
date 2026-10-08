@@ -148,8 +148,10 @@ func resampledInputKeepsTheCountInOutputFrames() throws {
 
 @Test("The capture writer hands the meter the buffer as captured, not only the mix (F419)")
 func theWriterMeasuresTheCapturedBuffer() throws {
-    // No test builds a `CMSampleBuffer` to drive `FloatTrackWriter.append` itself, so the wiring
-    // from the writer to the per-channel count is pinned as source, comments stripped.
+    // Pinned as source, comments stripped: the tests above drive `CaptureLevelMeter` with buffers
+    // they built, and this is what says `FloatTrackWriter.append` hands it the captured buffer.
+    // (`append` itself has been driven with a hand-built `CMSampleBuffer` since F856, in
+    // `CaptureFormatWithoutLayoutTests`, which checks the mix but not the clipping count.)
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
     #expect(source.contains("CaptureLevelMeter.measure(input: inputBuffer, output: outputBuffer)"))
 }

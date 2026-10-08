@@ -71,8 +71,8 @@ private func peak(_ samples: [Float]) -> Float {
 
 /// The capture path's conversion, through the production pieces in the order
 /// `FloatTrackWriter.append` uses them: `averagedToMono`, then a converter from `make`, fed the mixed
-/// buffer once. `append` itself takes a `CMSampleBuffer` on the capture queue, which no test here can
-/// drive (F402, F419); `theCapturePathMixesBeforeItConverts` pins that `append` makes these calls.
+/// buffer once. `theCapturePathMixesBeforeItConverts` pins that `append` makes these calls, and since
+/// F856 `CaptureFormatWithoutLayoutTests` drives `append` itself with a hand-built `CMSampleBuffer`.
 private func captureConvert(_ input: AVAudioPCMBuffer) throws -> [Float] {
     let target = try #require(AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: captureRate, channels: 1, interleaved: false
