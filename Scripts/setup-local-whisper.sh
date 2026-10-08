@@ -215,10 +215,10 @@ fi
 # SHA-256). Until this, whisper_dictate_server.py fetched `mlx-community/whisper-large-v3-turbo`
 # from whatever its mutable main branch held the first time dictation warmed up, verified nothing,
 # and recorded no revision. Best-effort, like the mlx-whisper package install just above: Quick
-# Dictation must never block the meetings runtime, and the helper's own warm-up already falls back
-# to an unpinned network fetch if this step did not run or did not finish (no network at install
-# time, a build predating this fix, or a failure here) — the difference this makes is that the
-# common case gets a verified, pinned model instead of whatever HEAD happens to hold that day.
+# Dictation must never block the meetings runtime, and the helper's own warm-up downloads the model
+# itself if this step did not run or did not finish (no network at install time, a build predating
+# this fix, or a failure here) — since F830 at this same revision, checked against these same
+# hashes (`PINNED_DICTATION_MODELS` in whisper_dictate_server.py; a test keeps the two equal).
 dictation_repository="mlx-community/whisper-large-v3-turbo"
 dictation_revision="a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 dictation_config_sha256="b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379"
@@ -302,7 +302,7 @@ PY
         mv "$dictation_backup" "$dictation_target"
       fi
     else
-      print -u2 "Note: the Quick Dictation model failed verification; it will download unpinned on first use (meetings unaffected)."
+      print -u2 "Note: the Quick Dictation model failed verification; it will download on first use (meetings unaffected)."
     fi
   else
     print -u2 "Note: could not pre-download the Quick Dictation model; it will download on first use (meetings unaffected)."

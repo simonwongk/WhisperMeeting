@@ -89,6 +89,21 @@ def go_offline() -> None:
 # they are printed as chunks are written, never from a timer.
 
 DICTATION_MODEL_FILES = ("config.json", "weights.safetensors")
+
+# F830: the only models this helper downloads, at the revision and SHA-256s `setup-local-whisper.sh`
+# pins (F483) — the same values, which `PinSourceTests` reads from both files. The helper used to
+# resolve `main` and trust the hash the Hub advertised, so a Mac whose first download was the
+# helper's (the installer's pre-download failed or never ran) got whatever `main` held that day.
+PINNED_DICTATION_MODELS = {
+    "mlx-community/whisper-large-v3-turbo": {
+        "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+        "sha256": {
+            "config.json": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
+            "weights.safetensors": "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6",
+        },
+    },
+}
+
 DOWNLOAD_REPORT_INTERVAL_SECONDS = 1.0
 DOWNLOAD_CHUNK_BYTES = 1 << 20
 DOWNLOAD_RETRIES = 5
@@ -109,6 +124,16 @@ class ResumableDownloadUnavailable(Exception):
     read, or TLS failed in this Python. Nothing on disk was changed, so the library's own downloader
     is a safe fallback. An unreachable Hub is not this (F828): that is retried, then a
     `ModelDownloadError`, because the library would ask the same Hub and could not resume."""
+
+
+def dictation_model_pin(mlx_repo):
+    """The pinned revision and SHA-256s for `mlx_repo` (F830). A repository with no pin is not
+    downloaded at all: every model this repo installs is pinned, and an unpinned download is exactly
+    what F483 and F830 removed, so a new repository must arrive with its pin."""
+    pin = PINNED_DICTATION_MODELS.get(mlx_repo)
+    if pin is None:
+        raise ModelDownloadError("%s has no pinned revision, and this helper downloads only pinned models" % mlx_repo)
+    return pin
 
 
 def emit_download_report(active) -> None:
@@ -297,11 +322,13 @@ def _sha256_of(path, chunk_size, heartbeat):
             if not chunk:
                 return digest.hexdigest()
             digest.update(chunk)
-            heartbeat.tick()
+            if heartbeat is not None:
+                heartbeat.tick()
 
 
-def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout, heartbeat):
-    """Bring `blob_path` into existence as exactly the advertised file, resuming `<blob>.part`."""
+def _fetch_blob(url, blob_path, size, sha256, retries, sleep, chunk_size, timeout, heartbeat):
+    """Bring `blob_path` into existence as exactly the pinned file — `size` bytes hashing to
+    `sha256` — resuming `<blob>.part`."""
     part_path = blob_path + ".part"
     failures = 0  # consecutive failed attempts that did not get past `best`
     # The most bytes this call has ever held. Progress is measured against it, never against the
@@ -350,14 +377,12 @@ def _fetch_blob(url, blob_path, etag, size, retries, sleep, chunk_size, timeout,
                 continue
         break
     # A file that is the wrong size, or hashes wrong, is not evidence of anything: keeping it would
-    # resume from bytes that may be corrupt, so it goes and the next attempt starts clean. The hub
-    # advertises an LFS/Xet file's sha256 as its ETag; a plain git file's ETag is a sha1 that only its
-    # size can vouch for.
-    if os.path.getsize(part_path) != size or (
-        _SHA256_HEX.match(etag) and _sha256_of(part_path, chunk_size, heartbeat) != etag
-    ):
+    # resume from bytes that may be corrupt, so it goes and the next attempt starts clean. Checked
+    # against the pinned sha256 (F830), which covers config.json too: the Hub's ETag for a plain git
+    # file is a sha1, so until F830 only its size vouched for it.
+    if os.path.getsize(part_path) != size or _sha256_of(part_path, chunk_size, heartbeat) != sha256:
         os.remove(part_path)
-        raise ModelDownloadError("the downloaded model did not match its published size and checksum and was discarded")
+        raise ModelDownloadError("the downloaded model did not match its pinned size and checksum and was discarded")
     os.replace(part_path, blob_path)
 
 
@@ -385,27 +410,41 @@ def _write_ref(repo_cache, revision, commit):
 def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, retries=DOWNLOAD_RETRIES,
                            sleep=time.sleep, chunk_size=DOWNLOAD_CHUNK_BYTES,
                            timeout=DOWNLOAD_REQUEST_TIMEOUT_SECONDS, files=DICTATION_MODEL_FILES):
-    """Complete the model's hub cache, resuming whatever an earlier attempt left. Every file is
-    resolved at one commit; `refs/main` is written last, so an unfinished model is never advertised.
+    """Complete the model's hub cache at its pinned revision (F830), resuming whatever an earlier
+    attempt left; `refs/main` names that revision and is written last, so an unfinished model is
+    never advertised.
 
-    Raises `ModelDownloadError` when the transfer fails (partial bytes stay), and
-    `ResumableDownloadUnavailable` when it could not begin (nothing was touched)."""
+    Raises `ModelDownloadError` when the transfer fails (partial bytes stay), when the repository
+    has no pin, or when the Hub's file cannot be the pinned one; and `ResumableDownloadUnavailable`
+    when it could not begin (nothing was touched)."""
+    pin = dictation_model_pin(mlx_repo)
+    revision = pin["revision"]
     endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
     heartbeat = heartbeat or DownloadHeartbeat()
     repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
 
-    commit, first_etag, first_size = _file_metadata(endpoint, mlx_repo, "main", files[0], timeout, retries, sleep)
-    metadata = {files[0]: (first_etag, first_size)}
-    for name in files[1:]:
-        _, etag, size = _file_metadata(endpoint, mlx_repo, commit, name, timeout, retries, sleep)
-        metadata[name] = (etag, size)
+    metadata = {}
+    for name in files:
+        commit, etag, size = _file_metadata(endpoint, mlx_repo, revision, name, timeout, retries, sleep)
+        if commit != revision:
+            raise ModelDownloadError("the model hub answered for %s at commit %s, not the pinned %s" % (name, commit, revision))
+        pinned_sha256 = pin["sha256"].get(name)
+        if pinned_sha256 is None:
+            raise ModelDownloadError("%s has no pinned checksum" % name)
+        # The Hub advertises an LFS/Xet file's sha256 as its ETag: one that is not the pin is a file
+        # that cannot be the pinned one, so not one byte of it is fetched.
+        if _SHA256_HEX.match(etag) and etag != pinned_sha256:
+            raise ModelDownloadError("the model hub's %s at the pinned revision is not the pinned file" % name)
+        metadata[name] = (etag, size, pinned_sha256)
 
     blobs = os.path.join(repo_cache, "blobs")
     os.makedirs(blobs, exist_ok=True)
-    wanted_parts = set(etag + ".part" for etag, _ in metadata.values())
+    wanted_parts = set(etag + ".part" for etag, _size, _sha in metadata.values())
     for leftover in os.listdir(blobs):
         # The library never reuses its own `.incomplete` files, and a `.part` for an etag the hub no
-        # longer serves cannot be resumed; either can be 1.6 GB. Completed blobs are never touched.
+        # longer serves cannot be resumed; either can be 1.6 GB. Completed blobs are not touched here;
+        # the loop below replaces only a blob under one of the pinned files' names that is not that
+        # file (F830).
         if leftover.endswith(".incomplete") or (leftover.endswith(".part") and leftover not in wanted_parts):
             try:
                 os.remove(os.path.join(blobs, leftover))
@@ -413,14 +452,20 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
                 pass
 
     for name in files:
-        etag, size = metadata[name]
+        etag, size, pinned_sha256 = metadata[name]
         blob_path = os.path.join(blobs, etag)
-        if not (os.path.isfile(blob_path) and os.path.getsize(blob_path) == size):
-            _fetch_blob(_resolve_url(endpoint, mlx_repo, commit, name), blob_path, etag, size,
+        if os.path.isfile(blob_path) and not (
+            os.path.getsize(blob_path) == size and _sha256_of(blob_path, chunk_size, heartbeat) == pinned_sha256
+        ):
+            # A blob under this name that is not the pinned file — a download from before F830 that
+            # only a size vouched for, or bytes damaged since — is not kept as the model.
+            os.remove(blob_path)
+        if not os.path.isfile(blob_path):
+            _fetch_blob(_resolve_url(endpoint, mlx_repo, revision, name), blob_path, size, pinned_sha256,
                         retries, sleep, chunk_size, timeout, heartbeat)
-        _link_snapshot_file(repo_cache, commit, name, etag)
+        _link_snapshot_file(repo_cache, revision, name, etag)
     drop_superseded_partials(repo_cache)
-    _write_ref(repo_cache, "main", commit)
+    _write_ref(repo_cache, "main", revision)
 
 
 def drop_superseded_partials(repo_cache):
@@ -445,9 +490,12 @@ def drop_superseded_partials(repo_cache):
                 pass
 
 
-def hub_snapshot_download(mlx_repo, hub_dir, heartbeat):
+def hub_snapshot_download(mlx_repo, hub_dir, heartbeat, revision):
     """The library's own downloader, used only when the resumable path could not begin. It cannot
-    resume, but it reports progress through the same heartbeat so the app does not stop it early."""
+    resume, but it reports progress through the same heartbeat so the app does not stop it early.
+    Asked for the pinned commit (F830), it writes no `refs/` at all — a ref only when the revision is
+    not the commit it resolved to (`_snapshot_download.py:404-415` in 1.24.0; F483 measured it) — so
+    `adopt_library_download` checks the files and writes the ref."""
     from huggingface_hub import snapshot_download
     from tqdm.auto import tqdm as base_tqdm
 
@@ -463,10 +511,35 @@ def hub_snapshot_download(mlx_repo, hub_dir, heartbeat):
 
     snapshot_download(
         repo_id=mlx_repo,
+        revision=revision,
         cache_dir=hub_dir,
         allow_patterns=list(DICTATION_MODEL_FILES),
         tqdm_class=_Reporting,
     )
+
+
+def adopt_library_download(repo_cache, pin, files=DICTATION_MODEL_FILES, chunk_size=DOWNLOAD_CHUNK_BYTES):
+    """Make the library's download of the pinned revision the model, or discard it (F830): every
+    file in `snapshots/<revision>/` must hash to its pin before `refs/main` names that revision. A
+    file that does not is removed with the blob it points to — bytes that are not the pinned file are
+    not kept under its name — and the download is a failure, retried at the next start."""
+    revision = pin["revision"]
+    snapshot = os.path.join(repo_cache, "snapshots", revision)
+    wrong = []
+    for name in files:
+        path = os.path.join(snapshot, name)
+        if not (os.path.isfile(path) and _sha256_of(path, chunk_size, None) == pin["sha256"].get(name)):
+            wrong.append(path)
+    for path in wrong:
+        target = os.path.realpath(path)
+        for doomed in (target, path):
+            try:
+                os.remove(doomed)
+            except OSError:
+                pass
+    if wrong:
+        raise ModelDownloadError("the model the library downloaded did not match its pinned checksum and was discarded")
+    _write_ref(repo_cache, "main", revision)
 
 
 def download_dictation_model(mlx_repo, hub_dir, emit=emit_download_report, fallback=hub_snapshot_download,
@@ -480,10 +553,13 @@ def download_dictation_model(mlx_repo, hub_dir, emit=emit_download_report, fallb
             ensure_dictation_model(mlx_repo, hub_dir, heartbeat=heartbeat, **options)
         except ResumableDownloadUnavailable as unavailable:
             sys.stderr.write("resumable model download unavailable (%s); using the library's\n" % unavailable)
-            fallback(mlx_repo, hub_dir, heartbeat)
+            pin = dictation_model_pin(mlx_repo)
+            repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
+            fallback(mlx_repo, hub_dir, heartbeat, pin["revision"])
+            adopt_library_download(repo_cache, pin)
             # Only once the library has finished: until then the partial file is the one thing a
             # later start could resume.
-            drop_superseded_partials(os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--")))
+            drop_superseded_partials(repo_cache)
     finally:
         emit(False)
 

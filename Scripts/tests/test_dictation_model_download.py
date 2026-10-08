@@ -36,9 +36,13 @@ _spec.loader.exec_module(server)
 REPO = "mlx-community/whisper-large-v3-turbo"
 COMMIT = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 CONFIG = b'{"n_mels": 128}\n'
-CONFIG_ETAG = hashlib.sha1(CONFIG).hexdigest()  # git blob ids are sha1; only a size can vouch for them
+CONFIG_ETAG = hashlib.sha1(CONFIG).hexdigest()  # git blob ids are sha1: the Hub's ETag cannot vouch for content
+CONFIG_SHA256 = hashlib.sha256(CONFIG).hexdigest()
 WEIGHTS = bytes((i * 31 + 7) % 251 for i in range(300_000))
 WEIGHTS_SHA256 = hashlib.sha256(WEIGHTS).hexdigest()  # what the Hub advertises as X-Linked-ETag for LFS/Xet
+# F830: what the helper is pinned to for these tests, in place of F483's real pin (whose hashes are the
+# real 1.6 GB model's). Installed as the helper's pin table in `DownloaderTestCase.setUp`.
+PIN = {"revision": COMMIT, "sha256": {"config.json": CONFIG_SHA256, "weights.safetensors": WEIGHTS_SHA256}}
 
 
 class FakeHub:
@@ -52,6 +56,9 @@ class FakeHub:
     def __init__(self):
         hub = self
         self.weights = WEIGHTS
+        self.config = CONFIG            # F830: the bytes served for config.json, under CONFIG_ETAG regardless
+        self.main_commit = COMMIT       # F830: the commit `main` resolves to; a commit revision resolves to itself
+        self.revisions = []             # F830: the revision of every resolve/ request
         self.advertised_extra = 0       # bytes the Hub claims the weights have beyond the ones it serves
         self.advertised_sha = WEIGHTS_SHA256
         self.ignore_range = False       # answer a Range request with the whole file and a 200
@@ -80,7 +87,9 @@ class FakeHub:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                commit = None if hub.unusable_metadata else COMMIT
+                revision = self.path.split("/resolve/", 1)[1].split("/", 1)[0] if "/resolve/" in self.path else None
+                hub.revisions.append(revision)
+                commit = None if hub.unusable_metadata else (hub.main_commit if revision == "main" else revision)
                 name = self.path.split("?")[0].rsplit("/", 1)[-1]
                 if name == "config.json":
                     redirect_body = b"x" * 276
@@ -117,10 +126,10 @@ class FakeHub:
                 self.send_header("ETag", '"%s"' % CONFIG_ETAG)
                 if not hub.unusable_metadata:
                     self.send_header("X-Repo-Commit", COMMIT)
-                self.send_header("Content-Length", str(len(CONFIG)))
+                self.send_header("Content-Length", str(len(hub.config)))
                 self.end_headers()
                 if not head:
-                    self.wfile.write(CONFIG)
+                    self.wfile.write(hub.config)
 
             def do_HEAD(self):
                 if self.path.startswith("/api/resolve-cache/"):
@@ -234,6 +243,9 @@ class DownloaderTestCase(unittest.TestCase):
     def setUp(self):
         self.hub = FakeHub()
         self.addCleanup(self.hub.close)
+        saved_pins = getattr(server, "PINNED_DICTATION_MODELS", None)
+        server.PINNED_DICTATION_MODELS = {REPO: PIN}
+        self.addCleanup(setattr, server, "PINNED_DICTATION_MODELS", saved_pins)
         self.tmp = tempfile.mkdtemp(prefix="whispermeet-f522-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.hub_dir = os.path.join(self.tmp, "hf", "hub")
@@ -276,6 +288,28 @@ class DownloaderTestCase(unittest.TestCase):
         with self.assertRaises(Killed):
             self.download(sleep=die)
         self.assertEqual(os.path.getsize(self.weights_part()), received)
+
+    def library(self, calls, weights=WEIGHTS):
+        """A stand-in for `hub_snapshot_download` that lays the files out as the library does (blobs
+        named by etag, relative links in the snapshot), ignoring any `.part`. Asked for a commit, the
+        library writes no `refs/` at all (F483 measured it), so neither does this."""
+
+        def fallback(repo, hub_dir, heartbeat, revision=None):
+            calls.append(repo)
+            self.fallback_revisions = getattr(self, "fallback_revisions", []) + [revision]
+            blobs = os.path.join(self.repo_cache, "blobs")
+            snapshot = os.path.join(self.repo_cache, "snapshots", COMMIT)
+            os.makedirs(blobs, exist_ok=True)
+            os.makedirs(snapshot, exist_ok=True)
+            for name, etag, data in (("config.json", CONFIG_ETAG, CONFIG),
+                                     ("weights.safetensors", WEIGHTS_SHA256, weights)):
+                with open(os.path.join(blobs, etag), "wb") as handle:
+                    handle.write(data)
+                link = os.path.join(snapshot, name)
+                if not os.path.lexists(link):
+                    os.symlink(os.path.join("..", "..", "blobs", etag), link)
+
+        return fallback
 
 
 class ResumeTests(DownloaderTestCase):
@@ -540,29 +574,6 @@ class MetadataFailureTests(DownloaderTestCase):
     transfer failure and then reported as a failed download, partial kept; the library is used only
     for metadata it cannot read. And a `.part` beside its published blob is removed, on either path."""
 
-    def library(self, calls):
-        """A stand-in for `hub_snapshot_download` that lays the files out as the library does (blobs
-        named by etag, relative links in the snapshot, refs/main), ignoring any `.part`."""
-
-        def fallback(repo, hub_dir, heartbeat, *rest):
-            calls.append(repo)
-            blobs = os.path.join(self.repo_cache, "blobs")
-            snapshot = os.path.join(self.repo_cache, "snapshots", COMMIT)
-            os.makedirs(blobs, exist_ok=True)
-            os.makedirs(snapshot, exist_ok=True)
-            for name, etag, data in (("config.json", CONFIG_ETAG, CONFIG),
-                                     ("weights.safetensors", WEIGHTS_SHA256, WEIGHTS)):
-                with open(os.path.join(blobs, etag), "wb") as handle:
-                    handle.write(data)
-                link = os.path.join(snapshot, name)
-                if not os.path.lexists(link):
-                    os.symlink(os.path.join("..", "..", "blobs", etag), link)
-            os.makedirs(os.path.join(self.repo_cache, "refs"), exist_ok=True)
-            with open(os.path.join(self.repo_cache, "refs", "main"), "w") as handle:
-                handle.write(COMMIT)
-
-        return fallback
-
     def orchestrate(self, calls, **overrides):
         options = dict(emit=lambda *_args: None, fallback=self.library(calls), endpoint=self.hub.endpoint,
                        retries=3, sleep=self.bounded_sleep, chunk_size=16 * 1024)
@@ -650,17 +661,133 @@ class MetadataFailureTests(DownloaderTestCase):
         self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
 
 
+class PinTests(DownloaderTestCase):
+    """F830 — the helper's own download resolved `main` and trusted the hash the Hub advertised, while
+    the installer pinned F483's revision and hashes: a Mac whose first download was the helper's got
+    whatever `main` held that day. The helper now downloads only the pinned revision, checks every
+    file against the pinned sha256 (config.json included, which the Hub vouches for with a git sha1
+    only), and writes that revision as `refs/main` — on its own path and on the library fallback."""
+
+    def test_the_pinned_revision_is_requested_and_written_as_main_even_when_main_has_moved(self):
+        self.hub.main_commit = "e" * 40  # upstream `main` has moved past the pin
+
+        self.download()
+
+        self.assertEqual(set(self.hub.revisions), {COMMIT}, "a request resolved something other than the pin")
+        self.assertEqual(self.read("refs", "main").decode(), COMMIT)
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+        self.assertFalse(os.path.exists(os.path.join(self.repo_cache, "snapshots", "e" * 40)))
+
+    def test_weights_the_hub_says_do_not_hash_to_the_pin_are_refused_before_any_byte_is_fetched(self):
+        self.hub.advertised_sha = "0" * 64
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download()
+
+        self.assertEqual([path for method, path in self.hub.requests if path.startswith("/cdn/") and method == "GET"], [],
+                         "1.6 GB was fetched for a file that cannot be the pinned one")
+        self.assertFalse(os.path.exists(os.path.join(self.repo_cache, "refs", "main")))
+
+    def test_a_config_that_does_not_hash_to_the_pin_is_discarded_not_published(self):
+        """config.json's ETag is a git sha1, so the size was all that vouched for it: same-size bytes
+        that are not the pinned file were published."""
+        self.hub.config = CONFIG.replace(b"128", b"129")  # same length, not the pinned file
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.download()
+
+        self.assertNotIn(CONFIG_ETAG, self.blobs())
+        self.assertFalse(os.path.exists(os.path.join(self.repo_cache, "refs", "main")))
+
+    def test_a_blob_already_on_disk_that_does_not_hash_to_the_pin_is_replaced(self):
+        blobs = os.path.join(self.repo_cache, "blobs")
+        os.makedirs(blobs)
+        with open(os.path.join(blobs, CONFIG_ETAG), "wb") as handle:
+            handle.write(CONFIG.replace(b"128", b"129"))  # the right size, the wrong bytes
+
+        self.download()
+
+        self.assertEqual(self.read("snapshots", COMMIT, "config.json"), CONFIG)
+
+    def test_a_repository_with_no_pin_is_not_downloaded(self):
+        with self.assertRaises(server.ModelDownloadError):
+            server.ensure_dictation_model("someone/else", self.hub_dir, endpoint=self.hub.endpoint,
+                                          heartbeat=self.beats, retries=0, sleep=self.bounded_sleep)
+        self.assertEqual(self.hub.requests, [])
+
+    def test_the_librarys_download_is_asked_for_the_pin_verified_and_given_the_main_ref(self):
+        self.hub.unusable_metadata = True
+        calls = []
+
+        server.download_dictation_model(REPO, self.hub_dir, emit=lambda *_args: None,
+                                        fallback=self.library(calls),
+                                        endpoint=self.hub.endpoint, retries=0, sleep=self.bounded_sleep)
+
+        self.assertEqual(getattr(self, "fallback_revisions", None), [COMMIT])
+        self.assertEqual(self.read("refs", "main").decode(), COMMIT,
+                         "a pinned library download leaves no ref, so the offline load could not find it")
+
+    def test_a_library_download_that_does_not_hash_to_the_pin_is_discarded(self):
+        self.hub.unusable_metadata = True
+        wrong = WEIGHTS[:-1] + b"\x00"
+
+        with self.assertRaises(server.ModelDownloadError):
+            server.download_dictation_model(REPO, self.hub_dir, emit=lambda *_args: None,
+                                            fallback=self.library([], weights=wrong),
+                                            endpoint=self.hub.endpoint, retries=0, sleep=self.bounded_sleep)
+
+        self.assertFalse(os.path.exists(os.path.join(self.repo_cache, "refs", "main")))
+        self.assertNotIn(WEIGHTS_SHA256, self.blobs(), "bytes that are not the pinned file were kept as its blob")
+
+
+class PinSourceTests(unittest.TestCase):
+    """F830 — the helper's pin is F483's pin, read from both files rather than restated: the
+    installer's `dictation_*` assignments and the helper's table must agree, and the repository the
+    app asks the helper for must be one it has a pin for."""
+
+    @staticmethod
+    def installer_assignment(name):
+        import re
+
+        path = os.path.join(os.path.dirname(__file__), "..", "setup-local-whisper.sh")
+        with open(path, encoding="utf-8") as handle:
+            found = re.findall(r'^%s="([^"]+)"$' % name, handle.read(), flags=re.MULTILINE)
+        if len(found) != 1:
+            raise AssertionError("expected one %s= in setup-local-whisper.sh, found %d" % (name, len(found)))
+        return found[0]
+
+    def test_the_helpers_pin_is_the_installers_pin(self):
+        repository = self.installer_assignment("dictation_repository")
+        expected = {repository: {
+            "revision": self.installer_assignment("dictation_revision"),
+            "sha256": {
+                "config.json": self.installer_assignment("dictation_config_sha256"),
+                "weights.safetensors": self.installer_assignment("dictation_weights_sha256"),
+            },
+        }}
+        self.assertEqual(server.PINNED_DICTATION_MODELS, expected)
+
+    def test_the_repository_the_app_asks_for_has_a_pin(self):
+        import re
+
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "Sources", "WhisperCore",
+                            "WarmWhisperDictationEngine.swift")
+        with open(path, encoding="utf-8") as handle:
+            defaults = set(re.findall(r'mlxRepo: String = "([^"]+)"', handle.read()))
+        self.assertTrue(defaults, "could not find the engine's default mlxRepo")
+        self.assertEqual(defaults - set(server.PINNED_DICTATION_MODELS), set())
+
+
 class OrchestrationTests(DownloaderTestCase):
     def test_the_library_downloader_is_only_the_fallback_for_an_unavailable_resumable_path(self):
         self.hub.unusable_metadata = True
         calls = []
         reports = []
         server.download_dictation_model(
-            REPO, self.hub_dir, emit=reports.append,
-            fallback=lambda repo, hub_dir, heartbeat: calls.append((repo, hub_dir)),
+            REPO, self.hub_dir, emit=reports.append, fallback=self.library(calls),
             endpoint=self.hub.endpoint, retries=0, sleep=lambda _s: None,
         )
-        self.assertEqual(calls, [(REPO, self.hub_dir)])
+        self.assertEqual(calls, [REPO])
         self.assertEqual(reports[0], True)
         self.assertEqual(reports[-1], False, "the report always closes, so the app leaves stall mode")
 
