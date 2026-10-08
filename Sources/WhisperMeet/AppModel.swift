@@ -6236,8 +6236,9 @@ final class AppModel: ObservableObject {
                 // removal then failed, and F146's rollback listed the meeting again without its
                 // audio. Here a save runs wholly before a delete, which then removes the index with
                 // the folder, or wholly after one, when the folder is gone and the check skips it.
-                // Measured at about 1 ms for a 2,000-passage group and 6.5 ms for a 20,000-line
-                // meeting (3 MB and 31 MB of vectors, median, Apple M3 Pro) — under one 60 Hz frame.
+                // Measured (median, Apple M3 Pro) at about 1 ms for one 2,000-passage meeting and
+                // 6.5 ms for one of 20,000 lines; each further meeting in a group adds about 0.3 ms,
+                // so a group of a hundred short meetings holds the main actor ~28 ms (F871).
                 for save in saves { try? askIndexSave(save.index, save.directory) }
             }
         }

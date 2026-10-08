@@ -179,7 +179,7 @@ func lineToolsRefuseAClearedTranscript() async throws {
     #expect(model.removeTranscriptLines(at: IndexSet(integer: 1), from: id) == nil)
     let replace = model.applySecondOpinionSpan(
         TranscriptComparisonSpan(kind: .diverge, start: 30.7, primaryText: "We'll sue Acme next week.",
-                                 secondaryText: "We'll see Acme next week."),
+                                 secondaryText: "We'll see Acme next week.", offersReplacement: true),
         to: id
     )
     #expect(replace == .refused(AppModel.secondOpinionReplaceRefusedForEdits))

@@ -16,6 +16,12 @@ import Testing
 // end. The other engine hears a sentence differently three times in ten and misses one in thirty.
 // Two groupings: the same for both engines (the case the review measured the short-neighbour
 // duplication in) and independent.
+//
+// Every guarantee below rests on that model, and in particular on this transcript's boundaries
+// being the sentences' own, so that all disagreement is the other engine's jitter. With both
+// engines' boundaries jittered by ±0.5 s the lane R review measured 3 of 827 offered rows dropping
+// words even for 1 s sentences, and the offer rate falling to ~50 % / ~9 %. Widening the model, and
+// measuring two real engines on one clip, is F872.
 
 /// A deterministic generator (SplitMix64), so a failure names a configuration that can be re-run.
 private struct SplitMix {

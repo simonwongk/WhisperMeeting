@@ -18,7 +18,9 @@ public struct TranscriptComparisonSpan: Sendable, Equatable {
     /// other kinds, which offer nothing to replace.
     public let offersReplacement: Bool
 
-    public init(kind: Kind, start: Double?, primaryText: String, secondaryText: String?, offersReplacement: Bool = true) {
+    /// `offersReplacement` defaults to false — the rule's own "when in doubt, withhold" (F658): a
+    /// caller that means a row may be written over its line says so.
+    public init(kind: Kind, start: Double?, primaryText: String, secondaryText: String?, offersReplacement: Bool = false) {
         self.kind = kind
         self.start = start
         self.primaryText = primaryText
