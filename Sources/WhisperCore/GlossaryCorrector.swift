@@ -130,7 +130,7 @@ public enum GlossaryCorrector {
                 phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
                                        evidence: segmentEvidence, sounds: &sounds)
             } else {
-                phrase = bestLatinWindow(for: term, in: latin, scratch: &scratch)
+                phrase = bestLatinWindow(for: term, in: latin, text: text, scratch: &scratch)
             }
             if let phrase {
                 results.append(GlossaryCorrection(segmentIndex: segmentIndex, from: phrase, to: term.term))
@@ -144,12 +144,13 @@ public enum GlossaryCorrector {
     /// term already stands as a window — one token or, since F820, several: F65 asked only whether
     /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
     /// proposed as it, deleting "said". The phrase returned is the window's without its outer
-    /// punctuation (F819).
+    /// punctuation (F819), unless `apply` would then change a different occurrence — see
+    /// `applicablePhrase`.
     private static func bestLatinWindow(
-        for term: PreparedTerm, in windows: LatinWindows, scratch: inout LCSScratch
+        for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
     ) -> String? {
         if windows.normalizedWindows.contains(term.normalized) { return nil }
-        var best: (similarity: Double, phrase: String)?
+        var best: (similarity: Double, window: LatinWindows.Window)?
         for window in windows.all where !window.containsCJK && !window.ids.isEmpty && window.ids != term.ids {
             let longer = max(window.ids.count, term.ids.count)
             // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
@@ -158,10 +159,27 @@ public enum GlossaryCorrector {
             guard bound >= similarityThreshold, bound > (best?.similarity ?? 0) else { continue }
             let score = Double(scratch.lcs(window.ids, term.ids)) / Double(longer)
             if score >= similarityThreshold, score > (best?.similarity ?? 0) {
-                best = (score, window.phrase)
+                best = (score, window)
             }
         }
-        return best?.phrase
+        guard let window = best?.window else { return nil }
+        return applicablePhrase(window, term: term.term, in: text)
+    }
+
+    /// The trimmed phrase (F819), unless `GlossaryCorrector.apply`, which changes the first genuine
+    /// occurrence of a proposal's text, would find the trimmed text somewhere the untrimmed text was
+    /// not: in "the Kestrol-ish build and the Kestrol." the window is "Kestrol.", and "Kestrol" first
+    /// occurs in "Kestrol-ish" — a ticked proposal would have changed the wrong word. Then the
+    /// untrimmed phrase is proposed, exactly as before F819. Only a trimmed window pays the two
+    /// searches.
+    private static func applicablePhrase(_ window: LatinWindows.Window, term: String, in text: String) -> String {
+        guard window.phrase != window.untrimmedPhrase,
+              let untrimmed = ReplacementBoundary.firstRange(of: window.untrimmedPhrase, notCoveredBy: term, in: text)
+        else { return window.phrase }
+        guard let trimmed = ReplacementBoundary.firstRange(of: window.phrase, notCoveredBy: term, in: text),
+              untrimmed.lowerBound <= trimmed.lowerBound, trimmed.upperBound <= untrimmed.upperBound
+        else { return window.untrimmedPhrase }
+        return window.phrase
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
@@ -255,7 +273,10 @@ public enum GlossaryCorrector {
     private struct LatinWindows {
         struct Window {
             let ids: [Int32]
+            /// Without the punctuation stuck to its outer words (F819).
             let phrase: String
+            /// The words as F65 joined them, punctuation and all.
+            let untrimmedPhrase: String
             let containsCJK: Bool
         }
 
@@ -282,6 +303,7 @@ public enum GlossaryCorrector {
                     windows.append(Window(
                         ids: table.ids(joined),
                         phrase: GlossaryCorrector.trimmingAttachedPunctuation(phrase),
+                        untrimmedPhrase: phrase,
                         containsCJK: tokens[slice].contains(where: \.isCJK)
                     ))
                 }

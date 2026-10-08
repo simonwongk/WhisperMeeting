@@ -24,6 +24,16 @@ func latinProposalKeepsAttachedPunctuation() {
     #expect(applied == ["the Kestrel, release", "(Kestrel) shipped", "we deployed Kubernetes."])
 }
 
+@Test("A trimmed proposal is never applied to an earlier word it only appears inside (F819, self-review)")
+func trimmedProposalIsAppliedWhereItWasFound() {
+    // The window is "Kestrol." at the end; "Kestrol" alone first occurs inside "Kestrol-ish", which
+    // `apply` would have changed instead. The untrimmed phrase is proposed, as before F819.
+    let segments = [seg("the Kestrol-ish build and the Kestrol.")]
+    let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: segments)
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol.", to: "Kestrel")])
+    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol-ish build and the Kestrel")
+}
+
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
 func multiWordTermAlreadyPresentProposesNothing() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("Priya Raman said the release is ready")]).isEmpty)
