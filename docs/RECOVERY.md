@@ -269,17 +269,21 @@ To take the index that is currently in place and carry on, open Settings → Mee
 **Keep the Version on Disk** (F833). WhisperMeet moves `meetings.ledger.json` aside as
 `meetings.ledger.set-aside-<timestamp>.json` in the library folder — kept, never deleted — and
 re-reads the library, which then opens on the index that was in place; it says where the ledger went.
-Without a ledger nothing contradicts that index, so the library is writable again straight away —
-unless that index is the empty one beside finished recordings in the table above, which stays
-read-only for the same reason it always does. The other version, the last save WhisperMeet
-recorded, is still in `meetings.history/` as a past generation, kept or aged out by the same rules
-as any other.
+Without a ledger nothing contradicts that index, so the library is writable again straight away. The
+other version, the last save WhisperMeet recorded, is still in `meetings.history/` as a past
+generation, kept or aged out by the same rules as any other.
 
-By hand, with WhisperMeet quit, the same step is:
+If the index on disk is the empty one beside finished recordings in the table above (the 2026-08-14
+shape, from a write WhisperMeet did not record), keeping it would leave the library read-only
+anyway, so WhisperMeet refuses, changes nothing, and says to use **Recover Library…** instead. If
+the index changed on disk after WhisperMeet read it and the library still would not open, the ledger
+is put back where it was, so nothing has changed (F833).
+
+By hand, with WhisperMeet quit, the same step is (`-n` never replaces a ledger set aside earlier):
 
 ```bash
 cd ~/Library/Application\ Support/WhisperMeet
-mv meetings.ledger.json meetings.ledger.set-aside.json
+mv -n meetings.ledger.json "meetings.ledger.set-aside-$(date -u +%Y%m%dT%H%M%S).json"
 ```
 
 ### A generation is not a backup

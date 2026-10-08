@@ -651,6 +651,10 @@ enum MeetingStoreError: LocalizedError, Equatable {
     /// inside it (F855).
     case restoreSnapshotHoldsALiveRecording(snapshot: String, meeting: String)
 
+    /// `keepIndexOnDisk()` refused, or undid itself, because keeping the version on disk would still
+    /// leave the library read-only (F833): nothing was changed.
+    case keptVersionWouldStayReadOnly
+
     var errorDescription: String? {
         switch self {
         case .libraryIsReadOnly:
@@ -661,6 +665,8 @@ enum MeetingStoreError: LocalizedError, Equatable {
             return MeetingStore.changeRefusedDuringRestore
         case let .notARestoreSnapshot(name):
             return "\(name) is not a safety copy a restore made in this library, so it was not removed."
+        case .keptVersionWouldStayReadOnly:
+            return "Keeping the version of the meeting library on disk would still leave the library read-only, so nothing was changed — an empty meeting list beside finished recordings stays read-only either way. To get your meetings back, use Recover Library… in Settings → Meeting library, which goes back to the last save WhisperMeet recorded."
         case let .restoreSnapshotHoldsALiveRecording(snapshot, meeting):
             return "The safety copy \(snapshot) was not removed: the recording of “\(meeting)” is inside it, and removing it would delete that meeting's audio. Nothing was changed."
         }
@@ -3228,12 +3234,27 @@ final class MeetingStore: ObservableObject {
     /// place, which is what `docs/RECOVERY.md`'s manual step did with `rm`. Decided 2026-10-07 by the
     /// user: a button that moves the ledger aside, never deletes it. Only for `.divergentGenerations`;
     /// every other read-only state is about the index itself, which the ledger did not cause.
+    ///
+    /// **Not when the version on disk is the wipe shape** (the lane review's F833 follow-up): an empty
+    /// index beside finished recordings stays read-only without a ledger too (`.suspectEmpty`), so
+    /// keeping it opens nothing — and with the ledger gone, Recover Library's list, which the user then
+    /// needs, loses its meeting counts (no save runs while read-only to rebuild them, F854). Refused
+    /// with `keptVersionWouldStayReadOnly` before anything moves. Behind that, the fallback is a
+    /// deferral: if the reload is still read-only for any other reason — the index changed on disk
+    /// after it was read — the ledger is put back and the library re-read, so nothing has changed.
     func keepIndexOnDisk() throws -> String? {
         guard !isRestoringLibrary else { throw MeetingStoreError.libraryIsBeingRestored }
         guard health == .divergentGenerations else { return nil }
+        if meetings.isEmpty, finalizedRecordingFolderCount() > 0 {
+            throw MeetingStoreError.keptVersionWouldStayReadOnly
+        }
         let keptAs = try meetingFiles.setLedgerAside()
         // Health only ever worsens outside a recovery; this is one (`revalidateHealth`'s rule).
         reloadAfterLibraryRestore()
+        if isDegraded, let keptAs, (try? meetingFiles.putLedgerBack(fromSetAside: keptAs)) != nil {
+            reloadAfterLibraryRestore()
+            throw MeetingStoreError.keptVersionWouldStayReadOnly
+        }
         if !isDegraded {
             storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
         }

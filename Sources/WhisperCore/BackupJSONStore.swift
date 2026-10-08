@@ -992,6 +992,17 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         return name
     }
 
+    /// Puts a ledger `setLedgerAside()` moved back where it was (F833) — the fallback when keeping the
+    /// version on disk would not open the library after all, so nothing has changed. Never replaces a
+    /// ledger written since: then the set-aside one stays where it is, and this throws.
+    public func putLedgerBack(fromSetAside name: String) throws {
+        guard !io.fileExists(ledgerURL) else {
+            throw StoreIOError.destinationExists(ledgerURL.lastPathComponent)
+        }
+        let directory = ledgerURL.deletingLastPathComponent()
+        try io.rename(directory.appendingPathComponent(name), ledgerURL, .commit)
+    }
+
     /// The verified bytes of a retained generation (F295's tests read them back; `restore` uses
     /// the same path). Refuses a file whose bytes no longer match its name.
     public func data(of generation: RetainedGeneration) throws -> Data {

@@ -7307,6 +7307,10 @@ extension AppModel {
                 didPerformStartupRecovery = false
                 Task { await performStartupRecovery() }
             }
+        } catch MeetingStoreError.keptVersionWouldStayReadOnly {
+            // Refused, or undone, because the library would have stayed read-only (the lane review's
+            // F833 follow-up). Its sentence says nothing changed and points to Recover Library….
+            alertMessage = MeetingStoreError.keptVersionWouldStayReadOnly.localizedDescription
         } catch {
             alertMessage = """
                 The version on disk could not be kept, and nothing was changed. Your recordings are \
