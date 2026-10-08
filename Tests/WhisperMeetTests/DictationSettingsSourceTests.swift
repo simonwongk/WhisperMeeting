@@ -13,11 +13,22 @@ private func contentViewSource() throws -> String {
     )
 }
 
+/// `DictationTriggerChooser`, which took Change's monitors out of `SettingsView` (F691).
+private func triggerChooserSource() throws -> String {
+    SourceAssertion.stripComments(
+        try String(
+            contentsOf: SourceAssertion.url("Sources/WhisperMeet/Dictation/DictationTriggerChooser.swift"),
+            encoding: .utf8
+        ),
+        blankStringLiterals: true
+    )
+}
+
 /// The braces-balanced body that follows the first `marker`.
 private func body(following marker: String, in source: String) -> String {
     guard let markerRange = source.range(of: marker),
           let openBrace = source.range(of: "{", range: markerRange.upperBound..<source.endIndex) else {
-        Issue.record("could not find \(marker.debugDescription) in ContentView.swift; did it move?")
+        Issue.record("could not find \(marker.debugDescription) in the source; did it move?")
         return ""
     }
     var depth = 1
@@ -29,28 +40,46 @@ private func body(following marker: String, in source: String) -> String {
     return String(source[openBrace.upperBound..<cursor])
 }
 
+// Since F691 Change's monitors live in `DictationTriggerChooser`, and F521's and F653's checks below
+// read that file. What the chooser does with each decision is driven for real in
+// `DictationTriggerChooserTests`; what is left to read here is the event plumbing no test can feed.
+
 @Test("Choosing a trigger hears only its own window, lets other keys through and cancels on Escape (F521)")
 func triggerCaptureIsScopedAndCancellable() throws {
-    let capture = body(following: "private func toggleKeyCapture()", in: try contentViewSource())
-    #expect(!capture.isEmpty)
-    // The rules live in WhisperCore's tested `DictationTriggerCapture`; the view only feeds it.
-    #expect(capture.contains("keyCapture.handle("), "the capture does not ask DictationTriggerCapture what a key means")
+    let source = try triggerChooserSource()
+    let begin = body(following: "private func begin(", in: source)
+    #expect(!begin.isEmpty)
     // An app-wide monitor heard the toolbar search and every other window.
-    #expect(capture.contains("event.window === "), "the capture is not scoped to the window its button is in")
-    #expect(capture.contains("case .cancel"), "Escape does not end the capture")
+    #expect(begin.contains("event.window === "), "the capture is not scoped to the window its button is in")
     // Returning nil for every event is what swallowed ⌘W, Tab and Space.
-    #expect(capture.contains("return event"), "the capture swallows every key")
+    #expect(begin.contains("? event : nil"), "the capture swallows keys its rules let through")
+    let receive = body(following: "func receive(", in: source)
+    // The rules live in WhisperCore's tested `DictationTriggerCapture`; the chooser only feeds it.
+    #expect(receive.contains("capture.handle("), "the capture does not ask DictationTriggerCapture what a key means")
+    #expect(receive.contains("case .cancel"), "Escape does not end the capture")
 }
 
 @Test("Choosing a trigger hears clicks, in the app and outside it, as chord input (F653)")
 func triggerCaptureHearsClicks() throws {
+    let source = try triggerChooserSource()
+    let begin = body(following: "private func begin(", in: source)
+    #expect(begin.contains("receive(.click)"), "a click is not fed to the capture")
+    #expect(begin.contains(".leftMouseDown"), "the capture's monitors do not include mouse-down")
+    #expect(begin.contains("monitors.addGlobal("), "a modifier-click in another app is not heard")
+    #expect(source.contains("NSEvent.addGlobalMonitorForEvents("), "the app's global monitor is not NSEvent's")
+    let end = body(following: "func end()", in: source)
+    #expect(end.contains("clickMonitor"), "the click monitor outlives the capture")
+}
+
+@Test("Settings' Change drives the trigger chooser, and leaving Settings ends it (F521, F691)")
+func settingsChangeDrivesTheTriggerChooser() throws {
     let source = try contentViewSource()
-    let capture = body(following: "private func toggleKeyCapture()", in: source)
-    #expect(capture.contains("keyCapture.handle(.click)"), "a click is not fed to the capture")
-    #expect(capture.contains(".leftMouseDown"), "the capture's monitors do not include mouse-down")
-    #expect(capture.contains("addGlobalMonitorForEvents"), "a modifier-click in another app is not heard")
-    let end = body(following: "private func endKeyCapture()", in: source)
-    #expect(end.contains("keyCaptureClickMonitor"), "the click monitor outlives the capture")
+    let settings = body(following: "struct SettingsView: View", in: source)
+    #expect(settings.contains("triggerChooser.toggle("), "Change does not start choosing a trigger")
+    #expect(settings.contains(".onDisappear { triggerChooser.end() }"), "leaving Settings leaves a choice running")
+    // A monitor installed by the view itself would be one nothing ends.
+    #expect(!source.contains("addLocalMonitorForEvents"), "ContentView installs an event monitor of its own")
+    #expect(!source.contains("addGlobalMonitorForEvents"), "ContentView installs a global event monitor of its own")
 }
 
 @Test("The trigger row no longer promises F-keys type nothing, and warns about keys macOS uses (F547)")

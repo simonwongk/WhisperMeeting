@@ -1439,13 +1439,8 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var apiKeyDraft = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @State private var capturingKey = false
-    @State private var keyMonitor: Any?
-    /// Clicks in other apps while choosing a trigger, which the local monitor cannot see (F653).
-    @State private var keyCaptureClickMonitor: Any?
-    @State private var keyCaptureHint: String?
-    /// What the keys pressed so far in this capture add up to (F521).
-    @State private var keyCapture = DictationTriggerCapture()
+    /// Change: choosing a new trigger key (F521, F653).
+    @StateObject private var triggerChooser = DictationTriggerChooser()
 
     var body: some View {
         Form {
@@ -1859,7 +1854,10 @@ struct SettingsView: View {
                     Spacer()
                     Text(DictationKeyName.display(for: dictation.hotkey.keyCode))
                         .foregroundStyle(.secondary)
-                    Button(capturingKey ? "Press a key…" : "Change") { toggleKeyCapture() }
+                    // The click (or Space) that pressed Change made its window key.
+                    Button(triggerChooser.isChoosing ? "Press a key…" : "Change") {
+                        triggerChooser.toggle(in: NSApp.keyWindow ?? NSApp.mainWindow, for: dictation)
+                    }
                 }
                 Text(triggerKeyHint)
                     .font(.caption)
@@ -1872,8 +1870,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 }
-                if let keyCaptureHint {
-                    Text(keyCaptureHint).font(.caption).foregroundStyle(.orange)
+                if let hint = triggerChooser.hint {
+                    Text(hint).font(.caption).foregroundStyle(.orange)
                 }
                 Picker("Recognition model", selection: Binding(
                     get: { dictation.selectedEngine },
@@ -2107,7 +2105,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showingStorage) {
             MeetingStorageView(model: model, store: model.store)
         }
-        .onDisappear { endKeyCapture() }
+        .onDisappear { triggerChooser.end() }
     }
 
     /// The Storage row's label (F795): the measured total, or a plain name until it is measured.
@@ -2175,62 +2173,6 @@ struct SettingsView: View {
             return use + " While Quick Dictation is on, the app you are typing in does not receive it, unless ⌘ ⌃ ⌥ or ⇧ is held with it."
         }
         return use + " A modifier key still reaches the app you are typing in; using it in a shortcut cancels the dictation. An F-key is kept from that app instead."
-    }
-
-    /// "Change": the next key pressed in this window becomes the trigger, by
-    /// `DictationTriggerCapture`'s rules (F521). Only this window's keys are heard — the monitor is
-    /// app-wide, and in the main window's Settings pane the toolbar search shares the window, which
-    /// the capture's own rules cover. Keys the rules pass on reach the app as usual, so ⌘W still
-    /// closes the window, and Escape cancels.
-    private func toggleKeyCapture() {
-        if capturingKey { endKeyCapture(); return }
-        // The click (or Space) that pressed Change made its window key.
-        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
-        capturingKey = true
-        keyCaptureHint = nil
-        keyCapture = DictationTriggerCapture()
-        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks.union([.keyDown, .flagsChanged])) { event in
-            // F653: a click anywhere makes a modifier held for it — ⌘-click, ⌥-click — half of a
-            // chord, not a lone press to choose. The click itself is the app's.
-            if clicks.contains(NSEvent.EventTypeMask(type: event.type)) {
-                _ = keyCapture.handle(.click)
-                return event
-            }
-            guard event.window === window else { return event }
-            let input: DictationTriggerCapture.Input = event.type == .flagsChanged
-                ? .modifiersChanged(keyCode: event.keyCode, flags: UInt64(event.modifierFlags.rawValue))
-                : .keyDown(
-                    keyCode: event.keyCode,
-                    isShortcut: !event.modifierFlags.intersection([.command, .control]).isEmpty
-                )
-            switch keyCapture.handle(input) {
-            case let .choose(code):
-                dictation.hotkey = DictationHotkey(keyCode: code, mode: dictation.hotkey.mode)
-                endKeyCapture()
-                // A modifier's release is let through, so the app's modifier state stays true.
-                return event.type == .flagsChanged ? event : nil
-            case .cancel:
-                endKeyCapture()
-                return nil
-            case .refuse:
-                keyCaptureHint = DictationTriggerCapture.refusalHint
-                return nil
-            case .pass:
-                return event
-            }
-        }
-        // A ⌘-click in another app's window leaves WhisperMeet frontmost, so the ⌘'s release still
-        // arrives here; only a global monitor hears that click. Mouse-down needs no permission.
-        keyCaptureClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { _ in
-            _ = keyCapture.handle(.click)
-        }
-    }
-    private func endKeyCapture() {
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
-        if let keyCaptureClickMonitor { NSEvent.removeMonitor(keyCaptureClickMonitor); self.keyCaptureClickMonitor = nil }
-        capturingKey = false
-        keyCaptureHint = nil
     }
 }
 
