@@ -1258,6 +1258,7 @@ final class DictationController: ObservableObject {
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
         let refinerRelease = refinerReleaseForCapture
+        let gpuUtilization = self.gpuUtilization
         // Snapshot the refine decision with the other settings: mid-flight toggle changes must not
         // switch behavior halfway through a dictation.
         // A cold refiner is a nice-to-have, never a reason to hold this clip. It warms only after
@@ -1298,6 +1299,9 @@ final class DictationController: ObservableObject {
                 // A just-started optional model is cancelled on press-down. Ensure it has actually
                 // left unified memory before the recognition helper runs, even for a very short tap.
                 await refinerRelease?.value
+                // F890: read before the request, so the figure is what the recognizer is about to
+                // share the GPU with, not the recognizer's own work.
+                let gpuBusy = gpuUtilization()
                 let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
                 try? FileManager.default.removeItem(at: clip.url)
                 var cleaned = DictationTextCleanup.clean(result.text)
@@ -1310,10 +1314,18 @@ final class DictationController: ObservableObject {
                     cleaned, terms: vocab, noSpeechProb: result.noSpeechProb) {
                     cleaned = ""
                 }
-                log.notice("\(selection.rawValue, privacy: .public) transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s")
+                // The GPU share is on the line because it is the one thing that made this slow
+                // on 2026-10-08 (F890): a reader of the log can tell a busy GPU from a slow model.
+                let gpuNote = gpuBusy.map { " (GPU \($0)% busy before the request)" } ?? ""
+                log.notice("\(selection.rawValue, privacy: .public) transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s\(gpuNote, privacy: .public)")
                 var rawText: String?
                 var refinement: String?
-                if refineOn, !cleaned.isEmpty {
+                if refineOn, !cleaned.isEmpty, let gpuBusy, gpuBusy >= Self.refineSkipGPUBusyPercent {
+                    // F890: not consulted. The outcome is recorded so the history and the refine
+                    // report can tell "not asked" from "asked and missed".
+                    refinement = DictationRefinement.rawGPUBusy.rawValue
+                    log.notice("refinement not attempted — the GPU was \(gpuBusy, privacy: .public)% busy before recognition")
+                } else if refineOn, !cleaned.isEmpty {
                     await MainActor.run { if self.enabled { self.showPhase(.refining) } }
                     // F245: the whole vocabulary, not the prompt-capped slice and not gated on
                     // the engine's prompt support — this is a guard on the model's output, not a
@@ -1564,6 +1576,23 @@ final class DictationController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + idleEvictSeconds, execute: item)
     }
 
+
+    /// How busy the GPU is just before recognition, 0–100, or nil when it cannot be read (F890).
+    /// Injectable: the real reading is this Mac's, and a test must say nothing about it.
+    var gpuUtilization: @Sendable () -> Int? = { GPUActivityProbe.deviceUtilizationPercent() }
+
+    /// At or above this share, the optional refiner is not consulted for the dictation (F890).
+    ///
+    /// Measured 2026-10-08 (`Scripts/bench/dictation-latency.py`): beside another process on the
+    /// GPU the recognizer takes 4.2–4.8 s for a 3 s clip instead of 0.3 s, and the refiner — a
+    /// second model pass under a 0.8–1.5 s budget — would miss that budget by the same factor and
+    /// deliver the identical raw text after the whole budget, then be killed on the next press and
+    /// reloaded after it (`refinerRequiresReleaseBeforeRecognition`). Not asking is the same words
+    /// sooner, with the resident refiner kept for the next dictation. 75 because a single reading
+    /// can show a compositing spike of a few tens of percent on an otherwise idle GPU (47 was seen
+    /// while a window streamed text), while a process that is actually computing reads near 100.
+    /// I chose the figure; it was not the user's decision.
+    static let refineSkipGPUBusyPercent = 75
 
     /// Injectable because `UNUserNotificationCenter.current()` requires a real app bundle and
     /// raises an NSException in headless test processes — the F200 wiring tests are the first to

@@ -63,6 +63,7 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("AVKit"),
                 .linkedFramework("CoreMedia"),
+                .linkedFramework("IOKit"),
                 .linkedFramework("NaturalLanguage"),
                 .linkedFramework("PDFKit"),
                 .linkedFramework("ScreenCaptureKit"),

@@ -643,6 +643,13 @@ the stash — all three have bitten.
   memory file before rewriting it, append rather than replace when the existing text is someone
   else's, and keep `MEMORY.md` to one added line per memory.
 - **Prefer a worktree** for anything longer than a few edits.
+- **The GPU is shared with the user's dictation, and nothing arbitrates it.** F890 measured it:
+  the Qwen recognizer answers a 3 s clip in 0.3 s on an idle GPU and in 4.2–4.8 s beside one
+  other MLX process, while memory pressure, paging, CPU load and the refiner's own churn left it
+  under a second. A real-model test, a bench, `Scripts/bench/dictation-latency.py`'s G/K/L
+  conditions, a summarizer run or a meeting transcription you start is that other process. The
+  app's "transcribed in" line names the GPU share when it was busy; if the user is at the keyboard,
+  run model work when they are not dictating, one at a time, and say in the log entry when it ran.
 
 ## Build commands
 

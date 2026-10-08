@@ -50,9 +50,9 @@ public struct DictationRefineReport {
         /// Every entry that recorded a refinement outcome, whatever it was.
         public var total = 0
         /// Outcomes where the model actually ran: `refined`, `rawTimeout`, `rawRejected`,
-        /// `rawError`. `skipped` and `rawBusy` are excluded because the policy declined or the
-        /// engine was occupied — neither is evidence about decode speed, and counting them would
-        /// dilute the rate downward, which is the flattering direction.
+        /// `rawError`. `skipped`, `rawBusy` and `rawGPUBusy` are excluded because the policy declined,
+        /// the engine was occupied or the GPU was (F890) — none is evidence about decode speed, and
+        /// counting them would dilute the rate downward, which is the flattering direction.
         public var attempted = 0
         public var timedOut = 0
         /// A value this build does not know, kept visible: skipping it understates the sample and
@@ -104,7 +104,7 @@ public struct DictationRefineReport {
             case .rawTimeout:
                 tally.attempted += 1
                 tally.timedOut += 1
-            case .skipped, .rawBusy:
+            case .skipped, .rawBusy, .rawGPUBusy:
                 break
             case nil:
                 tally.unrecognised += 1

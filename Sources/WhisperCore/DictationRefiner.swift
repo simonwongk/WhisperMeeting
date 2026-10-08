@@ -10,6 +10,10 @@ public enum DictationRefinement: String, Sendable, Equatable {
     case rawTimeout   // the model missed the budget; raw delivered at the deadline
     case rawRejected  // the model answered but the guardrails refused its output
     case rawError     // the engine failed (helper crash, runtime missing, decode error)
+    /// F890: the GPU was busy with other work before recognition, so the model was not asked —
+    /// its pass would miss the budget there and deliver the same raw text, later. No attempt was
+    /// made, so this says nothing about decode speed (the report counts it beside `skipped`).
+    case rawGPUBusy
 }
 
 /// The text to deliver (always safe to paste — raw on every failure path) plus how it was decided.
