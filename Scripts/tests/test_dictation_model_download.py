@@ -59,7 +59,9 @@ class FakeHub:
         self.served = 0                 # weight bytes put on the wire, across every request
         self.ranges = []                # Range header of every weights request that reached the CDN
         self.requests = []              # (method, path)
-        self.fail_head_with = None      # status for every HEAD, to model an unusable metadata path
+        self.fail_head_with = None      # status for every HEAD to resolve/, to model a Hub that stays down
+        self.fail_heads = []            # F828: statuses for the next HEADs to resolve/ only, one each
+        self.unusable_metadata = False  # F828: answer with no X-Repo-Commit, which the downloader cannot use
         # F829: how the CDN answers the next Range requests, one entry each — 416, "wrong-offset" (a
         # 206 that resumes at byte 0), or "portal" (a 200 whose body is not the file at all).
         self.range_replies = []
@@ -72,11 +74,13 @@ class FakeHub:
 
             def _resolve(self, head):
                 hub.requests.append((self.command, self.path))
-                if hub.fail_head_with is not None and head:
-                    self.send_response(hub.fail_head_with)
+                failing = hub.fail_heads.pop(0) if head and hub.fail_heads else hub.fail_head_with if head else None
+                if failing is not None:
+                    self.send_response(failing)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
+                commit = None if hub.unusable_metadata else COMMIT
                 name = self.path.split("?")[0].rsplit("/", 1)[-1]
                 if name == "config.json":
                     redirect_body = b"x" * 276
@@ -85,7 +89,8 @@ class FakeHub:
                         "Location",
                         "/api/resolve-cache/models/mlx-community/whisper-large-v3-turbo/%s/config.json?etag=1" % COMMIT,
                     )
-                    self.send_header("X-Repo-Commit", COMMIT)
+                    if commit:
+                        self.send_header("X-Repo-Commit", commit)
                     self.send_header("X-Linked-ETag", '"%s"' % CONFIG_ETAG)
                     self.send_header("Content-Length", str(len(redirect_body)))
                     self.end_headers()
@@ -95,7 +100,8 @@ class FakeHub:
                     self.send_response(302)
                     # `localhost`, not 127.0.0.1: a different host from the endpoint, as the real CDN is
                     self.send_header("Location", "http://localhost:%d/cdn/weights" % hub.port)
-                    self.send_header("X-Repo-Commit", COMMIT)
+                    if commit:
+                        self.send_header("X-Repo-Commit", commit)
                     self.send_header("X-Linked-ETag", '"%s"' % hub.advertised_sha)
                     self.send_header("X-Linked-Size", str(len(hub.weights) + hub.advertised_extra))
                     self.send_header("Content-Length", "0")
@@ -109,7 +115,8 @@ class FakeHub:
                 hub.requests.append((self.command, self.path))
                 self.send_response(200)
                 self.send_header("ETag", '"%s"' % CONFIG_ETAG)
-                self.send_header("X-Repo-Commit", COMMIT)
+                if not hub.unusable_metadata:
+                    self.send_header("X-Repo-Commit", COMMIT)
                 self.send_header("Content-Length", str(len(CONFIG)))
                 self.end_headers()
                 if not head:
@@ -440,7 +447,7 @@ class ResumeTests(DownloaderTestCase):
             )
 
     def test_an_unusable_metadata_path_means_unavailable_and_changes_nothing(self):
-        self.hub.fail_head_with = 500
+        self.hub.unusable_metadata = True  # a 5xx was "unusable" too until F828; it is now retried
         with self.assertRaises(server.ResumableDownloadUnavailable):
             self.download()
         self.assertFalse(os.path.exists(self.repo_cache))
@@ -524,9 +531,128 @@ class BadResponseTests(DownloaderTestCase):
         self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
 
 
+class MetadataFailureTests(DownloaderTestCase):
+    """F828 — a network error or a 5xx on the metadata request used to mean "the resumable path is
+    unavailable", which sent the download to the library's `snapshot_download`: from zero, ignoring
+    the partial file, and — when it completed — leaving that same-name `.part` (up to 1.6 GB) beside
+    the finished blob for good, since a cached helper never runs the resumable path's cleanup again
+    and F626 keeps the folder on a Repair. A metadata failure is now retried with back-off like a
+    transfer failure and then reported as a failed download, partial kept; the library is used only
+    for metadata it cannot read. And a `.part` beside its published blob is removed, on either path."""
+
+    def library(self, calls):
+        """A stand-in for `hub_snapshot_download` that lays the files out as the library does (blobs
+        named by etag, relative links in the snapshot, refs/main), ignoring any `.part`."""
+
+        def fallback(repo, hub_dir, heartbeat, *rest):
+            calls.append(repo)
+            blobs = os.path.join(self.repo_cache, "blobs")
+            snapshot = os.path.join(self.repo_cache, "snapshots", COMMIT)
+            os.makedirs(blobs, exist_ok=True)
+            os.makedirs(snapshot, exist_ok=True)
+            for name, etag, data in (("config.json", CONFIG_ETAG, CONFIG),
+                                     ("weights.safetensors", WEIGHTS_SHA256, WEIGHTS)):
+                with open(os.path.join(blobs, etag), "wb") as handle:
+                    handle.write(data)
+                link = os.path.join(snapshot, name)
+                if not os.path.lexists(link):
+                    os.symlink(os.path.join("..", "..", "blobs", etag), link)
+            os.makedirs(os.path.join(self.repo_cache, "refs"), exist_ok=True)
+            with open(os.path.join(self.repo_cache, "refs", "main"), "w") as handle:
+                handle.write(COMMIT)
+
+        return fallback
+
+    def orchestrate(self, calls, **overrides):
+        options = dict(emit=lambda *_args: None, fallback=self.library(calls), endpoint=self.hub.endpoint,
+                       retries=3, sleep=self.bounded_sleep, chunk_size=16 * 1024)
+        options.update(overrides)
+        return server.download_dictation_model(REPO, self.hub_dir, **options)
+
+    def test_a_metadata_request_that_fails_once_is_retried_and_the_partial_resumed(self):
+        """The reviewer's suggested probe: a HEAD that 503s once."""
+        self.interrupt_after(120_000)
+        self.hub.fail_heads = [503]
+        calls = []
+
+        self.orchestrate(calls)
+
+        self.assertEqual(calls, [], "one 503 sent the download to the library, from zero")
+        self.assertEqual(self.hub.ranges[-1], "bytes=120000-")
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_hub_that_stays_unreachable_ends_in_a_failed_download_with_the_partial_kept(self):
+        self.interrupt_after(120_000)
+        self.hub.fail_head_with = 500
+        calls = []
+        sleeps = []
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.orchestrate(calls, retries=2, sleep=sleeps.append)
+
+        self.assertEqual(calls, [], "the library would have started from zero beside the partial")
+        self.assertEqual(len(sleeps), 2, "the first request and two retries, with back-off between")
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+
+    def test_a_network_error_on_the_metadata_request_is_retried_not_sent_to_the_library(self):
+        self.interrupt_after(120_000)
+        closed = FakeHub()
+        endpoint = closed.endpoint
+        closed.close()  # nothing listens there now: every connection is refused
+        calls = []
+        sleeps = []
+
+        with self.assertRaises(server.ModelDownloadError):
+            self.orchestrate(calls, endpoint=endpoint, retries=1, sleep=sleeps.append)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(len(sleeps), 1)
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+
+    def test_a_part_beside_its_published_blob_is_removed(self):
+        """Probe P1: a `.part` beside a complete blob of the same etag survived a whole pass."""
+        self.download()
+        leftover = self.weights_part()
+        with open(leftover, "wb") as handle:
+            handle.write(b"x" * 1000)
+
+        self.download()
+
+        self.assertFalse(os.path.exists(leftover), "a .part beside its finished blob was kept")
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_after_the_librarys_download_completes_no_part_is_left_beside_its_blob(self):
+        """The other half of P1: the library completes the model and ignores the `.part`; nothing
+        afterwards would ever remove it, because the next start finds the model cached."""
+        self.interrupt_after(120_000)
+        orphan = os.path.join(self.repo_cache, "blobs", WEIGHTS_SHA256 + ".408d0ef8.incomplete")
+        with open(orphan, "wb") as handle:
+            handle.write(b"x" * 1000)  # an earlier library attempt that was killed
+        self.hub.unusable_metadata = True
+        calls = []
+
+        self.orchestrate(calls)
+
+        self.assertEqual(calls, [REPO])
+        self.assertEqual([name for name in self.blobs() if name.endswith((".part", ".incomplete"))], [])
+        self.assertEqual(self.read("snapshots", COMMIT, "weights.safetensors"), WEIGHTS)
+
+    def test_a_failed_library_download_keeps_the_partial_for_a_later_resume(self):
+        self.interrupt_after(120_000)
+        self.hub.unusable_metadata = True
+
+        def failing(*_args):
+            raise OSError("the library could not download either")
+
+        with self.assertRaises(OSError):
+            self.orchestrate([], fallback=failing)
+
+        self.assertEqual(os.path.getsize(self.weights_part()), 120_000)
+
+
 class OrchestrationTests(DownloaderTestCase):
     def test_the_library_downloader_is_only_the_fallback_for_an_unavailable_resumable_path(self):
-        self.hub.fail_head_with = 500
+        self.hub.unusable_metadata = True
         calls = []
         reports = []
         server.download_dictation_model(

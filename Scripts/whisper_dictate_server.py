@@ -20,6 +20,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -104,8 +105,10 @@ class ModelDownloadError(Exception):
 
 
 class ResumableDownloadUnavailable(Exception):
-    """The resumable path could not even start (metadata unusable). Nothing on disk was changed, so
-    the library's own downloader is a safe fallback."""
+    """The resumable path could not even start: the Hub's metadata is in a shape this code cannot
+    read, or TLS failed in this Python. Nothing on disk was changed, so the library's own downloader
+    is a safe fallback. An unreachable Hub is not this (F828): that is retried, then a
+    `ModelDownloadError`, because the library would ask the same Hub and could not resume."""
 
 
 def emit_download_report(active) -> None:
@@ -177,7 +180,31 @@ def _head(url, timeout):
         return error.code, error.headers
 
 
-def _file_metadata(endpoint, repo, revision, filename, timeout):
+def _is_tls_failure(error):
+    """Whether a transport error is the TLS handshake (a certificate the runtime's own store cannot
+    verify, say). That is a property of this Python, not of the moment, so retrying cannot help; the
+    library's downloader brings its own certificate bundle and may succeed where urllib cannot."""
+    return isinstance(error, ssl.SSLError) or isinstance(getattr(error, "reason", None), ssl.SSLError)
+
+
+def _head_following_same_host_redirects(url, timeout):
+    """(status, headers, commit) of the response a same-host redirect chain ends on."""
+    start = url
+    commit_seen = None
+    for _hop in range(6):
+        status, headers = _head(url, timeout)
+        commit_seen = headers.get("X-Repo-Commit") or commit_seen
+        location = headers.get("Location")
+        if 300 <= status < 400 and location:
+            target = urllib.parse.urljoin(url, location)
+            if urllib.parse.urlsplit(target).netloc == urllib.parse.urlsplit(url).netloc:
+                url = target
+                continue
+        return status, headers, commit_seen
+    raise ResumableDownloadUnavailable("too many redirects for %s" % start)
+
+
+def _file_metadata(endpoint, repo, revision, filename, timeout, retries=DOWNLOAD_RETRIES, sleep=time.sleep):
     """(commit, etag, size) the Hub reports for one file, read the way the library reads it
     (`get_hf_file_metadata`, `file_download.py:1563-1634` in 1.24.0): same-host redirects are
     followed, and the response the chain ENDS on is the one read — a different host's redirect
@@ -187,35 +214,38 @@ def _file_metadata(endpoint, repo, revision, filename, timeout):
 
     The same-host hop is not optional. Against the live Hub `config.json` answers `resolve/` with a
     307 to a relative path whose own Content-Length is the REDIRECT body's (276, where the file is
-    268): read as the size, every download of the real model was a size mismatch."""
+    268): read as the size, every download of the real model was a size mismatch.
+
+    A network error, a timeout, a 5xx or a 429 is retried with the transfer's back-off, and then is
+    a failed download (F828) — not a reason to use the library's downloader, which asks the same
+    Hub, cannot resume, and ignores the partial file beside it. `ResumableDownloadUnavailable` is
+    kept for what only the library might get past: metadata this code cannot read, and TLS."""
     url = _resolve_url(endpoint, repo, revision, filename)
-    start = url
-    commit_seen = None
-    try:
-        for _hop in range(6):
-            status, headers = _head(url, timeout)
-            commit_seen = headers.get("X-Repo-Commit") or commit_seen
-            location = headers.get("Location")
-            if 300 <= status < 400 and location:
-                target = urllib.parse.urljoin(url, location)
-                if urllib.parse.urlsplit(target).netloc == urllib.parse.urlsplit(url).netloc:
-                    url = target
-                    continue
-            break
+    failures = 0
+    while True:
+        try:
+            status, headers, commit = _head_following_same_host_redirects(url, timeout)
+        except _TRANSIENT_ERRORS as error:
+            if _is_tls_failure(error):
+                raise ResumableDownloadUnavailable("%s: %s" % (url, error))
+            problem = str(error)
         else:
-            raise ResumableDownloadUnavailable("too many redirects for %s" % start)
-    except _TRANSIENT_ERRORS as error:
-        raise ResumableDownloadUnavailable("%s: %s" % (start, error))
-    if status in (401, 403, 404):
-        raise ModelDownloadError("%s/%s is not available from the model hub (HTTP %d)" % (repo, filename, status))
-    if status >= 400:
-        raise ResumableDownloadUnavailable("HTTP %d for %s" % (status, start))
-    commit = commit_seen
+            if status in (401, 403, 404):
+                raise ModelDownloadError("%s/%s is not available from the model hub (HTTP %d)" % (repo, filename, status))
+            if status < 400:
+                break
+            if status < 500 and status != 429:
+                raise ResumableDownloadUnavailable("HTTP %d for %s" % (status, url))
+            problem = "HTTP %d" % status
+        failures += 1
+        if failures > retries:
+            raise ModelDownloadError("could not reach the model hub for %s (%s)" % (filename, problem))
+        sleep(min(2 ** failures, 10))
     etag = _normalize_etag(headers.get("X-Linked-ETag") or headers.get("ETag"))
     size = _int_or_none(headers.get("X-Linked-Size") or headers.get("Content-Length"))
     if not commit or not etag or size is None or not _SAFE_BLOB_NAME.match(etag) \
             or not re.match(r"^[0-9a-f]{40}$", commit):
-        raise ResumableDownloadUnavailable("unusable metadata for %s" % start)
+        raise ResumableDownloadUnavailable("unusable metadata for %s" % url)
     return commit, etag, size
 
 
@@ -364,10 +394,10 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
     heartbeat = heartbeat or DownloadHeartbeat()
     repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
 
-    commit, first_etag, first_size = _file_metadata(endpoint, mlx_repo, "main", files[0], timeout)
+    commit, first_etag, first_size = _file_metadata(endpoint, mlx_repo, "main", files[0], timeout, retries, sleep)
     metadata = {files[0]: (first_etag, first_size)}
     for name in files[1:]:
-        _, etag, size = _file_metadata(endpoint, mlx_repo, commit, name, timeout)
+        _, etag, size = _file_metadata(endpoint, mlx_repo, commit, name, timeout, retries, sleep)
         metadata[name] = (etag, size)
 
     blobs = os.path.join(repo_cache, "blobs")
@@ -389,7 +419,30 @@ def ensure_dictation_model(mlx_repo, hub_dir, endpoint=None, heartbeat=None, ret
             _fetch_blob(_resolve_url(endpoint, mlx_repo, commit, name), blob_path, etag, size,
                         retries, sleep, chunk_size, timeout, heartbeat)
         _link_snapshot_file(repo_cache, commit, name, etag)
+    drop_superseded_partials(repo_cache)
     _write_ref(repo_cache, "main", commit)
+
+
+def drop_superseded_partials(repo_cache):
+    """Remove what no download will ever resume once a blob is published (F828): a `<etag>.part`
+    beside a finished `<etag>` — left by the library's downloader, which never looks at it, or by
+    anything else that completed the blob — and the library's own `.incomplete` orphans, which it
+    never reuses. Either can be 1.6 GB, and a cached helper never runs a download pass again to
+    notice them. A `.part` whose blob is not there yet is a download to resume, and is kept."""
+    blobs = os.path.join(repo_cache, "blobs")
+    try:
+        names = os.listdir(blobs)
+    except OSError:
+        return
+    for name in names:
+        superseded = name.endswith(".incomplete") or (
+            name.endswith(".part") and os.path.isfile(os.path.join(blobs, name[:-len(".part")]))
+        )
+        if superseded:
+            try:
+                os.remove(os.path.join(blobs, name))
+            except OSError:
+                pass
 
 
 def hub_snapshot_download(mlx_repo, hub_dir, heartbeat):
@@ -428,6 +481,9 @@ def download_dictation_model(mlx_repo, hub_dir, emit=emit_download_report, fallb
         except ResumableDownloadUnavailable as unavailable:
             sys.stderr.write("resumable model download unavailable (%s); using the library's\n" % unavailable)
             fallback(mlx_repo, hub_dir, heartbeat)
+            # Only once the library has finished: until then the partial file is the one thing a
+            # later start could resume.
+            drop_superseded_partials(os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--")))
     finally:
         emit(False)
 
