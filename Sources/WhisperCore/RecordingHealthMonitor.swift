@@ -401,8 +401,8 @@ public final class RecordingHealthMonitor {
     /// this floor, a recording that started at 510 MB ran for nearly ten minutes with no warning,
     /// until under 300 MB remained (the capture writes 384,000 B/s at 48 kHz while the derived
     /// threshold rises by 96,000 B/s). That contradicts the gate that refuses to start one there.
-    /// The gate's literal lives in the app target, which WhisperCore cannot import, so this
-    /// restates it. Change both together.
+    /// The gate compares against this constant and names it in its refusal (F744), so the two cannot
+    /// drift apart: it lives here because the app target imports WhisperCore, not the reverse.
     ///
     /// Not a measurement of what macOS needs to stay responsive. Nobody has measured that, and a
     /// larger floor chosen by feel would warn a brand-new recording that the start gate let through.

@@ -3981,9 +3981,12 @@ final class AppModel: ObservableObject {
             report("Recording cannot start because no microphone is connected or available. Connect an input device and choose Check Again.")
             return
         }
+        // F744: the floor the live low-storage warning holds a recording to (F597), not a literal of
+        // this gate's own. Two copies of one number drift, and then a recording starts in a band it
+        // is warned about at once, or runs below what this gate calls at risk with nothing said.
         if let available = recordingPreflight.availableStorageBytes,
-           available < 500_000_000 {
-            report("Recording cannot start because this Mac has less than 500 MB available. Free some storage so the meeting audio is not put at risk.")
+           available < RecordingHealthMonitor.lowStorageFloorBytes {
+            report("Recording cannot start because this Mac has less than \(RecordingHealthMonitor.lowStorageFloorBytes / 1_000_000) MB available. Free some storage so the meeting audio is not put at risk.")
             return
         }
         recordingState = .starting
