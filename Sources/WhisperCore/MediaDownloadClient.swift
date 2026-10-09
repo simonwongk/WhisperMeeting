@@ -13,6 +13,8 @@ public enum MediaDownloadError: LocalizedError, Equatable {
     /// Recovery's own run of the audio extraction an interrupted import was in (F453) did not
     /// produce a WAV.
     case extractionFailed
+    /// That run was still going when its time limit, in seconds, passed, so it was stopped (F453).
+    case extractionTimedOut(TimeInterval)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +36,8 @@ public enum MediaDownloadError: LocalizedError, Equatable {
             return "The download stopped making progress, so it was cancelled. Check your connection and try again."
         case .extractionFailed:
             return "FFmpeg could not convert the downloaded file into audio WhisperMeet can play."
+        case let .extractionTimedOut(seconds):
+            return "Converting the downloaded file was taking longer than \(Int(saturating: seconds)) seconds, so it was stopped."
         }
     }
 }

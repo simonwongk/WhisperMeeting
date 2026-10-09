@@ -184,3 +184,44 @@ func anExtractionStillRunningIsLeftAlone() async throws {
     #expect(!alert.contains(AppModel.recordingStillInProgress),
             "an import was described as a recording that will be added when it stops: \(alert)")
 }
+
+@MainActor
+@Test("A conversion stopped at the launch's time limit is listed with its download kept, never offered for deletion (F453)")
+func aConversionPastTheLaunchLimitIsListedAndKept() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F453-limit-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, folder) = try makeInterruptedExtraction(in: root)
+    let model = makeModel(root: root)
+    let limit = AppModel.linkImportConversionTimeLimit
+    model.finishInterruptedLinkImportExtraction = { _ in throw MediaDownloadError.extractionTimedOut(limit) }
+
+    await model.performStartupRecovery()
+
+    let meeting = try #require(model.store.meeting(id: id), "the interrupted import was not kept as an entry")
+    #expect(meeting.status == .failed)
+    #expect(meeting.title == AppModel.unfinishedLinkImportTitle(host: "example.com"))
+    #expect(meeting.errorMessage == AppModel.unfinishedLinkImportMessage(
+        reason: MediaDownloadError.extractionTimedOut(limit).localizedDescription
+    ))
+    #expect(meeting.errorMessage?.localizedCaseInsensitiveContains("delete") == false, "\(meeting.errorMessage ?? "")")
+    #expect(model.alertMessage?.localizedCaseInsensitiveContains("delete") == false, "\(model.alertMessage ?? "")")
+    #expect(meeting.recordingPath.hasSuffix("recording.webm"), "indexed against \(meeting.recordingPath)")
+    for name in ["recording.webm", "recording.wav", MediaSource.sidecarFilename] {
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path), "\(name) was removed")
+    }
+}
+
+@Test("Startup recovery's real conversion runs under the launch's time limit (F453)")
+func theLaunchConversionIsGivenItsTimeLimit() throws {
+    // The seam's default cannot run in a test process — it refuses ffmpeg there (F442) — so its
+    // wiring is pinned as source. Without the limit, everything after the recovery sweep waits for
+    // the whole conversion, and for a stuck one indefinitely.
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
+    let declaration = try #require(source.range(of: "var finishInterruptedLinkImportExtraction"))
+    let closureEnd = try #require(source.range(of: "\n    }\n", range: declaration.upperBound..<source.endIndex))
+    let seam = source[declaration.lowerBound..<closureEnd.upperBound]
+    #expect(seam.contains("timeLimit: AppModel.linkImportConversionTimeLimit"), "\(seam)")
+    #expect(AppModel.linkImportConversionTimeLimit > 0 && AppModel.linkImportConversionTimeLimit.isFinite)
+}

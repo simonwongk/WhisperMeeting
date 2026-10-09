@@ -1483,13 +1483,16 @@ final class AppModel: ObservableObject {
 
     /// Converts an interrupted link import's download into the `recording.wav` the import was
     /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
-    /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg, and in a test
-    /// process refuses as if none were installed (F442), so an unstubbed test never runs a real
-    /// subprocess or depends on what the host has installed.
+    /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg for at most
+    /// `linkImportConversionTimeLimit`, and in a test process refuses as if none were installed
+    /// (F442), so an unstubbed test never runs a real subprocess or depends on what the host has
+    /// installed.
     var finishInterruptedLinkImportExtraction: @Sendable (URL) async throws -> URL = { download in
         guard TestProcess.allowsRealAccess(to: "ffmpeg") else { throw MediaDownloadError.ffmpegMissing }
         return try await InterruptedLinkImportExtraction.finish(
-            download: download, ffmpeg: MediaDownloadRuntime.findFFmpeg()
+            download: download,
+            ffmpeg: MediaDownloadRuntime.findFFmpeg(),
+            timeLimit: AppModel.linkImportConversionTimeLimit
         )
     }
 
@@ -5165,6 +5168,16 @@ final class AppModel: ObservableObject {
     /// inside an outage as well as one actively appending, and a sleeping capture is not being
     /// written to.
     static let recordingStillInProgress = "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
+
+    /// The longest startup recovery waits for its conversion of an interrupted link import's download
+    /// (F453; `finishInterruptedLinkImportExtraction`). The rest of the recovery sweep and everything
+    /// after it — re-queued transcriptions, the integrity check, the launch notice, files opened from
+    /// Finder, the watched folder — waits for that conversion, and ffmpeg 8 keeps printing progress
+    /// when its input stops arriving, so the runner's stall watchdog alone never ends a stuck one.
+    /// Measured with ffmpeg 8.1.2 on an M3 Pro: an hour of YouTube-style Opus took 7.1 s and four
+    /// hours 28.3 s, so this finishes about four hours of audio there; anything longer is stopped and
+    /// listed as an unfinished import with its link.
+    nonisolated static let linkImportConversionTimeLimit: TimeInterval = 30
 
     /// The entry for a link import recovered from a download macOS cannot open, whose conversion
     /// could not be finished (F453). Says where the complete download is and how to get a meeting

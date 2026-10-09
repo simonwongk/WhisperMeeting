@@ -105,6 +105,19 @@ func noFFmpegIsFFmpegMissing() async throws {
     #expect(FileManager.default.fileExists(atPath: download.path))
 }
 
+/// Writes `seconds` of a sine as Opus in WebM with the installed ffmpeg. Through the async runner
+/// rather than `Process.waitUntilExit()`, which blocks a cooperative thread (F169).
+private func makeOpusWebM(at url: URL, seconds: Int, ffmpeg: URL) async throws {
+    let outcome = try await ProcessGroupRunner().run(
+        executableURL: ffmpeg,
+        arguments: ["-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=\(seconds)", "-c:a", "libopus", url.path],
+        environment: MediaDownloadClient.makeEnvironment(),
+        stallTimeout: 0
+    )
+    try #require(outcome.exitStatus == 0, "could not make the WebM fixture: \(outcome.output)")
+}
+
 @Test(
     "The installed ffmpeg turns a real WebM/Opus download into a finished 16 kHz mono WAV (F453)",
     .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")
@@ -114,13 +127,7 @@ func realFFmpegFinishesAnInterruptedWebM() async throws {
     let (folder, download, _) = try makeInterruptedFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
     // A 3 s Opus-in-WebM file, the format YouTube's bestaudio usually is (format 251).
-    let make = Process()
-    make.executableURL = ffmpeg
-    make.arguments = ["-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
-                      "-c:a", "libopus", download.path]
-    try make.run()
-    make.waitUntilExit()
-    try #require(make.terminationStatus == 0, "could not make the WebM fixture")
+    try await makeOpusWebM(at: download, seconds: 3, ffmpeg: ffmpeg)
 
     let result = try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg)
 
@@ -133,4 +140,108 @@ func realFFmpegFinishesAnInterruptedWebM() async throws {
     #expect(FileManager.default.fileExists(atPath: download.path), "the download was removed")
     #expect(InterruptedRecordingRecovery.finalizedRecording(in: folder)?.recordingURL.lastPathComponent == "recording.wav")
     print("REAL_FFMPEG: \(ffmpeg.path) → \(result.lastPathComponent), \(duration) s, \(header.sampleRate) Hz, \(header.channels) ch, \(header.bitsPerSample)-bit")
+}
+
+// MARK: - The time limit startup recovery runs this under
+
+/// A stand-in for ffmpeg 8 whose input has stopped arriving: it prints a progress line every quarter
+/// second and makes no progress, for about ten seconds, then writes its output and exits 0 — so a
+/// time limit that is not enforced reads as a finished conversion. ffmpeg 8.1.2 was measured doing
+/// the first part (sixteen identical `time=` reports in eight seconds), which is why the runner's
+/// stall watchdog, reset by any output at all, cannot end it. It creates `started` first, so a test
+/// can tell it is running.
+private func stuckFFmpeg(in folder: URL) throws -> URL {
+    let script = folder.appendingPathComponent("stuck-ffmpeg.sh")
+    try """
+    #!/bin/sh
+    for out; do :; done
+    : > "\(folder.path)/started"
+    i=0
+    while [ $i -lt 40 ]; do
+      printf 'size=       0KiB time=00:00:06.39 bitrate= 255.3kbits/s speed=0.9x\\r' >&2
+      sleep 0.25
+      i=$((i + 1))
+    done
+    printf '%s' 'converted audio' > "${out#file:}"
+    exit 0
+    """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return script
+}
+
+@Test("A conversion still going at its time limit is stopped, whatever it prints, and touches nothing (F453)")
+func aConversionPastItsTimeLimitIsStopped() async throws {
+    // Within the limit nothing changes.
+    do {
+        let (folder, download, _) = try makeInterruptedFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ffmpeg = try fakeFFmpeg(in: folder, writing: "converted audio", exiting: 0)
+        let result = try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, timeLimit: 60)
+        #expect(try String(contentsOf: result, encoding: .utf8) == "converted audio")
+    }
+    // Past it: printing progress does not keep it alive, and what was there stays as it was.
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    let ffmpeg = try stuckFFmpeg(in: folder)
+
+    await #expect(throws: MediaDownloadError.extractionTimedOut(0.5)) {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, stallTimeout: 2, timeLimit: 0.5)
+    }
+
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
+}
+
+@Test("A cancelled conversion is a cancellation, not a timeout, and touches nothing (F453)")
+func aCancelledConversionIsNotATimeout() async throws {
+    // Startup recovery leaves the folder for the next launch on a cancellation and lists the import
+    // as unfinished on a timeout, so the two must not be confused.
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    let ffmpeg = try stuckFFmpeg(in: folder)
+    let conversion = Task {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, timeLimit: 60)
+    }
+    // Cancelled once the stand-in runs, so the cancellation reaches the process and not the spawn.
+    let started = folder.appendingPathComponent("started")
+    let deadline = Date().addingTimeInterval(60)
+    while !FileManager.default.fileExists(atPath: started.path), Date() < deadline {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    try #require(FileManager.default.fileExists(atPath: started.path), "the stand-in ffmpeg never started")
+
+    conversion.cancel()
+
+    await #expect(throws: CancellationError.self) { try await conversion.value }
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
+}
+
+@Test(
+    "The installed ffmpeg, still converting at its time limit, is stopped and leaves no file behind (F453)",
+    .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")
+)
+func realFFmpegPastItsTimeLimitIsStopped() async throws {
+    // ffmpeg writes its trailer when it is stopped by SIGTERM, so the temp file it leaves has a
+    // header that reads as finished; it must be removed, never renamed into place.
+    let ffmpeg = try #require(MediaDownloadRuntime.findFFmpeg(), "REAL_FFMPEG=1 needs an installed ffmpeg")
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    // Ten minutes of audio: over a second to convert on an M3 Pro, so still running at 0.2 s.
+    try await makeOpusWebM(at: download, seconds: 600, ffmpeg: ffmpeg)
+    let downloadBytes = try Data(contentsOf: download)
+
+    await #expect(throws: MediaDownloadError.extractionTimedOut(0.2)) {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, timeLimit: 0.2)
+    }
+
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try Data(contentsOf: download) == downloadBytes, "the download changed")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
+    print("REAL_FFMPEG: \(ffmpeg.path) stopped at the 0.2 s limit; download and half-written WAV untouched, no temp file")
 }
