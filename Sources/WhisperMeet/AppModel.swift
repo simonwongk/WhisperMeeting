@@ -1708,8 +1708,8 @@ final class AppModel: ObservableObject {
     /// `refreshRuntime()` must go through both seams, not just this one's Whisper sibling. Until it
     /// did, an install state injected at construction was silently discarded by the first
     /// `refreshRuntime()` — which `stopRecording` and `adoptImportedRecording` each call immediately
-    /// before their install gate. That made a pinned test state useless and was invisible on a machine with
-    /// the runtimes present; CI caught it.
+    /// before their install gate. That made a pinned test state useless and was invisible on a
+    /// machine with the runtimes present; CI caught it.
     var checkQwenInstalled: @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
 
     /// Runs a transcription engine on a WAV and returns the result WITHOUT persisting. Injectable so the
