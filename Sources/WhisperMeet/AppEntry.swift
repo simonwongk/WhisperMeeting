@@ -222,8 +222,9 @@ extension AppLifecycle {
         // F529: a quit during a live recording asks first, and Stop & Quit saves the meeting through
         // the ordinary stop before the process ends.
         isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
-        // F672: and a stop already saving it is waited for rather than killed.
-        isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
+        // F672: and a stop already saving it is waited for rather than killed, including a failed
+        // stop rebuilding it from its tracks (F808), which is no longer `.stopping`.
+        isRecordingFinishing = { [weak model] in model?.isRecordingFinishing ?? false }
         confirmQuitDuringRecording = ask
         onStopRecordingForQuit = { [weak model] in
             await model?.stopRecordingBeforeQuit() ?? true

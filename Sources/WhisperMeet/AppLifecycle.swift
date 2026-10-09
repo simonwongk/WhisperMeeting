@@ -145,8 +145,9 @@ public final class AppLifecycle: ObservableObject {
     /// Whether a capture is running right now, so that quitting would cut a meeting short.
     public var isRecordingLive: (() -> Bool)?
 
-    /// Whether a stop is already saving the recording — the user's own Stop, or one the app began
-    /// for a sleep or a lost capture (F672).
+    /// Whether a stop already owns the recording — the user's own Stop, one the app began for a
+    /// sleep or a lost capture, a Cancel discarding it (F672), or a stop whose finalize failed and
+    /// that is rebuilding the meeting from its tracks (F808).
     public var isRecordingFinishing: (() -> Bool)?
 
     /// Asks the user what to do about the live recording. Called only while `isRecordingLive`.

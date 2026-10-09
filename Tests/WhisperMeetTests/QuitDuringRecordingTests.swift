@@ -380,6 +380,130 @@ func aQuitWhileAFailingStopIsSavingStaysOpen() async throws {
     #expect(model.alertMessage?.contains(model.store.recordingDirectoryURL(for: id).path) == true)
 }
 
+// MARK: - F808: a quit during a failed stop's rebuild
+
+// A Stop whose finalize fails goes `.idle` and clears the meeting's id, and only then rebuilds the
+// meeting from its tracks (`stopRecording`'s catch), with `stopRecording` still running. F672 waited
+// only for `.stopping`, so a quit in that window terminated at once, mid-rebuild, and the meeting
+// reopened recovered at the next launch instead of saved now. The round-2 review's probes P1 and P2.
+
+/// Holds `stopRecording`'s rebuild, which its catch runs in a detached task through the recovery
+/// seam, until the test lets it go. A semaphore because the seam is synchronous; its timeout keeps
+/// a failing test from wedging the run.
+private final class RebuildGate: @unchecked Sendable {
+    private let entered = Locked(false)
+    private let release = DispatchSemaphore(value: 0)
+    var hasEntered: Bool { entered.withLock { $0 } }
+    /// Called from the seam, off the main actor.
+    func enterAndWait() {
+        entered.withLock { $0 = true }
+        _ = release.wait(timeout: .now() + 60)
+    }
+    func open() { release.signal() }
+}
+
+/// Polls the gate — the precondition's own subject — against the wall clock.
+@MainActor
+private func waitUntilRebuilding(_ gate: RebuildGate) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while !gate.hasEntered, Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(gate.hasEntered, "the failed stop never reached its rebuild")
+}
+
+@MainActor
+@Test("A quit while a failed Stop is rebuilding the meeting waits for the rebuild, asks nothing, then quits (F808)")
+func aQuitDuringAFailedStopsRebuildWaitsForIt() async throws {
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    let rebuild = RebuildGate()
+    defer { rebuild.open() }
+    model.recoverInterruptedRecording = { directory in
+        rebuild.enterAndWait()
+        return try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilRebuilding(rebuild)
+    try #require(model.recordingState == .idle, "sanity: the failed stop is idle while it rebuilds")
+
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+
+    try #require(decision == .terminateLater, "quitting now kills the rebuild, and the meeting reopens recovered")
+    #expect(asked.withLock { $0 } == 0, "the recording is already ending; there is nothing to ask")
+    #expect(model.store.meeting(id: id) == nil, "sanity: not rebuilt yet")
+    rebuild.open()
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "the rebuild indexed the meeting, so the quit goes ahead")
+    #expect(model.store.meeting(id: id)?.title == "Board call", "indexed before the app quit, with its title")
+    #expect(await stop.value == id)
+}
+
+@MainActor
+@Test("Stop & Quit that finds a failed stop rebuilding waits for the rebuild before it answers (F808)")
+func stopAndQuitDuringAFailedStopsRebuildWaitsForIt() async throws {
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    let rebuild = RebuildGate()
+    defer { rebuild.open() }
+    model.recoverInterruptedRecording = { directory in
+        rebuild.enterAndWait()
+        return try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    let id = try await startRecordingWithTracks(model)
+
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilRebuilding(rebuild)
+    // What Stop & Quit runs once the user answers (`onStopRecordingForQuit`). The realistic route: a
+    // sleep's stop began while the question was on screen and failed, and the alert's modal loop kept
+    // the main queue running into its rebuild. Created before the rebuild is let go, so it starts first.
+    let answer = Task { () -> (mayQuit: Bool, indexed: Bool) in
+        let mayQuit = await model.stopRecordingBeforeQuit()
+        return (mayQuit, model.store.meeting(id: id) != nil)
+    }
+    rebuild.open()
+    let seen = await answer.value
+
+    #expect(seen.mayQuit)
+    #expect(seen.indexed, "Stop & Quit answered while the rebuild was still running")
+    #expect(await stop.value == id)
+}
+
+@MainActor
+@Test("A quit during a failed Stop whose rebuild also fails keeps the app open, so the failure stays on screen (F808)")
+func aQuitDuringAFailedRebuildStaysOpen() async throws {
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    let rebuild = RebuildGate()
+    defer { rebuild.open() }
+    // Nothing usable to rebuild. The catch has already cleared `activeMeetingID`, so only the stop's
+    // own record of which meeting it was can tell the quit that this folder is still unsaved.
+    model.recoverInterruptedRecording = { _ in
+        rebuild.enterAndWait()
+        return nil
+    }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "") }
+    try await waitUntilRebuilding(rebuild)
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+    try #require(decision == .terminateLater)
+    rebuild.open()
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [false], "quitting would take the failure message with it")
+    #expect(await stop.value == nil)
+    #expect(model.alertMessage?.contains(model.store.recordingDirectoryURL(for: id).path) == true)
+    #expect(FileManager.default.fileExists(atPath: model.store.recordingDirectoryURL(for: id).path),
+            "the folder is kept for a later launch to rebuild")
+}
+
 // MARK: - The AppKit half, pinned by source (F174: no scene or AppKit harness in this target)
 
 @Test("The app delegate hands every quit to AppLifecycle.shouldTerminate, and init wires its three inputs (F529)")
