@@ -143,10 +143,10 @@ final class HotkeyMonitor: HotkeyMonitoring {
 
     @discardableResult
     func start(hotkey: DictationHotkey) -> Bool {
-        removeTap()
+        let replaced = removeTap()
         adopt(hotkey)
         if Self.tapKind(for: hotkey) == .holdsTriggerBack {
-            if mayHoldTriggerBack, startTriggerTap(keyCode: hotkey.keyCode) { return true }
+            if mayHoldTriggerBack, startTriggerTap(keyCode: hotkey.keyCode, continuing: replaced) { return true }
             // Without it the trigger still works, listen-only as before F547; it just also reaches
             // the app in front. Never a dead key because the better tap was refused.
             if mayHoldTriggerBack {
@@ -227,11 +227,18 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// F-key trigger needs neither modifier changes nor clicks (F448's chord cancel is for modifier
     /// triggers). Per CGEvent.h, a tap not permitted to see key events has those bits cleared, and an
     /// empty mask returns NULL, so a missing grant fails here rather than making a deaf tap.
-    private func startTriggerTap(keyCode: UInt16) -> Bool {
+    ///
+    /// `previous` is the active tap this re-arm just let go of, if any (F686): a new tap has not
+    /// seen the press its predecessor was keeping from the app, so on its own it passed the rest of
+    /// that hold — the autorepeats and the release — to the app in front. Its first callback takes
+    /// the hold over (`TriggerTapContext.takeOverHold`).
+    private func startTriggerTap(keyCode: UInt16, continuing previous: TriggerTapContext?) -> Bool {
         let mask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue)
-        let context = Unmanaged.passRetained(TriggerTapContext(keyCode: keyCode, monitor: self))
+        let context = Unmanaged.passRetained(
+            TriggerTapContext(keyCode: keyCode, monitor: self, continuing: previous)
+        )
         guard let port = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -260,8 +267,9 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// The F-key trigger's tap callback (F547), on `TriggerTapThread`. It must stay trivially cheap:
     /// every key-down and key-up in the session waits on its answer (the mask has nothing else). It
     /// reads two integer fields and the flags, updates `TriggerKeyFilter` (a few comparisons, no
-    /// lock), and hands the monitor an edge with at most one `DispatchQueue.main.async`, only for
-    /// the trigger key; it never waits on the main thread. Returning nil deletes the event
+    /// lock) — the first time, after taking over the hold of the tap it replaced (F686) — and hands
+    /// the monitor an edge with at most one `DispatchQueue.main.async`, only for the trigger key; it
+    /// never waits on the main thread. Returning nil deletes the event
     /// (CGEventTypes.h, `CGEventTapCallBack`). Internal so a test can call it with a real
     /// `CGEvent` and no tap.
     static let triggerTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -273,10 +281,16 @@ final class HotkeyMonitor: HotkeyMonitoring {
             // system disables the tap, the callback puts it straight back, and every key waits on
             // it again (deskflow #9562, slovo #73). Disabled, it blocks nothing; the monitor's
             // owner re-arms through `start`, whose new `tapCreate` is the check that counts.
+            //
+            // F686: while it is disabled the key can be released and pressed again with the app
+            // seeing both, so the hold it was keeping back is not handed to the tap that replaces
+            // it. Swallowing a release whose press the app saw would leave the key down there.
+            context.forgetHold()
             let loss: TriggerTapLoss = type == .tapDisabledByUserInput ? .userInput : .timeout
             DispatchQueue.main.async { context.monitor?.triggerTapWasDisabled(context, loss) }
             return Unmanaged.passUnretained(event)
         }
+        context.takeOverHold()
         let verdict = context.filter.verdict(
             type: type,
             keyCode: UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode)),
@@ -339,11 +353,21 @@ final class HotkeyMonitor: HotkeyMonitoring {
         toggledOn = false
     }
 
-    private func removeTap() {
+    /// Lets go of every tap. Returns the F-key trigger's active tap's context when that tap was
+    /// still holding the key back until this call let go of it (F686), so `start` can hand the hold
+    /// it was keeping from the app to the new tap. Not when the off-main probe had already let go of
+    /// it (F689), nor when the system had disabled it, whether or not its callback has heard so yet:
+    /// either way the key may have been released and pressed again, with the app seeing both, while
+    /// nothing held it — and a release swallowed after that would leave the key down in the app.
+    @discardableResult
+    private func removeTap() -> TriggerTapContext? {
         isArmedWithoutHoldingBack = false
+        var replaced: TriggerTapContext?
         if let triggerTap {
             let loop = TriggerTapThread.runLoop
-            triggerTap.context.takeUnretainedValue().isCurrent = false
+            let current = triggerTap.context.takeUnretainedValue()
+            current.isCurrent = false
+            if activeTapSwitch.armedTapIsEnabled { replaced = current }
             // Removes, disables and invalidates it, unless the off-main probe already has (F689) —
             // and if the probe is doing so right now, returns only once it has, so the release
             // queued below can never run while the tap's source is still on the run loop.
@@ -367,6 +391,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
         runLoopSource = nil
         clickTap = nil
         clickRunLoopSource = nil
+        return replaced
     }
 
     /// The edge state `start` begins from (F446). Internal so a test can drive it without creating a
@@ -549,6 +574,19 @@ struct TriggerKeyFilter: Equatable {
         self.keyCode = keyCode
     }
 
+    /// Takes over a hold `previous` was keeping from the app (F686): the same key, still held back,
+    /// so this filter holds back the rest of that press — its autorepeats and its release — as the
+    /// filter that saw the press would have. Anything else leaves this one as it was.
+    mutating func continueHold(of previous: TriggerKeyFilter) {
+        guard previous.keyCode == keyCode, previous.holdingBack else { return }
+        holdingBack = true
+    }
+
+    /// Drops the hold this filter is keeping back (F686), so no later tap takes it over.
+    mutating func forgetHold() {
+        holdingBack = false
+    }
+
     mutating func verdict(type: CGEventType, keyCode: UInt16, flags: CGEventFlags, isRepeat: Bool) -> Verdict {
         guard keyCode == self.keyCode else { return Verdict(consume: false, forward: false) }
         switch type {
@@ -585,6 +623,18 @@ final class ActiveTapSwitch: @unchecked Sendable {
         lock.withLock { armed = (port, source) }
     }
 
+    /// Whether a tap is armed, nobody has let go of it yet, and the system has not disabled it
+    /// (F686). CGEvent.h: a tap that "becomes unresponsive" or that "a user requests" be disabled is
+    /// disabled and its callback is told — but a re-arm can come before the callback has heard, and
+    /// a disabled tap holds nothing back. Asked under the lock, so never of a port the off-main
+    /// probe is letting go of.
+    var armedTapIsEnabled: Bool {
+        lock.withLock {
+            guard let tap = armed else { return false }
+            return CGEvent.tapIsEnabled(tap: tap.port)
+        }
+    }
+
     func disarm() {
         lock.withLock {
             guard let tap = armed else { return }
@@ -596,18 +646,42 @@ final class ActiveTapSwitch: @unchecked Sendable {
     }
 }
 
-/// What an F-key trigger's tap knows (F547). `filter` is read and written only by the tap's
-/// callback, on the tap thread; `monitor` and `isCurrent` are read and written only on the main
-/// queue.
+/// What an F-key trigger's tap knows (F547). `filter` is read and written only on the tap thread:
+/// by the tap's callback, and read once more by the first callback of the tap that replaces it
+/// (F686). `predecessor` is set when the context is made, before its tap exists, and from then on
+/// read and cleared only by callbacks, on the tap thread. `monitor` and `isCurrent` are read and
+/// written only on the main queue.
 final class TriggerTapContext: @unchecked Sendable {
     var filter: TriggerKeyFilter
     weak var monitor: HotkeyMonitor?
     /// False once the monitor has removed this context's tap, so a loss it reported late is ignored.
     var isCurrent = true
+    /// The context of the active tap this one replaced, until this one's first callback takes over
+    /// its hold (F686).
+    private var predecessor: TriggerTapContext?
 
-    init(keyCode: UInt16, monitor: HotkeyMonitor?) {
+    init(keyCode: UInt16, monitor: HotkeyMonitor?, continuing predecessor: TriggerTapContext? = nil) {
         filter = TriggerKeyFilter(keyCode: keyCode)
         self.monitor = monitor
+        self.predecessor = predecessor
+    }
+
+    /// Takes over the hold the replaced tap was keeping from the app, once (F686). On the tap
+    /// thread, where both filters live; the replaced tap's callback cannot run any more, since its
+    /// source left the run loop before this tap existed, and one that was already running finished
+    /// first, on this same thread. A predecessor that was itself replaced before any key reached it
+    /// has not taken over its own yet, so the chain is followed.
+    func takeOverHold() {
+        guard let previous = predecessor else { return }
+        predecessor = nil
+        previous.takeOverHold()
+        filter.continueHold(of: previous.filter)
+    }
+
+    /// The system disabled this tap (F686): its hold is dropped, not handed on.
+    func forgetHold() {
+        predecessor = nil
+        filter.forgetHold()
     }
 }
 

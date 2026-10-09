@@ -216,6 +216,116 @@ func aForwardedPressOfAReplacedTriggerStartsNothing() async throws {
     #expect(edges.startCount == 0)
 }
 
+// MARK: - Re-armed while the F-key is held (F686)
+
+/// F686 — a re-arm while the trigger F-key is held (the Trigger mode picker changed with the key
+/// down) builds a new tap whose filter never saw the press, so it passed the rest of that hold —
+/// every autorepeat and the release — to the app in front. The new tap now takes the hold over from
+/// the tap it replaced. Both contexts are driven through the real callback, as the two taps would
+/// be, one after the other on the tap thread.
+@MainActor
+@Test("An F-key trigger re-armed mid-hold keeps the rest of that hold from the app in front, and still ends the dictation (F686)")
+func aRearmMidHoldKeepsTheRestOfTheHoldBack() async throws {
+    let edges = EdgeCounter()
+    let monitor = monitor(DictationHotkey(keyCode: f5, mode: .hold), edges: edges)
+    let replaced = TriggerTapContext(keyCode: f5, monitor: monitor)
+    #expect(try !tap(replaced, .keyDown, key: f5, flags: plainPress))
+    #expect(try !tap(replaced, .keyDown, key: f5, isRepeat: true))
+    await drainMainQueue()
+    try #require(edges.startCount == 1)
+
+    let rearmed = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: replaced)
+    #expect(try !tap(rearmed, .keyDown, key: f5, isRepeat: true), "an autorepeat of the held press reached the app after the re-arm")
+    #expect(try !tap(rearmed, .keyDown, key: f5, isRepeat: true))
+    #expect(try !tap(rearmed, .keyUp, key: f5), "the release of the held press reached the app after the re-arm")
+    await drainMainQueue()
+    #expect(edges.startCount == 1, "a carried autorepeat started a second dictation")
+    #expect(edges.endCount == 1, "the release no longer ends the dictation")
+    // The hold is over: the next press is a press like any other.
+    #expect(try !tap(rearmed, .keyDown, key: f5))
+    #expect(try !tap(rearmed, .keyUp, key: f5))
+}
+
+/// Two re-arms before the key repeats again: the second tap's predecessor never saw a key, so it has
+/// not taken over its own predecessor's hold yet.
+@MainActor
+@Test("A hold survives two re-arms in a row (F686)")
+func aHoldSurvivesTwoRearms() throws {
+    let monitor = monitor(DictationHotkey(keyCode: f5, mode: .hold), edges: EdgeCounter())
+    let first = TriggerTapContext(keyCode: f5, monitor: monitor)
+    _ = try tap(first, .keyDown, key: f5)
+    let second = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: first)
+    let third = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: second)
+    #expect(try !tap(third, .keyDown, key: f5, isRepeat: true))
+    #expect(try !tap(third, .keyUp, key: f5))
+}
+
+/// What is not handed on. A tap the system disabled may have missed a release and a new press the
+/// app saw (F547), and swallowing that release would leave the key down in the app; a shortcut
+/// press reached the app, so its release must too; another key's hold is not this trigger's.
+@MainActor
+@Test("A hold is not handed on from a disabled tap, a shortcut press or another key (F686)")
+func aHoldIsHandedOnOnlyWhenItWasHeldBack() throws {
+    let monitor = monitor(DictationHotkey(keyCode: f5, mode: .hold), edges: EdgeCounter())
+
+    let disabled = TriggerTapContext(keyCode: f5, monitor: monitor)
+    _ = try tap(disabled, .keyDown, key: f5)
+    _ = try tap(disabled, .tapDisabledByTimeout, key: f5)
+    let afterLoss = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: disabled)
+    #expect(try tap(afterLoss, .keyDown, key: f5, isRepeat: true), "a hold was carried across a disabled tap")
+    #expect(try tap(afterLoss, .keyUp, key: f5), "a release the app may need was swallowed after a disabled tap")
+
+    let shortcut = TriggerTapContext(keyCode: f5, monitor: monitor)
+    #expect(try tap(shortcut, .keyDown, key: f5, flags: .maskCommand))
+    let afterShortcut = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: shortcut)
+    #expect(try tap(afterShortcut, .keyUp, key: f5, flags: .maskCommand), "a shortcut's release was kept from the app")
+
+    // F6 was the trigger and is held back; the trigger is now F5, which nobody is holding.
+    let otherKey = TriggerTapContext(keyCode: f6, monitor: monitor)
+    _ = try tap(otherKey, .keyDown, key: f6)
+    let newKey = TriggerTapContext(keyCode: f5, monitor: monitor, continuing: otherKey)
+    #expect(try tap(newKey, .keyUp, key: f5), "the old trigger's hold was taken for the new key's")
+}
+
+/// The wiring the callback tests cannot reach, since no test can create a real tap (F729 is the
+/// ticket for a `tapCreate` seam): `start` hands the active tap it let go of to the new one, and
+/// only one that was still holding the key — not one the off-main probe had already let go of
+/// (F689), nor one the system had disabled, whose callback may not have heard so yet when the
+/// re-arm comes. Either way the key may have been released and pressed again, the app seeing both,
+/// while nothing held it. Comments are stripped first (F285).
+@Test("A re-arm hands the tap it let go of to the new one, and only while that tap was still armed and enabled (F686)")
+func aRearmHandsTheReplacedTapToTheNewOne() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/HotkeyMonitor.swift")
+    #expect(source.contains("let replaced = removeTap()"), "start no longer keeps the tap it let go of")
+    #expect(
+        source.contains("startTriggerTap(keyCode: hotkey.keyCode, continuing: replaced)"),
+        "start does not hand the replaced tap to the new one"
+    )
+    #expect(
+        source.contains("TriggerTapContext(keyCode: keyCode, monitor: self, continuing: previous)"),
+        "the new tap's context is not given the replaced one"
+    )
+    let removeTap = try #require(source.range(of: "private func removeTap() -> TriggerTapContext?"))
+    let body = String(source[removeTap.upperBound...].prefix(700))
+    let check = try #require(body.range(of: "if activeTapSwitch.armedTapIsEnabled { replaced = current }"))
+    let disarm = try #require(body.range(of: "activeTapSwitch.disarm()"))
+    #expect(check.upperBound <= disarm.lowerBound, "the switch is asked after removeTap has let go of the tap itself")
+    // The switch asks the tap itself whether it is still enabled, under the lock the probe lets go
+    // of it under (F689), so a port being invalidated meanwhile is never asked.
+    let query = try #require(source.range(of: "var armedTapIsEnabled: Bool {"))
+    let queryRest = source[query.upperBound...]
+    let queryEnd = try #require(queryRest.range(of: "\n    }\n"), "armedTapIsEnabled's closing brace")
+    let queryBody = String(queryRest[..<queryEnd.lowerBound])
+    let locked = try #require(queryBody.range(of: "lock.withLock {"), "armedTapIsEnabled does not ask inside lock.withLock { … }")
+    let asked = try #require(queryBody.range(of: "CGEvent.tapIsEnabled(tap: tap.port)"), "armedTapIsEnabled does not ask the tap")
+    #expect(locked.upperBound <= asked.lowerBound, "the tap is asked outside the lock")
+    let callback = try #require(source.range(of: "static let triggerTapCallback"))
+    let rest = source[callback.upperBound...]
+    let takeOver = try #require(rest.range(of: "context.takeOverHold()"))
+    let verdict = try #require(rest.range(of: "context.filter.verdict("))
+    #expect(takeOver.upperBound <= verdict.lowerBound, "the hold is taken over after the first event's verdict")
+}
+
 // MARK: - Armed listen-only for want of Accessibility
 
 /// A monitor whose next `start` succeeds, holding the F-key back or not as the test says.
