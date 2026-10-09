@@ -95,11 +95,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// same for `_streamError`/`_streamDied`). On the queue, the sample handler and
     /// `applyPendingRestartPaddingIfNeeded` write through them — `restartAfterFailure` reaches
     /// them only that way, inside its own `captureQueue.sync` — `finishTrackWriters` (F388) and
-    /// `preservePartialTracks` (F632) finish them, and `reset` drops them inside its `sync`. Off
-    /// the queue, through the accessors below: `start`, `stop` and `cancel`, which are
-    /// `nonisolated async` and so run on the generic executor, not on their callers' MainActor
-    /// (SE-0338), and the DEBUG test seams. An unsynchronized load/store of a strong reference can
-    /// over-release, and this one is a `FloatTrackWriter` holding an open descriptor.
+    /// `preservePartialTracks` (F632) finish them, `discardTrackWriters` (F734) discards them, and
+    /// `reset` drops them inside its `sync`. Off the queue, through the accessors below: `start`
+    /// and `stop`, which are `nonisolated async` and so run on the generic executor, not on their
+    /// callers' MainActor (SE-0338), and the DEBUG test seams. An unsynchronized load/store of a
+    /// strong reference can over-release, and this one is a `FloatTrackWriter` holding an open
+    /// descriptor.
     ///
     /// **Code already on `captureQueue` must use the `_` storage; a `sync` from the queue
     /// deadlocks.** Converted site by site for that reason, never by rename.
@@ -310,8 +311,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 || (microphoneWriter?.frameCount ?? 0) > 0 {
                 preservePartialTracks()
             } else {
-                systemWriter?.cancel()
-                microphoneWriter?.cancel()
+                discardTrackWriters()
             }
             reset()
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
@@ -452,8 +452,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
         stopHealthTimer()
         await captureQueue.flush()
-        systemWriter?.cancel()
-        microphoneWriter?.cancel()
+        discardTrackWriters()
         if let sessionDirectory {
             try? FileManager.default.removeItem(at: sessionDirectory)
         }
@@ -940,11 +939,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// `deviceSync` reaches each track's `FloatTrackFile`, so a test can observe where `finish()`'s
     /// flush runs (F632). `systemFinishFailure` makes the system track's `finish()` throw once,
     /// after the track is finalized, so a test can check that one track's failure does not skip
-    /// the other's finish (F632).
+    /// the other's finish (F632). `onTrackCancel` is told each track's URL when it is discarded,
+    /// so a test can observe where `cancel()` runs (F734).
     func beginTestTrackSession(
         in directory: URL,
         deviceSync: @escaping FloatTrackFile.DeviceSync = FloatTrackFile.fullFsync,
-        systemFinishFailure: Error? = nil
+        systemFinishFailure: Error? = nil,
+        onTrackCancel: ((URL) -> Void)? = nil
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let system = try FloatTrackWriter(
@@ -952,11 +953,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             deviceSync: deviceSync
         )
         system.finishFailureForTesting = systemFinishFailure
+        system.cancelProbeForTesting = onTrackCancel
         systemWriter = system
-        microphoneWriter = try FloatTrackWriter(
+        let microphone = try FloatTrackWriter(
             outputURL: directory.appendingPathComponent("microphone-audio.f32"), targetSampleRate: Self.targetSampleRate,
             deviceSync: deviceSync
         )
+        microphone.cancelProbeForTesting = onTrackCancel
+        microphoneWriter = microphone
         sessionDirectory = directory
         healthMonitor = RecordingHealthMonitor(
             startedAt: ProcessInfo.processInfo.systemUptime,
@@ -1081,6 +1085,20 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         dispatchPrecondition(condition: .onQueue(captureQueue))
         _ = try? _systemWriter?.finish()
         _ = try? _microphoneWriter?.finish()
+    }
+
+    /// Discards both tracks, for a capture that never became a recording: `cancel()`, and `start()`'s
+    /// catch when nothing was written. On `captureQueue` since F734, for F632's reason on the discard
+    /// path: `FloatTrackFile.cancel` marks the track finished, closes its descriptor and removes the
+    /// file, and the sample handler and the restart padding write through that descriptor on the
+    /// queue. Reached through the syncing accessors, only the load of the reference was protected,
+    /// and `cancel()` ignores a `stopCapture()` that failed, so a stream that would not stop could
+    /// still be appending. Neither caller is on the queue, so the `sync` cannot deadlock.
+    private func discardTrackWriters() {
+        captureQueue.sync {
+            _systemWriter?.cancel()
+            _microphoneWriter?.cancel()
+        }
     }
 
     /// Internal rather than private so F254's tests can drive the assertion's lifetime directly;
@@ -1438,6 +1456,11 @@ final class FloatTrackWriter {
     /// and a failed finish there leaves the track finished, so that is the failure this stands in
     /// for. Set before the engine publishes the writer; read and cleared on the capture queue.
     var finishFailureForTesting: Error?
+
+    /// Test seam (F734): told the track's URL when `cancel()` runs, so a test can ask where a
+    /// discard happened. `FloatTrackFile.cancel` never reaches the `DeviceSync` that F632's probe
+    /// observes. Set before the engine publishes the writer.
+    var cancelProbeForTesting: ((URL) -> Void)?
     #endif
 
     func finish() throws -> FloatTrack {
@@ -1460,6 +1483,9 @@ final class FloatTrackWriter {
     }
 
     func cancel() {
+        #if DEBUG
+        cancelProbeForTesting?(track.url)
+        #endif
         track.cancel()
     }
 }

@@ -316,3 +316,63 @@ func abortPathFinishesEachTrackOnItsOwn() async throws {
     // skipped microphone a second time, as a queue failure.
     #expect(!probe.onCaptureQueue.contains(false), "each finish() flush must run on captureQueue")
 }
+
+// F734 — F632's shape on the discard path. `cancel()` (and `start()`'s catch) discarded the tracks
+// through the syncing accessors, which protect only the load of the reference: `FloatTrackWriter
+// .cancel` → `FloatTrackFile.cancel` then marked the track finished, closed its descriptor and
+// removed the file on whatever executor `cancel()` ran on. `cancel()` begins with a `stopCapture()`
+// whose failure it ignores, so a stream that refused to stop and did not die can still be appending
+// on the capture queue through that descriptor. The writer's own probe records where each discard
+// ran, because `FloatTrackFile.cancel` never reaches the `DeviceSync` F632's probe watches.
+// `start()`'s catch cannot be driven (an injected engine returns from `start()` before it), and its
+// stream never started; it shares the one discard function, pinned below as source.
+
+private final class TrackCancelProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed: [(track: String, onCaptureQueue: Bool)] = []
+    func record(_ url: URL) {
+        let onCaptureQueue = AudioCaptureEngine.isOnCaptureQueueForTesting
+        lock.lock(); observed.append((url.lastPathComponent, onCaptureQueue)); lock.unlock()
+    }
+    var tracks: [String] { lock.lock(); defer { lock.unlock() }; return observed.map(\.track) }
+    var onCaptureQueue: [Bool] { lock.lock(); defer { lock.unlock() }; return observed.map(\.onCaptureQueue) }
+}
+
+@Test("Cancel discards both tracks on the capture queue, and still removes the recording (F734)")
+func cancelDiscardsTracksOnCaptureQueue() async throws {
+    let directory = try sessionDirectory("cancelqueue")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let engine = injectedEngine(directory)
+    let probe = TrackCancelProbe()
+    try engine.beginTestTrackSession(in: directory, onTrackCancel: { probe.record($0) })
+    try engine.writeTestFrames(system: 48_000, microphone: 48_000, systemStart: 0, microphoneStart: 0)
+
+    await engine.cancel()
+
+    #expect(probe.tracks == ["system-audio.f32", "microphone-audio.f32"], "both tracks are discarded")
+    // Not `== [true, true]`: the count is the claim above (F632's reasoning).
+    #expect(!probe.onCaptureQueue.contains(false), "each track must be discarded on captureQueue")
+    #expect(!FileManager.default.fileExists(atPath: directory.path), "a cancel still removes the recording")
+}
+
+@Test("Cancel and start's failure path discard the tracks through the one queue-bound function (F734)")
+func everyDiscardGoesThroughTheQueue() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
+    // The off-queue shape, wherever it is: a writer's `cancel()` reached through a syncing accessor,
+    // not through its `_` storage.
+    for accessor in ["systemWriter", "microphoneWriter"] {
+        let offQueue = source.range(of: #"(?<![_A-Za-z0-9])"# + accessor + #"\?\.cancel\(\)"#, options: .regularExpression)
+        #expect(offQueue == nil, "\(accessor)'s track discarded off the capture queue")
+    }
+    let discard = try #require(source.range(of: "private func discardTrackWriters() {"))
+    let body = source[discard.upperBound...].prefix(240)
+    #expect(body.contains("captureQueue.sync {"), "\(body)")
+    #expect(body.contains("_systemWriter?.cancel()") && body.contains("_microphoneWriter?.cancel()"), "\(body)")
+    // Both callers. `start()`'s catch is the one no test can reach.
+    let start = try #require(source.range(of: "func start("))
+    let stop = try #require(source.range(of: "func stop() async throws -> RecordingArtifact {"))
+    #expect(source[start.upperBound..<stop.lowerBound].contains("discardTrackWriters()"), "start()'s catch")
+    let cancel = try #require(source.range(of: "func cancel() async {"))
+    let afterCancel = try #require(source.range(of: "func stream(", range: cancel.upperBound..<source.endIndex))
+    #expect(source[cancel.upperBound..<afterCancel.lowerBound].contains("discardTrackWriters()"), "cancel()")
+}

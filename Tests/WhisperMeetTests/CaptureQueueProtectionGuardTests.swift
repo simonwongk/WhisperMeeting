@@ -51,11 +51,14 @@ import Testing
 //   anywhere is not reported. The file has no `let _x` today.
 // - **The object behind a field.** Only the reference is checked. `systemWriter?.cancel()` goes
 //   through a syncing getter, so it passes, and then runs the writer's own code off the queue. That
-//   is the shape F388 and F632 fixed by hand for `finish()`, and this scan cannot see it.
+//   is the shape F388 and F632 fixed by hand for `finish()`, and F734 for `cancel()`, and this scan
+//   cannot see it.
 //
 // The first two were shown, not assumed: the w2-F-capture review's probes inserted each into the
 // real file's source, in memory, and the scan reported nothing; its fix pass re-ran them with the
-// same result. The third is visible in the real file itself, which passes with such calls in it.
+// same result. The third was visible in the real file itself until F734 moved the last such call,
+// `cancel()`'s discard, onto the queue; reads such as `systemWriter?.frameCount` in `start()`'s
+// catch still pass the same way.
 //
 // Not planned for the first and third: they need the scan to follow what code does at run time, not
 // where it sits in the text, and that is a different tool from a text scan over one file. The second
