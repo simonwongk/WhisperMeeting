@@ -18,8 +18,9 @@ extension Array: ConcurrentlyEncodableArray where Element: Encodable {
 ///
 /// **Why.** At 1,000 transcribed meetings the index is ~274 MB, and one `JSONEncoder` pass over it
 /// took ~1.95 s of a ~2.0 s save, on the main actor, after every edit and every 0.5 s pause in
-/// typing. Encoding the records separately, spread over every core, took the same index 0.33–0.39 s
-/// on an 11-core Mac, and the output was byte-identical (`IndexSaveCostMeasurementTests`).
+/// typing. Encoding the records separately, spread over every core, took the same index 0.33 s on an
+/// 11-core Mac in an optimized build, and the output was byte-identical
+/// (`IndexSaveCostMeasurementTests`, run with `F526_MEASURE=1`).
 ///
 /// **Why the bytes cannot mean anything else.** Each element is encoded by an encoder with the
 /// caller's configuration, exactly as the array's encoder encodes it, except at the top of its own
@@ -28,14 +29,23 @@ extension Array: ConcurrentlyEncodableArray where Element: Encodable {
 /// line inside an empty container. JSON allows any whitespace between tokens, and a raw line feed
 /// never occurs inside a string — `JSONEncoder` escapes U+000A, and no UTF-8 continuation byte is
 /// 0x0A — so adding spaces after one cannot touch a value. The parts are joined with the array's own
-/// `[\n`, `,\n` and `\n]` (`[`, `,`, `]` compact). So the result always decodes to the same value;
-/// that it is also byte-identical is pinned by `elementwiseEncodingIsByteIdentical` and
-/// `theMeetingIndexOnDiskIsTheWholeArrayEncoding`, so a Foundation that formats differently fails a
-/// test rather than changing a file's format.
+/// `[\n`, `,\n` and `\n]` (`[`, `,`, `]` compact). So the result decodes to the same value, for every
+/// element that encodes a value (below). That it is also byte-identical is pinned by
+/// `elementwiseEncodingIsByteIdentical` and `theMeetingIndexOnDiskIsTheWholeArrayEncoding` — on the
+/// Macs that run the tests. On a user's Mac it is the whitespace argument above, not a test, that
+/// keeps a Foundation formatting differently from changing anything but the file's spacing.
 ///
 /// **What an element must not do:** read `encoder.codingPath` to decide what to write, because at the
 /// top of its own document the path is empty where the array's encoder would have given its index.
-/// Nothing in the meeting index does (`optedInStoresEncodeElementwise` shows the difference).
+/// Nothing in the meeting index does (`optedInStoresEncodeElementwise` shows the difference). For the
+/// same reason an element's `EncodingError` carries a coding path without its index.
+///
+/// **What an element must do:** encode a value. One whose `encode(to:)` writes nothing is `{}` inside
+/// the whole array, but on its own it is a document with no top-level value, which `JSONEncoder`
+/// refuses ("did not encode any values") — so this throws where the whole-array encoder would not.
+/// A throw fails the save before anything is written (`anElementThatCannotEncodeFailsTheSaveAndWritesNothing`
+/// pins that for any element's failure); every `MeetingRecord` encodes a keyed container, so the
+/// meeting index never meets it.
 enum ConcurrentArrayEncoding {
     static func encode<Element: Encodable>(
         _ elements: [Element], makeEncoder: () -> JSONEncoder

@@ -32,3 +32,27 @@ func theMeetingIndexOnDiskIsTheWholeArrayEncoding() throws {
     let whole = try BackupJSONStore<[MeetingRecord]>.makeEncoder().encode(store.meetings)
     #expect(onDisk == whole)
 }
+
+/// The meeting store's opt-in is the whole of the speed-up's reachability, and nothing above can see
+/// it: the bytes are the same either way, which is the point, and the core tests drive
+/// `BackupJSONStore` directly (the lane-V review's V6 — a mutant turning it off passed every test).
+/// Read off a real store rather than out of the source text, so it is the value the app runs with.
+@MainActor
+@Test("The meeting store encodes its index element by element (F526)")
+func theMeetingStoreEncodesItsIndexElementByElement() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F526OptIn-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = MeetingStore(rootDirectory: root)
+
+    let meetingFiles = try #require(
+        Mirror(reflecting: store).children.first { $0.label == "meetingFiles" }?.value,
+        "MeetingStore has no stored `meetingFiles`; this test reads the opt-in from it"
+    )
+    let optedIn = try #require(
+        Mirror(reflecting: meetingFiles).children.first { $0.label == "encodesElementsConcurrently" }?.value as? Bool,
+        "the meeting index's store has no `encodesElementsConcurrently` flag"
+    )
+    #expect(optedIn, "the meeting index is encoded with one encoder again: ~2 s per edit at 1,000 meetings")
+}

@@ -251,6 +251,52 @@ func optedInStoresEncodeElementwise(optedIn: Bool) throws {
     #expect(DepthTally.shared.depths(run) == expected)
 }
 
+/// A value `JSONEncoder` refuses: a non-finite `Double` under the default `.throw` strategy.
+private struct Fragile: Codable, Equatable { let value: Double }
+
+/// One element that cannot be encoded fails the whole save, and nothing is written (the lane-V
+/// review's V5). The element-wise encoder spreads the elements over lanes, records the first error
+/// and throws it; if it swallowed that error the parts it never filled would be spliced in empty, and
+/// an opted-in store would install an index that does not decode — the next launch would open the
+/// previous backup, read-only, one save behind. The same guarantee the whole-array encoder gives by
+/// throwing, and the reason `save` encodes before any IO.
+@Test("One element that cannot be encoded fails the whole save, and nothing is written (F526)")
+func anElementThatCannotEncodeFailsTheSaveAndWritesNothing() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ElementEncodeFailure-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let primaryURL = directory.appendingPathComponent("meetings.json")
+    let backupURL = directory.appendingPathComponent("meetings.backup.json")
+    let store = BackupJSONStore<[Fragile]>(
+        primaryURL: primaryURL,
+        backupURL: backupURL,
+        recordCount: { $0.count },
+        encodesElementsConcurrently: true
+    )
+    // Two saves, so the backup (the first) differs from the primary and a rotation would show.
+    try store.save([Fragile(value: 1)])
+    let saved = [Fragile(value: 1), Fragile(value: 2)]
+    try store.save(saved)
+    let primaryBefore = try Data(contentsOf: primaryURL)
+    let backupBefore = try Data(contentsOf: backupURL)
+
+    // Enough elements to spread over every lane, with the bad one in the middle of one of them.
+    var values = (0..<200).map { Fragile(value: Double($0)) }
+    values[137] = Fragile(value: .nan)
+
+    #expect(throws: EncodingError.self) {
+        try ConcurrentArrayEncoding.encode(values, makeEncoder: BackupJSONStore<[Fragile]>.makeEncoder)
+    }
+    #expect(throws: EncodingError.self) { try store.save(values) }
+
+    #expect(try Data(contentsOf: primaryURL) == primaryBefore, "a failed element-wise encode replaced the index")
+    #expect(try Data(contentsOf: backupURL) == backupBefore, "a failed element-wise encode rotated the backup")
+    let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    #expect(!names.contains { $0.contains(".stage-") || $0.contains(".rotate-") }, "left behind: \(names)")
+    #expect(try store.load()?.value == saved)
+}
+
 private extension JSONDecoder {
     static var store: JSONDecoder {
         let decoder = JSONDecoder()
