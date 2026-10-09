@@ -106,10 +106,15 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
     private var _attemptCount = 0
     private var _warmUpCount = 0
     private var _shutdownCount = 0
+    private var _touchCount = 0
     private var _scripted: RefineAttempt?
     var attemptCount: Int { lock.withLock { _attemptCount } }
     var warmUpCount: Int { lock.withLock { _warmUpCount } }
     var shutdownCount: Int { lock.withLock { _shutdownCount } }
+    /// F891: press-down touches of a resident refiner, and a hook run on each so a test can see
+    /// what else had happened by then.
+    var touchCount: Int { lock.withLock { _touchCount } }
+    var onTouch: (@Sendable () -> Void)?
 
     /// nil → echo the input back as `.skipped`; set to script a specific outcome.
     func script(_ attempt: RefineAttempt?) { lock.withLock { _scripted = attempt } }
@@ -123,6 +128,10 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
         return lock.withLock { _scripted } ?? RefineAttempt(text: text, outcome: .skipped)
     }
     func shutdown() { lock.withLock { _shutdownCount += 1 } }
+    func touch() async {
+        lock.withLock { _touchCount += 1 }
+        onTouch?()
+    }
 }
 
 /// Counts `warmUp()` calls so tests can pin exactly when the controller prewarms the

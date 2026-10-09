@@ -30,6 +30,8 @@ public struct RefineAttempt: Sendable, Equatable {
 /// substitute fakes.
 public protocol DictationRefineEngine: Sendable {
     func warmUp() async throws
+    /// Wakes a resident model with one tiny request (F891); a no-op when none is running.
+    func touch() async throws
     func refine(_ request: RefineRequest) async throws -> String
     func shutdown()
     /// Temporarily frees a resident model and waits until its child process has exited.
@@ -37,6 +39,8 @@ public protocol DictationRefineEngine: Sendable {
 }
 
 public extension DictationRefineEngine {
+    func touch() async throws {}
+
     func evict() async {
         shutdown()
     }
@@ -48,6 +52,8 @@ public protocol DictationTextRefining: Sendable {
     /// Returns true only when a resident model is ready to accept an immediate request. A failed
     /// optional warm-up must not make the controller spend a dictation's latency budget trying it.
     func warmUp() async -> Bool
+    /// Wakes a resident model on press-down (F891). Never fails: a touch is an optimisation.
+    func touch() async
     func attempt(text: String, languageCode: String?) async -> RefineAttempt
     /// As above, refusing an output that loses one of `protectedTerms` (F245). Defaulted in the
     /// extension below so a fake that implements only the two-argument form still conforms.
@@ -58,6 +64,8 @@ public protocol DictationTextRefining: Sendable {
 }
 
 public extension DictationTextRefining {
+    func touch() async {}
+
     func evict() async {
         shutdown()
     }
@@ -113,6 +121,16 @@ public actor DictationRefiner: DictationTextRefining {
         } catch {
             return false
         }
+    }
+
+    /// Not while a request is in flight or an eviction is under way — the engine's queue would make
+    /// the touch wait behind the request, and an evicting helper has nothing to wake. The touch is
+    /// awaited to completion, so its reply is consumed by its own call and no later request can read
+    /// it; `inFlight` is not taken, because a dictation ending during the touch should queue its
+    /// attempt behind it (and pay the same page-in it would have paid), not be told the engine is busy.
+    public func touch() async {
+        guard !inFlight, !isEvicting else { return }
+        try? await engine.touch()
     }
 
     nonisolated public func shutdown() {

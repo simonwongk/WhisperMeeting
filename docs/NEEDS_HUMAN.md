@@ -41,12 +41,11 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Eleven entries, over the cap of five. (2026-10-08, later: F891 added as #1 — one question about your Mac, and the one that explains today's slow dictation.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Ten entries, over the cap of five. (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F891** | ~1 min | What else was using the GPU when dictation took 5–10 s today. The app now says so itself on the next one; your answer says what to do about it. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
@@ -59,48 +58,6 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 12 | **F889 · F857** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
 
 ---
-
-## F891 — What was using the GPU while you dictated at 11:27 and 12:05–12:11 today?
-
-You said dictation has been getting slower. It has, and I can say exactly how much: the app's own
-log for 2026-10-08 shows your 3–5 s clips coming back in **5.3, 3.1, 9.3 and 10.4 s**, while
-other clips the same day — longer ones — came back in under a second (0.37 s for 3.3 s of speech,
-0.87 s for 15.6 s). The model is not slow; something was in its way.
-
-I drove the installed recognizer and refiner exactly as the app does
-(`Scripts/bench/dictation-latency.py`, new) under every condition I could think of: the refiner's
-4.3 GB load, its kill-and-reload cycle, 9 GB of memory pressure with 2.5 GB of the recognizer
-reported swapped, twelve CPU hogs, a hundred requests in a row, silence, noise, clicks, −30 dB
-speech, repeats. Every one stayed at 0.3–0.8 s. **One thing reproduced it: another process on the
-GPU.** With a second MLX process running, the same clip took 4.2–4.8 s. That is the shape of your
-slow dictations, and it is the one resource the app cannot reserve.
-
-What I could not find out from records is **what** was on the GPU at those minutes. It was not a
-test suite (the Wave 4 agents' first run today was 12:14), not a summary or transcription in the
-app (its index was last written yesterday), not disk or Time Machine. The remaining candidates are
-things only you would know: a video or voice call with camera effects, a screen share, a video
-playing, a game, another AI tool running a local model, or Chrome with a heavy page.
-
-Two things are in place so the next slow one explains itself:
-
-- The build on this branch reads the GPU's busy share just before recognition and writes it into
-  the same log line: `qwen3-asr-1.7b-8bit transcribed in 5.28s (GPU 92% busy before the request)`.
-  Above 75 % it also skips the polishing pass, which could only have added its full 0.8–1.5 s
-  budget and then been killed and reloaded — so a slow dictation under a busy GPU is now up to
-  1.5 s shorter and the refiner stays resident for the next one.
-- That build is installed and running since 14:00 on 2026-10-08 (the app was idle; quit, installed,
-  relaunched; its log shows "dictation enabled (hotkey 54 mode hold)" with no tap error). The
-  tagged timing trace I had put in the installed Qwen helper while measuring was removed by the
-  launch sync, which copies the shipped helper back; the backup copy is deleted too.
-
-**What I need from you:** tell me what was open or running at 11:27 and 12:05–12:11 today (a
-call? a video? another local model?), or just dictate a few times with the new build installed and
-send me the "transcribed in … (GPU …% busy …)" lines from `/usr/bin/log show --predicate
-'subsystem == "com.whispermeet.app"' --last 1d`. If it turns out to be something the app owns, that
-is F891's fix; if it is another app, the fix is knowing which one.
-
-*Status: open question. F891 is `blocked` on the board pointing here; F890 (the measurement, the
-log line and the refiner skip) is closed with the evidence.*
 
 ## F294 — Confirm a menu-bar-only session gets its notices
 
@@ -415,6 +372,58 @@ only if you own a multi-input audio interface.
 ---
 
 ## Settled — nothing needed from you
+
+**F891 — answered 2026-10-09: "no".** None of the apps I could see were running at the morning's
+slow minutes, and the first slow dictation on the new build (2026-10-08 19:40, 4.0 s → 6.93 s)
+showed the GPU 28 % busy, so it was never the GPU. Measured instead: after minutes idle, the
+recognizer's first request takes 0.7 s (your worst case 6.9 s, from disk) and the resident
+refiner's 2.3 s against its 1.4 s budget — the system pages their weights out between dictations
+on an 18 GB Mac with 9–10 GB of swap in use. The fix (F891, same commit): a press-down wakes both
+resident models, so that page-in happens while you speak. The letter as it stood is kept below.
+
+### The F891 letter, as asked
+
+#### F891 — What was using the GPU while you dictated at 11:27 and 12:05–12:11 today?
+
+You said dictation has been getting slower. It has, and I can say exactly how much: the app's own
+log for 2026-10-08 shows your 3–5 s clips coming back in **5.3, 3.1, 9.3 and 10.4 s**, while
+other clips the same day — longer ones — came back in under a second (0.37 s for 3.3 s of speech,
+0.87 s for 15.6 s). The model is not slow; something was in its way.
+
+I drove the installed recognizer and refiner exactly as the app does
+(`Scripts/bench/dictation-latency.py`, new) under every condition I could think of: the refiner's
+4.3 GB load, its kill-and-reload cycle, 9 GB of memory pressure with 2.5 GB of the recognizer
+reported swapped, twelve CPU hogs, a hundred requests in a row, silence, noise, clicks, −30 dB
+speech, repeats. Every one stayed at 0.3–0.8 s. **One thing reproduced it: another process on the
+GPU.** With a second MLX process running, the same clip took 4.2–4.8 s. That is the shape of your
+slow dictations, and it is the one resource the app cannot reserve.
+
+What I could not find out from records is **what** was on the GPU at those minutes. It was not a
+test suite (the Wave 4 agents' first run today was 12:14), not a summary or transcription in the
+app (its index was last written yesterday), not disk or Time Machine. The remaining candidates are
+things only you would know: a video or voice call with camera effects, a screen share, a video
+playing, a game, another AI tool running a local model, or Chrome with a heavy page.
+
+Two things are in place so the next slow one explains itself:
+
+- The build on this branch reads the GPU's busy share just before recognition and writes it into
+  the same log line: `qwen3-asr-1.7b-8bit transcribed in 5.28s (GPU 92% busy before the request)`.
+  Above 75 % it also skips the polishing pass, which could only have added its full 0.8–1.5 s
+  budget and then been killed and reloaded — so a slow dictation under a busy GPU is now up to
+  1.5 s shorter and the refiner stays resident for the next one.
+- That build is installed and running since 14:00 on 2026-10-08 (the app was idle; quit, installed,
+  relaunched; its log shows "dictation enabled (hotkey 54 mode hold)" with no tap error). The
+  tagged timing trace I had put in the installed Qwen helper while measuring was removed by the
+  launch sync, which copies the shipped helper back; the backup copy is deleted too.
+
+**What I need from you:** tell me what was open or running at 11:27 and 12:05–12:11 today (a
+call? a video? another local model?), or just dictate a few times with the new build installed and
+send me the "transcribed in … (GPU …% busy …)" lines from `/usr/bin/log show --predicate
+'subsystem == "com.whispermeet.app"' --last 1d`. If it turns out to be something the app owns, that
+is F891's fix; if it is another app, the fix is knowing which one.
+
+*Status: open question. F891 is `blocked` on the board pointing here; F890 (the measurement, the
+log line and the refiner skip) is closed with the evidence.*
 
 **F464 — answered 2026-09-26: "改" (yes).** The spec sentence is amended in the same commit as the
 fix: the meeting index alone locks the whole library; a damaged vocabulary or replacement-rules file

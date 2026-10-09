@@ -375,3 +375,42 @@ func realModelRefineLatencyWithASRResident() async throws {
     FileHandle.standardError.write(Data(summary.utf8))
     #expect(soloMean > 0 && withMean > 0)
 }
+
+@Test(
+    "Real installed Qwen helper answers a press-down touch, and the clip after it (F891)",
+    .enabled(if: RealModelPerf.isEnabled && RealModelPerf.qwenRuntimeReady)
+)
+func realModelTouchWakesTheQwenRecognizer() async throws {
+    let engine = RealModelPerf.productionQwenEngine()
+    defer { engine.shutdown() }
+    // Nothing running yet: a touch must be a no-op, not a spawn.
+    try await engine.touch()
+    _ = try await RealModelPerf.measure("qwen warm-up") { try await engine.warmUp() }
+    let touch = try await RealModelPerf.measure("qwen touch (1 s silence)") { try await engine.touch() }
+    #expect(touch < 120, "a touch is one request on the resident helper, bounded by its reply wait")
+    let result = try await engine.transcribe(
+        wavAt: RealModelPerf.clip("en1.wav"), language: .automatic, initialPrompt: nil
+    )
+    #expect(!result.text.isEmpty, "the touch must leave the helper's wire in step: the next reply is the clip's")
+}
+
+@Test(
+    "Real installed refine helper answers a press-down touch after its prime (F891)",
+    .enabled(if: RealModelPerf.isEnabled && RealModelPerf.refineRuntimeReady)
+)
+func realModelTouchWakesTheRefiner() async throws {
+    let engine = RealModelPerf.productionRefineEngine()
+    defer { engine.shutdown() }
+    try await engine.touch() // not running: no-op
+    _ = try await RealModelPerf.measure("refine warm-up + prime") { try await engine.warmUp() }
+    let touch = try await RealModelPerf.measure("refine touch (1 token)") { try await engine.touch() }
+    #expect(touch < 30)
+    let refined = try await engine.refine(
+        RefineRequest(
+            text: "um so send me the report by friday",
+            systemPrompt: DictationRefinePrompt.system(languageCode: "en"),
+            maxTokens: 64
+        )
+    )
+    #expect(!refined.isEmpty, "the touch's reply was consumed by the touch; this reply is the request's")
+}

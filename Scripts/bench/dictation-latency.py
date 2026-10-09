@@ -17,6 +17,7 @@ Conditions (each ASR point is one request on `clips/en1.wav`, ~3.1 s of speech):
     B2  kill-cycle   what the app does on a press mid-prewarm: SIGTERM the refiner (resident, then
                      3 s into a load), wait for its exit as `evict()` does, ASR at once
     F   aging        12 requests back to back on one helper, first vs last
+    I   idle-minutes sit idle IDLE_SECS (150) with no hog, then ask — without, then with the refiner resident
     G   pressure     a process allocates HOG_GB (default 6) and keeps touching every page for
                      HOG_SECS (20) while the recognizer idles, without and then with the refiner
                      resident; vmmap's resident/swapped sizes for the helper before and after
@@ -223,8 +224,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="write the JSON results here")
-    parser.add_argument("--conditions", default="A,B1,C,D,B2,F,G,K,L",
-                        help="comma-separated subset of A,B1,C,D,B2,F,G,K,L")
+    parser.add_argument("--conditions", default="A,B1,C,D,B2,F,I,G,K,L",
+                        help="comma-separated subset of A,B1,C,D,B2,F,I,G,K,L")
     args = parser.parse_args()
     want = set(args.conditions.split(","))
     if app_helpers_alive():
@@ -313,6 +314,29 @@ def main():
                                     "asr_after": [asr(asr_h) for _ in range(3)],
                                     "refine_after": refine(ref_h)[0]}
         note("G_idle_under_pressure", hog_gb=gb, hog_secs=secs, runs=runs)
+
+    if "I" in want:
+        # F891: the app's slow dictations come minutes after a fast one with the refiner resident and
+        # the GPU idle. Sit idle for IDLE_SECS (150) on the Mac's own background load — no hog — then
+        # ask; first without the refiner, then with it resident, so the two idles differ in one thing.
+        secs = float(os.environ.get("IDLE_SECS", "150"))
+        if ref_h is not None:
+            ref_h.terminate_and_wait()
+            ref_h = None
+        runs = {}
+        asr(asr_h)
+        before = swapped(asr_h.proc.pid)
+        time.sleep(secs)
+        runs["no_refiner"] = {"helper_before": before, "helper_after": swapped(asr_h.proc.pid),
+                              "asr_after": [asr(asr_h) for _ in range(3)]}
+        ref_h = resident_refiner()
+        asr(asr_h)
+        before = swapped(asr_h.proc.pid)
+        time.sleep(secs)
+        runs["refiner_resident"] = {"helper_before": before, "helper_after": swapped(asr_h.proc.pid),
+                                    "asr_after": [asr(asr_h) for _ in range(3)],
+                                    "refine_after": refine(ref_h)[0]}
+        note("I_idle_minutes", idle_secs=secs, runs=runs)
 
     if "K" in want:
         count = int(os.environ.get("CPU_HOG_N", "12"))

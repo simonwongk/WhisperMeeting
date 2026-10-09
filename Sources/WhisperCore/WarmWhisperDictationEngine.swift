@@ -202,6 +202,28 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         try await run { try self.ensureRunning() }
     }
 
+    /// F891: one second of silence through the resident helper's own request path (for the Qwen
+    /// helper, exactly the request its startup prewarm makes) — so every weight is read once. Measured 2026-10-09: after 150 s idle
+    /// the first request took 0.70 s instead of 0.32 (the user's worst case 6.9 s, from disk), the
+    /// next 0.32; sent on press-down, that first request is this one, and it overlaps the speech.
+    /// Nothing to do when no helper is running: `ensureRunning` is `warmUp`'s job, and a fresh helper
+    /// is hot. The reply is read and discarded; an error is the caller's to ignore.
+    public func touch() async throws {
+        try await run {
+            guard let process = self.process, process.isRunning else { return }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dictation-touch-\(UUID().uuidString).wav")
+            let silence = [Float](repeating: 0, count: 16_000)
+            try WAVWriter.wavData(from: silence, sampleRate: 16_000).write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let request = DictationRequest(wavPath: url.path, language: nil, initialPrompt: nil)
+            if let stdin = self.stdin {
+                try ThrowingFileHandleIO.write(try DictationWireProtocol.encodeLine(request), to: stdin)
+            }
+            _ = try self.readLine(timeout: 120)
+        }
+    }
+
     public func transcribe(
         wavAt url: URL,
         language: WhisperLanguage,
@@ -634,6 +656,23 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         }
     }
 
+    /// F891: the prime's own tiny request again, on a helper that is already running, so
+    /// the 4B/8B weights come back from the compressor or disk while the user is still speaking.
+    /// Measured 2026-10-09: 2.31 s for the first request after 150 s idle against 0.72 s warm — past
+    /// the 1.4 s budget — the `rawTimeout` three of the user's five slow dictations carried (the other
+    /// two had no resident refiner to ask). Not a warm-up: a
+    /// helper that is not running is left alone.
+    public func touch() async throws {
+        try await run {
+            guard let process = self.process, process.isRunning, let primePrompt = self.primePrompt else { return }
+            let request = RefineRequest(text: "ready", systemPrompt: primePrompt, maxTokens: 1)
+            if let stdin = self.stdin {
+                try ThrowingFileHandleIO.write(try DictationWireProtocol.encodeLine(request), to: stdin)
+            }
+            _ = try self.readLine(timeout: Self.replyTimeout)
+        }
+    }
+
     public func refine(_ request: RefineRequest) async throws -> String {
         try await run {
             try self.ensureRunning()
@@ -840,6 +879,10 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
         try await runner.warmUp()
     }
 
+    public func touch() async throws {
+        try await runner.touch()
+    }
+
     /// Qwen's model is a pinned local snapshot run offline, so this is never called today; it is
     /// forwarded so the shared runner's reports could not go unheard if that changed.
     public func observeModelDownload(_ observer: DictationModelDownloadObserver?) {
@@ -921,6 +964,11 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
             try await fallback.warmUp()
             setChosen(fallback)
         }
+    }
+
+    /// Only a chosen engine can have something resident; before the choice there is nothing to wake.
+    public func touch() async throws {
+        try await currentChoice?.touch()
     }
 
     public func transcribe(

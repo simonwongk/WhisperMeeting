@@ -533,7 +533,10 @@ final class DictationController: ObservableObject {
         // F202: without this, a dictation after idle eviction pays the full subprocess spawn +
         // model load entirely after key release. This overlaps the reload with the user's speaking
         // time, but does not re-arm an idle timer while capture is in progress.
-        startEngineWarmUp(armIdleEviction: false, prewarmRefinerAfter: false)
+        // F891: and a resident model pays its page-in on the same edge, for the same reason — after
+        // minutes idle its weights are in the compressor or on disk, and the first request after that
+        // measured 0.70 s (recognizer) and 2.31 s (refiner) on this Mac, 6.9 s in the user's worst case.
+        startEngineWarmUp(armIdleEviction: false, prewarmRefinerAfter: false, touchAfter: true)
     }
 
     /// If an optional refiner is cold-loading or still completing a timed-out request when the user
@@ -629,7 +632,7 @@ final class DictationController: ObservableObject {
 
     /// Starts only the recognition helper. The optional refiner has a separate warm policy because
     /// its multi-GB load must never race recognition or a meeting model.
-    private func startEngineWarmUp(armIdleEviction: Bool, prewarmRefinerAfter: Bool) {
+    private func startEngineWarmUp(armIdleEviction: Bool, prewarmRefinerAfter: Bool, touchAfter: Bool = false) {
         guard enabled,
               !isMeetingTranscriptionRunning(),
               engineWarmTask == nil else { return }
@@ -658,6 +661,7 @@ final class DictationController: ObservableObject {
                 self.engineWarmTask = nil
                 if prewarmRefinerAfter { self.prewarmRefinerWhenSafe() }
                 if armIdleEviction { self.scheduleIdleEviction() }
+                if touchAfter { await self.touchResidentModels() }
             } catch {
                 guard !Task.isCancelled,
                       self.engineWarmGeneration == generation else { return }
@@ -675,6 +679,21 @@ final class DictationController: ObservableObject {
             }
         }
         engineWarmTask = task
+    }
+
+    /// F891: wakes the resident recognizer, then — only once it is awake, so the two page-ins never
+    /// share the disk — the refiner, if it is resident. The clip's transcription queues behind the
+    /// recognizer's touch on the engine's own serial queue, which is the point: whatever the touch
+    /// pays, the clip would have paid after the release. A failed touch is logged and nothing else.
+    private func touchResidentModels() async {
+        do {
+            try await engine.touch()
+        } catch {
+            log.notice("press-down touch of the recognizer failed: \(DiagnosticsBundleBuilder.publicLogDescription(error), privacy: .public)")
+            return
+        }
+        guard refineEnabled, refinerIsWarm else { return }
+        await refiner.touch()
     }
 
     func warmUpIfNeeded() {

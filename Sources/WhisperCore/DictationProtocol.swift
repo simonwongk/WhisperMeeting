@@ -119,6 +119,10 @@ public struct DictationResult: Sendable, Equatable {
 /// A source of transcripts for quick dictation. Implementations may hold a warm model.
 public protocol DictationEngine: Sendable {
     func warmUp() async throws
+    /// Wakes a resident model with one tiny request, so weights the system compressed or paged out
+    /// while it sat idle come back in now rather than on the user's clip (F891). A no-op when nothing
+    /// is resident: a fresh helper is hot from its own startup pass. Never required to succeed.
+    func touch() async throws
     func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult
     func shutdown()
     /// Temporarily frees a resident model and waits until its child process has exited. Unlike
@@ -175,6 +179,9 @@ public struct DictationModelDownloadProgress: Equatable, Sendable {
 }
 
 public extension DictationEngine {
+    /// Nothing resident to wake: the batch engine, and every fake.
+    func touch() async throws {}
+
     func evict() async {
         shutdown()
     }
@@ -252,6 +259,10 @@ public final class SelectableDictationEngine: DictationEngine, @unchecked Sendab
 
     public func warmUp() async throws {
         try await current.warmUp()
+    }
+
+    public func touch() async throws {
+        try await current.touch()
     }
 
     public func transcribe(
