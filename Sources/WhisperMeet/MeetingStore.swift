@@ -1767,12 +1767,24 @@ final class MeetingStore: ObservableObject {
         // was carrying is in `losing`, so it is offered back below rather than lost with the timer.
         pendingIndexFlush?.cancel()
         pendingIndexFlush = nil
+        // A meeting this window holds and has never saved — a recording it just stopped, an import, a
+        // row a delete had to keep, one the outstanding offer is holding — has its folder on disk
+        // before any index lists it, named by its id. When the other copy's commit is an empty list,
+        // the re-read's wipe check counted that folder as a meeting the index had lost and made the
+        // library read-only, on every launch, over a library that had lost nothing (F909). Every one
+        // of these meetings is put back below and saved, or held for either answer to save, so its
+        // folder is explained by this window and not counted. A folder of a meeting this window HAD
+        // saved still counts: a rival writing `[]` over saved meetings is the 2026-08-14 shape. The
+        // exclusion lives only in this re-read, so a crash before the meeting is saved leaves the
+        // next launch counting the folder again — read-only, a deferral, never a lost recording.
+        let unsavedHere = Set((losing + (outstanding?.unsavedNew ?? [])).map(\.id))
+            .subtracting(lastPersistedMeetings.map(\.id))
         // Clears `writeConflict`/`unsavedChanges` and puts `storageErrorMessage` back to its resting
         // value (F553's unread notice, else nil — F669) as part of the reload, all
         // within this same synchronous call — SwiftUI observes only the state after this function
         // returns, so the generic "could not be saved" alert never flashes on its way to the banner
         // below, which is the one surface this conflict is meant to be resolved from.
-        reloadForConflictRecovery()
+        reloadForConflictRecovery(explaining: unsavedHere)
         // This session's own edits since its last save — a record it never touched, whatever the
         // rival did to it, is excluded here regardless.
         let ownEdits = losing.filter { !(persistedByID[$0.id]?.contains($0) ?? false) }
@@ -3441,8 +3453,11 @@ final class MeetingStore: ObservableObject {
     /// to require in advance is instead offered afterward, from that snapshot. Private since F642,
     /// when the last test that called it bare moved to the offer: a caller with no snapshot would
     /// discard the in-memory edit outright.
-    private func reloadForConflictRecovery() {
-        loadMeetings()
+    ///
+    /// `unsavedHere` names the meetings this window holds and has never saved, whose folders the
+    /// wipe check must not count against an emptied index (F909, see the caller).
+    private func reloadForConflictRecovery(explaining unsavedHere: Set<UUID>) {
+        loadMeetings(explainingFolders: unsavedHere)
         writeConflict = nil
         unsavedChanges = false
         // Not nil (F669): this cleared F553's unread notice off screen until some later save put it
@@ -3585,7 +3600,9 @@ final class MeetingStore: ObservableObject {
         return record
     }
 
-    private func loadMeetings() {
+    /// - Parameter explainingFolders: meetings whose recording folders the wipe check does not count —
+    ///   only a lost race's re-read passes any: this window's own meetings it has not saved yet (F909).
+    private func loadMeetings(explainingFolders unsavedHere: Set<UUID> = []) {
         do {
             guard let result = try meetingFiles.load() else {
                 // No index on disk, as in a fresh library. The next save expects to find none, so
@@ -3628,8 +3645,11 @@ final class MeetingStore: ObservableObject {
             // It is counted anyway, because a COMPLETED import leaves the identical file and nothing
             // else — excluding it would make a wiped library of imports look like a fresh install,
             // which is the failure this check exists to catch.
+            //
+            // A lost race's re-read leaves out the folders of this window's own unsaved meetings
+            // (F909): they are about to be saved, so they are not meetings an index lost.
             if meetings.isEmpty, result.health == .complete {
-                let count = finalizedRecordingFolderCount()
+                let count = finalizedRecordingFolderCount(excluding: unsavedHere)
                 if count > 0 { degrade(to: .suspectEmpty(recordingFolderCount: count)) }
             }
         } catch {
@@ -3645,7 +3665,9 @@ final class MeetingStore: ObservableObject {
     /// `InterruptedRecordingRecovery.finalizedRecording(in:)` is the single definition of "finalized"
     /// and belongs there, not here: the recovery path and this check must agree, or one of them would
     /// treat a folder as a lost meeting while the other treats it as something to rebuild.
-    private func finalizedRecordingFolderCount() -> Int {
+    ///
+    /// `explained` (F909): folders named by these meeting ids are not counted.
+    private func finalizedRecordingFolderCount(excluding explained: Set<UUID> = []) -> Int {
         let recordings = rootDirectory.appendingPathComponent("Recordings", isDirectory: true)
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: recordings,
@@ -3653,8 +3675,8 @@ final class MeetingStore: ObservableObject {
             options: [.skipsHiddenFiles]
         )) ?? []
         return urls.filter {
-            UUID(uuidString: $0.lastPathComponent) != nil
-                && InterruptedRecordingRecovery.finalizedRecording(in: $0) != nil
+            guard let id = UUID(uuidString: $0.lastPathComponent), !explained.contains(id) else { return false }
+            return InterruptedRecordingRecovery.finalizedRecording(in: $0) != nil
         }.count
     }
 
