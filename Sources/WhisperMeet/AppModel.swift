@@ -953,7 +953,28 @@ final class AppModel: ObservableObject {
         guard let available = recordingPreflight.availableStorageBytes else { return nil }
         let needed = Self.importStorageNeeded(forFileSizes: pendingWatchedFiles.map { measureImportSource($0) ?? 0 })
         guard available < needed else { return nil }
-        return "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
+        return Self.watchedFolderSpaceRefusal(for: pendingWatchedFiles, needed: needed)
+    }
+
+    /// What the watched folder says when its waiting batch does not fit in free space (F706).
+    ///
+    /// The check is for the whole batch, so this says how many recordings are waiting and which,
+    /// with the space they need together. It used to be `importOne`'s per-file sentence, "Importing
+    /// this recording needs about …", which with three files waiting said "this recording" and
+    /// gave the figure for all three. And it ends with what happens next: the batch stays queued
+    /// and is imported once it fits, on a later look, with nothing for the user to try again.
+    static func watchedFolderSpaceRefusal(for files: [URL], needed: Int64) -> String {
+        let size = ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)
+        guard files.count > 1 else {
+            let name = files.first?.lastPathComponent ?? "a recording"
+            return "Importing \(name) from your watched folder needs about \(size) free, but less is available. Free some storage and it will be imported."
+        }
+        // Three names at most: the count says how many, and an alert listing a whole download
+        // folder would bury the sentence that matters.
+        let shown = files.prefix(3).map(\.lastPathComponent)
+        let more = files.count - shown.count
+        let names = shown.joined(separator: ", ") + (more > 0 ? " and \(more) more" : "")
+        return "Importing \(files.count) recordings from your watched folder (\(names)) needs about \(size) free, but less is available. Free some storage and they will be imported."
     }
 
     /// Above this, a link download asks for explicit confirmation before starting.
