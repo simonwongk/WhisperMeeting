@@ -268,6 +268,11 @@ struct RecordingMenu: View {
         if dictation.isDownloadingModel {
             Text(dictation.modelDownloadMenuText)
         }
+        // F687: the pill says "Dictation failed" for 1.6 s and not why. The reason stays here, under
+        // the toggle, until a later dictation ends without failing or Quick Dictation is turned off.
+        if let failure = dictation.lastFailureMenuText {
+            Text(failure)
+        }
         Divider()
         SettingsLink { Text("Settings…") }
         Button("Quit WhisperMeet") { NSApplication.shared.terminate(nil) }

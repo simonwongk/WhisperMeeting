@@ -44,6 +44,14 @@ final class DictationController: ObservableObject {
     /// How far that download has got (F859), when the engine can say; nil before its first figure,
     /// for an engine that sends none, and whenever no download is running.
     @Published private(set) var modelDownloadProgress: DictationModelDownloadProgress?
+    /// Why the last dictation failed (F687), for the menu-bar menu. The pill says only "Dictation
+    /// failed" and is gone after 1.6 s; VoiceOver hears the reason (F537), but a sighted user found
+    /// it only in the Dictation tab's history, a window away. Kept until a later dictation ends
+    /// without failing — delivered, or nothing heard — or Quick Dictation is switched off; a press
+    /// that dictates nothing (refused, a shortcut, too short a tap) leaves it. Not `status`, which
+    /// goes back to idle with the pill: in the menu bar its error icon means a trigger that cannot
+    /// be armed, not one dictation that failed.
+    @Published private(set) var lastFailureReason: String?
     @Published var enabled: Bool { didSet { persist(); apply() } }
     @Published var hotkey: DictationHotkey {
         didSet {
@@ -997,6 +1005,7 @@ final class DictationController: ObservableObject {
             // optional helper has finished terminating.
             beginRefinerRelease()
             status = .disabled
+            lastFailureReason = nil // the menu bar names no failure for a feature that is off (F687)
             log.notice("dictation disabled")
         }
     }
@@ -1345,6 +1354,7 @@ final class DictationController: ObservableObject {
             _ = session.handle(.dismiss)
             status = settledStatus
             scheduleIdleEviction()
+            lastFailureReason = nil // nothing heard is not a failure (F687)
             showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.2)
@@ -1541,6 +1551,7 @@ final class DictationController: ObservableObject {
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
             status = .delivering
+            lastFailureReason = nil // the last dictation is this one, and it did not fail (F687)
             let delivery = textInjector.deliver(payload, autoPaste: autoPaste, pressedIn: pressTarget)
             _ = session.handle(.delivered)
             switch delivery {
@@ -1570,6 +1581,7 @@ final class DictationController: ObservableObject {
                 scheduleDismiss(after: 1.1)
             }
         case .none where session.state == .failed(.emptyTranscript):
+            lastFailureReason = nil // nothing heard is not a failure (F687)
             showPhase(.empty)
             logStore.record(text: "", outcome: .empty)
             scheduleDismiss(after: 1.3)
@@ -1655,6 +1667,28 @@ final class DictationController: ObservableObject {
         return "Selected model downloading… \(progress.percent) %"
     }
 
+    /// The menu-bar menu's line for the last failure (F687): the reason's first line, cut at a word
+    /// to at most `limit` characters. A menu item is one line as wide as its text, and a reason can
+    /// be far wider than a menu should be: a helper's failure carries up to 2,000 characters of its
+    /// stderr after the first line (`WarmWhisperDictationEngine`), and the helper's download errors
+    /// can quote a URL. 200 keeps the dictation path's longest fixed failure sentence whole: the
+    /// download stall's, 171 characters at 180 s. The whole reason stays in the Dictation tab's
+    /// history.
+    nonisolated static func lastFailureMenuLine(reason: String, limit: Int = 200) -> String {
+        let firstLine = reason.split(whereSeparator: \.isNewline).first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard !firstLine.isEmpty else { return "Last dictation failed" }
+        guard firstLine.count > limit else { return "Last dictation failed: \(firstLine)" }
+        let head = firstLine.prefix(max(limit - 1, 1))
+        let endsAtWord = head.endIndex < firstLine.endIndex && firstLine[head.endIndex].isWhitespace
+        let kept = endsAtWord ? head : head.lastIndex(where: \.isWhitespace).map { head[..<$0] } ?? head
+        let shown = kept.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".,;:")))
+        return "Last dictation failed: \(shown)…"
+    }
+
+    /// What the menu-bar menu shows under Quick Dictation, while the last dictation is one that failed.
+    var lastFailureMenuText: String? { lastFailureReason.map { Self.lastFailureMenuLine(reason: $0) } }
+
     var modelDownloadNoticeText: String { Self.modelDownloadNotice(progress: modelDownloadProgress) }
     var modelDownloadMenuText: String { Self.modelDownloadMenuLine(progress: modelDownloadProgress) }
     var modelDownloadRowText: String { Self.modelDownloadRowLabel(progress: modelDownloadProgress) }
@@ -1719,6 +1753,7 @@ final class DictationController: ObservableObject {
 
     private func fail(_ message: String) {
         status = .error(message)
+        lastFailureReason = message
         showPhase(.error, detail: message)
         logStore.record(text: "", outcome: .failed(message))
         scheduleDismiss(after: 1.6)
