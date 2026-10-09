@@ -58,6 +58,36 @@ public enum MeetingStoragePlan {
         ["meeting.m4a", "meeting-recovered.m4a"].contains(name.lowercased())
     }
 
+    /// Whether the recording's container can hold more than one audio track, so its tracks are
+    /// counted before it is shrunk (F801). An import keeps the container it came in, and a movie or
+    /// MPEG-4 file can carry a track per side of a call. A capture's recording is the app's own mono
+    /// WAV, or Shrink's one-track `.m4a`.
+    public static func mayHoldSeveralAudioTracks(_ recordingName: String) -> Bool {
+        URL(fileURLWithPath: recordingName).deletingPathExtension().lastPathComponent == "recording"
+    }
+
+    /// Below this RMS level (about -80 dBFS) a recording counts as silence for `levelsAgree`: there is
+    /// no sound to lose, and a ratio against it means nothing.
+    public static let silenceLevel = 0.000_1
+
+    /// How far a compressed copy's level may be from its original's, as a ratio (F801). Measured
+    /// through Shrink's own two-step encode on this Mac: ten speech clips 0.993-0.997, tones and
+    /// stereo calls 0.999-1.001, white noise 0.537 — the working WAV is 16 kHz, so whatever lies above
+    /// 8 kHz is gone, which broadband noise has most of — and a silent encode 0. A quarter clears the
+    /// noise with room to spare and still refuses a copy 12 dB quieter; four times is the same margin
+    /// the other way, for a copy that came out as something other than the recording.
+    public static let levelRatioBand: ClosedRange<Double> = 0.25...4
+
+    /// Whether a compressed copy carries the recording's sound (F801). Its length alone did not show
+    /// it: an encode that came out silent has the right length. Both levels are RMS of the mono mix,
+    /// decoded the same way. A silent original agrees with anything; a level that is not a finite,
+    /// non-negative number agrees with nothing.
+    public static func levelsAgree(original: Double, compressed: Double) -> Bool {
+        guard original.isFinite, compressed.isFinite, original >= 0, compressed >= 0 else { return false }
+        guard original >= silenceLevel else { return true }
+        return levelRatioBand.contains(compressed / original)
+    }
+
     /// The files Shrink removes, in the order it removes them. Only names on this list are ever removed.
     ///
     /// The order is what keeps a folder from looking damaged if the app stops partway (design, step 7):
@@ -135,9 +165,13 @@ public enum MeetingStoragePlan {
         /// The recording's decoded length when it could be read, else the index's duration.
         public var durationSeconds: TimeInterval
         public var entries: [FolderEntry]
+        /// How many audio tracks the recording's container holds, when they were counted — only for
+        /// a recording that `mayHoldSeveralAudioTracks` (F801). Nil when not counted or not readable.
+        public var audioTrackCount: Int?
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
-                    rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry]) {
+                    rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
+                    audioTrackCount: Int? = nil) {
             self.recordingName = recordingName
             self.recordingExists = recordingExists
             self.inOwnFolder = inOwnFolder
@@ -145,6 +179,7 @@ public enum MeetingStoragePlan {
             self.rebuildOffered = rebuildOffered
             self.durationSeconds = durationSeconds
             self.entries = entries
+            self.audioTrackCount = audioTrackCount
         }
     }
 
@@ -163,6 +198,8 @@ public enum MeetingStoragePlan {
         case unsupportedRecording
         case recordingMissing
         case damaged(rebuildOffered: Bool)
+        /// The container holds more than one audio track, and the encode keeps only the first (F801).
+        case multipleAudioTracks(count: Int)
         case cannotMeasureLength
         case alreadyShrunk
         case nothingToGain
@@ -183,6 +220,9 @@ public enum MeetingStoragePlan {
                 return "This recording is incomplete. Use Rebuild Audio first: shrinking now would keep the damage and delete the raw tracks that can repair it."
             case .damaged(rebuildOffered: false):
                 return "Verify Library reports a problem with this recording, so it isn't shrunk: the damage would be kept and the original deleted."
+            case let .multipleAudioTracks(count):
+                let others = count == 2 ? "The other track" : "The other \(count - 1) tracks"
+                return "This recording has \(count) audio tracks, and a shrunk copy keeps only the first. \(others) would be deleted with the original, so it isn't shrunk."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
             case .alreadyShrunk:
@@ -219,6 +259,9 @@ public enum MeetingStoragePlan {
             if disk.hasIntegrityProblem || disk.rebuildOffered {
                 return .damaged(rebuildOffered: disk.rebuildOffered)
             }
+            // F801: a track the shrunk copy cannot hold is never deleted with the original. Refused,
+            // not warned about, because the loss is permanent and the confirmation is one click.
+            if let tracks = disk.audioTrackCount, tracks > 1 { return .multipleAudioTracks(count: tracks) }
             guard disk.durationSeconds.isFinite, disk.durationSeconds > 0 else { return .cannotMeasureLength }
             let reclaim = reclaimableBytes(in: disk.entries, recordingName: disk.recordingName, outputName: output)
             let predicted = predictedOutputBytes(durationSeconds: disk.durationSeconds)

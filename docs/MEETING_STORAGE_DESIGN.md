@@ -104,6 +104,9 @@ verified and the index saved.
    - Decode the **whole** `.m4a` with `AVAudioFile` and count its frames.
    - Its duration must match the original's within 0.5 s. The original's duration comes from the WAV header, or from
      `AVAudioFile` for a non-WAV import.
+   - Its level must match the original's (F801): the RMS of its decoded audio must be between a quarter of and four
+     times the RMS of the original, decoded the same way and mixed to mono. A copy that came out silent has the right
+     length and fails here. A silent original is not compared.
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.
@@ -159,6 +162,10 @@ re-made when the action runs. The reasons, in the order a person can act on them
 - **The recording is damaged.** Verify Library has a finding for it, or `SourceRebuild.offer` would offer a rebuild.
   The message is "Rebuild Audio first". Shrinking would lock the damage in and delete the tracks that can repair it.
 - **The recording file is missing.**
+- **The recording has more than one audio track** (F801). An import keeps the container it came in, and a movie or
+  MPEG-4 file can carry a track per side of a call. afconvert decodes only the first audio track, so the shrunk copy
+  would keep track 1 and the rest would be deleted with the original. The message says how many tracks would be lost.
+  See the 2026-10-09 amendment below.
 - **Nothing to gain.** This is step 5's rule, *E* > 0.75 × *R*. Before encoding, *E* is predicted as the record's
   duration × 4,100 B/s. The measured *E* at step 5 is the authority. This is how an already shrunk `recording.m4a`
   import is refused without encoding it again: its stem cannot show that it was shrunk, but its size can.
@@ -318,3 +325,20 @@ approved the original text and has not yet reviewed these changes.
   committed.
 - **Only top-level files are ever deleted.** A nested `sub/recording.txt` is never on the list.
 - **The library total counts only meetings still in the index.**
+
+## Amendment for F801 (2026-10-09)
+
+The final review found that step 4 checked only the length, so two losses could pass it. I changed the design as
+follows; the user has not reviewed this yet.
+
+- **The compressed copy's level is compared with the original's.** An encode that comes out silent has the right
+  length. Both are decoded in full with `AVAudioFile` and mixed to mono, and the copy's RMS must be between a quarter
+  of and four times the original's. Measured through Shrink's own encode on synthetic audio and the bench clips: speech
+  0.993-0.997 of the original, tones and stereo calls 0.999-1.001, white noise 0.537 (the 16 kHz working WAV drops
+  everything above 8 kHz), and a silent encode 0. An original below about -80 dBFS is silence and is not compared.
+- **A recording with more than one audio track is not shrunk.** afconvert, which the encode runs, decodes only the
+  first audio track of a container, as do `AVAudioFile` and (measured on a two-track `.mov`) Whisper's ffmpeg decode.
+  Shrinking such an import would keep track 1 and delete the others with the original. I chose to refuse, with a
+  reason that says how many tracks would be lost, over warning in the confirmation (a permanent loss one click away)
+  and over mixing the tracks into one (new work). Mixing is the option that loses nothing; it is a decision for the
+  user, not taken here.

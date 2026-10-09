@@ -188,7 +188,7 @@ extension AppModel {
             let token = UUID().uuidString
             let tempM4A = folder.appendingPathComponent(".shrink-\(token).m4a")
             let tempWAV = folder.appendingPathComponent(".shrink-\(token).wav")
-            let encode = encodeForShrink, decode = decodedDurationForShrink, free = availableBytesForShrink
+            let encode = encodeForShrink, decode = decodeForShrink, free = availableBytesForShrink
             let flush = flushForShrink
             let expected = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
@@ -202,9 +202,17 @@ extension AppModel {
                         throw ShrinkFailure.insufficientSpace(needed: needed, available: available)
                     }
                     try encode(recordingURL, tempM4A, tempWAV)
-                    let decoded = try decode(tempM4A)
-                    guard abs(decoded - expected) <= 0.5 else {
-                        throw ShrinkFailure.lengthMismatch(expected: expected, decoded: decoded)
+                    let copy: DecodedAudio.Decoded
+                    do { copy = try decode(tempM4A) } catch { throw ShrinkFailure.unreadableCopy }
+                    guard abs(copy.duration - expected) <= 0.5 else {
+                        throw ShrinkFailure.lengthMismatch(expected: expected, decoded: copy.duration)
+                    }
+                    // The right length is not the right audio: a copy that came out silent has it too
+                    // (F801). The original is decoded the same way, and the two levels must agree.
+                    let original: Double
+                    do { original = try decode(recordingURL).level } catch { throw ShrinkFailure.unreadableOriginal }
+                    guard MeetingStoragePlan.levelsAgree(original: original, compressed: copy.level) else {
+                        throw ShrinkFailure.levelMismatch(original: original, compressed: copy.level)
                     }
                     // On stable storage before anything is committed or removed (final review).
                     try flush(tempM4A)
@@ -290,6 +298,12 @@ extension AppModel {
     enum ShrinkFailure: LocalizedError {
         case insufficientSpace(needed: Int64, available: Int64)
         case lengthMismatch(expected: TimeInterval, decoded: TimeInterval)
+        /// The copy's level is not the original's (F801).
+        case levelMismatch(original: Double, compressed: Double)
+        /// Said in Shrink's own words, so a decoder's raw error ("The operation couldn't be completed.
+        /// (com.apple.coreaudio.avfaudio error …)") is not the sentence the user reads (F801).
+        case unreadableCopy
+        case unreadableOriginal
         var errorDescription: String? {
             let size = { (b: Int64) in ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
             switch self {
@@ -297,6 +311,17 @@ extension AppModel {
                 return "Shrinking needs about \(size(needed)) free while it works, and \(size(available)) is available."
             case let .lengthMismatch(expected, decoded):
                 return "The compressed copy was \(TranscriptFormatter.clock(decoded)) long instead of \(TranscriptFormatter.clock(expected)), so it was discarded."
+            case let .levelMismatch(original, compressed):
+                guard original.isFinite, compressed.isFinite else {
+                    return "The compressed copy's sound could not be checked against the recording's, so it was discarded."
+                }
+                return compressed < original
+                    ? "The compressed copy came out silent or much quieter than the recording, so it was discarded."
+                    : "The compressed copy came out much louder than the recording, so it was discarded."
+            case .unreadableCopy:
+                return "The compressed copy could not be read back, so it was discarded."
+            case .unreadableOriginal:
+                return "The recording could not be read to check the compressed copy against it, so the copy was discarded."
             }
         }
     }
@@ -321,10 +346,14 @@ extension AppModel {
         let folder = store.ownRecordingFolder(of: meeting)
         let descriptor = integrityDescriptorForShrink(meeting)
         let entries = storageEntries, declared = declaredDurationForShrink
+        let countTracks = audioTrackCountForShrink
         let indexDuration = meeting.duration
         return await Task.detached(priority: .utility) {
             let name = recordingURL.lastPathComponent
             let exists = FileManager.default.fileExists(atPath: recordingURL.path)
+            // Only an import's container can hold more than one audio track (F801).
+            let tracks = exists && MeetingStoragePlan.mayHoldSeveralAudioTracks(name)
+                ? await countTracks(recordingURL) : nil
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
             let length = declared(recordingURL) ?? (indexDuration > 0 ? indexDuration : 0)
@@ -338,7 +367,7 @@ extension AppModel {
                 inOwnFolder: folder != nil && recordingURL.deletingLastPathComponent().standardizedFileURL.path
                     == folder?.standardizedFileURL.path,
                 hasIntegrityProblem: problem, rebuildOffered: rebuild,
-                durationSeconds: length, entries: folder.map(entries) ?? [])
+                durationSeconds: length, entries: folder.map(entries) ?? [], audioTrackCount: tracks)
         }.value
     }
 }

@@ -107,7 +107,7 @@ func deleteDuringShrinkIsRefused() async throws {
         guard gate.block(until: { $0.isReleased }) else { Issue.record("the encode was never let go"); return }
         try Data(count: 15_000).write(to: output)
     }
-    model.decodedDurationForShrink = { _ in 60 }
+    model.decodeForShrink = { _ in DecodedAudio.Decoded(duration: 60, level: 0.1) }
     model.declaredDurationForShrink = { _ in 60 }
     model.availableBytesForShrink = { _ in .max }
     removeInTwoHalves(model.store, letting: gate)

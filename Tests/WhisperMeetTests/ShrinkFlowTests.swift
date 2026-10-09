@@ -40,9 +40,10 @@ private struct Fixture {
             id: id, title: "Weekly sync", duration: duration,
             recordingPath: recordingPath ?? "Recordings/\(id.uuidString)/\(recordingName)",
             status: .completed, transcriptText: "Hi."))
-        // Seams: a fake encode writes a small file; lengths agree unless a test says otherwise.
+        // Seams: a fake encode writes a small file; lengths and levels (F801) agree unless a test says
+        // otherwise. The one decode seam answers for the copy and the original alike.
         model.encodeForShrink = { _, output, _ in try Data(count: 15_000).write(to: output) }
-        model.decodedDurationForShrink = { _ in wavSeconds }
+        model.decodeForShrink = { _ in DecodedAudio.Decoded(duration: wavSeconds, level: 0.1) }
         model.declaredDurationForShrink = { _ in wavSeconds }
         model.availableBytesForShrink = { _ in .max }
     }
@@ -152,7 +153,7 @@ func shrinkVerificationFailureChangesNothing() async throws {
     for mode in ["mismatch", "throws"] {
         let f = try Fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         if mode == "mismatch" {
-            f.model.decodedDurationForShrink = { _ in 1_800 }
+            f.model.decodeForShrink = { _ in DecodedAudio.Decoded(duration: 1_800, level: 0.1) }
         } else {
             f.model.encodeForShrink = { _, _, _ in throw AudioTranscoderError.transcodeFailed("boom") }
         }

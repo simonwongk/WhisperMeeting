@@ -613,7 +613,11 @@ final class AppModel: ObservableObject {
     var encodeForShrink: @Sendable (_ input: URL, _ output: URL, _ workingWAV: URL) throws -> Void = {
         try AudioCompressor.compressSpeech(input: $0, output: $1, workingWAV: $2)
     }
-    var decodedDurationForShrink: @Sendable (URL) throws -> TimeInterval = { try DecodedAudio.fullyDecodedDuration(of: $0) }
+    /// Decodes every packet of a file for Shrink's checks: the compressed copy's length and level, and
+    /// the original's level to compare it with (F795, F801).
+    var decodeForShrink: @Sendable (URL) throws -> DecodedAudio.Decoded = { try DecodedAudio.fullyDecoded(of: $0) }
+    /// How many audio tracks an import's container holds, or nil when it cannot be read (F801).
+    var audioTrackCountForShrink: @Sendable (URL) async -> Int? = { await DecodedAudio.audioTrackCount(of: $0) }
     var declaredDurationForShrink: @Sendable (URL) -> TimeInterval? = { DecodedAudio.declaredDuration(of: $0) }
     var storageEntries: @Sendable (URL) -> [MeetingStoragePlan.FolderEntry] = { MeetingStorageMeter.entries(in: $0) }
     var availableBytesForShrink: @Sendable (URL) -> Int64? = { url in

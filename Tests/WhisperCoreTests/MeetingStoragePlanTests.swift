@@ -167,3 +167,64 @@ func shrinkRefusesDuringARestore() {
     #expect(MeetingStoragePlan.unavailability(disk: disk(), live: live) == .libraryRestoring)
     #expect(MeetingStoragePlan.Unavailability.libraryRestoring.message.contains("restore"))
 }
+
+// MARK: - F801: a container with several audio tracks, and a copy whose level is wrong
+
+@Test("An import with several audio tracks is refused, saying how many would be lost (F801)")
+func shrinkRefusesSeveralAudioTracks() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    var two = disk("recording.mov", entries: [Entry(name: "recording.mov", bytes: 900_000_000)])
+    two.audioTrackCount = 2
+    #expect(MeetingStoragePlan.unavailability(disk: two, live: idle) == .multipleAudioTracks(count: 2))
+    var three = two
+    three.audioTrackCount = 3
+    #expect(MeetingStoragePlan.unavailability(disk: three, live: idle) == .multipleAudioTracks(count: 3))
+    // One track, or a count nobody could read, is judged by the other rules as before.
+    var one = two
+    one.audioTrackCount = 1
+    #expect(MeetingStoragePlan.unavailability(disk: one, live: idle) == nil)
+    var unread = two
+    unread.audioTrackCount = nil
+    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle) == nil)
+    // Damage is still said first: Rebuild Audio is the step that comes before anything else.
+    var damaged = two
+    damaged.hasIntegrityProblem = true
+    #expect(MeetingStoragePlan.unavailability(disk: damaged, live: idle) == .damaged(rebuildOffered: false))
+    // Finishing an interrupted shrink encodes nothing, so the tracks are not its question.
+    var resume = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
+                                                 Entry(name: "recording.mov", bytes: 900_000_000)])
+    resume.audioTrackCount = 2
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
+    #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 2).message
+        .contains("2 audio tracks, and a shrunk copy keeps only the first. The other track would be deleted"))
+    #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 3).message.contains("The other 2 tracks"))
+}
+
+@Test("Only an import's container is asked how many audio tracks it holds (F801)")
+func shrinkCountsTracksOnlyForAnImport() {
+    #expect(MeetingStoragePlan.mayHoldSeveralAudioTracks("recording.mov"))
+    #expect(MeetingStoragePlan.mayHoldSeveralAudioTracks("recording.m4a"))
+    #expect(MeetingStoragePlan.mayHoldSeveralAudioTracks("recording.wav"))
+    #expect(!MeetingStoragePlan.mayHoldSeveralAudioTracks("meeting.wav"))
+    #expect(!MeetingStoragePlan.mayHoldSeveralAudioTracks("meeting-recovered.wav"))
+    #expect(!MeetingStoragePlan.mayHoldSeveralAudioTracks("meeting.m4a"))
+}
+
+@Test("A compressed copy must carry the recording's level: silence, and a copy far off either way, are refused (F801)")
+func shrinkLevelsMustAgree() {
+    // Measured through Shrink's own encode: speech 0.993-0.997 of the original, white noise 0.537.
+    #expect(MeetingStoragePlan.levelsAgree(original: 0.18005, compressed: 0.17944))
+    #expect(MeetingStoragePlan.levelsAgree(original: 0.17303, compressed: 0.09285),
+            "broadband noise loses what lies above 8 kHz, and that is not a wrong encode")
+    #expect(!MeetingStoragePlan.levelsAgree(original: 0.21211, compressed: 0), "a silent encode")
+    #expect(!MeetingStoragePlan.levelsAgree(original: 0.2, compressed: 0.049), "more than 12 dB quieter")
+    #expect(MeetingStoragePlan.levelsAgree(original: 0.2, compressed: 0.05), "the band's lower edge is inside it")
+    #expect(!MeetingStoragePlan.levelsAgree(original: 0.1, compressed: 0.41), "more than four times louder")
+    // A silent recording has no sound to lose, so there is nothing to compare.
+    #expect(MeetingStoragePlan.levelsAgree(original: 0, compressed: 0))
+    #expect(MeetingStoragePlan.levelsAgree(original: 0.000_05, compressed: 0.3))
+    // A level that is not a finite, non-negative number agrees with nothing.
+    #expect(!MeetingStoragePlan.levelsAgree(original: .nan, compressed: 0.2))
+    #expect(!MeetingStoragePlan.levelsAgree(original: 0.2, compressed: .infinity))
+    #expect(!MeetingStoragePlan.levelsAgree(original: -0.2, compressed: 0.2))
+}
