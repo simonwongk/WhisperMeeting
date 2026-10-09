@@ -845,6 +845,23 @@ final class AppModel: ObservableObject {
         guard watchedFolderDelivery == nil, !pendingWatchedFiles.isEmpty, recordingState == .idle,
               !isImporting, !isPreflightTestActive, !isInstallingRecognitionRuntime,
               watchedFolderProblem == nil else { return }
+        // A waiting file the user deleted, or moved out of the folder, is forgotten, silently (F709).
+        // "No such file" is transient to the copy (F554), because a file on a share that dropped
+        // reads that way and is back with the share; a deleted one never is, so it failed every try
+        // and ended in "not imported after 3 tries", whose next step had nothing to import. The
+        // folder was listed on this very look (the guard above), and the file's own folder is still
+        // there, so the file is gone rather than out of reach. A file whose folder has gone too is
+        // kept: a volume unmounted since the listing looks exactly like that.
+        let gone = pendingWatchedFiles.filter(Self.wasRemovedFromItsFolder)
+        if !gone.isEmpty {
+            let gonePaths = Set(gone.map(\.path))
+            pendingWatchedFiles.removeAll { gonePaths.contains($0.path) }
+            for path in gonePaths {
+                watchedFolderCopyAttempts[path] = nil
+                announcedWatchedFiles.remove(path)
+            }
+            guard !pendingWatchedFiles.isEmpty else { return }
+        }
         // A degraded library or insufficient storage refuses every file in the batch the same way
         // `importOne` would, but checking here — before the notification and the attempt — is what
         // lets a persisting cause be held silently instead of repeating both every three seconds
@@ -889,6 +906,17 @@ final class AppModel: ObservableObject {
             self.pendingWatchedFiles.insert(contentsOf: self.countingCopyFailures(in: batch, outcome: outcome), at: 0)
             self.watchedFolderDelivery = nil
         }
+    }
+
+    /// Whether `url` was deleted or moved away: no file is at its path while the folder it was in is
+    /// still there (F709). Two `stat`s per waiting file per delivery, on the main actor — where the
+    /// batch's free-space check after it already reads each waiting file's attributes.
+    nonisolated static func wasRemovedFromItsFolder(_ url: URL) -> Bool {
+        let manager = FileManager.default
+        guard !manager.fileExists(atPath: url.path) else { return false }
+        var isDirectory: ObjCBool = false
+        return manager.fileExists(atPath: url.deletingLastPathComponent().path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     /// The files of `batch` to put back on the queue, having counted the failed copies among them
