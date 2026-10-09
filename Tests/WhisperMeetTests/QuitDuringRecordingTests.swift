@@ -70,18 +70,17 @@ private func startRecordingWithTracks(_ model: AppModel) async throws -> UUID {
     return id
 }
 
-/// The lifecycle exactly as `WhisperMeetApp.init()` wires it, with the question answered by `answer`.
+/// The lifecycle wired by the app's own `wireQuitDuringRecording`, which `WhisperMeetApp.init()`
+/// calls, with the question answered by `answer`. Not a copy of the wiring (F810): a copy kept these
+/// tests green with the app's `isRecordingFinishing` set back to the predicate F672 replaced.
 @MainActor
 private func makeLifecycle(for model: AppModel, answer: @escaping () -> AppLifecycle.QuitDuringRecordingChoice) -> (AppLifecycle, asked: Locked<Int>) {
     let asked = Locked(0)
     let lifecycle = AppLifecycle()
-    lifecycle.isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
-    lifecycle.isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
-    lifecycle.confirmQuitDuringRecording = {
+    lifecycle.wireQuitDuringRecording(to: model) {
         asked.withLock { $0 += 1 }
         return answer()
     }
-    lifecycle.onStopRecordingForQuit = { [weak model] in await model?.stopRecordingBeforeQuit() ?? true }
     return (lifecycle, asked)
 }
 
@@ -396,18 +395,38 @@ func theDelegateAndTheAppWireTheQuitDecision() throws {
     let initStart = try #require(entry.range(of: "struct WhisperMeetApp: App {"))
     let bodyStart = try #require(entry.range(of: "var body: some Scene {"))
     let initRegion = entry[initStart.upperBound..<bodyStart.lowerBound]
-    for needle in [
-        "lifecycle.isRecordingLive =",
-        "lifecycle.confirmQuitDuringRecording =",
-        "lifecycle.onStopRecordingForQuit =",
-        "lifecycle.isRecordingFinishing =",
-        "model?.stopRecordingBeforeQuit()",
-        "QuitDuringRecordingAlert.ask()",
-    ] {
+    // F810: init wires the decision through the function the behaviour tests above call, so what
+    // they drive is the app's wiring and not a copy of it.
+    for needle in ["lifecycle.wireQuitDuringRecording(to: model)", "QuitDuringRecordingAlert.ask()"] {
         #expect(initRegion.contains(needle), "expected `\(needle)` in WhisperMeetApp.init(), before `body`")
     }
     // The menu bar's Quit must go through AppKit's terminate, which is what reaches the delegate.
     #expect(entry.contains("Button(\"Quit WhisperMeet\") { NSApplication.shared.terminate(nil) }"))
+}
+
+@Test("The quit decision's four inputs are assigned in one place only, the function the tests call (F810)")
+func theQuitInputsHaveOneWiring() throws {
+    // A second assignment anywhere, in init after the call or in any other file, would replace the
+    // wiring the behaviour tests check without failing one of them: M6's shape again.
+    var assignments: [String: [String]] = [:]
+    for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
+        let components = url.pathComponents
+        let relative = components[(components.lastIndex(of: "Sources") ?? components.startIndex)...].joined(separator: "/")
+        let code = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8), blankStringLiterals: true)
+        for input in ["isRecordingLive", "isRecordingFinishing", "confirmQuitDuringRecording", "onStopRecordingForQuit"] {
+            let pattern = #"\b"# + input + #"\s*=(?!=)"#
+            let count = (try NSRegularExpression(pattern: pattern))
+                .numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code))
+            if count > 0 { assignments[input, default: []] += Array(repeating: relative, count: count) }
+        }
+    }
+    for input in ["isRecordingLive", "isRecordingFinishing", "confirmQuitDuringRecording", "onStopRecordingForQuit"] {
+        #expect(assignments[input] == ["Sources/WhisperMeet/AppEntry.swift"], "\(input): \(assignments[input] ?? [])")
+    }
+    let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
+    let wiring = try #require(entry.range(of: "func wireQuitDuringRecording("))
+    #expect(entry[wiring.upperBound...].prefix(900).contains("isRecordingFinishing = {"),
+            "the one assignment is the wiring function's")
 }
 
 /// A Sendable box, since the handlers are closures.

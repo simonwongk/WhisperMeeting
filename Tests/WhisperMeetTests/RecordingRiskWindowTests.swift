@@ -43,8 +43,10 @@ private func snapshot(_ warnings: [RecordingHealthWarning]) -> RecordingHealthSn
 // The window arrangements the tests use (F674: facts, not a verdict, so the verdict is tested too).
 private let libraryWindow = WindowlessAlert.WindowFacts(isLibraryWindow: true, isReadable: true, isKey: false)
 private let keyLibraryWindow = WindowlessAlert.WindowFacts(isLibraryWindow: true, isReadable: true, isKey: true)
+// Settings and Keyboard Shortcuts are the same facts, since the decision reads only whether a window
+// shows the library (F810: a loop over the two used to test one case twice).
 private let keySettingsWindow = WindowlessAlert.WindowFacts(isLibraryWindow: false, isReadable: true, isKey: true)
-private let keyShortcutsWindow = WindowlessAlert.WindowFacts(isLibraryWindow: false, isReadable: true, isKey: true)
+private let shortcutsWindow = WindowlessAlert.WindowFacts(isLibraryWindow: false, isReadable: true, isKey: false)
 
 @MainActor
 @Test("An at-risk warning reaches a user whose WhisperMeet window is behind another app, once (F528)")
@@ -139,10 +141,11 @@ func ordinaryMessagesAreNotPostedBehindOtherApps() throws {
 @MainActor
 @Test("With only Settings or Keyboard Shortcuts open, an at-risk warning is posted — no window can show it (F674)")
 func atRiskWithOnlyAnAuxiliaryWindowIsPosted() throws {
-    for (label, only) in [("settings", keySettingsWindow), ("shortcuts", keyShortcutsWindow)] {
+    // Two arrangements that differ: one auxiliary window open and key, or both open with one key.
+    for (label, windows) in [("one", [keySettingsWindow]), ("both", [keySettingsWindow, shortcutsWindow])] {
         let (model, root, posts) = try makeModel("aux-\(label)")
         defer { try? FileManager.default.removeItem(at: root) }
-        model.windowFacts = { ([only], true) }
+        model.windowFacts = { (windows, true) }
         model.setRecordingStateForTesting(.recording(startedAt: Date()))
         let dying = snapshot([.microphoneCaptureStopped])
         model.setRecordingHealthForTesting(dying)

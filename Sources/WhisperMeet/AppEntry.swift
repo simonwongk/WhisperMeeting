@@ -91,15 +91,9 @@ struct WhisperMeetApp: App {
             let what = urls.count == 1 ? urls[0].lastPathComponent : "those files"
             model?.report("WhisperMeet can only transcribe audio and video: \(what) was not imported.")
         }
-        // F529: a quit during a live recording asks first, and Stop & Quit saves the meeting through
-        // the ordinary stop before the process ends.
-        lifecycle.isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
-        // F672: and a stop already saving it is waited for rather than killed.
-        lifecycle.isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
-        lifecycle.confirmQuitDuringRecording = { QuitDuringRecordingAlert.ask() }
-        lifecycle.onStopRecordingForQuit = { [weak model] in
-            await model?.stopRecordingBeforeQuit() ?? true
-        }
+        // F529, F672: what a quit does about a recording, through the one function the quit tests
+        // call too (F810).
+        lifecycle.wireQuitDuringRecording(to: model) { QuitDuringRecordingAlert.ask() }
         AppLifecycleDelegate.lifecycle = lifecycle
         AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
         lifecycle.begin()
@@ -210,6 +204,29 @@ struct WhisperMeetApp: App {
         case .transcribing, .delivering: return "waveform"
         case .error: return "mic.slash"
         default: return "mic"
+        }
+    }
+}
+
+extension AppLifecycle {
+    /// Connects the quit decision to the recording (F529, F672): what `WhisperMeetApp.init()` wires,
+    /// in one function the quit tests call as well.
+    ///
+    /// Those tests used to build their own copy of these closures, so setting the app's
+    /// `isRecordingFinishing` back to the predicate F672 replaced left every one of them green: the
+    /// round-2 review's mutation M6 (F810). Calling this, they test the app's own wiring.
+    func wireQuitDuringRecording(
+        to model: AppModel,
+        ask: @escaping () -> QuitDuringRecordingChoice
+    ) {
+        // F529: a quit during a live recording asks first, and Stop & Quit saves the meeting through
+        // the ordinary stop before the process ends.
+        isRecordingLive = { [weak model] in model?.recordingState.isLive ?? false }
+        // F672: and a stop already saving it is waited for rather than killed.
+        isRecordingFinishing = { [weak model] in model?.recordingState == .stopping }
+        confirmQuitDuringRecording = ask
+        onStopRecordingForQuit = { [weak model] in
+            await model?.stopRecordingBeforeQuit() ?? true
         }
     }
 }

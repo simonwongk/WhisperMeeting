@@ -486,8 +486,10 @@ final class AppModel: ObservableObject {
     /// showing notes or Settings. Now: a library window in front (F674) shows
     /// `recordingRiskBannerLine` on every pane, and anything else gets the notification. Never
     /// twice: the banner is live state rather than a post, and the announcer still says each problem
-    /// once. (A library window partly visible behind Settings shows the banner as well as the
-    /// notification — the one case where both appear, because neither alone is sure to be seen.)
+    /// once. (Both appear whenever a library window can be read but something of WhisperMeet's own
+    /// is key in front of it: Settings, Keyboard Shortcuts, or a sheet, file importer or alert on
+    /// that window. That is deliberate: what is in front may cover the banner, so neither alone is
+    /// sure to be seen.)
     func announceRecordingRisk(from snapshot: RecordingHealthSnapshot) {
         guard let announcement = riskAnnouncer.announcement(for: snapshot) else { return }
         windowlessAlertCount += 1

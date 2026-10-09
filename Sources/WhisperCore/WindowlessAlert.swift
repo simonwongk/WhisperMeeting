@@ -36,8 +36,9 @@ public enum WindowlessAlert {
         /// No library window the user could read: none open (Settings or Keyboard Shortcuts alone
         /// do not count), or every one minimised or on another Space.
         case noReadableWindow
-        /// A readable library window exists, but something is in front of it — another app, or
-        /// WhisperMeet's own Settings or Keyboard Shortcuts window.
+        /// A readable library window exists, but none is the key window of the active app: another
+        /// app is in front, or something of WhisperMeet's own is key instead — Settings, Keyboard
+        /// Shortcuts, or a sheet, file importer or alert on a library window.
         case behindOtherApps
         /// A readable library window is the key window of the active app.
         case inFront
