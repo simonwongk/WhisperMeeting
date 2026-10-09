@@ -5399,6 +5399,8 @@ final class AppModel: ObservableObject {
         }
         let before = sourceVersion(of: original)
         try copyFile(original, destination)
+        // Before the re-check below, whose cleanup has to be able to remove the copy (F804).
+        unlockLibraryCopy(at: destination)
         // Re-stating the source costs one `stat` — and it catches exactly the case the watched
         // folder's settle window cannot: a writer that paused longer than that window and then
         // resumed, leaving a copy that is a prefix of the real recording (F326). Both reads go to
@@ -5410,6 +5412,25 @@ final class AppModel: ObservableObject {
             throw ImportError.sourceChangedDuringCopy
         }
         return destination
+    }
+
+    /// Clears Finder's Locked flag (`uchg`) and the append-only flag (`uappnd`) on the copy an import
+    /// has just made in the library (F804). `copyItem` carries both over from the user's file, and a
+    /// file with either set cannot be removed: Delete Meeting kept the meeting as one that "could not
+    /// have its recording removed", and Shrink reported a file it could not remove on every retry.
+    ///
+    /// The app's call, because the library's copy is the app's own file: the app decides when it is
+    /// replaced or deleted, and a lock carried onto it protects nothing of the user's — their
+    /// recording is the file they imported, which is never touched and keeps its lock. Best effort:
+    /// the owner can always clear these two flags, and a copy that somehow kept them is no worse off
+    /// than every import was before.
+    nonisolated private static func unlockLibraryCopy(at url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return }
+        var cleared: [FileAttributeKey: Any] = [:]
+        if attributes[.immutable] as? Bool == true { cleared[.immutable] = false }
+        if attributes[.appendOnly] as? Bool == true { cleared[.appendOnly] = false }
+        guard !cleared.isEmpty else { return }
+        try? FileManager.default.setAttributes(cleared, ofItemAtPath: url.path)
     }
 
     /// The recording an import copies: the file itself, or the recording a symbolic link or a Finder
