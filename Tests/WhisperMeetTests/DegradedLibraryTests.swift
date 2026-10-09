@@ -264,7 +264,7 @@ func degradedLibraryRefusesImport() async throws {
     let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
     let model = AppModel(store: store, recorder: AudioCaptureEngine(), defaults: defaults)
 
-    let imported = await model.importRecording(from: source, title: "Imported")
+    let imported = await model.importRecordings(from: [source], title: "Imported").firstID
 
     #expect(imported == nil)
     #expect(store.meetings.isEmpty)

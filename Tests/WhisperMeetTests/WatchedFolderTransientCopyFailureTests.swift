@@ -246,7 +246,7 @@ func userImportStillReportsTransientFailure() async throws {
     let copy = ScriptedCopy(failing: .max, with: outOfSpace)
     model.copyRecordingIntoLibrary = { try copy.copy($0, $1) }
 
-    let imported = await model.importRecording(from: file, title: "")
+    let imported = await model.importRecordings(from: [file], title: "").firstID
 
     #expect(imported == nil)
     #expect(copy.calls == 1)

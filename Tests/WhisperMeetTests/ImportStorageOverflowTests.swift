@@ -127,7 +127,7 @@ func userImportPastInt64IsRefusedForSpace() async throws {
     }
     try requireFreeSpaceFigure(model)
 
-    let imported = await model.importRecording(from: file, title: "")
+    let imported = await model.importRecordings(from: [file], title: "").firstID
 
     #expect(imported == nil)
     #expect(copies.count == 0)

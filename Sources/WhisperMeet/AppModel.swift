@@ -1650,8 +1650,8 @@ final class AppModel: ObservableObject {
     ///
     /// `refreshRuntime()` must go through both seams, not just this one's Whisper sibling. Until it
     /// did, an install state injected at construction was silently discarded by the first
-    /// `refreshRuntime()` — which `stopRecording` and `importRecording` each call immediately before
-    /// their install gate. That made a pinned test state useless and was invisible on a machine with
+    /// `refreshRuntime()` — which `stopRecording` and `adoptImportedRecording` each call immediately
+    /// before their install gate. That made a pinned test state useless and was invisible on a machine with
     /// the runtimes present; CI caught it.
     var checkQwenInstalled: @Sendable () -> Bool = { QwenASRRuntime.isInstalled() }
 
@@ -4896,17 +4896,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Imports an existing audio or video file as a new meeting and transcribes it. The file is
-    /// copied into the recording library so the imported audio becomes the source of truth, exactly
-    /// like a live recording. Whisper (via FFmpeg) decodes any supported container directly, so no
-    /// conversion is needed here.
-    func importRecording(from sourceURL: URL, title: String) async -> UUID? {
-        if case .success(let id) = await importOne(from: sourceURL, title: title, requireReadableAudio: false, origin: .user) {
-            return id
-        }
-        return nil
-    }
-
     /// Why an import did not produce a meeting.
     ///
     /// The distinction exists for the watched folder, which owns a queue: `retryable` means nothing
@@ -5217,9 +5206,10 @@ final class AppModel: ObservableObject {
     /// place where a meeting becomes real (F183).
     ///
     /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
-    /// not an oversight: `importRecording` calls `libraryAcceptsChanges` and `importFromURL` asks
-    /// `libraryRefusal` (the same check, answered to its sheet — F539) before they copy or download
-    /// anything, so this is unreachable while the library is degraded.
+    /// not an oversight: `importRecordings` (for the batch) and `importOne` (for each file) call
+    /// `libraryAcceptsChanges`, and `importFromURL` asks `libraryRefusal` (the same check, answered
+    /// to its sheet — F539), before they copy or download anything, so this is unreachable while the
+    /// library is degraded.
     /// A third caller added without that guard would reach the `upsert` below, which `MeetingStore`
     /// silently refuses — correctness is safe, but the user would have paid for the copy first. Guard
     /// any new caller up front, the way the two existing ones do (F187).
@@ -5260,11 +5250,9 @@ final class AppModel: ObservableObject {
         return id
     }
 
-    /// Imports several files, enqueueing each for transcription. Returns the first meeting's id so
-    /// the UI can navigate to it. Only a single-file import adopts the typed title.
     /// Imports files handed over from outside the app (F181), and says so when it cannot.
     ///
-    /// `importRecording` returns nil without a word when a recording or another import is running —
+    /// `importRecordings` declines without a word when a recording or another import is running —
     /// fine for a button that is disabled in that state, wrong for a file the user just sent from
     /// Finder, who would see nothing happen. Reported through `report`, so it reaches them with no
     /// window open too.
@@ -5305,6 +5293,13 @@ final class AppModel: ObservableObject {
         var copyFailures: [String: String] = [:]
     }
 
+    /// Imports existing audio or video files as new meetings and transcribes each — the one import
+    /// entry point every surface calls: the Import panel, Finder/Dock/Shortcuts/Services through
+    /// `importExternalFiles`, and the watched folder through `deliverWatchedFiles` (F707). Each file
+    /// is copied into the recording library, so the imported audio becomes the source of truth
+    /// exactly like a live recording. Whisper (via FFmpeg) decodes any supported container
+    /// directly, so no conversion is needed here. Only a single-file import adopts the typed title;
+    /// `firstID` is the first new meeting, for the caller to navigate to.
     @discardableResult
     func importRecordings(
         from urls: [URL],

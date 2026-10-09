@@ -57,7 +57,7 @@ func sourceGrowingDuringTheCopyIsRefused() async throws {
         try appendToSource(source)
     }
 
-    let imported = await model.importRecording(from: file, title: "")
+    let imported = await model.importRecordings(from: [file], title: "").firstID
 
     #expect(imported == nil, "the library's copy is a prefix of what is on disk now")
     #expect(model.store.meetings.isEmpty)
@@ -74,7 +74,7 @@ func sourceHoldingStillDuringTheCopyImports() async throws {
     let file = try makeRecordingFile()
     defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
 
-    let imported = await model.importRecording(from: file, title: "")
+    let imported = await model.importRecordings(from: [file], title: "").firstID
 
     let id = try #require(imported)
     let meeting = try #require(model.store.meeting(id: id))

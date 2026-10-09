@@ -58,7 +58,7 @@ func linkedRecordingIsCopiedNotLinked() async throws {
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
     let originalBytes = try Data(contentsOf: original)
 
-    let imported = await model.importRecording(from: link, title: "")
+    let imported = await model.importRecordings(from: [link], title: "").firstID
 
     let id = try #require(imported)
     let meeting = try #require(model.store.meeting(id: id))
@@ -81,7 +81,7 @@ func relativeLinkIsCopiedAsItsRecording() async throws {
     let link = folder.appendingPathComponent("talk.wav")
     try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "real.wav")
 
-    let imported = await model.importRecording(from: link, title: "")
+    let imported = await model.importRecordings(from: [link], title: "").firstID
 
     let id = try #require(imported)
     let meeting = try #require(model.store.meeting(id: id))
@@ -102,7 +102,7 @@ func danglingLinkIsRefused() async throws {
         atPath: link.path, withDestinationPath: "/Volumes/F494-ejected-\(UUID().uuidString)/talk.wav"
     )
 
-    let imported = await model.importRecording(from: link, title: "")
+    let imported = await model.importRecordings(from: [link], title: "").firstID
 
     #expect(imported == nil)
     #expect(model.store.meetings.isEmpty)
@@ -137,7 +137,7 @@ func freeSpaceCheckMeasuresTheLinkedRecording() async throws {
     model.refreshRecordingPreflight()
     try #require(model.recordingPreflight.availableStorageBytes != nil)
 
-    let imported = await model.importRecording(from: link, title: "")
+    let imported = await model.importRecordings(from: [link], title: "").firstID
 
     #expect(imported == nil)
     #expect(copyAttempts.count == 0, "refused before copying, the way a 1 PiB file itself is")
@@ -166,7 +166,7 @@ func linkedRecordingGrowingDuringTheCopyIsRefused() async throws {
         try handle.write(contentsOf: Data(repeating: 0, count: 4_096))
     }
 
-    let imported = await model.importRecording(from: link, title: "")
+    let imported = await model.importRecordings(from: [link], title: "").firstID
 
     #expect(imported == nil, "the library's copy is a prefix of what the link points to now")
     #expect(model.store.meetings.isEmpty)
