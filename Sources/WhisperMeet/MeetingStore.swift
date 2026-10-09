@@ -1416,6 +1416,10 @@ final class MeetingStore: ObservableObject {
         meetings[index] = recordBefore
         conflictOffer = offerBefore
         beginConflictRecovery()
+        // What the recovery said when it had nothing left to ask — the other copy's commit, a meeting
+        // back in the list, a note (F884). The save below sets the message to its own: nothing on
+        // success, so a banner that resolved itself here used to go away with nothing said.
+        let said = storageErrorMessage == restingStorageMessage ? nil : storageErrorMessage
         applyToOfferedCopies(of: id, mutation)
         // Nothing more is written when the re-read left the library refusing changes — the result
         // then survives only in an offered copy, if there is one — or when the other copy deleted
@@ -1425,6 +1429,18 @@ final class MeetingStore: ObservableObject {
         mutation(&meetings[reloaded])
         meetings[reloaded].schemaVersion = MeetingRecord.currentSchemaVersion
         persistMeetingsOrRecover()
+        if let said { keepSaying(said) }
+    }
+
+    /// Puts `said` back in front of whatever the message is now (F884): over the resting value a
+    /// later save left, or before what that save had to add — an ordinary failure's own message.
+    private func keepSaying(_ said: String) {
+        guard let now = storageErrorMessage, now != restingStorageMessage else {
+            storageErrorMessage = said
+            return
+        }
+        guard now != said else { return }
+        storageErrorMessage = "\(said) \(now)"
     }
 
     /// Repoints a meeting at a new recording file and reports whether the index save landed (F795).
