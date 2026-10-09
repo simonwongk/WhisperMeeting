@@ -4945,8 +4945,9 @@ final class AppModel: ObservableObject {
         refreshRecordingPreflight()
         if let available = recordingPreflight.availableStorageBytes {
             // The file is copied into the library, so require room for it plus a safety margin. A
-            // link is measured as the recording it points to, which is what is copied: the link's
-            // own size is a hundred-odd bytes (F494).
+            // link or a Finder alias is measured as the recording it points to, which is what is
+            // copied: a link's own size is a hundred-odd bytes (F494), an alias's about a kilobyte
+            // (F705).
             let needed = Self.importStorageNeeded(forFileSizes: [measureImportSource(sourceURL) ?? 0])
             if available < needed {
                 alertMessage = "Importing this recording needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) free, but less is available. Free some storage and try again."
@@ -5335,21 +5336,21 @@ final class AppModel: ObservableObject {
     }
 
     /// Copies an imported file's bytes into the library, as `(source, destination)` — the source
-    /// being the recording itself, never a link to it (F494). A seam in the F47 shape so a test can
-    /// do what a writer that paused and resumed does — change the source while it is being copied
-    /// (F698). Only the byte copy is replaceable: the version check around it in
+    /// being the recording itself, never a link or an alias to it (F494, F705). A seam in the F47
+    /// shape so a test can do what a writer that paused and resumed does — change the source while
+    /// it is being copied (F698). Only the byte copy is replaceable: the version check around it in
     /// `copyImportedRecording` stays real under test, because that check is what is tested.
     var copyRecordingIntoLibrary: @Sendable (URL, URL) throws -> Void = { source, destination in
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
     /// How many bytes importing a file will copy, as both free-space checks measure it — `importOne`'s
-    /// for one file and the watched folder's for a whole batch: the recording a link points to (F494),
-    /// read from the file system rather than the URL's resource-value cache (F698). A seam in the F47
-    /// shape so a test can stand in sizes no volume will create, which is what the checks' sums have
-    /// to survive (F494).
+    /// for one file and the watched folder's for a whole batch: the recording a link or a Finder
+    /// alias points to (F494, F705), read from the file system rather than the URL's resource-value
+    /// cache (F698). A seam in the F47 shape so a test can stand in sizes no volume will create, which
+    /// is what the checks' sums have to survive (F494).
     var measureImportSource: @Sendable (URL) -> Int64? = { url in
-        AppModel.sourceVersion(of: url.resolvingSymlinksInPath())?.size
+        (try? AppModel.importedOriginal(of: url)).flatMap { AppModel.sourceVersion(of: $0)?.size }
     }
 
     /// The free space Import from a link needs: the size the probe reports plus the same 500 MB
@@ -5386,16 +5387,7 @@ final class AppModel: ObservableObject {
         let didAccess = sourceURL.startAccessingSecurityScopedResource()
         defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
 
-        // A symbolic link is imported as the recording it points to (F494). `copyItem` copies a link
-        // as a link, so the library held a pointer to the user's file: unplayable once they deleted
-        // the original or ejected its drive, and skipped by backups, which take regular files only.
-        let original = sourceURL.resolvingSymlinksInPath()
-        // Still a link once resolved means it points at nothing that exists — copied, it became a
-        // meeting with no audio in it.
-        if (try? FileManager.default.attributesOfItem(atPath: original.path))?[.type] as? FileAttributeType
-            == .typeSymbolicLink {
-            throw ImportError.linkTargetMissing
-        }
+        let original = try importedOriginal(of: sourceURL)
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -5411,8 +5403,8 @@ final class AppModel: ObservableObject {
         // folder's settle window cannot: a writer that paused longer than that window and then
         // resumed, leaving a copy that is a prefix of the real recording (F326). Both reads go to
         // the file system: through the URL's resource-value cache the second returned the first's
-        // values, and this check did not fire (F698). Both read the recording, not a link to it,
-        // whose own size and date do not move when the recording grows (F494).
+        // values, and this check did not fire (F698). Both read the recording, not a link or an
+        // alias to it, whose own size and date do not move when the recording grows (F494, F705).
         if let before, let after = sourceVersion(of: original), after != before {
             try? FileManager.default.removeItem(at: destination)
             throw ImportError.sourceChangedDuringCopy
@@ -5420,12 +5412,56 @@ final class AppModel: ObservableObject {
         return destination
     }
 
+    /// The recording an import copies: the file itself, or the recording a symbolic link or a Finder
+    /// alias points to (F494, F705). The copy reads it, and both free-space checks measure it.
+    ///
+    /// A symbolic link: `copyItem` copies a link as a link, so the library held a pointer to the
+    /// user's file — unplayable once they deleted the original or ejected its drive, and skipped by
+    /// backups, which take regular files only (F494). A Finder alias is a regular file holding a
+    /// bookmark, so resolving links never touched it, and `copyItem` copied its kilobyte of bookmark
+    /// bytes as the "recording": a meeting with no audio in it (F705). `URL(resolvingAliasFileAt:)`
+    /// resolves it — through an alias to an alias, or to a link, as measured on this Mac — and throws
+    /// when the original cannot be found. `.withoutUI` and `.withoutMounting`, because an import must
+    /// not put up a dialog or mount a volume on its own; an original on a drive that is not connected
+    /// is refused and said, as a dangling link is.
+    nonisolated static func importedOriginal(of url: URL) throws -> URL {
+        let original = url.resolvingSymlinksInPath()
+        // Still a link once resolved means it points at nothing that exists — copied, it became a
+        // meeting with no audio in it.
+        if (try? FileManager.default.attributesOfItem(atPath: original.path))?[.type] as? FileAttributeType
+            == .typeSymbolicLink {
+            throw ImportError.linkTargetMissing
+        }
+        // `isAliasFile` is also true of a symbolic link, and none is left at this point.
+        guard (try? original.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true else {
+            return original
+        }
+        let target: URL
+        do {
+            target = try URL(resolvingAliasFileAt: original, options: [.withoutUI, .withoutMounting])
+                .resolvingSymlinksInPath()
+        } catch {
+            throw ImportError.linkTargetMissing
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory),
+              (try? target.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile != true else {
+            // Gone since it resolved, a link to nothing, or an alias that still names an alias:
+            // whichever, there is no recording here to copy.
+            throw ImportError.linkTargetMissing
+        }
+        if isDirectory.boolValue { throw ImportError.aliasToFolder }
+        return target
+    }
+
     /// What the importer refuses on the file's own merits.
     enum ImportError: LocalizedError {
         case sourceChangedDuringCopy
-        /// A symbolic link whose original does not exist — moved, deleted, or on a drive that is not
-        /// connected (F494).
+        /// A symbolic link or a Finder alias whose original does not exist — moved, deleted, or on a
+        /// drive that is not connected (F494, F705).
         case linkTargetMissing
+        /// A Finder alias to a folder, which a name like `interviews.m4a` lets through intake (F705).
+        case aliasToFolder
 
         var errorDescription: String? {
             switch self {
@@ -5433,6 +5469,8 @@ final class AppModel: ObservableObject {
                 return "it was still being written while it was copied."
             case .linkTargetMissing:
                 return "it is a link to a file that cannot be found. The original may have been moved or deleted, or be on a drive that is not connected."
+            case .aliasToFolder:
+                return "it is an alias to a folder, not to a recording."
             }
         }
 
@@ -5446,7 +5484,7 @@ final class AppModel: ObservableObject {
                 case .watchedFolder: return "It will be imported once it is finished."
                 case .user: return "Try again once it has finished."
                 }
-            case .linkTargetMissing:
+            case .linkTargetMissing, .aliasToFolder:
                 return nil
             }
         }
