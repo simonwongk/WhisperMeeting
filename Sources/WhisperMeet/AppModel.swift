@@ -869,7 +869,9 @@ final class AppModel: ObservableObject {
         // (busy app, a truncated file) is already excluded above or reported per file as before.
         if let refusal = watchedFolderImportRefusalMessage() {
             if refusal != lastWatchedFolderRefusalMessage {
-                alertMessage = refusal
+                // Through `report`, because nobody pressed anything: the watched folder imports with
+                // no window open, and a window-only alert reached no one then (F711).
+                report(refusal)
             }
             lastWatchedFolderRefusalMessage = refusal
             return
@@ -946,10 +948,12 @@ final class AppModel: ObservableObject {
             announcedWatchedFiles.remove(url.path)
         }
         if !givenUp.isEmpty {
-            alertMessage = "Not imported from your watched folder after \(Self.watchedFolderCopyAttemptLimit) tries: "
+            // Through `report`, so a user with no window open learns a recording was given up on
+            // (F711).
+            report("Not imported from your watched folder after \(Self.watchedFolderCopyAttemptLimit) tries: "
                 + givenUp.joined(separator: " ")
                 + " WhisperMeet will not try again on its own. Once the problem is fixed, import "
-                + (givenUp.count == 1 ? "it" : "them") + " with Import Recordings…"
+                + (givenUp.count == 1 ? "it" : "them") + " with Import Recordings…")
         }
         return requeue
     }
@@ -5045,7 +5049,15 @@ final class AppModel: ObservableObject {
             if let nextStep = (error as? ImportError)?.nextStep(for: origin) {
                 message += " " + nextStep
             }
-            alertMessage = message
+            switch origin {
+            case .watchedFolder:
+                // Nobody pressed anything, and there may be no window to show it in (F711).
+                report(message)
+            case .user:
+                // Unchanged: the window's alert. Whether a Finder or Dock hand-off made with no
+                // window open should also be posted is F294's remaining window-only sites.
+                alertMessage = message
+            }
             return .failure(.permanent)
         }
     }
