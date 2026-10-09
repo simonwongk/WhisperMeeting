@@ -507,11 +507,25 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             // level meter moves, and nothing lands. `_streamError` alone does not surface —
             // three consecutive failures on one track raise an at-risk warning, which the risk
             // announcer and the menu-bar title already carry. Counted per track (F876), so the
-            // other track landing does not hide this one failing.
+            // other track landing does not hide this one failing. With its cause (F888), so the
+            // warning tells someone to check disk space only when the disk may be what failed.
             if let track {
-                healthMonitor?.recordWriteOutcome(track, succeeded: false)
+                healthMonitor?.recordWriteOutcome(track, succeeded: false, cause: Self.writeFailureCause(of: error))
             }
         }
+    }
+
+    /// Which advice a failed append earns (F888).
+    ///
+    /// `FloatTrackWriter.append` throws `AudioCaptureError.conversionFailed` from every step before
+    /// its write (the format description, the buffer list, the PCM buffer, the downmix, the
+    /// converter) and nothing else. The write itself, and the restart padding before it, throw the
+    /// file system's own error, which `FloatTrackFile.append` passes on unchanged. So a conversion
+    /// failure is the captured audio's format, and anything else is storage, which keeps the disk
+    /// advice whenever the cause is unclear.
+    static func writeFailureCause(of error: Error) -> RecordingWriteFailureCause {
+        if case AudioCaptureError.conversionFailed = error { return .format }
+        return .storage
     }
 
     /// Emits combined levels no more often than `levelsEmitInterval` so the volume bar updates

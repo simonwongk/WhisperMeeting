@@ -26,7 +26,7 @@ public enum RecordingHUD {
         RecordingHUDState(
             elapsedText: TranscriptFormatter.clock(elapsedSeconds),
             statusLine: isStopping ? "Finishing…" : "Recording",
-            topWarning: health.flatMap { topWarning(from: $0.warnings) },
+            topWarning: health.flatMap { topWarning(from: $0.warnings, writeFailureCause: $0.writeFailureCause) },
             level: max(0, min(1, level))
         )
     }
@@ -38,8 +38,11 @@ public enum RecordingHUD {
     }
 
     /// The single most-severe warning's message, or nil when there are none.
-    static func topWarning(from warnings: [RecordingHealthWarning]) -> String? {
-        warnings.min(by: { rank($0) < rank($1) }).map(message)
+    static func topWarning(
+        from warnings: [RecordingHealthWarning],
+        writeFailureCause: RecordingWriteFailureCause?
+    ) -> String? {
+        warnings.min(by: { rank($0) < rank($1) }).map { message($0, writeFailureCause: writeFailureCause) }
     }
 
     /// Severity rank (lower = worse). Consistent with `RecordingHealthSnapshot.overallStatus`, which
@@ -60,14 +63,21 @@ public enum RecordingHUD {
         }
     }
 
-    static func message(_ warning: RecordingHealthWarning) -> String {
+    /// `writeFailureCause` is the snapshot's (F888), and has no default so that every surface
+    /// that words a live warning has to say where its cause came from.
+    static func message(_ warning: RecordingHealthWarning, writeFailureCause: RecordingWriteFailureCause?) -> String {
         switch warning {
         case .microphoneCaptureStopped: return "Microphone capture stopped"
         case .systemAudioCaptureStopped: return "System audio capture stopped"
         case .lowStorage: return "Low storage — recording may stop soon"
         // The consequence, not the cause. "Appends are failing" means nothing; "not being saved"
         // is the only part a user can act on, and the action is to stop rather than keep going.
-        case .captureWritesFailing: return "Audio is not being saved — stop and check disk space"
+        // The disk advice only when the disk may be what failed (F888): a track whose captured
+        // audio cannot be read fails the same way, and the disk is fine.
+        case .captureWritesFailing:
+            return writeFailureCause == .format
+                ? "Audio is not being saved — stop the recording"
+                : "Audio is not being saved — stop and check disk space"
         // States the consequence, not the cause: "the WAV length field overflows" means nothing to
         // anyone, and the action is the same either way.
         case .approachingLengthLimit:
@@ -76,5 +86,14 @@ public enum RecordingHUD {
         case .microphoneClipping: return "Microphone is clipping"
         case .systemAudioClipping: return "System audio is clipping"
         }
+    }
+
+    /// The in-window health panel's sentence for `.captureWritesFailing` (F386). Here rather than in
+    /// the panel's view because it depends on the cause (F888), and a choice made here is tested;
+    /// the panel's other sentences carry no logic.
+    public static func failingWritesDetail(writeFailureCause: RecordingWriteFailureCause?) -> String {
+        writeFailureCause == .format
+            ? "Stop this recording: audio is no longer being written to disk. What was captured before now is safe."
+            : "Stop this recording: audio is no longer being written to disk. Check free space. What was captured before now is safe."
     }
 }

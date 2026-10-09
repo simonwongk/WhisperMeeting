@@ -22,8 +22,10 @@ func aFailedAppendIsReported() throws {
     // The catch that F363 left as the only record of a write failure, and which surfaced nowhere.
     let handler = try #require(source.range(of: "_streamError = error"))
     let window = source[handler.lowerBound...].prefix(400)
-    // Per track since F876, attributed by the output type the buffer came in on.
-    #expect(window.contains("healthMonitor?.recordWriteOutcome(track, succeeded: false)"), "\(window)")
+    // Per track since F876, attributed by the output type the buffer came in on, and with its cause
+    // since F888, so the warning's disk advice follows what failed.
+    #expect(window.contains("healthMonitor?.recordWriteOutcome(track, succeeded: false, cause: Self.writeFailureCause(of: error))"),
+            "\(window)")
     #expect(source.contains("case .audio: .systemAudio"), "system audio buffers are the system track")
     #expect(source.contains("case .microphone: .microphone"), "microphone buffers are the microphone track")
 }

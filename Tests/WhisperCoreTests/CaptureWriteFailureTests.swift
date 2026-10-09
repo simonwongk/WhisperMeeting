@@ -78,7 +78,10 @@ func theWarningIsRankedAndWorded() {
     // one, and this leaves nothing.
     #expect(RecordingHUD.rank(.captureWritesFailing) == RecordingHUD.rank(.microphoneCaptureStopped))
     #expect(RecordingHUD.rank(.captureWritesFailing) < RecordingHUD.rank(.lowStorage))
-    let top = RecordingHUD.topWarning(from: [.systemAudioClipping, .captureWritesFailing, .lowStorage])
+    // A failed write to the disk; F888's tests cover the format cause, which drops the disk advice.
+    let top = RecordingHUD.topWarning(
+        from: [.systemAudioClipping, .captureWritesFailing, .lowStorage], writeFailureCause: .storage
+    )
     #expect(top == "Audio is not being saved — stop and check disk space", "\(top ?? "")")
 
     // The completed-meeting advisory says what was lost, not what failed.

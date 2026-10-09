@@ -55,6 +55,7 @@ The panel checks once per second and reports:
 | No system-audio samples have ever arrived after 15 seconds | Ask the user to play meeting audio to verify the channel. Silence alone is not described as a capture failure. | worth a check |
 | A channel reaches 98% of full scale, or any captured input channel reaches full scale before the mono mix (F419) | Keep a clipping warning visible for 3 seconds. | worth a check |
 | Available storage falls below the space Stop needs to write `meeting.wav` for the audio so far (about 96 KB per recorded second) plus 10 minutes of the raw tracks' growth (about 230 MB) as time to react, and never below the 500 MB the start check requires (`RecordingHealthMonitor`, F530, F597) | Warn the user to stop soon to protect the recording. | needs attention |
+| Three captured buffers in a row fail to reach one channel's track, whatever the other channel does (F386, F876) | Warn that audio is not being saved and that the recording should be stopped. The advice to check disk space is given unless every failure was the captured audio's format, which the disk has nothing to do with (F888). | needs attention |
 
 Warnings do not stop the meeting automatically. Stopping safely is normally preferable to abruptly
 ending capture, and the existing interruption recovery remains available if capture subsequently

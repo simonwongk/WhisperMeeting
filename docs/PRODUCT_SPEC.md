@@ -170,8 +170,9 @@ spite of it (F407).
 When appends to the capture tracks keep failing — a full disk is the case this is really about —
 the app tells the user, loudly and in every surface it has: the menu-bar title takes its warning
 mark, the risk announcer speaks it once, the HUD says "Audio is not being saved — stop and check
-disk space", and the in-window banner says to stop. **It does not stop the recording itself, and
-it will not.**
+disk space", and the in-window banner says to stop. When what fails is the captured audio's format
+rather than the write, the disk advice is left out (F888). **It does not stop the recording itself,
+and it will not.**
 
 The cost of that is real and is not hidden here: someone who starts a recording and walks away is
 not looking at any of those surfaces, and if the disk stays full they come back to an hour of

@@ -107,22 +107,44 @@ public enum RecordingHealthWarning: String, Sendable, Equatable, Hashable, Codab
     }
 }
 
+/// Why a track's write failed, as far as the advice to the user needs it (F888).
+///
+/// The at-risk warning is the same either way, because audio is not being saved; what to check is
+/// not. The advice used to be "check disk space" for every failure, and since F876 counts each
+/// track on its own the warning also fires for a track whose captured audio cannot be read at all
+/// (F856's format description, or F875's interleaved buffers before that fix). The disk is fine
+/// then, and the advice sent the user to check it.
+public enum RecordingWriteFailureCause: Sendable, Equatable {
+    /// Writing to the track failed: a full disk, a volume that went away, an I/O error.
+    case storage
+    /// The captured audio could not be read or converted, so nothing reached the disk to fail.
+    case format
+}
+
 public struct RecordingHealthSnapshot: Sendable, Equatable {
     public let microphoneLevel: RecordingAudioLevel
     public let systemAudioLevel: RecordingAudioLevel
     public let availableStorageBytes: Int64?
     public let warnings: [RecordingHealthWarning]
+    /// Why `.captureWritesFailing` is raised, when it is (F888), for the wording only. `.format` only
+    /// when every failing track's current run of failures was the captured audio's format, so the
+    /// disk advice is dropped only when the disk is known not to be the problem. Nil when no track's
+    /// writes are failing. Live only: the saved report keeps the warning, and its advisory gives no
+    /// advice to drop.
+    public let writeFailureCause: RecordingWriteFailureCause?
 
     public init(
         microphoneLevel: RecordingAudioLevel,
         systemAudioLevel: RecordingAudioLevel,
         availableStorageBytes: Int64?,
-        warnings: [RecordingHealthWarning]
+        warnings: [RecordingHealthWarning],
+        writeFailureCause: RecordingWriteFailureCause? = nil
     ) {
         self.microphoneLevel = microphoneLevel
         self.systemAudioLevel = systemAudioLevel
         self.availableStorageBytes = availableStorageBytes
         self.warnings = warnings
+        self.writeFailureCause = writeFailureCause
     }
 
     /// Both channels stopped together — the capture itself stopped, not one device (F292). On the
@@ -368,6 +390,11 @@ public final class RecordingHealthMonitor {
     /// connection instead of that audio was not being saved.
     private var microphoneWriteFailures = 0
     private var systemAudioWriteFailures = 0
+    /// Whether each track's current run of failures includes one on the storage side (F888). Reset
+    /// with that track's count, by its next success. A run that mixes causes reads as storage, so
+    /// the disk advice is dropped only when the disk is known not to be the problem.
+    private var microphoneRunHitStorage = false
+    private var systemAudioRunHitStorage = false
 
     // Accumulated across the capture for the post-meeting report (F58).
     private var seenWarnings: Set<RecordingHealthWarning> = []
@@ -496,7 +523,8 @@ public final class RecordingHealthMonitor {
             microphoneLevel: microphone.level,
             systemAudioLevel: systemAudio.level,
             availableStorageBytes: availableStorageBytes,
-            warnings: warnings
+            warnings: warnings,
+            writeFailureCause: writeFailureCause
         )
 
         // Fold this snapshot into the running report.
@@ -538,13 +566,35 @@ public final class RecordingHealthMonitor {
     }
 
     /// One append's outcome on one track (F386, F876). Called from the capture queue, like `receive`.
-    public func recordWriteOutcome(_ channel: RecordingChannel, succeeded: Bool) {
+    ///
+    /// `cause` is read only for a failure (F888). It defaults to storage, which is what every
+    /// failure meant to the wording before the cause was carried, so a caller that does not know
+    /// keeps the disk advice rather than losing it.
+    public func recordWriteOutcome(
+        _ channel: RecordingChannel,
+        succeeded: Bool,
+        cause: RecordingWriteFailureCause = .storage
+    ) {
+        let storage = !succeeded && cause == .storage
         switch channel {
         case .microphone:
             microphoneWriteFailures = succeeded ? 0 : microphoneWriteFailures + 1
+            microphoneRunHitStorage = !succeeded && (microphoneRunHitStorage || storage)
         case .systemAudio:
             systemAudioWriteFailures = succeeded ? 0 : systemAudioWriteFailures + 1
+            systemAudioRunHitStorage = !succeeded && (systemAudioRunHitStorage || storage)
         }
+    }
+
+    /// Why the writes are failing right now, for the advice (F888); nil when they are not. Only a
+    /// track at the threshold has a say, the same tracks `writesAreFailing` reads: `.format` when
+    /// every one of them has failed only on its format since its last success, `.storage` otherwise.
+    public var writeFailureCause: RecordingWriteFailureCause? {
+        var failingRunsHitStorage: [Bool] = []
+        if microphoneWriteFailures >= writeFailureThreshold { failingRunsHitStorage.append(microphoneRunHitStorage) }
+        if systemAudioWriteFailures >= writeFailureThreshold { failingRunsHitStorage.append(systemAudioRunHitStorage) }
+        guard !failingRunsHitStorage.isEmpty else { return nil }
+        return failingRunsHitStorage.contains(true) ? .storage : .format
     }
 
     /// Whether either track's writes are failing persistently right now — the live half of the
