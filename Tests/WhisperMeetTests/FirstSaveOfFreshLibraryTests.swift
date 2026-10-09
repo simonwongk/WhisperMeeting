@@ -76,6 +76,27 @@ func firstListSaveOfAFreshLibraryIsChecked() throws {
     #expect(here.vocabulary.contains("Grafana"))
 }
 
+/// The replacement rules' own line (`readReplacementRules` setting `.absent`), which the vocabulary
+/// test above cannot see: the lane-V review's mutant that deleted it passed every other test (V2).
+@MainActor
+@Test("A fresh library's first replacement-rule save does not replace another copy's (F864)")
+func firstReplacementRuleSaveOfAFreshLibraryIsChecked() throws {
+    let root = try emptyLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let other = MeetingStore(rootDirectory: root)
+    let here = MeetingStore(rootDirectory: root)
+    let theirs = ReplacementRule(heard: "graph Anna", preferred: "Grafana")
+    let ours = ReplacementRule(heard: "cube CTL", preferred: "kubectl")
+
+    #expect(other.addReplacementRule(heard: theirs.heard, preferred: theirs.preferred) == .added)
+    #expect(here.addReplacementRule(heard: ours.heard, preferred: ours.preferred) == .added)
+
+    let onDisk = MeetingStore(rootDirectory: root).replacementRules
+    #expect(onDisk.contains(theirs), "the other copy's first replacement-rule save was overwritten: \(onDisk)")
+    #expect(onDisk.contains(ours))
+    #expect(here.replacementRules.contains(theirs))
+}
+
 @MainActor
 @Test("A library with no index yet still saves its first meeting (F864)")
 func aLoneFreshLibraryStillSaves() throws {
