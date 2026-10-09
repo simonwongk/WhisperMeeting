@@ -24,11 +24,22 @@ public struct WatchedFolderInbox: Sendable {
         public let url: URL
         public let size: Int64
         public let modified: Date
+        /// `url`'s path, its extension, and whether its name starts with a dot: what `ready(in:)`
+        /// reads of each file, worked out once when the entry is made (F716). `URL` builds a new
+        /// string for each of these on every call, and over 20,000 files those three reads were about
+        /// 15 of a look's 17 ms on the main actor (measured, -O). `WatchedFolderMonitor.listing(at:)`
+        /// makes its entries off the main actor, so the work moved there with them.
+        let path: String
+        let pathExtension: String
+        let isHidden: Bool
 
         public init(url: URL, size: Int64, modified: Date) {
             self.url = url
             self.size = size
             self.modified = modified
+            path = url.path
+            pathExtension = url.pathExtension
+            isHidden = url.lastPathComponent.hasPrefix(".")
         }
     }
 
@@ -112,15 +123,17 @@ public struct WatchedFolderInbox: Sendable {
     public mutating func ready(in listing: [Entry]) -> [URL] {
         // One importable lookup per distinct extension per look, not one per file (F671). This runs
         // on the main actor every three seconds over the whole listing: over 20,000 files, compiled
-        // -O, a look took 75-250 ms with a UTType lookup per file and 20-35 ms with this. Exact:
+        // -O, a look took 75-250 ms with a UTType lookup per file and 20-35 ms with this (F671); most
+        // of what was left was the entry's URL rebuilding its name, extension and path as strings,
+        // which the entry now does once, off the main actor (F716). Exact:
         // `ExternalFileIntake.isImportable` reads only `isFileURL` and `pathExtension`, the key is the
         // extension exactly as spelled, and a URL that is not a file URL (which `listing(at:)` never
         // produces) is classified on its own rather than letting its verdict stand for a real file's.
         var verdictByExtension: [String: Bool] = [:]
         let candidates = listing.filter { entry in
-            guard !entry.url.lastPathComponent.hasPrefix(".") else { return false }
+            guard !entry.isHidden else { return false }
             guard entry.url.isFileURL else { return isImportable(entry.url) }
-            let pathExtension = entry.url.pathExtension
+            let pathExtension = entry.pathExtension
             if let verdict = verdictByExtension[pathExtension] { return verdict }
             let verdict = isImportable(entry.url)
             verdictByExtension[pathExtension] = verdict
@@ -132,7 +145,7 @@ public struct WatchedFolderInbox: Sendable {
             // the moment the switch is turned on would be the opposite of opt-in — except for what
             // a previous run of the app was watching and had not seen, which is genuinely new.
             for entry in candidates {
-                let path = entry.url.path
+                let path = entry.path
                 let version = Version(size: entry.size, modified: entry.modified)
                 guard let known else {
                     handled[path] = version
@@ -149,7 +162,7 @@ public struct WatchedFolderInbox: Sendable {
         var ready: [URL] = []
         var stillThere: Set<String> = []
         for entry in candidates where entry.size > 0 {
-            let path = entry.url.path
+            let path = entry.path
             let version = Version(size: entry.size, modified: entry.modified)
             stillThere.insert(path)
             if handled[path] == version { continue }
