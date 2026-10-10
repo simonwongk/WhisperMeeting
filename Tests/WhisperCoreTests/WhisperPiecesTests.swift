@@ -632,3 +632,74 @@ func pieceTimesNeverOverlapAtAJoin() async throws {
     #expect(zip(ends, starts.dropFirst()).allSatisfy { $0 <= $1 }, "a segment overlaps the next piece's: ends \(ends), starts \(starts)")
     #expect(result.audioDuration.map { abs($0 - 10) < 0.000_001 } == true, "\(String(describing: result.audioDuration))")
 }
+
+// MARK: - Run folders a crash left behind
+
+/// Above macOS's `PID_MAX` (99,999), so no process can have it: the run folder of a process that has
+/// certainly exited. PID 1, launchd, is a process that certainly exists and is not this one.
+private let exitedProcess: pid_t = 99_999_999
+
+@Test("Only a run folder whose process has exited is swept, never one in use or named or linked like one (F533)")
+func onlyAbandonedRunFoldersAreSwept() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F533-sweep-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func makeFolder(_ name: String) throws {
+        let folder = directory.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("decoded audio".utf8).write(to: folder.appendingPathComponent("whispermeet-decoded.s16le"))
+    }
+    let abandoned = LocalWhisperClient.runFolderName(processID: exitedProcess)
+    try makeFolder(abandoned)
+    let kept = [
+        LocalWhisperClient.runFolderName(),                                    // this process: a run may still be going
+        LocalWhisperClient.runFolderName(processID: 1),                        // launchd: exists, and is not ours to signal
+        "WhisperMeet-\(UUID().uuidString)",                                    // the name run folders had before
+        "WhisperMeet-Qwen-\(UUID().uuidString)",                               // another feature's
+        "WhisperMeet-Whisper-\(exitedProcess)-not-a-uuid",
+        "WhisperMeet-Whisper-0\(exitedProcess)-\(UUID().uuidString)",          // a leading zero: not a name we make
+        "WhisperMeet-Whisper-\(exitedProcess)-\(UUID().uuidString.lowercased())",
+    ]
+    for name in kept { try makeFolder(name) }
+    // A file, and a link to a folder, each named exactly like an abandoned run folder.
+    let file = LocalWhisperClient.runFolderName(processID: exitedProcess)
+    try Data("not a folder".utf8).write(to: directory.appendingPathComponent(file))
+    let target = directory.appendingPathComponent("target", isDirectory: true)
+    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+    try Data("keep".utf8).write(to: target.appendingPathComponent("keep.txt"))
+    let link = LocalWhisperClient.runFolderName(processID: exitedProcess)
+    try FileManager.default.createSymbolicLink(
+        atPath: directory.appendingPathComponent(link).path, withDestinationPath: target.path
+    )
+
+    let removed = LocalWhisperClient.removeAbandonedRunFolders(in: directory)
+
+    #expect(removed == [abandoned])
+    let left = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+    #expect(left == Set(kept + [file, link, "target"]))
+    #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("keep.txt").path), "a link is never followed")
+}
+
+@Test("A transcription first removes a run folder a crashed run left, and keeps one in use (F533)")
+func transcriptionSweepsAbandonedRunFolders() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    try writeWAV(Array(tenSecondSamples().prefix(3 * rate)), to: fixture.recording)
+    let abandoned = fixture.scratch.appendingPathComponent(LocalWhisperClient.runFolderName(processID: exitedProcess))
+    let inUse = fixture.scratch.appendingPathComponent(LocalWhisperClient.runFolderName(processID: 1))
+    for folder in [abandoned, inUse] {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(count: 4_096).write(to: folder.appendingPathComponent("whispermeet-decoded.s16le"))
+    }
+
+    _ = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    #expect(!FileManager.default.fileExists(atPath: abandoned.path), "a crashed run's folder outlived the next run")
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.scratch.path) == [inUse.lastPathComponent])
+    // The run's own folder carries this process's ID, so a later run can tell when it is abandoned.
+    let run = try #require(try fixture.invocations().first)
+    let outputIndex = try #require(run.firstIndex(of: "--output_dir"))
+    let outputFolder = URL(fileURLWithPath: run[outputIndex + 1]).lastPathComponent
+    #expect(LocalWhisperClient.runFolderOwner(outputFolder) == getpid(), "\(outputFolder)")
+}

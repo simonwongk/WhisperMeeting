@@ -230,8 +230,11 @@ public struct LocalWhisperClient: Sendable {
         }
         try Task.checkCancellation()
 
-        let workingDirectory = (scratchDirectory ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("WhisperMeet-\(UUID().uuidString)", isDirectory: true)
+        let scratchRoot = scratchDirectory ?? FileManager.default.temporaryDirectory
+        // First, what a run cut short by a crash or a force-quit left behind: its `defer` below never
+        // ran, and since F533 its folder can hold a whole decode (review R7).
+        Self.removeAbandonedRunFolders(in: scratchRoot)
+        let workingDirectory = scratchRoot.appendingPathComponent(Self.runFolderName(), isDirectory: true)
         try FileManager.default.createDirectory(
             at: workingDirectory,
             withIntermediateDirectories: true
@@ -240,7 +243,8 @@ public struct LocalWhisperClient: Sendable {
             at: modelDirectory,
             withIntermediateDirectories: true
         )
-        // Removes the decoded audio and every piece with it, however the run ends.
+        // Removes the decoded audio and every piece with it, however the run ends, short of the
+        // process itself dying; then a later run's sweep above removes it.
         defer { try? FileManager.default.removeItem(at: workingDirectory) }
 
         await onProgress(.preparing)
@@ -364,6 +368,71 @@ public struct LocalWhisperClient: Sendable {
         path.split(separator: ":").lazy
             .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("ffmpeg") }
             .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    // MARK: Run folders (F533, review R7)
+
+    /// The start of every run folder's name: `WhisperMeet-Whisper-<process ID>-<UUID>`. The process
+    /// ID lets a later run tell a folder whose process has exited from one still in use, and the
+    /// UUID keeps two runs in one process apart. No other temporary folder the app makes starts this
+    /// way (Qwen's is `WhisperMeet-Qwen-`, a summary's `WhisperMeet-Summary-`, and so on), and the
+    /// name these folders had before, `WhisperMeet-<UUID>`, does not either.
+    static let runFolderPrefix = "WhisperMeet-Whisper-"
+
+    /// A new run folder's name, for this process unless a test names another.
+    static func runFolderName(processID: pid_t = getpid(), id: UUID = UUID()) -> String {
+        "\(runFolderPrefix)\(processID)-\(id.uuidString)"
+    }
+
+    /// The process that made the run folder called `name`, or nil when `name` is not exactly a name
+    /// `runFolderName` makes: the prefix, a positive decimal ID with no sign or leading zero, and an
+    /// upper-case UUID. So the sweep below cannot mistake anything else for a run folder.
+    static func runFolderOwner(_ name: String) -> pid_t? {
+        guard name.hasPrefix(runFolderPrefix) else { return nil }
+        let rest = name.dropFirst(runFolderPrefix.count)
+        guard let dash = rest.firstIndex(of: "-") else { return nil }
+        let digits = rest[..<dash]
+        let uuidText = String(rest[rest.index(after: dash)...])
+        guard let owner = pid_t(digits), owner > 0, String(owner) == digits,
+              UUID(uuidString: uuidText)?.uuidString == uuidText else { return nil }
+        return owner
+    }
+
+    /// Whether a process with this ID exists. Only "no such process" counts as gone: `EPERM` is a
+    /// live process that is not ours to signal, and any other answer keeps the folder too.
+    static func processExists(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno != ESRCH
+    }
+
+    /// Removes the run folders in `directory` that a process which has since exited left behind,
+    /// and returns their names.
+    ///
+    /// `transcribe`'s `defer` removes its folder however a run ends, but it cannot run when the
+    /// process dies: a crash or a force-quit mid-run leaves the folder. Since F533 a long
+    /// recording's folder holds its whole decode, about 115 MB per hour of audio, and nothing else
+    /// removed it before macOS cleared its temporary folder. So each run sweeps first, and the next
+    /// transcription removes what an earlier one could not.
+    ///
+    /// Only a real directory is removed (never a link, nor what one points at), only when its name
+    /// is exactly one `runFolderName` makes, and only when its process is not this one and no longer
+    /// exists. A folder still in use always has a live process: this one, a second copy of the app,
+    /// or one that cannot be checked. So no run in progress loses its folder. A folder whose
+    /// process ID has since been reused is kept until macOS clears it, which costs only space.
+    @discardableResult
+    static func removeAbandonedRunFolders(in directory: URL) -> [String] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return [] }
+        let current = getpid()
+        var removed: [String] = []
+        for name in names {
+            guard let owner = runFolderOwner(name), owner != current, !processExists(owner) else { continue }
+            // No trailing slash, and `attributesOfItem` does not follow a link, so a link named like
+            // a run folder is seen as the link it is.
+            let path = directory.appendingPathComponent(name, isDirectory: false).path
+            guard (try? FileManager.default.attributesOfItem(atPath: path)[.type]) as? FileAttributeType == .typeDirectory,
+                  (try? FileManager.default.removeItem(atPath: path)) != nil else { continue }
+            removed.append(name)
+        }
+        return removed
     }
 
     /// One `whisper` run over one file, read back as a piece transcript (times relative to `audio`).
