@@ -591,6 +591,38 @@ func theNextStopAfterACancelledQuitStillTranscribes() async throws {
             "a quit that is over must not keep suppressing transcription")
 }
 
+// MARK: - F809: a stop whose stopCapture() never returns
+
+@MainActor
+@Test("Stop & Quit whose capture never confirms the stop saves the meeting once the bound runs out, and quits with one reply (F809)")
+func stopAndQuitWithAHungStopCaptureQuitsAfterTheBound() async throws {
+    // `stopCapture()` never returns. The bound is injected, so nothing here waits it out.
+    let neverStops = Gate()
+    let (model, cleanup) = try makeModel(stopGate: neverStops)
+    defer { cleanup() }
+    defer { Task { await neverStops.open() } }
+    let bound = Gate()
+    defer { Task { await bound.open() } }
+    model.recorder.stopCaptureDeadlineForTesting = { await bound.wait() }
+    model.recordingTitle = "Late night"
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
+    let replies = Locked<[Bool]>([])
+
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+    try #require(decision == .terminateLater)
+    await bound.open()
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "one reply, and it is to quit")
+    let meeting = try #require(model.store.meeting(id: id), "saved from what was written, not left for the next launch")
+    #expect(meeting.title == "Late night")
+    #expect(meeting.status == .recorded)
+    #expect(meeting.recoverySource == nil, "finalized normally, not rebuilt after a finishing error")
+    #expect(model.recordingState == .idle, "and the Stop button is free again")
+    #expect(lifecycle.shouldTerminate { _ in } == .terminateNow, "a later quit is answered at once")
+}
+
 // MARK: - The AppKit half, pinned by source (F174: no scene or AppKit harness in this target)
 
 @Test("The app delegate hands every quit to AppLifecycle.shouldTerminate, and init wires its three inputs (F529)")

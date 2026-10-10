@@ -4603,20 +4603,25 @@ final class AppModel: ObservableObject {
     private func waitForCaptureRestartToSettle() async -> Bool {
         var waited = 0
         while isRestartingCapture, waited < captureRestartSettleTicks {
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(for: Self.captureRestartSettleTick)
             waited += 1
         }
         return !isRestartingCapture
     }
 
-    /// 50 ms ticks. 200 → 10 s.
+    /// Ticks of `captureRestartSettleTick` that make up `AudioCaptureEngine.captureSettleBound`
+    /// (200 × 50 ms = 10 s): one bound for both of Stop's waits on capture work it does not control,
+    /// this one and the stream's own `stopCapture()` (F809).
     private var captureRestartSettleTicks: Int {
         #if DEBUG
-        return captureRestartSettleTicksForTesting ?? 200
+        return captureRestartSettleTicksForTesting ?? Self.captureRestartSettleTicksInProduction
         #else
-        return 200
+        return Self.captureRestartSettleTicksInProduction
         #endif
     }
+    private static let captureRestartSettleTick: Duration = .milliseconds(50)
+    private static let captureRestartSettleTicksInProduction =
+        Int(saturating: (AudioCaptureEngine.captureSettleBound / captureRestartSettleTick).rounded(.up))
 
     #if DEBUG
     /// Test seam (F365): the bound, shortened so the expiry can be driven without a ten-second

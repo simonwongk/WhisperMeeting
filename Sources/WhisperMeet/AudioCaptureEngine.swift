@@ -55,6 +55,17 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// conservative restart-padding estimate from it (F460) instead of a second literal `1`
     /// describing the same interval in a different file.
     static let healthTickInterval: TimeInterval = 1.0
+
+    /// How long Stop waits for capture work it does not control before it goes on without it: an
+    /// in-flight restart (`AppModel.waitForCaptureRestartToSettle`, F292 and F365), and the stream's
+    /// own `stopCapture()` (F809).
+    ///
+    /// One bound, not a second guess. `SCStream.h` gives `stopCaptureWithCompletionHandler:` no time
+    /// limit, so nothing measured says how long a stop may take. A restart tears its dead stream down
+    /// with the same call before it builds another, and Stop has waited up to this long for a whole
+    /// restart since F292, so a `stopCapture()` gets the same. The figure itself is F292's choice,
+    /// not a measurement.
+    static let captureSettleBound: Duration = .seconds(10)
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
         category: "RecordingStartup"
@@ -340,28 +351,38 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             _streamDied || _restartInProgress || (_stream == nil && injectedStopCapture == nil)
         }
 
-        do {
-            if let injectedStopCapture {
-                try await injectedStopCapture()
-            } else if let stream {
+        // F809: within `captureSettleBound`. Past it, the capture is finalized from what was written,
+        // below, as if the stop had returned: the deferred branch, never a discard. Nothing more
+        // lands in the tracks once they are finished on the queue, and the sample handler drops
+        // anything from a stream that is no longer `_stream` once `reset()` has run.
+        let stopCall: CaptureStopCall?
+        if let injectedStopCapture {
+            stopCall = CaptureStopCall(run: injectedStopCapture)
+        } else if let stream {
+            stopCall = CaptureStopCall { try await stream.stopCapture() }
+        } else {
+            stopCall = nil
+        }
+        if let stopCall {
+            switch await stopCaptureWithinBound(stopCall) {
+            case .stopped:
+                break
+            case .expired:
+                Self.logger.error("Recording stop: the capture did not confirm its stop within the bound; finalizing what was written.")
+            case let .failed(error):
                 // Stopping a stream ScreenCaptureKit already stopped throws; that is the death we
-                // already know about, not a new failure.
-                if captureHadDied {
-                    try? await stream.stopCapture()
+                // already know about, not a new failure. An injected stop's error is always examined.
+                if captureHadDied, injectedStopCapture == nil { break }
+                stopHealthTimer()
+                await captureQueue.flush()
+                // A death delivered between the check above and this stop is still a death, not a
+                // finishing failure.
+                if streamDied {
+                    captureHadDied = true
                 } else {
-                    try await stream.stopCapture()
+                    preservePartialTracks()
+                    throw error
                 }
-            }
-        } catch {
-            stopHealthTimer()
-            await captureQueue.flush()
-            // A death delivered between the check above and this stop is still a death, not a
-            // finishing failure.
-            if streamDied {
-                captureHadDied = true
-            } else {
-                preservePartialTracks()
-                throw error
             }
         }
         stopHealthTimer()
@@ -448,7 +469,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func cancel() async {
         if let stream {
-            try? await stream.stopCapture()
+            // F809: within the same bound as Stop's, since a Cancel that never got past this held
+            // every quit just the same (F672 waits for `.stopping`). A discard has nothing to save,
+            // so a stop that never confirms is simply let go; its failure was ignored before too.
+            _ = await stopCaptureWithinBound(CaptureStopCall { try await stream.stopCapture() })
         }
         stopHealthTimer()
         await captureQueue.flush()
@@ -464,6 +488,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        guard stream === _stream else { return }
+        // F809: only the live stream's buffers belong to this recording. Stop lets go of a stream
+        // whose `stopCapture()` did not return within its bound, and if that stream is still
+        // delivering, its buffers would land in whatever writers are current, which can be the next
+        // recording's. `start()` and a restart publish a stream before starting it, so the live one
+        // always passes. On the capture queue (both `addStreamOutput` calls name it), so `_stream`.
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
         // Which track a failure below belongs to (F876): the health monitor counts each track's
         // consecutive failures on its own. Only `.audio` and `.microphone` outputs are added
@@ -817,6 +847,64 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         return abandoned
     }
 
+    /// A stream's stop, as a value a task can carry (F809). Unchecked because the injected seam's
+    /// closure and `SCStream` are not `Sendable`; the call runs exactly once, in one task.
+    private struct CaptureStopCall: @unchecked Sendable {
+        let run: () async throws -> Void
+    }
+
+    /// What became of a `stopCapture()` that Stop waited on within `captureSettleBound` (F809).
+    private enum CaptureStopOutcome: Sendable {
+        case stopped
+        case failed(any Error)
+        /// The bound ran out first. The call is still running, and nothing waits for it any more.
+        case expired
+    }
+
+    /// Runs a stream's stop, but answers `.expired` once `captureSettleBound` passes without it
+    /// (F809).
+    ///
+    /// `SCStream.stopCapture()` has no bound of its own, and a stop that never returned used to hold
+    /// Stop at "Finishing…" and, since F672, every quit, until Force Quit. Only the first outcome is
+    /// answered: a call that returns or throws after the bound changes nothing, because Stop has
+    /// already finalized the tracks and reset the engine. Its stream is no longer `_stream`, so the
+    /// sample handler drops anything it still delivers.
+    private func stopCaptureWithinBound(_ call: CaptureStopCall) async -> CaptureStopOutcome {
+        let deadline = stopCaptureDeadline
+        return await withCheckedContinuation { continuation in
+            let answered = OSAllocatedUnfairLock(initialState: false)
+            let answer: @Sendable (CaptureStopOutcome) -> Void = { outcome in
+                let first = answered.withLock { done in
+                    let first = !done
+                    done = true
+                    return first
+                }
+                if first { continuation.resume(returning: outcome) }
+            }
+            let expiry = Task {
+                await deadline()
+                if !Task.isCancelled { answer(.expired) }
+            }
+            Task {
+                do {
+                    try await call.run()
+                    answer(.stopped)
+                } catch {
+                    answer(.failed(error))
+                }
+                expiry.cancel()
+            }
+        }
+    }
+
+    /// Stop's deadline for `stopCapture()`: sleeping out `captureSettleBound`, or a test's (F809).
+    private var stopCaptureDeadline: @Sendable () async -> Void {
+        #if DEBUG
+        if let stopCaptureDeadlineForTesting { return stopCaptureDeadlineForTesting }
+        #endif
+        return { try? await Task.sleep(for: AudioCaptureEngine.captureSettleBound) }
+    }
+
     /// Throws `CancellationError` when a stop or cancel has reset the engine since `generation`.
     private func ensureSession(_ generation: Int) throws {
         guard generation == sessionGeneration else { throw CancellationError() }
@@ -846,6 +934,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Test seams for F334: the window between "is this session still mine?" and publishing the
     /// restarted stream is where a racing `reset()` used to land. Nothing in the app sets these.
     var onRestartPublishWindowForTesting: (@Sendable () -> Void)?
+
+    /// Test seam (F809): returns when Stop's wait for `stopCapture()` runs out, in place of
+    /// sleeping out `captureSettleBound`. Nothing in the app sets it.
+    var stopCaptureDeadlineForTesting: (@Sendable () async -> Void)?
 
     var sessionGenerationForTesting: Int { sessionGeneration }
     var pendingRestartPaddingForTesting: Int64 { captureQueue.sync { _pendingRestartPadding } }
