@@ -2626,6 +2626,21 @@ final class AppModel: ObservableObject {
     /// Why a finished segment re-run was not put in: its line was removed or changed while it ran (F573).
     static let segmentReRunDiscardedLineGone = "That line was removed or changed while it was being "
         + "re-transcribed, so the new text was not put in. Nothing else in the transcript was changed."
+    /// Why a segment re-run did not start: the conflict banner is waiting for an answer (F863). The
+    /// person's changes wait for it (F619), and the line a re-run puts in is one.
+    static let segmentReRunRefusedForConflict = "Choose Keep My Edit or Use the Other Copy in the banner at "
+        + "the top of the window first. Until you do, changes to your meetings wait, so a re-transcribed line "
+        + "could not be put in."
+    /// Why a finished segment re-run was not put in: the conflict banner appeared while it ran (F863).
+    static let segmentReRunDiscardedForConflict = "That segment was re-transcribed, but the new line was not "
+        + "put in: the banner at the top of the window is waiting for you to choose Keep My Edit or Use the "
+        + "Other Copy, and changes to your meetings wait until you do. Choose one, then re-transcribe the "
+        + "segment again."
+    /// Whether the conflict banner is up and holding the person's changes back (F863). Not while a
+    /// restore runs: the banner is hidden then, and the store's own refusal says why.
+    private var conflictBannerHoldsChanges: Bool {
+        store.conflictOffer != nil && !store.isRestoringLibrary
+    }
     /// Why Second Opinion's Replace was refused: the transcript was edited by hand (F436).
     static let secondOpinionReplaceRefusedForEdits = "This transcript was edited by hand, so a line can't "
         + "be replaced with the other engine's reading — that rebuilds the text from the original lines "
@@ -2637,6 +2652,10 @@ final class AppModel: ObservableObject {
     /// + wraps.
     func reTranscribeSegment(id: UUID, index: Int) async {
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
+        guard !conflictBannerHoldsChanges else {
+            alertMessage = Self.segmentReRunRefusedForConflict
+            return
+        }
         guard let meeting = store.meeting(id: id),
               meeting.segments.indices.contains(index),
               let start = meeting.segments[index].start,
@@ -2682,6 +2701,12 @@ final class AppModel: ObservableObject {
                 // it is spliced in, and are added to the meeting's count rather than replacing it — the
                 // rest of the transcript's earlier removals still happened.
                 let cleaned = TranscriptRepetitionCleanup.clean(result.segments)
+                // F863: the banner came up while the engine ran. The store would refuse the splice
+                // without a word — the banner explains a refused keystroke — so it is said here.
+                guard !conflictBannerHoldsChanges else {
+                    alertMessage = Self.segmentReRunDiscardedForConflict
+                    return
+                }
                 var spliced = false
                 var editedMeanwhile = false
                 var lineGone = false
@@ -2757,6 +2782,12 @@ final class AppModel: ObservableObject {
         // Guarded here as well as in the delegate, so the refusal is one immediate message rather
         // than one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
+        // F863: the line could not be put in while the banner waits for an answer, so the engine is
+        // not run for it.
+        guard !conflictBannerHoldsChanges else {
+            alertMessage = Self.segmentReRunRefusedForConflict
+            return
+        }
         // The same reasoning for a hand-edited transcript (F436); `reTranscribeSegment` checks again.
         guard let current = store.meeting(id: id), !store.isTranscriptEdited(current) else {
             alertMessage = Self.segmentReRunRefusedForEdits

@@ -130,8 +130,10 @@ F642):
 - A delete that lost is not offered back: nothing was deleted, the message says so, and deleting
   again works.
 - Until the offer is answered, that copy refuses further changes the person makes to its meetings —
-  edits and deletes — without a message of its own; the offer is the explanation. Work the app
-  finishes meanwhile — a recording stopped, an import, a transcript or summary, a rebuilt recording —
+  edits and deletes — without a message of its own; the offer is the explanation. Re-transcribing a
+  segment, which runs the engine first, is the exception: it is refused with a message naming the
+  banner, before it starts or, if the banner appears while it runs, when it finishes (F863). Work the
+  app finishes meanwhile — a recording stopped, an import, a transcript or summary, a rebuilt recording —
   is saved as usual and written into the offered copy of its meeting as well, so neither answer loses
   it. If that save loses to the other copy, the work is made again to the copy the re-read found and
   saved once more, so it is never left for *Use the Other Copy* to drop (F662); if that loses too, it
