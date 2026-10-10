@@ -467,7 +467,9 @@ enum BackupCoordinator {
     /// How much of a file is held in memory at once while hashing it.
     ///
     /// 1 MiB: large enough that a 4 GB recording costs ~4,000 reads rather than a syscall per page,
-    /// small enough that it is irrelevant beside the app's own footprint.
+    /// small enough that it is irrelevant beside the app's own footprint. That holds only because each
+    /// chunk is read inside its own autorelease pool (F927): without the pools every chunk stayed
+    /// allocated until the whole backup returned, so a backup held every byte it had hashed.
     static let hashChunkByteCount = 1 << 20
 
     /// Streams a file through SHA-256 (F191 slice B).
@@ -477,9 +479,11 @@ enum BackupCoordinator {
     /// to protect are multi-gigabyte recordings — so the verification step was the one most likely
     /// to fail on exactly the library that needed backing up most.
     ///
-    /// The read is injected so the chunking itself is observable. "Memory did not grow" is not
-    /// something a test can assert honestly; how many times the reader was asked, and for how much,
-    /// is.
+    /// The read is injected so the chunking itself is observable: how many times the reader was
+    /// asked, and for how much. Chunking alone did not keep memory flat, though, because every
+    /// chunk the reader returned stayed allocated until the call ended (F927). What the call holds is
+    /// asserted directly too, as footprint and allocated bytes across one call
+    /// (`BackupHashMemoryTests`).
     static func sha256(
         of url: URL,
         read: (FileHandle, Int) throws -> Data? = { try $0.read(upToCount: $1) }
@@ -501,9 +505,17 @@ enum BackupCoordinator {
         defer { try? handle.close() }
         var hasher = SHA256()
         var byteCount: Int64 = 0
-        while let chunk = try read(handle, hashChunkByteCount), !chunk.isEmpty {
-            hasher.update(data: chunk)
-            byteCount += Int64(chunk.count)
+        // Each chunk inside its own autorelease pool (F927). `read(upToCount:)` returns the bytes in an
+        // autoreleased buffer, and a backup runs as one call inside `Task.detached`, so with no drain
+        // here every chunk of every file it hashed stayed allocated until the backup returned.
+        var more = true
+        while more {
+            more = try autoreleasepool {
+                guard let chunk = try read(handle, hashChunkByteCount), !chunk.isEmpty else { return false }
+                hasher.update(data: chunk)
+                byteCount += Int64(chunk.count)
+                return true
+            }
         }
         return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), byteCount)
     }
