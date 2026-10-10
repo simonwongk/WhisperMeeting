@@ -504,6 +504,93 @@ func aQuitDuringAFailedRebuildStaysOpen() async throws {
             "the folder is kept for a later launch to rebuild")
 }
 
+// MARK: - F812: a quit that waited for a Stop & Transcribe
+
+// F673 made Stop & Quit save the meeting without starting its transcription. A quit that instead
+// waits (F672) for a Stop & Transcribe already under way let that stop start its job, then quit
+// under it, so a cleanly saved meeting reopened "Local transcription was interrupted".
+
+/// A stub engine that never finishes on its own, so a job that started is visibly running.
+@MainActor
+private func installLatchedEngine(_ model: AppModel, _ engine: Gate) {
+    model.runTranscriptionEngineOverride = { _, _ in
+        await engine.wait()
+        return TranscriptionResult(id: "stub", text: "Done.", languageCode: "en", audioDuration: 2, confidence: nil,
+                                   segments: [TranscriptSegment(speaker: nil, start: 0, end: 2, text: "Done.")])
+    }
+}
+
+@MainActor
+@Test("A quit that waited for a Stop & Transcribe leaves the meeting ready to transcribe, without a job it would quit under (F812)")
+func aQuitThatWaitedForStopAndTranscribeStartsNoJob() async throws {
+    let gate = Gate()
+    let (model, cleanup) = try makeModel(stopGate: gate, engineInstalled: true)
+    defer { cleanup() }
+    defer { Task { await gate.open() } }
+    let engine = Gate()
+    defer { Task { await engine.open() } }
+    installLatchedEngine(model, engine)
+    try #require(model.isSelectedEngineInstalled, "sanity: the stub engine counts as installed")
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
+    let atReply = Locked<(quit: Bool, active: Bool, queued: Bool, status: MeetingStatus?)?>(nil)
+
+    // The in-window Stop & Transcribe, held mid-save, and then ⌘Q.
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilStopping(model)
+    let decision = lifecycle.shouldTerminate { quit in
+        atReply.withLock { $0 = (quit, model.hasActiveTranscription, model.isQueuedForTranscription(id),
+                                 model.store.meeting(id: id)?.status) }
+    }
+    try #require(decision == .terminateLater)
+    await gate.open()
+    let deadline = Date().addingTimeInterval(30)
+    while atReply.withLock({ $0 == nil }), Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let seen = try #require(atReply.withLock { $0 }, "the quit was never answered")
+
+    #expect(seen.quit)
+    #expect(!seen.active, "a job started now is killed by the quit and the meeting reopens as interrupted")
+    #expect(!seen.queued)
+    #expect(seen.status == .recorded, "saved, and ready to transcribe at the next launch")
+    #expect(await stop.value == id)
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(!model.hasActiveTranscription && meeting.status == .recorded, "and nothing starts one after the reply either")
+    #expect(meeting.errorMessage == nil, "a cleanly saved meeting, not an interrupted one")
+}
+
+@MainActor
+@Test("After a quit that waited is cancelled, the next Stop & Transcribe still transcribes (F812 control)")
+func theNextStopAfterACancelledQuitStillTranscribes() async throws {
+    // The obvious over-fix: a "quit is waiting" mark that outlives its quit. The first stop fails and
+    // nothing can be rebuilt, so the quit is cancelled and the app stays open.
+    let gate = Gate()
+    let (model, cleanup) = try makeModel(stopFails: true, stopGate: gate, engineInstalled: true)
+    defer { cleanup() }
+    defer { Task { await gate.open() } }
+    let engine = Gate()
+    defer { Task { await engine.open() } }
+    installLatchedEngine(model, engine)
+    model.recoverInterruptedRecording = { _ in nil }
+    _ = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let failing = Task { await model.stopRecording(title: "") }
+    try await waitUntilStopping(model)
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    await gate.open()
+    try await waitForReply(replies)
+    try #require(replies.withLock { $0 } == [false], "sanity: the failed stop cancels the quit")
+    try #require(await failing.value == nil)
+
+    // The app stayed open. The next recording's Stop & Transcribe starts its transcription as usual.
+    // (A stop resets the engine's injected stop, so this one does not fail.)
+    let next = try await startRecordingWithTracks(model)
+    #expect(await model.stopRecording(title: "Next") == next)
+    #expect(model.hasActiveTranscription || model.isQueuedForTranscription(next),
+            "a quit that is over must not keep suppressing transcription")
+}
+
 // MARK: - The AppKit half, pinned by source (F174: no scene or AppKit harness in this target)
 
 @Test("The app delegate hands every quit to AppLifecycle.shouldTerminate, and init wires its three inputs (F529)")

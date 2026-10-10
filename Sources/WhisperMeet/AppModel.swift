@@ -4074,7 +4074,8 @@ final class AppModel: ObservableObject {
     /// - Parameter transcribe: whether a saved meeting's transcription starts now. `false` only for
     ///   Stop & Quit (F673): the process is about to end, so a job started here would be killed
     ///   mid-run and the meeting reopen as "Local transcription was interrupted". It is saved
-    ///   `.recorded` instead, ready to transcribe at the next launch.
+    ///   `.recorded` instead, ready to transcribe at the next launch. A quit that is waiting for
+    ///   this stop by the time it saves has the same effect (F812).
     func stopRecording(title: String, transcribe: Bool = true) async -> UUID? {
         guard let id = activeMeetingID else { return nil }
         // F292: one stop at a time, and never mid-start — `start()` is still building the stream and
@@ -4139,6 +4140,12 @@ final class AppModel: ObservableObject {
 
             refreshRuntime()
             let engineInstalled = isSelectedEngineInstalled
+            // F812: when a quit is waiting for this stop (F672), the process ends as soon as this
+            // returns. A job started here would be cut off and the meeting reopen "Local
+            // transcription was interrupted", so it is saved `.recorded` instead, exactly as Stop &
+            // Quit's own stop does (F673). Read here, at the decision, because the quit can arrive
+            // at any point while this stop is saving.
+            let transcribe = transcribe && !isQuitWaitingForStop
             if engineInstalled, transcribe {
                 beginTranscription(id: id)
             }
@@ -4263,6 +4270,11 @@ final class AppModel: ObservableObject {
             // `activeMeetingID`; a Cancel's, or a sleep stop's before it calls in, is still active.
             // The wait also holds while anything has begun since (not `.idle`), as F672's did.
             let id = stopInFlightMeetingID ?? activeMeetingID
+            // F812: and that stop saves the meeting ready to transcribe rather than starting a job
+            // this quit would cut off. Cleared when the wait ends, whatever it decides, so a quit
+            // that is cancelled leaves the next stop transcribing as usual.
+            isQuitWaitingForStop = true
+            defer { isQuitWaitingForStop = false }
             while isRecordingFinishing || recordingState != .idle {
                 guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return false }
             }
@@ -4552,6 +4564,11 @@ final class AppModel: ObservableObject {
     /// that rebuild has to know which meeting to look for afterwards.
     private var stopInFlightMeetingID: UUID?
     private var isStopInFlight: Bool { stopInFlightMeetingID != nil }
+
+    /// A quit is waiting for the stop under way (F672), so the app is about to end, and that stop
+    /// must not start a transcription the quit would cut off (F812). Set and cleared by
+    /// `stopRecordingBeforeQuit()`'s wait; read by `stopRecording` at its transcription decision.
+    private var isQuitWaitingForStop = false
 
     /// Whether `captureRestartNotice` is the "keeps trying" line, which only describes a live
     /// recording and must not outlive it (F292).
