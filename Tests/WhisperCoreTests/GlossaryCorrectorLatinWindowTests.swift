@@ -56,10 +56,11 @@ func termsOwnPunctuationIsNotDoubled() {
 func untrimmedWindowNotFoundIsNeverMisapplied() {
     // The window "(Kestrol⟨TAB⟩Release)" is proposed with a space between its words, so its text is
     // nowhere in the segment; its trimmed text is, inside "Kestrol Release-ish", and a tick changed
-    // those words. Before F819 the row changed nothing, and it changes nothing again.
+    // those words. Before F819 the row changed nothing; now a row that changes nothing is not
+    // proposed at all (F820).
     let segments = [seg("(Kestrol\tRelease) ok, Kestrol Release-ish")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel Release"], segments: segments)
-    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "(Kestrol Release)", to: "Kestrel Release")])
+    #expect(corrections.isEmpty)
     #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "(Kestrol\tRelease) ok, Kestrol Release-ish")
 }
 
@@ -73,6 +74,21 @@ func underscoreIsNeverTrimmed() {
     let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: segments)
     #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol_", to: "Kestrel")])
     #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrel build")
+}
+
+@Test("A row that applying would leave unchanged is not proposed: a correct term of four or more words, words joined across a tab (F820)")
+func noOpRowsAreNotProposed() {
+    // Windows go up to three words, so a correct four-word term's best window lies inside it
+    // ("Bank of New" in "Bank of New York"); apply never changes text inside the term, so the row
+    // did nothing. Words joined across a tab or a double space are proposed with one space, which
+    // apply never finds.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Bank of New York"], segments: [seg("the Bank of New York said yes")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Bank of New York Mellon"], segments: [seg("we bank with Bank of New York Mellon today")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper\tnetties today")]).isEmpty)
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper  netties today")]).isEmpty)
+    // The same words with one space are a working row, as before.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper netties today")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "cooper netties", to: "Kubernetes")])
 }
 
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")

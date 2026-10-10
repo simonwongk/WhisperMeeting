@@ -22,8 +22,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// whitespace-separated words — as in F65, and pinned against a copy of the old code by
 /// `GlossaryCorrectorGoldenTests`, amended only where a later ticket changed the answer on purpose:
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
-/// proposed as "Kestrol"), and a term equal to a window of several words is already present (F820,
-/// "Priya Raman said" proposes nothing for "Priya Raman"). A term containing Chinese is compared
+/// proposed as "Kestrol"), a term equal to a window of several words is already present (F820,
+/// "Priya Raman said" proposes nothing for "Priya Raman"), and a row `apply` would leave unchanged
+/// is not proposed at all (F820's review). A term containing Chinese is compared
 /// with windows of exactly its own length, slid character by character along each run of letters
 /// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
@@ -147,6 +148,12 @@ public enum GlossaryCorrector {
     /// stuck to its outer words, less what the term's own spelling begins or ends with (F819),
     /// unless `apply` would then change something the untrimmed phrase did not — see
     /// `applicablePhrase`.
+    ///
+    /// And nothing is proposed that `apply` would leave unchanged (F820, the Wave 5 review's T10):
+    /// windows go up to three words, so the best window of a correct term of four or more words lies
+    /// inside it ("Bank of New" in "Bank of New York") — and `apply` never changes text inside the
+    /// term — and words joined across a tab or a double space are proposed with one space, which
+    /// `apply` never finds. Both were rows that did nothing when ticked.
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
     ) -> String? {
@@ -164,7 +171,9 @@ public enum GlossaryCorrector {
             }
         }
         guard let window = best?.window else { return nil }
-        return applicablePhrase(window, term: term.term, in: text)
+        let phrase = applicablePhrase(window, term: term.term, in: text)
+        guard ReplacementBoundary.occurs(phrase, notCoveredBy: term.term, in: text) else { return nil }
+        return phrase
     }
 
     /// The window's phrase trimmed for `term` (F819), unless `GlossaryCorrector.apply`, which changes
@@ -173,8 +182,8 @@ public enum GlossaryCorrector {
     /// "Kestrol" first occurs in "Kestrol-ish". In "(Kestrol⟨TAB⟩Release)" the window's words are
     /// joined with a space, so the untrimmed text is nowhere in the segment, while "Kestrol Release"
     /// is — inside "Kestrol Release-ish" (the Wave 5 review, T8). Either way the untrimmed phrase is
-    /// proposed, exactly as before F819: a row that changes what it always changed, or nothing.
-    /// Only a trimmed window pays the searches.
+    /// returned, exactly as before F819: a row that changes what it always changed — or nothing,
+    /// which `bestLatinWindow` then does not propose. Only a trimmed window pays the searches.
     private static func applicablePhrase(_ window: LatinWindows.Window, term: String, in text: String) -> String {
         let trimmed = trimmingAttachedPunctuation(window.phrase, keepingTheEdgesOf: term)
         guard trimmed != window.phrase,

@@ -97,3 +97,27 @@ func glossaryCorrectionLeavesACorrectTwoWordTermAlone() async throws {
     // Only the real mishearing, on the second line.
     #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "Priya Ramen", to: "Priya Raman")])
 }
+
+@MainActor
+@Test("Correct Toward Vocabulary offers no row that applying would leave unchanged, such as a correct four-word name (F820)")
+func glossaryCorrectionOffersNoRowThatChangesNothing() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GlossaryWiringTests-F820-noop-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 1, text: "The Bank of New York said yes."),
+        TranscriptSegment(speaker: nil, start: 1, end: 2, text: "We deployed cooper\tnetties today."),
+    ]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    model.store.addVocabulary(["Bank of New York", "Kubernetes"])
+
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
+    #expect(proposals.isEmpty)
+}

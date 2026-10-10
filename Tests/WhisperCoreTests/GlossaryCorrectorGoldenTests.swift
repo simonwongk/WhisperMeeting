@@ -14,11 +14,13 @@ import Testing
 // - F819 in place: but not where `apply` would then change something the untrimmed phrase did not
 //   change — elsewhere in the segment, or anywhere at all when the untrimmed text is nowhere in it.
 // - F820: a term equal to any window of the segment, not only to one word, is present already.
+// - F820 no-op: a row `apply` would leave unchanged is not proposed.
 
 private struct Amendments {
     var f819 = true
     var f819InPlace = true
     var f820 = true
+    var f820NoOp = true
 }
 
 private enum PreF536GlossaryCorrector {
@@ -61,7 +63,9 @@ private enum PreF536GlossaryCorrector {
                        !appliesInPlace(phrase, of: best.phrase, term: term, in: segment.text) { // amended
                         phrase = best.phrase // amended
                     } // amended
-                    results.append(GlossaryCorrection(segmentIndex: index, from: phrase, to: term))
+                    let proposal = GlossaryCorrection(segmentIndex: index, from: phrase, to: term)
+                    if amended.f820NoOp, changesNothing(proposal, in: segment) { continue } // amended
+                    results.append(proposal)
                 }
             }
         }
@@ -88,6 +92,13 @@ private enum PreF536GlossaryCorrector {
         while let last = characters.last, !keeps(last) { trailing.insert(characters.removeLast(), at: 0) }
         guard !characters.isEmpty else { return phrase }
         return String(leading.suffix(termLeading) + characters + trailing.prefix(termTrailing))
+    }
+
+    /// F820 no-op: whether applying `proposal` alone leaves `segment`'s text as it was — asked of
+    /// `GlossaryCorrector.apply` itself, since what it does is the definition.
+    static func changesNothing(_ proposal: GlossaryCorrection, in segment: TranscriptSegment) -> Bool {
+        let alone = GlossaryCorrection(segmentIndex: 0, from: proposal.from, to: proposal.to)
+        return GlossaryCorrector.apply([alone], to: [segment])[0].text == segment.text
     }
 
     /// F819 in place: whether `apply` would change the trimmed phrase inside the place it changes the
@@ -193,10 +204,19 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF819.f819 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF819) != expected,
             "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
-    var withoutInPlace = Amendments()
+    // Judged with the no-op amendment off on both sides: a row the in-place rule leaves untrimmed
+    // and unfindable is a row that changes nothing, which the no-op amendment drops either way.
+    var withInPlaceOnly = Amendments()
+    withInPlaceOnly.f820NoOp = false
+    var withoutInPlace = withInPlaceOnly
     withoutInPlace.f819InPlace = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutInPlace) != expected,
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutInPlace)
+        != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withInPlaceOnly),
             "no trimmed proposal in the corpus would be applied elsewhere, so F819's in-place amendment is untested here")
+    var withoutNoOp = Amendments()
+    withoutNoOp.f820NoOp = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutNoOp) != expected,
+            "no proposal in the corpus changes nothing, so F820's no-op amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
 }
