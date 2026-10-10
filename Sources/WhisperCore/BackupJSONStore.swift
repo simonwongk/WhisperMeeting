@@ -216,17 +216,28 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         /// What the load observed and could not silently fix. Diagnostics through return values,
         /// never a log line — `WhisperCore` has no logger and this is why that is fine.
         public let repairs: [StoreRepair]
+        /// The primary as this load found it, for a caller that will save over exactly what it
+        /// showed — a damaged list's Keep (F865) — and never for an ordinary save, which takes `token`.
+        /// The same as `token` for a clean load; the primary's own generation for
+        /// `.divergentGenerations`, whose primary decoded; and `GenerationToken.absent` when the
+        /// primary was missing or did not decode (`.recoveredFromBackup`, `.partiallySalvaged`). A save
+        /// expecting `.absent` proceeds over no file or an undecodable one (copied aside first, F187)
+        /// and is a lost race against any decodable file — which only another writer can have put
+        /// there since. Nil only for a result built by hand.
+        public let primaryAsRead: GenerationToken?
 
         public init(
             value: Value,
             health: PersistedStoreHealth,
             token: GenerationToken? = nil,
-            repairs: [StoreRepair] = []
+            repairs: [StoreRepair] = [],
+            primaryAsRead: GenerationToken? = nil
         ) {
             self.value = value
             self.health = health
             self.token = token
             self.repairs = repairs
+            self.primaryAsRead = primaryAsRead
         }
     }
 
@@ -331,13 +342,15 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 // `MeetingStore.meetings` empty, which renders as zero meetings plus a read-only
                 // banner — visually indistinguishable from the wipe this design exists to prevent.
                 // No token: nothing may arm a checked write against a lineage we cannot vouch for.
-                return LoadResult(value: value, health: .divergentGenerations, repairs: repairs)
+                // `primaryAsRead` is these bytes, for the one save that keeps exactly them (F865).
+                return LoadResult(
+                    value: value, health: .divergentGenerations, repairs: repairs,
+                    primaryAsRead: token(for: data, ledger: ledger)
+                )
             }
+            let generation = token(for: data, ledger: ledger)
             return LoadResult(
-                value: value,
-                health: .complete,
-                token: token(for: data, ledger: ledger),
-                repairs: repairs
+                value: value, health: .complete, token: generation, repairs: repairs, primaryAsRead: generation
             )
         }
         if backupExists,
@@ -345,8 +358,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
            let value = try? decoder.decode(Value.self, from: data) {
             // Deliberately NO token. These bytes are the backup, not the primary, so they are not
             // the generation a `save(expecting:)` would be swapping against — handing one back
-            // would let a degraded load arm a checked write over a primary nobody read.
-            return LoadResult(value: value, health: .recoveredFromBackup, repairs: repairs)
+            // would let a degraded load arm a checked write over a primary nobody read. The primary
+            // was missing or did not decode, which is what `primaryAsRead` says (F865).
+            return LoadResult(
+                value: value, health: .recoveredFromBackup, repairs: repairs, primaryAsRead: .absent
+            )
         }
         guard primaryExists || backupExists else { return nil }
 
@@ -381,7 +397,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             if let best {
                 return LoadResult(
                     value: best.value,
-                    health: .partiallySalvaged(parkedIdentifiers: best.parked)
+                    health: .partiallySalvaged(parkedIdentifiers: best.parked),
+                    primaryAsRead: .absent   // neither copy decoded (F865)
                 )
             }
         }

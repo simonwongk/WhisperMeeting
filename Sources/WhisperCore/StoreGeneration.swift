@@ -51,6 +51,12 @@ public struct GenerationToken: Codable, Sendable, Equatable {
     /// A value rather than a new stored field, so the type's shape is unchanged. Its fingerprint is
     /// not sixteen hex digits and its byte count is negative, so it matches no bytes, empty ones
     /// included. It is never written to a ledger: a save over no file has no parent.
+    ///
+    /// What a save expecting it does is the same for a file that is there but does not decode: it
+    /// proceeds (the save copies such a file aside first, and rule 3 lets it through whatever the
+    /// token), and any decodable file is a lost race. So it is also what a damaged list's load keeps for Keep This List when its
+    /// file was missing or did not decode (`LoadResult.primaryAsRead`, F865): nobody can have
+    /// written a decodable file there since except another writer.
     public static let absent = GenerationToken(
         sequence: 0, fingerprint: "absent", byteCount: -1, writer: "none", verified: false
     )

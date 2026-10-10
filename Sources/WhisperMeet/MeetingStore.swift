@@ -1333,9 +1333,10 @@ final class MeetingStore: ObservableObject {
     /// Health becomes `.complete` only once the save has landed, because only then is the list in
     /// memory the one on disk. A save that fails leaves the list read-only and says why. A save that
     /// loses to another copy re-reads the list (F663): what that copy saved is the list now, and its
-    /// own load says whether it still needs keeping. Not reached today: a damaged list's load holds no
-    /// generation token (`BackupJSONStore.load` hands none back for anything but a clean primary), so
-    /// this save is unchecked and cannot lose a race — it is last-writer-wins.
+    /// own load says whether it still needs keeping. It can lose (F865): the save is checked against
+    /// the file as this window read it — a hand-edited file's own generation, or "no decodable file"
+    /// when it was missing or did not decode (`LoadResult.primaryAsRead`) — so a list another copy
+    /// saved meanwhile is re-read, not replaced. It used to be unchecked, last-writer-wins.
     func keepLoadedList(_ list: EditableList) {
         guard mutationIsAllowed(), isListReadOnly(list) else { return }
         switch saveList(list) {
@@ -3806,7 +3807,10 @@ final class MeetingStore: ObservableObject {
         do {
             if let result = try vocabularyFiles.load() {
                 vocabulary = Self.storedTerms(result.value)
-                vocabularyToken = result.token
+                // The file as read: `token` for a clean list, and for a damaged one what Keep This List
+                // saves over (F865), so another copy's newer list is a lost race, not overwritten. Edits
+                // to a damaged list stay refused by its health; only Keep uses this.
+                vocabularyToken = result.primaryAsRead ?? result.token
                 // The list's own health, never the library's (F464). No re-persist on a backup
                 // recovery either: that writes nothing, so the damaged primary is left exactly as it
                 // is (F187, and what `docs/RECOVERY.md` promises). The old `save()` ran during
@@ -3818,10 +3822,12 @@ final class MeetingStore: ObservableObject {
             }
         } catch {
             // The same state `init` starts from, so the notice's "the list is empty" is true on a
-            // recovery's reload as well — and no token, so nothing arms a checked write against a
-            // generation this load could not read.
+            // recovery's reload as well. `BackupJSONStore.load` throws only once neither copy decoded,
+            // so Start a New List expects no decodable file (F865): it saves over the unreadable one —
+            // copied aside first — and loses to a list another copy has saved since. Edits stay
+            // refused by the list's health, as before; only Keep uses this token.
             vocabulary = []
-            vocabularyToken = nil
+            vocabularyToken = .absent
             vocabularyHealth = Self.health(after: error)
         }
     }
@@ -3836,7 +3842,7 @@ final class MeetingStore: ObservableObject {
         do {
             if let result = try replacementRulesFiles.load() {
                 replacementRules = result.value
-                replacementRulesToken = result.token
+                replacementRulesToken = result.primaryAsRead ?? result.token   // as `readVocabulary` (F865)
                 // As `loadVocabulary`: its own health, and no silent re-persist (F187, F464).
                 replacementRulesHealth = result.health
             } else {
@@ -3844,7 +3850,7 @@ final class MeetingStore: ObservableObject {
             }
         } catch {
             replacementRules = []
-            replacementRulesToken = nil
+            replacementRulesToken = .absent   // as `readVocabulary` (F865)
             replacementRulesHealth = Self.health(after: error)
         }
     }
