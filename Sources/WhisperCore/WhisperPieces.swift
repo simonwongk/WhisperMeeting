@@ -255,6 +255,28 @@ public struct WhisperPieceTranscript: Sendable, Equatable {
         self.language = language
         self.segments = segments
     }
+
+    /// The same transcript with no segment time past `seconds`, the length of its piece (the lane L
+    /// review's R6).
+    ///
+    /// openai-whisper does not clamp a segment's end to the audio it was given. The end is
+    /// `time_offset + end_timestamp_pos * time_precision`, or `time_offset + duration` with
+    /// `duration = last_timestamp_pos * time_precision` (`whisper/transcribe.py:361-362` and
+    /// `:389-394` in the pinned 20250625, the same on github.com/openai/whisper main on 2026-10-09),
+    /// and only `--word_timestamps`, which is never passed, adjusts it afterwards. So a timestamp the
+    /// model puts in the padding after a piece's last sample would end that piece's last segment
+    /// after the cut, and once offset, overlap the next piece's first segment. Clamped before the
+    /// offset, the pieces' times cannot overlap at a join, whatever the model does.
+    ///
+    /// The bound is the first argument of each `min`, so a NaN time becomes the bound (F369).
+    func clamped(toSeconds seconds: Double) -> WhisperPieceTranscript {
+        WhisperPieceTranscript(text: text, language: language, segments: segments.map { segment in
+            var clamped = segment
+            clamped.start = segment.start.map { min(seconds, $0) }
+            clamped.end = segment.end.map { min(seconds, $0) }
+            return clamped
+        })
+    }
 }
 
 /// Joins piece transcripts into the one result a single pass would have returned (F533). Pure.

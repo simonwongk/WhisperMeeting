@@ -206,6 +206,24 @@ func allSilentPiecesAreNoSpeech() {
     }
 }
 
+@Test("A piece's segment times are clamped to the piece's own length (F533)")
+func pieceTranscriptIsClampedToItsLength() {
+    // A 3.15 s piece: one segment inside it, one Whisper ended in the padding after its last
+    // sample, and one that starts there too.
+    let clamped = WhisperPieceTranscript(text: " a b c", language: "en", segments: [
+        segment("Inside.", 0.5, 2), segment("Ends past the cut.", 2.9, 3.6), segment("In the padding.", 3.3, 3.8),
+    ]).clamped(toSeconds: 3.15)
+
+    let starts: [Double?] = clamped.segments.map(\.start)
+    let ends: [Double?] = clamped.segments.map(\.end)
+    let expectedStarts: [Double?] = [0.5, 2.9, 3.15]
+    let expectedEnds: [Double?] = [2, 3.15, 3.15]
+    #expect(starts == expectedStarts)
+    #expect(ends == expectedEnds)
+    #expect(clamped.segments.map(\.text) == ["Inside.", "Ends past the cut.", "In the padding."], "no text is dropped")
+    #expect(clamped.text == " a b c" && clamped.language == "en")
+}
+
 // MARK: - Progress
 
 @Test("A piece's progress is reported as progress through the whole recording (F533)")
@@ -256,10 +274,11 @@ private struct PieceFixture {
     let pieceCountLog: URL
 
     /// `copiesAudio: false` keeps the stub from copying its input to `captured/`, for a sparse
-    /// 45-minute file a copy would make dense.
+    /// 45-minute file a copy would make dense. `overrunEnds: true` ends each piece's segment a
+    /// second past the piece's own length, as a timestamp the model put in the padding would.
     init(
         failPiece: Int? = nil, hangPiece: Int? = nil, ffmpegFails: Bool = false,
-        recordingName: String = "meeting.wav", copiesAudio: Bool = true
+        recordingName: String = "meeting.wav", copiesAudio: Bool = true, overrunEnds: Bool = false
     ) throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("WhisperPiecesTests-\(UUID().uuidString)", isDirectory: true)
@@ -302,8 +321,10 @@ private struct PieceFixture {
         print -r -- " 50%|#####     | 50/100 [00:01<00:01, 50.00frames/s]"
         print -r -- "100%|##########| 100/100 [00:02<00:00, 50.00frames/s]"
         [[ -n "$language" ]] || language="zh"
-        printf '{"text":" piece %s","language":"%s","segments":[{"start":0.5,"end":1.0,"text":" piece %s"}]}' \
-          "$number" "$language" "$number" > "$output_dir/${name}.json"
+        end="1.0"
+        \#(overrunEnds ? #"end=$(( ($(stat -f %z "$audio") - 44) / 32000.0 + 1.0 ))"# : ": ends at 1.0")
+        printf '{"text":" piece %s","language":"%s","segments":[{"start":0.5,"end":%s,"text":" piece %s"}]}' \
+          "$number" "$language" "$end" "$number" > "$output_dir/${name}.json"
         """#)
         // Stands in for ffmpeg's decode to 16 kHz mono s16le: the fixture is already that, behind a
         // canonical 44-byte header, so the decode is the bytes after it.
@@ -590,4 +611,24 @@ func progressAcrossPiecesMovesForward() async throws {
         #expect(fractions.contains { abs($0 - end) < 0.000_1 }, "no \(end) in \(fractions)")
     }
     #expect(fractions.last == 1)
+}
+
+@Test("A segment Whisper ends in a piece's padding is clamped to the cut, so pieces never overlap at a join (F533)")
+func pieceTimesNeverOverlapAtAJoin() async throws {
+    let fixture = try PieceFixture(overrunEnds: true)
+    defer { fixture.remove() }
+    try writeWAV(tenSecondSamples(), to: fixture.recording)
+
+    let result = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    // The stub ends each piece's one segment a second past that piece: 4.15 s into a 3.15 s piece.
+    // Clamped, each ends where its piece does on the recording's clock: 3.15, 6.55 and 10 s.
+    let starts = result.segments.compactMap(\.start)
+    let ends = result.segments.compactMap(\.end)
+    try #require(ends.count == 3, "\(result.segments)")
+    for (end, cut) in zip(ends, [3.15, 6.55, 10.0]) {
+        #expect(abs(end - cut) < 0.000_001, "ends \(ends)")
+    }
+    #expect(zip(ends, starts.dropFirst()).allSatisfy { $0 <= $1 }, "a segment overlaps the next piece's: ends \(ends), starts \(starts)")
+    #expect(result.audioDuration.map { abs($0 - 10) < 0.000_001 } == true, "\(String(describing: result.audioDuration))")
 }

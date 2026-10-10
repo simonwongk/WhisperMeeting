@@ -208,8 +208,9 @@ public struct LocalWhisperClient: Sendable {
     /// written to the run's working folder and given to its own `whisper` process, so no process
     /// ever builds the spectrogram of more than one piece. Language detection runs on the first
     /// piece only, which starts where the recording does, and its answer is pinned for the rest —
-    /// one pass also detects once, from the first 30 seconds. Times are offset back onto the
-    /// recording's clock and the pieces are joined (`WhisperPieceJoin`). Any piece failing fails
+    /// one pass also detects once, from the first 30 seconds. Each piece's times are clamped to its
+    /// own length, then offset back onto the recording's clock, and the pieces are joined
+    /// (`WhisperPieceJoin`). Any piece failing fails
     /// the whole run; nothing partial is returned. The recording itself is only ever read.
     ///
     /// A recording within the bound is one call on the original file, exactly as before.
@@ -273,7 +274,12 @@ public struct LocalWhisperClient: Sendable {
             if index == 0, options.language.commandLineValue == nil {
                 detectedLanguage = transcript.language
             }
-            transcripts.append((Double(piece.lowerBound) / Double(WhisperPiecePlanner.sampleRate), transcript))
+            // Clamped to its own piece before the offset, so no time crosses a cut (review R6).
+            let seconds = Double(piece.count) / Double(WhisperPiecePlanner.sampleRate)
+            transcripts.append((
+                Double(piece.lowerBound) / Double(WhisperPiecePlanner.sampleRate),
+                transcript.clamped(toSeconds: seconds)
+            ))
         }
         return try WhisperPieceJoin.join(transcripts, id: fileURL.lastPathComponent)
     }
