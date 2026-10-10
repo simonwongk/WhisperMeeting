@@ -7,11 +7,14 @@ import Foundation
 /// Quick Dictation applies the rules to its text before pasting, with no review (F821, the user's
 /// decision of 2026-10-07): `ReplacementRuleMatcher.applied(_:to:evidence:)`.
 ///
-/// "Exact" in its case, with one exception (F858): `heard` also matches with its first letter
-/// capitalised, because a recognizer capitalises the first word of a sentence and a rule written
-/// "jon → Jonathan" is meant for that "Jon" too. The replacement keeps the capital — see
-/// `ReplacementBoundary.replacement(for:)`. Any other case variant (JON, jOn), and a rule written
-/// with a capital meeting the word in lower case, still does not match.
+/// "Exact" in its case, with one exception (F858): where it starts a sentence, `heard` also matches
+/// with its first character upper-cased, because a recognizer capitalises the first word of a
+/// sentence and a rule written "jon → Jonathan" is meant for that "Jon" too. The replacement keeps
+/// the capital — see `ReplacementBoundary.replacement(for:)`. A capital anywhere else is left alone:
+/// mid-sentence it is what tells the person Bill from the bill a rule "bill → invoice" was written
+/// for, and Quick Dictation pastes with no review. So are ALL CAPS (JON), inner capitals (jOn), and a
+/// rule written with a capital meeting the word in lower case. The integrator chose sentence starts
+/// because the ticket names them; F913 asks the user whether a rule should reach further.
 public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
     public let heard: String
     public let preferred: String
@@ -26,7 +29,7 @@ public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
 /// (F179), so rule-based fixes flow through the identical F82 review sheet + `GlossaryCorrector.apply`
 /// path (which never opens the audio). Boundary-aware match (F444, see `ReplacementBoundary` below)
 /// — one correction per segment that contains a genuine occurrence of `heard`, or of `heard` with a
-/// capital first letter (F858); no-op and empty rules are dropped.
+/// capital first character where it starts a sentence (F858); no-op and empty rules are dropped.
 public enum ReplacementRuleMatcher {
     /// Rule-major, then segment order, as when this mapped the rules through F165's
     /// `TranscriptCorrection.glossaryCorrections`. A proposal's `from` is the text as it stands in
@@ -34,12 +37,17 @@ public enum ReplacementRuleMatcher {
     /// `GlossaryCorrector.apply`'s exact search finds it. It is proposed only where that search
     /// would apply it — the first occurrence `apply` finds must be this one — or a ticked proposal
     /// could change a different occurrence than the one reviewed (F444).
+    ///
+    /// For the same reason a row is proposed once per segment however many rules give it: the store
+    /// keeps "jon → Jonathan" and "Jon → Jonathan" as two rules, a sentence-initial "Jon" is an
+    /// occurrence of both, and two identical rows, both ticked, changed the next "Jon" too.
     public static func corrections(
         rules: [ReplacementRule],
         segments: [TranscriptSegment],
         evidence: CJKWordEvidence = .none
     ) -> [GlossaryCorrection] {
         var result: [GlossaryCorrection] = []
+        var proposed = Set<ProposedRow>()
         // One segmentation per segment, shared by every rule checked against it.
         let segmented = segments.map { SegmentedText($0.text, segmenter: evidence.segmenter) }
         for rule in rules where !rule.heard.isEmpty && rule.heard != rule.preferred {
@@ -53,12 +61,21 @@ public enum ReplacementRuleMatcher {
                     let to = boundary.replacement(for: from)
                     let applier = ReplacementBoundary(heard: from, notCoveredBy: to, evidence: evidence)
                     guard applier.firstRange(in: segmented[index]) == range else { continue }
-                    result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to))
+                    if proposed.insert(ProposedRow(segmentIndex: index, from: from, to: to)).inserted {
+                        result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to))
+                    }
                     break
                 }
             }
         }
         return result
+    }
+
+    /// A proposal as a set member, for `corrections`' one-row-per-segment rule.
+    private struct ProposedRow: Hashable {
+        let segmentIndex: Int
+        let from: String
+        let to: String
     }
 
     /// `text` with every rule applied, for Quick Dictation (F821), which pastes the result with no
@@ -72,8 +89,8 @@ public enum ReplacementRuleMatcher {
     /// (the "Jon" of an already-correct "Jonathan"), and for Chinese not part of a longer word by
     /// `evidence` (F594). Occurrences are found in the text as it was before the rule
     /// and never overlap, so a replacement is never matched again by the same rule. An empty or
-    /// no-op rule changes nothing. A sentence-initial "Jon" is an occurrence of a rule written
-    /// "jon", and its replacement keeps the capital (F858).
+    /// no-op rule changes nothing. A "Jon" that starts a sentence is an occurrence of a rule written
+    /// "jon", and its replacement keeps the capital (F858); a "Jon" mid-sentence is not.
     ///
     /// Nor does a rule touch a dictated email address, URL or dotted host name
     /// (`liesInsideAnAddress`): `@ . / :` are word edges to `ReplacementBoundary`, so "jon → Jonathan"
@@ -142,11 +159,13 @@ public enum ReplacementRuleMatcher {
 /// `LocalTranscriptCorrector.swift`) and the applier (`GlossaryCorrector.apply`), so a proposal and
 /// its application can never disagree about which occurrence was meant (F444).
 ///
-/// **A replacement rule also matches `heard` with a capital first letter (F858)** —
-/// `matchingCapitalised`, which only the rule matcher and dictation pass. The F165 model's
-/// corrections and `apply` stay exact: a rule proposal names the text as it stands, so `apply`
-/// needs no case rule of its own. With the variant, coverage widens to `preferred` capitalised too
-/// ("Jon smith" covers the "Jon" of a rule "jon → jon smith"), the safe direction.
+/// **A replacement rule also matches `heard` with its first character upper-cased where that starts
+/// a sentence (F858)** — `matchingCapitalised`, which only the rule matcher and dictation pass: the
+/// start of the text, or after `.` `!` `?` `。` `！` `？` or a line break, with only spaces, quotes
+/// and brackets between (`startsASentence`). The F165 model's corrections and `apply` stay exact: a
+/// rule proposal names the text as it stands, so `apply` needs no case rule of its own. With the
+/// variant, coverage widens to `preferred` capitalised too ("Jon smith" covers the "Jon" of a rule
+/// "jon → jon smith"), the safe direction.
 ///
 /// Two failures, one root cause — a plain substring test does not know where a word ends:
 ///
@@ -201,8 +220,10 @@ final class ReplacementBoundary {
     let heard: String
     let preferred: String
     private let evidence: CJKWordEvidence
-    /// `heard` with its first letter capitalised, when that differs from `heard` and the caller asked
-    /// for it (F858); nil otherwise — a rule already written with a capital, or Chinese.
+    /// `heard` with its first character upper-cased, when that differs from `heard` and the caller
+    /// asked for it (F858); nil otherwise — a rule already written with a capital, one beginning with
+    /// a digit or punctuation mark (`3d`, `'twas`), or Chinese. Matched only where it starts a
+    /// sentence.
     private let capitalisedHeard: String?
     /// The known terms that could enclose a CJK occurrence of `heard`, worked out on first need: with
     /// hundreds of rules and a 5,000-term vocabulary, a scan per rule that never matches is waste.
@@ -215,25 +236,50 @@ final class ReplacementBoundary {
         self.heard = heard
         self.preferred = preferred
         self.evidence = evidence
-        let capitalised = Self.capitalisingFirstLetter(heard)
+        let capitalised = Self.capitalisingFirstCharacter(heard)
         capitalisedHeard = matchingCapitalised && capitalised != heard ? capitalised : nil
     }
 
     /// What replaces the occurrence `matched` (F858): `preferred` as written, unless `matched` is the
-    /// capitalised variant of `heard` and `preferred` is written all in lower case — then `preferred`
-    /// with its first letter capitalised, so a sentence keeps its capital ("jon → jonathan" turns
-    /// "Jon said" into "Jonathan said"). A `preferred` with any capital of its own keeps it exactly:
-    /// "ios → iOS" never becomes "IOS".
+    /// capitalised variant of `heard` (a sentence's first word) and `preferred` is written all in
+    /// lower case — then `preferred` with its first character upper-cased, so the sentence keeps its
+    /// capital ("jon → jonathan" turns "Jon said" into "Jonathan said"). A `preferred` with any
+    /// capital of its own keeps it exactly: "ios → iOS" never becomes "IOS".
     func replacement(for matched: some StringProtocol) -> String {
         guard let capitalisedHeard, matched == capitalisedHeard,
               !preferred.contains(where: \.isUppercase) else { return preferred }
-        return Self.capitalisingFirstLetter(preferred)
+        return Self.capitalisingFirstCharacter(preferred)
     }
 
-    static func capitalisingFirstLetter(_ text: String) -> String {
+    /// `text` with its first character upper-cased. A digit or a punctuation mark has no capital, so
+    /// a rule that begins with one has no capitalised variant.
+    static func capitalisingFirstCharacter(_ text: String) -> String {
         guard let first = text.first else { return text }
         return first.uppercased() + text.dropFirst()
     }
+
+    /// Whether `index` starts a sentence (F858): it is the start of `text`, or the nearest character
+    /// before it that is not a space, a quote or a bracket is a line break or one of `.` `!` `?` `。`
+    /// `！` `？`. A comma, colon, semicolon or dash ends no sentence. An abbreviation's full stop
+    /// ("Mr. Bill", "U.S. and") reads as a sentence's: this cannot tell the two apart.
+    static func startsASentence(at index: String.Index, in text: String) -> Bool {
+        var cursor = index
+        while cursor > text.startIndex {
+            cursor = text.index(before: cursor)
+            let character = text[cursor]
+            if character.isNewline || sentenceEnds.contains(character) { return true }
+            guard character.isWhitespace || quotesAndBrackets.contains(character) else { return false }
+        }
+        return true
+    }
+
+    private static let sentenceEnds: Set<Character> = [".", "!", "?", "。", "！", "？"]
+
+    /// Skipped between a sentence's end and its first word: `He said "stop." Jon left`, `(Jon agreed.)`.
+    private static let quotesAndBrackets: Set<Character> = [
+        "\"", "'", "\u{201C}", "\u{201D}", "\u{2018}", "\u{2019}", "«", "»", "‹", "›",
+        "(", ")", "[", "]", "{", "}", "（", "）", "【", "】", "「", "」", "『", "』", "《", "》", "〈", "〉",
+    ]
 
     /// Whether `heard` genuinely occurs in `text` (see the type's documentation).
     static func occurs(
@@ -268,7 +314,7 @@ final class ReplacementBoundary {
         let text = segmented.text
         var preferredRanges = preferred.isEmpty ? [] : Self.allRanges(of: preferred, in: text)
         if capitalisedHeard != nil, !preferred.isEmpty {
-            preferredRanges += Self.allRanges(of: Self.capitalisingFirstLetter(preferred), in: text)
+            preferredRanges += Self.allRanges(of: Self.capitalisingFirstCharacter(preferred), in: text)
         }
         var found: [Range<String.Index>] = []
         var searchStart = text.startIndex
@@ -287,13 +333,19 @@ final class ReplacementBoundary {
         return found
     }
 
-    /// The earliest occurrence of `heard`, or of its capitalised variant (F858), at or after `start`.
+    /// The earliest occurrence at or after `start` of `heard`, or of its capitalised variant where
+    /// that starts a sentence (F858). A capitalised one mid-sentence is no candidate at all.
     private func nextCandidate(in text: String, from start: String.Index) -> Range<String.Index>? {
         let exact = text.range(of: heard, range: start..<text.endIndex)
-        guard let capitalisedHeard,
-              let capitalised = text.range(of: capitalisedHeard, range: start..<text.endIndex) else { return exact }
-        guard let exact else { return capitalised }
-        return capitalised.lowerBound < exact.lowerBound ? capitalised : exact
+        guard let capitalisedHeard else { return exact }
+        var searchStart = start
+        while searchStart < text.endIndex,
+              let capitalised = text.range(of: capitalisedHeard, range: searchStart..<text.endIndex),
+              exact.map({ capitalised.lowerBound < $0.lowerBound }) ?? true {
+            if Self.startsASentence(at: capitalised.lowerBound, in: text) { return capitalised }
+            searchStart = text.index(after: capitalised.lowerBound)
+        }
+        return exact
     }
 
     /// Every (possibly overlapping) range where `needle` occurs in `text`. Overlap-permissive on

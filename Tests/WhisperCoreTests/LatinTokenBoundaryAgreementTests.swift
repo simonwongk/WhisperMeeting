@@ -40,9 +40,27 @@ private let boundaryCases: [BoundaryCase] = [
     BoundaryCase(
         name: "full-width Latin is a boundary",
         term: "Kestrel", text: "\u{FF38}Kestrel\u{FF39}", expected: true,
-        reason: "a full-width letter is not in [A-Za-z0-9_] either, so it gets the same boundary "
-            + "answer as any other non-ASCII neighbour — a token boundary and a search match "
-            + "(F590's width-insensitive comparison) are different questions"
+        reason: "a full-width letter is outside the Latin letter blocks LatinTokenBoundary reads, so it "
+            + "gets the same boundary answer as a letter of another script — a token boundary and a "
+            + "search match (F590's width-insensitive comparison) are different questions"
+    ),
+    BoundaryCase(
+        name: "an accented Latin letter after the term continues the token",
+        term: "Jon", text: "ask Jonás today", expected: false,
+        reason: "Jonás is a name of its own, not Jon followed by punctuation: English transcripts "
+            + "carry accented Latin names and loanwords (José, Zoë, café, résumé), unlike Cyrillic, "
+            + "so a Latin letter outside ASCII continues a Latin token (Wave 5 review of F858, T3)"
+    ),
+    BoundaryCase(
+        name: "an accented Latin letter before the term continues the token",
+        term: "lan", text: "with élan", expected: false,
+        reason: "symmetric with the case above: the connector rule applies on both sides of a match"
+    ),
+    BoundaryCase(
+        name: "a Latin letter outside ASCII with no accent continues the token",
+        term: "Stra", text: "the Straße sign", expected: false,
+        reason: "ß, ø, æ and ł are Latin letters too; the class is the Latin script's letters, not "
+            + "only the ones that decompose into an ASCII letter and an accent"
     ),
     BoundaryCase(
         name: "an apostrophe is a boundary",

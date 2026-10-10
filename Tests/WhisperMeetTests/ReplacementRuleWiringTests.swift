@@ -86,3 +86,26 @@ func ruleCorrectionsMatchASentenceInitialCapital() throws {
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Jonathan said the build is green.")
 }
+
+@MainActor
+@Test("Improve proposes a lower-case rule for the word, never for the same word capitalised mid-sentence (F858)")
+func ruleCorrectionsLeaveAMidSentenceCapitalAlone() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-midsentence-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+
+    model.store.addReplacementRule(heard: "bill", preferred: "invoice")
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "Ask Bill about the bill.")]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+
+    let proposals = model.replacementRuleCorrections(for: id)
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "bill", to: "invoice")])
+
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "Ask Bill about the invoice.")
+}

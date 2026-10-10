@@ -2673,7 +2673,7 @@ private struct ReplacementRulesEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Replacement Rules").font(.headline)
-            Text("Exact fixes for a term that is always misheard the same way. Quick Dictation applies them before pasting. In a meeting, nothing changes until you review and approve them in Improve ▸ Apply Replacement Rules.")
+            Text("Exact fixes for a term that is always misheard the same way. A rule typed in lower case also fixes the word where it starts a sentence with a capital. Quick Dictation applies them before pasting. In a meeting, nothing changes until you review and approve them in Improve ▸ Apply Replacement Rules.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

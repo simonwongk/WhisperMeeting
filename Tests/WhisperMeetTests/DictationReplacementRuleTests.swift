@@ -200,6 +200,22 @@ func dictationRuleMatchesASentenceInitialCapital() async throws {
 }
 
 @MainActor
+@Test("A capital in the middle of a dictated sentence is a name, and a lower-case rule leaves it alone (F858)")
+func dictationRuleLeavesAMidSentenceCapitalAlone() async throws {
+    let harness = try Harness(engineText: "Ask Bill about the bill. Bill paid it")
+    defer { harness.cleanUp() }
+    harness.controller.configureReplacementRules(
+        { [ReplacementRule(heard: "bill", preferred: "invoice")] }, knownTerms: { [] }
+    )
+
+    let entry = try await harness.dictate()
+
+    // The second sentence starts with "Bill", and a sentence's capital cannot tell a name from the
+    // word, so that one is fixed: the integrator's choice, put to the user as F913.
+    #expect(entry.text == "Ask Bill about the invoice. Invoice paid it")
+}
+
+@MainActor
 @Test("The app hands dictation its replacement rules and stored vocabulary, and the default segmenter is NLTokenizer's (F821)")
 func appWiresReplacementRulesIntoDictation() throws {
     let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
