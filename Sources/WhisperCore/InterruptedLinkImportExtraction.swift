@@ -18,11 +18,15 @@ import Foundation
 /// **The download is never touched**, on success or failure. A failure removes the temp file and
 /// throws; cancellation is rethrown as it is, so the caller can leave the folder for the next launch.
 ///
-/// A run still going when its `timeLimit` passes is stopped the way a cancellation stops it — SIGTERM
-/// to its process group — and throws `extractionTimedOut`. The limit is a clock, not the runner's
-/// stall watchdog: ffmpeg 8 keeps printing progress while its input has stopped arriving (measured
-/// with 8.1.2: sixteen reports in eight seconds, all at one `time=`), and any output resets that
-/// watchdog, so a stuck conversion would otherwise never end.
+/// A run still going when its `timeLimit` passes is killed — SIGKILL to its process group
+/// (`ProcessGroupRunner.kill()`) — and throws `extractionTimedOut`. Not the SIGTERM a cancellation
+/// sends: the runner waits for the process without a bound, and ffmpeg 8.1.2 whose input read is
+/// blocked does not exit on one SIGTERM (measured with this conversion's own vector: still running
+/// 17.3 s after it), so a limit it could ignore was no limit. Nothing is lost by not stopping it
+/// gracefully, because a stopped run's output is removed, never renamed into place. The limit is a
+/// clock, not the runner's stall watchdog: ffmpeg 8 keeps printing progress while its input has
+/// stopped arriving (measured with 8.1.2: sixteen reports in eight seconds, all at one `time=`), and
+/// any output resets that watchdog, so a stuck conversion would otherwise never end.
 public enum InterruptedLinkImportExtraction {
     /// Where the conversion writes until it has finished.
     public static let temporaryFilename = "\(MediaDownloadArguments.outputBasename).extracting.wav"
@@ -53,7 +57,7 @@ public enum InterruptedLinkImportExtraction {
                     if Task.isCancelled { return }
                     if ProcessInfo.processInfo.systemUptime - start >= seconds {
                         limit.markReached()
-                        runner.cancel()
+                        runner.kill()
                         return
                     }
                 }

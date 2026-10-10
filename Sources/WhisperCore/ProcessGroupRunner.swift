@@ -86,23 +86,36 @@ public final class ProcessGroupRunner: @unchecked Sendable {
 
     private let lock = NSLock()
     private var childPID: pid_t = -1
-    private var cancelRequested = false
+    /// The signal a stop asked for, or 0 while none has: SIGTERM from `cancel()`, SIGKILL from
+    /// `kill()`. Remembered rather than only sent, because a stop asked for while the child is being
+    /// spawned finds no pid to signal, and `run` applies it when it records the child. That used to be
+    /// a SIGTERM whatever was asked for, so a `kill()` landing in the window was only a SIGTERM (review
+    /// of F453). A later `cancel()` never turns a requested SIGKILL back into a SIGTERM.
+    private var requestedSignal: Int32 = 0
 
     public init() {}
 
-    /// Records the spawned child and reports whether cancellation was already requested. Synchronous
+    /// Records the spawned child and returns the signal a stop already asked for, or 0. Synchronous
     /// (not called from an async context) so the lock use is safe under Swift 6 checking.
-    private func registerChild(_ pid: pid_t) -> Bool {
+    private func registerChild(_ pid: pid_t) -> Int32 {
         lock.lock()
         defer { lock.unlock() }
         childPID = pid
-        return cancelRequested
+        return requestedSignal
     }
 
     private func isCancelRequested() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return cancelRequested
+        return requestedSignal != 0
+    }
+
+    /// Records a stop and returns the child to signal now, or -1 when there is none yet.
+    private func requestStop(_ signal: Int32) -> pid_t {
+        lock.lock()
+        defer { lock.unlock() }
+        if requestedSignal != SIGKILL { requestedSignal = signal }
+        return childPID
     }
 
     /// Forgets the reaped child so a later `cancel()` cannot signal a **recycled** pid. Once `waitpid`
@@ -117,12 +130,23 @@ public final class ProcessGroupRunner: @unchecked Sendable {
     /// Terminates the entire process group. Safe to call before the child exists (the request is
     /// remembered and applied at spawn) and after it has exited (a no-op).
     public func cancel() {
-        lock.lock()
-        cancelRequested = true
-        let pid = childPID
-        lock.unlock()
+        let pid = requestStop(SIGTERM)
         if pid > 0 { _ = killpg(pid, SIGTERM) }
     }
+
+    /// Kills the entire process group with SIGKILL, which no process can catch or ignore — for a stop
+    /// that must end the run now and whose output is thrown away. `run` waits for the child without a
+    /// bound, so `cancel()`'s SIGTERM ends a run only when the child chooses to exit, and ffmpeg 8.1.2
+    /// with its input read blocked does not (F453: still running 17.3 s after one SIGTERM). Safe before
+    /// the child exists (applied as SIGKILL when it is recorded) and after it has exited (a no-op).
+    public func kill() {
+        let pid = requestStop(SIGKILL)
+        if pid > 0 { _ = killpg(pid, SIGKILL) }
+    }
+
+    /// Test seam: awaited after the child is spawned and before it is recorded — the one window in
+    /// which a stop finds no pid to signal and is applied by the recording itself. Nil in the app.
+    var afterSpawnForTesting: (@Sendable () async -> Void)?
 
     /// - Parameter returnsOutcomeWhenCancelled: When true, a cancellation that arrives after the child
     ///   was spawned still sends the group SIGTERM, but the run returns the child's `Outcome` rather
@@ -204,7 +228,10 @@ public final class ProcessGroupRunner: @unchecked Sendable {
             throw ProcessGroupRunnerError.spawnFailed(spawnResult)
         }
 
-        if registerChild(pid) { _ = killpg(pid, SIGTERM) }
+        if let hook = afterSpawnForTesting { await hook() }
+        // A stop asked for before the child was recorded is delivered now, as the signal it asked for.
+        let pendingSignal = registerChild(pid)
+        if pendingSignal != 0 { _ = killpg(pid, pendingSignal) }
 
         let state = State(use: outputUse)
         // Blocking reads live on a dedicated queue, never a cooperative thread. The group lets the

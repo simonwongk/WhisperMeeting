@@ -244,3 +244,86 @@ func cancelledRunReportsTheSignalWhenAsked() async throws {
     let outcome = try await task.value
     #expect(outcome.exitStatus != 0)
 }
+
+// F453 (round-2 review) — startup recovery's time limit on an interrupted link import's conversion
+// sent one SIGTERM and then waited, without a bound, for ffmpeg to exit. ffmpeg 8.1.2 with its input
+// read blocked does not exit on one SIGTERM, so the limit has to be a SIGKILL — and a SIGKILL asked
+// for while the child is still being spawned has to reach it once it exists, not a SIGTERM in its
+// place.
+
+@Test("kill() stops a whole group that ignores SIGTERM (F453)")
+func killStopsAGroupThatIgnoresSIGTERM() async throws {
+    let (directory, script) = try makeScript("""
+    trap '' TERM
+    sleep 120 &
+    echo $! > "$2"
+    echo started > "$1"
+    sleep 120
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let started = directory.appendingPathComponent("started")
+    let pidFile = directory.appendingPathComponent("child.pid")
+
+    let runner = ProcessGroupRunner()
+    defer { runner.kill() }
+    let completion = Completion()
+    let run = Task {
+        defer { completion.markFinished() }
+        return try await runner.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, started.path, pidFile.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0
+        )
+    }
+    try await waitForFile(started)
+    let text = try String(contentsOf: pidFile, encoding: .utf8)
+    let grandchild = try #require(pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+
+    runner.kill()
+
+    // Both stand-ins sleep 120 s with SIGTERM ignored, and each wait is capped at 30 s.
+    try await waitUntil("the killed run to return") { completion.isFinished }
+    await #expect(throws: CancellationError.self) { _ = try await run.value }
+    try await waitUntil("the grandchild to die") { !isAlive(grandchild) }
+}
+
+@Test("A kill asked for while the child is being spawned reaches it as SIGKILL, not SIGTERM (F453)")
+func aKillDuringTheSpawnIsDeliveredAsSIGKILL() async throws {
+    let (directory, script) = try makeScript("""
+    trap '' TERM
+    echo ready > "$1"
+    sleep 120
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let ready = directory.appendingPathComponent("ready")
+
+    let runner = ProcessGroupRunner()
+    defer { runner.kill() }
+    // Between posix_spawn and the runner's record of the child there is no pid to signal, so a stop
+    // asked for then is applied when the child is recorded. The hook asks there, once the stand-in
+    // has set its trap, so a SIGTERM in place of the SIGKILL leaves it running.
+    runner.afterSpawnForTesting = { [unowned runner] in
+        let deadline = Date().addingTimeInterval(30)
+        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        runner.kill()
+    }
+    let completion = Completion()
+    let run = Task {
+        defer { completion.markFinished() }
+        return try await runner.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, ready.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0
+        )
+    }
+
+    try await waitUntil("the run killed during its spawn to return") { completion.isFinished }
+    // Precondition: the stand-in had set its trap before the kill was asked for, so a pass is not a
+    // SIGTERM that arrived before the trap.
+    try #require(FileManager.default.fileExists(atPath: ready.path), "the stand-in never set its trap")
+    await #expect(throws: CancellationError.self) { _ = try await run.value }
+}

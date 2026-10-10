@@ -194,6 +194,53 @@ func aConversionPastItsTimeLimitIsStopped() async throws {
     #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
 }
 
+/// A stand-in for ffmpeg 8.1.2 whose input read is blocked: it ignores SIGTERM, prints a progress
+/// line every quarter second and makes no progress, and after about ten seconds marks that it ran to
+/// its own end, writes its output and exits 0. ffmpeg was measured doing exactly this with recovery's
+/// own vector reading a FIFO whose writer had stopped (review of F453 round 2): still running 17.3 s
+/// after one SIGTERM, gone 2.1 s after a SIGKILL. It creates `started` once its trap is set.
+private func sigtermIgnoringFFmpeg(in folder: URL) throws -> (script: URL, ranToItsEnd: URL) {
+    let script = folder.appendingPathComponent("sigterm-ignoring-ffmpeg.sh")
+    let ranToItsEnd = folder.appendingPathComponent("ran-to-its-end")
+    try """
+    #!/bin/sh
+    for out; do :; done
+    trap '' TERM
+    : > "\(folder.path)/started"
+    i=0
+    while [ $i -lt 40 ]; do
+      printf 'size=     199KiB time=00:00:06.39 bitrate= 255.3kbits/s speed=0.9x\\r' >&2
+      sleep 0.25
+      i=$((i + 1))
+    done
+    : > "\(ranToItsEnd.path)"
+    printf '%s' 'converted audio' > "${out#file:}"
+    exit 0
+    """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return (script, ranToItsEnd)
+}
+
+@Test("A conversion that ignores SIGTERM is still stopped at its time limit, and touches nothing (F453)")
+func aConversionIgnoringSIGTERMIsStoppedAtItsLimit() async throws {
+    // The limit used to send one SIGTERM and then wait, without a bound, for the process to exit —
+    // which ffmpeg with a blocked read does not do, so the launch waited for it indefinitely.
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    let (ffmpeg, ranToItsEnd) = try sigtermIgnoringFFmpeg(in: folder)
+
+    await #expect(throws: MediaDownloadError.extractionTimedOut(0.5)) {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, stallTimeout: 2, timeLimit: 0.5)
+    }
+
+    // No clock here: a stop the stand-in can ignore lets it run its ten seconds and leave this file.
+    #expect(!FileManager.default.fileExists(atPath: ranToItsEnd.path), "the conversion ran to its own end: the limit did not stop it")
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
+}
+
 @Test("A cancelled conversion is a cancellation, not a timeout, and touches nothing (F453)")
 func aCancelledConversionIsNotATimeout() async throws {
     // Startup recovery leaves the folder for the next launch on a cancellation and lists the import
@@ -244,4 +291,52 @@ func realFFmpegPastItsTimeLimitIsStopped() async throws {
     #expect(try Data(contentsOf: download) == downloadBytes, "the download changed")
     #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
     print("REAL_FFMPEG: \(ffmpeg.path) stopped at the 0.2 s limit; download and half-written WAV untouched, no temp file")
+}
+
+/// Set when a background run has returned.
+private final class Finished: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func mark() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
+@Test(
+    "The installed ffmpeg, its input read blocked, is stopped at its time limit, not when the input closes (F453)",
+    .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")
+)
+func realFFmpegWithItsInputStuckIsStoppedAtItsLimit() async throws {
+    // The download is a FIFO that delivers the first 150 KB of a real WebM and is then held open, so
+    // ffmpeg blocks in its read: the shape in which one SIGTERM does not stop it.
+    let ffmpeg = try #require(MediaDownloadRuntime.findFFmpeg(), "REAL_FFMPEG=1 needs an installed ffmpeg")
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    let source = folder.appendingPathComponent("source.webm")
+    try await makeOpusWebM(at: source, seconds: 60, ffmpeg: ffmpeg)
+    try FileManager.default.removeItem(at: download)
+    try #require(mkfifo(download.path, 0o600) == 0, "could not make the FIFO")
+
+    let writer = ProcessGroupRunner()
+    let writerDone = Finished()
+    Task {
+        _ = try? await writer.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exec > \"$1\"; head -c 150000 \"$2\"; sleep 15", "sh", download.path, source.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0
+        )
+        writerDone.mark()
+    }
+    defer { writer.cancel() }
+
+    await #expect(throws: MediaDownloadError.extractionTimedOut(1)) {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, timeLimit: 1)
+    }
+
+    // The input is still held open, so what ended ffmpeg was the limit, not the end of its input.
+    #expect(!writerDone.isSet, "ffmpeg ran until its input closed: the limit did not stop it")
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
+    print("REAL_FFMPEG: \(ffmpeg.path) with its read blocked: the conversion returned with its input \(writerDone.isSet ? "closed" : "still held open")")
 }
