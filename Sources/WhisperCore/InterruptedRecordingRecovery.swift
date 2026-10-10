@@ -659,14 +659,18 @@ private final class RawFloatReader {
     func read(frameCount: Int) throws -> [Float] {
         var result = [Float](repeating: 0, count: frameCount)
         guard let handle else { return result }
-        guard let data = try handle.read(upToCount: frameCount * MemoryLayout<Float>.size),
-              !data.isEmpty else {
-            return result
-        }
-        data.withUnsafeBytes { bytes in
-            let source = bytes.bindMemory(to: Float.self)
-            for index in 0..<min(source.count, result.count) {
-                result[index] = source[index]
+        // In its own autorelease pool, for `PaddedFloatReader.read`'s reason (F910): a rebuild runs
+        // inside one job, and every chunk `read(upToCount:)` returned stayed allocated until it ended.
+        try autoreleasepool {
+            guard let data = try handle.read(upToCount: frameCount * MemoryLayout<Float>.size),
+                  !data.isEmpty else {
+                return
+            }
+            data.withUnsafeBytes { bytes in
+                let source = bytes.bindMemory(to: Float.self)
+                for index in 0..<min(source.count, result.count) {
+                    result[index] = source[index]
+                }
             }
         }
         return result

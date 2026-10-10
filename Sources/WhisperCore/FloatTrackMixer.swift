@@ -311,13 +311,17 @@ private final class PaddedFloatReader {
         guard destinationIndex < frameCount else { return result }
 
         let requestedBytes = (frameCount - destinationIndex) * MemoryLayout<Float>.size
-        guard let data = try handle.read(upToCount: requestedBytes), !data.isEmpty else {
-            return result
-        }
-        data.withUnsafeBytes { bytes in
-            let source = bytes.bindMemory(to: Float.self)
-            for index in 0..<source.count {
-                result[destinationIndex + index] = source[index]
+        // In its own autorelease pool (F910). `read(upToCount:)` returns the bytes in an
+        // autoreleased buffer, and `mix` runs inside one job (`AudioCaptureEngine.stop()` calls it
+        // synchronously), so with no drain here every chunk of both tracks stayed allocated until the
+        // mix returned: both whole Float32 tracks, about 0.7 GB per track-hour at 48 kHz.
+        try autoreleasepool {
+            guard let data = try handle.read(upToCount: requestedBytes), !data.isEmpty else { return }
+            data.withUnsafeBytes { bytes in
+                let source = bytes.bindMemory(to: Float.self)
+                for index in 0..<source.count {
+                    result[destinationIndex + index] = source[index]
+                }
             }
         }
         return result

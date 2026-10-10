@@ -205,7 +205,8 @@ enum DiarizationArtifactStore {
 /// SHA-256 of a recording, used to notice that a stored result no longer describes the audio (F218).
 enum RecordingFingerprint {
     /// 1 MiB: big enough that the syscall overhead disappears, small enough that peak memory stays
-    /// flat regardless of file size.
+    /// flat regardless of file size — which holds only because each chunk is read inside its own
+    /// autorelease pool (F910). Without the pools every chunk stayed allocated until the hash ended.
     static let chunkSize = 1 << 20
 
     /// Hashes the file incrementally. Deliberately NOT `Data(contentsOf:)` — the way
@@ -216,8 +217,16 @@ enum RecordingFingerprint {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
-            hasher.update(data: chunk)
+        // Each chunk inside its own autorelease pool (F910). `read(upToCount:)` returns the bytes in
+        // an autoreleased buffer, and this runs inside one `Task.detached` job, so with no drain here
+        // every chunk stayed allocated until the hash returned: the whole recording.
+        var more = true
+        while more {
+            more = try autoreleasepool {
+                guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else { return false }
+                hasher.update(data: chunk)
+                return true
+            }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
