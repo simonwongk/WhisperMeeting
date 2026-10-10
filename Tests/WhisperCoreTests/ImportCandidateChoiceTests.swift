@@ -82,6 +82,26 @@ func aFinishedExtractionBeatsItsSource() throws {
     #expect(InterruptedRecordingRecovery.finalizedRecording(in: folder)?.recordingURL.lastPathComponent == "recording.wav")
 }
 
+@Test("Recovery's conversion temp is never the recording, however finished its header reads (F453)")
+func theConversionTempIsNeverACandidate() throws {
+    // `InterruptedLinkImportExtraction` writes `recording.extracting.wav` and renames it into place
+    // only after a clean exit. A quit leaves it with ffmpeg running on to the end, and a SIGTERM makes
+    // ffmpeg finish its header, so the temp a later launch finds can read as a complete WAV — of part
+    // of the audio, or of all of it with nothing to say so (review of F453 round 2, finding 3).
+    let tempName = InterruptedLinkImportExtraction.temporaryFilename
+    let shapes: [[String: Data]] = [
+        ["recording.webm": downloadedSource, "recording.wav": try extractionInProgressWAV(), tempName: finishedWAV()],
+        ["recording.webm": downloadedSource, tempName: finishedWAV()],
+    ]
+    for files in shapes {
+        let folder = try makeFolder(files)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let shape = files.keys.sorted()
+        #expect(InterruptedRecordingRecovery.importedRecordingCandidate(in: folder)?.lastPathComponent == "recording.webm", "\(shape)")
+        #expect(InterruptedRecordingRecovery.finalizedRecording(in: folder)?.recordingURL.lastPathComponent == "recording.webm", "\(shape)")
+    }
+}
+
 @Test("A lone imported file is still found, whatever it holds (F453)")
 func aLoneImportIsStillFound() throws {
     // The choice only orders candidates; it never discards the last one. An unverifiable lone file

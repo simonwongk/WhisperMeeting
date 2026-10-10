@@ -144,17 +144,20 @@ func realFFmpegFinishesAnInterruptedWebM() async throws {
 
 // MARK: - The time limit startup recovery runs this under
 
-/// A stand-in for ffmpeg 8 whose input has stopped arriving: it prints a progress line every quarter
-/// second and makes no progress, for about ten seconds, then writes its output and exits 0 — so a
-/// time limit that is not enforced reads as a finished conversion. ffmpeg 8.1.2 was measured doing
-/// the first part (sixteen identical `time=` reports in eight seconds), which is why the runner's
-/// stall watchdog, reset by any output at all, cannot end it. It creates `started` first, so a test
-/// can tell it is running.
+/// A stand-in for ffmpeg 8 whose input has stopped arriving: it writes the first part of its output,
+/// then prints a progress line every quarter second and makes no progress, for about ten seconds, then
+/// writes the rest and exits 0 — so a time limit that is not enforced reads as a finished conversion.
+/// ffmpeg 8.1.2 was measured doing the middle part (sixteen identical `time=` reports in eight
+/// seconds), which is why the runner's stall watchdog, reset by any output at all, cannot end it. The
+/// first part is there because a stopped ffmpeg leaves a temp file — SIGTERM even finishes its header
+/// (review of F453 round 2, finding 2) — and only a temp file that exists can be wrongly renamed into
+/// place. It creates `started` once that part is written, so a test can tell it is running.
 private func stuckFFmpeg(in folder: URL) throws -> URL {
     let script = folder.appendingPathComponent("stuck-ffmpeg.sh")
     try """
     #!/bin/sh
     for out; do :; done
+    printf '%s' 'part of a conversion' > "${out#file:}"
     : > "\(folder.path)/started"
     i=0
     while [ $i -lt 40 ]; do
@@ -189,16 +192,22 @@ func aConversionPastItsTimeLimitIsStopped() async throws {
         try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, stallTimeout: 2, timeLimit: 0.5)
     }
 
+    // Precondition: the stopped run had written part of its output, so there was a temp file that a
+    // wrong ending could have renamed over the half-written WAV.
+    try #require(FileManager.default.fileExists(atPath: folder.appendingPathComponent("started").path),
+                 "the stand-in never wrote the first part of its output")
     #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
     #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
     #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
 }
 
-/// A stand-in for ffmpeg 8.1.2 whose input read is blocked: it ignores SIGTERM, prints a progress
-/// line every quarter second and makes no progress, and after about ten seconds marks that it ran to
-/// its own end, writes its output and exits 0. ffmpeg was measured doing exactly this with recovery's
-/// own vector reading a FIFO whose writer had stopped (review of F453 round 2): still running 17.3 s
-/// after one SIGTERM, gone 2.1 s after a SIGKILL. It creates `started` once its trap is set.
+/// A stand-in for ffmpeg 8.1.2 whose input read is blocked: it ignores SIGTERM, writes the first part
+/// of its output, prints a progress line every quarter second and makes no progress, and after about
+/// ten seconds marks that it ran to its own end, writes the rest and exits 0. ffmpeg was measured
+/// doing this with recovery's own vector reading a FIFO whose writer had stopped (review of F453
+/// round 2): still running 17.3 s after one SIGTERM, gone 2.1 s after a SIGKILL. The first part is
+/// the temp file a stopped run leaves, which must be removed and never renamed into place. It
+/// creates `started` once its trap is set and that part is written.
 private func sigtermIgnoringFFmpeg(in folder: URL) throws -> (script: URL, ranToItsEnd: URL) {
     let script = folder.appendingPathComponent("sigterm-ignoring-ffmpeg.sh")
     let ranToItsEnd = folder.appendingPathComponent("ran-to-its-end")
@@ -206,6 +215,7 @@ private func sigtermIgnoringFFmpeg(in folder: URL) throws -> (script: URL, ranTo
     #!/bin/sh
     for out; do :; done
     trap '' TERM
+    printf '%s' 'part of a conversion' > "${out#file:}"
     : > "\(folder.path)/started"
     i=0
     while [ $i -lt 40 ]; do
@@ -236,6 +246,8 @@ func aConversionIgnoringSIGTERMIsStoppedAtItsLimit() async throws {
 
     // No clock here: a stop the stand-in can ignore lets it run its ten seconds and leave this file.
     #expect(!FileManager.default.fileExists(atPath: ranToItsEnd.path), "the conversion ran to its own end: the limit did not stop it")
+    try #require(FileManager.default.fileExists(atPath: folder.appendingPathComponent("started").path),
+                 "the stand-in never wrote the first part of its output")
     #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
     #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
     #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename).path))
