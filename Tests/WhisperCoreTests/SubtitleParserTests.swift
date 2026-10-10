@@ -86,8 +86,9 @@ func collapsesRollingDuplicates() {
     #expect(segments[0].end == 3) // end extended across the collapsed run
 }
 
-// F491 — WebVTT (and TranscriptExporter's own SRT) carry `<`, `>` and `&` as character references.
-// Label stripping is anchored on a literal `>>`, so an escaped chevron used to slip past it whole.
+// F491 — WebVTT carries `<`, `>` and `&` as character references (so did TranscriptExporter's own
+// SRT until F743). Label stripping was anchored on a literal `>>`, so an escaped chevron used to
+// slip past it whole.
 @Test("Strips a speaker label whose chevrons arrive entity-escaped (no-diarization invariant, F491)")
 func stripsEntityEscapedSpeakerLabels() {
     func text(_ cue: String) -> String? {
@@ -95,6 +96,20 @@ func stripsEntityEscapedSpeakerLabels() {
     }
     #expect(text("&gt;&gt; JOHN: Good morning.") == "Good morning.")
     #expect(text("&gt;&gt; and then we shipped") == "and then we shipped")
+}
+
+// F743 reads a file's references as text unless it begins with the WEBVTT header. A link import
+// adopts its caption by the .vtt name, not the header, and a caption converted to SubRip keeps
+// WebVTT's references as text — so the escaped chevron must still be a speaker change there.
+@Test("Strips an entity-escaped speaker label from any caption file, whatever its first line (no-diarization invariant, F743)")
+func stripsEntityEscapedSpeakerLabelsInAnyFile() {
+    // A .vtt with a blank line before its header, one with no header, and two SubRip files.
+    #expect(SubtitleParser.parse("\nWEBVTT\n\n00:00:00.000 --> 00:00:02.000\n&gt;&gt; JOHN: we shipped\n").map(\.text) == ["we shipped"])
+    #expect(SubtitleParser.parse("00:00:00.000 --> 00:00:02.000\n&gt;&gt; JOHN: we shipped\n").map(\.text) == ["we shipped"])
+    #expect(SubtitleParser.parse("1\n00:00:00,000 --> 00:00:02,000\n&gt;&gt; JOHN: we shipped\n").map(\.text) == ["we shipped"])
+    #expect(SubtitleParser.parse("1\n00:00:00,000 --> 00:00:02,000\n&gt;>&gt; and then we shipped\n").map(\.text) == ["and then we shipped"])
+    // A reference that is not a leading chevron is still text in SubRip, as F743 reads it.
+    #expect(SubtitleParser.parse("1\n00:00:00,000 --> 00:00:02,000\nsay &gt;&gt; twice\n").map(\.text) == ["say &gt;&gt; twice"])
 }
 
 @Test("Captions TranscriptExporter writes as VTT and SRT parse back to the original text (F491)")

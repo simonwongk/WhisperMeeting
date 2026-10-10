@@ -577,15 +577,16 @@ public enum TranscriptExporter {
 
     /// SubRip cue text, which the players show with NO character reference decoded (F743). F44
     /// wrote `<` and `>` as `&lt;`/`&gt;`, which was ambiguous with a transcript that says `&lt;`
-    /// and showed on screen as the entity. Measured, not assumed: ffmpeg 8.1.2's SubRip decoder
-    /// (mpv, IINA, ffplay) passes `&lt;`, `&amp;` and `&#60;` through as text, and so does VLC 3's
-    /// `subsdec.c`, which has no decoding step at all. A raw `<` is no answer either — ffmpeg turned
-    /// `x<y>z` into `xz`, `a<b and c>d` into bold `d`, and `<i>` into italics.
+    /// and showed on screen as the entity. Measured, not assumed: the output of ffmpeg 8.1.2's SubRip
+    /// decoder (the decoder mpv and IINA use) keeps `&lt;`, `&amp;` and `&#60;` as text, VLC 3's
+    /// `subsdec.c` has no decoding step at all, and VLC 3.0.23 on screen shows `&lt;` as written. A
+    /// raw `<` is no answer either — ffmpeg's decoder turned `x<y>z` into `xz`, `a<b and c>d` into a
+    /// bold `d`, and `<i>` into italics.
     ///
     /// So `<` stays `<` with a word joiner after it: VLC's `GetTag` needs a letter (after an
     /// optional `/` and spaces) and ffmpeg keeps an unknown non-ASCII tag as text, so no tag can open,
-    /// and the joiner is invisible. `-->` gets one before its `>` so no line of cue text can read as
-    /// a timing line. `&` and everything else is written as it is.
+    /// and VLC 3.0.23 on screen draws the joiner as nothing. `-->` gets one before its `>` so no line
+    /// of cue text can read as a timing line. `&` and everything else is written as it is.
     private static func escapeSubRipCueText(_ text: String) -> String {
         text.replacingOccurrences(of: "<", with: "<" + subRipTagBreaker)
             .replacingOccurrences(of: "-->", with: "--" + subRipTagBreaker + ">")

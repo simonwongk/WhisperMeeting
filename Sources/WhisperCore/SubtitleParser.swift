@@ -21,8 +21,11 @@ import Foundation
 ///
 /// - **No diarization.** Broadcast/YouTube captions embed speaker labels (`>> `, `JOHN:`, `[Speaker 1]`,
 ///   the `<v Name>` voice tag, a leading dialogue dash). Those are stripped — including a `>>` that
-///   arrives as `&gt;&gt;` — so a caption can never put speaker identity into a WhisperMeet
-///   transcript (`PRODUCT_SPEC.md` § "Explicit limitation").
+///   arrives as `&gt;&gt;`, in any file: a link import adopts its caption by the `.vtt` name, not the
+///   header, and a caption converted to SubRip keeps WebVTT's references as text, so a file read as
+///   SubRip still reads a leading `&gt;&gt;` as a speaker change (F743's review) — so a caption can
+///   never put speaker identity into a WhisperMeet transcript (`PRODUCT_SPEC.md` § "Explicit
+///   limitation").
 /// - **Original language.** Enforced upstream by pinning `--sub-langs` to the video's own language at the
 ///   download layer (never requesting auto-translated tracks); this parser only ever sees the pinned track.
 public enum SubtitleParser {
@@ -108,8 +111,9 @@ public enum SubtitleParser {
     /// `&lt;b&gt;` is kept as text rather than removed as a tag; decoding before labels, so an escaped
     /// `&gt;&gt;` chevron is still a chevron (F491). Whitespace-collapsed.
     ///
-    /// SubRip decodes no references (F743), so its `&lt;` stays text. A `<` followed by the
-    /// exporter's word joiner is text, not a tag, and the joiner goes — after `-->`'s too.
+    /// SubRip decodes no references (F743), so its `&lt;` stays text — except that a leading run of
+    /// `&gt;` is still a speaker change, whatever the file (`speakerLabelPrefixes`). A `<` followed by
+    /// the exporter's word joiner is text, not a tag, and the joiner goes — after `-->`'s too.
     static func cleanCueText(_ text: String, isWebVTT: Bool) -> String {
         // Remove every angle-bracket tag (timing cues, <c> color spans, <v Name> voice spans).
         let untagged = text.replacingOccurrences(of: #"<(?!\x{2060})[^>]*>"#, with: "", options: .regularExpression)
@@ -151,7 +155,7 @@ public enum SubtitleParser {
     }
 
     private static let speakerLabelPrefixes = [
-        #"^>>+\s*"#,                          // `>>` chevron speaker change
+        #"^(?:>|&gt;){2,}\s*"#,               // `>>` chevron speaker change, escaped or not, any file
         #"^-\s+"#,                            // leading dialogue dash
         #"^\[[^\]]*\]\s*:?\s*"#,             // `[Speaker 1]`, `[MUSIC]`
         #"^\((?:speaker|voice)[^)]*\)\s*:?\s*"#, // `(Speaker 1)`
