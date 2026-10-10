@@ -250,6 +250,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         case ledgerUnreadable
         case ledgerNewerFormat(Int)
         case historyUnavailable(reason: String)
+        /// A load found no primary at all and opened the backup (F844) — a missing file, not a
+        /// damaged one, which `.recoveredFromBackup` alone cannot tell apart. Loads only.
+        case primaryMissing
     }
 
     /// What actually happened during one save (F190).
@@ -359,7 +362,9 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             // Deliberately NO token. These bytes are the backup, not the primary, so they are not
             // the generation a `save(expecting:)` would be swapping against — handing one back
             // would let a degraded load arm a checked write over a primary nobody read. The primary
-            // was missing or did not decode, which is what `primaryAsRead` says (F865).
+            // was missing or did not decode, which is what `primaryAsRead` says (F865); which of the
+            // two is a repair of its own, for the sentence that describes it (F844).
+            if !primaryExists { repairs.append(.primaryMissing) }
             return LoadResult(
                 value: value, health: .recoveredFromBackup, repairs: repairs, primaryAsRead: .absent
             )

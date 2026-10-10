@@ -199,13 +199,14 @@ func theKeepVersionButtonIsWiredIntoTheMeetingLibrarySection() throws {
     #expect(section[button.upperBound...].prefix(120).contains("model.keepLibraryVersionOnDisk()"),
             "the button does not call the model")
     // Gated on the state it resolves, so it is never a way to drop the ledger of a healthy library.
-    let gate = try #require(section.range(of: "if model.store.health == .divergentGenerations"))
+    // Since F881 the store's own question, which also leaves out the empty version the button refuses.
+    let gate = try #require(section.range(of: "if model.store.offersKeepVersionOnDisk"))
     #expect(gate.upperBound <= button.lowerBound)
     // And the sentences that send the user there name the button, not a Terminal step.
     for sentence in [
-        ReadOnlyLibraryNotice.startup(for: .divergentGenerations),
-        ReadOnlyLibraryNotice.banner(for: .divergentGenerations),
-        ReadOnlyLibraryNotice.librarySectionNotice(for: .divergentGenerations),
+        ReadOnlyLibraryNotice.startup(for: .divergentGenerations, onDisk: .asHealthSays),
+        ReadOnlyLibraryNotice.banner(for: .divergentGenerations, onDisk: .asHealthSays),
+        ReadOnlyLibraryNotice.librarySectionNotice(for: .divergentGenerations, onDisk: .asHealthSays),
     ] {
         #expect(sentence.contains(ReadOnlyLibraryNotice.keepVersionOnDiskButton), "\(sentence)")
     }

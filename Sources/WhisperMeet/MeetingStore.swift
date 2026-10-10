@@ -417,11 +417,9 @@ enum ReadOnlyLibraryNotice {
     // what was found, so they are `librarySectionNotice(for:)` and `banner(for:)` in
     // `LibraryHealthNotice.swift`, built from the store's health (F540).
 
-    /// For the library check, which reads the index it is reporting on (F194). Reporting "no audio
-    /// problems were found" for a library that failed to decode is a clean bill of health for an
-    /// index nobody managed to read.
-    static let integrityCheckDeclined =
-        "\(lead) The library check cannot report on an index it could not read, so nothing was checked. Your recordings are untouched."
+    // The library check's decline (F194) is `integrityCheckDeclined(for:onDisk:)` in
+    // `LibraryHealthNotice.swift` since F844: it said "an index it could not read" in every read-only
+    // state, including the two in which the index read fine.
 
     /// Beside the disabled Forget History button (F457). The saved history is what Recover Library
     /// restores from, which is the one moment it must not be forgotten.
@@ -721,6 +719,17 @@ final class MeetingStore: ObservableObject {
     /// does not reset first (`reloadForConflictRecovery`) can only ever worsen it.
     @Published private(set) var health: PersistedStoreHealth = .complete
     var isDegraded: Bool { !health.allowsMutation }
+
+    /// What the meeting index's load found on disk that `health` cannot say (F844, F881): a missing
+    /// `meetings.json`, or an empty version on disk beside finished recordings. Every read-only
+    /// sentence takes it beside `health`. Set and reset with `health` — by `degrade(to:onDisk:)` and
+    /// `revalidateHealth` — so the two always describe the same load.
+    @Published private(set) var indexOnDisk: ReadOnlyLibraryNotice.IndexOnDisk = .asHealthSays
+
+    /// Whether Settings offers Keep the Version on Disk beside Recover Library… (F833, F881).
+    var offersKeepVersionOnDisk: Bool {
+        ReadOnlyLibraryNotice.offersKeepVersionOnDisk(health, onDisk: indexOnDisk)
+    }
 
     /// True while a whole-library restore is replacing files underneath this object (F506).
     ///
@@ -3502,6 +3511,7 @@ final class MeetingStore: ObservableObject {
     /// Only recovery may call this. Nothing on a save path should reconsider health.
     private func revalidateHealth() {
         health = .complete
+        indexOnDisk = .asHealthSays
         vocabularyHealth = .complete
         replacementRulesHealth = .complete
         // Cleared with `health`, and for the same reason: these describe the state being replaced.
@@ -3590,9 +3600,13 @@ final class MeetingStore: ObservableObject {
     /// given on `health`: `loadMeetings` can reach two verdicts, and `reloadForConflictRecovery`
     /// reloads without resetting. `.complete` is rank 0 in `PersistedStoreHealth.severity`, so it can
     /// only ever be the starting value, never an upgrade.
-    private func degrade(to state: PersistedStoreHealth) {
+    ///
+    /// `onDisk` is what that same load found beyond the health (F844, F881), kept only with the health
+    /// it came with, so the sentences never describe one load's state with another's file.
+    private func degrade(to state: PersistedStoreHealth, onDisk: ReadOnlyLibraryNotice.IndexOnDisk = .asHealthSays) {
         guard state.isWorse(than: health) else { return }
         health = state
+        indexOnDisk = onDisk
     }
 
     /// What a failed load implies. Fails CLOSED: a load that threw is never a healthy store, so the
@@ -3734,11 +3748,21 @@ final class MeetingStore: ObservableObject {
             // restore removed would otherwise keep its transcript copy in memory until quit.
             transcriptEditMemos.removeAll()
             meetingsToken = result.token
-            degrade(to: result.health)
+            // What the sentences need beyond the health (F844, F881). The empty-version test is the
+            // one `keepIndexOnDisk()` refuses on.
+            var onDisk = ReadOnlyLibraryNotice.IndexOnDisk.asHealthSays
+            if result.health == .recoveredFromBackup, result.repairs.contains(.primaryMissing) {
+                onDisk = .missing
+            } else if result.health == .divergentGenerations, meetings.isEmpty {
+                let count = finalizedRecordingFolderCount()
+                if count > 0 { onDisk = .emptyBesideRecordings(recordingFolderCount: count) }
+            }
+            degrade(to: result.health, onDisk: onDisk)
             // `.recoveredFromBackup` says nothing here any more (F540): this paragraph ended "confirm the
             // library looks right before editing", for a library that is read-only and refuses every edit,
             // and `performStartupRecovery` then added a sentence saying the damaged index "was copied
-            // aside", which this path never does. `ReadOnlyLibraryNotice.startup(for:)` is the one account.
+            // aside", which this path never does. `ReadOnlyLibraryNotice.startup(for:onDisk:)` is the one
+            // account.
             if case let .partiallySalvaged(parked) = result.health {
                 startupRecoveryMessages.append(Self.partialSalvageMessage(parked: parked))
             }

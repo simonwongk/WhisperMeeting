@@ -3131,7 +3131,8 @@ final class AppModel: ObservableObject {
             // honesty rule broken in the one place the user is most likely to believe it.
             var message = store.isDegraded
                 ? ReadOnlyLibraryNotice.stillReadOnly(
-                    afterWriting: "The backup's files were copied into your library", store.health
+                    afterWriting: "The backup's files were copied into your library", store.health,
+                    onDisk: store.indexOnDisk
                 )
                 : "Your library was restored from the backup."
             if let snapshot = outcome.preRestoreSnapshot {
@@ -3319,7 +3320,7 @@ final class AppModel: ObservableObject {
         if store.isDegraded {
             // Said per state (F540): "the unreadable index was copied aside" was false for the wipe
             // shape and for a stale-backup load, and nothing said two versions were found.
-            messages.append(ReadOnlyLibraryNotice.startup(for: store.health))
+            messages.append(ReadOnlyLibraryNotice.startup(for: store.health, onDisk: store.indexOnDisk))
             // `report`, not a bare assignment (F257): this is the startup-recovery summary, and a
             // launch with no window — a login item, or a window closed before this ran — showed it
             // to nobody. It is the notice that tells a user their recording came back.
@@ -7553,7 +7554,8 @@ extension AppModel {
                 // F540: what the library is now, not "could not fully read" — an empty generation is
                 // the usual cause, and an empty index reads fine.
                 alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
-                    afterWriting: "The meeting index was restored", store.health
+                    afterWriting: "The meeting index was restored", store.health,
+                    onDisk: store.indexOnDisk
                 )
             }
         } catch {
@@ -7593,7 +7595,8 @@ extension AppModel {
             let kept = "WhisperMeet's record of the other version \(record), and the other version is still among the saved copies of the index."
             if store.isDegraded {
                 alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
-                    afterWriting: "The version of the meeting library on disk was kept", store.health
+                    afterWriting: "The version of the meeting library on disk was kept", store.health,
+                    onDisk: store.indexOnDisk
                 ) + " " + kept
             } else {
                 alertMessage = "WhisperMeet kept the version of the meeting library that was on disk. \(kept)"
@@ -7717,7 +7720,8 @@ extension AppModel {
                 // other store can hold the library read-only). Never report success in that case —
                 // the F187 honesty rule.
                 alertMessage = ReadOnlyLibraryNotice.stillReadOnly(
-                    afterWriting: "The meeting index was rebuilt from the recording folders", store.health
+                    afterWriting: "The meeting index was rebuilt from the recording folders", store.health,
+                    onDisk: store.indexOnDisk
                 )
             }
         } catch {
@@ -7780,7 +7784,7 @@ extension AppModel {
         // failed to decode it finds no meetings, therefore no problems, and would report a clean
         // result — the most reassuring possible answer at the least reassuring possible moment.
         guard !store.isDegraded else {
-            alertMessage = ReadOnlyLibraryNotice.integrityCheckDeclined
+            alertMessage = ReadOnlyLibraryNotice.integrityCheckDeclined(for: store.health, onDisk: store.indexOnDisk)
             return
         }
         let results = verifyLibraryIntegrity(includingUncheckedSourceTracks: true)

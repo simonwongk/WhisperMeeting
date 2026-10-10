@@ -203,7 +203,7 @@ func launchSaysTheSentenceForTheStoresHealth() async throws {
     for shape in Shape.allCases {
         let (model, root, message) = try await launch(shape)
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(message.contains(ReadOnlyLibraryNotice.startup(for: model.store.health)),
+        #expect(message.contains(ReadOnlyLibraryNotice.startup(for: model.store.health, onDisk: model.store.indexOnDisk)),
                 "\(shape): launch did not say what startup(for: \(model.store.health)) says: \(message)")
     }
 }
@@ -224,16 +224,16 @@ private let everyHealth: [PersistedStoreHealth] = [
 @Test("Every standing surface says what was found, so none of them is the generic sentence (F540)")
 func everySurfaceIsBuiltFromWhatWasFound() {
     for health in everyHealth {
-        let found = ReadOnlyLibraryNotice.found(health)
+        let found = ReadOnlyLibraryNotice.found(health, onDisk: .asHealthSays)
         #expect(!found.isEmpty)
-        #expect(ReadOnlyLibraryNotice.banner(for: health).contains(found), "\(health): the banner")
-        #expect(ReadOnlyLibraryNotice.librarySectionNotice(for: health).contains(found), "\(health): the Settings section")
-        #expect(ReadOnlyLibraryNotice.banner(for: health).contains(ReadOnlyLibraryNotice.recoverLibraryPath)
-                || ReadOnlyLibraryNotice.banner(for: health).contains("Recovery in the documentation"),
+        #expect(ReadOnlyLibraryNotice.banner(for: health, onDisk: .asHealthSays).contains(found), "\(health): the banner")
+        #expect(ReadOnlyLibraryNotice.librarySectionNotice(for: health, onDisk: .asHealthSays).contains(found), "\(health): the Settings section")
+        #expect(ReadOnlyLibraryNotice.banner(for: health, onDisk: .asHealthSays).contains(ReadOnlyLibraryNotice.recoverLibraryPath)
+                || ReadOnlyLibraryNotice.banner(for: health, onDisk: .asHealthSays).contains("Recovery in the documentation"),
                 "\(health): the banner names no way out")
     }
     // Different states are told apart; the three that share a way out still say what they found.
-    let founds = everyHealth.map(ReadOnlyLibraryNotice.found)
+    let founds = everyHealth.map { ReadOnlyLibraryNotice.found($0, onDisk: .asHealthSays) }
     #expect(Set(founds).count == everyHealth.count, "two states were told the same thing")
 }
 
@@ -245,10 +245,10 @@ func theSurfacesDoNotInventCopies() {
     ]
     for health in copiedNothing {
         for (surface, text) in [
-            ("found", ReadOnlyLibraryNotice.found(health)),
-            ("startup", ReadOnlyLibraryNotice.startup(for: health)),
-            ("banner", ReadOnlyLibraryNotice.banner(for: health)),
-            ("section", ReadOnlyLibraryNotice.librarySectionNotice(for: health)),
+            ("found", ReadOnlyLibraryNotice.found(health, onDisk: .asHealthSays)),
+            ("startup", ReadOnlyLibraryNotice.startup(for: health, onDisk: .asHealthSays)),
+            ("banner", ReadOnlyLibraryNotice.banner(for: health, onDisk: .asHealthSays)),
+            ("section", ReadOnlyLibraryNotice.librarySectionNotice(for: health, onDisk: .asHealthSays)),
         ] {
             #expect(!claimsACopy(text), "\(health) \(surface): \(text)")
         }
@@ -259,9 +259,9 @@ func theSurfacesDoNotInventCopies() {
 func theWipeShapeCountComesFromTheHealthValue() {
     for count in [1, 2, 17] {
         let health = PersistedStoreHealth.suspectEmpty(recordingFolderCount: count)
-        #expect(ReadOnlyLibraryNotice.found(health).contains("\(count) finished recording"))
-        #expect(ReadOnlyLibraryNotice.startup(for: health).contains("\(count) finished recording"))
-        #expect(ReadOnlyLibraryNotice.banner(for: health).contains("\(count) finished recording"))
+        #expect(ReadOnlyLibraryNotice.found(health, onDisk: .asHealthSays).contains("\(count) finished recording"))
+        #expect(ReadOnlyLibraryNotice.startup(for: health, onDisk: .asHealthSays).contains("\(count) finished recording"))
+        #expect(ReadOnlyLibraryNotice.banner(for: health, onDisk: .asHealthSays).contains("\(count) finished recording"))
     }
 }
 
@@ -282,8 +282,8 @@ func theBannersPathNamesARealControl() throws {
 @Test("The banner and the Settings section are drawn from the store's health, not a constant (F540)")
 func theStandingSurfacesAskForTheHealthKeyedSentence() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    #expect(source.contains("Text(ReadOnlyLibraryNotice.banner(for: model.store.health))"))
-    #expect(source.contains("Text(ReadOnlyLibraryNotice.librarySectionNotice(for: model.store.health))"))
+    #expect(source.contains("Text(ReadOnlyLibraryNotice.banner(for: model.store.health, onDisk: model.store.indexOnDisk))"))
+    #expect(source.contains("Text(ReadOnlyLibraryNotice.librarySectionNotice(for: model.store.health, onDisk: model.store.indexOnDisk))"))
 }
 
 // MARK: - After a recovery that leaves it read-only
@@ -315,7 +315,7 @@ func restoringAnEmptyCopySaysTheWipeShape() async throws {
         return
     }
     #expect(model.alertMessage == ReadOnlyLibraryNotice.stillReadOnly(
-        afterWriting: "The meeting index was restored", model.store.health))
+        afterWriting: "The meeting index was restored", model.store.health, onDisk: model.store.indexOnDisk))
     #expect(model.alertMessage?.contains("\(count) finished recording") == true, "\(model.alertMessage ?? "nil")")
     #expect(model.alertMessage?.contains("could not fully read") == false)
     // The resumed startup sweep would run in a Task of its own after this test; there is none to

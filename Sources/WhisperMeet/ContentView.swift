@@ -1659,7 +1659,7 @@ struct SettingsView: View {
                     // the button already carries the restore dialog and SwiftUI honours one
                     // presentation modifier of a kind per view: with both on the button, neither
                     // appeared on screen.
-                    Text(ReadOnlyLibraryNotice.librarySectionNotice(for: model.store.health))
+                    Text(ReadOnlyLibraryNotice.librarySectionNotice(for: model.store.health, onDisk: model.store.indexOnDisk))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         // F289: the other route out of a read-only library, offered by the
@@ -1704,8 +1704,10 @@ struct SettingsView: View {
                         }
                     // F833: the other way out of two versions, beside the first. Only for that state —
                     // every other read-only state is about the index itself, which the ledger did not
-                    // cause — and the sentence above names this button by the same constant.
-                    if model.store.health == .divergentGenerations {
+                    // cause — and the sentence above names this button by the same constant. Not when
+                    // the version on disk is the empty one beside finished recordings, which the button
+                    // refuses and the sentences no longer name (F881).
+                    if model.store.offersKeepVersionOnDisk {
                         Button(ReadOnlyLibraryNotice.keepVersionOnDiskButton) { model.keepLibraryVersionOnDisk() }
                             .buttonStyle(.bordered)
                     }
@@ -5828,7 +5830,7 @@ struct ReadOnlyLibraryBanner: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "lock.fill")
                     .foregroundStyle(.secondary)
-                Text(ReadOnlyLibraryNotice.banner(for: model.store.health))
+                Text(ReadOnlyLibraryNotice.banner(for: model.store.health, onDisk: model.store.indexOnDisk))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -13,6 +13,11 @@ import WhisperCore
 /// silent about `.divergentGenerations`, for which `docs/RECOVERY.md` has a whole section keyed on
 /// the app saying "two versions of the library were found".
 ///
+/// Health alone cannot say everything the sentences need, so each takes what the load found on disk
+/// beside it (`IndexOnDisk`, F844, F881): a missing `meetings.json` loads `.recoveredFromBackup` like a
+/// damaged one, and an empty version on disk beside finished recordings loads `.divergentGenerations`
+/// like any other second version. The parameter has no default, so no surface can leave it out.
+///
 /// The switches are exhaustive with no `default`, like `PersistedStoreHealth.severity` and
 /// `DamagedListNotice.description`: a new health must be described here or this stops compiling,
 /// rather than silently reading as the sentence of some other state.
@@ -21,6 +26,19 @@ import WhisperCore
 /// nothing, and `.divergentGenerations` copies both files on a best-effort basis the load cannot
 /// report back, so it says neither version "has been changed" — which is true whatever the copy did.
 extension ReadOnlyLibraryNotice {
+    /// What the meeting index's load found on disk that its health cannot say (F844, F881). Recorded by
+    /// `MeetingStore.loadMeetings` beside the health, and passed with it to every sentence below.
+    enum IndexOnDisk: Equatable, Sendable {
+        /// Nothing beyond what the health says.
+        case asHealthSays
+        /// `meetings.json` was not there at all, and the library opened its backup (F844). The health
+        /// is `.recoveredFromBackup`, whose own sentence is about a damaged index left as it was.
+        case missing
+        /// The index on disk — one of two versions — is an empty list beside this many finished
+        /// recordings: the 2026-08-14 shape, which Keep the Version on Disk refuses (F833, F881).
+        case emptyBesideRecordings(recordingFolderCount: Int)
+    }
+
     /// Where Recover Library is, as the Settings window names it. Asserted against `ContentView`'s own
     /// section header, because the banner used to say "Settings → Library" for a section titled
     /// "Meeting library".
@@ -31,21 +49,35 @@ extension ReadOnlyLibraryNotice {
     /// cannot drift; `ContentView`'s use of it is asserted against its source.
     static let keepVersionOnDiskButton = "Keep the Version on Disk"
 
+    /// Whether the sentences — and Settings, beside Recover Library… — offer Keep the Version on Disk:
+    /// for two versions, unless the one on disk is the empty shape the button refuses (F881).
+    static func offersKeepVersionOnDisk(_ health: PersistedStoreHealth, onDisk: IndexOnDisk) -> Bool {
+        guard health == .divergentGenerations else { return false }
+        if case .emptyBesideRecordings = onDisk { return false }
+        return true
+    }
+
     /// What was found, for a library in this state: the sentence the standing surfaces build on.
     /// Never ends in a next step — each surface adds its own.
-    static func found(_ health: PersistedStoreHealth) -> String {
+    static func found(_ health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
         switch health {
         case .complete:
             // Not reachable from a read-only library; a sentence rather than a crash or an empty string.
             return "The meeting library loaded in full."
         case .recoveredFromBackup:
+            if onDisk == .missing {
+                // F844: there is no damaged file to have left anywhere.
+                return "The meeting index (meetings.json) is missing, so WhisperMeet opened its backup copy, which may be one save behind. Nothing was copied aside, and nothing has been changed."
+            }
             return "The meeting index was damaged, so WhisperMeet opened its previous backup, which may be one save behind. The damaged index was left as it was, and nothing was copied aside."
         case .divergentGenerations:
+            if case let .emptyBesideRecordings(count) = onDisk {
+                return "Two versions of the meeting library were found: the index on disk matches no save WhisperMeet recorded, and it is empty although \(recordings(count)) in the library's Recordings folder; the last save WhisperMeet did record is still kept. WhisperMeet will not choose between them, and neither has been changed."
+            }
             return "Two versions of the meeting library were found: the index on disk matches no save WhisperMeet recorded, and the last save it did record is still kept. WhisperMeet will not choose between them, and neither has been changed."
         case let .suspectEmpty(count):
-            let recordings = count == 1 ? "1 finished recording is" : "\(count) finished recordings are"
             let them = count == 1 ? "it" : "them"
-            return "The meeting index is empty, but \(recordings) in the library's Recordings folder, so WhisperMeet is open read-only instead of treating \(them) as new. The index itself read cleanly, so nothing was copied aside."
+            return "The meeting index is empty, but \(recordings(count)) in the library's Recordings folder, so WhisperMeet is open read-only instead of treating \(them) as new. The index itself read cleanly, so nothing was copied aside."
         case .partiallySalvaged:
             return "WhisperMeet could read only part of the meeting index. The meetings it could read are shown, and the records it could not read were left in the copy that was set aside."
         case let .unreadable(quarantined):
@@ -59,6 +91,11 @@ extension ReadOnlyLibraryNotice {
         }
     }
 
+    /// "1 finished recording is" / "3 finished recordings are".
+    private static func recordings(_ count: Int) -> String {
+        count == 1 ? "1 finished recording is" : "\(count) finished recordings are"
+    }
+
     /// The paragraph `performStartupRecovery` adds when the library opened read-only.
     ///
     /// Three states carry a paragraph of the store's own beside this one — the load that threw
@@ -66,14 +103,18 @@ extension ReadOnlyLibraryNotice {
     /// already says what was read and parked and copied aside, with the names. For those this says
     /// only that the library is read-only, so the two cannot repeat or contradict each other. The
     /// other three have no paragraph of the store's that is true, so this one is the whole account.
-    static func startup(for health: PersistedStoreHealth) -> String {
+    static func startup(for health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
         switch health {
         case .complete:
-            return found(health)
+            return found(health, onDisk: onDisk)
         case .recoveredFromBackup, .suspectEmpty:
-            return "\(found(health)) Your recordings are untouched. Nothing will be changed until you choose how to recover."
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. Nothing will be changed until you choose how to recover."
         case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. Nothing will be changed until you choose which version to keep, in Settings → Meeting library: Recover Library… goes back to the last save WhisperMeet recorded, and \(keepVersionOnDiskButton) keeps the index that is on disk."
+            guard offersKeepVersionOnDisk(health, onDisk: onDisk) else {
+                // F881: keeping an empty version beside finished recordings is refused, so only one way out is named.
+                return "\(found(health, onDisk: onDisk)) Your recordings are untouched. Nothing will be changed until you choose how to recover: Recover Library… in Settings → Meeting library goes back to the last save WhisperMeet recorded."
+            }
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. Nothing will be changed until you choose which version to keep, in Settings → Meeting library: Recover Library… goes back to the last save WhisperMeet recorded, and \(keepVersionOnDiskButton) keeps the index that is on disk."
         case .partiallySalvaged, .unreadable, .unavailable:
             return "WhisperMeet is open in read-only mode because it could not fully read your meeting library. Your recordings are untouched. Nothing will be changed until you choose how to recover."
         }
@@ -81,23 +122,23 @@ extension ReadOnlyLibraryNotice {
 
     /// The standing notice above the detail column while read-only (F313). Names the way out, because
     /// the read-only state is only ever resolved by taking it.
-    static func banner(for health: PersistedStoreHealth) -> String {
+    static func banner(for health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
         switch health {
-        case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. To go back to the last save WhisperMeet recorded, open \(recoverLibraryPath); to keep the version on disk instead, choose \(keepVersionOnDiskButton) beside it."
-        case .complete, .recoveredFromBackup, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
-            return "\(found(health)) Your recordings are untouched. To recover, open \(recoverLibraryPath)"
+        case .divergentGenerations where offersKeepVersionOnDisk(health, onDisk: onDisk):
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. To go back to the last save WhisperMeet recorded, open \(recoverLibraryPath); to keep the version on disk instead, choose \(keepVersionOnDiskButton) beside it."
+        case .complete, .recoveredFromBackup, .divergentGenerations, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. To recover, open \(recoverLibraryPath)"
         }
     }
 
     /// The Settings → Meeting library section's read-only sentence (F313): what is true of the library,
     /// beside the controls that resolve it, with nothing about menus or transcripts.
-    static func librarySectionNotice(for health: PersistedStoreHealth) -> String {
+    static func librarySectionNotice(for health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
         switch health {
-        case .divergentGenerations:
-            return "\(found(health)) Your recordings are untouched. Recover Library goes back to a save WhisperMeet recorded; \(keepVersionOnDiskButton) keeps the index that is on disk instead."
-        case .complete, .recoveredFromBackup, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
-            return "\(found(health)) Your recordings are untouched. Recover Library restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept."
+        case .divergentGenerations where offersKeepVersionOnDisk(health, onDisk: onDisk):
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. Recover Library goes back to a save WhisperMeet recorded; \(keepVersionOnDiskButton) keeps the index that is on disk instead."
+        case .complete, .recoveredFromBackup, .divergentGenerations, .partiallySalvaged, .suspectEmpty, .unreadable, .unavailable:
+            return "\(found(health, onDisk: onDisk)) Your recordings are untouched. Recover Library restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept."
         }
     }
 
@@ -105,7 +146,15 @@ extension ReadOnlyLibraryNotice {
     /// still read-only (F193, F289). The index they wrote can be in any state, and an empty copy beside
     /// finished recordings is the one the rehearsal in `docs/RECOVERY.md` walks into on purpose — so
     /// this says what the library is now, not "could not fully read".
-    static func stillReadOnly(afterWriting what: String, _ health: PersistedStoreHealth) -> String {
-        "\(what), but WhisperMeet stays in read-only mode. \(found(health)) Your recordings are untouched."
+    static func stillReadOnly(afterWriting what: String, _ health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
+        "\(what), but WhisperMeet stays in read-only mode. \(found(health, onDisk: onDisk)) Your recordings are untouched."
+    }
+
+    /// For the library check, which looks at the recordings the meeting index lists (F194): while the
+    /// library is read-only that list may not be all of them, and a clean report would be a clean bill
+    /// of health for meetings nobody looked at. Says what was found (F844) — it said "an index it could
+    /// not read" in every read-only state, including the two in which the index read fine.
+    static func integrityCheckDeclined(for health: PersistedStoreHealth, onDisk: IndexOnDisk) -> String {
+        "\(lead) \(found(health, onDisk: onDisk)) The library check looks only at the recordings the meeting index lists, and until the library is recovered that list may not be complete, so nothing was checked. Your recordings are untouched."
     }
 }

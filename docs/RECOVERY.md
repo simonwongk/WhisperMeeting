@@ -74,7 +74,7 @@ of these index files.
 | Recording finalization fails | The app closes the raw track files instead of deleting them, then attempts to rebuild `meeting-recovered.wav`. | All source files that reached disk. |
 | The app or Mac stops during recording | On the next launch, the app finds the unindexed recording folder and attempts to rebuild a WAV from the raw tracks. | Raw source tracks; the recovered WAV when enough audio was written. |
 | Recording permission or startup fails before any file is created | The verified-empty meeting folder is removed automatically and is not shown as an interrupted recording. | No audio existed to preserve. Any non-empty folder remains protected. |
-| The meeting index (`meetings.json`) is damaged | The app opens its previous readable backup, which may be one save behind, and leaves the damaged primary exactly as it is. The **whole** library opens read-only — the app cannot be sure what you had, so editing, deleting, recording, importing and transcribing are all refused until recovery is resolved. At launch, in the banner and in Settings → Meeting library it says the index was damaged and that nothing was copied aside, because nothing is: the damaged file stays where it is. | The backup, the damaged primary, and every recording folder. |
+| The meeting index (`meetings.json`) is damaged, or missing while its backup is there | The app opens its previous readable backup, which may be one save behind, and leaves a damaged primary exactly as it is. The **whole** library opens read-only — the app cannot be sure what you had, so editing, deleting, recording, importing and transcribing are all refused until recovery is resolved. At launch, in the banner and in Settings → Meeting library it says the index was damaged — or missing (F844) — and that nothing was copied aside, because nothing is: a damaged file stays where it is. | The backup, a damaged primary, and every recording folder. |
 | `meetings.json` reads cleanly but is empty, while finished recordings are in `Recordings/` (the 2026-08-14 wipe shape) | The library opens read-only rather than treat those recordings as new. It says the index is empty, how many finished recordings are beside it, and that nothing was copied aside, because the index read cleanly. **Recover Library…** restores an earlier copy of the index, or rebuilds one from the recording folders when no copy was kept. | Every recording folder, the empty index and its backup. |
 | The index on disk matches no save WhisperMeet recorded, and the last save it did record is still kept (something else rewrote it) | The library opens read-only and says *Two versions of the meeting library were found*. WhisperMeet does not choose: *Recover Library…* takes the last save it recorded and *Keep the Version on Disk* takes the index in place, both in Settings → Meeting library — see [If the app says two versions of the library were found](#if-the-app-says-two-versions-of-the-library-were-found). | Both versions, and every recording folder. |
 | Neither meeting-index copy can be read | The exact bytes are copied aside as `meetings.unreadable-<timestamp>.json` and `meetings.backup.unreadable-<timestamp>.json`, the library opens read-only, and no mutation, recording, import, transcription or deletion is permitted until recovery is resolved. | Every recording folder, and both original index files. |
@@ -153,7 +153,8 @@ the manual steps below are the way (F457). On a read-only library restoring is n
 reads the bytes off disk and verifies them rather than trusting anything in memory. When the
 restored generation reads cleanly, the library is writable again straight away and WhisperMeet
 finishes the startup work it skipped while the library was read-only; there is no need to quit and
-reopen. If it still cannot be read, the library stays read-only and WhisperMeet says so.
+reopen. If the restored index still leaves the library read-only — an empty copy beside finished
+recordings, say — it stays read-only and WhisperMeet says what it found.
 
 ### Rebuilding the index from the recording folders
 
@@ -260,8 +261,11 @@ reads the two index files the way every version of WhisperMeet always has.
 This is the one state that needs a decision from you. The app says it at launch, in the banner above a
 meeting and in Settings → Meeting library, as *Two versions of the meeting library were found*. It
 means the index on disk belongs to no save WhisperMeet recorded, *and* the save it did record is still
-available — so there are genuinely two versions and it will not choose for you. Both are preserved as
-`.unreadable-<timestamp>.json` copies before anything is reported, and neither has been changed.
+available — so there are genuinely two versions and it will not choose for you. Neither has been
+changed. Before it says so, WhisperMeet also tries to copy `meetings.json` and `meetings.backup.json`
+aside, under the names its copies of unreadable files get (`meetings.unreadable-<timestamp>.json`,
+`meetings.backup.unreadable-<timestamp>.json`) although both read; whether those copies were made is
+not yet reported (F834). The last save WhisperMeet recorded is in `meetings.history/`.
 
 To take the other version, the last save WhisperMeet recorded, open Settings → Meeting library →
 **Recover Library…** and choose it from the list; or restore it by hand as above.
@@ -276,9 +280,10 @@ generation, kept or aged out by the same rules as any other.
 
 If the index on disk is the empty one beside finished recordings in the table above (the 2026-08-14
 shape, from a write WhisperMeet did not record), keeping it would leave the library read-only
-anyway, so WhisperMeet refuses, changes nothing, and says to use **Recover Library…** instead. If
-the index changed on disk after WhisperMeet read it and the library still would not open, the ledger
-is put back where it was, so nothing has changed (F833).
+anyway, so WhisperMeet says so at launch, in the banner and in Settings, names **Recover Library…**
+alone, and does not show **Keep the Version on Disk** (F881); asked anyway, it refuses and changes
+nothing. If the index changed on disk after WhisperMeet read it and the library still would not
+open, the ledger is put back where it was, so nothing has changed (F833).
 
 By hand, with WhisperMeet quit, the same step is (`-n` never replaces a ledger set aside earlier):
 
@@ -311,7 +316,7 @@ meeting removes its recording folder straight away. Its title, transcript, notes
 the backup copy and the index generations under `meetings.history/` for one week — the same window
 the recovery list covers — so if the library is lost or damaged in that week, an earlier generation
 can still bring it back. That is protection for the library, not an undo button: WhisperMeet offers
-*Recover Library…* only while the library cannot be read (F457). To bring back one meeting you
+*Recover Library…* only while the library is read-only (F457). To bring back one meeting you
 deleted on purpose, restore a generation by hand as above, which also undoes every change saved
 since that generation. After that week (checked at each launch and after each delete) every generation
 that held the meeting is re-recorded without it under a new name, and the backup copy is rotated if
