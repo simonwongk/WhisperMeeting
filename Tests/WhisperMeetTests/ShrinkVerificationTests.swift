@@ -149,7 +149,7 @@ func shrinkAcceptsASingleTrackMovie() async throws {
     #expect(reason == nil, "\(String(describing: reason))")
 }
 
-// MARK: - A container with several audio tracks, written the way a recorder writes one
+// MARK: - A container with several audio tracks, written with AVAssetWriter
 
 /// Writes a QuickTime or MPEG-4 file with one AAC audio track per `(frequency, amplitude)` tone.
 /// Probed on this Mac before the test was written: AVURLAsset reports one audio track per input,
