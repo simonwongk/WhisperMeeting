@@ -30,15 +30,13 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
 /// inside an ordinary sentence was never found. A term already present in the segment is correct and
-/// proposes nothing. A window must match at least half the term's characters, position for
-/// position, and every character it gets wrong must sound like the term's (`MandarinSound`):
-/// matching two of three characters in place also fits 王经理 for 张经理 and 数据集 for 数据库,
-/// which the review of F536 found pre-ticked in seven of eight ordinary sentences. F536 asked for
-/// more than half, so a two-character term was never proposed; since F817 half is enough, because
-/// the sound rule is what keeps 计算 from being proposed for 预算 (ji is not yu), and a
-/// two-character mishearing (会意 for 会议) is one character in two. A homophone can still be a
-/// different real word (公事 for 公式), which is why a Chinese near-miss arrives unticked
-/// (`ProposalReview.uncheckedByDefault`). A Chinese window is only proposed where
+/// proposes nothing. A window must match more than half the term's characters, position for
+/// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
+/// character it gets wrong must sound like the term's (`MandarinSound`): matching two of three
+/// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
+/// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
+/// word or another person's name (公事 for 公式, 张薇 for 张伟), which is why a Chinese near-miss
+/// arrives unticked and needs its own tick (`ProposalReview`). A Chinese window is only proposed where
 /// `GlossaryCorrector.apply` would apply it — `ReplacementBoundary` with the caller's
 /// `CJKWordEvidence` (F594) — so a window cutting
 /// through a word is not offered. A Latin term's windows split a token where Latin meets Chinese
@@ -195,27 +193,20 @@ public enum GlossaryCorrector {
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
-    /// when the term is already present, no window matches at least half its characters position
-    /// for position with every other character a homophone, or the only such windows cut through a
-    /// word.
+    /// when the term is already present, no window matches enough of its characters position for
+    /// position (`enoughInPlace`) with every other character a homophone, or the only such windows
+    /// cut through a word.
     ///
     /// Position for position rather than an LCS: a Chinese mishearing substitutes a character for a
     /// homophone and keeps the length (张经理 → 张经里), and an LCS also credits the window one
     /// character to the left — 请张经 shares 张经 with 张经理 as a subsequence, and comes first.
-    ///
-    /// At least half, since F817; F536 asked for more than half, which kept every two-character
-    /// term from ever being proposed (会意 for 会议, 周无 for 周五: one substitution is half the
-    /// word). F536 set "more than" before the homophone rule existed, to stop 计算 being proposed
-    /// for 预算; the homophone rule now does that (ji is not yu). Half in place is still required, so
-    /// a word that only sounds like the term — 攻势 for 公式, gong shi both — is not proposed. Only
-    /// even-length terms are affected: for an odd length, at least half is more than half.
     private static func bestCJKWindow(
         for term: PreparedTerm, in runs: CJKRuns, text: String, segmented: SegmentedText,
         evidence: () -> CJKWordEvidence, sounds: inout [Character: String]
     ) -> String? {
         let length = term.ids.count
         // Cheap upper bound first: every matched character must occur in the segment somewhere.
-        guard term.ids.count(where: runs.characterSet.contains) * 2 >= length else { return nil }
+        guard enoughInPlace(term.ids.count(where: runs.characterSet.contains), of: length) else { return nil }
         if runs.contains(term.ids) { return nil }
         var best: (score: Int, phrase: String)?
         for run in runs.runs where run.ids.count >= length {
@@ -224,8 +215,8 @@ public enum GlossaryCorrector {
                 for offset in 0..<length where run.ids[start + offset] == term.ids[offset] {
                     common += 1
                 }
-                // At least half (F817), and better than the best genuine window so far.
-                guard common * 2 >= length, common > (best?.score ?? 0) else { continue }
+                // Enough in place, and better than the best genuine window so far.
+                guard enoughInPlace(common, of: length), common > (best?.score ?? 0) else { continue }
                 // And every character it gets wrong sounds like the one it should be: 张经里 for
                 // 张经理, not 王经理 — a different person who matches just as many characters.
                 let soundsAlike = (0..<length).allSatisfy { offset in
@@ -245,6 +236,21 @@ public enum GlossaryCorrector {
             }
         }
         return best?.phrase
+    }
+
+    /// Whether `common` characters in place are enough for a Chinese term of `length` characters:
+    /// more than half, as F536 asked, except one in two for a two-character term (F817).
+    ///
+    /// More than half kept every two-character term from ever being proposed — 会意 for 会议, 周无
+    /// for 周五: one substitution is half the word. F536 set it before the homophone rule existed, to
+    /// stop 计算 being proposed for 预算, and the homophone rule now does that (ji is not yu). One in
+    /// two is still required, so a word that only sounds like the term — 攻势 for 公式, gong shi
+    /// both — is not proposed. F817's first round lowered every even length to half, and the Wave 5
+    /// review measured what that did to four-character terms: two new right rows (会意记要, 书局分析)
+    /// and three new wrong ones from two patterns (时常分析 for 市场分析, twice; 项目精力 for 项目经理 —
+    /// other words that sound alike), so a longer term is back to more than half.
+    static func enoughInPlace(_ common: Int, of length: Int) -> Bool {
+        length == 2 ? common >= 1 : common * 2 > length
     }
 
     // MARK: - Preparation (F536: once per pass, not once per segment × term)

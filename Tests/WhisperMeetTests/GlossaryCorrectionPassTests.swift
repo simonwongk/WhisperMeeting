@@ -239,7 +239,9 @@ func twoCharacterHomophonesThroughTheApp() async throws {
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
 
     // 公事 (business) reads gong shi like 公式 (formula): a homophone that is another word, which
-    // is why a Chinese near-miss arrives unticked. Inside 公事公办 it would cut a word, so it is not.
+    // is why a Chinese near-miss arrives unticked. This test's segmenter keeps 公事公办 whole, so
+    // the 公事 inside it would cut a word and is not proposed; NLTokenizer splits it (公事 | 公办),
+    // so with the app's real segmenter that line is proposed too.
     let expected: [GlossaryCorrection] = [
         GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议"),
         GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五"),
@@ -248,6 +250,63 @@ func twoCharacterHomophonesThroughTheApp() async throws {
     #expect(proposals == expected)
     let review = ProposalReview(proposals: proposals, source: .vocabulary)
     #expect(review.preselected(touching: []).isEmpty, "a Chinese near-miss must arrive unticked")
+}
+
+@Test("Select All leaves a sound-alike Chinese row for its own tick, and Deselect All clears it too (F817)")
+func selectAllLeavesSoundAlikeRowsUnticked() {
+    let proposals = [
+        GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel"),
+        GlossaryCorrection(segmentIndex: 1, from: "会意", to: "会议"),
+        GlossaryCorrection(segmentIndex: 2, from: "张薇", to: "张伟"),
+    ]
+    let review = ProposalReview(proposals: proposals, source: .vocabulary)
+    // Select All from nothing ticked: the Latin row only. 张薇 is a different person from 张伟.
+    #expect(review.toggledAll([]) == [0])
+    // Then the button reads Deselect All, which clears every tick, a hand-ticked row included.
+    #expect(review.allTicked([0]))
+    #expect(review.toggledAll([0, 2]) == [])
+    // Select All keeps a row the user ticked by hand.
+    #expect(!review.allTicked([2]))
+    #expect(review.toggledAll([2]) == [0, 2])
+    // Sound-alike rows alone: Select All has nothing to tick.
+    #expect(ProposalReview(proposals: Array(proposals.dropFirst()), source: .vocabulary).selectableAll.isEmpty)
+    // The rules' and the local model's rows are all Select All's, as before.
+    #expect(ProposalReview(proposals: proposals, source: .replacementRules).toggledAll([]) == [0, 1, 2])
+    #expect(ProposalReview(proposals: proposals, source: .localModel).toggledAll([]) == [0, 1, 2])
+}
+
+@MainActor
+@Test("A review row's sentence is the words around the place applying it changes, found with the app's word evidence (F817)")
+func reviewRowShowsItsSentence() async throws {
+    let (model, root) = try makeModel("row-sentence")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // This segmenter keeps 公事公办 whole, so only the second 公事 is a word of its own.
+    model.cjkWordSegmenter = dictionarySegmenterForApp(["公事公办", "这", "是", "公事"])
+    model.store.addVocabulary(["公式"])
+    let id = addMeeting(model, lines: ["公事公办，这是公事"])
+
+    let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "公事", to: "公式")])
+    // The row is about the second 公事 — where apply, with the same evidence, changes it — and its
+    // sentence says so; the first 公事 in the line is not the one this row changes.
+    #expect(model.proposalContext(proposals[0], in: id) == ProposalContext(before: "公事公办，这是", match: "公事", after: ""))
+    // A row for a line that is gone has no sentence.
+    #expect(model.proposalContext(GlossaryCorrection(segmentIndex: 5, from: "公事", to: "公式"), in: id) == nil)
+}
+
+@Test("The review sheet's Select All goes through the review's rule, and each row shows its sentence (F817)")
+func reviewSheetUsesTheSelectAllRuleAndShowsSentences() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    let selectAllUsesTheRule = source.contains("selected = review.toggledAll(selected)")
+    #expect(selectAllUsesTheRule)
+    let titleUsesTheRule = source.contains("review.allTicked(selected) ? \"Deselect All\" : \"Select All\"")
+    #expect(titleUsesTheRule)
+    let ticksEveryRow = source.contains("Set(proposals.indices)")
+    #expect(!ticksEveryRow, "the sheet ticks every row itself again")
+    let passesTheSentence = source.contains("context: { model.proposalContext($0, in: meetingID) }")
+    #expect(passesTheSentence)
+    let rowShowsIt = source.contains("if let context = context(proposal)")
+    #expect(rowShowsIt)
 }
 
 @Test("Correct Toward Vocabulary goes through the background pass and its status line has Cancel (F536)")

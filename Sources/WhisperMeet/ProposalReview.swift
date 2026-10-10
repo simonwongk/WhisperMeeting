@@ -22,10 +22,13 @@ struct ProposalReview: Identifiable, Equatable {
     let proposals: [GlossaryCorrection]
     let source: Source
 
-    /// Proposals that arrive unticked whatever else is true of them: a Chinese near-miss from Correct
-    /// Toward Vocabulary. The pass now requires every differing character to sound the same, which
-    /// removed every wrong proposal the F536 review measured; this is the backstop for the reading
-    /// Foundation gives a character being wrong, because applying cannot be undone.
+    /// Proposals that need a tick of their own: a Chinese near-miss from Correct Toward Vocabulary,
+    /// a match by sound. Every differing character must sound like the term's, but a homophone can
+    /// be another real word or another person's name — the Wave 5 review of F817 measured 15 wrong
+    /// rows in 40 everyday sentences (经历 for 经理, 上限 for 上线, 张薇 for 张伟). So they arrive
+    /// unticked, Select All leaves them (`selectableAll`), and each row shows its sentence (the
+    /// sheet's `context`). Applying can be undone since F831, but a tick that renames a person in a
+    /// long transcript may not be noticed to undo.
     var uncheckedByDefault: Set<Int> {
         guard source == .vocabulary else { return [] }
         return GlossaryReviewDefaults.chineseSpans(proposals)
@@ -35,6 +38,23 @@ struct ProposalReview: Identifiable, Equatable {
     /// (F245): everything else, less `uncheckedByDefault`.
     func preselected(touching: Set<Int>) -> Set<Int> {
         Set(proposals.indices).subtracting(touching).subtracting(uncheckedByDefault)
+    }
+
+    /// What Select All ticks (F817): every row but those that need a tick of their own. A row that
+    /// rewrites a vocabulary term is still Select All's, as it always was — it arrives unticked and
+    /// marked, and Select All is the deliberate act.
+    var selectableAll: Set<Int> { Set(proposals.indices).subtracting(uncheckedByDefault) }
+
+    /// Whether the sheet's Select All button reads Deselect All: everything Select All would tick is
+    /// ticked, and something is (F817).
+    func allTicked(_ selected: Set<Int>) -> Bool {
+        !selected.isEmpty && selectableAll.isSubset(of: selected)
+    }
+
+    /// The ticks after the Select All / Deselect All button (F817): Deselect All clears every tick,
+    /// a hand-ticked sound-alike row's too; Select All adds `selectableAll` and keeps the hand ticks.
+    func toggledAll(_ selected: Set<Int>) -> Set<Int> {
+        allTicked(selected) ? [] : selected.union(selectableAll)
     }
 }
 

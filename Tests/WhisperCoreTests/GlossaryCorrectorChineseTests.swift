@@ -72,6 +72,34 @@ func twoCharacterTermNeedsOneCharacterOfItsOwn() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["公式"], segments: [seg("他们的攻势很猛")]).isEmpty)
 }
 
+@Test("A four-character term still needs more than half its characters in place; half is for two-character terms (F817)")
+func fourCharacterTermNeedsMoreThanHalf() {
+    // 时常 (often) reads shi chang like 市场 (market), and 精力 (energy) jing li like 经理 (manager):
+    // two in place, two homophones, and both are other words. F817's first round lowered every
+    // even-length term to half and proposed them; the review measured two right and two wrong new
+    // four-character rows. Three in four, as F536 asked, still finds 产品经历 for 产品经理.
+    let segments = [seg("我们时常分析数据"), seg("这个项目精力有限"), seg("产品经历了三次迭代")]
+    let corrections = GlossaryCorrector.corrections(vocabulary: ["市场分析", "项目经理", "产品经理"], segments: segments)
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 2, from: "产品经历", to: "产品经理")])
+}
+
+@Test("A row's sentence is the words around the place apply changes, cut at a space, marked where the line goes on (F817)")
+func proposalContextIsTheChangedPlaceInItsSentence() {
+    let chinese = GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议")
+    #expect(GlossaryCorrector.context(of: chinese, in: "明天的会意改到下午")
+        == ProposalContext(before: "明天的", match: "会意", after: "改到下午"))
+    // Up to 24 characters either side, backed off to a space rather than through a word.
+    let latin = GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")
+    #expect(GlossaryCorrector.context(of: latin, in: "We should ship the Kestrol build on Friday after the review")
+        == ProposalContext(before: "We should ship the ", match: "Kestrol", after: " build on Friday after…"))
+    #expect(GlossaryCorrector.context(of: latin, in: "One two three four five six seven eight Kestrol nine")
+        == ProposalContext(before: "…five six seven eight ", match: "Kestrol", after: " nine"))
+    // The place is apply's: not the "Kestrol" inside "Kestrols", and nothing where apply changes nothing.
+    #expect(GlossaryCorrector.context(of: latin, in: "Kestrols and Kestrol")
+        == ProposalContext(before: "Kestrols and ", match: "Kestrol", after: ""))
+    #expect(GlossaryCorrector.context(of: latin, in: "nothing to change here") == nil)
+}
+
 @Test("A Latin term written against Chinese proposes only the Latin word (F536)")
 func latinTermGluedToChinese() {
     let segments = [seg("这个Kubernets集群要升级")]

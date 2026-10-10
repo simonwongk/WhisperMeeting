@@ -3235,7 +3235,10 @@ private struct TranscriptDetailView: View {
                 get: { proposalReviews.current },
                 set: { if $0 == nil { proposalReviews.close() } }
             ), onDismiss: { proposalReviews.advance() }) { review in
-                GlossarySuggestionSheet(review: review, protectedTerms: store.vocabulary) { accepted in
+                GlossarySuggestionSheet(
+                    review: review, protectedTerms: store.vocabulary,
+                    context: { model.proposalContext($0, in: meetingID) }
+                ) { accepted in
                     // F831: Edit ▸ Undo puts the lines back, as it does for a line removal (F423).
                     guard let applied = model.applyGlossaryCorrections(accepted, to: meetingID) else { return }
                     registerCorrectionUndo(applied, model: model, undoManager: undoManager)
@@ -4707,6 +4710,9 @@ private struct GlossarySuggestionSheet: View {
     /// and marked, because a model's rename of a term the user taught the app must not land on
     /// one click. `GlossaryReviewDefaults` is the rule; this view only renders it.
     let protectedTerms: [String]
+    /// A row's sentence: the words around the place applying it would change (F817), so a row can
+    /// be checked where it is — a Chinese match by sound can be another word or another person.
+    let context: (GlossaryCorrection) -> ProposalContext?
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
@@ -4720,11 +4726,20 @@ private struct GlossarySuggestionSheet: View {
     init(
         review: ProposalReview,
         protectedTerms: [String] = [],
+        context: @escaping (GlossaryCorrection) -> ProposalContext? = { _ in nil },
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
         self.review = review
         self.protectedTerms = protectedTerms
+        self.context = context
         self.onApply = onApply
+    }
+
+    /// The row's sentence, the words it would change in bold (F817).
+    private static func sentence(_ context: ProposalContext) -> AttributedString {
+        var match = AttributedString(context.match)
+        match.inlinePresentationIntent = .stronglyEmphasized
+        return AttributedString(context.before) + match + AttributedString(context.after)
     }
 
     var body: some View {
@@ -4751,6 +4766,12 @@ private struct GlossarySuggestionSheet: View {
                                 Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
                                 Text(proposal.to).fontWeight(.medium)
                             }
+                            if let context = context(proposal) {
+                                Text(Self.sentence(context))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
                             if touching?.contains(index) == true {
                                 Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
                                     .font(.caption)
@@ -4767,9 +4788,11 @@ private struct GlossarySuggestionSheet: View {
             }
 
             HStack {
-                Button(selected.count == proposals.count ? "Deselect All" : "Select All") {
-                    selected = selected.count == proposals.count ? [] : Set(proposals.indices)
+                // F817: Select All leaves a sound-alike Chinese row for its own tick.
+                Button(review.allTicked(selected) ? "Deselect All" : "Select All") {
+                    selected = review.toggledAll(selected)
                 }
+                .disabled(review.selectableAll.isEmpty && selected.isEmpty)
                 Spacer()
                 // F537: Escape and Return.
                 Button("Cancel") { dismiss() }

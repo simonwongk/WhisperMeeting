@@ -6208,6 +6208,18 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// The sentence a review row is about (F817): its line's words around the place applying it
+    /// would change, found with the same evidence `applyGlossaryCorrections` applies with — so a
+    /// sound-alike Chinese row, which can be another word or another person's name, can be checked
+    /// from the row. Nil when the meeting or the line is gone, or applying the row changes nothing.
+    /// Cheap enough for the sheet to ask per row as it draws: one search in one line.
+    func proposalContext(_ proposal: GlossaryCorrection, in id: UUID) -> ProposalContext? {
+        guard let segments = store.meeting(id: id)?.segments, segments.indices.contains(proposal.segmentIndex) else {
+            return nil
+        }
+        return GlossaryCorrector.context(of: proposal, in: segments[proposal.segmentIndex].text, evidence: cjkWordEvidence)
+    }
+
     /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one
     /// (F594). Injectable in the F47 shape so a test can pin the segmentation; defaults to
     /// `NLTokenizer`'s, which `WhisperCore` cannot import.
