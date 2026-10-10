@@ -61,6 +61,20 @@ func noQuietMomentStillHonoursTheBound() {
     }
 }
 
+@Test("A quiet moment just past the bound is never taken, though it is in a search window (F533)")
+func quietMomentPastTheBoundIsNeverTaken() {
+    // 7.9 s at a 4 s bound, searched ±0.5 s. The only silent frames are 42–43 (4.2–4.4 s): past the
+    // bound, but within ±0.5 s of 3.95 s, where a two-piece split would aim. The planner aims low
+    // enough that its whole search window fits under the bound, and clips the window at the bound
+    // besides. With neither, the cut lands at 4.25 s and the first piece is longer than the bound
+    // (the lane L review's mutant M1: `[0..<68000, 68000..<126400]`).
+    let pieces = WhisperPiecePlanner.pieces(
+        totalSamples: 79 * frame, frameEnergies: energies(frames: 79, quiet: [42, 43]), policy: smallPolicy
+    )
+    #expect(pieces.allSatisfy { $0.count <= 4 * rate }, "\(pieces)")
+    #expect(pieces.first?.lowerBound == 0 && pieces.last?.upperBound == 79 * frame)
+}
+
 @Test("Three hours at the standard policy is five pieces of 30 to 45 minutes (F533)")
 func threeHoursAtTheStandardPolicy() {
     let total = 3 * 3_600 * rate
@@ -210,11 +224,24 @@ func pieceProgressMapsToTheWholeRecording() {
     #expect(WhisperPieceProgress.overall(download, pieceIndex: 0, pieces: pieces) == download)
 }
 
+@Test("A later piece's model load is progress at that piece's start, never loading again (F533)")
+func laterPieceLoadIsProgressAtItsStart() {
+    let pieces: [Range<Int>] = [0..<40, 40..<70, 70..<100]
+    for progress in [LocalTranscriptionProgress.loadingModel, .preparing] {
+        let mapped = WhisperPieceProgress.overall(progress, pieceIndex: 1, pieces: pieces)
+        #expect(mapped.phase == .transcribing, "\(progress.phase)")
+        #expect(mapped.fractionCompleted == 0.4, "\(progress.phase)")
+    }
+    // The first piece's load is the run's own, and is shown as what it is.
+    #expect(WhisperPieceProgress.overall(.loadingModel, pieceIndex: 0, pieces: pieces) == .loadingModel)
+}
+
 // MARK: - The client, end to end with stubs
 
-/// A stub `whisper` that copies each audio file it is given to `captured/`, logs its arguments, and
-/// writes the JSON openai-whisper would: piece N says "piece N" at 0.5–1.0 s of its own time, in the
-/// language it was pinned to, or "zh" when it had to detect one.
+/// A stub `whisper` that logs its arguments and how many piece files sit beside the audio it is
+/// given, copies that audio to `captured/` (unless `copiesAudio` is false), and writes the JSON
+/// openai-whisper would: piece N says "piece N" at 0.5–1.0 s of its own time, in the language it was
+/// pinned to, or "zh" when it had to detect one.
 private struct PieceFixture {
     let directory: URL
     let whisper: URL
@@ -225,8 +252,15 @@ private struct PieceFixture {
     let captured: URL
     let invocationLog: URL
     let ffmpegLog: URL
+    /// One line per whisper run: how many piece files sat beside the audio it was given.
+    let pieceCountLog: URL
 
-    init(failPiece: Int? = nil, hangPiece: Int? = nil, ffmpegFails: Bool = false, recordingName: String = "meeting.wav") throws {
+    /// `copiesAudio: false` keeps the stub from copying its input to `captured/`, for a sparse
+    /// 45-minute file a copy would make dense.
+    init(
+        failPiece: Int? = nil, hangPiece: Int? = nil, ffmpegFails: Bool = false,
+        recordingName: String = "meeting.wav", copiesAudio: Bool = true
+    ) throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("WhisperPiecesTests-\(UUID().uuidString)", isDirectory: true)
         whisper = directory.appendingPathComponent("whisper")
@@ -237,6 +271,7 @@ private struct PieceFixture {
         captured = directory.appendingPathComponent("captured", isDirectory: true)
         invocationLog = directory.appendingPathComponent("whisper.log")
         ffmpegLog = directory.appendingPathComponent("ffmpeg.log")
+        pieceCountLog = directory.appendingPathComponent("pieces.log")
         try FileManager.default.createDirectory(at: captured, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 
@@ -248,8 +283,10 @@ private struct PieceFixture {
         audio="$1"
         shift
         { print -r -- "---"; print -r -- "$audio"; printf '%s\n' "$@"; } >> "\#(invocationLog.path)"
+        pieces=( "${audio:h}"/whispermeet-piece-*.wav(N) )
+        print -r -- "${#pieces}" >> "\#(pieceCountLog.path)"
         name="${audio:t:r}"
-        cp "$audio" "\#(captured.path)/${name}.wav"
+        \#(copiesAudio ? "cp \"$audio\" \"\(captured.path)/${name}.wav\"" : ": no copy")
         output_dir=""; language=""
         while (( $# > 0 )); do
           case "$1" in
@@ -304,6 +341,12 @@ private struct PieceFixture {
 
     func scratchIsEmpty() throws -> Bool {
         try FileManager.default.contentsOfDirectory(atPath: scratch.path).isEmpty
+    }
+
+    /// For each whisper run in order, how many piece files sat beside the audio it was given.
+    func pieceFilesBesideEachRun() throws -> [Int] {
+        guard FileManager.default.fileExists(atPath: pieceCountLog.path) else { return [] }
+        return try String(contentsOf: pieceCountLog, encoding: .utf8).split(separator: "\n").compactMap { Int($0) }
     }
 }
 
@@ -375,6 +418,11 @@ func longRecordingIsTranscribedInPieces() async throws {
     #expect(starts == [0.5, 3.65, 7.05])
     #expect(ends == [1.0, 4.15, 7.55])
     #expect(result.audioDuration == 7.55)
+    // One piece file on disk at a time: each is removed before the next is written (the review's
+    // M7 kept them all, and the run folder grew by a piece per run).
+    let pieceFilesPresent = try fixture.pieceFilesBesideEachRun()
+    let onePieceAtATime: [Int] = [1, 1, 1]
+    #expect(pieceFilesPresent == onePieceAtATime)
     #expect(try fixture.scratchIsEmpty(), "the pieces and the decoded audio must not outlive the run")
     #expect(try Data(contentsOf: fixture.recording) == original, "the recording is the source of truth")
 }
@@ -408,6 +456,27 @@ func shortRecordingIsUnchanged() async throws {
     #expect(runs.count == 1)
     #expect(runs.first?.first == fixture.recording.path)
     #expect(!FileManager.default.fileExists(atPath: fixture.ffmpegLog.path), "a short WAV needs no decode to be measured")
+}
+
+@Test("A WAV of exactly 45 minutes is one pass on the original, with no decode (F533)")
+func exactlyTheBoundIsOnePassWithNoDecode() async throws {
+    let fixture = try PieceFixture(copiesAudio: false)
+    defer { fixture.remove() }
+    // Sparse: 45 minutes of 16 kHz 16-bit mono is 86.4 MB, of which only the header is on disk.
+    let bytes = UInt64(45 * 60 * rate * 2)
+    try WAVWriter.header(sampleRate: UInt32(rate), dataByteCount64: bytes).write(to: fixture.recording)
+    let handle = try FileHandle(forWritingTo: fixture.recording)
+    try handle.truncate(atOffset: 44 + bytes)
+    try handle.close()
+
+    _ = try await fixture.client(policy: .standard).transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    let runs = try fixture.invocations()
+    #expect(runs.count == 1)
+    #expect(runs.first?.first == fixture.recording.path)
+    // At most the bound is one piece, and the header says so without a decode (the review's M6
+    // decoded a WAV of exactly 45:00 by testing `<` where it means `<=`).
+    #expect(!FileManager.default.fileExists(atPath: fixture.ffmpegLog.path), "a 45:00 WAV needs no decode")
 }
 
 @Test("A recording whose length the header cannot tell is decoded to measure it, and a short one runs whole (F533)")
@@ -509,6 +578,12 @@ func progressAcrossPiecesMovesForward() async throws {
 
     let fractions = log.snapshot.filter { $0.phase == .transcribing }.compactMap(\.fractionCompleted)
     #expect(zip(fractions, fractions.dropFirst()).allSatisfy { $0 <= $1 }, "progress went backwards: \(fractions)")
+    // Once the bar is moving it never goes back to an indeterminate Loading or Preparing, though each
+    // later piece's own process loads the model again.
+    let phases = log.snapshot.map(\.phase)
+    let firstTranscribing = try #require(phases.firstIndex(of: .transcribing))
+    #expect(!phases[firstTranscribing...].contains { $0 == .loadingModel || $0 == .preparing },
+            "the bar went back to indeterminate between pieces: \(phases)")
     // Each piece's own 100% is where it ends in the recording: 3.15 s, 6.55 s and 10 s of 10. (Its
     // 50% line may arrive in the same read as its 100% one, and then only the newer is reported.)
     for end in [0.315, 0.655, 1.0] {
