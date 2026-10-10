@@ -26,8 +26,8 @@ public struct WatchedFolderInbox: Sendable {
         public let modified: Date
         /// `url`'s path, its extension, and whether its name starts with a dot: what `ready(in:)`
         /// reads of each file, worked out once when the entry is made (F716). `URL` builds a new
-        /// string for each of these on every call, and over 20,000 files those three reads were about
-        /// 15 of a look's 17 ms on the main actor (measured, -O). `WatchedFolderMonitor.listing(at:)`
+        /// string for each of these on every call; over 20,000 files, a look on the main actor fell
+        /// from 16.8 to 4.3 ms (median, -O) when they moved. `WatchedFolderMonitor.listing(at:)`
         /// makes its entries off the main actor, so the work moved there with them.
         let path: String
         let pathExtension: String
