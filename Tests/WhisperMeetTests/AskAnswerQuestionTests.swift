@@ -48,7 +48,24 @@ func writeAnswerUsesTheRetrievedQuestion() throws {
     let writeAnswer = try body(following: "private func writeAnswer()", in: structure)
     #expect(writeAnswer.contains("AppModel.answerableQuestion(retrievedFor: resultsQuestion, typed: query)"))
     #expect(!writeAnswer.contains("let question = query"))
-    // And the button is disabled while the field says something else.
+    // And the button is disabled while the field says something else — in its `.disabled(…)`
+    // itself, which the `.help(answerQuestion == nil ? …)` beside it would satisfy on its own.
     let answerSection = try body(following: "private var answerSection", in: structure)
-    #expect(answerSection.contains("answerQuestion == nil"))
+    let button = try #require(answerSection.range(of: "{ writeAnswer() }"), "Write an Answer's button is gone")
+    let disabled = try argument(of: ".disabled(", after: button.upperBound, in: answerSection)
+    #expect(disabled.contains("answerQuestion == nil"), "Write an Answer is not disabled for a changed question: \(disabled)")
+}
+
+/// The argument of the first `call` (which ends with its opening parenthesis) after `start`,
+/// parentheses balanced, in comment- and literal-free source.
+private func argument(of call: String, after start: Substring.Index, in source: Substring) throws -> Substring {
+    let opening = try #require(source.range(of: call, range: start..<source.endIndex), "no \(call) after the button")
+    var depth = 1
+    var cursor = opening.upperBound
+    while cursor < source.endIndex {
+        if source[cursor] == "(" { depth += 1 } else if source[cursor] == ")" { depth -= 1 }
+        if depth == 0 { break }
+        cursor = source.index(after: cursor)
+    }
+    return source[opening.upperBound..<cursor]
 }
