@@ -9,11 +9,15 @@ import Testing
 //
 // Amended since, deliberately and only where marked `amended`, for tickets that changed the
 // English answer on purpose — each switchable, so a test can show the corpus exercises it:
-// - F819: a proposal's phrase leaves the punctuation stuck to its outer words in the transcript.
+// - F819: a proposal's phrase leaves the punctuation stuck to its outer words in the transcript,
+//   except what the term's own spelling begins or ends with.
+// - F819 in place: but not where `apply` would then change something the untrimmed phrase did not
+//   change — elsewhere in the segment, or anywhere at all when the untrimmed text is nowhere in it.
 // - F820: a term equal to any window of the segment, not only to one word, is present already.
 
 private struct Amendments {
     var f819 = true
+    var f819InPlace = true
     var f820 = true
 }
 
@@ -52,7 +56,11 @@ private enum PreF536GlossaryCorrector {
                 }
                 if amended.f820, presentAsAWindow { continue } // amended
                 if let best {
-                    let phrase = amended.f819 ? trimmedF819(best.phrase) : best.phrase // amended
+                    var phrase = amended.f819 ? trimmedF819(best.phrase, for: term) : best.phrase // amended
+                    if amended.f819InPlace, phrase != best.phrase, // amended
+                       !appliesInPlace(phrase, of: best.phrase, term: term, in: segment.text) { // amended
+                        phrase = best.phrase // amended
+                    } // amended
                     results.append(GlossaryCorrection(segmentIndex: index, from: phrase, to: term))
                 }
             }
@@ -62,16 +70,33 @@ private enum PreF536GlossaryCorrector {
 
     /// F819, written here independently of `GlossaryCorrector.trimmingAttachedPunctuation`: drop
     /// outer characters with no letter, mark or digit in them, stopping at an ASCII word character
-    /// (an underscore stays, as `LatinTokenBoundary` reads it as part of the word).
-    static func trimmedF819(_ phrase: String) -> String {
+    /// (an underscore stays, as `LatinTokenBoundary` reads it as part of the word) — but keep, on
+    /// each side, as many of them as `term` itself begins or ends with (".NOT" keeps its "." for
+    /// ".NET").
+    static func trimmedF819(_ phrase: String, for term: String) -> String {
         func keeps(_ character: Character) -> Bool {
             (character.isASCII && (character.isLetter || character.isNumber || character == "_"))
                 || character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
         }
+        let termCharacters = Array(term)
+        let termLeading = termCharacters.prefix(while: { !keeps($0) }).count
+        let termTrailing = termCharacters.reversed().prefix(while: { !keeps($0) }).count
         var characters = Array(phrase)
-        while let first = characters.first, !keeps(first) { characters.removeFirst() }
-        while let last = characters.last, !keeps(last) { characters.removeLast() }
-        return characters.isEmpty ? phrase : String(characters)
+        var leading: [Character] = []
+        while let first = characters.first, !keeps(first) { leading.append(characters.removeFirst()) }
+        var trailing: [Character] = []
+        while let last = characters.last, !keeps(last) { trailing.insert(characters.removeLast(), at: 0) }
+        guard !characters.isEmpty else { return phrase }
+        return String(leading.suffix(termLeading) + characters + trailing.prefix(termTrailing))
+    }
+
+    /// F819 in place: whether `apply` would change the trimmed phrase inside the place it changes the
+    /// untrimmed one. Where `apply` changes a phrase is `ReplacementBoundary`'s first genuine
+    /// occurrence by definition (F444), so that is asked here rather than written a second time.
+    static func appliesInPlace(_ trimmed: String, of untrimmed: String, term: String, in text: String) -> Bool {
+        guard let whole = ReplacementBoundary.firstRange(of: untrimmed, notCoveredBy: term, in: text),
+              let part = ReplacementBoundary.firstRange(of: trimmed, notCoveredBy: term, in: text) else { return false }
+        return whole.lowerBound <= part.lowerBound && part.upperBound <= whole.upperBound
     }
 
     static func normalize(_ text: String) -> String {
@@ -168,6 +193,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF819.f819 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF819) != expected,
             "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
+    var withoutInPlace = Amendments()
+    withoutInPlace.f819InPlace = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutInPlace) != expected,
+            "no trimmed proposal in the corpus would be applied elsewhere, so F819's in-place amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
 }

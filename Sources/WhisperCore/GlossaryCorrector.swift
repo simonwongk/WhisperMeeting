@@ -143,8 +143,9 @@ public enum GlossaryCorrector {
     /// window with the highest ratio at or above the threshold, not equal to the term, unless the
     /// term already stands as a window — one token or, since F820, several: F65 asked only whether
     /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
-    /// proposed as it, deleting "said". The phrase returned is the window's without its outer
-    /// punctuation (F819), unless `apply` would then change a different occurrence — see
+    /// proposed as it, deleting "said". The phrase returned is the window's without the punctuation
+    /// stuck to its outer words, less what the term's own spelling begins or ends with (F819),
+    /// unless `apply` would then change something the untrimmed phrase did not — see
     /// `applicablePhrase`.
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
@@ -166,20 +167,22 @@ public enum GlossaryCorrector {
         return applicablePhrase(window, term: term.term, in: text)
     }
 
-    /// The trimmed phrase (F819), unless `GlossaryCorrector.apply`, which changes the first genuine
-    /// occurrence of a proposal's text, would find the trimmed text somewhere the untrimmed text was
-    /// not: in "the Kestrol-ish build and the Kestrol." the window is "Kestrol.", and "Kestrol" first
-    /// occurs in "Kestrol-ish" — a ticked proposal would have changed the wrong word. Then the
-    /// untrimmed phrase is proposed, exactly as before F819. Only a trimmed window pays the two
-    /// searches.
+    /// The window's phrase trimmed for `term` (F819), unless `GlossaryCorrector.apply`, which changes
+    /// the first genuine occurrence of a proposal's text, would then change something the untrimmed
+    /// phrase did not. In "the Kestrol-ish build and the Kestrol." the window is "Kestrol.", and
+    /// "Kestrol" first occurs in "Kestrol-ish". In "(Kestrol⟨TAB⟩Release)" the window's words are
+    /// joined with a space, so the untrimmed text is nowhere in the segment, while "Kestrol Release"
+    /// is — inside "Kestrol Release-ish" (the Wave 5 review, T8). Either way the untrimmed phrase is
+    /// proposed, exactly as before F819: a row that changes what it always changed, or nothing.
+    /// Only a trimmed window pays the searches.
     private static func applicablePhrase(_ window: LatinWindows.Window, term: String, in text: String) -> String {
-        guard window.phrase != window.untrimmedPhrase,
-              let untrimmed = ReplacementBoundary.firstRange(of: window.untrimmedPhrase, notCoveredBy: term, in: text)
+        let trimmed = trimmingAttachedPunctuation(window.phrase, keepingTheEdgesOf: term)
+        guard trimmed != window.phrase,
+              let untrimmed = ReplacementBoundary.firstRange(of: window.phrase, notCoveredBy: term, in: text),
+              let found = ReplacementBoundary.firstRange(of: trimmed, notCoveredBy: term, in: text),
+              untrimmed.lowerBound <= found.lowerBound, found.upperBound <= untrimmed.upperBound
         else { return window.phrase }
-        guard let trimmed = ReplacementBoundary.firstRange(of: window.phrase, notCoveredBy: term, in: text),
-              untrimmed.lowerBound <= trimmed.lowerBound, trimmed.upperBound <= untrimmed.upperBound
-        else { return window.untrimmedPhrase }
-        return window.phrase
+        return trimmed
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
@@ -273,10 +276,9 @@ public enum GlossaryCorrector {
     private struct LatinWindows {
         struct Window {
             let ids: [Int32]
-            /// Without the punctuation stuck to its outer words (F819).
+            /// The words as F65 joined them, punctuation and all; trimmed for a term only once it
+            /// is the best window for that term (F819, `applicablePhrase`).
             let phrase: String
-            /// The words as F65 joined them, punctuation and all.
-            let untrimmedPhrase: String
             let containsCJK: Bool
         }
 
@@ -302,8 +304,7 @@ public enum GlossaryCorrector {
                     normalizedWindows.insert(joined)
                     windows.append(Window(
                         ids: table.ids(joined),
-                        phrase: GlossaryCorrector.trimmingAttachedPunctuation(phrase),
-                        untrimmedPhrase: phrase,
+                        phrase: phrase,
                         containsCJK: tokens[slice].contains(where: \.isCJK)
                     ))
                 }
@@ -497,18 +498,28 @@ public enum GlossaryCorrector {
     }
 
     /// A Latin window's phrase without the punctuation stuck to its outer words (F819): "Kestrol,"
-    /// is proposed as "Kestrol", so applying it keeps the comma. Only what `normalize` already
-    /// ignores is trimmed — nothing the window was scored on — and never an underscore, which
+    /// is proposed as "Kestrol", so applying it keeps the comma. What `term`'s own spelling begins or
+    /// ends with goes with the word, as many characters as the term has there: ".NOT" stays ".NOT"
+    /// for ".NET", and "Acme Ink.," becomes "Acme Ink." for "Acme Inc.", so applying writes the
+    /// term's "." once and the comma stays (F819's first round trimmed them all, and `apply` wrote
+    /// "..NET" and "Acme Inc.." — the Wave 5 review, T7). Only what `normalize` already ignores is
+    /// trimmed — nothing the window was scored on — and never an underscore, which
     /// `ReplacementBoundary` reads as part of the word: trimmed off, `apply` would no longer find
     /// the word at all. Punctuation inside the phrase ("Kestrol, release") stays.
-    static func trimmingAttachedPunctuation(_ phrase: String) -> String {
-        let isPartOfAWord: (Character) -> Bool = { character in
-            LatinTokenBoundary.isConnector(character)
-                || character.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
-        }
-        guard let first = phrase.firstIndex(where: isPartOfAWord),
-              let last = phrase.lastIndex(where: isPartOfAWord) else { return phrase }
-        return String(phrase[first...last])
+    static func trimmingAttachedPunctuation(_ phrase: String, keepingTheEdgesOf term: String = "") -> String {
+        let characters = Array(phrase)
+        guard let first = characters.firstIndex(where: isPartOfAWord),
+              let last = characters.lastIndex(where: isPartOfAWord) else { return phrase }
+        let leading = term.prefix(while: { !isPartOfAWord($0) }).count
+        let trailing = term.reversed().prefix(while: { !isPartOfAWord($0) }).count
+        let start = first - min(first, leading)
+        let end = last + min(characters.count - 1 - last, trailing)
+        return String(characters[start...end])
+    }
+
+    private static func isPartOfAWord(_ character: Character) -> Bool {
+        LatinTokenBoundary.isConnector(character)
+            || character.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
     }
 
     /// Alphanumerics-lowercase, separator-free — CJK-safe (ideographs are alphanumeric).
