@@ -1631,11 +1631,12 @@ final class MeetingStore: ObservableObject {
         /// answers save them, so neither can drop the meeting that was just recorded — while the
         /// library can be written; while it cannot, both are refused and the message says so.
         let unsavedNew: [MeetingRecord]
-        /// The titles of meetings this session added that were put back in the reloaded list at once
-        /// (F667) — saved, or, after an ordinary save failure, listed and carried by the next save
-        /// while that failure's own message says so. Named in the banner only, so the person knows
-        /// neither answer removes them.
-        let keptNew: [String]
+        /// Meetings this session added that were put back in the reloaded list at once (F667) —
+        /// saved, or, after an ordinary save failure, listed and carried by the next save while that
+        /// failure's own message says so. Named in the banner only, so the person knows neither answer
+        /// removes them. The records, not their titles (F887): a later fold keeps only those its
+        /// re-read still has, by id, so a meeting the other copy deleted meanwhile is not said to stay.
+        let keptNew: [MeetingRecord]
         /// Records this session had saved and then modified, whose id the rival's commit no longer
         /// has at all — the rival deleted them. Never reapplied: doing so would resurrect a meeting
         /// whose recording folder the rival may already have removed. Kept only so the banner can
@@ -1655,7 +1656,7 @@ final class MeetingStore: ObservableObject {
         /// - Parameter libraryWritable: false when the reload left the library refusing changes, so
         ///   neither answer can save `unsavedNew` now and the banner must not say it will.
         init(
-            delta: [MeetingRecord], unsavedNew: [MeetingRecord] = [], keptNew: [String] = [],
+            delta: [MeetingRecord], unsavedNew: [MeetingRecord] = [], keptNew: [MeetingRecord] = [],
             deletedByOther: [MeetingRecord], notes: [String], heldResults: [String] = [], report: String,
             libraryWritable: Bool = true
         ) {
@@ -1666,7 +1667,7 @@ final class MeetingStore: ObservableObject {
             self.notes = notes
             self.heldResults = heldResults
             message = Self.message(
-                report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew,
+                report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew.map(\.title),
                 deletedByOther: deletedByOther, notes: notes, heldResults: heldResults,
                 libraryWritable: libraryWritable
             )
@@ -1892,7 +1893,9 @@ final class MeetingStore: ObservableObject {
                 deletedByOther.append(record)
             }
         }
-        var keptNew = outstanding?.keptNew ?? []
+        // A meeting the outstanding offer said stays in the list is named again only while the re-read
+        // still has it, under the title it has there (F887): the other copy may have deleted it since.
+        var keptNew = (outstanding?.keptNew ?? []).compactMap { kept in meetings.first { $0.id == kept.id } }
         if !added.isEmpty, savingNewMeetings, !isDegraded, !isRestoringLibrary {
             // Published first, so if this save loses as well the recovery it starts folds in what is
             // still to decide rather than dropping it (F662's fold).
@@ -1902,7 +1905,7 @@ final class MeetingStore: ObservableObject {
             )
             writeBack(added)
             if persistMeetings() {
-                keptNew += added.map(\.title)
+                keptNew += added
                 added = []
             } else if writeConflict?.isRace == true {
                 beginConflictRecovery(savingNewMeetings: false)
@@ -1911,7 +1914,7 @@ final class MeetingStore: ObservableObject {
                 // An ordinary failure (a full disk): they stay listed and unsaved, as any change
                 // whose save failed does, and the next save carries them. The failure's own message
                 // stands; the banner below says they stay either way.
-                keptNew += added.map(\.title)
+                keptNew += added
                 added = []
             }
         }
@@ -1927,7 +1930,7 @@ final class MeetingStore: ObservableObject {
             guard !notes.isEmpty else { return }
             var said = [report.message]
             // The report says "these changes were not applied"; a meeting put back above was (F667).
-            if !keptNew.isEmpty { said.append(ConflictOffer.backInTheList(keptNew)) }
+            if !keptNew.isEmpty { said.append(ConflictOffer.backInTheList(keptNew.map(\.title))) }
             said += notes
             // And an ordinary failure putting it back keeps its own words beside these.
             if let failure = writeConflict, !failure.isRace, let shown = storageErrorMessage {

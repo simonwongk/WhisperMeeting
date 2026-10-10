@@ -270,9 +270,61 @@ func failureWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
     #expect(saved.status == .completed, "Keep saved a kept transcript as \(saved.status)")
 }
 
-/// The behavioural tests above drive three of the app's result writers. The rest — an import, a
-/// transcription's status, its cancellation and its failure, a rebuilt recording — are pinned here on
-/// source, comments stripped (F285): every meeting write in each of these functions is a `.result`,
+/// The same for a cancelled transcription (F887). Its closure decides "does this copy still hold a
+/// transcript?" — `.completed` if it does, `.recorded` and a message if not — and it is private, so the
+/// lane-Q draft called it untestable; the engine override reaches it, as the round-2 review showed.
+/// Before follow-up B the decision was read off the list's copy and written into both, so Keep saved
+/// `.recorded` and "cancelled" over a transcript the person had kept.
+@MainActor
+@Test("A transcription cancelled while the banner is up judges each copy by its own transcript (F662, F887)")
+func cancellationWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F887-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let suite = testSuiteName()
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root, transcriptWriteDebounce: 60), recorder: AudioCaptureEngine(),
+        defaults: defaults, whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true }
+    )
+    model.runTranscriptionEngineOverride = { _, _ in throw CancellationError() }
+    let store = model.store
+    let id = UUID()
+    store.upsert(MeetingRecord(id: id, title: "Standup", recordingPath: "none", status: .recorded))
+    // This window types a transcript; the other copy renames the meeting first, so the typing is
+    // offered back — the offered copy holds a transcript, the list's copy does not.
+    try otherCopyCommits(in: root) { $0.map { var r = $0; r.title = renamedThere; return r } }
+    store.editTranscript(id: id, text: "What I typed while it was recorded.")
+    store.flushPendingEdits()
+    let offer = try #require(store.conflictOffer, "fixture: the typed transcript lost and was offered back")
+    try #require(offer.delta.first { $0.id == id }?.transcriptText == "What I typed while it was recorded.")
+    try #require(store.meeting(id: id)?.transcriptText.isEmpty == true)
+
+    model.beginTranscription(id: id)
+    let deadline = Date().addingTimeInterval(30)
+    while model.hasActiveTranscription || model.hasQueuedTranscriptions || store.meeting(id: id)?.status == .processing,
+          Date() < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    try #require(store.meeting(id: id)?.status == .recorded, "fixture: the run was cancelled and the list's copy, with no transcript, says so")
+    #expect(store.meeting(id: id)?.errorMessage?.contains("cancelled") == true)
+
+    let kept = try #require(store.conflictOffer?.delta.first { $0.id == id })
+    #expect(kept.status == .completed, "the copy holding a transcript was marked \(kept.status) from the other copy's")
+    #expect(kept.errorMessage == nil, "the copy holding a transcript was given the cancellation as if it had none")
+    store.keepConflictedEdit()
+    let saved = try #require(onDisk(root, id))
+    #expect(saved.transcriptText == "What I typed while it was recorded.")
+    #expect(saved.status == .completed, "Keep saved a kept transcript as \(saved.status)")
+}
+
+/// The behavioural tests above drive five of the app's result writers: Stop, a transcript, a summary,
+/// a transcription's failure and its cancellation. The rest — an import, a transcription's status, a
+/// rebuilt recording — are pinned here on source, comments stripped (F285), and so are all nine
+/// functions: every meeting write in each of these functions is a `.result`,
 /// so a new write added to one of them without it fails here rather than being dropped while a
 /// banner is up.
 @Test("Every meeting write in the app's result paths is marked a result (F662)")
