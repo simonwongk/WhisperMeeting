@@ -40,9 +40,12 @@ public enum EditedTranscript {
     /// line, which would be one passage the length of the meeting — a useless citation, a meaning
     /// vector of its first 256 tokens (`embed_local.py` truncates there), and a grounding prompt that
     /// can outgrow the model (F755). So it is cut where the aligner cuts it, by `QwenAlignedTranscript.sentenceSlices`
-    /// (sentence marks and newlines, "3.5" and "A.D.," kept whole). Nothing is parsed as a timestamp:
-    /// with no timed segment, a leading clock is prose (F42). The action-item quotes and the
-    /// exporter keep their own readings.
+    /// (sentence marks and newlines, "3.5" and "A.D.," kept whole), and a sentence longer than
+    /// `searchablePassageLimit` is cut again (`boundedPassages`): a transcript with few sentence marks
+    /// — Chinese with only commas, speech the recognizer did not punctuate — was still one passage
+    /// the length of the meeting (the Wave 5 review measured 2,959 characters in one). Nothing is
+    /// parsed as a timestamp: with no timed segment, a leading clock is prose (F42). The action-item
+    /// quotes and the exporter keep their own readings.
     public static func searchablePassages(
         transcriptText: String,
         segments: [TranscriptSegment]
@@ -50,10 +53,50 @@ public enum EditedTranscript {
         guard segments.isEmpty else {
             return effectiveSegments(transcriptText: transcriptText, segments: segments)
         }
-        return QwenAlignedTranscript.sentenceSlices(transcriptText).map {
+        return QwenAlignedTranscript.sentenceSlices(transcriptText).flatMap { boundedPassages($0) }.map {
             TranscriptSegment(speaker: nil, start: nil, end: nil, text: $0)
         }
     }
+
+    /// The longest passage `searchablePassages` makes of a segment-less transcript, in characters:
+    /// about as long as a long recognizer segment. Chosen, not measured against the embedding
+    /// model's 256-token window.
+    static let searchablePassageLimit = 240
+
+    /// `sentence`, cut into pieces of at most `searchablePassageLimit` characters: after the last
+    /// clause mark (`，` `；` `,` `;`) in the second half of the piece, else at its last space, else
+    /// after any clause mark, else at the limit — Chinese with no mark at all has no better place.
+    /// Nothing is lost but the space a piece was cut at.
+    static func boundedPassages(_ sentence: String) -> [String] {
+        let limit = searchablePassageLimit
+        let characters = Array(sentence)
+        guard characters.count > limit else { return [sentence] }
+        var pieces: [String] = []
+        func keep(_ piece: ArraySlice<Character>) {
+            let text = String(piece).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { pieces.append(text) }
+        }
+        var start = 0
+        while characters.count - start > limit {
+            let end = start + limit
+            let lastMark = (start..<end).last { clauseMarks.contains(characters[$0]) }
+            var cut = end
+            if let lastMark, lastMark - start >= limit / 2 {
+                cut = lastMark + 1
+            } else if let space = (start...end).last(where: { characters[$0].isWhitespace }), space > start {
+                cut = space
+            } else if let lastMark {
+                cut = lastMark + 1
+            }
+            keep(characters[start..<cut])
+            start = cut
+            while start < characters.count, characters[start].isWhitespace { start += 1 }
+        }
+        keep(characters[start...])
+        return pieces
+    }
+
+    private static let clauseMarks: Set<Character> = ["，", "；", ",", ";"]
 
     /// The edited text as segments, one per non-empty line, so nothing the user removed survives.
     ///

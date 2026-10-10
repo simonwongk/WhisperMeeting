@@ -37,6 +37,35 @@ func segmentlessTranscriptIsSearchedAsItsSentences() {
         == EditedTranscript.effectiveSegments(transcriptText: edited, segments: original))
 }
 
+@Test("A segment-less transcript with few sentence marks is cut into passages of a bounded length, at clause marks or spaces (F839)")
+func segmentlessPassagesHaveABoundedLength() {
+    let limit = EditedTranscript.searchablePassageLimit
+    // The review's probe: 2,959 characters and not one sentence mark.
+    let unpunctuated = Array(repeating: "we talked about the launch and the vendor and the pricing for a long time", count: 40)
+        .joined(separator: " ")
+    let english = EditedTranscript.searchablePassages(transcriptText: unpunctuated, segments: [])
+    #expect(english.count > 1)
+    #expect(english.allSatisfy { $0.text.count <= limit && $0.start == nil })
+    // Cut between words, and no word is lost.
+    #expect(english.map(\.text).joined(separator: " ") == unpunctuated)
+    // The review's other probe: Chinese with only commas, cut just after one.
+    let commas = Array(repeating: "我们讨论了发布时间，供应商的价格，还有预算", count: 30).joined(separator: "，")
+    let chinese = EditedTranscript.searchablePassages(transcriptText: commas, segments: [])
+    #expect(chinese.count > 1)
+    #expect(chinese.allSatisfy { $0.text.count <= limit })
+    #expect(chinese.dropLast().allSatisfy { $0.text.hasSuffix("，") })
+    #expect(chinese.map(\.text).joined() == commas)
+    // With no mark and no space at all, it is cut at the limit.
+    let unbroken = String(repeating: "我们讨论了发布时间供应商的价格还有预算", count: 30)
+    let cut = EditedTranscript.searchablePassages(transcriptText: unbroken, segments: [])
+    #expect(cut.count > 1)
+    #expect(cut.allSatisfy { $0.text.count <= limit })
+    #expect(cut.map(\.text).joined() == unbroken)
+    // A sentence within the limit is one passage, as before.
+    #expect(EditedTranscript.searchablePassages(transcriptText: "Short, and sweet. Done", segments: [])
+        .map(\.text) == ["Short, and sweet.", "Done"])
+}
+
 @Test("An unedited transcript reads exactly its stored segments, metrics and all (F455)")
 func uneditedTranscriptIsItsSegments() {
     let text = TranscriptFormatter.timestamped(original)

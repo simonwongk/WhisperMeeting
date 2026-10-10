@@ -3,7 +3,9 @@ import Foundation
 /// A meeting segment prepared for cross-meeting retrieval (F180). Framework-free — the app builds these
 /// from `MeetingRecord`/`TranscriptSegment` at the boundary, the same way `MeetingFacets` is built.
 public struct SearchableSegment: Sendable, Equatable {
-    /// Position in the meeting's segments array — the stable citation anchor.
+    /// Position among the passages Ask searches for this meeting (`EditedTranscript.searchablePassages`:
+    /// its segments, an edited transcript's lines, or a segment-less transcript's bounded sentences)
+    /// — the citation anchor.
     public let index: Int
     /// Seek timestamp in seconds; `nil` when the transcript is unaligned (Qwen/dictation) and cannot
     /// be seeked, in which case a hit still cites the meeting without an offset.
