@@ -43,7 +43,7 @@ public struct WhisperPiecePolicy: Sendable, Equatable {
 /// (`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py:38-126` in the pinned venv), which
 /// `Scripts/qwen_transcribe.py` calls — in the two ways that matter: a cut is placed at the
 /// lowest-energy 100 ms window (`min_window_ms=100`) within a search window around its target, and
-/// the cut is the centre of that window (`argmin + min_window_samples // 2`). It differs in two,
+/// the cut is the centre of that window (`argmin + min_window_samples // 2`). It differs in three,
 /// deliberately:
 ///
 /// - **A piece is never longer than the bound.** mlx-audio searches ±5 s around `start + chunk`,
@@ -52,6 +52,12 @@ public struct WhisperPiecePolicy: Sendable, Equatable {
 /// - **The targets are balanced.** mlx-audio cuts every chunk at full length and leaves the rest as
 ///   a tail, which here could be a 2-second piece after two 45-minute ones. The remaining audio is
 ///   divided into the fewest pieces that leave room for the search window, recomputed after each cut.
+/// - **Fixed frames, not a sliding window.** mlx-audio slides its 100 ms window one sample at a time
+///   (`np.convolve(…, mode="valid")`, `qwen3_asr.py:99-104`), and `argmin` takes the earliest
+///   minimum. Here the energies are of fixed, non-overlapping 100 ms frames (`WhisperAudioEnergy`
+///   keeps one number per frame, not one per sample), and a tie goes to the frame nearest the
+///   target. A pause scores as silent only where it covers a whole frame, so a pause of 100 to
+///   200 ms can straddle two frames and score as neither, where mlx-audio's window would find it.
 public enum WhisperPiecePlanner {
     /// openai-whisper's `SAMPLE_RATE` (`whisper/audio.py:13`); the decode is to this rate.
     public static let sampleRate = 16_000

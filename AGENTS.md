@@ -732,9 +732,9 @@ names. Current contract: models `large` (accuracy default) and `turbo`; `--task 
 `--output_format json`; `--model_dir` points at the app's local model cache; omit `--language` for
 auto-detect. A recording longer than 45 minutes is run as pieces (F533, `WhisperPieces.swift`): one
 `whisper` process per piece of at most 45 minutes, decoded with Whisper's own `load_audio` command
-and cut at quiet moments; the first piece detects the language and the rest are pinned to it with
-`--language <code>`. `--clip_timestamps` is not a substitute — the mel of the whole file is built
-before it is read.
+and cut at quiet moments. With Automatic, the first piece detects the language and the rest are
+pinned to the detected code with `--language <code>`; a language the user chose goes to every piece.
+`--clip_timestamps` is not a substitute — the mel of the whole file is built before it is read.
 
 ### Storage layout
 

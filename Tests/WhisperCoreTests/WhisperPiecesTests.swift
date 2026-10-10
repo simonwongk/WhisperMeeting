@@ -535,7 +535,7 @@ func undecodableRecordingFailsBeforeWhisper() async throws {
     #expect(try fixture.scratchIsEmpty())
 }
 
-@Test("Cancelling between or during pieces stops the run (F533)")
+@Test("Cancelling a piece while it runs stops the run, and no later piece starts (F533)")
 func cancellingAPieceStopsTheRun() async throws {
     let fixture = try PieceFixture(hangPiece: 2)
     defer { fixture.remove() }
