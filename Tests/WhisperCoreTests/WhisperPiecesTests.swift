@@ -96,6 +96,53 @@ func energyProfileIgnoresChunkBoundaries() {
     #expect(split.frameEnergies() == expected)
 }
 
+// MARK: - What the app holds while it reads the decode
+
+// `FileHandle.read(upToCount:)` returns each chunk in an autoreleased buffer. A loop that never
+// drains a pool keeps every chunk it has read until the job that called it ends. The lane L review
+// (R1) measured `measure` holding +346,489,072 bytes after reading a 345,600,000-byte decode, so the
+// app held the whole decode beside every Whisper process. Each test reads a dense 64 MiB file
+// through ONE direct call and checks what the call left held (`heldMemory`): the current footprint,
+// and the bytes malloc has allocated, which an earlier test cannot mask (`FootprintMeasurement.swift`).
+// Holding every chunk is the whole 64 MiB in both; one chunk at a time is about 1 MiB.
+
+@Test("Measuring the decoded recording holds one chunk of it at a time, not all of it (F533)")
+func measuringTheDecodeHoldsOneChunkAtATime() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F533-measure-\(UUID().uuidString).s16le")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try writeDenseFile(at: url, mebibytes: 64, seed: 533)
+
+    var energy = WhisperAudioEnergy()
+    let held = try heldMemory { energy = try WhisperPieceAudio.measure(url) }
+
+    #expect(energy.sampleCount == (64 << 20) / 2)
+    #expect(held.allocated < 16 << 20, "measuring a 64 MiB decode left \(held) held")
+    #expect(held.footprint < 16 << 20, "measuring a 64 MiB decode left \(held) held")
+}
+
+@Test("Writing a piece holds one chunk of the decode at a time, not all of it (F533)")
+func writingAPieceHoldsOneChunkAtATime() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F533-piece-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let decoded = directory.appendingPathComponent("whispermeet-decoded.s16le")
+    let piece = directory.appendingPathComponent("whispermeet-piece-1.wav")
+    try writeDenseFile(at: decoded, mebibytes: 64, seed: 534)
+
+    let held = try heldMemory {
+        try WhisperPieceAudio.writePiece(0..<((64 << 20) / 2), from: decoded, to: piece)
+    }
+
+    // Mapped, so the comparison itself holds nothing.
+    let written = try Data(contentsOf: piece, options: .alwaysMapped)
+    #expect(written.count == 44 + (64 << 20))
+    #expect(written.dropFirst(44) == (try Data(contentsOf: decoded, options: .alwaysMapped)), "the piece is its slice, byte for byte")
+    #expect(held.allocated < 16 << 20, "writing a 64 MiB piece left \(held) held")
+    #expect(held.footprint < 16 << 20, "writing a 64 MiB piece left \(held) held")
+}
+
 // MARK: - Joining
 
 private func segment(_ text: String, _ start: Double, _ end: Double) -> TranscriptSegment {

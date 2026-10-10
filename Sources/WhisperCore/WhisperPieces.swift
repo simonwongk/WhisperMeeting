@@ -112,8 +112,8 @@ public enum WhisperPiecePlanner {
 }
 
 /// Accumulates the per-frame energy of 16-bit little-endian mono PCM as it streams past (F533), so
-/// a multi-hour decode is measured in one bounded read rather than held in memory: three hours is
-/// ~108,000 numbers. Bytes may arrive in chunks of any size, odd ones included.
+/// a multi-hour decode is measured in one pass without being held: what it keeps is one number per
+/// 100 ms frame, ~108,000 for three hours. Bytes may arrive in chunks of any size, odd ones included.
 public struct WhisperAudioEnergy: Sendable {
     public private(set) var sampleCount = 0
     private var energies: [Double] = []
@@ -158,7 +158,13 @@ public struct WhisperAudioEnergy: Sendable {
 }
 
 /// The file side of splitting (F533): how long a WAV says it is, measuring a decode, and writing a
-/// piece. Every read is bounded — a multi-hour decode is streamed, never loaded.
+/// piece. A multi-hour decode is streamed, never loaded: each read is one chunk, read inside its own
+/// autorelease pool, so the app holds one chunk of it at a time.
+///
+/// The pools are what make that true. `FileHandle.read(upToCount:)` returns each chunk in an
+/// autoreleased buffer, and nothing drains a pool inside one call. Without them every chunk stayed
+/// allocated until the job ended, and the app held the whole decode, about 115 MB per hour of audio,
+/// beside every Whisper process (the lane L review's R1).
 enum WhisperPieceAudio {
     /// How much is read or copied at a time.
     static let chunkBytes = 1 << 20
@@ -184,16 +190,20 @@ enum WhisperPieceAudio {
         return Double(bytes) / Double(header.bytesPerSecond)
     }
 
-    /// Streams a decoded 16 kHz s16le file through `WhisperAudioEnergy`.
+    /// Streams a decoded 16 kHz s16le file through `WhisperAudioEnergy`, one chunk at a time.
     static func measure(_ url: URL) throws -> WhisperAudioEnergy {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var energy = WhisperAudioEnergy()
-        while let data = try handle.read(upToCount: chunkBytes), !data.isEmpty {
+        while true {
             try Task.checkCancellation()
-            energy.consume(data)
+            let more = try autoreleasepool { () throws -> Bool in
+                guard let data = try handle.read(upToCount: chunkBytes), !data.isEmpty else { return false }
+                energy.consume(data)
+                return true
+            }
+            guard more else { return energy }
         }
-        return energy
     }
 
     /// Writes samples `piece` of the decoded `audio` as a 16 kHz mono 16-bit WAV — the format
@@ -214,11 +224,13 @@ enum WhisperPieceAudio {
         while left > 0 {
             try Task.checkCancellation()
             let want = Int(min(UInt64(chunkBytes), left))
-            guard let data = try input.read(upToCount: want), !data.isEmpty else {
-                throw LocalWhisperError.processFailed("the decoded recording ended before its last piece did.")
+            try autoreleasepool {
+                guard let data = try input.read(upToCount: want), !data.isEmpty else {
+                    throw LocalWhisperError.processFailed("the decoded recording ended before its last piece did.")
+                }
+                try output.write(contentsOf: data)
+                left -= UInt64(data.count)
             }
-            try output.write(contentsOf: data)
-            left -= UInt64(data.count)
         }
     }
 }
