@@ -1259,7 +1259,8 @@ final class MeetingStore: ObservableObject {
         ///
         /// When its own save loses to the other copy, `update` makes it again to the copy the re-read
         /// found and saves that (`saveResult`), rather than leaving it in the offer as the person's
-        /// change for Use the Other Copy to drop; only a second loss leaves it offered.
+        /// change for Use the Other Copy to drop. If that save loses too, the result waits beside the
+        /// banner, out of the list, and either answer makes it to the copy it keeps (F885).
         ///
         /// Its mutation may therefore run on more than one copy of a record, so it must decide from
         /// the copy it is given, never from a value read off the list beforehand — the review found
@@ -1376,8 +1377,19 @@ final class MeetingStore: ObservableObject {
     ///
     ///   A result whose save loses a race is made again to the copy the re-read found, and saved
     ///   (see `saveResult`) — never left for the recovery to offer as the person's change.
-    func update(id: UUID, as kind: WriteKind = .edit, _ mutation: (inout MeetingRecord) -> Void) {
+    ///
+    /// `mutation` escapes because a result whose save lost twice is held until the banner is answered
+    /// (`heldResults`, F885).
+    func update(id: UUID, as kind: WriteKind = .edit, _ mutation: @escaping (inout MeetingRecord) -> Void) {
         guard writeIsAllowed(kind) else { return }
+        // An earlier result for this meeting is waiting for the banner's answer (F885): this one waits
+        // behind it, so the two reach disk in the order they finished. Made now, it would be saved
+        // first and the answer would then make the earlier one on top of it — a finished
+        // transcription put back to "transcribing".
+        if kind == .result, heldResults.contains(where: { $0.id == id }) {
+            heldResults.append(HeldResult(id: id, apply: mutation))
+            return
+        }
         let offerBefore = conflictOffer
         applyToOfferedCopies(of: id, mutation)
         guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
@@ -1402,12 +1414,16 @@ final class MeetingStore: ObservableObject {
     /// banner — and Use the Other Copy erased a finished transcript. A result is true of the meeting
     /// whichever copy is kept, so it is taken out before the recovery (which then offers only the
     /// person's own changes, and folds an outstanding offer as before) and put on the re-read copy and
-    /// every offered copy afterwards — the shape F667 gives a new meeting. If that second save loses
-    /// too, the recovery it starts sees the result as this session's change and offers it: a bounded
-    /// fallback that is deferred rather than lost.
+    /// every offered copy afterwards — the shape F667 gives a new meeting.
+    ///
+    /// If that second save loses too — the other copy saved again between the re-read and it — the
+    /// result is taken out once more and held (`heldResults`, F885) instead of being saved a third
+    /// time: left in the list, the next recovery saw it as this window's change and offered it as
+    /// "your changes", and Use the Other Copy erased it. Held, it is named in the banner and made by
+    /// whichever answer is chosen, to the copy that answer keeps (`saveBack`).
     private func saveResult(
         id: UUID, at index: Int, before recordBefore: MeetingRecord, offerBefore: ConflictOffer?,
-        _ mutation: (inout MeetingRecord) -> Void
+        _ mutation: @escaping (inout MeetingRecord) -> Void
     ) {
         guard !persistMeetings() else { return }
         // An ordinary failure (a full disk) keeps the result in memory for the next save, as any
@@ -1420,15 +1436,24 @@ final class MeetingStore: ObservableObject {
         // back in the list, a note (F884). The save below sets the message to its own: nothing on
         // success, so a banner that resolved itself here used to go away with nothing said.
         let said = storageErrorMessage == restingStorageMessage ? nil : storageErrorMessage
+        let offerWithoutTheResult = conflictOffer
         applyToOfferedCopies(of: id, mutation)
         // Nothing more is written when the re-read left the library refusing changes — the result
         // then survives only in an offered copy, if there is one — or when the other copy deleted
         // the meeting, whose result has nothing left to describe.
         guard !isDegraded, !isRestoringLibrary,
               let reloaded = meetings.firstIndex(where: { $0.id == id }) else { return }
+        let reloadedCopy = meetings[reloaded]
         mutation(&meetings[reloaded])
         meetings[reloaded].schemaVersion = MeetingRecord.currentSchemaVersion
-        persistMeetingsOrRecover()
+        if !persistMeetings(), writeConflict?.isRace == true {
+            // Lost twice (F885): out of the list and the offer again, and held for the answer, so the
+            // recovery offers only the person's own changes and names this meeting as waiting.
+            meetings[reloaded] = reloadedCopy
+            conflictOffer = offerWithoutTheResult
+            heldResults.append(HeldResult(id: id, apply: mutation))
+            beginConflictRecovery()
+        }
         if let said { keepSaying(said) }
     }
 
@@ -1620,6 +1645,10 @@ final class MeetingStore: ObservableObject {
         /// (F642). Kept apart from `message` so a later race folded into this offer (F662) says it
         /// again rather than losing it.
         let notes: [String]
+        /// The titles of meetings with work the app finished — a transcript, a summary, a status —
+        /// whose save lost twice in a row (F885). The store holds the work itself (`heldResults`), out
+        /// of the list and out of this offer; both answers make it to the copy they keep and save it.
+        let heldResults: [String]
         /// The banner's text: the conflict, then which meetings each answer decides (F667).
         let message: String
 
@@ -1627,16 +1656,19 @@ final class MeetingStore: ObservableObject {
         ///   neither answer can save `unsavedNew` now and the banner must not say it will.
         init(
             delta: [MeetingRecord], unsavedNew: [MeetingRecord] = [], keptNew: [String] = [],
-            deletedByOther: [MeetingRecord], notes: [String], report: String, libraryWritable: Bool = true
+            deletedByOther: [MeetingRecord], notes: [String], heldResults: [String] = [], report: String,
+            libraryWritable: Bool = true
         ) {
             self.delta = delta
             self.unsavedNew = unsavedNew
             self.keptNew = keptNew
             self.deletedByOther = deletedByOther
             self.notes = notes
+            self.heldResults = heldResults
             message = Self.message(
                 report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew,
-                deletedByOther: deletedByOther, notes: notes, libraryWritable: libraryWritable
+                deletedByOther: deletedByOther, notes: notes, heldResults: heldResults,
+                libraryWritable: libraryWritable
             )
         }
 
@@ -1646,13 +1678,17 @@ final class MeetingStore: ObservableObject {
             keptNew = offer.keptNew
             deletedByOther = offer.deletedByOther
             notes = offer.notes
+            heldResults = offer.heldResults
             message = offer.message
         }
 
         /// Whether there is anything for the person to answer: an edit to keep or drop, a meeting
-        /// still to save, or a meeting the other copy deleted to be told about. Notes alone, or
-        /// meetings already back in the list, are said without a banner.
-        var asksAnything: Bool { !delta.isEmpty || !unsavedNew.isEmpty || !deletedByOther.isEmpty }
+        /// still to save, a result waiting to be saved with the answer (F885), or a meeting the other
+        /// copy deleted to be told about. Notes alone, or meetings already back in the list, are said
+        /// without a banner.
+        var asksAnything: Bool {
+            !delta.isEmpty || !unsavedNew.isEmpty || !heldResults.isEmpty || !deletedByOther.isEmpty
+        }
 
         /// This offer with `mutation` applied to every offered copy of `id` — a result the app
         /// finished while the offer was up (F662). `deletedByOther` is left alone: it is never
@@ -1674,7 +1710,8 @@ final class MeetingStore: ObservableObject {
         /// lost save at Stop dropped the recording just made with nothing on screen naming it.
         static func message(
             report: String, delta: [MeetingRecord], unsavedNew: [MeetingRecord], keptNew: [String],
-            deletedByOther: [MeetingRecord], notes: [String], libraryWritable: Bool = true
+            deletedByOther: [MeetingRecord], notes: [String], heldResults: [String] = [],
+            libraryWritable: Bool = true
         ) -> String {
             var sentences = [report]
             if !delta.isEmpty {
@@ -1694,6 +1731,13 @@ final class MeetingStore: ObservableObject {
                         ? "\(new.text) are new in this window and cannot be saved while the library cannot be written; their recordings stay on this Mac and are added back once the library is recovered."
                         : "\(new.text) is new in this window and cannot be saved while the library cannot be written; its recording stays on this Mac and is added back once the library is recovered.")
                 }
+            }
+            if !heldResults.isEmpty {
+                // F885: not "your changes" — the app's own work, which either answer saves.
+                let held = names(heldResults).text
+                sentences.append(libraryWritable
+                    ? "What WhisperMeet finished for \(held) — a transcript, a summary or a status — is not saved yet; either answer saves it."
+                    : "What WhisperMeet finished for \(held) cannot be saved while the library cannot be written.")
             }
             if !keptNew.isEmpty {
                 let kept = names(keptNew)
@@ -1735,6 +1779,26 @@ final class MeetingStore: ObservableObject {
     /// Set once a lost race's edit is retained for the user to resolve (F433). `nil` the rest of
     /// the time, including while an ordinary (non-race) save failure is being retried.
     @Published private(set) var conflictOffer: ConflictOffer?
+
+    /// A result whose save lost twice in a row, and the mutation that makes it (F885).
+    private struct HeldResult {
+        let id: UUID
+        let apply: (inout MeetingRecord) -> Void
+    }
+
+    /// Results whose save lost twice, waiting for the banner's answer (F885), in the order they
+    /// finished. Held here, outside both the list and the offer, so neither answer can drop one and
+    /// nothing makes one twice: the answer makes each to the copy it keeps and saves them with it
+    /// (`saveBack`). The banner names their meetings (`ConflictOffer.heldResults`), which is what keeps
+    /// it up. Dropped when the other copy deleted the meeting (nothing left to describe), when Use the
+    /// Other Copy is chosen on a library that cannot be written, and by a restore, with the offer.
+    private var heldResults: [HeldResult] = []
+
+    /// The titles of the meetings with a held result, in list order.
+    private var heldResultTitles: [String] {
+        let ids = Set(heldResults.map(\.id))
+        return meetings.filter { ids.contains($0.id) }.map(\.title)
+    }
 
     /// Re-reads the library after a lost race instead of leaving the token stale forever, and works
     /// out what THIS SESSION had not yet saved so `conflictOffer` can offer it back (F433). Wires
@@ -1801,6 +1865,10 @@ final class MeetingStore: ObservableObject {
         // returns, so the generic "could not be saved" alert never flashes on its way to the banner
         // below, which is the one surface this conflict is meant to be resolved from.
         reloadForConflictRecovery(explaining: unsavedHere)
+        // A result waiting for an answer whose meeting the other copy deleted has nothing left to
+        // describe, as `saveResult` treats one (F885). The rest stay held, and named.
+        heldResults.removeAll { result in !meetings.contains { $0.id == result.id } }
+        let heldTitles = heldResultTitles
         // This session's own edits since its last save — a record it never touched, whatever the
         // rival did to it, is excluded here regardless.
         let ownEdits = losing.filter { !(persistedByID[$0.id]?.contains($0) ?? false) }
@@ -1830,7 +1898,7 @@ final class MeetingStore: ObservableObject {
             // still to decide rather than dropping it (F662's fold).
             conflictOffer = ConflictOffer(
                 delta: delta, unsavedNew: added, keptNew: keptNew,
-                deletedByOther: deletedByOther, notes: notes, report: report.message
+                deletedByOther: deletedByOther, notes: notes, heldResults: heldTitles, report: report.message
             )
             writeBack(added)
             if persistMeetings() {
@@ -1849,7 +1917,7 @@ final class MeetingStore: ObservableObject {
         }
         let offer = ConflictOffer(
             delta: delta, unsavedNew: added, keptNew: keptNew,
-            deletedByOther: deletedByOther, notes: notes, report: report.message,
+            deletedByOther: deletedByOther, notes: notes, heldResults: heldTitles, report: report.message,
             libraryWritable: !isDegraded && !isRestoringLibrary
         )
         guard offer.asksAnything else {
@@ -1908,7 +1976,8 @@ final class MeetingStore: ObservableObject {
     /// every one of these records still unsaved: the edits are re-offered together, and a new
     /// meeting among them is put back in the list as any lost save's is (F667).
     ///
-    /// Also saves `unsavedNew` — meetings only this window has, which either answer keeps (F667).
+    /// Also saves `unsavedNew` — meetings only this window has, which either answer keeps (F667) —
+    /// and makes any held result to the copy it keeps (F885, `saveBack`).
     func keepConflictedEdit() {
         guard mutationIsAllowed() else { return }
         guard let offer = conflictOffer else { return }
@@ -1923,20 +1992,44 @@ final class MeetingStore: ObservableObject {
     /// recording just stopped out of the list (F667). While the library refuses changes it cannot
     /// be saved; its folder stays on disk, unindexed, for the startup sweep to adopt once the
     /// library can be written again.
+    ///
+    /// A held result (F885) is made to the other copy's version and saved with it. While the library
+    /// refuses changes it cannot be, and goes with the offer, as a result does whose re-read left the
+    /// library refusing changes (`saveResult`).
     func discardConflictedEdit() {
         guard let offer = conflictOffer else { return }
         conflictOffer = nil
-        guard !offer.unsavedNew.isEmpty, mutationIsAllowed() else { return }
+        guard !offer.unsavedNew.isEmpty || !heldResults.isEmpty else { return }
+        guard mutationIsAllowed() else {
+            heldResults = []
+            return
+        }
         saveBack(offer.unsavedNew)
     }
 
-    /// Writes `records` back into the list and saves them as ONE write (F433); a race on that save
-    /// re-offers them all together, through the recovery every lost save takes.
+    /// Writes `records` back into the list, makes every held result (F885) to the copy now in the
+    /// list, in the order they finished, and saves it all as ONE write (F433). A race on that save
+    /// re-offers the records together, through the recovery every lost save takes — and takes the
+    /// results back out first, so they are held for the next answer rather than offered as the
+    /// person's changes. An ordinary failure leaves them made in the list, unsaved, for the next save
+    /// to carry, as any failed change is kept.
     private func saveBack(_ records: [MeetingRecord]) {
-        guard !records.isEmpty else { return }
+        guard !records.isEmpty || !heldResults.isEmpty else { return }
         writeBack(records)
+        let withoutResults = meetings
+        let results = heldResults
+        heldResults = []
+        for result in results {
+            // A meeting gone from the list has nothing left for its result to describe.
+            guard let index = meetings.firstIndex(where: { $0.id == result.id }) else { continue }
+            result.apply(&meetings[index])
+            meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
+            scheduleNotesSidecarWrite(for: result.id)
+        }
         persistMeetings()
         guard writeConflict?.isRace == true else { return }
+        meetings = withoutResults
+        heldResults = results
         beginConflictRecovery()
     }
 
@@ -3383,8 +3476,9 @@ final class MeetingStore: ObservableObject {
         unsavedChanges = false
         // A snapshot from before this restore/rebuild describes a library that no longer exists
         // (F433 follow-up): keeping it would let `keepConflictedEdit()` reapply a stale edit over
-        // whatever this restore just installed.
+        // whatever this restore just installed. The results held for its answer go with it (F885).
         conflictOffer = nil
+        heldResults = []
         // Only when the library really is writable again. Clearing this unconditionally asserted
         // "no storage problem" about a library the reload had just found still unreadable.
         if !isDegraded {
@@ -3437,8 +3531,10 @@ final class MeetingStore: ObservableObject {
         writeConflict = nil
         unsavedChanges = false
         // As in `adoptRestoredIndex` (F433 follow-up): a snapshot from before a whole-library
-        // restore describes a library the restore just replaced.
+        // restore describes a library the restore just replaced. The results held for its answer go
+        // with it (F885).
         conflictOffer = nil
+        heldResults = []
     }
 
     /// Holds every change to the library until `endLibraryRestore()` (F506).

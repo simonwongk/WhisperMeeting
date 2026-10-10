@@ -2034,7 +2034,7 @@ final class AppModel: ObservableObject {
         var before: (segments: [TranscriptSegment], transcriptText: String)?
         let commitsBefore = store.persistCommitCount
         store.update(id: id) { meeting in
-            guard !store.isTranscriptEdited(meeting) else {
+            guard !self.store.isTranscriptEdited(meeting) else {
                 outcome = .refused(Self.secondOpinionReplaceRefusedForEdits)
                 return
             }
@@ -2688,7 +2688,7 @@ final class AppModel: ObservableObject {
                 store.update(id: id) { meeting in
                     // F436: re-checked on the record being written, not the one read before the engine
                     // ran. The engine takes seconds to minutes, and an edit made in that time wins.
-                    guard !store.isTranscriptEdited(meeting) else {
+                    guard !self.store.isTranscriptEdited(meeting) else {
                         editedMeanwhile = true
                         return
                     }
@@ -6003,7 +6003,7 @@ final class AppModel: ObservableObject {
 
     /// Edits one action item on a meeting's summary — its done state, owner, or due — and persists the
     /// change to the index (F177). An out-of-range index or a meeting without a summary is a safe no-op.
-    func updateActionItem(at index: Int, for id: UUID, _ mutation: (inout ActionItem) -> Void) {
+    func updateActionItem(at index: Int, for id: UUID, _ mutation: @escaping (inout ActionItem) -> Void) {
         store.update(id: id) { record in
             guard record.summary != nil,
                   record.summary!.actionItems.indices.contains(index) else { return }

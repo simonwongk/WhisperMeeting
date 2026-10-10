@@ -134,8 +134,9 @@ F642):
   finishes meanwhile — a recording stopped, an import, a transcript or summary, a rebuilt recording —
   is saved as usual and written into the offered copy of its meeting as well, so neither answer loses
   it. If that save loses to the other copy, the work is made again to the copy the re-read found and
-  saved once more, so it is never left for *Use the Other Copy* to drop; only if that loses too is it
-  offered back like a change (F662).
+  saved once more, so it is never left for *Use the Other Copy* to drop (F662); if that loses too, it
+  waits beside the offer, out of the list and named in it, and either answer makes it to the copy it
+  keeps and saves it (F885).
 - The vocabulary and replacement-rule lists are compare-and-swapped the same way and recover without
   a question: a change that lost re-reads that list alone and is made again to what the other copy
   saved, once. If it loses again, or the save fails, the list shows what is on disk and the message
