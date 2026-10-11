@@ -147,10 +147,12 @@ func shrinkNeverRemovesNestedFiles() {
 
 @Test("An import whose shrink was interrupted is finished, not encoded a second time (F795 review)")
 func shrinkResumesAnInterruptedImport() {
-    // The index already names recording.m4a and the original recording.mp4 survived: that pair only
-    // arises from Shrink's own commit, so the AAC is not encoded again.
-    let interrupted = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
+    // The index already names recording.m4a and the original recording.mp4 survived, so the AAC is not
+    // encoded again. Since F911 the leftover must be measured as no longer than the recording before
+    // it is removed — a Shrink original always is, since its encode was checked against it.
+    var interrupted = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
                                                       Entry(name: "recording.mp4", bytes: 900_000_000)])
+    interrupted.otherRecordingSeconds = ["recording.mp4": 3_600]
     #expect(MeetingStoragePlan.isResume(interrupted))
     #expect(MeetingStoragePlan.unavailability(disk: interrupted, live: .init()) == nil)
     // A plain AAC import with nothing left over is an ordinary candidate, judged by the size rule.
@@ -194,6 +196,8 @@ func shrinkRefusesSeveralAudioTracks() {
     var resume = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
                                                  Entry(name: "recording.mov", bytes: 900_000_000)])
     resume.audioTrackCount = 2
+    // Measured as no longer than the recording, which F911 requires before a leftover is removed.
+    resume.otherRecordingSeconds = ["recording.mov": 3_600]
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 2).message
         .contains("2 audio tracks, and a shrunk copy keeps only the first. The other track would be deleted"))
@@ -258,4 +262,73 @@ func shrinkFindsTheFirstStretchTheCopyLost() {
     // Nothing measured, nothing judged: the fakes in the flow tests, and a copy one window short.
     #expect(MeetingStoragePlan.firstWindowLosingSound(original: [], compressed: [], originalLevel: 0.2) == nil)
     #expect(MeetingStoragePlan.firstWindowLosingSound(original: [0.2, 0.2], compressed: [0.2], originalLevel: 0.2) == nil)
+}
+
+// MARK: - F911: a link import's complete download beside the shorter WAV ffmpeg finished on SIGTERM
+
+/// A recovered link import indexed against `recording.wav` (30 minutes) with its download beside it.
+private func linkImport(download: String = "recording.webm", downloadBytes: Int64 = 83_000_000,
+                        seconds: TimeInterval?) -> MeetingStoragePlan.DiskFacts {
+    var facts = disk("recording.wav", entries: [Entry(name: "recording.wav", bytes: 57_600_044),
+                                                Entry(name: download, bytes: downloadBytes),
+                                                Entry(name: "source.json", bytes: 300)],
+                     duration: 1_800)
+    if let seconds { facts.otherRecordingSeconds = [download: seconds] }
+    return facts
+}
+
+@Test("Shrink refuses to delete another recording that runs longer, or whose length is unknown (F911)")
+func shrinkRefusesAnOtherRecordingThatMayHoldMore() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    // The download runs an hour; the WAV ffmpeg finished on SIGTERM holds half of it.
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: 3_600), live: idle)
+            == .otherRecordingMayHoldMore(name: "recording.webm", seconds: 3_600))
+    // Never measured — a WebM macOS cannot open — is not shown to be covered.
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: nil), live: idle)
+            == .otherRecordingMayHoldMore(name: "recording.webm", seconds: nil))
+    // The output's own name is at risk too: the encode would replace it.
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(download: "recording.m4a", seconds: 3_600), live: idle)
+            == .otherRecordingMayHoldMore(name: "recording.m4a", seconds: 3_600))
+    // Said before the busy states, which clear on their own.
+    var busy = idle; busy.meetingBusy = true
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: nil), live: busy)
+            == .otherRecordingMayHoldMore(name: "recording.webm", seconds: nil))
+    let longer = MeetingStoragePlan.Unavailability.otherRecordingMayHoldMore(name: "recording.webm", seconds: 3_600).message
+    #expect(longer.contains("“recording.webm”") && longer.contains("1:00:00") && longer.contains("longer than this recording"), "\(longer)")
+    let unknown = MeetingStoragePlan.Unavailability.otherRecordingMayHoldMore(name: "recording.webm", seconds: nil).message
+    #expect(unknown.contains("“recording.webm”") && unknown.contains("can't be read"), "\(unknown)")
+}
+
+@Test("Another recording no longer than the recording, or empty, does not stop Shrink (F911)")
+func shrinkAllowsAnOtherRecordingThatHoldsNoMore() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    // The download and the WAV made from it were measured at most 32 ms apart.
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: 1_800.032), live: idle) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: 1_800 + InterruptedLinkImportExtraction.lengthTolerance), live: idle) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: 1_800.6), live: idle) != nil)
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(seconds: 900), live: idle) == nil)
+    // An empty file holds nothing, measured or not.
+    #expect(MeetingStoragePlan.unavailability(disk: linkImport(downloadBytes: 0, seconds: nil), live: idle) == nil)
+    // Only the import's stem counts, and never the recording itself or a nested file.
+    let others = MeetingStoragePlan.otherRecordings(
+        in: [Entry(name: "recording.wav", bytes: 1), Entry(name: "recording.webm", bytes: 1),
+             Entry(name: "recording.extracting.wav", bytes: 1), Entry(name: "sub/recording.mp4", bytes: 1),
+             Entry(name: "recording", bytes: 1), Entry(name: "meeting.wav", bytes: 1)],
+        recordingName: "recording.WAV"
+    )
+    #expect(others.map(\.name) == ["recording.webm"])
+}
+
+@Test("A resume does not remove a leftover that runs longer than the recording (F911)")
+func shrinkResumeRefusesALongerLeftover() {
+    // recording.m4a beside a longer recording.wav is not Shrink's own interrupted commit.
+    var facts = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 9_000_000),
+                                                Entry(name: "recording.wav", bytes: 115_200_044)],
+                     duration: 1_800)
+    #expect(MeetingStoragePlan.isResume(facts))
+    facts.otherRecordingSeconds = ["recording.wav": 3_600]
+    #expect(MeetingStoragePlan.unavailability(disk: facts, live: .init())
+            == .otherRecordingMayHoldMore(name: "recording.wav", seconds: 3_600))
+    facts.otherRecordingSeconds = ["recording.wav": 1_800]
+    #expect(MeetingStoragePlan.unavailability(disk: facts, live: .init()) == nil)
 }

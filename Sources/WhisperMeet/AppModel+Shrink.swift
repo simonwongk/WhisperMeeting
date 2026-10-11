@@ -375,12 +375,25 @@ extension AppModel {
             // always exists there; a second past the recording allows for track padding (final review).
             let rebuild = SourceRebuild.offer(in: directory, currentDuration: indexDuration)
                 .map { $0.expectedDurationSeconds > length + 1 } ?? false
+            let listed = folder.map(entries) ?? []
+            // F911: every other `recording.<ext>` Shrink would remove is measured, so the plan can tell
+            // whether removing it loses audio — a WAV from its header (or the audio it holds, when
+            // ffmpeg never finished it), anything else with AVAudioFile. Unreadable stays unmeasured.
+            var otherSeconds: [String: TimeInterval] = [:]
+            for other in MeetingStoragePlan.otherRecordings(in: listed, recordingName: name) {
+                let url = directory.appendingPathComponent(other.name)
+                let seconds = url.pathExtension.lowercased() == "wav"
+                    ? InterruptedLinkImportExtraction.heldWAVSeconds(at: url)
+                    : declared(url)
+                if let seconds { otherSeconds[other.name] = seconds }
+            }
             return MeetingStoragePlan.DiskFacts(
                 recordingName: name, recordingExists: exists,
                 inOwnFolder: folder != nil && recordingURL.deletingLastPathComponent().standardizedFileURL.path
                     == folder?.standardizedFileURL.path,
                 hasIntegrityProblem: problem, rebuildOffered: rebuild,
-                durationSeconds: length, entries: folder.map(entries) ?? [], audioTrackCount: tracks)
+                durationSeconds: length, entries: listed, audioTrackCount: tracks,
+                otherRecordingSeconds: otherSeconds)
         }.value
     }
 }

@@ -3592,49 +3592,38 @@ final class AppModel: ObservableObject {
                 var duration = recovered.duration > 0
                     ? recovered.duration
                     : await Self.loadDuration(of: recovered.recordingURL)
-                // F453 (review): a link import interrupted while ffmpeg converted its download is
-                // recovered from the download, and AVFoundation cannot open the format YouTube's
-                // audio usually is (Opus in WebM). Listed as it is, that was an Unverified Import
-                // inviting deletion — of the folder holding the only complete copy. So the
-                // conversion the import was running is finished here, with its own ffmpeg options.
-                // Only for a link import (`source.json`): a file import's `recording.<ext>` is the
-                // user's own file, with no conversion in progress. The download is never touched.
-                var unfinishedConversion: String?
-                if recovered.source == .importedRecording, duration <= 0, let mediaSource,
-                   recovered.recordingURL.pathExtension.lowercased() != "wav" {
-                    do {
-                        let finished = try await finishInterruptedLinkImportExtraction(recovered.recordingURL)
-                        let measured = await Self.loadDuration(of: finished)
-                        if measured > 0 {
-                            recovered = RecoveredRecording(
-                                recordingURL: finished, duration: measured, source: .importedRecording
-                            )
-                            duration = measured
-                        } else {
-                            unfinishedConversion = MediaDownloadError.extractionFailed.localizedDescription
-                        }
-                    } catch is CancellationError {
+                // F453, F911: a link import interrupted while ffmpeg extracted its audio. The folder
+                // can hold the complete download beside the WAV the import was making, and which of
+                // the two the meeting is made from — and whether a download macOS cannot open is
+                // converted here — is `settleInterruptedLinkImport`'s decision. Only for a link import
+                // (`source.json`): a file import's `recording.<ext>` is the user's own file, with no
+                // conversion in progress. The download is never touched.
+                var linkImportWarning: String?
+                if recovered.source == .importedRecording, let mediaSource {
+                    switch await settleInterruptedLinkImport(recovered, duration: duration) {
+                    case .leaveForNextLaunch:
                         // Nothing is indexed, so the next launch finds the folder as it was.
                         continue
-                    } catch {
-                        unfinishedConversion = error.localizedDescription
-                    }
-                    if let reason = unfinishedConversion {
+                    case let .unfinished(reason, download):
                         let failedTitle = Self.unfinishedLinkImportTitle(host: mediaSource.host)
                         let message = Self.unfinishedLinkImportMessage(reason: reason)
                         store.upsert(MeetingRecord(
                             id: orphan.id,
                             title: failedTitle,
                             createdAt: orphan.createdAt,
-                            recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
+                            recordingPath: store.relativeRecordingPath(for: download),
                             status: .failed,
                             errorMessage: message,
                             tags: provenanceTags,
-                            recoverySource: recovered.source.rawValue,
+                            recoverySource: RecoveredRecording.Source.importedRecording.rawValue,
                             source: mediaSource
                         ))
                         messages.append("\(failedTitle) needs attention. \(message)")
                         continue
+                    case let .recording(settled, settledDuration, warning):
+                        recovered = settled
+                        duration = settledDuration
+                        linkImportWarning = warning
                     }
                 }
                 if recovered.source == .importedRecording, duration <= 0 {
@@ -3678,7 +3667,8 @@ final class AppModel: ObservableObject {
                 let recoveredMarkers = session?.markers.isEmpty == false ? session?.markers : nil
                 // F256. The rebuild reports where it stopped; say so on the meeting itself, not
                 // only in the startup alert the user dismisses once.
-                let recoveryWarning = Self.recoveryWarning(for: recovered)
+                // F911: a link import's WAV that could not be checked against its download says so.
+                let recoveryWarning = linkImportWarning ?? Self.recoveryWarning(for: recovered)
                 // Below a tenth of what the tracks promised, "technically recovered" would
                 // masquerade as recovered — a two-second stub titled like an ordinary meeting. It
                 // lands as `.failed` naming the raw tracks instead. What `.failed` buys is the
@@ -5684,7 +5674,7 @@ final class AppModel: ObservableObject {
         return WatchedFolderInbox.Version(size: size, modified: modified)
     }
 
-    nonisolated private static func loadDuration(of url: URL) async -> TimeInterval {
+    nonisolated static func loadDuration(of url: URL) async -> TimeInterval {
         let asset = AVURLAsset(url: url)
         guard let duration = try? await asset.load(.duration) else { return 0 }
         let seconds = duration.seconds

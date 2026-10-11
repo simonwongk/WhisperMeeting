@@ -170,6 +170,9 @@ re-made when the action runs. The reasons, in the order a person can act on them
   MPEG-4 file can carry a track per side of a call. afconvert decodes only the first audio track, so the shrunk copy
   would keep track 1 and the rest would be deleted with the original. The message says how many tracks would be lost.
   See the 2026-10-09 amendment below.
+- **Another `recording.<ext>` in the folder may hold more audio than the recording** (F911). It names the file and
+  says whether it runs longer or could not be measured. This one applies in resume mode too. See the 2026-10-10
+  amendment below.
 - **Nothing to gain.** This is step 5's rule, *E* > 0.75 × *R*. Before encoding, *E* is predicted as the record's
   duration × 4,100 B/s. The measured *E* at step 5 is the authority. This is how an already shrunk `recording.m4a`
   import is refused without encoding it again: its stem cannot show that it was shrunk, but its size can.
@@ -355,3 +358,26 @@ follows; the user has not reviewed this yet.
   reason that says how many tracks would be lost, over warning in the confirmation (a permanent loss one click away)
   and over mixing the tracks into one (new work). Mixing is the option that loses nothing; it is a decision for the
   user, not taken here.
+
+## Amendment for F911 (2026-10-10)
+
+A link import recovered after its audio extraction was interrupted keeps its complete download beside the
+`recording.wav` the import was making, and that WAV can hold only part of the audio: FFmpeg stopped by SIGTERM, which
+a shutdown, restart or logout sends, finishes its header over what it had written. Shrink treated every other
+`recording.<ext>` as a leftover of the import. So once its encode succeeded, shrinking such a meeting would delete the
+download — or, when the download was itself `recording.m4a`, replace it with the encode — and the only complete copy
+would be gone. Today that is latent rather than live for a link import's own WAV: Shrink's first encode step
+(`afconvert -c 1 --mix`) refuses a 16 kHz mono PCM input outright, which is what such a WAV is, so the encode fails
+before anything is removed. The rule below does not rely on that.
+
+- **Each other `recording.<ext>` is measured** when the folder is: a WAV from its header (or, for one FFmpeg never
+  finished, from the audio it holds), anything else with `AVAudioFile`.
+- **Shrink refuses unless every one runs no more than half a second past the recording**
+  (`InterruptedLinkImportExtraction.lengthTolerance`; the download and the WAV made from it were measured at most
+  32 ms apart). A file that could not be measured is not shown to be covered, so it is refused too. An empty file
+  holds nothing and is not.
+- **Resume mode too.** A leftover that runs longer than the recording is not one Shrink made.
+
+I chose refusing over removing only what is shown to be covered, because the file at risk is the only complete copy.
+The cost: a meeting whose other file is a WebM download, which macOS cannot measure, is never shrunk, since showing
+that its WAV holds all of it would need FFmpeg.

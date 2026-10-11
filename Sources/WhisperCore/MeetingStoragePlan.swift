@@ -66,6 +66,34 @@ public enum MeetingStoragePlan {
         URL(fileURLWithPath: recordingName).deletingPathExtension().lastPathComponent == "recording"
     }
 
+    /// The other `recording.<ext>` files in a meeting's folder: every top-level file with an import's
+    /// stem except the recording itself. Shrink removes each of them (`removableFiles`), or, the one
+    /// that already has the output's name, replaces it with the output. A link import whose
+    /// extraction was interrupted keeps its complete download among them (F911).
+    public static func otherRecordings(in entries: [FolderEntry], recordingName: String) -> [FolderEntry] {
+        let recording = recordingName.lowercased()
+        return entries.filter { entry in
+            let lower = entry.name.lowercased()
+            guard lower != recording, !lower.contains("/") else { return false }
+            let url = URL(fileURLWithPath: lower)
+            return url.deletingPathExtension().lastPathComponent == "recording" && !url.pathExtension.isEmpty
+        }
+    }
+
+    /// The first other `recording.<ext>` that is not shown to hold no more audio than the recording, or
+    /// nil (F911). Shown means measured (`DiskFacts.otherRecordingSeconds`) and running no more than
+    /// `InterruptedLinkImportExtraction.lengthTolerance` past the recording; an empty file holds
+    /// nothing. Fail-closed: a file with no measurement is at risk, so a caller that never measured
+    /// refuses rather than deletes.
+    public static func otherRecordingAtRisk(_ disk: DiskFacts) -> FolderEntry? {
+        otherRecordings(in: disk.entries, recordingName: disk.recordingName).first { entry in
+            guard entry.bytes > 0 else { return false }
+            guard let seconds = disk.otherRecordingSeconds[entry.name], seconds.isFinite,
+                  disk.durationSeconds.isFinite, disk.durationSeconds > 0 else { return true }
+            return seconds > disk.durationSeconds + InterruptedLinkImportExtraction.lengthTolerance
+        }
+    }
+
     /// Below this RMS level (about -80 dBFS) a recording counts as silence for `levelsAgree`: there is
     /// no sound to lose, and a ratio against it means nothing.
     public static let silenceLevel = 0.000_1
@@ -195,10 +223,13 @@ public enum MeetingStoragePlan {
         /// How many audio tracks the recording's container holds, when they were counted — only for
         /// a recording that `mayHoldSeveralAudioTracks` (F801). Nil when not counted or not readable.
         public var audioTrackCount: Int?
+        /// How long each other `recording.<ext>` in the folder (`otherRecordings`) is, keyed by its name
+        /// in `entries`, where it could be measured (F911). A name missing here was not measured.
+        public var otherRecordingSeconds: [String: TimeInterval]
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
-                    audioTrackCount: Int? = nil) {
+                    audioTrackCount: Int? = nil, otherRecordingSeconds: [String: TimeInterval] = [:]) {
             self.recordingName = recordingName
             self.recordingExists = recordingExists
             self.inOwnFolder = inOwnFolder
@@ -207,6 +238,7 @@ public enum MeetingStoragePlan {
             self.durationSeconds = durationSeconds
             self.entries = entries
             self.audioTrackCount = audioTrackCount
+            self.otherRecordingSeconds = otherRecordingSeconds
         }
     }
 
@@ -227,6 +259,11 @@ public enum MeetingStoragePlan {
         case damaged(rebuildOffered: Bool)
         /// The container holds more than one audio track, and the encode keeps only the first (F801).
         case multipleAudioTracks(count: Int)
+        /// Another `recording.<ext>` in the folder is not shown to hold no more audio than the
+        /// recording, and Shrink would delete or replace it (F911) — a link import's complete download
+        /// beside the shorter WAV an interrupted extraction finished. `seconds` is its length, nil when
+        /// it could not be measured.
+        case otherRecordingMayHoldMore(name: String, seconds: TimeInterval?)
         case cannotMeasureLength
         case alreadyShrunk
         case nothingToGain
@@ -250,6 +287,10 @@ public enum MeetingStoragePlan {
             case let .multipleAudioTracks(count):
                 let others = count == 2 ? "The other track" : "The other \(count - 1) tracks"
                 return "This recording has \(count) audio tracks, and a shrunk copy keeps only the first. \(others) would be deleted with the original, so it isn't shrunk."
+            case let .otherRecordingMayHoldMore(name, seconds?):
+                return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
+            case let .otherRecordingMayHoldMore(name, nil):
+                return "This meeting's folder also holds “\(name)”, and its length can't be read to show that this recording holds all of its audio. Shrinking would delete it, so it isn't shrunk."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
             case .alreadyShrunk:
@@ -279,6 +320,10 @@ public enum MeetingStoragePlan {
             return .unsupportedRecording
         }
         guard disk.recordingExists else { return .recordingMissing }
+        // F911: before the resume and encode rules alike, since both remove every other `recording.<ext>`.
+        if let other = otherRecordingAtRisk(disk) {
+            return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
+        }
         if isResume(disk) {
             // Resume mode: nothing is encoded, so damage and size rules about an encode don't apply.
             if removableFiles(in: disk.entries, keeping: output).isEmpty { return .alreadyShrunk }

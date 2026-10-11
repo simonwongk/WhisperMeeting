@@ -112,3 +112,57 @@ private final class TimeLimitWatch: @unchecked Sendable {
         return reached
     }
 }
+
+// MARK: - What an interrupted link import's folder holds beside the file recovery chose (F911)
+
+extension InterruptedLinkImportExtraction {
+    /// How far apart two lengths of the same audio may be and still count as the same: the length
+    /// macOS reads for a link import's download and the length of the WAV the import's ffmpeg vector
+    /// makes from it. Measured with ffmpeg 8.1.2 and `afinfo` on 7 s and 1,801 s sines: 32 ms apart
+    /// for MP3, 19 ms for AAC in M4A, 6.5 ms for Opus in Ogg (WebM cannot be read at all). Half a
+    /// second leaves fifteen times the widest of those, and it is the margin Shrink already allows a
+    /// compressed copy against its original.
+    public static let lengthTolerance: TimeInterval = 0.5
+
+    /// The complete download a link import's folder holds: its non-empty `recording.<ext>` that is not
+    /// a WAV, first by name — the order `InterruptedRecordingRecovery.importedRecordingCandidate`
+    /// picks a download in. yt-dlp deletes it only once ffmpeg's extraction has finished, so an
+    /// interrupted extraction leaves it beside the WAV. Nil when there is none.
+    public static func download(in folder: URL) -> URL? {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ) else { return nil }
+        return contents
+            .filter { url in
+                guard url.deletingPathExtension().lastPathComponent == MediaDownloadArguments.outputBasename,
+                      !url.pathExtension.isEmpty, url.pathExtension.lowercased() != "wav",
+                      let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else {
+                    return false
+                }
+                return values.isRegularFile == true && (values.fileSize ?? 0) > 0
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .first
+    }
+
+    /// The length a WAV's complete header declares, or nil when it is not a finished WAV.
+    public static func finishedWAVSeconds(at url: URL) -> TimeInterval? {
+        InterruptedRecordingRecovery.finalizedDuration(at: url)
+    }
+
+    /// The seconds of audio a WAV actually holds: what its complete header declares, or, for one
+    /// ffmpeg has not finished, what its bytes so far amount to. Nil when its header cannot be read.
+    public static func heldWAVSeconds(at url: URL) -> TimeInterval? {
+        if let seconds = finishedWAVSeconds(at: url) { return seconds }
+        guard let header = WAVInspection.header(at: url), header.bytesPerSecond > 0,
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+        else { return nil }
+        let held = size > UInt64(header.dataOffset) ? size - UInt64(header.dataOffset) : 0
+        return Double(held) / Double(header.bytesPerSecond)
+    }
+
+    /// Whether `seconds` of audio falls short of `downloadSeconds` by more than `lengthTolerance`.
+    public static func holdsLess(_ seconds: TimeInterval, than downloadSeconds: TimeInterval) -> Bool {
+        seconds < downloadSeconds - lengthTolerance
+    }
+}
