@@ -228,3 +228,34 @@ func shrinkLevelsMustAgree() {
     #expect(!MeetingStoragePlan.levelsAgree(original: 0.2, compressed: .infinity))
     #expect(!MeetingStoragePlan.levelsAgree(original: -0.2, compressed: 0.2))
 }
+
+// MARK: - F801 review (R2): a copy can keep the file's level and still lose a stretch of it
+
+@Test("A copy is refused at the first audible stretch it lost, and quiet stretches are not judged (F801 review)")
+func shrinkFindsTheFirstStretchTheCopyLost() {
+    // A copy that kept the first fifth of 30 s of steady sound: window 1 keeps one second of five.
+    let original = [Double](repeating: 0.2, count: 6)
+    let partial: [Double] = [0.2, 0.2 * (1.0 / 5).squareRoot(), 0, 0, 0, 0]
+    #expect(MeetingStoragePlan.levelsAgree(original: 0.2, compressed: 0.2 * (0.2).squareRoot()),
+            "the whole-file band alone lets it through")
+    #expect(MeetingStoragePlan.firstWindowLosingSound(original: original, compressed: partial, originalLevel: 0.2) == 2)
+    // Every stretch kept, at the levels measured for real encodes, passes.
+    let speech: [Double] = [0.13, 0.12, 0.14, 0.02, 0.13]
+    #expect(MeetingStoragePlan.firstWindowLosingSound(
+        original: speech, compressed: speech.map { $0 * 0.996 }, originalLevel: 0.12) == nil)
+    #expect(MeetingStoragePlan.firstWindowLosingSound(
+        original: original, compressed: original.map { $0 * 0.377 }, originalLevel: 0.2) == nil)
+    // A stretch quieter than a tenth of the whole file's level is not judged: lost or not, it is not
+    // where the recording's sound is.
+    let pauses: [Double] = [0.2, 0.01, 0.2]
+    #expect(MeetingStoragePlan.firstWindowLosingSound(
+        original: pauses, compressed: [0.2, 0, 0.2], originalLevel: 0.16) == nil)
+    // Lower bound only, and a level that is not a number is a loss.
+    #expect(MeetingStoragePlan.firstWindowLosingSound(
+        original: original, compressed: original.map { $0 * 3.9 }, originalLevel: 0.2) == nil)
+    #expect(MeetingStoragePlan.firstWindowLosingSound(
+        original: [0.2, 0.2], compressed: [0.2, .nan], originalLevel: 0.2) == 1)
+    // Nothing measured, nothing judged: the fakes in the flow tests, and a copy one window short.
+    #expect(MeetingStoragePlan.firstWindowLosingSound(original: [], compressed: [], originalLevel: 0.2) == nil)
+    #expect(MeetingStoragePlan.firstWindowLosingSound(original: [0.2, 0.2], compressed: [0.2], originalLevel: 0.2) == nil)
+}

@@ -211,10 +211,17 @@ extension AppModel {
                     // (F801). The original is decoded the same way, its level taken over all its channels
                     // before any mixing, so a recording the mono mix silences cannot pass as silent (F801
                     // review); the two levels must agree.
-                    let original: Double
-                    do { original = try decode(recordingURL).level } catch { throw ShrinkFailure.unreadableOriginal }
-                    guard MeetingStoragePlan.levelsAgree(original: original, compressed: copy.level) else {
-                        throw ShrinkFailure.levelMismatch(original: original, compressed: copy.level)
+                    let original: DecodedAudio.Decoded
+                    do { original = try decode(recordingURL) } catch { throw ShrinkFailure.unreadableOriginal }
+                    guard MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) else {
+                        throw ShrinkFailure.levelMismatch(original: original.level, compressed: copy.level)
+                    }
+                    // And stretch by stretch: a copy of the right length can keep the whole file's level
+                    // within the band and still have lost part of the recording (F801 review).
+                    if let window = MeetingStoragePlan.firstWindowLosingSound(
+                        original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
+                    ) {
+                        throw ShrinkFailure.soundLost(from: Double(window) * MeetingStoragePlan.levelWindowSeconds)
                     }
                     // On stable storage before anything is committed or removed (final review).
                     try flush(tempM4A)
@@ -306,6 +313,8 @@ extension AppModel {
         /// (com.apple.coreaudio.avfaudio error …)") is not the sentence the user reads (F801).
         case unreadableCopy
         case unreadableOriginal
+        /// A stretch of the recording, from this second, is missing from the copy (F801 review).
+        case soundLost(from: TimeInterval)
         var errorDescription: String? {
             let size = { (b: Int64) in ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
             switch self {
@@ -324,6 +333,8 @@ extension AppModel {
                 return "The compressed copy could not be read back, so it was discarded."
             case .unreadableOriginal:
                 return "The recording could not be read to check the compressed copy against it, so the copy was discarded."
+            case let .soundLost(from):
+                return "The compressed copy lost the sound from about \(TranscriptFormatter.clock(from)) on, so it was discarded."
             }
         }
     }

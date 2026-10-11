@@ -238,6 +238,34 @@ func decodedLevelCountsEveryChannel() throws {
     #expect(abs(antiPhase - toneLevel) < 0.002, "\(antiPhase)")
 }
 
+// R2 — the band compared whole-file levels, so a copy of the right length that holds only the
+// first fifth of the recording, silence after, read sqrt(0.2) = 0.45 of the level and passed. The
+// review's probe P2, over 30 s so that later windows of the recording are entirely missing.
+@Test("A copy of the right length that lost most of the recording is discarded, and the original kept (F801 review)")
+@MainActor
+func shrinkRefusesACopyMissingMostOfTheRecording() async throws {
+    let full = toneSamples(seconds: 30)
+    let f = try await ImportFixture(recordingExtension: "wav", duration: 30) { url in
+        try WAVWriter.wavData(from: full, sampleRate: 48_000).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let partial = f.root.appendingPathComponent("partial.wav")
+    let fifth = full.count / 5
+    try WAVWriter.wavData(from: Array(full[0..<fifth]) + [Float](repeating: 0, count: full.count - fifth),
+                          sampleRate: 48_000).write(to: partial)
+    f.model.encodeForShrink = { _, output, workingWAV in
+        try AudioCompressor.compressSpeech(input: partial, output: output, workingWAV: workingWAV)
+    }
+
+    await f.shrink()
+
+    #expect(f.exists("recording.wav"), "four fifths of the sound would have been deleted")
+    #expect(!f.exists("recording.m4a"))
+    #expect(try f.hiddenTemps().isEmpty)
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed"), "\(alert)")
+}
+
 // MARK: - A container with several audio tracks, written with AVAssetWriter
 
 /// Writes a QuickTime or MPEG-4 file with one AAC audio track per `(frequency, amplitude)` tone.

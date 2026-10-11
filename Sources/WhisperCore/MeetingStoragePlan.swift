@@ -94,6 +94,27 @@ public enum MeetingStoragePlan {
         return levelRatioBand.contains(compressed / original)
     }
 
+    /// How long a stretch the copy's level is also compared over, besides the whole file (F801 review).
+    public static let levelWindowSeconds: Double = 5
+
+    /// The first `levelWindowSeconds` stretch in which a compressed copy lost the recording's sound,
+    /// or nil when none did (F801 review). The whole-file band cannot see a copy of the right length
+    /// that holds only part of the recording: one holding the first fifth reads sqrt(0.2) ≈ 0.45 of
+    /// the level, inside the band. So every stretch in which the original is audible — at least a
+    /// tenth of its whole-file level, and above `silenceLevel` — must keep at least the band's lower
+    /// bound of its level in the copy. Lower bound only: the windows look for missing sound. Measured
+    /// per window through Shrink's encode: lowest legitimate ratio 0.377 (right-only white noise),
+    /// speech at least 0.996, also when it drops to a fifth of the level after a loud start.
+    /// Windows past the shorter list's end are not compared; the length check covers a short copy.
+    public static func firstWindowLosingSound(original: [Double], compressed: [Double], originalLevel: Double) -> Int? {
+        let audible = Swift.max(silenceLevel, originalLevel / 10)
+        for index in 0..<Swift.min(original.count, compressed.count) where original[index] >= audible {
+            let copy = compressed[index]
+            guard copy.isFinite, copy >= original[index] * levelRatioBand.lowerBound else { return index }
+        }
+        return nil
+    }
+
     /// The files Shrink removes, in the order it removes them. Only names on this list are ever removed.
     ///
     /// The order is what keeps a folder from looking damaged if the app stops partway (design, step 7):
