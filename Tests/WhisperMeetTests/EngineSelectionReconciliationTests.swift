@@ -114,9 +114,9 @@ func nothingInstalledMessage() {
 func refreshRuntimeHonoursInjectedProbes() {
     // Found by CI, not locally: `AppModel.init`'s probes only governed construction, while
     // `refreshRuntime()` re-read the real filesystem — so an init-time pin was silently discarded
-    // the moment any code path refreshed runtime state, which `importRecording` and `stopRecording`
-    // both do before their install gate. On a dev Mac with both runtimes present that overwrite is
-    // invisible; on a runner with neither it flips the gate.
+    // the moment any code path refreshed runtime state, which `adoptImportedRecording` and
+    // `stopRecording` both do before their install gate. On a dev Mac with both runtimes present
+    // that overwrite is invisible; on a runner with neither it flips the gate.
     let (model, defaults, suite) = makeModel(
         suite: "F262.refresh", whisperInstalled: false, qwenInstalled: true
     )
