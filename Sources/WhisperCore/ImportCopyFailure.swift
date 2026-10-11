@@ -43,10 +43,12 @@ public enum ImportCopyFailure {
     }
 
     /// Whether a failure to read a file's attributes says the file is not there (F709 review): no
-    /// such file (`ENOENT`), or a part of its path that is not a folder (`ENOTDIR`) — what a deleted
-    /// or moved file gives. Any other reason — no permission, an I/O error, a timeout on a share —
+    /// such file (`ENOENT`), which is what a deleted or moved file gives, or a part of its path that is
+    /// not a folder (`ENOTDIR`). Any other reason — no permission, an I/O error, a timeout on a share —
     /// says nothing about whether the file is there, so it is not absence. The POSIX reason decides
-    /// when Foundation gives one; a Cocoa "no such file" decides only when it gives none.
+    /// when Foundation gives one; a Cocoa "no such file" decides only when it gives none. For a watched
+    /// file, a direct child of its folder, `ENOTDIR` means the folder itself is no longer a folder, and
+    /// `wasRemovedFromItsFolder`'s folder check then keeps the file: there, only `ENOENT` forgets one.
     public static func meansNoSuchFile(_ error: Error) -> Bool {
         var current: NSError? = error as NSError
         var depth = 0
