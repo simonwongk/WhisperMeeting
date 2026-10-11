@@ -226,10 +226,14 @@ public enum MeetingStoragePlan {
         /// How long each other `recording.<ext>` in the folder (`otherRecordings`) is, keyed by its name
         /// in `entries`, where it could be measured (F911). A name missing here was not measured.
         public var otherRecordingSeconds: [String: TimeInterval]
+        /// How many channels the recording holds, read from its header (F801 review). Nil when not read
+        /// or not readable.
+        public var channelCount: Int?
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
-                    audioTrackCount: Int? = nil, otherRecordingSeconds: [String: TimeInterval] = [:]) {
+                    audioTrackCount: Int? = nil, otherRecordingSeconds: [String: TimeInterval] = [:],
+                    channelCount: Int? = nil) {
             self.recordingName = recordingName
             self.recordingExists = recordingExists
             self.inOwnFolder = inOwnFolder
@@ -239,6 +243,7 @@ public enum MeetingStoragePlan {
             self.entries = entries
             self.audioTrackCount = audioTrackCount
             self.otherRecordingSeconds = otherRecordingSeconds
+            self.channelCount = channelCount
         }
     }
 
@@ -259,6 +264,9 @@ public enum MeetingStoragePlan {
         case damaged(rebuildOffered: Bool)
         /// The container holds more than one audio track, and the encode keeps only the first (F801).
         case multipleAudioTracks(count: Int)
+        /// The recording holds more than two channels, and the encode's mono mix keeps only some of them
+        /// (F801 review): with no channel layout, channel 1 alone.
+        case multipleChannels(count: Int)
         /// Another `recording.<ext>` in the folder is not shown to hold no more audio than the
         /// recording, and Shrink would delete or replace it (F911) — a link import's complete download
         /// beside the shorter WAV an interrupted extraction finished. `seconds` is its length, nil when
@@ -287,6 +295,8 @@ public enum MeetingStoragePlan {
             case let .multipleAudioTracks(count):
                 let others = count == 2 ? "The other track" : "The other \(count - 1) tracks"
                 return "This recording has \(count) audio tracks, and a shrunk copy keeps only the first. \(others) would be deleted with the original, so it isn't shrunk."
+            case let .multipleChannels(count):
+                return "This recording has \(count) channels, and a shrunk copy keeps only some of them. The others would be deleted with the original, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, seconds?):
                 return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, nil):
@@ -325,7 +335,11 @@ public enum MeetingStoragePlan {
             return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
         }
         if isResume(disk) {
-            // Resume mode: nothing is encoded, so damage and size rules about an encode don't apply.
+            // Resume mode: nothing is encoded, so damage and size rules about an encode don't apply. Nor
+            // do the track and channel rules, which are about what an encode keeps of the recording: here
+            // the recording is already Shrink's output and is kept. What a resume removes are originals
+            // an earlier run had already replaced with its copy; F911's rule above refuses one that runs
+            // longer than the recording, and their tracks and channels are not read.
             if removableFiles(in: disk.entries, keeping: output).isEmpty { return .alreadyShrunk }
         } else {
             if disk.hasIntegrityProblem || disk.rebuildOffered {
@@ -334,6 +348,12 @@ public enum MeetingStoragePlan {
             // F801: a track the shrunk copy cannot hold is never deleted with the original. Refused,
             // not warned about, because the loss is permanent and the confirmation is one click.
             if let tracks = disk.audioTrackCount, tracks > 1 { return .multipleAudioTracks(count: tracks) }
+            // F801 review: the same for channels. The encode's mono mix (`-c 1 --mix`) mixes stereo
+            // (F796) and a layout that gives each channel a position, but of a WAV with more than two
+            // channels and no layout it keeps channel 1 alone — and with the channels at equal levels,
+            // neither level check sees the loss. Refused whatever the layout, which is not read here, so
+            // a positioned 5.1 or quad recording is refused too (F953).
+            if let channels = disk.channelCount, channels > 2 { return .multipleChannels(count: channels) }
             guard disk.durationSeconds.isFinite, disk.durationSeconds > 0 else { return .cannotMeasureLength }
             let reclaim = reclaimableBytes(in: disk.entries, recordingName: disk.recordingName, outputName: output)
             let predicted = predictedOutputBytes(durationSeconds: disk.durationSeconds)

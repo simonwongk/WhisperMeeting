@@ -170,6 +170,9 @@ re-made when the action runs. The reasons, in the order a person can act on them
   MPEG-4 file can carry a track per side of a call. afconvert decodes only the first audio track, so the shrunk copy
   would keep track 1 and the rest would be deleted with the original. The message says how many tracks would be lost.
   See the 2026-10-09 amendment below.
+- **The recording has more than two channels** (F801 review, 2026-10-11). The encode's mono mix keeps only channel 1
+  of a WAV with more than two channels and no channel layout. The message says how many channels it has. A positioned
+  layout such as 5.1 is refused too (F953). See the same amendment.
 - **Another `recording.<ext>` in the folder may hold more audio than the recording** (F911). It names the file and
   says whether it runs longer or could not be measured. This one applies in resume mode too. See the 2026-10-10
   amendment below.
@@ -358,6 +361,18 @@ follows; the user has not reviewed this yet.
   reason that says how many tracks would be lost, over warning in the confirmation (a permanent loss one click away)
   and over mixing the tracks into one (new work). Mixing is the option that loses nothing; it is a decision for the
   user, not taken here.
+- **Nor is a recording with more than two channels** (found in the second review, 2026-10-11). The encode's
+  `afconvert -c 1 --mix` mixes stereo (F796) and a layout that gives each channel a position (3.0, quad, 5.1 and 7.1
+  were measured; LFE is dropped). Of a WAV with more than two channels and no layout — plain PCM, or extensible with
+  channel mask 0, measured at 3, 4, 6 and 8 channels — it keeps channel 1 alone. With the channels at equal levels,
+  channel 1's level is the level over all of them, in the whole file and in every window, so both level checks passed
+  a four-channel import and channels 2–4 were deleted with the original. Field and podcast recorders write such "poly"
+  WAVs, and conference systems record a floor microphone and its interpreters this way. The channel count is read from
+  the header (`AVAudioFile`), and more than two is refused whatever the layout, so a positioned 5.1 import, which the
+  mix would have kept, is refused too (F953). `AVAudioFile` reported the right count for every shape measured. Outside
+  resume mode, like the track rule: a resume encodes nothing and keeps the recording, which is already the copy. The
+  fail-closed fix was the integrating session's decision (whisper-27), not the user's; reading the layout to keep
+  positioned recordings shrinkable is F953.
 
 ## Amendment for F911 (2026-10-10)
 

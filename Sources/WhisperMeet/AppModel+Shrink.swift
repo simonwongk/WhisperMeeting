@@ -367,6 +367,9 @@ extension AppModel {
             // Only an import's container can hold more than one audio track (F801).
             let tracks = exists && MeetingStoragePlan.mayHoldSeveralAudioTracks(name)
                 ? await countTracks(recordingURL) : nil
+            // And how many channels it holds (F801 review), from its header, for every recording: a
+            // capture's is the app's own mono WAV, so asking costs one header read and assumes nothing.
+            let channels = exists ? DecodedAudio.channelCount(of: recordingURL) : nil
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
             let length = declared(recordingURL) ?? (indexDuration > 0 ? indexDuration : 0)
@@ -393,7 +396,7 @@ extension AppModel {
                     == folder?.standardizedFileURL.path,
                 hasIntegrityProblem: problem, rebuildOffered: rebuild,
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
-                otherRecordingSeconds: otherSeconds)
+                otherRecordingSeconds: otherSeconds, channelCount: channels)
         }.value
     }
 }

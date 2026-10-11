@@ -214,6 +214,44 @@ func shrinkCountsTracksOnlyForAnImport() {
     #expect(!MeetingStoragePlan.mayHoldSeveralAudioTracks("meeting.m4a"))
 }
 
+@Test("A recording with more than two channels is refused, saying how many; stereo and mono are not (F801 review)")
+func shrinkRefusesMoreThanTwoChannels() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    // An hour of four-channel 16-bit 48 kHz audio, so the size rule alone would shrink it.
+    var four = disk("recording.wav", entries: [Entry(name: "recording.wav", bytes: 1_382_400_000)])
+    four.channelCount = 4
+    #expect(MeetingStoragePlan.unavailability(disk: four, live: idle) == .multipleChannels(count: 4))
+    var three = four
+    three.channelCount = 3
+    #expect(MeetingStoragePlan.unavailability(disk: three, live: idle) == .multipleChannels(count: 3))
+    // Stereo is mixed by the encode (F796), mono is what it makes, and a count nobody could read is
+    // judged by the other rules as before — the encode's own checks still run.
+    let shrinkable: [Int?] = [2, 1, nil]
+    for count in shrinkable {
+        var other = four
+        other.channelCount = count
+        #expect(MeetingStoragePlan.unavailability(disk: other, live: idle) == nil, "\(String(describing: count))")
+    }
+    // Damage is said first, and several tracks before several channels: a copy keeps one track,
+    // whatever its channels.
+    var damaged = four
+    damaged.hasIntegrityProblem = true
+    #expect(MeetingStoragePlan.unavailability(disk: damaged, live: idle) == .damaged(rebuildOffered: false))
+    var tracks = four
+    tracks.audioTrackCount = 2
+    #expect(MeetingStoragePlan.unavailability(disk: tracks, live: idle) == .multipleAudioTracks(count: 2))
+    // Finishing an interrupted shrink encodes nothing and keeps the recording, which is already the
+    // copy, so its channels are not the question there.
+    var resume = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
+                                                 Entry(name: "recording.wav", bytes: 1_382_400_000)])
+    resume.channelCount = 4
+    resume.otherRecordingSeconds = ["recording.wav": 3_600]
+    #expect(MeetingStoragePlan.isResume(resume))
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
+    #expect(MeetingStoragePlan.Unavailability.multipleChannels(count: 4).message
+        == "This recording has 4 channels, and a shrunk copy keeps only some of them. The others would be deleted with the original, so it isn't shrunk.")
+}
+
 @Test("A compressed copy must carry the recording's level: silence, and a copy far off either way, are refused (F801)")
 func shrinkLevelsMustAgree() {
     // Measured through Shrink's own encode: speech 0.993-0.997 of the original, white noise 0.537.

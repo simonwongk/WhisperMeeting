@@ -26,6 +26,14 @@ enum DecodedAudio {
         var windowLevels: [Double] = []
     }
 
+    /// How many channels the file holds, from its header, or nil when AVAudioFile cannot open it (F801
+    /// review). Shrink refuses more than two: its mono mix keeps channel 1 alone of a file with more
+    /// than two channels and no channel layout.
+    static func channelCount(of url: URL) -> Int? {
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        return Int(file.fileFormat.channelCount)
+    }
+
     /// The length the container declares, without decoding. Nil when AVAudioFile cannot open it.
     static func declaredDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0 else { return nil }
