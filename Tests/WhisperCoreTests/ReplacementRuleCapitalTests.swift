@@ -138,6 +138,8 @@ func sentenceStartsAreMarksLineBreaksAndTheStartOfTheText() {
     let rules = [ReplacementRule(heard: "jon", preferred: "jonathan")]
     func pasted(_ text: String) -> String { ReplacementRuleMatcher.applied(rules, to: text) }
     #expect(pasted("Done! Jon left. Really? Jon? Yes.\nJon too") == "Done! Jonathan left. Really? Jonathan? Yes.\nJonathan too")
+    // A line break ends a sentence with no mark before it.
+    #expect(pasted("ok\nJon left") == "ok\nJonathan left")
     #expect(pasted("好的。Jon来了！Jon走了？Jon呢") == "好的。Jonathan来了！Jonathan走了？Jonathan呢")
     #expect(
         pasted("\"Jon\" said \"stop.\" Jon left. (Jon agreed.) \u{201C}Jon?\u{201D} and Jon")
