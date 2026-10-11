@@ -105,8 +105,12 @@ verified and the index saved.
    - Its duration must match the original's within 0.5 s. The original's duration comes from the WAV header, or from
      `AVAudioFile` for a non-WAV import.
    - Its level must match the original's (F801): the RMS of its decoded audio must be between a quarter of and four
-     times the RMS of the original, decoded the same way and mixed to mono. A copy that came out silent has the right
-     length and fails here. A silent original is not compared.
+     times the RMS of the original, decoded the same way and taken over all its channels' samples, before any mixing.
+     A copy that came out silent has the right length and fails here, and so does one that the mono mix silenced (a
+     stereo recording whose channels cancel). A silent original is not compared.
+   - And per five-second window: in every window where the original is audible (at least a tenth of its whole-file
+     level), the copy must keep at least a quarter of that window's level. A copy of the right length that lost a
+     stretch of the recording fails here.
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.
@@ -332,10 +336,19 @@ The final review found that step 4 checked only the length, so two losses could 
 follows; the user has not reviewed this yet.
 
 - **The compressed copy's level is compared with the original's.** An encode that comes out silent has the right
-  length. Both are decoded in full with `AVAudioFile` and mixed to mono, and the copy's RMS must be between a quarter
-  of and four times the original's. Measured through Shrink's own encode on synthetic audio and the bench clips: speech
-  0.993-0.997 of the original, tones and stereo calls 0.999-1.001, white noise 0.537 (the 16 kHz working WAV drops
-  everything above 8 kHz), and a silent encode 0. An original below about -80 dBFS is silence and is not compared.
+  length. Both are decoded in full with `AVAudioFile`, and the copy's RMS must be between a quarter of and four times
+  the original's. The original's RMS is taken over all its channels' samples, before any mixing: measured after the
+  mono mix, as first written, a stereo recording whose channels cancel in that mix read as silence on both sides and
+  was shrunk to silence (found in review, 2026-10-10). Measured through Shrink's own encode on synthetic audio and the
+  bench clips: speech 0.997 of the original, a mono tone 1.000, stereo with identical channels 1.000, one side per
+  channel or right-only 0.707, white noise 0.535 (the 16 kHz working WAV drops everything above 8 kHz), right-only
+  white noise 0.379, and a silent encode or a fully cancelling stereo pair 0. An original below about -80 dBFS is
+  silence and is not compared.
+- **And per five-second window.** The whole-file band let a copy of the right length that held only part of the
+  recording through: one holding the first fifth reads sqrt(0.2) ≈ 0.45. In every window where the original is
+  audible (at least a tenth of its whole-file level), the copy must keep at least a quarter of that window's level.
+  Lower bound only, since the windows look for missing sound. Measured per window: lowest legitimate ratio 0.377
+  (right-only white noise), speech at least 0.996, also at a fifth of the level after a loud start.
 - **A recording with more than one audio track is not shrunk.** afconvert, which the encode runs, decodes only the
   first audio track of a container, as do `AVAudioFile` and (measured on a two-track `.mov`) Whisper's ffmpeg decode.
   Shrinking such an import would keep track 1 and delete the others with the original. I chose to refuse, with a
