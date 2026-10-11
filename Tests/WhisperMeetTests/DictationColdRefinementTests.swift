@@ -153,6 +153,7 @@ func coldRefinerNeverBlocksFirstDictation() async throws {
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
+    controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.clipboardNotifier = {}
 
     monitor.onPressStart?()
@@ -213,6 +214,7 @@ func rapidNextDictationCancelsColdRefiner() async throws {
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
+    controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.clipboardNotifier = {}
 
     monitor.onPressStart?()

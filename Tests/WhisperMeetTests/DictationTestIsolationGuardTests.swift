@@ -50,3 +50,38 @@ func everyTestControllerIsKeptOffTheRealClipboard() throws {
         "these build a DictationController on the real clipboard; pass `textInjector: isolatedTextInjector()`: \(offenders.joined(separator: ", "))"
     )
 }
+
+// F954 — since F890/F891 a dictation with refinement on skips refining when `gpuUtilization()` says
+// the GPU is at least 75 % busy, and the seam defaults to the real `GPUActivityProbe`. A test that
+// turns refinement on without pinning it passes or fails with whatever else this Mac's GPU is doing:
+// "Rules apply to the refined text when refinement is accepted (F821)" got "rawGPUBusy" in a lane's
+// final run while other builds shared the Mac, and passed on the same code before and after.
+//
+// Per file: every statement that turns refinement on — the setting written with anything but
+// `false`, or `refineEnabled = true` — needs a `gpuUtilization =` beside it in the same file.
+// Comments are stripped first (F285); string literals stay, because the setting's key is one.
+@Test("Every test file that turns dictation refinement on pins the GPU reading refinement waits on (F954)")
+func everyRefinementTestPinsTheGPUReading() throws {
+    let turnsRefinementOn = try NSRegularExpression(
+        pattern: #"defaults\.set\(\s*(?!false\b)[^,()]+,\s*forKey:\s*"dictationRefineEnabled"\s*\)|\.refineEnabled\s*=\s*true\b"#
+    )
+    let pinsTheGPUReading = try NSRegularExpression(pattern: #"\.gpuUtilization\s*="#)
+    var turnedOn = 0
+    var offenders: [String] = []
+    for url in try SourceAssertion.swiftFileURLs(under: "Tests/WhisperMeetTests")
+    where url.lastPathComponent != "DictationTestIsolationGuardTests.swift" {
+        let source = SourceAssertion.stripComments(try String(contentsOf: url, encoding: .utf8))
+        let range = NSRange(source.startIndex..., in: source)
+        let on = turnsRefinementOn.numberOfMatches(in: source, range: range)
+        let pinned = pinsTheGPUReading.numberOfMatches(in: source, range: range)
+        turnedOn += on
+        if on > pinned {
+            offenders.append("\(url.lastPathComponent) (turns refinement on \(on)×, pins the GPU reading \(pinned)×)")
+        }
+    }
+    #expect(turnedOn > 0, "found no test that turns refinement on, so this guard checked nothing")
+    #expect(
+        offenders.isEmpty,
+        "these turn dictation refinement on and leave the real GPU reading in charge of it; set `controller.gpuUtilization = { nil }`: \(offenders.joined(separator: ", "))"
+    )
+}

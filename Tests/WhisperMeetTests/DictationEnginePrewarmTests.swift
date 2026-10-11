@@ -249,6 +249,7 @@ func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
     )
     let meeting = MeetingActivity()
     controller.refineRuntimeAvailability = { true }
+    controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.configureMeetingTranscriptionRunning { meeting.isRunning }
     controller.setEnabled(true)
     for _ in 0..<100 where engine.warmUpCount == 0 {
@@ -293,6 +294,7 @@ func refinementToggleWaitsForRecognitionWarmUp() async throws {
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
+    controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.setEnabled(true)
     for _ in 0..<100 where engine.warmUpCount == 0 {
         try await Task.sleep(for: .milliseconds(10))

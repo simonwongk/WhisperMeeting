@@ -132,6 +132,7 @@ func timedOutRefinerReleasesBeforeNextRecognitionWarmUp() async throws {
         activateOnInit: false
     )
     controller.refineRuntimeAvailability = { true }
+    controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.clipboardNotifier = {}
     controller.setEnabled(true)
 
