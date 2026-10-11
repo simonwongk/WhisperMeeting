@@ -134,6 +134,10 @@ public enum MeetingStoragePlan {
     /// per window through Shrink's encode: lowest legitimate ratio 0.377 (right-only white noise),
     /// speech at least 0.996, also when it drops to a fifth of the level after a loud start.
     /// Windows past the shorter list's end are not compared; the length check covers a short copy.
+    /// What it catches, measured through the real encoder (second review, R6): a lost stretch of steady
+    /// sound from 4.7 s when it falls inside one window, missed up to 9.3 s at the worst alignment, and
+    /// always from 9.4 s; of speech, a lost 1–2 s never, 7 s in 10 of 15 placements, 10 s in 13 of 13.
+    /// A backstop against an encoder losing a stretch, not a proof that every second survived.
     public static func firstWindowLosingSound(original: [Double], compressed: [Double], originalLevel: Double) -> Int? {
         let audible = Swift.max(silenceLevel, originalLevel / 10)
         for index in 0..<Swift.min(original.count, compressed.count) where original[index] >= audible {

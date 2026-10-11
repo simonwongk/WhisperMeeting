@@ -264,6 +264,9 @@ func shrinkRefusesACopyMissingMostOfTheRecording() async throws {
     #expect(try f.hiddenTemps().isEmpty)
     let alert = f.model.alertMessage ?? "nil"
     #expect(alert.contains("nothing was removed"), "\(alert)")
+    // Window 2 is the first the copy lost (window 1 kept one second of five). The sentence names that
+    // stretch and claims nothing about the ones after it, which the check stopped before reading (R7).
+    #expect(alert.contains("is missing sound the recording has at about 0:10"), "\(alert)")
 }
 
 // MARK: - Review round 3 (R5): more channels than a shrunk copy keeps

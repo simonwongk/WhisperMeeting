@@ -109,8 +109,12 @@ verified and the index saved.
      A copy that came out silent has the right length and fails here, and so does one that the mono mix silenced (a
      stereo recording whose channels cancel). A silent original is not compared.
    - And per five-second window: in every window where the original is audible (at least a tenth of its whole-file
-     level), the copy must keep at least a quarter of that window's level. A copy of the right length that lost a
-     stretch of the recording fails here.
+     level), the copy must keep at least a quarter of that window's level. A copy of the right length that lost a long
+     stretch of the recording fails here. Measured with the real encoder (second review, 2026-10-11): a lost stretch of
+     steady sound is caught from 4.7 s when it falls inside one window, missed up to 9.3 s at the worst alignment, and
+     always caught from 9.4 s; of speech, a lost 1–2 s is never caught, 7 s in 10 of 15 placements, 10 s in 13 of 13.
+     Shorter losses are not caught: the check is a backstop against an encoder losing a stretch. The refusal names the
+     first stretch it found ("missing sound the recording has at about 0:10") and nothing after it.
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.
@@ -354,13 +358,18 @@ follows; the user has not reviewed this yet.
   recording through: one holding the first fifth reads sqrt(0.2) ≈ 0.45. In every window where the original is
   audible (at least a tenth of its whole-file level), the copy must keep at least a quarter of that window's level.
   Lower bound only, since the windows look for missing sound. Measured per window: lowest legitimate ratio 0.377
-  (right-only white noise), speech at least 0.996, also at a fifth of the level after a loud start.
+  (right-only white noise), speech at least 0.996, also at a fifth of the level after a loud start. What it catches,
+  measured in the second review: steady sound from 4.7 s inside one window and always from 9.4 s (missed up to 9.3 s
+  across two windows); speech 7 s in 10 of 15 placements, 10 s in 13 of 13, and 1–2 s never. Finer windows would
+  catch shorter losses but need the false-refusal measurements repeated, and no encoder has been seen to drop a
+  stretch while keeping the length, so they are not planned.
 - **A recording with more than one audio track is not shrunk.** afconvert, which the encode runs, decodes only the
   first audio track of a container, as do `AVAudioFile` and (measured on a two-track `.mov`) Whisper's ffmpeg decode.
   Shrinking such an import would keep track 1 and delete the others with the original. I chose to refuse, with a
   reason that says how many tracks would be lost, over warning in the confirmation (a permanent loss one click away)
-  and over mixing the tracks into one (new work). Mixing is the option that loses nothing; it is a decision for the
-  user, not taken here.
+  and over mixing the tracks into one (new work). Mixing is the option that loses no voice, though the tracks could
+  not be separated again afterwards: per-speaker tracks would be gone for good, which matters for speaker analysis or
+  editing. It is a decision for the user, not taken here, and the same question covers the channel rule below.
 - **Nor is a recording with more than two channels** (found in the second review, 2026-10-11). The encode's
   `afconvert -c 1 --mix` mixes stereo (F796) and a layout that gives each channel a position (3.0, quad, 5.1 and 7.1
   were measured; LFE is dropped). Of a WAV with more than two channels and no layout — plain PCM, or extensible with
