@@ -855,9 +855,10 @@ final class AppModel: ObservableObject {
         // "No such file" is transient to the copy (F554), because a file on a share that dropped
         // reads that way and is back with the share; a deleted one never is, so it failed every try
         // and ended in "not imported after 3 tries", whose next step had nothing to import. The
-        // folder was listed on this very look (the guard above), and the file's own folder is still
-        // there, so the file is gone rather than out of reach. A file whose folder has gone too is
-        // kept: a volume unmounted since the listing looks exactly like that.
+        // folder was listed on this very look (the guard above), the file's own `stat` says no such
+        // file, and its folder is still there, so the file is gone rather than out of reach. A file
+        // whose folder has gone too is kept: a volume unmounted since the listing looks exactly like
+        // that. So is one whose `stat` fails for any other reason (F709 review).
         let gone = pendingWatchedFiles.filter(Self.wasRemovedFromItsFolder)
         if !gone.isEmpty {
             let gonePaths = Set(gone.map(\.path))
@@ -866,7 +867,12 @@ final class AppModel: ObservableObject {
                 watchedFolderCopyAttempts[path] = nil
                 announcedWatchedFiles.remove(path)
             }
-            guard !pendingWatchedFiles.isEmpty else { return }
+            guard !pendingWatchedFiles.isEmpty else {
+                // Nothing is held now, so nothing has been said about what is held (F709 review): a
+                // file put back later is news, even if its refusal reads the same as the last one.
+                lastWatchedFolderRefusalMessage = nil
+                return
+            }
         }
         // A degraded library or insufficient storage refuses every file in the batch the same way
         // `importOne` would, but checking here — before the notification and the attempt — is what
@@ -916,12 +922,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Whether `url` was deleted or moved away: no file is at its path while the folder it was in is
-    /// still there (F709). Two `stat`s per waiting file per delivery, on the main actor — where the
-    /// batch's free-space check after it already reads each waiting file's attributes.
+    /// Whether `url` was deleted or moved away: its `stat` says there is no such file, while the folder
+    /// it was in is still there (F709). Only "no such file" counts (F709 review): a `stat` that fails
+    /// for any other reason — no permission, an I/O error or a timeout on a share in the moment after
+    /// a good listing — says nothing about whether the file is there, and forgetting a file that is
+    /// still there would let the next look record it as seen, never to be imported. Two `stat`s per
+    /// waiting file per delivery, on the main actor — where the batch's free-space check after it
+    /// already reads each waiting file's attributes.
     nonisolated static func wasRemovedFromItsFolder(_ url: URL) -> Bool {
         let manager = FileManager.default
-        guard !manager.fileExists(atPath: url.path) else { return false }
+        do {
+            _ = try manager.attributesOfItem(atPath: url.path)
+            return false
+        } catch {
+            guard ImportCopyFailure.meansNoSuchFile(error) else { return false }
+        }
         var isDirectory: ObjCBool = false
         return manager.fileExists(atPath: url.deletingLastPathComponent().path, isDirectory: &isDirectory)
             && isDirectory.boolValue

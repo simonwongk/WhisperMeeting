@@ -47,3 +47,28 @@ func permanentCopyFailures() {
     struct Unrelated: Error {}
     #expect(!ImportCopyFailure.isTransient(Unrelated()))
 }
+
+// F709 review (R4) — a waiting watched file is forgotten only when its stat says it is not there.
+// Anything else leaves it waiting: forgetting a file that is still there loses it for good.
+
+@Test("Only no such file, or a path through something that is not a folder, means a file is gone (F709 review)")
+func noSuchFileMeansGone() {
+    #expect(ImportCopyFailure.meansNoSuchFile(posix(ENOENT)))
+    #expect(ImportCopyFailure.meansNoSuchFile(posix(ENOTDIR)))
+    #expect(ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadNoSuchFileError, wrapping: posix(ENOENT))))
+    #expect(ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadNoSuchFileError)), "a Cocoa no-such-file with no reason under it")
+    #expect(ImportCopyFailure.meansNoSuchFile(CocoaError(.fileNoSuchFile)))
+}
+
+@Test("A stat that fails for any other reason does not mean the file is gone (F709 review)")
+func otherStatFailuresAreNotAbsence() {
+    #expect(!ImportCopyFailure.meansNoSuchFile(posix(EACCES)))
+    #expect(!ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadNoPermissionError, wrapping: posix(EACCES))))
+    #expect(!ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadUnknownError, wrapping: posix(EIO))))
+    #expect(!ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadUnknownError, wrapping: posix(ETIMEDOUT))))
+    // The POSIX reason decides over a Cocoa code that says otherwise.
+    #expect(!ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadNoSuchFileError, wrapping: posix(EIO))))
+    #expect(!ImportCopyFailure.meansNoSuchFile(cocoa(NSFileReadUnknownError)), "no reason given is not absence")
+    struct Unrelated: Error {}
+    #expect(!ImportCopyFailure.meansNoSuchFile(Unrelated()))
+}

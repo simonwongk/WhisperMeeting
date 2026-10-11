@@ -162,3 +162,63 @@ func missingFileWithoutItsFolderIsKept() async throws {
     #expect(model.pendingWatchedFiles == [file])
     #expect(model.alertMessage == nil)
 }
+
+// Review round, R4 (b): only "no such file" means the user deleted it. A file whose `stat` fails for
+// any other reason — an I/O error or a timeout on a share in the moment after a good listing, or, as
+// here, permission — is still there as far as anyone knows, so it stays queued. Forgetting it would
+// have let the next look record it as seen, and it would never have been imported.
+@MainActor
+@Test("A waiting file whose stat fails for another reason than its absence is kept, not forgotten (F709 review)")
+func fileWhoseStatFailsOtherwiseIsKept() async throws {
+    let model = try makeModel()
+    defer { try? FileManager.default.removeItem(at: model.store.rootDirectory) }
+    let file = try makeRecordingFile()
+    let folder = file.deletingLastPathComponent()
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let copy = ScriptedCopy(failing: 2, with: outOfSpace)
+    model.copyRecordingIntoLibrary = { try copy.copy($0, $1) }
+    await look(model, ready: [file])
+    try #require(model.pendingWatchedFiles == [file])
+
+    // The folder is there, but nothing in it can be looked up: `stat` on the file fails with EACCES.
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.path)
+    await look(model)
+
+    #expect(model.pendingWatchedFiles == [file], "not known to be gone, so still waiting")
+    #expect(copy.calls == 2, "and tried again, as any file waiting to be retried is")
+    #expect(model.alertMessage == nil)
+}
+
+// Review round, R4 (a): the queue held a file for space and said so once; the user deleted it, and it
+// was forgotten. The same file put back while space is still short must be said again, not held in
+// silence because the refusal reads the same as the one already said.
+@MainActor
+@Test("A file put back after its batch was forgotten is told again, not held in silence (F709 review)")
+func refusalIsSaidAgainAfterTheQueueWasForgotten() async throws {
+    let model = try makeModel()
+    defer { try? FileManager.default.removeItem(at: model.store.rootDirectory) }
+    let file = try makeRecordingFile()
+    defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+    model.refreshRecordingPreflight()
+    let available = try #require(model.recordingPreflight.availableStorageBytes)
+    model.measureImportSource = { _ in available }   // never fits: the 500 MB margin comes on top
+
+    await look(model, ready: [file])
+    let refusal = try #require(model.alertMessage, "held for space, and said once")
+    model.alertMessage = nil
+
+    let bytes = try Data(contentsOf: file)
+    try FileManager.default.removeItem(at: file)
+    await look(model)
+    try #require(model.pendingWatchedFiles.isEmpty, "forgotten")
+    #expect(model.alertMessage == nil)
+
+    try bytes.write(to: file)
+    await look(model, ready: [file])
+
+    #expect(model.pendingWatchedFiles == [file])
+    #expect(model.alertMessage == refusal, "the same refusal, for a file the user put back, is news again")
+}
