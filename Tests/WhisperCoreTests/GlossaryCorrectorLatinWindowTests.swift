@@ -50,6 +50,33 @@ func termsOwnPunctuationIsNotDoubled() {
     // Only the term's own share goes with it: the comma and the brackets stay where they were.
     check("Acme Inc.", "Acme Ink., the vendor, signed", from: "Acme Ink.", applied: "Acme Inc., the vendor, signed")
     check(".NET", "the (.NOT) runtime", from: ".NOT", applied: "the (.NET) runtime")
+    // A full stop that is both the term's and the sentence's is written once.
+    check("Acme Inc.", "we signed with Acme Ink.", from: "Acme Ink.", applied: "we signed with Acme Inc.")
+}
+
+@Test("A window's outer mark goes with the word only where it is the term's own mark, never a different one (F819)")
+func onlyTheTermsOwnMarksGoWithTheWord() {
+    func check(_ term: String, _ text: String, from: String, applied: String) {
+        let segments = [seg(text)]
+        let corrections = GlossaryCorrector.corrections(vocabulary: [term], segments: segments)
+        #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: from, to: term)], "\(term) in \(text)")
+        #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == applied, "\(term) in \(text)")
+    }
+    // Round 2 kept as many of the window's outer marks as the term has, whatever they were, so a
+    // comma or a question mark was swallowed and a bracket or quote lost half its pair (the Wave 5
+    // review of round 2, R6).
+    check("Acme Inc.", "Acme Ink, the vendor, signed", from: "Acme Ink", applied: "Acme Inc., the vendor, signed")
+    check("Acme Inc.", "we signed with Acme Ink?", from: "Acme Ink", applied: "we signed with Acme Inc.?")
+    check("Acme Inc.", "(Acme Ink) signed", from: "Acme Ink", applied: "(Acme Inc.) signed")
+    check(".NET", "the (NOT) runtime is old", from: "NOT", applied: "the (.NET) runtime is old")
+    check(".NET", "the \"NOT\" runtime", from: "NOT", applied: "the \".NET\" runtime")
+    check("@kestrel", "ping (kestrol) now", from: "kestrol", applied: "ping (@kestrel) now")
+    check("Yahoo!", "Yahooo, said hi", from: "Yahooo", applied: "Yahoo!, said hi")
+    check("(beta)", "the betta, release", from: "betta", applied: "the (beta), release")
+    // On the trim itself: the longest run of the window's outer marks that is the term's own.
+    #expect(GlossaryCorrector.trimmingAttachedPunctuation("Ink..", keepingTheEdgesOf: "Inc.") == "Ink.")
+    #expect(GlossaryCorrector.trimmingAttachedPunctuation("(.NOT.)", keepingTheEdgesOf: ".NET") == ".NOT")
+    #expect(GlossaryCorrector.trimmingAttachedPunctuation("Kestrol_,", keepingTheEdgesOf: "Kestrel") == "Kestrol_")
 }
 
 @Test("A window whose untrimmed text is nowhere in the segment is never applied to other words (F819)")

@@ -513,11 +513,15 @@ public enum GlossaryCorrector {
     }
 
     /// A Latin window's phrase without the punctuation stuck to its outer words (F819): "Kestrol,"
-    /// is proposed as "Kestrol", so applying it keeps the comma. What `term`'s own spelling begins or
-    /// ends with goes with the word, as many characters as the term has there: ".NOT" stays ".NOT"
-    /// for ".NET", and "Acme Ink.," becomes "Acme Ink." for "Acme Inc.", so applying writes the
-    /// term's "." once and the comma stays (F819's first round trimmed them all, and `apply` wrote
-    /// "..NET" and "Acme Inc.." — the Wave 5 review, T7). Only what `normalize` already ignores is
+    /// is proposed as "Kestrol", so applying it keeps the comma. A mark goes with the word only where
+    /// it *is* the term's own: on the left, the longest run just before the word that ends the term's
+    /// leading marks; on the right, the longest run just after it that begins the term's trailing
+    /// marks. ".NOT" stays ".NOT" for ".NET" and "Acme Ink.," becomes "Acme Ink." for "Acme Inc.",
+    /// so applying writes the term's "." once and the comma stays (F819's first round trimmed every
+    /// mark, and `apply` wrote "..NET" and "Acme Inc.." — the Wave 5 review, T7); while "Acme Ink,"
+    /// becomes "Acme Ink" and "(NOT)" becomes "NOT", because a comma is not the term's "." and a
+    /// bracket is not its "." (round 2 kept marks by count, so it swallowed the comma and wrote
+    /// "the .NET) runtime" — the review of round 2, R6). Only what `normalize` already ignores is
     /// trimmed — nothing the window was scored on — and never an underscore, which
     /// `ReplacementBoundary` reads as part of the word: trimmed off, `apply` would no longer find
     /// the word at all. Punctuation inside the phrase ("Kestrol, release") stays.
@@ -525,11 +529,17 @@ public enum GlossaryCorrector {
         let characters = Array(phrase)
         guard let first = characters.firstIndex(where: isPartOfAWord),
               let last = characters.lastIndex(where: isPartOfAWord) else { return phrase }
-        let leading = term.prefix(while: { !isPartOfAWord($0) }).count
-        let trailing = term.reversed().prefix(while: { !isPartOfAWord($0) }).count
-        let start = first - min(first, leading)
-        let end = last + min(characters.count - 1 - last, trailing)
-        return String(characters[start...end])
+        let termLeading = Array(term.prefix(while: { !isPartOfAWord($0) }))
+        let termTrailing = Array(term.reversed().prefix(while: { !isPartOfAWord($0) }).reversed())
+        var leading = min(first, termLeading.count)
+        while leading > 0, !characters[(first - leading)..<first].elementsEqual(termLeading.suffix(leading)) {
+            leading -= 1
+        }
+        var trailing = min(characters.count - 1 - last, termTrailing.count)
+        while trailing > 0, !characters[(last + 1)...(last + trailing)].elementsEqual(termTrailing.prefix(trailing)) {
+            trailing -= 1
+        }
+        return String(characters[(first - leading)...(last + trailing)])
     }
 
     private static func isPartOfAWord(_ character: Character) -> Bool {

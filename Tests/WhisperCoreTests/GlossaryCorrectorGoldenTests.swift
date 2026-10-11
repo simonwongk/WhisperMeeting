@@ -10,7 +10,8 @@ import Testing
 // Amended since, deliberately and only where marked `amended`, for tickets that changed the
 // English answer on purpose — each switchable, so a test can show the corpus exercises it:
 // - F819: a proposal's phrase leaves the punctuation stuck to its outer words in the transcript,
-//   except what the term's own spelling begins or ends with.
+//   except the marks that are the term's own ("by identity"; round 2 kept as many marks as the term
+//   has, whatever they were — switch `f819ByIdentity` off for that rule).
 // - F819 in place: but not where `apply` would then change something the untrimmed phrase did not
 //   change — elsewhere in the segment, or anywhere at all when the untrimmed text is nowhere in it.
 // - F820: a term equal to any window of the segment, not only to one word, is present already.
@@ -18,6 +19,7 @@ import Testing
 
 private struct Amendments {
     var f819 = true
+    var f819ByIdentity = true
     var f819InPlace = true
     var f820 = true
     var f820NoOp = true
@@ -58,7 +60,8 @@ private enum PreF536GlossaryCorrector {
                 }
                 if amended.f820, presentAsAWindow { continue } // amended
                 if let best {
-                    var phrase = amended.f819 ? trimmedF819(best.phrase, for: term) : best.phrase // amended
+                    var phrase = amended.f819 // amended
+                        ? trimmedF819(best.phrase, for: term, byIdentity: amended.f819ByIdentity) : best.phrase // amended
                     if amended.f819InPlace, phrase != best.phrase, // amended
                        !appliesInPlace(phrase, of: best.phrase, term: term, in: segment.text) { // amended
                         phrase = best.phrase // amended
@@ -74,24 +77,37 @@ private enum PreF536GlossaryCorrector {
 
     /// F819, written here independently of `GlossaryCorrector.trimmingAttachedPunctuation`: drop
     /// outer characters with no letter, mark or digit in them, stopping at an ASCII word character
-    /// (an underscore stays, as `LatinTokenBoundary` reads it as part of the word) — but keep, on
-    /// each side, as many of them as `term` itself begins or ends with (".NOT" keeps its "." for
-    /// ".NET").
-    static func trimmedF819(_ phrase: String, for term: String) -> String {
+    /// (an underscore stays, as `LatinTokenBoundary` reads it as part of the word) — but keep the
+    /// ones that are `term`'s own: the end of the window's leading marks that is also the end of the
+    /// term's, and the start of its trailing marks that is also the start of the term's (".NOT"
+    /// keeps its "." for ".NET"; "Ink," keeps no comma for "Inc."). With `byIdentity` off, round 2's
+    /// rule: as many marks on each side as the term has, whatever they are.
+    static func trimmedF819(_ phrase: String, for term: String, byIdentity: Bool) -> String {
         func keeps(_ character: Character) -> Bool {
             (character.isASCII && (character.isLetter || character.isNumber || character == "_"))
                 || character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
         }
         let termCharacters = Array(term)
-        let termLeading = termCharacters.prefix(while: { !keeps($0) }).count
-        let termTrailing = termCharacters.reversed().prefix(while: { !keeps($0) }).count
+        let termLeading = Array(termCharacters.prefix(while: { !keeps($0) }))
+        let termTrailing = Array(termCharacters.reversed().prefix(while: { !keeps($0) }).reversed())
         var characters = Array(phrase)
         var leading: [Character] = []
         while let first = characters.first, !keeps(first) { leading.append(characters.removeFirst()) }
         var trailing: [Character] = []
         while let last = characters.last, !keeps(last) { trailing.insert(characters.removeLast(), at: 0) }
         guard !characters.isEmpty else { return phrase }
-        return String(leading.suffix(termLeading) + characters + trailing.prefix(termTrailing))
+        guard byIdentity else {
+            return String(leading.suffix(termLeading.count) + characters + trailing.prefix(termTrailing.count))
+        }
+        var keptLeading = leading
+        while !keptLeading.isEmpty, !termLeading.reversed().starts(with: keptLeading.reversed()) {
+            keptLeading.removeFirst()
+        }
+        var keptTrailing = trailing
+        while !keptTrailing.isEmpty, !termTrailing.starts(with: keptTrailing) {
+            keptTrailing.removeLast()
+        }
+        return String(keptLeading + characters + keptTrailing)
     }
 
     /// F820 no-op: whether applying `proposal` alone leaves `segment`'s text as it was — asked of
@@ -192,8 +208,15 @@ private func syntheticTranscript(_ vocabulary: [String], _ random: inout SeededR
 @Test("English suggestions are exactly the pre-F536 ones on a synthetic transcript (F536)")
 func englishSuggestionsMatchThePreF536Oracle() {
     var random = SeededRandom(state: 0xF536)
-    let vocabulary = syntheticVocabulary(&random)
-    let segments = syntheticTranscript(vocabulary, &random)
+    let generated = syntheticVocabulary(&random)
+    // Terms with outer punctuation of their own, and lines where a window's mark is the term's and
+    // where it is not (the review of round 2, R6) — added after generating, so the seeded corpus
+    // above is the one F536 pinned.
+    let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)"]
+    let segments = syntheticTranscript(generated, &random) + [
+        "we signed with Acme Ink, the vendor.", "Acme Ink., the vendor, signed.", "the (NOT) runtime is old.",
+        "the .NOT runtime is old.", "the betta, release ships.",
+    ].enumerated().map { TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element) }
 
     let expected = PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
     let actual = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
@@ -204,6 +227,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF819.f819 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF819) != expected,
             "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
+    var byCount = Amendments()
+    byCount.f819ByIdentity = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: byCount) != expected,
+            "no window in the corpus has a mark that is not the term's, so F819's identity rule is untested here")
     // Judged with the no-op amendment off on both sides: a row the in-place rule leaves untrimmed
     // and unfindable is a row that changes nothing, which the no-op amendment drops either way.
     var withInPlaceOnly = Amendments()
