@@ -7,8 +7,8 @@ import Testing
 // `importOne` checks it again for each file. Since the tests moved onto `importRecordings` (F707),
 // the batch check runs first in every one of them, so nothing reached the per-file check: deleting it
 // passed the suite. It is the F187 protection for a batch whose library stops accepting changes
-// between files — here, a whole-library restore that starts while the first file is being copied.
-// The second file must then be refused before anything of it is copied.
+// between files — here, a whole-library restore that starts after the first file is adopted, before
+// the second is copied. The second file must then be refused before anything of it is copied.
 
 @MainActor
 @Test("A restore that starts during a batch stops the files after it, before they are copied (F707 review)")
