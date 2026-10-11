@@ -149,6 +149,95 @@ func shrinkAcceptsASingleTrackMovie() async throws {
     #expect(reason == nil, "\(String(describing: reason))")
 }
 
+// MARK: - Review round (R1, R2): what the level check measures
+
+/// A 16-bit stereo WAV at 48 kHz, the channels interleaved.
+private func stereoWAV(left: [Float], right: [Float]) -> Data {
+    let frames = min(left.count, right.count)
+    var data = Data()
+    func u32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    func u16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    let byteCount = UInt32(frames * 4)
+    data.append(contentsOf: Array("RIFF".utf8)); u32(36 + byteCount); data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(2); u32(48_000); u32(48_000 * 4); u16(4); u16(16)
+    data.append(contentsOf: Array("data".utf8)); u32(byteCount)
+    for frame in 0..<frames {
+        for sample in [left[frame], right[frame]] {
+            u16(UInt16(bitPattern: Int16(Swift.max(-1, Swift.min(1, sample)) * 32_767)))
+        }
+    }
+    return data
+}
+
+// R1 — the original was measured after the mono mix the encode makes, so a stereo recording whose
+// channels cancel in that mix (one of them polarity-inverted, as a swapped mic or cable leaves it)
+// read as silence on both sides, "a silent original agrees with anything", and Shrink deleted it.
+// The review's probe P1, with the real encoder.
+@Test("A stereo import whose channels cancel when mixed is not shrunk into silence (F801 review)")
+@MainActor
+func shrinkRefusesAnAntiPhaseStereoImport() async throws {
+    let left = toneSamples(seconds: 6)
+    let f = try await ImportFixture(recordingExtension: "wav", duration: 6) { url in
+        try stereoWAV(left: left, right: left.map { -$0 }).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    #expect(f.exists("recording.wav"), "the stereo original holds the only copy of the sound")
+    #expect(try Data(contentsOf: f.recording) == original)
+    #expect(!f.exists("recording.m4a"))
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed") && alert.contains("silent or much quieter"), "\(alert)")
+}
+
+@Test("A stereo call with one side per channel is still shrunk (F801 review control)")
+@MainActor
+func shrinkAcceptsAStereoCallWithOneSidePerChannel() async throws {
+    // Each channel speaks in turn: the mono mix halves each side, which is a level of about 0.707 of
+    // the original's all-channel level, well inside the band.
+    let tone = toneSamples(seconds: 6)
+    let half = tone.count / 2
+    let left = Array(tone[0..<half]) + [Float](repeating: 0, count: tone.count - half)
+    let right = [Float](repeating: 0, count: half) + Array(tone[half...])
+    let f = try await ImportFixture(recordingExtension: "wav", duration: 6) { url in
+        try stereoWAV(left: left, right: right).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("Shrunk"), "\(alert)")
+    #expect(f.exists("recording.m4a") && !f.exists("recording.wav"), "\(alert)")
+}
+
+@Test("A recording's level is read over every channel's samples, before any mixing (F801 review)")
+func decodedLevelCountsEveryChannel() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F801Level-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let tone = toneSamples(seconds: 2)
+    let toneLevel = 0.3 / 2.0.squareRoot()
+    let silence = [Float](repeating: 0, count: tone.count)
+    func level(_ name: String, _ data: Data) throws -> Double {
+        let url = dir.appendingPathComponent(name)
+        try data.write(to: url)
+        return try DecodedAudio.fullyDecoded(of: url).level
+    }
+    // Mono reads as it always did.
+    #expect(abs(try level("mono.wav", WAVWriter.wavData(from: tone, sampleRate: 48_000)) - toneLevel) < 0.002)
+    // Identical channels read as one of them.
+    #expect(abs(try level("same.wav", stereoWAV(left: tone, right: tone)) - toneLevel) < 0.002)
+    // One silent channel: the sound is there, over half the samples.
+    let oneSide = try level("right.wav", stereoWAV(left: silence, right: tone))
+    #expect(abs(oneSide - toneLevel / 2.0.squareRoot()) < 0.002, "\(oneSide)")
+    // Channels that cancel when mixed still carry their sound.
+    let antiPhase = try level("anti.wav", stereoWAV(left: tone, right: tone.map { -$0 }))
+    #expect(abs(antiPhase - toneLevel) < 0.002, "\(antiPhase)")
+}
+
 // MARK: - A container with several audio tracks, written with AVAssetWriter
 
 /// Writes a QuickTime or MPEG-4 file with one AAC audio track per `(frequency, amplitude)` tone.

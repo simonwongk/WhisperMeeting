@@ -208,7 +208,9 @@ extension AppModel {
                         throw ShrinkFailure.lengthMismatch(expected: expected, decoded: copy.duration)
                     }
                     // The right length is not the right audio: a copy that came out silent has it too
-                    // (F801). The original is decoded the same way, and the two levels must agree.
+                    // (F801). The original is decoded the same way, its level taken over all its channels
+                    // before any mixing, so a recording the mono mix silences cannot pass as silent (F801
+                    // review); the two levels must agree.
                     let original: Double
                     do { original = try decode(recordingURL).level } catch { throw ShrinkFailure.unreadableOriginal }
                     guard MeetingStoragePlan.levelsAgree(original: original, compressed: copy.level) else {

@@ -71,17 +71,23 @@ public enum MeetingStoragePlan {
     public static let silenceLevel = 0.000_1
 
     /// How far a compressed copy's level may be from its original's, as a ratio (F801). Measured
-    /// through Shrink's own two-step encode on this Mac: ten speech clips 0.993-0.997, tones and
-    /// stereo calls 0.999-1.001, white noise 0.537 — the working WAV is 16 kHz, so whatever lies above
-    /// 8 kHz is gone, which broadband noise has most of — and a silent encode 0. A quarter clears the
-    /// noise with room to spare and still refuses a copy 12 dB quieter; four times is the same margin
-    /// the other way, for a copy that came out as something other than the recording.
+    /// through Shrink's own two-step encode on this Mac, the original's level taken over all its
+    /// channels' samples: speech 0.997, a mono tone and stereo with identical channels 1.000, stereo
+    /// with one side per channel (or right only) 0.707 — the mono mix halves each side — white
+    /// noise 0.535 and right-only white noise 0.379 — the working WAV is 16 kHz, so whatever lies
+    /// above 8 kHz is gone, which broadband noise has most of — and a silent encode, or a stereo pair
+    /// that cancels in the mix, 0. A quarter clears the lowest of those with room to spare and still
+    /// refuses a copy 12 dB quieter; four times is the same margin the other way, for a copy that
+    /// came out as something other than the recording.
     public static let levelRatioBand: ClosedRange<Double> = 0.25...4
 
     /// Whether a compressed copy carries the recording's sound (F801). Its length alone did not show
-    /// it: an encode that came out silent has the right length. Both levels are RMS of the mono mix,
-    /// decoded the same way. A silent original agrees with anything; a level that is not a finite,
-    /// non-negative number agrees with nothing.
+    /// it: an encode that came out silent has the right length. Both levels are RMS over every
+    /// channel's samples, decoded the same way, so the original's is the sound before any mixing:
+    /// read after the mono mix instead, a stereo recording whose channels cancel in that mix read as
+    /// silence on both sides and was shrunk to silence (F801 review). The copy is mono. A silent
+    /// original agrees with anything; a level that is not a finite, non-negative number agrees with
+    /// nothing.
     public static func levelsAgree(original: Double, compressed: Double) -> Bool {
         guard original.isFinite, compressed.isFinite, original >= 0, compressed >= 0 else { return false }
         guard original >= silenceLevel else { return true }

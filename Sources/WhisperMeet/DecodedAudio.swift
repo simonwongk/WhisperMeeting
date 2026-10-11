@@ -10,9 +10,12 @@ enum DecodedAudio {
         }
     }
 
-    /// What decoding every packet of a file found (F801): its length, and its level — the RMS of the
-    /// per-frame mean of its channels, which is the mono mix Shrink's encode makes with afconvert's
-    /// `--mix` (F796), on the same 0…1 scale for every format.
+    /// What decoding every packet of a file found (F801): its length, and its level — the RMS over
+    /// every channel's samples, on the same 0…1 scale for every format. That is the sound in the file
+    /// before any mixing. It used to be the RMS of the channels' per-frame mean, the mono mix Shrink's
+    /// encode makes (`--mix`, F796); measured that way, a stereo recording whose channels cancel in
+    /// the mix read as silence on both sides of the comparison, and Shrink deleted it for a silent
+    /// copy (F801 review). A mono file reads the same either way.
     struct Decoded: Equatable, Sendable {
         var duration: TimeInterval
         var level: Double
@@ -49,16 +52,18 @@ enum DecodedAudio {
             guard count > 0 else { break }
             // AVAudioFile's processing format is always deinterleaved Float32, so this is present.
             if let samples = buffer.floatChannelData {
-                for frame in 0..<count {
-                    var mix: Float = 0
-                    for channel in 0..<channels { mix += samples[channel][frame] }
-                    let mean = Double(mix) / Double(channels)
-                    sumOfSquares += mean * mean
+                for channel in 0..<channels {
+                    let channelSamples = samples[channel]
+                    for frame in 0..<count {
+                        let value = Double(channelSamples[frame])
+                        sumOfSquares += value * value
+                    }
                 }
             }
             frames += AVAudioFramePosition(count)
         }
-        let level = frames > 0 ? (sumOfSquares / Double(frames)).squareRoot() : 0
+        let sampleCount = Double(frames) * Double(channels)
+        let level = sampleCount > 0 ? (sumOfSquares / sampleCount).squareRoot() : 0
         return Decoded(duration: Double(frames) / format.sampleRate, level: level)
     }
 
