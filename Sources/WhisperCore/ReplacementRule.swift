@@ -38,16 +38,21 @@ public enum ReplacementRuleMatcher {
     /// would apply it — the first occurrence `apply` finds must be this one — or a ticked proposal
     /// could change a different occurrence than the one reviewed (F444).
     ///
-    /// For the same reason a row is proposed once per segment however many rules give it: the store
-    /// keeps "jon → Jonathan" and "Jon → Jonathan" as two rules, a sentence-initial "Jon" is an
-    /// occurrence of both, and two identical rows, both ticked, changed the next "Jon" too.
+    /// For the same reason an occurrence gets one row however many rules reach it — the first rule's
+    /// in list order, as in dictation, which applies the rules in that order. The store keeps
+    /// "jon → Jonathan" and "Jon → Jonathan" as two rules, a sentence-initial "Jon" is an occurrence
+    /// of both, and two rows for it, both ticked, changed the next "Jon" too; so did "bill → invoice"
+    /// and "Bill → invoice", whose rows even differ ("Bill → Invoice" carries the sentence's capital,
+    /// "Bill → invoice" does not). A row whose occurrence overlaps one already proposed in its segment
+    /// is dropped.
     public static func corrections(
         rules: [ReplacementRule],
         segments: [TranscriptSegment],
         evidence: CJKWordEvidence = .none
     ) -> [GlossaryCorrection] {
         var result: [GlossaryCorrection] = []
-        var proposed = Set<ProposedRow>()
+        // The occurrences already proposed, per segment.
+        var proposed = [[Range<String.Index>]](repeating: [], count: segments.count)
         // One segmentation per segment, shared by every rule checked against it.
         let segmented = segments.map { SegmentedText($0.text, segmenter: evidence.segmenter) }
         for rule in rules where !rule.heard.isEmpty && rule.heard != rule.preferred {
@@ -61,7 +66,8 @@ public enum ReplacementRuleMatcher {
                     let to = boundary.replacement(for: from)
                     let applier = ReplacementBoundary(heard: from, notCoveredBy: to, evidence: evidence)
                     guard applier.firstRange(in: segmented[index]) == range else { continue }
-                    if proposed.insert(ProposedRow(segmentIndex: index, from: from, to: to)).inserted {
+                    if !proposed[index].contains(where: { $0.overlaps(range) }) {
+                        proposed[index].append(range)
                         result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to))
                     }
                     break
@@ -69,13 +75,6 @@ public enum ReplacementRuleMatcher {
             }
         }
         return result
-    }
-
-    /// A proposal as a set member, for `corrections`' one-row-per-segment rule.
-    private struct ProposedRow: Hashable {
-        let segmentIndex: Int
-        let from: String
-        let to: String
     }
 
     /// `text` with every rule applied, for Quick Dictation (F821), which pastes the result with no

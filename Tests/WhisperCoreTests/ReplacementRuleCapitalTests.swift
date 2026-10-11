@@ -176,6 +176,23 @@ func identicalProposalsFromTwoRulesAreOneRow() {
     #expect(GlossaryCorrector.apply(proposed, to: segments).map(\.text) == ["Jonathan and Jon said", "Ask Jonathan."])
 }
 
+@Test("Two rules aimed at one occurrence give one row, the first rule's, so Apply changes only the occurrence shown (F858)")
+func oneRowPerOccurrenceAcrossRules() {
+    // "bill → invoice" carries the sentence's capital and "Bill → invoice" does not, so their rows
+    // for the sentence-initial "Bill" differ ("Bill → Invoice", "Bill → invoice"), and both ticked
+    // changed the second "Bill", which no row showed (the Wave 5 review of round 2, R1). The first
+    // rule in list order wins, as it does in dictation.
+    let rules = [ReplacementRule(heard: "bill", preferred: "invoice"), ReplacementRule(heard: "Bill", preferred: "invoice")]
+    let segments = [seg("Bill paid. Ask Bill.")]
+    let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
+    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "Invoice")])
+    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Invoice paid. Ask Bill.")
+    // A later rule's row for a different occurrence in the same segment is still proposed.
+    let other = [ReplacementRule(heard: "bill", preferred: "invoice"), ReplacementRule(heard: "acme", preferred: "Acme")]
+    #expect(ReplacementRuleMatcher.corrections(rules: other, segments: [seg("Bill acme")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "Invoice"), GlossaryCorrection(segmentIndex: 0, from: "acme", to: "Acme")])
+}
+
 @Test("An accented Latin letter continues the word, so a rule never rewrites part of Jonás or élan (F858)")
 func accentedLatinLetterContinuesTheWord() {
     let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan")]
