@@ -9,10 +9,18 @@ public enum MeetingStoragePlan {
     public struct FolderEntry: Sendable, Equatable {
         public let name: String
         public let bytes: Int64
-        public init(name: String, bytes: Int64) {
+        /// Its logical length, when it was read (F949). It differs from `bytes` for a dataless file —
+        /// one iCloud's Optimize Storage evicted, or a File Provider placeholder — which takes no space
+        /// on disk and still holds its whole recording elsewhere.
+        public let logicalBytes: Int64?
+        public init(name: String, bytes: Int64, logicalBytes: Int64? = nil) {
             self.name = name
             self.bytes = bytes
+            self.logicalBytes = logicalBytes
         }
+
+        /// Whether it holds nothing: no bytes on disk, and no logical length either (F949).
+        public var isEmpty: Bool { bytes <= 0 && (logicalBytes ?? 0) <= 0 }
     }
 
     /// AAC at `-b 32000` measured 32,928 bit/s on a bench clip (F795): about 4,116 bytes a second.
@@ -83,11 +91,12 @@ public enum MeetingStoragePlan {
     /// The first other `recording.<ext>` that is not shown to hold no more audio than the recording, or
     /// nil (F911). Shown means measured (`DiskFacts.otherRecordingSeconds`) and running no more than
     /// `InterruptedLinkImportExtraction.lengthTolerance` past the recording; an empty file holds
-    /// nothing. Fail-closed: a file with no measurement is at risk, so a caller that never measured
-    /// refuses rather than deletes.
+    /// nothing — empty by its logical length too, since a dataless file has no bytes on disk and its
+    /// whole recording elsewhere (F949). Fail-closed: a file with no measurement is at risk, so a
+    /// caller that never measured refuses rather than deletes.
     public static func otherRecordingAtRisk(_ disk: DiskFacts) -> FolderEntry? {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).first { entry in
-            guard entry.bytes > 0 else { return false }
+            guard !entry.isEmpty else { return false }
             guard let seconds = disk.otherRecordingSeconds[entry.name], seconds.isFinite,
                   disk.durationSeconds.isFinite, disk.durationSeconds > 0 else { return true }
             return seconds > disk.durationSeconds + InterruptedLinkImportExtraction.lengthTolerance
@@ -206,6 +215,29 @@ public enum MeetingStoragePlan {
             .compactMap { entry in rank(entry.name).map { (entry, $0) } }
             .sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0.name < $1.0.name }
             .map(\.0)
+    }
+
+    /// What Shrink's delete step removes now (F949): `removableFiles` of a listing taken just before the
+    /// removal (`current`), but only the files the checks ran on (`measured`, the listing `DiskFacts`
+    /// was read from) and as they were then — the same name, size on disk and logical length. A file
+    /// that appeared or changed in between was never measured: F911's check that it holds no more
+    /// audio than the recording never saw it, so it is kept, in `changed`, for the next Shrink to
+    /// measure. Removing every name in the fresh listing, as before, let the deletion and the safety
+    /// check read different facts.
+    public static func removableNow(current: [FolderEntry], measured: [FolderEntry], keeping outputName: String)
+        -> (remove: [FolderEntry], changed: [FolderEntry]) {
+        var seen: [String: FolderEntry] = [:]
+        for entry in measured { seen[entry.name.lowercased()] = entry }
+        var remove: [FolderEntry] = [], changed: [FolderEntry] = []
+        for entry in removableFiles(in: current, keeping: outputName) {
+            if let before = seen[entry.name.lowercased()], before.bytes == entry.bytes,
+               before.logicalBytes == entry.logicalBytes {
+                remove.append(entry)
+            } else {
+                changed.append(entry)
+            }
+        }
+        return (remove, changed)
     }
 
     /// *R* in the design: what a shrink frees. Every removable file, plus the recording itself when

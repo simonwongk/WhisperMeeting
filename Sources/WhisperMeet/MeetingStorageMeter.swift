@@ -16,7 +16,8 @@ enum MeetingStorageMeter {
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             let bytes = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0
             let name = String(url.standardizedFileURL.path.dropFirst(root.path.count + 1))
-            entries.append(.init(name: name, bytes: Int64(bytes)))
+            // The logical length too, so a dataless file (no bytes on disk) is not taken for empty (F949).
+            entries.append(.init(name: name, bytes: Int64(bytes), logicalBytes: values.fileSize.map(Int64.init)))
         }
         return entries
     }

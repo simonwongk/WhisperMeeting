@@ -323,10 +323,12 @@ extension AppModel {
             }
         }
 
-        // Delete (design, step 7), in the planner's order, only names on its list.
-        let removable = MeetingStoragePlan.removableFiles(in: storageEntries(folder), keeping: output)
-        var unremoved = 0
-        for entry in removable {
+        // Delete (design, step 7), in the planner's order, only names on its list — and of those, only
+        // what the checks above ran on, unchanged since (F949). A file that appeared or changed during
+        // the encode was never measured, so it stays for the next Shrink, which measures it.
+        let now = MeetingStoragePlan.removableNow(current: storageEntries(folder), measured: disk.entries, keeping: output)
+        var unremoved = now.changed.count
+        for entry in now.remove {
             willRemoveForShrink(entry.name)
             let url = folder.appendingPathComponent(entry.name)
             do {

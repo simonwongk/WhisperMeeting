@@ -149,6 +149,12 @@ verified and the index saved.
      - stale `.shrink-*` and `.meeting.wav.mixing` files.
    - **Kept:** `notes.md`, `session.json`, `diarization*.json`, `ask-embeddings.*`, `source.json`, `captions.*.vtt`, and
      anything else.
+   - **Only what the checks ran on** (F949, 2026-10-12). The list is taken from the folder just before the removal,
+     but a name on it is removed only if the listing the checks ran on (step 1's facts) held it with the same size on
+     disk and logical length. A file that appeared or changed during the encode was never measured — F911's check that
+     another `recording.<ext>` holds no more audio than the recording never saw it — so it stays, counted among the
+     files not removed, and the next Shrink measures it. A dataless file (no bytes on disk, its content in iCloud or a
+     File Provider) is not taken for empty: emptiness is read from its logical length too.
    - The manifest goes with the tracks. Left behind, it would make Verify Library report "the system source track is
      shorter than recorded (0 of N frames)" on every launch (`MeetingIntegrityChecker.swift:147-151, 237-243`).
    - **Deletion order:**

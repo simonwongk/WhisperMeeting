@@ -373,3 +373,40 @@ func shrinkResumeRefusesALongerLeftover() {
     facts.otherRecordingSeconds = ["recording.wav": 1_800]
     #expect(MeetingStoragePlan.unavailability(disk: facts, live: .init()) == nil)
 }
+
+// MARK: - F949: the delete step and the facts the checks ran on
+
+@Test("Only what the checks measured, unchanged, is removed; anything new or changed is kept (F949)")
+func removableNowOnlyRemovesWhatWasMeasured() {
+    let measured = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044),
+                    Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000),
+                    Entry(name: ".shrink-OLD.m4a", bytes: 9_000), Entry(name: "notes.md", bytes: 40)]
+    let current = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044),
+                   Entry(name: "recording.mp3", bytes: 5_000_000, logicalBytes: 5_000_000),
+                   Entry(name: "recording.webm", bytes: 3_000_000, logicalBytes: 3_000_000),
+                   Entry(name: ".shrink-OLD.m4a", bytes: 9_000), Entry(name: "notes.md", bytes: 40),
+                   Entry(name: "recording.m4a", bytes: 240_000, logicalBytes: 240_000)]
+    let now = MeetingStoragePlan.removableNow(current: current, measured: measured, keeping: "recording.m4a")
+    #expect(now.remove.map(\.name) == [".shrink-OLD.m4a", "recording.wav"])
+    #expect(Set(now.changed.map(\.name)) == ["recording.mp3", "recording.webm"], "grew; appeared")
+    // A logical length that changed with the same allocation is a change too; a name in another case is the same file.
+    let rewritten = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_000_000)]
+    #expect(MeetingStoragePlan.removableNow(current: rewritten, measured: measured, keeping: "recording.m4a").changed.count == 1)
+    let renamed = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_760_044)]
+    #expect(MeetingStoragePlan.removableNow(current: renamed, measured: measured, keeping: "recording.m4a").remove.count == 1)
+}
+
+@Test("A dataless other recording is not taken for empty: its logical length counts (F949)")
+func otherRecordingAtRiskReadsTheLogicalLength() {
+    // iCloud Optimize Storage or a File Provider placeholder: nothing on disk, the whole download elsewhere.
+    var facts = disk("recording.wav", entries: [Entry(name: "recording.wav", bytes: 115_200_000),
+                                                Entry(name: "recording.webm", bytes: 0, logicalBytes: 72_000_000)])
+    #expect(MeetingStoragePlan.otherRecordingAtRisk(facts)?.name == "recording.webm", "unmeasured, so at risk")
+    #expect(MeetingStoragePlan.unavailability(disk: facts, live: .init())
+            == .otherRecordingMayHoldMore(name: "recording.webm", seconds: nil))
+    // Truly empty, by both sizes, holds nothing, as before; and a size never read is judged by bytes alone.
+    facts.entries[1] = Entry(name: "recording.webm", bytes: 0, logicalBytes: 0)
+    #expect(MeetingStoragePlan.otherRecordingAtRisk(facts) == nil)
+    facts.entries[1] = Entry(name: "recording.webm", bytes: 0)
+    #expect(MeetingStoragePlan.otherRecordingAtRisk(facts) == nil)
+}
