@@ -11,9 +11,8 @@ import Testing
 // (`InterruptedLinkImportExtraction.recordConversion`), and Shrink reads the record as the download's
 // length when nothing else can measure it.
 //
-// The conversion is stubbed to write a 48 kHz WAV, not the 16 kHz mono one a real import makes:
-// Shrink's encode refuses a 16 kHz mono 16-bit WAV today (F941, lane M), which would hide what this is
-// about — whether Shrink is allowed to remove the download.
+// The conversion is stubbed to write what the real one writes, a 16 kHz mono 16-bit WAV, so the shrink
+// below runs end to end on the real shape (Shrink's encode takes that input since F941).
 
 private func tone(seconds: Double, rate: Double) -> [Float] {
     (0..<Int(seconds * rate)).map { Float(0.3 * sin(2 * Double.pi * 440 * Double($0) / rate)) }
@@ -52,7 +51,7 @@ private func recoveredWebMImport(_ label: String) async throws -> (root: URL, mo
     model.crashReportsSince = { _ in [] }
     model.finishInterruptedLinkImportExtraction = { download in
         let finished = download.deletingLastPathComponent().appendingPathComponent("recording.wav")
-        try WAVWriter.wavData(from: tone(seconds: 6, rate: 48_000), sampleRate: 48_000).write(to: finished)
+        try WAVWriter.wavData(from: tone(seconds: 6, rate: 16_000), sampleRate: 16_000).write(to: finished)
         return finished
     }
     // The free-space figure is the host's; these tests are about what is kept.

@@ -11,12 +11,21 @@ import Testing
 // with no caveat, and a meeting made from such a download took the estimate as its duration.
 //
 // The fixture is synthetic: 2 s of white noise then 18 s of a quiet tone, VBR MP3 with no length
-// header, made with ffmpeg 8.1.2 (`libmp3lame -q:a 0 -write_xing 0`, 44.1 kHz mono, noise seed 948;
-// the recipe is in the lane's `gates/f948-make-fixture.sh`). The loud start gives its first frames a
-// bitrate far above the file's average, which is what a bitrate-based estimate extrapolates from.
-// Measured on this Mac (macOS 27): AVURLAsset 16.379 s, AVURLAsset with precise timing 20.036 s,
-// AVAudioFile 20.036 s. The assertions below hold whatever AVURLAsset reads on the host, since the
-// expected length is asked of the reader Shrink uses.
+// header, made with ffmpeg 8.1.2:
+//
+//     ffmpeg -nostdin -y -loglevel error \
+//       -f lavfi -i "anoisesrc=color=white:amplitude=0.9:sample_rate=44100:duration=2:seed=948" \
+//       -f lavfi -i "sine=frequency=200:sample_rate=44100:duration=18" \
+//       -filter_complex "[1:a]volume=0.001[s];[0:a][s]concat=n=2:v=0:a=1" \
+//       -ac 1 -c:a libmp3lame -q:a 0 -write_xing 0 vbr-mp3-no-length-header-20s.mp3
+//
+// Made again from the same seed it came out at the same 104,231 bytes with the same readings. The loud
+// start gives its first frames a bitrate far above the file's average, which is what a bitrate-based
+// estimate extrapolates from. Measured on this Mac (macOS 27): AVURLAsset 16.379 s, AVURLAsset with
+// precise timing 20.036 s, AVAudioFile 20.036 s. The assertions below hold whatever AVURLAsset reads on
+// the host, since the expected length is asked of the reader Shrink uses — provided AVAudioFile counts
+// this file's packets there as it does here (`afinfo` estimates 6.08 s, review of lane L); the first test's
+// `#require` stops on it if it does not.
 
 private let fixture = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
