@@ -53,7 +53,7 @@ func aTrackFailingEveryBufferIsNotAlsoStale(heardFirst: Bool) {
     #expect(!advisory.contains("Microphone capture stopped"), "\(advisory)")
 }
 
-@Test("A microphone that stops arriving is still reported stopped, and so is one that recovered and then stopped (F931 control)")
+@Test("A microphone that stops arriving is still reported stopped, as is one that recovered, or failed fewer times than the threshold, and then stopped (F931 control)")
 func aTrackThatStopsArrivingIsStillStale() {
     // Heard once, then nothing at all: not a write failure, a microphone that went away.
     let silent = RecordingHealthMonitor(startedAt: 0)
@@ -70,6 +70,20 @@ func aTrackThatStopsArrivingIsStillStale() {
     let snapshot = recovered.snapshot(at: 10, availableStorageBytes: nil)
     #expect(!snapshot.warnings.contains(.captureWritesFailing))
     #expect(snapshot.warnings.contains(.microphoneCaptureStopped))
+
+    // Two failed appends, one short of the write-failure threshold, then nothing at all. Below the
+    // threshold the track is not "not being saved", so only staleness can report it; a suppression
+    // keyed on any failure rather than on the threshold leaves it with no warning whatever (the
+    // review's mutant B).
+    let shortRun = RecordingHealthMonitor(startedAt: 0)
+    shortRun.receive(.microphone, level: quiet, at: 0.5)
+    shortRun.recordWriteOutcome(.microphone, succeeded: false, cause: .format)
+    shortRun.recordWriteOutcome(.microphone, succeeded: false, cause: .format)
+    for tick in 6..<100 { shortRun.receive(.systemAudio, level: quiet, at: Double(tick) / 10) }
+    let afterShortRun = shortRun.snapshot(at: 10, availableStorageBytes: nil)
+    #expect(!afterShortRun.warnings.contains(.captureWritesFailing), "sanity: two failures are a blip (F386)")
+    #expect(afterShortRun.warnings.contains(.microphoneCaptureStopped),
+            "a microphone that stopped arriving after two failed appends must still be reported: \(afterShortRun.warnings)")
 }
 
 @Test("System audio failing every buffer is not reported stopped either (F931)")
