@@ -206,6 +206,25 @@ func shrinkMixesAPanelWhoseMicrophonesTakeTurns() async throws {
     }
 }
 
+@Test("A movie whose picture runs past its sound is shrunk from the mix of its tracks (F942 review R1)")
+@MainActor
+func shrinkMixesAMovieWhosePictureOutlastsItsSound() async throws {
+    let f = try await MixFixture(recordingExtension: "mp4", duration: 8) { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 6, audibleTo: 3),
+                                               FixtureTrack(channels: [(800, 0.2)], seconds: 6, audibleFrom: 3)],
+                                     videoSeconds: 8)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("Shrunk"), "\(alert)")
+    let copy = try f.copy()
+    #expect(fixtureToneAmplitude(copy, rate: 16_000, frequency: 300, from: 0.5, to: 2.5) > 0.1, "\(alert)")
+    #expect(fixtureToneAmplitude(copy, rate: 16_000, frequency: 800, from: 3.5, to: 5.5) > 0.1, "\(alert)")
+}
+
 @Test("Alternate audio tracks, such as two languages, are not mixed into one copy, and nothing is encoded (F942)")
 @MainActor
 func shrinkRefusesAlternateTracks() async throws {

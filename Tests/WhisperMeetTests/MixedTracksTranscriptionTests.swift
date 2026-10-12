@@ -112,6 +112,36 @@ func engineGetsAnOrdinaryRecordingAsItIs() async throws {
     }
 }
 
+// Review of F942, R1: the mixer compared its mix with the asset's duration, which counts a video track,
+// so a movie whose picture runs more than half a second past its sound threw "stopped at 0:06 of 0:08" —
+// on every engine run, where before F942 it transcribed. The audio tracks' own end is what a mix covers.
+@Test("A movie whose picture runs past its sound is still transcribed, from the mix of its tracks (F942 review R1)")
+@MainActor
+func engineHearsAMovieWhosePictureOutlastsItsSound() async throws {
+    let root = try scratch("F942-R1"); defer { try? FileManager.default.removeItem(at: root) }
+    let twoTracks = root.appendingPathComponent("two.mp4")
+    try await writeFixtureTracks(to: twoTracks, [FixtureTrack(channels: [(300, 0.05)], seconds: 6),
+                                                 FixtureTrack(channels: [(800, 0.4)], seconds: 6)], videoSeconds: 8)
+    let surround = root.appendingPathComponent("surround.mp4")
+    // AAC 5.1 orders its channels C L R Ls Rs LFE, and its LFE channel carries only the lowest sound, so the
+    // sixth tone is a low one, as an LFE track holds.
+    let tones = [300.0, 500.0, 700.0, 900.0, 1_100.0, 60.0]
+    try await writeFixtureTracks(to: surround, [FixtureTrack(channels: tones.map { ($0, 0.1) }, seconds: 6)], videoSeconds: 8)
+
+    for (movie, heardTones) in [(twoTracks, [300.0, 800.0]), (surround, tones)] {
+        let log = try await engineRun(on: movie, root: root)
+        let run = try #require(log.all.first)
+        let heard = try #require(run.decoded, "\(movie.lastPathComponent): the engine's input could be read")
+        let mono = try #require(heard.channels.first)
+        #expect(heard.channels.count == 1 && heard.rate == 16_000, "\(movie.lastPathComponent) is mixed")
+        #expect(abs(Double(mono.count) / heard.rate - 6) < 0.1, "\(movie.lastPathComponent): the sound's length, not the picture's")
+        for tone in heardTones {
+            #expect(fixtureToneAmplitude(mono, rate: heard.rate, frequency: tone, from: 0.5, to: 5.5) > 0.01,
+                    "\(movie.lastPathComponent): \(tone) Hz")
+        }
+    }
+}
+
 @Test("Every decode of a recording for listening is reached through the mixer, and no new one is added unseen (F942)")
 func everyDecodeForListeningGoesThroughTheMixer() throws {
     // Derived, not restated: the files that hand a recording to a decoder that keeps one track are found

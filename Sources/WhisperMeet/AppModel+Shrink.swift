@@ -219,7 +219,7 @@ extension AppModel {
                     if mixed {
                         // The mix's own length is the recording's, every track's end included: the header
                         // read for `declaredLength` measures the first track alone. The mixer refuses a
-                        // decode that stops short of what the container declares.
+                        // decode that stops short of where the audio tracks end (not a video track, R1).
                         let result = try await mix(recordingURL, mixWAV)
                         expected = result.duration
                         mixedChannels = result.channels

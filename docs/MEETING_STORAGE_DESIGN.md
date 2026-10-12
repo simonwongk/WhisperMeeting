@@ -127,7 +127,8 @@ verified and the index saved.
      case where a copy of track 1 alone still keeps the whole-file and per-window levels (F801 review R5's fault, pinned
      by `shrinkRefusesAMixThatLostAChannel`). A channel lost while another is as loud for the whole window is not caught.
      For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
-     stops more than 0.5 s short of what the container declares.
+     stops more than 0.5 s short of where the audio tracks end — not the movie's length, which counts its picture
+     (review of F942, R1).
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.

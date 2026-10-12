@@ -93,9 +93,22 @@ enum RecordingMixer {
         return output
     }
 
+    /// Where the recording's audio ends: the latest end of its audio tracks' own time ranges. Not the
+    /// asset's duration, which counts a video track too: a movie whose picture runs past its sound is a
+    /// whole recording, and measured against the picture its mix "stopped short" on every engine run
+    /// (review of F942, R1).
+    static func audioEnd(of tracks: [AVAssetTrack]) async throws -> TimeInterval {
+        var end = 0.0
+        for track in tracks {
+            let seconds = try await track.load(.timeRange).end.seconds
+            if seconds.isFinite { end = Swift.max(end, seconds) }
+        }
+        return end
+    }
+
     /// Mixes every channel of every audio track of `input` into a 16 kHz mono 16-bit WAV at `output`.
     /// Throws for alternate tracks, an unreadable file, or a decode that stops more than half a second
-    /// short of the recording's length; `output` is then removed.
+    /// short of where the audio tracks end; `output` is then removed.
     static func mixEveryChannel(of input: URL, to output: URL) async throws -> Result {
         let asset = AVURLAsset(url: input)
         let tracks: [AVAssetTrack]
@@ -103,7 +116,7 @@ enum RecordingMixer {
         let declared: TimeInterval
         do {
             tracks = try await asset.loadTracks(withMediaType: .audio)
-            declared = try await asset.load(.duration).seconds
+            declared = try await audioEnd(of: tracks)
         } catch {
             throw Failure.unreadable(error.localizedDescription)
         }

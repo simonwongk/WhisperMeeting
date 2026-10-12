@@ -27,26 +27,31 @@ func fixtureTone(frequency: Double, amplitude: Double, seconds: Double, rate: Do
 }
 
 /// Writes a QuickTime or MPEG-4 file with one AAC track per `FixtureTrack`. With `alternates`, every
-/// track is put in one alternate group, the way a movie carries its languages: only the first is
-/// enabled, and AVFoundation reports the group.
-func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool = false) async throws {
+/// track is put in one alternate group, the way a movie carries its languages, and ffmpeg's muxer carries
+/// every multi-track file: only the first is enabled, and AVFoundation reports the group. `languages`
+/// tags the tracks in order. With `videoSeconds`, a black H.264 picture of that length is written too.
+func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool = false,
+                        languages: [String]? = nil, videoSeconds: Double? = nil) async throws {
     let rate = 48_000.0
     let type: AVFileType = url.pathExtension == "mov" ? .mov : (url.pathExtension == "m4a" ? .m4a : .mp4)
     let writer = try AVAssetWriter(outputURL: url, fileType: type)
     var inputs: [AVAssetWriterInput] = []
-    for track in tracks {
+    for (index, track) in tracks.enumerated() {
         let count = track.channels.count
         // 128 kbps a channel, so each file is large enough beside Shrink's 32 kbps output that the
         // "nothing to gain" rule never decides a test about tracks.
         var settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
-                                       AVNumberOfChannelsKey: count, AVEncoderBitRateKey: 128_000 * count]
-        if count == 2 {
+                                       AVNumberOfChannelsKey: count, AVEncoderBitRateKey: Swift.min(128_000 * count, 320_000)]
+        let tags: [Int: AudioChannelLayoutTag] = [2: kAudioChannelLayoutTag_Stereo, 4: kAudioChannelLayoutTag_AAC_Quadraphonic,
+                                                  6: kAudioChannelLayoutTag_AAC_5_1]
+        if let tag = tags[count] {
             var layout = AudioChannelLayout()
-            layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+            layout.mChannelLayoutTag = tag
             settings[AVChannelLayoutKey] = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
         }
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
         input.expectsMediaDataInRealTime = false
+        if let languages, index < languages.count { input.languageCode = languages[index] }
         try #require(writer.canAdd(input))
         writer.add(input)
         inputs.append(input)
@@ -56,8 +61,45 @@ func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool 
         try #require(writer.canAdd(group))
         writer.add(group)
     }
+    var video: (input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, frames: Int)?
+    if let videoSeconds {
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64,
+        ])
+        try #require(writer.canAdd(input))
+        writer.add(input)
+        video = (input, adaptor, Int(videoSeconds * 10))
+    }
     try #require(writer.startWriting(), "\(String(describing: writer.error))")
     writer.startSession(atSourceTime: .zero)
+    // Ten black frames a second, the last at the picture's end so it lasts its full length; fed in the
+    // same turns as the audio, since the writer interleaves and may hold one input back for another.
+    var videoFrame = 0
+    var videoFinished = video == nil
+    func feedVideo() throws -> Bool {
+        guard let video, !videoFinished else { return false }
+        if videoFrame > video.frames {
+            video.input.markAsFinished()
+            videoFinished = true
+            return true
+        }
+        guard video.input.isReadyForMoreMediaData else { return false }
+        var pixels: CVPixelBuffer?
+        try #require(CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &pixels) == kCVReturnSuccess)
+        let buffer = try #require(pixels)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let base = CVPixelBufferGetBaseAddress(buffer) { memset(base, 0, CVPixelBufferGetDataSize(buffer)) }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        try #require(video.adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(videoFrame), timescale: 10)),
+                     "\(String(describing: writer.error))")
+        videoFrame += 1
+        return true
+    }
     let samples: [[[Float]]] = tracks.map { track in
         track.channels.map {
             fixtureTone(frequency: $0.frequency, amplitude: $0.amplitude, seconds: track.seconds, rate: rate,
@@ -70,8 +112,8 @@ func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool 
     let deadline = Date().addingTimeInterval(30)
     // Each turn feeds every input that is ready. Waiting on one input while the writer wants another
     // to catch up first never ends, so no input is waited on alone; a stall fails on the 30 s cap.
-    while finished.contains(false) {
-        var progressed = false
+    while finished.contains(false) || !videoFinished {
+        var progressed = try feedVideo()
         for (index, input) in inputs.enumerated() where !finished[index] {
             let total = samples[index][0].count
             if next[index] >= total {
