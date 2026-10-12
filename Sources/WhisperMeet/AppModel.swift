@@ -4410,11 +4410,14 @@ final class AppModel: ObservableObject {
     ///
     /// Not a new figure. The longest a healthy stop goes without a counted write is the two waits it
     /// already bounds, back to back, each `AudioCaptureEngine.captureSettleBound`: an in-flight
-    /// restart's settle (F292, F365), then `stopCapture()` itself (F809). The third covers the steps
-    /// between them and the mix's first write: the flush, the finish of the tracks with their
-    /// `F_FULLFSYNC`, and the manifest took 0.4 s together for an hour of tracks still all unsynced
-    /// (the same measurement's 53.5 s stop less its 53.2 s mix). It gets the same constant again,
-    /// whose meaning is how long Stop waits for work it does not control before it goes on without it.
+    /// restart's settle (F292, F365), then `stopCapture()` itself (F809). The third covers the other
+    /// quiet steps: before the mix's first write the flush and the finish of the tracks with their
+    /// `F_FULLFSYNC`, and after its last the manifest. Those took 0.4 s together for an hour of
+    /// tracks written 4.4 s before the stop (the same measurement's 53.5 s stop less its 53.2 s mix).
+    /// It gets the same constant again, whose meaning is how long Stop waits for work it does not
+    /// control before it goes on without it.
+    ///
+    /// Counted in time the Mac is awake (`quitWaitClock`), so a lid closed mid-save is not quiet.
     nonisolated static let quitWaitStallBound: Duration = AudioCaptureEngine.captureSettleBound * 3
 
     /// Waits for the stop that owns the recording to finish, then says whether the app may quit
@@ -4442,12 +4445,15 @@ final class AppModel: ObservableObject {
             || !FileManager.default.fileExists(atPath: store.recordingDirectoryURL(for: id).path)
     }
 
-    /// The quit wait's clock: the continuous clock, or a test's (F929).
-    private var quitWaitClock: @Sendable () -> ContinuousClock.Instant {
+    /// The quit wait's clock: the suspending clock, which stops while the Mac sleeps, or a test's
+    /// (F929). Not `ContinuousClock`, which counts the sleep: a Stop & Quit whose lid closed mid-mix
+    /// then woke to a quiet period already past the bound, and could quit under a save about to
+    /// resume.
+    private var quitWaitClock: @Sendable () -> SuspendingClock.Instant {
         #if DEBUG
-        if let quitWaitClockForTesting { return quitWaitClockForTesting }
+        if let quitWaitClocksForTesting { return quitWaitClocksForTesting.suspending }
         #endif
-        return { ContinuousClock.now }
+        return { SuspendingClock.now }
     }
 
     /// What a user is told when Stop saved a capture that had died and never came back (F292).
@@ -5625,9 +5631,15 @@ final class AppModel: ObservableObject {
     /// what F188 needs to exercise is the second run itself, so this is that line and nothing more.
     func resetStartupRecoveryForTesting() { didPerformStartupRecovery = false }
 
-    /// Test seam (F929): the clock a quit's wait for a saving stop reads, so a test moves it past
-    /// `quitWaitStallBound` instead of waiting it out. Nothing in the app sets it.
-    var quitWaitClockForTesting: (@Sendable () -> ContinuousClock.Instant)?
+    /// Test seam (F929): the two clocks a quit's wait for a saving stop could measure its quiet with.
+    /// Time the Mac spends asleep moves `continuous` and not `suspending`, so a test can put the Mac
+    /// to sleep mid-save, and move either past `quitWaitStallBound` instead of waiting it out. The wait
+    /// reads `suspending`; `continuous` is here so that a test can show it does. Nothing in the app
+    /// sets it.
+    var quitWaitClocksForTesting: (
+        continuous: @Sendable () -> ContinuousClock.Instant,
+        suspending: @Sendable () -> SuspendingClock.Instant
+    )?
     #endif
 
     /// What importing a batch did. `notImported` lists the files a caller that owns a queue should

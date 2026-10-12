@@ -37,12 +37,17 @@ public final class WriteProgress: @unchecked Sendable {
 ///
 /// Every change in the tick count restarts the quiet period, so work that keeps completing writes
 /// is never called stalled however long it runs. A value type the caller keeps between polls.
+///
+/// Measured in `SuspendingClock` time, which stops while the Mac sleeps. Work frozen by a lid close
+/// completes no writes while asleep and owes none, so the sleep is not the work going quiet;
+/// `ContinuousClock`, which this used first, counted it, and a save that spanned a sleep could be
+/// called stalled at wake before its next write (the review of F929).
 public struct ProgressStallWatch: Sendable {
     public let bound: Duration
     private var lastTicks: UInt64
-    private var quietSince: ContinuousClock.Instant
+    private var quietSince: SuspendingClock.Instant
 
-    public init(bound: Duration, ticks: UInt64, now: ContinuousClock.Instant) {
+    public init(bound: Duration, ticks: UInt64, now: SuspendingClock.Instant) {
         self.bound = bound
         self.lastTicks = ticks
         self.quietSince = now
@@ -50,7 +55,7 @@ public struct ProgressStallWatch: Sendable {
 
     /// Records what the counter reads at `now`, and says whether it has now been unchanged for at
     /// least `bound`.
-    public mutating func hasStalled(ticks: UInt64, now: ContinuousClock.Instant) -> Bool {
+    public mutating func hasStalled(ticks: UInt64, now: SuspendingClock.Instant) -> Bool {
         if ticks != lastTicks {
             lastTicks = ticks
             quietSince = now

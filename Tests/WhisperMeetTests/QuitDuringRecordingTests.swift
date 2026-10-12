@@ -700,22 +700,37 @@ func stopAndQuitWithAHungStopCaptureQuitsAfterTheBound() async throws {
 // On a volume that stops answering, any of these held every quit until Force Quit. The quit now has a
 // bound of its own, on how long the save goes without completing a write, and past it the app quits
 // with the folder left where Force Quit would have left it, for the next launch to rebuild. The
-// clock is injected (`quitWaitClockForTesting`), so no test waits the bound out.
+// clocks are injected (`quitWaitClocksForTesting`), so no test waits the bound out.
 
-/// The quit wait's clock, moved by hand. Counts its reads, so a test can require that the wait has
-/// looked at it since the last move instead of hoping it has.
+/// The Mac's two clocks, moved by hand: `advance` is time awake, which both count; `sleep` is time
+/// asleep, which only the continuous clock counts (`ContinuousClock` against `SuspendingClock`).
+/// Counts the wait's reads of either, so a test can require that the wait has looked since the last
+/// move instead of hoping it has.
 private final class QuitWaitClock: @unchecked Sendable {
     private let lock = NSLock()
-    private let base = ContinuousClock.now
-    private var offset: Duration = .zero
+    private let continuousBase = ContinuousClock.now
+    private let suspendingBase = SuspendingClock.now
+    private var awake: Duration = .zero
+    private var asleep: Duration = .zero
     private var reads = 0
     var readCount: Int { lock.withLock { reads } }
-    func advance(by duration: Duration) { lock.withLock { offset += duration } }
-    func now() -> ContinuousClock.Instant {
+    func advance(by duration: Duration) { lock.withLock { awake += duration } }
+    func sleep(for duration: Duration) { lock.withLock { asleep += duration } }
+    func continuousNow() -> ContinuousClock.Instant {
         lock.withLock {
             reads += 1
-            return base.advanced(by: offset)
+            return continuousBase.advanced(by: awake + asleep)
         }
+    }
+    func suspendingNow() -> SuspendingClock.Instant {
+        lock.withLock {
+            reads += 1
+            return suspendingBase.advanced(by: awake)
+        }
+    }
+    @MainActor
+    func install(on model: AppModel) {
+        model.quitWaitClocksForTesting = (continuous: { self.continuousNow() }, suspending: { self.suspendingNow() })
     }
 }
 
@@ -772,7 +787,7 @@ func stopAndQuitWithAHeldFinalizeQuitsAfterTheQuitBound() async throws {
     defer { cleanup() }
     defer { finish.open() }
     let clock = QuitWaitClock()
-    model.quitWaitClockForTesting = { clock.now() }
+    clock.install(on: model)
     let id = try await startRecordingWithTracks(model)
     let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
     let replies = Locked<[Bool]>([])
@@ -804,7 +819,7 @@ func aQuitDuringAHeldRebuildQuitsAfterTheQuitBound() async throws {
         return try InterruptedRecordingRecovery.recover(in: directory)
     }
     let clock = QuitWaitClock()
-    model.quitWaitClockForTesting = { clock.now() }
+    clock.install(on: model)
     let id = try await startRecordingWithTracks(model)
     let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
     let replies = Locked<[Bool]>([])
@@ -822,6 +837,37 @@ func aQuitDuringAHeldRebuildQuitsAfterTheQuitBound() async throws {
     expectFolderLeftForTheNextLaunch(model, id)
     rebuild.open()
     #expect(await stop.value == id)
+}
+
+@MainActor
+@Test("A Mac that sleeps mid-save does not count the sleep as the save going quiet, so the quit waits on at wake (F929)")
+func aQuitDoesNotCountTheMacsSleepAsQuiet() async throws {
+    // The review of F929: ⌘Q ▸ Stop & Quit, then the lid closes while the save is still mixing. The
+    // save makes no write while the Mac is asleep, and owes none; at wake the wait's first poll can
+    // run before the mix's next write.
+    let finish = RebuildGate()
+    let (model, cleanup) = try makeModel(finishGate: finish)
+    defer { cleanup() }
+    defer { finish.open() }
+    let clock = QuitWaitClock()
+    clock.install(on: model)
+    _ = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
+    let replies = Locked<[Bool]>([])
+
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    try await waitUntilHeld(finish, "the stop never reached the finish of its tracks")
+    try await waitForTheQuitToLook(clock)
+    clock.sleep(for: AppModel.quitWaitStallBound * 10)
+    try await waitForTheQuitToLook(clock, orAnswer: replies)
+    try #require(replies.withLock { $0 }.isEmpty,
+                 "the quit counted the Mac's sleep as the save going quiet, and quits at wake under a save about to resume")
+    // Awake, the save still writes nothing: the bound runs in time the Mac was awake.
+    clock.advance(by: AppModel.quitWaitStallBound)
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true])
+    finish.open()
+    try await waitUntilIdle(model)
 }
 
 /// A save step that is held, and completes one write through `ThrowingFileHandleIO` each time the
@@ -896,7 +942,7 @@ func aQuitWaitsForAFinalizeThatIsStillWriting() async throws {
     let (model, cleanup) = try makeModel(finishStep: { step.run() })
     defer { cleanup() }
     let clock = QuitWaitClock()
-    model.quitWaitClockForTesting = { clock.now() }
+    clock.install(on: model)
     _ = try await startRecordingWithTracks(model)
     let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
     let replies = Locked<[Bool]>([])
@@ -924,7 +970,7 @@ func aQuitWaitsForARebuildThatIsStillWriting() async throws {
         return try InterruptedRecordingRecovery.recover(in: directory)
     }
     let clock = QuitWaitClock()
-    model.quitWaitClockForTesting = { clock.now() }
+    clock.install(on: model)
     let id = try await startRecordingWithTracks(model)
     let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
     let replies = Locked<[Bool]>([])

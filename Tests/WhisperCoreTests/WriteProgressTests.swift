@@ -47,7 +47,7 @@ func aFailedWriteIsNotCounted() throws {
 
 @Test("Work is stalled only after the bound passes with no new write, and every write starts the quiet over (F929)")
 func theStallWatchMeasuresQuietNotDuration() {
-    let start = ContinuousClock.now
+    let start = SuspendingClock.now
     var watch = ProgressStallWatch(bound: .seconds(30), ticks: 5, now: start)
     // (Each answer is taken before it is asserted: `hasStalled` is mutating, and `#expect` would
     // capture the watch immutably.)
