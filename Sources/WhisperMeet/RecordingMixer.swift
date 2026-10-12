@@ -30,6 +30,8 @@ import WhisperCore
 /// The recording is only read; the mix is written where the caller says.
 enum RecordingMixer {
     static let sampleRate = 16_000
+    /// The most frames `readInStep` hands on at once: four seconds.
+    static let longestStretch = 4 * sampleRate
 
     struct Result: Equatable, Sendable {
         /// How many tracks, and how many channels in all, were summed.
@@ -50,6 +52,9 @@ enum RecordingMixer {
         case shortDecode(expected: TimeInterval, decoded: TimeInterval)
         /// A track's audio is timed past the end of the recording's audio: a corrupt timestamp.
         case implausibleTiming
+        /// The tracks are timed to run far longer than the audio they hold (`RecordingMixPlan.longestMix`):
+        /// an edit list that places a track far in, say. `claimed` is where they end, `held` their audio.
+        case implausibleLength(claimed: TimeInterval, held: TimeInterval)
 
         var errorDescription: String? {
             switch self {
@@ -61,6 +66,8 @@ enum RecordingMixer {
                 return "Mixing this recording's audio tracks stopped at \(TranscriptFormatter.clock(decoded)) of \(TranscriptFormatter.clock(expected))."
             case .implausibleTiming:
                 return "This recording's audio tracks could not be mixed into one: one of them is timed past the end of the recording's audio."
+            case let .implausibleLength(claimed, held):
+                return "This recording's audio tracks could not be mixed into one: they are timed to run \(TranscriptFormatter.clock(claimed)) but hold only \(TranscriptFormatter.clock(held)) of audio, so their timing looks damaged."
             }
         }
     }
@@ -121,6 +128,33 @@ enum RecordingMixer {
         for track in tracks {
             let seconds = try await track.load(.timeRange).end.seconds
             if seconds.isFinite { end = Swift.max(end, seconds) }
+        }
+        return end
+    }
+
+    /// `audioEnd`, once shown to be no further than the audio the tracks hold allows
+    /// (`RecordingMixPlan.longestMix`); throws `Failure.implausibleLength` past it, before anything is read
+    /// (second review of F942, N16). What a track holds is the media its edit list maps — each non-empty
+    /// segment's source duration — and for a track that lists no segments, its time range. An edit list's
+    /// empty edit maps no media: AVAssetReader hands it back as silence of its own, so without this bound
+    /// an edit list placing a track an hour in became an hour of mix.
+    static func boundedAudioEnd(of tracks: [AVAssetTrack]) async throws -> TimeInterval {
+        let end: TimeInterval
+        var held = 0.0
+        do {
+            end = try await audioEnd(of: tracks)
+            for track in tracks {
+                let segments = try await track.load(.segments)
+                let seconds = segments.isEmpty
+                    ? [try await track.load(.timeRange).duration.seconds]
+                    : segments.filter { !$0.isEmpty }.map(\.timeMapping.source.duration.seconds)
+                held += seconds.filter { $0.isFinite && $0 > 0 }.reduce(0, +)
+            }
+        } catch {
+            throw Failure.unreadable(error.localizedDescription)
+        }
+        guard end <= RecordingMixPlan.longestMix(heldSeconds: held) else {
+            throw Failure.implausibleLength(claimed: end, held: held)
         }
         return end
     }
@@ -255,16 +289,16 @@ enum RecordingMixer {
     private static func open(_ input: URL) async throws -> (AVAsset, [AVAssetTrack], [RecordingMixPlan.Track], TimeInterval) {
         let asset = AVURLAsset(url: input)
         let tracks: [AVAssetTrack]
-        let end: TimeInterval
         do {
             tracks = try await asset.loadTracks(withMediaType: .audio)
-            end = try await audioEnd(of: tracks)
         } catch {
             throw Failure.unreadable(error.localizedDescription)
         }
         let facts = await Self.facts(of: tracks, in: asset)
         if case let .unsupported(refusal) = RecordingMixPlan.decision(for: facts) { throw Failure.notMixable(refusal) }
         guard !tracks.isEmpty else { throw Failure.unreadable("no audio tracks") }
+        // Before anything is read or written: a mix runs no longer than the audio the tracks hold allows.
+        let end = try await boundedAudioEnd(of: tracks)
         return (asset, tracks, facts, end)
     }
 
@@ -282,9 +316,11 @@ enum RecordingMixer {
 
     /// Reads every audio track at 16 kHz, each channel apart, in step, and hands `body` each stretch of the
     /// timeline in order: its first frame, its length, and for each track its channels' samples over it
-    /// (silence where the track has none). Returns the frames handed on. Throws `Failure.implausibleTiming` for
-    /// a buffer timed past `audioEnd` and a second: nothing is allocated or written in proportion to a
-    /// corrupt timestamp (review of F942).
+    /// (silence where the track has none), at most `longestStretch` frames at a time. Returns the frames
+    /// handed on. Throws `Failure.implausibleTiming` for a buffer timed past `audioEnd` and a second (review of
+    /// F942). `audioEnd` itself is bounded by the audio the tracks hold (`boundedAudioEnd`, which `open`
+    /// applies): bounding a buffer by the tracks' time range alone did not catch an edit list that sets that
+    /// range (second review, N16).
     static func readInStep(asset: AVAsset, tracks: [AVAssetTrack], channels: [Int], audioEnd: TimeInterval,
                            body: (_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int {
         let reader: AVAssetReader
@@ -355,18 +391,20 @@ enum RecordingMixer {
             }
             let live = lanes.filter { !$0.finished }
             let target = live.isEmpty ? (lanes.map(\.end).max() ?? handed) : (live.map(\.end).min() ?? handed)
-            if target > handed {
-                let count = target - handed
+            // At most `longestStretch` frames at a time, so a gap no track covers is never one allocation
+            // the size of the gap (second review of F942).
+            while target > handed {
+                let count = Swift.min(target - handed, longestStretch), until = handed + count
                 let stretch: [[[Float]]] = lanes.map { lane in
                     lane.pending.map { samples in
                         var out = [Float](repeating: 0, count: count)
-                        let from = Swift.max(handed, lane.start), to = Swift.min(target, lane.end)
+                        let from = Swift.max(handed, lane.start), to = Swift.min(until, lane.end)
                         if to > from { for frame in from..<to { out[frame - handed] = samples[frame - lane.start] } }
                         return out
                     }
                 }
                 try body(handed, count, stretch)
-                handed = target
+                handed = until
                 for index in lanes.indices where lanes[index].start < handed {
                     let drop = Swift.min(lanes[index].count, handed - lanes[index].start)
                     for channel in lanes[index].pending.indices { lanes[index].pending[channel].removeFirst(drop) }

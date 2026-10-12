@@ -447,7 +447,11 @@ below is in place behind `MeetingStoragePlan.shrinkMixesRecordings`, which is of
   two channels a discrete layout, so nothing is downmixed on the way: asked for one channel, AVFoundation keeps only
   channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time, within the
   audio's own length: a time past the audio tracks' end and a second is refused as corrupt rather than padded to, and
-  a track that starts late stores nothing for the silence before it (review of F942). Then a
+  a track that starts late stores nothing for the silence before it (review of F942). And the audio tracks' end is
+  bounded too, since an edit list sets it: a mix runs at most the audio the tracks hold and as much silence again,
+  or a minute (`RecordingMixPlan.longestMix`); past that it is refused, before anything is read, because an edit
+  list placing a track an hour in made a 108 KB file into a 115 MB mix (second review, N16). What is mixed is
+  handed on at most four seconds at a time. Then a
   capture's rule: each track's channels are averaged into its own signal, as a capture averages a microphone's
   channels (F659), and the tracks are summed as a capture sums its two (0.95 of the sum, a limiter above full scale).
   So a voice alone on its track keeps nearly its level and no sum clips — dividing by the number of tracks would make

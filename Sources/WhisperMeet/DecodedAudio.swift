@@ -144,8 +144,12 @@ enum DecodedAudio {
         var sums = WindowSums()
         var firstChannel = 0
         // Where the audio ends: no buffer may be placed past it and a second, so a corrupt timestamp cannot
-        // make this allocate windows in proportion to it, nor overflow a frame index (review of F942).
-        let audioEnd = (try? await RecordingMixer.audioEnd(of: tracks)) ?? 0
+        // make this allocate windows in proportion to it, nor overflow a frame index (review of F942); and
+        // the end itself no further than the audio the tracks hold allows, as the mixer's (second review).
+        let audioEnd: TimeInterval
+        do { audioEnd = try await RecordingMixer.boundedAudioEnd(of: tracks) } catch {
+            throw Failure.unreadable(error.localizedDescription)
+        }
         for track in tracks {
             let reader: AVAssetReader
             do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(error.localizedDescription) }

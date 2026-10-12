@@ -214,6 +214,8 @@ func timelinePlacementIsBoundedEverywhere() throws {
     for (name, source) in [("RecordingMixer", mixer), ("DecodedAudio", decoded)] {
         #expect(source.contains("RecordingMixPlan.placement(firstFrame:"), "\(name) places through the bounded rule")
         #expect(source.contains("RecordingMixPlan.placementLimit(audioEnd:"), "\(name) bounds by the audio's own end")
+        // And that end by the audio the tracks hold, which an edit list does not set (second review, N16).
+        #expect(source.contains("boundedAudioEnd(of: tracks)"), "\(name) bounds the end by the audio held")
     }
 }
 

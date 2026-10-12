@@ -110,6 +110,21 @@ public enum RecordingMixPlan {
         }
     }
 
+    /// Silence no track holds that a mix may carry whatever the tracks hold: a minute, so short recordings
+    /// whose tracks start a little apart are mixed as they are timed.
+    public static let silenceAllowance: TimeInterval = 60
+
+    /// The longest a mix may run for tracks that hold `heldSeconds` of audio between them — the media their
+    /// edit lists map, not the range they claim: that audio, and as much silence again or
+    /// `silenceAllowance`, whichever is more (second review of F942, N16). The tracks' time range is set by
+    /// their edit lists, so bounding a buffer's time by it (`placementLimit`) cannot catch an edit list that
+    /// places a track an hour in: a 108 KB file mixed into a 115 MB WAV. A mix longer than this is refused,
+    /// so its size follows the audio the file holds, never a corrupt timestamp. Not a number counts as none.
+    public static func longestMix(heldSeconds: TimeInterval) -> TimeInterval {
+        let held = heldSeconds.isFinite ? Swift.max(0, heldSeconds) : 0
+        return held + Swift.max(silenceAllowance, held)
+    }
+
     /// The last frame, at `rate`, a track's audio may be placed up to: the audio's own end — the latest end
     /// of the audio tracks' time ranges — and a second. Saturating, and a second when the end is not a
     /// number.

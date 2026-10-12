@@ -40,6 +40,54 @@ func mixerPlacesEachTrackAtItsTime() async throws {
     #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: 300, from: 0.2, to: 3.8) - 0.19) < 0.01)
 }
 
+// Second review of F942, N16: the bound on a buffer's time is the tracks' own time range, and an edit list
+// sets that range, so an edit list placing a track an hour in made a 108 KB file mix into a 115 MB WAV, and
+// the gap before it was handed on as one allocation the size of the gap. Kept small here: two 1 s tracks,
+// the second placed 300 s in, which mixed into 301 s (9.6 MB).
+@Test("Tracks timed to run far past the audio they hold are refused, not padded with silence (F942 second review)")
+func mixerRefusesSilenceFarPastTheAudioHeld() async throws {
+    let dir = try scratch("F942-editlist"); defer { try? FileManager.default.removeItem(at: dir) }
+    let input = dir.appendingPathComponent("offset.mov")
+    try await writeFixtureTracks(to: input, [FixtureTrack(channels: [(300, 0.2)], seconds: 1),
+                                             FixtureTrack(channels: [(800, 0.2)], seconds: 1, startSeconds: 300)])
+    let output = dir.appendingPathComponent("mix.wav")
+
+    do {
+        let result = try await RecordingMixer.mixEveryChannel(of: input, to: output)
+        Issue.record("mixed \(result.duration) s from 2 s of audio")
+    } catch {
+        #expect(error.localizedDescription.contains("hold only"), "\(error.localizedDescription)")
+    }
+    #expect(!FileManager.default.fileExists(atPath: output.path), "nothing is left of a refused mix")
+}
+
+@Test("A gap no track covers, within the bound, is mixed as silence handed on a few seconds at a time (F942 second review)")
+func mixerHandsALongGapOnInChunks() async throws {
+    let dir = try scratch("F942-gap"); defer { try? FileManager.default.removeItem(at: dir) }
+    let input = dir.appendingPathComponent("gap.mov")
+    try await writeFixtureTracks(to: input, [FixtureTrack(channels: [(300, 0.2)], seconds: 1),
+                                             FixtureTrack(channels: [(800, 0.2)], seconds: 1, startSeconds: 30)])
+    let asset = AVURLAsset(url: input)
+    let tracks = try await asset.loadTracks(withMediaType: .audio)
+    let end = try await RecordingMixer.audioEnd(of: tracks)
+
+    var longest = 0, total = 0
+    _ = try RecordingMixer.readInStep(asset: asset, tracks: tracks, channels: [1, 1], audioEnd: end) { start, count, _ in
+        #expect(start == total, "in order, with nothing skipped")
+        longest = Swift.max(longest, count)
+        total += count
+    }
+
+    #expect(abs(Double(total) / 16_000 - 31) < 0.05, "\(total) frames")
+    // Four seconds at most. This held before the chunking too: AVAssetReader hands an edit list's empty edit
+    // back as silence buffers of its own, at most 8,192 frames each here (measured). The chunking bounds a gap
+    // between a track's own buffers, which AVAssetWriter does not write (it closes one), so no file here has it.
+    #expect(longest <= 64_000, "\(longest) frames in one stretch")
+    let (mix, _) = try await mixed(input, in: dir)
+    #expect(fixtureToneAmplitude(mix, rate: 16_000, frequency: 800, from: 5, to: 25) < 0.005)
+    #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: 800, from: 30.1, to: 30.9) - 0.19) < 0.01)
+}
+
 @Test("Tracks whose sum passes full scale are limited, never clipped (F942)")
 func mixerNeverClips() async throws {
     let dir = try scratch("F942-loud"); defer { try? FileManager.default.removeItem(at: dir) }

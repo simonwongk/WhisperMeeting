@@ -245,6 +245,17 @@ func leastSquaresIsDefinedWhenRegressorsCoincide() {
 
 // MARK: - Review of F942: placing a track's audio on the timeline, bounded by the audio's own length
 
+@Test("A mix runs at most the audio its tracks hold and as much silence again, or a minute (F942 second review)")
+func longestMixFollowsTheAudioHeld() {
+    #expect(RecordingMixPlan.longestMix(heldSeconds: 2) == 62, "two 1 s tracks: a minute of silence at most")
+    #expect(RecordingMixPlan.longestMix(heldSeconds: 12) == 72, "the review's N16 file holds 12 s; it claimed 3606")
+    #expect(RecordingMixPlan.longestMix(heldSeconds: 3_600) == 7_200)
+    #expect(RecordingMixPlan.longestMix(heldSeconds: 0) == 60)
+    #expect(RecordingMixPlan.longestMix(heldSeconds: -5) == 60)
+    #expect(RecordingMixPlan.longestMix(heldSeconds: .nan) == 60)
+    #expect(RecordingMixPlan.longestMix(heldSeconds: .infinity) == 60, "not a length, so none")
+}
+
 @Test("A buffer is placed where its time says, and one timed past the audio's end is refused, not padded to (F942 review)")
 func placementIsBoundedByTheAudiosOwnLength() {
     let limit = RecordingMixPlan.placementLimit(audioEnd: 10, rate: 16_000)
