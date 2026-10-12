@@ -103,9 +103,10 @@ enum HelperStartPoint: Sendable {
 /// A helper's start was ended by `evict()` or `shutdown()` (F878).
 ///
 /// **Not a reason to fall back.** Nothing about this Mac was learned: the helper was stopped
-/// because the app asked for its memory back (a meeting is about to transcribe) or switched
-/// dictation off, so `FallbackDictationEngine` must not read it as "the warm helper cannot run
-/// here" and move the session to the batch engine for good. The next warm-up starts it again.
+/// because the app asked for its memory back (a meeting is about to transcribe) or let it go
+/// (dictation switched off, a cold refiner released for a press), so `FallbackDictationEngine` must
+/// not read it as "the warm helper cannot run here" and move the session to the batch engine for
+/// good. The next warm-up starts it again.
 public struct DictationHelperStoppedError: LocalizedError, Equatable, Sendable {
     public init() {}
 

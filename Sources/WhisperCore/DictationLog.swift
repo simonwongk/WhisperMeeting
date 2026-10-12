@@ -13,7 +13,8 @@ public struct DictationTimings: Sendable, Equatable {
     /// The recording's length.
     public var clipSeconds: Double?
     /// From the release to the recognizer's reply — the figure the "transcribed in" log line prints:
-    /// the speech checks, any wait behind a press-down touch on the engine's queue, and recognition.
+    /// the speech checks, any wait for a refiner being released, any wait behind a press-down touch
+    /// on the engine's queue, and recognition.
     public var transcribeSeconds: Double?
     /// The refiner's own pass, from asking it to its answer; nil when it was not asked.
     public var refineSeconds: Double?
