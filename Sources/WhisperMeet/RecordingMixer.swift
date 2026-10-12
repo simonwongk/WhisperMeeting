@@ -41,7 +41,7 @@ enum RecordingMixer {
         var errorDescription: String? {
             switch self {
             case .notMixable(.alternateTracks):
-                return "This recording's audio tracks are alternatives to each other, so they are not mixed into one."
+                return "This recording's audio tracks are in different languages, alternatives to each other, so they are not mixed into one."
             case .notMixable(.unreadableTrack), .unreadable:
                 return "This recording's audio tracks could not be read to mix them into one."
             case let .shortDecode(expected, decoded):
@@ -67,7 +67,11 @@ enum RecordingMixer {
                 CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee.mChannelsPerFrame
             }.map(Int.init).max() ?? 0
             let group = groups.firstIndex { $0.trackIDs.contains(NSNumber(value: track.trackID)) }
-            facts.append(.init(channels: channels, alternateGroup: group))
+            // The ISO 639-2 code every QuickTime and MPEG-4 track carries (`und` when unset, as ffmpeg
+            // writes it); the extended tag only when there is no code, so two tracks are compared alike.
+            let code = (try? await track.load(.languageCode)) ?? nil
+            let extended = code == nil ? ((try? await track.load(.extendedLanguageTag)) ?? nil) : nil
+            facts.append(.init(channels: channels, alternateGroup: group, language: code ?? extended))
         }
         return facts
     }

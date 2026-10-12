@@ -428,8 +428,8 @@ func resumeLeftoverTracksDecideWhatIsChecked() {
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.otherRecordingsToVerify(resume).map(\.name) == ["recording.mov"])
     // Alternates are never mixed, so no copy holds them both: kept, saying why.
-    resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1, alternateGroup: 0),
-                                                     RecordingMixPlan.Track(channels: 1, alternateGroup: 0)]]
+    resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1, alternateGroup: 0, language: "eng"),
+                                                     RecordingMixPlan.Track(channels: 1, alternateGroup: 0, language: "fra")]]
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle)
             == .otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2))
     #expect(MeetingStoragePlan.Unavailability.otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2)

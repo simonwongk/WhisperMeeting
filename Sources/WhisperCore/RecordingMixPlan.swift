@@ -18,13 +18,19 @@ public enum RecordingMixPlan {
     public struct Track: Sendable, Equatable {
         /// How many channels it carries, from its format description.
         public var channels: Int
-        /// The alternate group it shares with other audio tracks — a movie's languages, of which a
-        /// player plays one — or nil when it plays alongside the others.
+        /// The alternate group it shares with other audio tracks, or nil. A group alone does not make
+        /// tracks alternatives: ffmpeg's MP4 and QuickTime muxer puts every audio track it writes in one
+        /// group and enables only the first (review of F942, R3, measured on files from ffmpeg 8.1.2), so
+        /// a call saved a side per track by ffmpeg, or by a tool built on it, carries one.
         public var alternateGroup: Int?
+        /// Its language tag, or nil when it has none: ffmpeg writes `und`, which counts as none.
+        public var language: String?
 
-        public init(channels: Int, alternateGroup: Int? = nil) {
+        public init(channels: Int, alternateGroup: Int? = nil, language: String? = nil) {
             self.channels = channels
             self.alternateGroup = alternateGroup
+            let tag = language?.trimmingCharacters(in: .whitespaces).lowercased()
+            self.language = tag.flatMap { $0.isEmpty || $0 == "und" ? nil : $0 }
         }
     }
 
@@ -40,9 +46,11 @@ public enum RecordingMixPlan {
     }
 
     public enum Refusal: Sendable, Equatable {
-        /// Audio tracks that are alternatives of one another (an alternate group). Summing two
-        /// languages makes neither intelligible, so they are not mixed: the engines keep decoding the
-        /// default one, as before, and Shrink refuses rather than delete the others.
+        /// Audio tracks that are alternatives of one another: in one alternate group, and tagged with
+        /// different languages. Summing two languages makes neither intelligible, so they are not mixed:
+        /// the engines keep decoding the default one, as before, and Shrink refuses rather than delete the
+        /// others. The user's decision was to mix every track; another language is not a part of the
+        /// recording but another version of it.
         case alternateTracks(count: Int)
         /// A track whose channels could not be read.
         case unreadableTrack
@@ -51,11 +59,20 @@ public enum RecordingMixPlan {
     public static func decision(for tracks: [Track]) -> Decision {
         guard !tracks.isEmpty else { return .asItIs }
         if tracks.contains(where: { $0.channels < 1 }) { return .unsupported(.unreadableTrack) }
-        var groupSizes: [Int: Int] = [:]
-        for group in tracks.compactMap(\.alternateGroup) { groupSizes[group, default: 0] += 1 }
-        if groupSizes.values.contains(where: { $0 > 1 }) { return .unsupported(.alternateTracks(count: tracks.count)) }
+        if hasAlternateLanguages(tracks) { return .unsupported(.alternateTracks(count: tracks.count)) }
         if tracks.count == 1, tracks[0].channels <= 2 { return .asItIs }
         return .mixEveryChannel(channels: tracks.reduce(0) { $0 + $1.channels })
+    }
+
+    /// Whether two tracks of one alternate group are tagged with two different languages. A group alone
+    /// is what ffmpeg writes for every file with several audio tracks (R3).
+    static func hasAlternateLanguages(_ tracks: [Track]) -> Bool {
+        var languagesByGroup: [Int: Set<String>] = [:]
+        for track in tracks {
+            guard let group = track.alternateGroup, let language = track.language else { continue }
+            languagesByGroup[group, default: []].insert(language)
+        }
+        return languagesByGroup.values.contains { $0.count > 1 }
     }
 
     /// What the mix does to the level of a voice that is alone on its track or channel: the gain

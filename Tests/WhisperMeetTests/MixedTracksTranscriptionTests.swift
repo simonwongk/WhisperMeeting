@@ -112,6 +112,29 @@ func engineGetsAnOrdinaryRecordingAsItIs() async throws {
     }
 }
 
+// Review of F942, R3: ffmpeg's MP4 and QuickTime muxer puts every audio track it writes in one alternate
+// group and enables only the first, and so do tools built on it (OBS's ffmpeg output). F942 took any group
+// for languages, so the ticket's own case — a call saved one side per track — was still transcribed from
+// track 1 when ffmpeg made the file. Alternatives are now tracks of one group tagged with different
+// languages; ffmpeg tags them `und`.
+@Test("Tracks ffmpeg put in one alternate group, untagged, reach the engine mixed (F942 review R3)")
+@MainActor
+func engineHearsBothTracksOfAFileFFmpegGrouped() async throws {
+    let root = try scratch("F942-R3"); defer { try? FileManager.default.removeItem(at: root) }
+    let call = root.appendingPathComponent("call.mp4")
+    try await writeFixtureTracks(to: call, [FixtureTrack(channels: [(300, 0.05)], seconds: 4),
+                                            FixtureTrack(channels: [(800, 0.4)], seconds: 4)], alternates: true)
+
+    let log = try await engineRun(on: call, root: root)
+
+    let run = try #require(log.all.first)
+    #expect(run.url != call, "mixed, not handed on as it is")
+    let heard = try #require(run.decoded)
+    let mono = try #require(heard.channels.first)
+    #expect(fixtureToneAmplitude(mono, rate: heard.rate, frequency: 300) > 0.03)
+    #expect(fixtureToneAmplitude(mono, rate: heard.rate, frequency: 800) > 0.3, "the disabled second track is heard")
+}
+
 // Review of F942, R1: the mixer compared its mix with the asset's duration, which counts a video track,
 // so a movie whose picture runs more than half a second past its sound threw "stopped at 0:06 of 0:08" —
 // on every engine run, where before F942 it transcribed. The audio tracks' own end is what a mix covers.

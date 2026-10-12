@@ -199,8 +199,8 @@ re-made when the action runs. The reasons, in the order a person can act on them
 - **The recording has more than one audio track, or more than two channels, and they cannot be mixed** (F801, F942).
   An import keeps the container it came in, and a movie or MPEG-4 file can carry a track per side of a call; a "poly"
   WAV can carry a microphone per channel. Since F942 such a recording is mixed into the copy (step 0), whatever its
-  layout (F953). What is still refused: audio tracks that are alternatives of each other, such as a movie's
-  languages ("…alternatives to each other…"), and a recording whose tracks could not be read, where the plain encode
+  layout (F953). What is still refused: audio tracks in different languages that are alternatives of each other
+  ("…in different languages, alternatives to each other…"), and a recording whose tracks could not be read, where the plain encode
   would keep track 1, or channel 1 of a WAV with no layout ("…can't be read to mix them into one…", saying how many
   tracks or channels). See the 2026-10-09 amendment and the F942 amendment below.
 - **Another `recording.<ext>` in the folder may hold more audio than the recording** (F911). It names the file and
@@ -416,8 +416,10 @@ transcription and Shrink. Wave 6 built the mixing, so the two refusals above giv
 
 - **What is mixed.** A recording with several audio tracks, or one track of more than two channels
   (`RecordingMixPlan`). One track of one or two channels is not: the encode's `--mix` mixes stereo (F796), as the
-  engines' own decodes do. Alternate tracks — a movie's languages, of which a player plays one — are not summed,
-  since that would garble both; Shrink refuses them, and transcription keeps decoding the default one.
+  engines' own decodes do. Alternate tracks in different languages — one alternate group, of which a player plays one
+  — are not summed, since that would garble both; Shrink refuses them, and transcription keeps decoding the default
+  one. A group alone is not enough: ffmpeg's MP4 and QuickTime muxer puts every audio track it writes in one group
+  tagged `und`, so a call saved a side per track by ffmpeg, or a tool built on it, is mixed (review of F942, R3).
 - **How.** `RecordingMixer` reads each track with AVFoundation at 16 kHz with its own channel count, and for more than
   two channels a discrete layout, so nothing is downmixed on the way: asked for one channel, AVFoundation keeps only
   channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time. Every

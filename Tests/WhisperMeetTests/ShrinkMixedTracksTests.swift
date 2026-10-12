@@ -225,12 +225,13 @@ func shrinkMixesAMovieWhosePictureOutlastsItsSound() async throws {
     #expect(fixtureToneAmplitude(copy, rate: 16_000, frequency: 800, from: 3.5, to: 5.5) > 0.1, "\(alert)")
 }
 
-@Test("Alternate audio tracks, such as two languages, are not mixed into one copy, and nothing is encoded (F942)")
+@Test("Audio tracks in two languages are not mixed into one copy, and nothing is encoded (F942)")
 @MainActor
 func shrinkRefusesAlternateTracks() async throws {
     let f = try await MixFixture(recordingExtension: "mov", duration: 3) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 3),
-                                               FixtureTrack(channels: [(800, 0.2)], seconds: 3)], alternates: true)
+                                               FixtureTrack(channels: [(800, 0.2)], seconds: 3)],
+                                     alternates: true, languages: ["eng", "fra"])
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
     let encoded = CallFlag()
@@ -238,12 +239,33 @@ func shrinkRefusesAlternateTracks() async throws {
     let original = try Data(contentsOf: f.recording)
 
     let reason = try await f.reason()
-    #expect(reason?.message.contains("alternatives") == true, "\(String(describing: reason))")
+    #expect(reason?.message.contains("in different languages") == true, "\(String(describing: reason))")
     await f.shrink()
 
     #expect(!encoded.value)
     #expect(try Data(contentsOf: f.recording) == original)
     #expect(!f.exists("recording.m4a"))
+}
+
+// Review of F942, R3: ffmpeg puts every audio track of a file in one alternate group (tagged `und`), so the
+// group alone told Shrink "alternatives… such as languages" about a call saved one side per track.
+@Test("Tracks ffmpeg put in one alternate group, untagged, are mixed into the copy (F942 review R3)")
+@MainActor
+func shrinkMixesTracksFFmpegGrouped() async throws {
+    let f = try await MixFixture(recordingExtension: "mp4", duration: 8) { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 8, audibleTo: 4),
+                                               FixtureTrack(channels: [(800, 0.2)], seconds: 8, audibleFrom: 4)],
+                                     alternates: true)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    #expect(try await f.reason() == nil, "offered: one group with no languages is not two languages")
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("Shrunk"), "\(alert)")
+    let copy = try f.copy()
+    #expect(fixtureToneAmplitude(copy, rate: 16_000, frequency: 800, from: 4.5, to: 7.5) > 0.1, "the disabled track is in the copy")
 }
 
 @Test("The confirmation says that several tracks are mixed into one and cannot be separated again (F942)")

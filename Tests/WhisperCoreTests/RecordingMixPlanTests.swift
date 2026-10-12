@@ -21,8 +21,20 @@ func mixPlanDecidesWhatIsMixed() {
 
 @Test("Alternate tracks are not mixed, and a track whose channels cannot be read is not either (F942)")
 func mixPlanRefusesAlternatesAndTheUnreadable() {
-    let languages = [Track(channels: 1, alternateGroup: 0), Track(channels: 1, alternateGroup: 0)]
+    let languages = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
     #expect(RecordingMixPlan.decision(for: languages) == .unsupported(.alternateTracks(count: 2)))
+    // Review R3: ffmpeg groups every audio track it writes and tags them `und`; a group whose tracks share
+    // a language, or carry none, holds parts of one recording, and is mixed.
+    let ffmpeg = [Track(channels: 1, alternateGroup: 0, language: "und"), Track(channels: 1, alternateGroup: 0, language: "und")]
+    #expect(RecordingMixPlan.decision(for: ffmpeg) == .mixEveryChannel(channels: 2))
+    let untagged = [Track(channels: 1, alternateGroup: 0), Track(channels: 1, alternateGroup: 0)]
+    #expect(RecordingMixPlan.decision(for: untagged) == .mixEveryChannel(channels: 2))
+    let same = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "ENG ")]
+    #expect(RecordingMixPlan.decision(for: same) == .mixEveryChannel(channels: 2))
+    let oneTagged = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0)]
+    #expect(RecordingMixPlan.decision(for: oneTagged) == .mixEveryChannel(channels: 2), "both must be set to differ")
+    let apart = [Track(channels: 1, language: "eng"), Track(channels: 1, language: "fra")]
+    #expect(RecordingMixPlan.decision(for: apart) == .mixEveryChannel(channels: 2), "languages outside a group play together")
     // A group a track holds alone (say, with the video it belongs to) is not an alternative to anything.
     let own = [Track(channels: 1, alternateGroup: 0), Track(channels: 1, alternateGroup: 1)]
     #expect(RecordingMixPlan.decision(for: own) == .mixEveryChannel(channels: 2))
@@ -63,9 +75,9 @@ func shrinkMixesWhatItCanRead() {
     #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle) == nil, "F953: whatever the layout")
 
     var languages = call
-    languages.audioTracks = [Track(channels: 1, alternateGroup: 0), Track(channels: 1, alternateGroup: 0)]
+    languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
     #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle) == .alternateAudioTracks(count: 2))
-    #expect(MeetingStoragePlan.Unavailability.alternateAudioTracks(count: 2).message.contains("alternatives"))
+    #expect(MeetingStoragePlan.Unavailability.alternateAudioTracks(count: 2).message.contains("in different languages"))
 
     // Fail-closed: not read, or read as something that needs no mix while the counts say it does.
     var unread = call

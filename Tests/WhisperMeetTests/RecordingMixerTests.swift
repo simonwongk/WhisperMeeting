@@ -82,12 +82,17 @@ func mixerDecidesFromTheFile() async throws {
                                            FixtureTrack(channels: [(800, 0.2)], seconds: 1)])
     let languages = dir.appendingPathComponent("languages.mov")
     try await writeFixtureTracks(to: languages, [FixtureTrack(channels: [(300, 0.2)], seconds: 1),
-                                                 FixtureTrack(channels: [(800, 0.2)], seconds: 1)], alternates: true)
+                                                 FixtureTrack(channels: [(800, 0.2)], seconds: 1)],
+                                 alternates: true, languages: ["eng", "fra"])
+    let grouped = dir.appendingPathComponent("grouped.mp4")
+    try await writeFixtureTracks(to: grouped, [FixtureTrack(channels: [(300, 0.2)], seconds: 1),
+                                               FixtureTrack(channels: [(800, 0.2)], seconds: 1)], alternates: true)
 
     #expect(await RecordingMixer.decision(for: mono) == .asItIs)
     #expect(await RecordingMixer.decision(for: poly) == .mixEveryChannel(channels: 3))
     #expect(await RecordingMixer.decision(for: two) == .mixEveryChannel(channels: 2))
     #expect(await RecordingMixer.decision(for: languages) == .unsupported(.alternateTracks(count: 2)))
+    #expect(await RecordingMixer.decision(for: grouped) == .mixEveryChannel(channels: 2), "a group without languages, as ffmpeg writes")
     #expect(await RecordingMixer.decision(for: dir.appendingPathComponent("missing.mov")) == .asItIs,
             "what AVFoundation cannot read is left to the engines, as before")
     // Alternates are never summed, and nothing is left behind.

@@ -360,8 +360,8 @@ public enum MeetingStoragePlan {
         /// The container holds more than one audio track, and they could not be read to mix them into the
         /// copy, which would then keep only the first (F801, F942).
         case multipleAudioTracks(count: Int)
-        /// The container's audio tracks are alternatives of one another, such as languages: summing them
-        /// would make none of them intelligible, and a copy keeps one track (F942).
+        /// The container's audio tracks are alternatives of one another — one alternate group, tagged with different
+        /// languages: summing them would make none intelligible, and a copy keeps one track (F942, review R3).
         case alternateAudioTracks(count: Int)
         /// The recording holds more than two channels, and they could not be read to mix them into the
         /// copy, whose plain mono mix keeps only some of them — with no channel layout, channel 1 alone
@@ -401,7 +401,7 @@ public enum MeetingStoragePlan {
                 let others = count == 2 ? "the other track" : "the other \(count - 1) tracks"
                 return "This recording has \(count) audio tracks, and they can't be read to mix them into one. A shrunk copy would keep only the first, and \(others) would be deleted with the original, so it isn't shrunk."
             case let .alternateAudioTracks(count):
-                return "This recording has \(count) audio tracks that are alternatives to each other, such as languages. Mixed into one they would garble each other, and a shrunk copy keeps one track, so it isn't shrunk."
+                return "This recording has \(count) audio tracks in different languages, alternatives to each other. Mixed into one they would garble each other, and a shrunk copy keeps one track, so it isn't shrunk."
             case let .multipleChannels(count):
                 return "This recording has \(count) channels, and they can't be read to mix them into one. A shrunk copy would keep only some of them, and the others would be deleted with the original, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, seconds?):
