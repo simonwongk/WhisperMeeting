@@ -85,8 +85,10 @@ it, the entry's `rawText` keeps what the recognizer heard. Each entry also keeps
 dictation took (F892): the clip's seconds, the recognizer's (from the release to its reply, the
 "transcribed in" log line), the refiner's own pass when it was asked, and how busy the GPU was just
 before recognition — the figures F890 and F891 needed, which the unified log keeps for about a day.
-They are not shown in the window; `WhisperMeet --dictation-refine-report <dictation-log.json>`
-prints the slowest dictations with them (figures only, never the text).
+A dictation whose recognition failed keeps them too, its recognizer seconds running to the failure.
+They are not shown in the window (the user's decision, 2026-10-12);
+`WhisperMeet --dictation-refine-report <dictation-log.json>` prints the slowest dictations with them,
+failed ones marked as such (figures only, never the text or a failure's reason).
 
 Fallback / edge branches:
 - **No Accessibility permission** (or auto-paste off) → text left on clipboard + a user notification

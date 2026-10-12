@@ -230,8 +230,8 @@ func reportCommandListsTheSlowestDictations() throws {
 
     let all = DictationRefineReportCommand.run(logURL: url, calendar: try shanghaiCalendar())
     #expect(all.status == 0)
-    #expect(all.message.contains("| 2026-10-09 07:40:44 | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
-    #expect(all.message.contains("| 2026-10-07 20:00:00 | 4.00 s | 9.30 s | 1.04 s | 95 % | rawTimeout |"))
+    #expect(all.message.contains("| 2026-10-09 07:40:44 | pasted | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
+    #expect(all.message.contains("| 2026-10-07 20:00:00 | pasted | 4.00 s | 9.30 s | 1.04 s | 95 % | rawTimeout |"))
     #expect(!all.message.contains("private words"))
 
     let cut = try #require(iso.date(from: "2026-10-08T16:00:00Z")) // midnight 2026-10-09 in Shanghai

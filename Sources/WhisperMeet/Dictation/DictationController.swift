@@ -1468,13 +1468,15 @@ final class DictationController: ObservableObject {
                 await MainActor.run { self.finish(text: "") }
                 return
             }
+            // Outside the `do`, so a failed dictation keeps it too (F892 review).
+            var gpuBusy: Int?
             do {
                 // A just-started optional model is cancelled on press-down. Ensure it has actually
                 // left unified memory before the recognition helper runs, even for a very short tap.
                 await refinerRelease?.value
                 // F890: read before the request, so the figure is what the recognizer is about to
                 // share the GPU with, not the recognizer's own work.
-                let gpuBusy = gpuUtilization()
+                gpuBusy = gpuUtilization()
                 let result = try await engine.transcribe(wavAt: clip.url, language: language, initialPrompt: initialPrompt)
                 try? FileManager.default.removeItem(at: clip.url)
                 var cleaned = DictationTextCleanup.clean(result.text)
@@ -1568,10 +1570,18 @@ final class DictationController: ObservableObject {
                     for: error,
                     fallback: "The transcription could not be completed."
                 )
+                // F892 review: a recognizer that timed out or died is the slowest dictation of all,
+                // so it keeps its clip, its seconds from the release to the failure, and the GPU
+                // share, and reaches the report's "slowest dictations" as a failed row.
+                let timings = DictationTimings(
+                    clipSeconds: clip.duration,
+                    transcribeSeconds: clock() - started,
+                    gpuBusyPercent: gpuBusy
+                )
                 await MainActor.run {
                     guard self.enabled else { return }
                     _ = self.session.handle(.engineFailed(sentence))
-                    self.fail(sentence)
+                    self.fail(sentence, timings: timings)
                 }
             }
         }
@@ -1788,11 +1798,11 @@ final class DictationController: ObservableObject {
         textInjector.discardClipboardPrefetch()
     }
 
-    private func fail(_ message: String) {
+    private func fail(_ message: String, timings: DictationTimings = DictationTimings()) {
         status = .error(message)
         lastFailureReason = message
         showPhase(.error, detail: message)
-        logStore.record(text: "", outcome: .failed(message))
+        logStore.record(text: "", outcome: .failed(message), timings: timings)
         scheduleDismiss(after: 1.6)
     }
 

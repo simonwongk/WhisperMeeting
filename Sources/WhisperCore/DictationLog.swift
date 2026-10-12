@@ -20,7 +20,8 @@ public struct DictationTimings: Sendable, Equatable {
     public var clipSeconds: Double? { didSet { clipSeconds = Self.measured(clipSeconds) } }
     /// From the release to the recognizer's reply — the figure the "transcribed in" log line prints:
     /// the speech checks, any wait for a refiner being released, any wait behind a press-down touch
-    /// on the engine's queue, and recognition.
+    /// on the engine's queue, and recognition. For a dictation whose recognition failed, from the
+    /// release to the failure.
     public var transcribeSeconds: Double? { didSet { transcribeSeconds = Self.measured(transcribeSeconds) } }
     /// The refiner's own pass, from asking it to its answer; nil when it was not asked.
     public var refineSeconds: Double? { didSet { refineSeconds = Self.measured(refineSeconds) } }

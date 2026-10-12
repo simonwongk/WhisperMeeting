@@ -30,6 +30,18 @@ private struct TimedEngine: DictationEngine {
     func shutdown() {}
 }
 
+/// Recognition that fails after exactly `seconds` on `clock` — a helper that stopped answering.
+private struct FailingTimedEngine: DictationEngine {
+    let clock: ManualClock
+    let seconds: TimeInterval
+    func warmUp() async throws {}
+    func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult {
+        clock.advance(by: seconds)
+        throw LocalWhisperError.processFailed("Dictation helper stopped unexpectedly.")
+    }
+    func shutdown() {}
+}
+
 /// A resident refiner whose pass takes exactly `seconds` on `clock` and refines.
 private final class TimedRefiner: DictationTextRefining, @unchecked Sendable {
     private let clock: ManualClock
@@ -72,7 +84,7 @@ private struct Rig {
     let suite: String
     let directory: URL
 
-    init(refine: Bool, gpuBusy: Int?) throws {
+    init(refine: Bool, gpuBusy: Int?, recognitionFails: Bool = false) throws {
         suite = testSuiteName()
         defaults = try #require(UserDefaults(suiteName: suite))
         directory = FileManager.default.temporaryDirectory
@@ -85,9 +97,12 @@ private struct Rig {
         recorder = FakeDictationRecorder(outputURL: directory.appendingPathComponent("clip.wav"))
         recorder.stopDuration = 4.0
         refiner = TimedRefiner(clock: clock, seconds: 1.25)
+        let engine: any DictationEngine = recognitionFails
+            ? FailingTimedEngine(clock: clock, seconds: 6.5)
+            : TimedEngine(clock: clock, seconds: 6.5)
         controller = DictationController(
             defaults: defaults,
-            engine: TimedEngine(clock: clock, seconds: 6.5),
+            engine: engine,
             recorder: recorder,
             overlay: SilentDictationOverlay(),
             hotkeyMonitor: monitor,
@@ -166,6 +181,24 @@ func refinementOffAndAnUnreadableGPU() async throws {
 
     #expect(entry.text == "hello there")
     #expect(entry.timings == DictationTimings(clipSeconds: 4.0, transcribeSeconds: 6.5))
+}
+
+@MainActor
+@Test("A dictation whose recognition fails keeps its clip, its seconds until the failure and the GPU share (F892 review)")
+func aFailedDictationRecordsItsTimings() async throws {
+    // Review finding (b): a recognizer that times out is the slowest dictation of all and the one a
+    // user reports as "it hung", and `fail` recorded it with no figures, so the report never saw it.
+    let rig = try Rig(refine: true, gpuBusy: 28, recognitionFails: true)
+    defer { rig.tearDown() }
+
+    let entry = try await rig.dictateOnce()
+
+    guard case .failed = entry.outcome else {
+        Issue.record("expected a failed entry, got \(entry.outcome)")
+        return
+    }
+    #expect(rig.refiner.attemptCount == 0)
+    #expect(entry.timings == DictationTimings(clipSeconds: 4.0, transcribeSeconds: 6.5, gpuBusyPercent: 28))
 }
 
 @MainActor

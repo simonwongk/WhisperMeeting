@@ -168,9 +168,10 @@ func figuresSetAfterConstructionAreCheckedToo() throws {
 // MARK: - The report
 
 private func dated(_ seconds: TimeInterval, _ timings: DictationTimings, refinement: String? = nil,
-                   text: String = "secret words") -> DictationLogEntry {
+                   text: String = "secret words",
+                   outcome: DictationLogEntry.Outcome = .pasted) -> DictationLogEntry {
     DictationLogEntry(
-        id: UUID(), date: Date(timeIntervalSince1970: seconds), text: text, outcome: .pasted,
+        id: UUID(), date: Date(timeIntervalSince1970: seconds), text: text, outcome: outcome,
         refinement: refinement, timings: timings
     )
 }
@@ -184,18 +185,24 @@ func theSlowestDictationsComeFirst() throws {
         dated(1_759_951_000, DictationTimings(clipSeconds: 48, transcribeSeconds: 2.84, refineSeconds: 0.6, gpuBusyPercent: 10),
               refinement: "refined"),
         dated(1_759_940_000, DictationTimings()), // from before F892: nothing measured, not listed
+        // A recognizer that stopped answering after 30 s: the slowest of all, and it failed (review
+        // finding b). Listed as failed; its reason is not printed, like the text.
+        dated(1_759_953_000, DictationTimings(clipSeconds: 2, transcribeSeconds: 30, gpuBusyPercent: 0), text: "",
+              outcome: .failed("Dictation helper stopped unexpectedly.")),
     ])
     let report = DictationTimingReport(log: log)
-    let slowestFirst: [Double?] = [6.93, 2.84, 0.37] // typed: Swift 6.1 infers a bare literal differently
+    let slowestFirst: [Double?] = [30, 6.93, 2.84, 0.37] // typed: Swift 6.1 infers a bare literal differently
     #expect(report.rows.map(\.timings.transcribeSeconds) == slowestFirst)
 
     let table = report.markdown(timeZone: try #require(TimeZone(identifier: "UTC")))
-    #expect(table.contains("| 2025-10-08 19:40:44 | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
-    #expect(table.contains("| 2025-10-08 19:00:00 | 3.00 s | 0.37 s | — | 3 % | — |"))
+    #expect(table.contains("| 2025-10-08 19:50:00 | failed | 2.00 s | 30.00 s | — | 0 % | — |"))
+    #expect(table.contains("| 2025-10-08 19:40:44 | pasted | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
+    #expect(table.contains("| 2025-10-08 19:00:00 | pasted | 3.00 s | 0.37 s | — | 3 % | — |"))
     #expect(!table.contains("secret words"), "the report prints figures, never what was dictated")
+    #expect(!table.contains("stopped unexpectedly"), "nor a failure's reason")
 
     #expect(DictationTimingReport(log: log, limit: 2).rows.count == 2)
-    #expect(DictationTimingReport(log: log, since: Date(timeIntervalSince1970: 1_759_951_500)).rows.count == 1)
+    #expect(DictationTimingReport(log: log, since: Date(timeIntervalSince1970: 1_759_951_500)).rows.count == 2)
 }
 
 @Test("A log with no measured dictation says so instead of printing an empty table (F892)")
