@@ -108,7 +108,7 @@ extension RecordingFolderLiveness {
     /// included — answered by `proc_listpidspath` (Darwin's libproc), which looks through every
     /// process's open files for that file. Opens made only to watch it for changes (`O_EVTONLY`, as
     /// Finder and FSEvents clients do) do not count, and a process of another user, whose files this
-    /// one may not list, is not seen. It opens nothing. Measured on macOS 27: 0.1–0.3 s a call.
+    /// one may not list, is not seen. It opens nothing. Measured on macOS 27: up to about 0.34 s a call.
     public static func openState(of path: String) -> OpenState {
         var pids = [pid_t](repeating: 0, count: 1_024)
         let bytes = pids.withUnsafeMutableBytes { buffer in
@@ -131,11 +131,16 @@ extension RecordingFolderLiveness {
     /// however it ends. So a folder that answers here is live for as long as its writer is, and no
     /// longer. A file whose state is `.unknown` is not counted: that is the answer before this probe
     /// existed, with the growth probe and the library lease still in front of it.
+    ///
+    /// - Parameter openState: how each file is asked about; nil asks the kernel (`openState(of:)`).
+    ///   Optional rather than a closure default, which every module using the default would compile a
+    ///   copy of (F718).
     public static func importFilesHeldOpen(
         in directory: URL,
-        openState: (URL) -> OpenState = { RecordingFolderLiveness.openState(of: $0.path) }
+        openState: ((URL) -> OpenState)? = nil
     ) -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+        let openState = openState ?? { RecordingFolderLiveness.openState(of: $0.path) }
+        return ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
             .filter { $0.hasPrefix(importFilePrefix) }
             .sorted()
             .filter { openState(directory.appendingPathComponent($0)) == .held }
