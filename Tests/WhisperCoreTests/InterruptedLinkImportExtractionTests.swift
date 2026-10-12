@@ -454,3 +454,31 @@ func aConversionSweepsOnlyAbandonedTemps() async throws {
             "left \(temporaryFiles(in: folder)), expected only the held one")
     #expect(try String(contentsOf: running, encoding: .utf8) == "a running conversion's", "the held temp was changed")
 }
+
+// MARK: - The record of a conversion of the whole download (F947)
+
+@Test("A conversion's record measures only the download it names, at the size it was converted (F947)")
+func aConversionRecordMeasuresOnlyItsOwnDownload() throws {
+    let (folder, download, _) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    #expect(InterruptedLinkImportExtraction.convertedSeconds(of: download) == nil, "measured with no record")
+
+    InterruptedLinkImportExtraction.recordConversion(of: download, seconds: 3_600.25)
+    #expect(InterruptedLinkImportExtraction.convertedSeconds(of: download) == 3_600.25)
+
+    // Another file of the same stem, even of the same size, is not the one that was converted.
+    let other = folder.appendingPathComponent("recording.mkv")
+    try Data(contentsOf: download).write(to: other)
+    #expect(InterruptedLinkImportExtraction.convertedSeconds(of: other) == nil)
+    // Nor is the download once its size has changed.
+    try Data("the complete download, and more".utf8).write(to: download)
+    #expect(InterruptedLinkImportExtraction.convertedSeconds(of: download) == nil)
+    // A record that cannot be read measures nothing.
+    let record = folder.appendingPathComponent(InterruptedLinkImportExtraction.convertedDownloadFilename)
+    try Data("{".utf8).write(to: record)
+    #expect(InterruptedLinkImportExtraction.convertedSeconds(of: download) == nil)
+    // And a length that is no length is never recorded.
+    try FileManager.default.removeItem(at: record)
+    InterruptedLinkImportExtraction.recordConversion(of: download, seconds: .infinity)
+    #expect(!FileManager.default.fileExists(atPath: record.path))
+}

@@ -183,13 +183,18 @@ extension AppModel {
 
     /// Runs `finishInterruptedLinkImportExtraction` (under the launch's time limit) and measures its
     /// result; a result AVFoundation cannot measure counts as a failed conversion.
+    ///
+    /// A finished conversion is a measurement of the download too: the WAV holds all of it. So its
+    /// length is recorded beside the download (`InterruptedLinkImportExtraction.recordConversion`),
+    /// which is how Shrink can show the recording covers a WebM that AVFoundation cannot read, and
+    /// remove it (F947). Without the record such a meeting was never shrunk.
     private func convertInterruptedLinkImportDownload(_ download: URL) async -> LinkImportConversion {
         do {
             let finished = try await finishInterruptedLinkImportExtraction(download)
             let measured = await Self.loadDuration(of: finished)
-            return measured > 0
-                ? .converted(finished, measured)
-                : .failed(MediaDownloadError.extractionFailed.localizedDescription)
+            guard measured > 0 else { return .failed(MediaDownloadError.extractionFailed.localizedDescription) }
+            InterruptedLinkImportExtraction.recordConversion(of: download, seconds: measured)
+            return .converted(finished, measured)
         } catch is CancellationError {
             return .cancelled
         } catch {

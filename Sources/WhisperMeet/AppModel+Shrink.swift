@@ -471,14 +471,16 @@ extension AppModel {
             let listed = folder.map(entries) ?? []
             // F911: every other `recording.<ext>` Shrink would remove is measured, so the plan can tell
             // whether removing it loses audio — a WAV from its header (or the audio it holds, when
-            // ffmpeg never finished it), anything else with AVAudioFile. Unreadable stays unmeasured.
+            // ffmpeg never finished it), anything else with AVAudioFile, and a download AVAudioFile
+            // cannot read (WebM) by the length recovery recorded when it converted all of it (F947).
+            // Unreadable and unrecorded stays unmeasured.
             var otherSeconds: [String: TimeInterval] = [:]
             var otherTracks: [String: [RecordingMixPlan.Track]] = [:]
             for other in MeetingStoragePlan.otherRecordings(in: listed, recordingName: name) {
                 let url = directory.appendingPathComponent(other.name)
                 let seconds = url.pathExtension.lowercased() == "wav"
                     ? InterruptedLinkImportExtraction.heldWAVSeconds(at: url)
-                    : declared(url)
+                    : declared(url) ?? InterruptedLinkImportExtraction.convertedSeconds(of: url)
                 if let seconds { otherSeconds[other.name] = seconds }
                 // F955: and its tracks and channels — a WAV's from its header, which ffmpeg writes before
                 // it has finished (F911's half-written WAV), anything else with AVFoundation.

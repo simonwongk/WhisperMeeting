@@ -457,3 +457,10 @@ keeps the download.)
 I chose refusing over removing only what is shown to be covered, because the file at risk is the only complete copy.
 The cost: a meeting whose other file is a WebM download, which macOS cannot measure, is never shrunk, since showing
 that its WAV holds all of it would need FFmpeg.
+
+**Amended 2026-10-12 (F947).** A WebM that recovery converted itself is measured after all. When startup recovery
+finishes the conversion of all of a link import's download (F453, F911), it writes `download-conversion.json` beside
+it — the download's name and size, and the length of the WAV made from it — and Shrink takes that length as the
+download's when `AVAudioFile` cannot open it. A record that names another file, or this one at another size, measures
+nothing, so such a download is refused as before; so is a WebM beside a recording that recovery did not convert, such
+as one in a folder an earlier build recovered.

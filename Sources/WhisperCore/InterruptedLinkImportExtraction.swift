@@ -230,3 +230,59 @@ extension InterruptedLinkImportExtraction {
         seconds < downloadSeconds - lengthTolerance
     }
 }
+
+// MARK: - How long a download macOS cannot measure is, once recovery has converted it (F947)
+
+extension InterruptedLinkImportExtraction {
+    /// What recovery writes beside a link import's download when it has converted all of it itself:
+    /// the download, by name and size, and the length of its conversion — which is the length of the
+    /// download's audio, measured the only way the app can measure a WebM (F947).
+    public struct ConvertedDownload: Codable, Sendable, Equatable {
+        /// The download's name in the meeting's folder.
+        public var download: String
+        /// Its size when it was converted. A file of another size is not the one that was converted.
+        public var downloadBytes: Int64
+        /// The length of the WAV the conversion made from it.
+        public var seconds: TimeInterval
+
+        public init(download: String, downloadBytes: Int64, seconds: TimeInterval) {
+            self.download = download
+            self.downloadBytes = downloadBytes
+            self.seconds = seconds
+        }
+    }
+
+    /// The record's name in the meeting's folder. Not `recording.*`, so no recovery, liveness or
+    /// Shrink rule takes it for audio, and Shrink leaves it in place.
+    public static let convertedDownloadFilename = "download-conversion.json"
+
+    /// Records that `download` was converted in full into audio `seconds` long (F947). Best effort:
+    /// a record that cannot be written leaves Shrink unable to show the recording covers the
+    /// download, which keeps the download — the state before the record existed.
+    public static func recordConversion(of download: URL, seconds: TimeInterval) {
+        guard seconds.isFinite, seconds > 0,
+              let bytes = (try? FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value,
+              let data = try? JSONEncoder().encode(ConvertedDownload(
+                  download: download.lastPathComponent, downloadBytes: bytes, seconds: seconds
+              ))
+        else { return }
+        try? data.write(
+            to: download.deletingLastPathComponent().appendingPathComponent(convertedDownloadFilename),
+            options: .atomic
+        )
+    }
+
+    /// The length of `download`'s audio as recovery's own conversion of all of it measured, or nil
+    /// unless the folder's record names this file at its present size (F947). Fail-closed: a missing,
+    /// unreadable or stale record measures nothing, so Shrink keeps the download.
+    public static func convertedSeconds(of download: URL) -> TimeInterval? {
+        let recordURL = download.deletingLastPathComponent().appendingPathComponent(convertedDownloadFilename)
+        guard let data = try? Data(contentsOf: recordURL),
+              let record = try? JSONDecoder().decode(ConvertedDownload.self, from: data),
+              record.download == download.lastPathComponent, record.seconds.isFinite, record.seconds > 0,
+              let bytes = (try? FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value,
+              bytes == record.downloadBytes
+        else { return nil }
+        return record.seconds
+    }
+}
