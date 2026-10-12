@@ -94,6 +94,42 @@ func engineHearsEveryChannelOfAPolyWAV() async throws {
     }
 }
 
+// Second review of F942, D2: a float WAV can carry NaN or infinity, and one such sample in one channel made
+// the whole frame's sum non-finite, which the limiter turns into silence (NaN) or the rail (infinity) — so
+// a single bad channel silenced every other channel the engine should have heard.
+@Test("A float WAV with a NaN or infinite stretch in one channel reaches the engine with every other channel heard (F942 second review D2)")
+@MainActor
+func engineHearsTheOtherChannelsBesideANonFiniteOne() async throws {
+    let root = try scratch("F942-D2"); defer { try? FileManager.default.removeItem(at: root) }
+    let tones = [300.0, 500.0, 700.0, 900.0]
+    let bad: [(label: String, value: Float)] = [("NaN", .nan), ("infinity", .infinity)]
+    for (label, value) in bad {
+        // Four channels at 16 kHz; the fourth is non-finite from 1 s to 2 s and a tone elsewhere.
+        var channels = tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 3, rate: 16_000) }
+        for frame in 16_000..<32_000 { channels[3][frame] = value }
+        let recording = root.appendingPathComponent("recording-\(label).wav")
+        try fixtureFloatWAV(channels, rate: 16_000).write(to: recording)
+
+        let log = try await engineRun(on: recording, root: root)
+
+        let run = try #require(log.all.first)
+        #expect(run.url != recording, "\(label): mixed")
+        let mono = try #require(run.decoded?.channels.first)
+        // Inside the bad stretch, the other three at 0.2 / 4 × 0.95, and the bad channel silent.
+        for tone in tones.dropLast() {
+            #expect(abs(fixtureToneAmplitude(mono, rate: 16_000, frequency: tone, from: 1.1, to: 1.9) - 0.0475) < 0.004,
+                    "\(label): \(tone) Hz inside the bad stretch")
+        }
+        #expect(fixtureToneAmplitude(mono, rate: 16_000, frequency: 900, from: 1.1, to: 1.9) < 0.002, "\(label): silenced")
+        // Outside it, the fourth channel too.
+        #expect(abs(fixtureToneAmplitude(mono, rate: 16_000, frequency: 900, from: 0.1, to: 0.9) - 0.0475) < 0.004,
+                "\(label): 900 Hz before the bad stretch")
+        // And the mixer says how many it silenced: the second's 16,000 samples of channel 4.
+        let mix = root.appendingPathComponent("mix-\(label).wav")
+        #expect(try await RecordingMixer.mixEveryChannel(of: recording, to: mix).silencedSamples == 16_000, "\(label)")
+    }
+}
+
 @Test("A recording with one track of one or two channels is handed to the engine as it is (F942 control)")
 @MainActor
 func engineGetsAnOrdinaryRecordingAsItIs() async throws {

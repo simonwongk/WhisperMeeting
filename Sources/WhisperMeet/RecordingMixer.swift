@@ -1,10 +1,12 @@
 import AVFoundation
 import Foundation
+import os
 import WhisperCore
 
 /// Mixes every channel of every audio track of a recording into one 16 kHz mono 16-bit WAV (F942), for
-/// the engines, speaker analysis and Shrink, and measures a mono copy against the tracks it was made from
-/// (`audit`), so Shrink deletes nothing a mix or an encode lost. `RecordingMixPlan` decides when, combines
+/// the engines and speaker analysis — and for Shrink, which is held back until F980
+/// (`MeetingStoragePlan.shrinkMixesRecordings`) — and measures a mono copy against the tracks it was made
+/// from (`audit`), so that Shrink, once F980 proves that check, deletes nothing a mix or an encode lost. `RecordingMixPlan` decides when, combines
 /// a track's channels (`channelWeight`) and judges the measurement; this reads and writes.
 ///
 /// **How it reads.** One `AVAssetReader` with an `AVAssetReaderTrackOutput` per audio track, each asked
@@ -35,7 +37,12 @@ enum RecordingMixer {
         var channels: Int
         /// The mix's length, from the frames written.
         var duration: TimeInterval
+        /// Samples that were NaN or infinite, mixed as silence (second review of F942, D2).
+        var silencedSamples = 0
     }
+
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
+                                       category: "RecordingMixer")
 
     enum Failure: LocalizedError, Equatable {
         case notMixable(RecordingMixPlan.Refusal)
@@ -121,22 +128,41 @@ enum RecordingMixer {
     /// track's channels combined by `RecordingMixPlan.channelWeight`, the tracks summed through
     /// `FloatTrackMixer.limitedSample`. Throws for alternate tracks, an unreadable file, or a decode that
     /// stops more than half a second short of where the audio tracks end; `output` is then removed.
+    ///
+    /// A sample that is NaN or infinite — a float recording can carry either — is mixed as silence, that
+    /// sample alone, and the count is logged and returned (second review of F942, D2). Summed as it was, one
+    /// such sample made its whole frame NaN or infinite, which the limiter turns into silence or the rail, so
+    /// one bad channel silenced every other channel the engines should hear. Silencing it rather than
+    /// failing the mix: transcription deletes nothing, the bad samples hold no sound to keep, and a failed mix
+    /// would fail the same way on every retry, since the file does not change.
     static func mixEveryChannel(of input: URL, to output: URL) async throws -> Result {
         let (asset, tracks, facts, end) = try await open(input)
         let weights = facts.map { RecordingMixPlan.channelWeight(channels: $0.channels) }
         do {
             let handle = try writer(at: output, expectedSeconds: end)
             defer { try? handle.close() }
+            var silenced = 0
+            var silencedChannels = Set<Int>()
             let frames = try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end) { _, count, lanes in
                 var block = Data(count: count * 2)
                 block.withUnsafeMutableBytes { raw in
                     let samples = raw.bindMemory(to: Int16.self)
                     for frame in 0..<count {
                         var sum = 0.0
+                        var first = 0
                         for (track, channels) in lanes.enumerated() {
                             var total = 0.0
-                            for channel in channels { total += Double(channel[frame]) }
+                            for (index, channel) in channels.enumerated() {
+                                let value = channel[frame]
+                                if value.isFinite {
+                                    total += Double(value)
+                                } else {
+                                    silenced += 1
+                                    silencedChannels.insert(first + index)
+                                }
+                            }
                             sum += weights[track] * total
+                            first += channels.count
                         }
                         samples[frame] = FloatTrackMixer.limitedSample(sum: Float(sum)).littleEndian
                     }
@@ -146,7 +172,12 @@ enum RecordingMixer {
             try finishWAV(handle, frames: frames, expectedSeconds: end)
             let duration = Double(frames) / Double(sampleRate)
             if end - duration > 0.5 { throw Failure.shortDecode(expected: end, decoded: duration) }
-            return Result(tracks: tracks.count, channels: facts.reduce(0) { $0 + $1.channels }, duration: duration)
+            if silenced > 0 {
+                let list = silencedChannels.sorted().map { String($0 + 1) }.joined(separator: ", ")
+                logger.warning("Mixed \(input.lastPathComponent, privacy: .private) with \(silenced) NaN or infinite samples silenced, in channel(s) \(list, privacy: .public) counted over every track; every other sample was mixed as it is.")
+            }
+            return Result(tracks: tracks.count, channels: facts.reduce(0) { $0 + $1.channels }, duration: duration,
+                          silencedSamples: silenced)
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw error
