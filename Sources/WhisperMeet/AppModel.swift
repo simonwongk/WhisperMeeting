@@ -4171,11 +4171,20 @@ final class AppModel: ObservableObject {
             }
             return id
         } catch let recordingError {
-            recordingState = .idle
             activeMeetingID = nil
             recordingHealth = nil
             recordingMeter.reset()
-            refreshRecordingPreflight()
+            // F928: still `.stopping` while the meeting is rebuilt from its tracks, and `.idle` only
+            // on the way out, as the success path does once it has saved. The rebuild reads
+            // `pendingMarkers` and clears `recordingTitle` after it has run, so an `.idle` here let a
+            // recording start during it (Start, the menu bar and ⌘R all read `canStartRecording`),
+            // lend the old meeting its markers and lose its own title; and it showed the title field
+            // and freed every other gate that waits for a recording to finish. "Finishing…" is what
+            // the record screen and the menu bar then say, which is the truth.
+            defer {
+                recordingState = .idle
+                refreshRecordingPreflight()
+            }
             // F297: the lock is released on every exit below. The FILE is kept unless this
             // instance indexes the folder itself: a folder left for a later launch keeps the
             // evidence that its writer is gone, which is what lets that launch rebuild it even
@@ -4244,8 +4253,10 @@ final class AppModel: ObservableObject {
     /// Whether a stop already owns the recording, so that a quit waits for it instead of asking or
     /// terminating (F672, F808): the phase is `.stopping` (a Stop, a sleep's or a lost capture's
     /// finalize, or a Cancel discarding it), or a `stopRecording` call has not returned yet. The
-    /// second half is a stop whose finalize failed: it goes `.idle` and only then rebuilds the
-    /// meeting from its tracks. The quit's input (`AppLifecycle.isRecordingFinishing`, wired in
+    /// second half was F808's: a stop whose finalize failed went `.idle` and only then rebuilt the
+    /// meeting from its tracks. Since F928 that rebuild stays `.stopping` until it returns, so the
+    /// second half no longer has a window of its own; it stays so that a stop still running can
+    /// never read as over. The quit's input (`AppLifecycle.isRecordingFinishing`, wired in
     /// `wireQuitDuringRecording`) and `stopRecordingBeforeQuit`'s wait both read this, so they
     /// cannot disagree about when a stop is over; before F808 only the wait knew about the rebuild.
     var isRecordingFinishing: Bool { recordingState == .stopping || isStopInFlight }
@@ -4267,13 +4278,14 @@ final class AppModel: ObservableObject {
         case .idle, .stopping:
             // F672: a stop already owns the capture — the user's Stop, or a sleep's or a lost
             // capture's finalize, including one that began while the question was on screen.
-            // F808: `.idle` with that stop still running is one whose finalize failed and that is
-            // rebuilding the meeting from its tracks. Starting a second would be refused
-            // (`isStopInFlight`), and quitting under it kills the save midway, so wait for it to
-            // finish. Polled: that stop is someone else's call and leaves no handle to await. The
-            // meeting is the stop's own record of it, since a failed stop has already cleared
-            // `activeMeetingID`; a Cancel's, or a sleep stop's before it calls in, is still active.
-            // The wait also holds while anything has begun since (not `.idle`), as F672's did.
+            // F808: that includes a stop whose finalize failed and that is rebuilding the meeting
+            // from its tracks (`.stopping` since F928; `.idle` with the stop in flight before it).
+            // Starting a second would be refused (`isStopInFlight`), and quitting under it kills the
+            // save midway, so wait for it to finish. Polled: that stop is someone else's call and
+            // leaves no handle to await. The meeting is the stop's own record of it, since a failed
+            // stop has already cleared `activeMeetingID`; a Cancel's, or a sleep stop's before it
+            // calls in, is still active. The wait also holds while anything has begun since (not
+            // `.idle`), as F672's did.
             let id = stopInFlightMeetingID ?? activeMeetingID
             // F812: and that stop saves the meeting ready to transcribe rather than starting a job
             // this quit would cut off. Cleared when the wait ends, whatever it decides, so a quit

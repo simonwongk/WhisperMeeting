@@ -429,7 +429,8 @@ func aQuitDuringAFailedStopsRebuildWaitsForIt() async throws {
 
     let stop = Task { await model.stopRecording(title: "Board call") }
     try await waitUntilRebuilding(rebuild)
-    try #require(model.recordingState == .idle, "sanity: the failed stop is idle while it rebuilds")
+    // `.idle` here when F808 was fixed; `.stopping` since F928, and the wait must hold either way.
+    try #require(model.recordingState == .stopping, "sanity: the failed stop is still finishing while it rebuilds")
 
     let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
 
@@ -502,6 +503,59 @@ func aQuitDuringAFailedRebuildStaysOpen() async throws {
     #expect(model.alertMessage?.contains(model.store.recordingDirectoryURL(for: id).path) == true)
     #expect(FileManager.default.fileExists(atPath: model.store.recordingDirectoryURL(for: id).path),
             "the folder is kept for a later launch to rebuild")
+}
+
+// MARK: - F928: Start while a failed stop rebuilds
+
+// The failed stop's rebuild reads `pendingMarkers` and clears `recordingTitle` only after it has
+// rebuilt the meeting, and `startRecording` resets the one and is typed into through the other. So a
+// recording started during the rebuild lent the old meeting its markers and lost its own title, and
+// a quit in that window found Stop & Quit's stop refused by the stop still in flight, and answered
+// "no" without a word (the Wave 5 lane Q2 review's finding 1).
+
+@MainActor
+@Test("Start is refused while a failed Stop rebuilds the last meeting, which keeps its own markers, and a quit then waits for the rebuild (F928)")
+func startDuringAFailedStopsRebuildIsRefused() async throws {
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    let rebuild = RebuildGate()
+    defer { rebuild.open() }
+    model.recoverInterruptedRecording = { directory in
+        rebuild.enterAndWait()
+        return try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilRebuilding(rebuild)
+
+    #expect(!model.canStartRecording, "Start is offered while the last meeting is still being saved")
+    await model.startRecording()
+    let next = model.activeMeetingID
+    #expect(next == nil, "a new recording started on top of the rebuild")
+    if model.recordingState.isLive {
+        // What someone does in a recording that did start, which the rebuild then takes.
+        model.recordingTitle = "Next meeting"
+        model.addLiveMarker(label: "next")
+    }
+    let decision = lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } }
+    #expect(decision == .terminateLater, "quitting now kills the rebuild")
+    #expect(asked.withLock { $0 } == 0, "the recording is already ending; there is nothing to ask")
+    rebuild.open()
+
+    #expect(await stop.value == id)
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "the quit waits for the rebuild and quits, rather than answering no")
+    let meeting = try #require(model.store.meeting(id: id))
+    #expect(meeting.title == "Board call")
+    #expect(meeting.markers == nil, "the rebuilt meeting took the next recording's marker")
+    if next != nil {
+        #expect(model.recordingTitle == "Next meeting", "the rebuild cleared the title typed for the next recording")
+        await model.cancelRecording()
+    }
+    #expect(model.recordingState == .idle)
 }
 
 // MARK: - F812: a quit that waited for a Stop & Transcribe
