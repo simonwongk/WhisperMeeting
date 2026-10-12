@@ -283,6 +283,33 @@ func shrinkMixesAPanelWhoseMicrophonesTakeTurns() async throws {
     }
 }
 
+// Review of F942/F955, mutant M2: the checks judge the copy against each channel the recording was measured
+// to have, so a decode that measured fewer channels than the mixer mixed leaves the rest unjudged — a lost
+// channel there would pass. Nothing drove that guard; this decode measures one channel too few of a copy
+// that is good, so only the guard can refuse it.
+@Test("A recording measured with fewer channels than were mixed keeps its original (F942 review, M2)")
+@MainActor
+func shrinkKeepsAnOriginalMeasuredWithFewerChannelsThanMixed() async throws {
+    let f = try await MixFixture(recordingExtension: "wav", duration: 20) { url in
+        try fixturePolyWAV(panelChannels()).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    f.model.decodeForShrink = { url in
+        var decoded = try await DecodedAudio.fullyDecodedEveryTrack(of: url)
+        if url.lastPathComponent == "recording.wav" { decoded.channelWindowLevels.removeLast() }
+        return decoded
+    }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed") && alert.contains("could not be read to check the compressed copy"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+    #expect(!f.exists("recording.m4a"))
+    #expect(try f.hiddenTemps().isEmpty)
+}
+
 @Test("A movie whose picture runs past its sound is shrunk from the mix of its tracks (F942 review R1)")
 @MainActor
 func shrinkMixesAMovieWhosePictureOutlastsItsSound() async throws {

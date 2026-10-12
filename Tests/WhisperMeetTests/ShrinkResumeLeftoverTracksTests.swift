@@ -108,6 +108,67 @@ func shrinkResumeKeepsAFourChannelLeftoverItsCopyLacks() async throws {
     #expect(alert.contains("nothing was removed") && alert.contains("0:05"), "\(alert)")
 }
 
+// Review of F955, mutants M2 and M3: both fixtures above take turns, so while the lost side or channel
+// speaks alone the copy is silent, and a level check catches it without the per-channel check. These sound
+// together: the copy keeps the mix's level, so only the fit of each track and channel shows what is gone.
+
+@Test("A resume keeps a two-track leftover whose tracks speak together and whose copy holds track 1 (F955 review)")
+@MainActor
+func shrinkResumeKeepsATwoTrackLeftoverWhoseTracksOverlap() async throws {
+    // The review's probe I: the second side speaks under the first, never alone.
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, writeLeftover: { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 20),
+                                               FixtureTrack(channels: [(800, 0.1)], seconds: 20, audibleFrom: 2, audibleTo: 18)])
+    }, makeCopy: firstTrackCopy)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.folder.appendingPathComponent("recording.mov"))
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(try Data(contentsOf: f.folder.appendingPathComponent("recording.mov")) == original, "\(alert)")
+    #expect(alert.contains("nothing was removed") && alert.contains("audio track 2 of “recording.mov”"), "\(alert)")
+}
+
+@Test("A resume keeps a four-channel leftover whose channels sound at once and whose copy holds channel 1 (F955 review)")
+@MainActor
+func shrinkResumeKeepsAFourChannelLeftoverWhoseChannelsOverlap() async throws {
+    // R5's four simultaneous feeds at one level: the copy of channel 1 alone is louder than their mix.
+    let tones = [300.0, 500.0, 700.0, 900.0]
+    let f = try await ResumeFixture(leftoverName: "recording.wav", duration: 6, writeLeftover: { url in
+        try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 6) }).write(to: url)
+    }, makeCopy: firstTrackCopy)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.folder.appendingPathComponent("recording.wav"))
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(try Data(contentsOf: f.folder.appendingPathComponent("recording.wav")) == original, "\(alert)")
+    #expect(alert.contains("nothing was removed") && alert.contains("missing channel 2 of “recording.wav”"), "\(alert)")
+}
+
+@Test("A resume keeps a leftover measured with fewer channels than the copy was checked against (F955 review)")
+@MainActor
+func shrinkResumeKeepsALeftoverMeasuredWithFewerChannels() async throws {
+    // The copy is the leftover's own mix, so every check passes on it; only the count shows that the
+    // decode left a channel unjudged.
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+                                    writeLeftover: twoSidedCall, makeCopy: mixedCopy)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    f.model.decodeForShrink = { url in
+        var decoded = try await DecodedAudio.fullyDecodedEveryTrack(of: url)
+        if url.lastPathComponent == "recording.mov" { decoded.channelWindowLevels.removeLast() }
+        return decoded
+    }
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(f.exists("recording.mov"), "\(alert)")
+    #expect(alert.contains("“recording.mov”, which the compressed copy replaced, could not be checked"), "\(alert)")
+}
+
 @Test("A resume still removes a several-track leftover whose copy is its mix (F955 control)")
 @MainActor
 func shrinkResumeRemovesALeftoverItsMixHolds() async throws {
