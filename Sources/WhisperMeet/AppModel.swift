@@ -572,6 +572,28 @@ final class AppModel: ObservableObject {
 
     /// Live download progress for the link-import sheet. Nil when no download is running.
     @Published var mediaDownloadProgress: MediaDownloadProgress?
+    /// What a link import is doing once its audio has downloaded, for the link-import sheet (F895).
+    /// Nil before the download has finished and once the import has ended, however it ended.
+    @Published private(set) var linkImportStage: LinkImportStage?
+
+    /// The steps of a link import after its download (F895). The sheet shows "Checking the link…"
+    /// while it is working with no download progress, which is right while the link is probed and
+    /// was wrong here: the caption fetch takes seconds, and that is when a user is likeliest to press
+    /// Stop.
+    enum LinkImportStage: Equatable {
+        /// yt-dlp is fetching the video's own captions, a reference for the transcript.
+        case fetchingCaptions
+        /// The recording is being measured and added to the library.
+        case addingMeeting
+
+        /// The sheet's words for it.
+        var label: String {
+            switch self {
+            case .fetchingCaptions: return "Fetching captions…"
+            case .addingMeeting: return "Adding the meeting…"
+            }
+        }
+    }
     /// A probed link whose duration is above `longMediaDurationThreshold`, awaiting explicit
     /// confirmation. Never a hard cap — a legitimate 4-hour conference recording stays possible.
     @Published var pendingLongMediaConfirmation: MediaProbe?
@@ -5335,6 +5357,8 @@ final class AppModel: ObservableObject {
             fetchedAt: Date()
         )
 
+        // F895: however the import ends, the sheet's stage line goes with it.
+        defer { linkImportStage = nil }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // Provenance first, so a crash mid-download still leaves a recoverable link import.
@@ -5350,12 +5374,17 @@ final class AppModel: ObservableObject {
             // language, captions are skipped entirely rather than guessed: asking for a fixed language
             // on an unknown-language video is exactly how an auto-translated track would be fetched,
             // and adopting one would break "preserve the original spoken language".
+            //
+            // F895: from here on the sheet has no download progress to show, and "Checking the link…",
+            // which it shows otherwise, describes the probe. So each step says what it is.
             let reference: [TranscriptSegment]
             if let language = probe.language?.trimmingCharacters(in: .whitespaces), !language.isEmpty {
+                linkImportStage = .fetchingCaptions
                 reference = await downloadCaptions(parsed.url, directory, language)
             } else {
                 reference = []
             }
+            linkImportStage = .addingMeeting
             let title = (probe.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
                 $0.isEmpty ? nil : $0
             } ?? "Imported from \(parsed.host)"

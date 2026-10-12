@@ -2225,7 +2225,12 @@ private struct LinkImportSheet: View {
                         .textSelection(.enabled)
                 }
 
-                if let progress = model.mediaDownloadProgress {
+                // F895: the step after the download first. It is set only once the download has
+                // returned, so it wins over a progress update that arrives late, and "Checking the
+                // link…" is left to the probe.
+                if let stage = model.linkImportStage {
+                    ProgressView(stage.label).controlSize(.small)
+                } else if let progress = model.mediaDownloadProgress {
                     if let fraction = progress.fractionCompleted {
                         ProgressView(value: fraction) {
                             Text("Downloading audio… \(Int(saturating: fraction * 100))%")
