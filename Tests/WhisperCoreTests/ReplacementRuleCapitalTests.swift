@@ -262,6 +262,9 @@ func aRowWhosePlaceHasChangedIsNotApplied() {
     #expect(GlossaryCorrector.context(of: row, in: "Zoë and Jon. Bob left.") == nil)
     // Its place reads "Jon" but inside a longer word: not a genuine occurrence, so not changed either.
     #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Jones left.")])[0].text == "Zoë and Jon. Jones left.")
+    // Nor is a later genuine "Jon" taken instead of the place: only an occurrence that starts there
+    // (the Wave 6 review of lane T, mutant M-A).
+    #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Bob and Jon left.")])[0].text == "Zoë and Jon. Bob and Jon left.")
     // Unchanged, it applies where it was proposed.
     #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Jon left.")])[0].text == "Zoë and Jon. Jonathan left.")
 }
