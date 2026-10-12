@@ -109,6 +109,15 @@ extension AppModel {
         }
     }
 
+    /// The import files in `folder` that some process has open (F946), asked of `importFileOpenState`
+    /// off the main actor, since each answer looks through every process's open files.
+    func importFilesHeldOpen(in folder: URL) async -> [String] {
+        let probe = importFileOpenState
+        return await Task.detached(priority: .utility) {
+            RecordingFolderLiveness.importFilesHeldOpen(in: folder, openState: probe)
+        }.value
+    }
+
     /// The length of an interrupted link import's download, read the way Shrink reads it
     /// (`declaredDurationForShrink`, AVAudioFile), or 0 when it cannot be measured (F948).
     ///

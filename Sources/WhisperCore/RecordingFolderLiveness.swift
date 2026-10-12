@@ -90,3 +90,54 @@ public enum RecordingFolderLiveness {
         }
     }
 }
+
+// MARK: - A positive sign of a writer (F946)
+
+extension RecordingFolderLiveness {
+    /// Whether some process has a file open, as the kernel answers it.
+    public enum OpenState: Sendable, Equatable {
+        /// At least one process has it open.
+        case held
+        /// The kernel looked through every process it lets this one see, and none has it open.
+        case notHeld
+        /// The question could not be asked: the file is missing, or could not be looked up.
+        case unknown
+    }
+
+    /// Whether any process has the file at `path` open — any of this user's processes, this one
+    /// included — answered by `proc_listpidspath` (Darwin's libproc), which looks through every
+    /// process's open files for that file. Opens made only to watch it for changes (`O_EVTONLY`, as
+    /// Finder and FSEvents clients do) do not count, and a process of another user, whose files this
+    /// one may not list, is not seen. It opens nothing. Measured on macOS 27: 0.1–0.3 s a call.
+    public static func openState(of path: String) -> OpenState {
+        var pids = [pid_t](repeating: 0, count: 1_024)
+        let bytes = pids.withUnsafeMutableBytes { buffer in
+            proc_listpidspath(
+                UInt32(PROC_ALL_PIDS), 0, path, UInt32(PROC_LISTPIDSPATH_EXCLUDE_EVTONLY),
+                buffer.baseAddress, Int32(buffer.count)
+            )
+        }
+        if bytes < 0 { return .unknown }
+        return bytes > 0 ? .held : .notHeld
+    }
+
+    /// The import files in `directory` — the `recording.*` names `sample` watches — that some process
+    /// has open, in name order (F946).
+    ///
+    /// Growth between two samples misses a writer that is alive but has stalled for longer than the
+    /// samples are apart, and neither yt-dlp nor ffmpeg says "still running" any other way. An open
+    /// file does: yt-dlp holds its `.part` while it downloads, and ffmpeg holds the download it reads
+    /// and the WAV it writes for as long as it runs, and the kernel closes them when the process ends,
+    /// however it ends. So a folder that answers here is live for as long as its writer is, and no
+    /// longer. A file whose state is `.unknown` is not counted: that is the answer before this probe
+    /// existed, with the growth probe and the library lease still in front of it.
+    public static func importFilesHeldOpen(
+        in directory: URL,
+        openState: (URL) -> OpenState = { RecordingFolderLiveness.openState(of: $0.path) }
+    ) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+            .filter { $0.hasPrefix(importFilePrefix) }
+            .sorted()
+            .filter { openState(directory.appendingPathComponent($0)) == .held }
+    }
+}

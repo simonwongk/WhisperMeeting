@@ -1590,6 +1590,14 @@ final class AppModel: ObservableObject {
         RecordingFolderLiveness.sample(in: $0)
     }
 
+    /// Whether some process has a file open (F946): startup recovery's positive sign that a link
+    /// import's writer is alive, beside the growth samples, and the condition under which recovery
+    /// removes a link import's unfinished WAV (F894). Injectable in the same F47 shape; defaults to
+    /// the kernel's answer (`RecordingFolderLiveness.openState(of:)`).
+    var importFileOpenState: @Sendable (URL) -> RecordingFolderLiveness.OpenState = {
+        RecordingFolderLiveness.openState(of: $0.path)
+    }
+
     /// Converts an interrupted link import's download into the `recording.wav` the import was
     /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
     /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg for at most
@@ -3519,6 +3527,17 @@ final class AppModel: ObservableObject {
                             live.insert(directory)
                         }
                     }
+                }
+                // F946: growth misses a writer that is alive but stalled for longer than the samples
+                // are apart, and for a link import that meant choosing the download over a WAV ffmpeg
+                // was still writing. An open file is a positive sign, so a link import whose files a
+                // process holds open is live too — for as long as that process holds them, which ends
+                // when it exits, however it exits. Link imports only (`source.json`); a capture's
+                // folder has its own lock (F297).
+                for candidate in candidates where !live.contains(candidate.directory)
+                    && MediaSource.read(in: candidate.directory) != nil {
+                    let held = await importFilesHeldOpen(in: candidate.directory)
+                    if !held.isEmpty { live.insert(candidate.directory) }
                 }
                 if !live.isEmpty {
                     // F453: since the probe also watches an import's files, a live folder can be a

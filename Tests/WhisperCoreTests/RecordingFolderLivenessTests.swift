@@ -113,3 +113,41 @@ func shrinkingIsNotLive() throws {
 
     #expect(!RecordingFolderLiveness.isGrowing(from: before, to: after))
 }
+
+// F946 — growth misses a writer that is alive but stalled; an open file does not.
+
+@Test("The kernel says whether a file is open, by this process or no one, and when it cannot tell (F946)")
+func openStateFollowsTheOpenFile() throws {
+    let directory = try makeFolder("open")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("recording.wav")
+    try Data("partial".utf8).write(to: file)
+
+    #expect(RecordingFolderLiveness.openState(of: file.path) == .notHeld)
+    let handle = try FileHandle(forWritingTo: file)
+    #expect(RecordingFolderLiveness.openState(of: file.path) == .held)
+    try handle.close()
+    #expect(RecordingFolderLiveness.openState(of: file.path) == .notHeld)
+    #expect(RecordingFolderLiveness.openState(of: directory.appendingPathComponent("missing.wav").path) == .unknown)
+}
+
+@Test("Only the import files someone holds open are named, in name order (F946)")
+func importFilesHeldOpenNamesOnlyHeldImportFiles() throws {
+    let directory = try makeFolder("held")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    for name in ["recording.wav", "recording.webm", "recording.webm.part", "notes.txt"] {
+        try Data("x".utf8).write(to: directory.appendingPathComponent(name))
+    }
+    let wav = try FileHandle(forReadingFrom: directory.appendingPathComponent("recording.wav"))
+    defer { try? wav.close() }
+    let part = try FileHandle(forWritingTo: directory.appendingPathComponent("recording.webm.part"))
+    defer { try? part.close() }
+    let notes = try FileHandle(forReadingFrom: directory.appendingPathComponent("notes.txt"))
+    defer { try? notes.close() }
+
+    let held: [String] = RecordingFolderLiveness.importFilesHeldOpen(in: directory)
+    #expect(held == ["recording.wav", "recording.webm.part"])
+    // A file whose state cannot be asked is not counted: that is the answer before the probe existed.
+    let unknown: [String] = RecordingFolderLiveness.importFilesHeldOpen(in: directory) { _ in .unknown }
+    #expect(unknown.isEmpty)
+}
