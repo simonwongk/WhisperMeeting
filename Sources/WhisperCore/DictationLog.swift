@@ -9,22 +9,26 @@ import Foundation
 /// log for about a day, so a slow dictation reported two days later had nothing to find. These go
 /// into the dictation history (`dictation-log.json`), which keeps the most recent dictations (100
 /// by default, `DictationLog.limit`).
+///
+/// **Every figure passes one rule, however it is set.** A figure that cannot be a measurement —
+/// negative, not finite, or a percentage outside 0…100 — is dropped rather than stored: JSON has no
+/// NaN or infinity, so storing one would fail the whole history's save, and since the entry stays in
+/// the in-memory log, every later save too, for the rest of the session. `init` applies the rule and
+/// so does each property's `didSet` (a review found a NaN set after `init` reaching the store).
 public struct DictationTimings: Sendable, Equatable {
     /// The recording's length.
-    public var clipSeconds: Double?
+    public var clipSeconds: Double? { didSet { clipSeconds = Self.measured(clipSeconds) } }
     /// From the release to the recognizer's reply — the figure the "transcribed in" log line prints:
     /// the speech checks, any wait for a refiner being released, any wait behind a press-down touch
     /// on the engine's queue, and recognition.
-    public var transcribeSeconds: Double?
+    public var transcribeSeconds: Double? { didSet { transcribeSeconds = Self.measured(transcribeSeconds) } }
     /// The refiner's own pass, from asking it to its answer; nil when it was not asked.
-    public var refineSeconds: Double?
+    public var refineSeconds: Double? { didSet { refineSeconds = Self.measured(refineSeconds) } }
     /// The accelerator's "Device Utilization %" read just before the recognizer was asked (F890);
     /// nil when it could not be read.
-    public var gpuBusyPercent: Int?
+    public var gpuBusyPercent: Int? { didSet { gpuBusyPercent = Self.percentage(gpuBusyPercent) } }
 
-    /// A figure that cannot be a measurement — negative, not finite, or a percentage outside 0…100
-    /// — is dropped here rather than stored: JSON has no NaN or infinity, so storing one would fail
-    /// the whole history's save.
+    /// Observers do not run during `init`, so it applies the same rule itself.
     public init(
         clipSeconds: Double? = nil,
         transcribeSeconds: Double? = nil,
@@ -34,12 +38,16 @@ public struct DictationTimings: Sendable, Equatable {
         self.clipSeconds = Self.measured(clipSeconds)
         self.transcribeSeconds = Self.measured(transcribeSeconds)
         self.refineSeconds = Self.measured(refineSeconds)
-        self.gpuBusyPercent = gpuBusyPercent.flatMap { (0...100).contains($0) ? $0 : nil }
+        self.gpuBusyPercent = Self.percentage(gpuBusyPercent)
     }
 
     private static func measured(_ seconds: Double?) -> Double? {
         guard let seconds, seconds.isFinite, seconds >= 0 else { return nil }
         return seconds
+    }
+
+    private static func percentage(_ percent: Int?) -> Int? {
+        percent.flatMap { (0...100).contains($0) ? $0 : nil }
     }
 }
 

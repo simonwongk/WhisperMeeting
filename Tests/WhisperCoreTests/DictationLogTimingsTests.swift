@@ -147,6 +147,24 @@ func impossibleFiguresAreNotStored() throws {
     _ = try JSONEncoder().encode(DictationLog(entries: [entry]))
 }
 
+@Test("A figure set after construction goes through the same rule, so the history can still be saved (F892 review)")
+func figuresSetAfterConstructionAreCheckedToo() throws {
+    // The review's finding: the four fields were plain `public var`s, so a value assigned after
+    // `init` skipped the rule, and one NaN in an entry made every later save of the history throw.
+    var timings = DictationTimings(clipSeconds: 1, transcribeSeconds: 2, refineSeconds: 3, gpuBusyPercent: 4)
+    timings.clipSeconds = .nan
+    timings.transcribeSeconds = -1
+    timings.refineSeconds = .infinity
+    timings.gpuBusyPercent = 101
+    #expect(timings == DictationTimings())
+
+    timings.transcribeSeconds = 0.75 // and a real measurement set later is kept
+    #expect(timings.transcribeSeconds == 0.75)
+
+    let entry = DictationLogEntry(id: UUID(), date: Date(), text: "a", outcome: .pasted, timings: timings)
+    _ = try JSONEncoder().encode(DictationLog(entries: [entry]))
+}
+
 // MARK: - The report
 
 private func dated(_ seconds: TimeInterval, _ timings: DictationTimings, refinement: String? = nil,

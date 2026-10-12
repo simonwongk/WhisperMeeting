@@ -167,3 +167,25 @@ func refinementOffAndAnUnreadableGPU() async throws {
     #expect(entry.text == "hello there")
     #expect(entry.timings == DictationTimings(clipSeconds: 4.0, transcribeSeconds: 6.5))
 }
+
+@MainActor
+@Test("A NaN set on a timing after construction cannot stop the history from being saved (F892 review)")
+func aNaNSetLaterCannotStopTheHistorySaving() throws {
+    // The review reproduced it through the real store: the entry stayed in the in-memory log, so
+    // every later save threw too, and the history stopped being saved for the rest of the session.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F892-nan-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = DictationLogStore(directory: directory)
+
+    var timings = DictationTimings(clipSeconds: 1)
+    timings.clipSeconds = .nan
+    store.record(text: "first", outcome: .pasted, timings: timings)
+    #expect(store.saveErrorMessage == nil, "the entry with a NaN figure could not be saved")
+    store.record(text: "second", outcome: .pasted)
+    #expect(store.saveErrorMessage == nil, "a later dictation could not be saved either")
+
+    let expected: [String] = ["second", "first"]
+    #expect(DictationLogStore(directory: directory).log.entries.map(\.text) == expected)
+}
