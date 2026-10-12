@@ -235,7 +235,16 @@ func theModelRowOffersRepairOnlyWhereRepairCanFetchTheModel() throws {
 
     let models = LocalWhisperRuntime.modelDirectory(applicationSupport: support)
     try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
-    try Data([0]).write(to: models.appendingPathComponent(LocalWhisperRuntime.checkpointFileName(for: .turbo)))
+    let checkpoint = models.appendingPathComponent(LocalWhisperRuntime.checkpointFileName(for: .turbo))
+    // F900: what a stopped first download leaves — openai-whisper writes the checkpoint in place — is
+    // not a ready model; the whole checkpoint is. Sparse, so 1.6 GB are not written.
+    try Data([0]).write(to: checkpoint)
+    let handle = try FileHandle(forWritingTo: checkpoint)
+    try handle.truncate(atOffset: 48_000_000)
+    #expect(!harness.controller.diagnostics(applicationSupport: support).modelReady,
+            "a partial checkpoint read as \"Selected model ready\"")
+    try handle.truncate(atOffset: UInt64(LocalWhisperRuntime.checkpointByteCount(for: .turbo)))
+    try handle.close()
     #expect(harness.controller.diagnostics(applicationSupport: support).modelReady)
 
     harness.controller.warmWhisperHelperRunsHere = true

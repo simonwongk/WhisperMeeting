@@ -155,14 +155,37 @@ public struct LocalWhisperRuntime: Sendable {
         }
     }
 
-    /// Whether the openai-whisper checkpoint for `model` is in the app's model directory — the
-    /// model the batch dictation engine runs where the warm MLX helper cannot (F823). Presence, as
-    /// `mlxModelCached` checks presence: whisper itself re-verifies the checksum when it loads.
+    /// The size of openai-whisper's checkpoint for `model`, in bytes (F900). Each `_MODELS` URL names
+    /// its file's SHA-256 in its path (`expected_sha256 = url.split("/")[-2]`), so the file behind it
+    /// never changes, and neither does its size. Read 2026-10-12 as the `Content-Length` of a HEAD of
+    /// each URL — the figure `_download` itself sizes its progress bar with (`whisper/__init__.py:75`
+    /// in the pinned 20250625, the same on github.com/openai/whisper main that day) — and equal to
+    /// both checkpoints installed on the developer's Mac.
+    public static func checkpointByteCount(for model: WhisperModel) -> Int64 {
+        switch model {
+        case .large: 3_087_371_615
+        case .turbo: 1_617_941_637
+        }
+    }
+
+    /// Whether the openai-whisper checkpoint for `model` is in the app's model directory, whole —
+    /// the model the batch dictation engine runs where the warm MLX helper cannot (F823).
+    ///
+    /// **Whole, not merely present (F900).** openai-whisper downloads straight into the final file
+    /// (`open(download_target, "wb")`, `whisper/__init__.py:73` in the pinned 20250625, and on main),
+    /// so a download stopped part-way (F860's stall limit, a quit, a lost link) leaves a file under
+    /// the checkpoint's own name, and presence alone called it ready until the next dictation
+    /// re-downloaded it. The size is compared with the checkpoint's known size; the SHA-256 is not
+    /// computed here (1.6 GB, on every refresh of the Dictation tab) — whisper checks it itself when
+    /// it loads, and replaces a file that fails.
     public static func checkpointCached(_ model: WhisperModel, applicationSupport: URL? = nil) -> Bool {
-        FileManager.default.fileExists(
-            atPath: modelDirectory(applicationSupport: applicationSupport)
-                .appendingPathComponent(checkpointFileName(for: model)).path
-        )
+        // Through a symlink, as whisper's own `os.path.isfile` check is.
+        let path = modelDirectory(applicationSupport: applicationSupport)
+            .appendingPathComponent(checkpointFileName(for: model)).resolvingSymlinksInPath().path
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber else { return false }
+        return size.int64Value == checkpointByteCount(for: model)
     }
 
     public static func dictationServerScript(applicationSupport: URL? = nil) -> URL {

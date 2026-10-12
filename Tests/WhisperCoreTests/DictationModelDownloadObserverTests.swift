@@ -128,7 +128,12 @@ func turboCheckpointIsLookedForWhereWhisperKeepsIt() throws {
 
     let models = LocalWhisperRuntime.modelDirectory(applicationSupport: support)
     try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
-    try Data([0]).write(to: models.appendingPathComponent("large-v3-turbo.pt"))
+    // Whole, since F900 (presence alone read a stopped download as ready): sparse, so 1.6 GB are not written.
+    let checkpoint = models.appendingPathComponent("large-v3-turbo.pt")
+    try Data([0]).write(to: checkpoint)
+    let handle = try FileHandle(forWritingTo: checkpoint)
+    try handle.truncate(atOffset: UInt64(LocalWhisperRuntime.checkpointByteCount(for: .turbo)))
+    try handle.close()
 
     #expect(LocalWhisperRuntime.checkpointCached(.turbo, applicationSupport: support))
     #expect(!LocalWhisperRuntime.checkpointCached(.large, applicationSupport: support))
