@@ -355,15 +355,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // below, as if the stop had returned: the deferred branch, never a discard. Nothing more
         // lands in the tracks once they are finished on the queue, and the sample handler drops
         // anything from a stream that is no longer `_stream` once `reset()` has run.
-        let stopCall: CaptureStopCall?
-        if let injectedStopCapture {
-            stopCall = CaptureStopCall(run: injectedStopCapture)
-        } else if let stream {
-            stopCall = CaptureStopCall { try await stream.stopCapture() }
-        } else {
-            stopCall = nil
-        }
-        if let stopCall {
+        if let stopCall = captureStopCall {
             switch await stopCaptureWithinBound(stopCall) {
             case .stopped:
                 break
@@ -468,11 +460,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
 
     func cancel() async {
-        if let stream {
+        if let stopCall = captureStopCall {
             // F809: within the same bound as Stop's, since a Cancel that never got past this held
             // every quit just the same (F672 waits for `.stopping`). A discard has nothing to save,
             // so a stop that never confirms is simply let go; its failure was ignored before too.
-            _ = await stopCaptureWithinBound(CaptureStopCall { try await stream.stopCapture() })
+            // F929: the same call Stop makes, the injected stop included, so a Cancel whose stop
+            // never returns can be driven rather than only pinned as source.
+            _ = await stopCaptureWithinBound(stopCall)
         }
         stopHealthTimer()
         await captureQueue.flush()
@@ -851,6 +845,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// closure and `SCStream` are not `Sendable`; the call runs exactly once, in one task.
     private struct CaptureStopCall: @unchecked Sendable {
         let run: () async throws -> Void
+    }
+
+    /// The stop that `stop()` and `cancel()` wait on: the injected one when a test supplied it,
+    /// otherwise the live stream's `stopCapture()`, otherwise none. One choice for both (F929):
+    /// `cancel()` used to look only at the stream, so its bound could not be driven by a test.
+    private var captureStopCall: CaptureStopCall? {
+        if let injectedStopCapture { return CaptureStopCall(run: injectedStopCapture) }
+        if let stream { return CaptureStopCall { try await stream.stopCapture() } }
+        return nil
     }
 
     /// What became of a `stopCapture()` that Stop waited on within `captureSettleBound` (F809).

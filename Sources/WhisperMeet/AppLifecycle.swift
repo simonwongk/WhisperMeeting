@@ -173,7 +173,8 @@ public final class AppLifecycle: ObservableObject {
     /// an app that neither quits nor behaves normally. Hence the shape: the question is answered
     /// synchronously, so "Keep Recording" is a plain `.terminateCancel`; only "Stop & Quit" — and a
     /// quit that finds a stop already saving (F672) — goes asynchronous, and its task replies once,
-    /// after the stop, whatever the stop returned. A quit that arrives while the question is up, or
+    /// after the stop, whatever the stop returned, or once that stop's save has completed no write for
+    /// `AppModel.quitWaitStallBound` (F929). A quit that arrives while the question is up, or
     /// while that stop is still saving, is refused outright rather than asked or answered twice.
     ///
     /// A quit during `.starting` still terminates at once: nothing has been captured yet, and

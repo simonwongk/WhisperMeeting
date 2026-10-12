@@ -74,7 +74,9 @@ func aHungStopCaptureFinalizesAfterTheBound() async throws {
 func theBoundIsSharedAndALetGoStreamIsIgnored() throws {
     let engine = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AudioCaptureEngine.swift")
     // Cancel cannot be driven with a stream (no test may build an SCStream, F484), so its use of the
-    // bound is pinned as source.
+    // bound is pinned as source. Since F929 it takes the injected stop as `stop()` does, and
+    // `aQuitDuringAHungCancelQuitsOnceTheCancelsBoundRunsOut` drives that; this pin still covers the
+    // stream's branch.
     let cancel = try #require(engine.range(of: "func cancel() async {"))
     let afterCancel = try #require(engine.range(of: "func stream(", range: cancel.upperBound..<engine.endIndex))
     #expect(engine[cancel.upperBound..<afterCancel.lowerBound].contains("stopCaptureWithinBound("),

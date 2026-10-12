@@ -4111,7 +4111,11 @@ final class AppModel: ObservableObject {
         await settleCaptureRestartBeforeTeardown()
         let directory = store.recordingDirectoryURL(for: id)
         do {
-            let artifact = try await recorder.stop()
+            // F929: the finalize's writes (the mix, chunk by chunk) are what a waiting quit reads
+            // as progress, so a long save is never mistaken for a stuck one.
+            let artifact = try await WriteProgress.$current.withValue(finalizeWriteProgress) {
+                try await recorder.stop()
+            }
             let fallbackTitle = "Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let meeting = MeetingRecord(
@@ -4195,8 +4199,11 @@ final class AppModel: ObservableObject {
                 // which is why this branch — the one that runs when the user's own stop fails —
                 // had no way to be tested at all.
                 let recover = recoverInterruptedRecording
+                // F929: bound inside the detached task, which inherits no task-locals, so the
+                // rebuild's writes count as this stop's progress for a waiting quit.
+                let progress = finalizeWriteProgress
                 let recovered = try await Task.detached(priority: .userInitiated) {
-                    try recover(directory)
+                    try WriteProgress.$current.withValue(progress) { try recover(directory) }
                 }.value
                 if let recovered {
                     // F256 applies here too. This is the second, deliberately ungated `recover`
@@ -4266,15 +4273,22 @@ final class AppModel: ObservableObject {
     /// saved, or when the recording had already ended by the time this ran; `false` when the stop
     /// could not save it, so the quit is cancelled and the failure `stopRecording` reported stays on
     /// screen instead of vanishing with the process. The folder is kept either way, so a later quit
-    /// loses nothing a launch cannot rebuild.
+    /// loses nothing a launch cannot rebuild. Also `true` once the stop has completed no write for
+    /// `quitWaitStallBound` (F929): the app quits and leaves the folder for the next launch to rebuild.
     func stopRecordingBeforeQuit() async -> Bool {
         switch recordingState {
         case .idle where !isRecordingFinishing:
             return true
         case .recording:
             // "" is the windowless stop — the title typed on the record screen is used (F298). No
-            // transcription: the app is about to quit under it (F673).
-            return await stopRecording(title: "", transcribe: false) != nil
+            // transcription: the app is about to quit under it (F673). Started rather than awaited
+            // (F929), so that the quit's bound covers this stop exactly as it covers one already
+            // under way: the stop goes on saving, and the wait below answers for it. Saved (or
+            // rebuilt) means indexed, and a stop that could not save leaves its folder unindexed,
+            // which is what `stopRecording`'s own `nil` meant here before.
+            let id = activeMeetingID
+            Task { _ = await stopRecording(title: "", transcribe: false) }
+            return await waitForStopBeforeQuit(meeting: id)
         case .idle, .stopping:
             // F672: a stop already owns the capture — the user's Stop, or a sleep's or a lost
             // capture's finalize, including one that began while the question was on screen.
@@ -4286,26 +4300,73 @@ final class AppModel: ObservableObject {
             // stop has already cleared `activeMeetingID`; a Cancel's, or a sleep stop's before it
             // calls in, is still active. The wait also holds while anything has begun since (not
             // `.idle`), as F672's did.
-            let id = stopInFlightMeetingID ?? activeMeetingID
-            // F812: and that stop saves the meeting ready to transcribe rather than starting a job
-            // this quit would cut off. Cleared when the wait ends, whatever it decides, so a quit
-            // that is cancelled leaves the next stop transcribing as usual.
-            isQuitWaitingForStop = true
-            defer { isQuitWaitingForStop = false }
-            while isRecordingFinishing || recordingState != .idle {
-                guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return false }
-            }
-            guard let id else { return true }
-            // Quit when nothing is left unsaved: the meeting is indexed, or its folder is gone (a
-            // cancel). A folder left unindexed is a failed stop, whose report must stay on screen.
-            return store.meeting(id: id) != nil
-                || !FileManager.default.fileExists(atPath: store.recordingDirectoryURL(for: id).path)
+            return await waitForStopBeforeQuit(meeting: stopInFlightMeetingID ?? activeMeetingID)
         case .starting:
             // Not reached through `AppLifecycle.shouldTerminate`, which terminates at once during a
             // start (nothing captured yet); kept correct for any other caller.
             report("The recording is still starting. Quit again in a moment.")
             return false
         }
+    }
+
+    /// How long a quit waits for a saving stop that has completed no write before it lets the app
+    /// quit anyway (F929).
+    ///
+    /// F809 bounded `stopCapture()`, but a stop still waits without limit on the disk work after it:
+    /// the capture queue's flush, the finish of the tracks (`F_FULLFSYNC`), the mix, a failed stop's
+    /// rebuild, a Cancel's removal of the folder. On a volume that stops answering, any of these held
+    /// every quit until Force Quit. Quitting at the bound is the deferred branch, and leaves things
+    /// as Force Quit would have: the stop's folder is still unindexed and its tracks are on disk, so
+    /// the next launch rebuilds the meeting (F297, F808). Nothing captured is discarded. A Cancel
+    /// stuck the same way can leave its folder behind for that launch too, which keeps a recording
+    /// the user meant to discard rather than losing one they meant to keep.
+    ///
+    /// A bound on the quiet, not on the whole wait. A save legitimately takes as long as its mix,
+    /// which grows with the recording: one hour measured 53 s in a debug build on a developer Mac,
+    /// completing writes all the way through. A volume that has stopped answering completes none, so
+    /// every write the finalize or the rebuild completes (`finalizeWriteProgress`) starts the quiet
+    /// period over, and a long save is never cut short however long it runs.
+    ///
+    /// Not a new figure. The longest a healthy stop goes without a counted write is the two waits it
+    /// already bounds, back to back, each `AudioCaptureEngine.captureSettleBound`: an in-flight
+    /// restart's settle (F292, F365), then `stopCapture()` itself (F809). The third covers the steps
+    /// between them and the mix's first write: the flush, the finish of the tracks with their
+    /// `F_FULLFSYNC`, and the manifest took 0.4 s together for an hour of tracks still all unsynced
+    /// (the same measurement's 53.5 s stop less its 53.2 s mix). It gets the same constant again,
+    /// whose meaning is how long Stop waits for work it does not control before it goes on without it.
+    nonisolated static let quitWaitStallBound: Duration = AudioCaptureEngine.captureSettleBound * 3
+
+    /// Waits for the stop that owns the recording to finish, then says whether the app may quit
+    /// (F672, F808, F812, F929). Polled: that stop is someone else's call and leaves no handle to
+    /// await. `id` is the stop's meeting.
+    private func waitForStopBeforeQuit(meeting id: UUID?) async -> Bool {
+        // F812: that stop saves the meeting ready to transcribe rather than starting a job this
+        // quit would cut off. Cleared when the wait ends, whatever it decides, so a quit that is
+        // cancelled leaves the next stop transcribing as usual.
+        isQuitWaitingForStop = true
+        defer { isQuitWaitingForStop = false }
+        // F929: the quit's own bound, on how long the save has gone without completing a write.
+        // Read from memory between polls, and answered without touching the disk, so a volume that
+        // never answers cannot hold the answer too.
+        let now = quitWaitClock
+        var stall = ProgressStallWatch(bound: Self.quitWaitStallBound, ticks: finalizeWriteProgress.ticks, now: now())
+        while isRecordingFinishing || recordingState != .idle {
+            if stall.hasStalled(ticks: finalizeWriteProgress.ticks, now: now()) { return true }
+            guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return false }
+        }
+        guard let id else { return true }
+        // Quit when nothing is left unsaved: the meeting is indexed, or its folder is gone (a
+        // cancel). A folder left unindexed is a failed stop, whose report must stay on screen.
+        return store.meeting(id: id) != nil
+            || !FileManager.default.fileExists(atPath: store.recordingDirectoryURL(for: id).path)
+    }
+
+    /// The quit wait's clock: the continuous clock, or a test's (F929).
+    private var quitWaitClock: @Sendable () -> ContinuousClock.Instant {
+        #if DEBUG
+        if let quitWaitClockForTesting { return quitWaitClockForTesting }
+        #endif
+        return { ContinuousClock.now }
     }
 
     /// What a user is told when Stop saved a capture that had died and never came back (F292).
@@ -4586,6 +4647,10 @@ final class AppModel: ObservableObject {
     /// must not start a transcription the quit would cut off (F812). Set and cleared by
     /// `stopRecordingBeforeQuit()`'s wait; read by `stopRecording` at its transcription decision.
     private var isQuitWaitingForStop = false
+
+    /// The writes a stop's finalize and its rebuild have completed, which a quit waiting for that
+    /// stop reads as progress (F929). One counter for every stop: the wait looks only at changes.
+    private let finalizeWriteProgress = WriteProgress()
 
     /// Whether `captureRestartNotice` is the "keeps trying" line, which only describes a live
     /// recording and must not outlive it (F292).
@@ -5442,6 +5507,10 @@ final class AppModel: ObservableObject {
     /// writable (F193). Reaching either of them needs a damaged index and a restorable generation;
     /// what F188 needs to exercise is the second run itself, so this is that line and nothing more.
     func resetStartupRecoveryForTesting() { didPerformStartupRecovery = false }
+
+    /// Test seam (F929): the clock a quit's wait for a saving stop reads, so a test moves it past
+    /// `quitWaitStallBound` instead of waiting it out. Nothing in the app sets it.
+    var quitWaitClockForTesting: (@Sendable () -> ContinuousClock.Instant)?
     #endif
 
     /// What importing a batch did. `notImported` lists the files a caller that owns a queue should

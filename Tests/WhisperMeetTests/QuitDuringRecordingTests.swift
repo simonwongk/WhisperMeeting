@@ -32,18 +32,33 @@ private actor Gate {
     }
 }
 
+/// - Parameters:
+///   - stopEntered: counts the calls to the engine's injected stop, so a test can require that a
+///     Cancel or a Stop is held inside it rather than hope it is (F929).
+///   - finishGate: holds the finish of the tracks, the first of the finalize's disk steps (F929).
+///   - finishStep: runs in that same step, inside the stop's own task, for a test that needs the
+///     step to do something there, such as complete writes (F929).
 @MainActor
-private func makeModel(stopFails: Bool = false, stopGate: Gate? = nil, engineInstalled: Bool = false) throws -> (AppModel, () -> Void) {
+private func makeModel(
+    stopFails: Bool = false, stopGate: Gate? = nil, engineInstalled: Bool = false,
+    stopEntered: Locked<Int>? = nil, finishGate: RebuildGate? = nil,
+    finishStep: (@Sendable () -> Void)? = nil
+) throws -> (AppModel, () -> Void) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F529-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let suite = testSuiteName()
     let defaults = UserDefaults(suiteName: suite)!
     let recorder = AudioCaptureEngine(
         stoppingCapture: {
+            stopEntered?.withLock { $0 += 1 }
             if let stopGate { await stopGate.wait() }
             if stopFails { throw CaptureWouldNotStop() }
         },
-        finishingTracks: {}, preservingPartialTracks: {},
+        finishingTracks: {
+            finishGate?.enterAndWait()
+            finishStep?()
+        },
+        preservingPartialTracks: {},
         startingCapture: { _, _, _ in }, restartingCapture: { _ in }, directory: root
     )
     // By default no engine is installed, so a saved meeting does not start a transcription a test
@@ -389,7 +404,8 @@ func aQuitWhileAFailingStopIsSavingStaysOpen() async throws {
 
 /// Holds `stopRecording`'s rebuild, which its catch runs in a detached task through the recovery
 /// seam, until the test lets it go. A semaphore because the seam is synchronous; its timeout keeps
-/// a failing test from wedging the run.
+/// a failing test from wedging the run. F929 holds the engine's synchronous finish of the tracks
+/// with it too.
 private final class RebuildGate: @unchecked Sendable {
     private let entered = Locked(false)
     private let release = DispatchSemaphore(value: 0)
@@ -675,6 +691,284 @@ func stopAndQuitWithAHungStopCaptureQuitsAfterTheBound() async throws {
     #expect(meeting.recoverySource == nil, "finalized normally, not rebuilt after a finishing error")
     #expect(model.recordingState == .idle, "and the Stop button is free again")
     #expect(lifecycle.shouldTerminate { _ in } == .terminateNow, "a later quit is answered at once")
+}
+
+// MARK: - F929: the quit's own bound, and Cancel's stopCapture
+
+// F809 bounded `stopCapture()`, but a stop still waits without limit on the disk work after it: the
+// capture queue's flush, the finish of the tracks (`F_FULLFSYNC`), the mix, a failed stop's rebuild.
+// On a volume that stops answering, any of these held every quit until Force Quit. The quit now has a
+// bound of its own, on how long the save goes without completing a write, and past it the app quits
+// with the folder left where Force Quit would have left it, for the next launch to rebuild. The
+// clock is injected (`quitWaitClockForTesting`), so no test waits the bound out.
+
+/// The quit wait's clock, moved by hand. Counts its reads, so a test can require that the wait has
+/// looked at it since the last move instead of hoping it has.
+private final class QuitWaitClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let base = ContinuousClock.now
+    private var offset: Duration = .zero
+    private var reads = 0
+    var readCount: Int { lock.withLock { reads } }
+    func advance(by duration: Duration) { lock.withLock { offset += duration } }
+    func now() -> ContinuousClock.Instant {
+        lock.withLock {
+            reads += 1
+            return base.advanced(by: offset)
+        }
+    }
+}
+
+/// Polls until the quit's wait has read the clock twice more, so it has made at least one whole
+/// pass since whatever the test just changed, or has answered (and so stopped looking). Its own
+/// subject, against the wall clock.
+@MainActor
+private func waitForTheQuitToLook(_ clock: QuitWaitClock, orAnswer replies: Locked<[Bool]>? = nil) async throws {
+    let target = clock.readCount + 2
+    let answered = { replies?.withLock { !$0.isEmpty } ?? false }
+    let deadline = Date().addingTimeInterval(30)
+    while clock.readCount < target, !answered(), Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(clock.readCount >= target || answered(), "the quit's wait never looked at its clock")
+}
+
+/// Polls a held step, the precondition's own subject, against the wall clock.
+@MainActor
+private func waitUntilHeld(_ gate: RebuildGate, _ what: Comment) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while !gate.hasEntered, Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(gate.hasEntered, what)
+}
+
+/// Polls until no stop is left running, so a test does not end under one.
+@MainActor
+private func waitUntilIdle(_ model: AppModel) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while model.isRecordingFinishing || model.recordingState != .idle, Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(!model.isRecordingFinishing && model.recordingState == .idle, "the stop never finished")
+}
+
+/// What the next launch needs to rebuild the meeting: the raw tracks, and the lock file that says
+/// their writer is gone (F297).
+@MainActor
+private func expectFolderLeftForTheNextLaunch(_ model: AppModel, _ id: UUID) {
+    let directory = model.store.recordingDirectoryURL(for: id)
+    for name in [RecordingCaptureLock.filename, "system-audio.f32", "microphone-audio.f32"] {
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path),
+                "\(name) is kept, so the next launch rebuilds the meeting")
+    }
+}
+
+@MainActor
+@Test("Stop & Quit whose finalize never finishes quits once the save has written nothing for the quit's bound, leaving the folder for the next launch (F929)")
+func stopAndQuitWithAHeldFinalizeQuitsAfterTheQuitBound() async throws {
+    let finish = RebuildGate()
+    let (model, cleanup) = try makeModel(finishGate: finish)
+    defer { cleanup() }
+    defer { finish.open() }
+    let clock = QuitWaitClock()
+    model.quitWaitClockForTesting = { clock.now() }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
+    let replies = Locked<[Bool]>([])
+
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    try await waitUntilHeld(finish, "the stop never reached the finish of its tracks")
+    try await waitForTheQuitToLook(clock)
+    #expect(replies.withLock { $0 }.isEmpty, "sanity: the quit waits for the save until its bound runs out")
+    clock.advance(by: AppModel.quitWaitStallBound)
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "the quit is answered, and it is to quit")
+    #expect(model.store.meeting(id: id) == nil, "sanity: the save is still held")
+    expectFolderLeftForTheNextLaunch(model, id)
+    // In the app the process has ended here. In the test the held save is let go and finishes.
+    finish.open()
+    try await waitUntilIdle(model)
+}
+
+@MainActor
+@Test("A quit during a failed Stop whose rebuild never finishes quits once the quit's bound runs out, and the folder keeps its lock (F929)")
+func aQuitDuringAHeldRebuildQuitsAfterTheQuitBound() async throws {
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    let rebuild = RebuildGate()
+    defer { rebuild.open() }
+    model.recoverInterruptedRecording = { directory in
+        rebuild.enterAndWait()
+        return try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    let clock = QuitWaitClock()
+    model.quitWaitClockForTesting = { clock.now() }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilRebuilding(rebuild)
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    #expect(asked.withLock { $0 } == 0, "the recording is already ending; there is nothing to ask")
+    try await waitForTheQuitToLook(clock)
+    clock.advance(by: AppModel.quitWaitStallBound)
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "the quit is answered, and it is to quit")
+    #expect(model.store.meeting(id: id) == nil, "sanity: the rebuild is still held")
+    expectFolderLeftForTheNextLaunch(model, id)
+    rebuild.open()
+    #expect(await stop.value == id)
+}
+
+/// A save step that is held, and completes one write through `ThrowingFileHandleIO` each time the
+/// test asks: a long save that is still making progress, at the test's pace.
+private final class WritingStep: @unchecked Sendable {
+    private let lock = NSLock()
+    private let go = DispatchSemaphore(value: 0)
+    private var released = false
+    private var writes = 0
+    private var entered = false
+    private let handle: FileHandle
+    init(writingTo url: URL) throws {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        handle = try FileHandle(forWritingTo: url)
+    }
+    var hasEntered: Bool { lock.withLock { entered } }
+    var writeCount: Int { lock.withLock { writes } }
+    /// Called from the stop's own step, off the main actor. The semaphore's timeout keeps a failing
+    /// test from wedging the run.
+    func run() {
+        lock.withLock { entered = true }
+        while go.wait(timeout: .now() + 60) == .success, !lock.withLock({ released }) {
+            try? ThrowingFileHandleIO.write(Data([0]), to: handle)
+            lock.withLock { writes += 1 }
+        }
+    }
+    func writeOnce() { go.signal() }
+    func release() {
+        lock.withLock { released = true }
+        go.signal()
+    }
+}
+
+/// Polls the held step's entry, the precondition's own subject, against the wall clock.
+@MainActor
+private func waitUntilEntered(_ step: WritingStep) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while !step.hasEntered, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    try #require(step.hasEntered, "the stop never reached the held step")
+}
+
+/// Moves the clock two thirds of the bound, lets the held step complete one write, then moves it two
+/// thirds again: the save has now run for longer than the bound but has never been quiet that long.
+/// Then it goes quiet past the bound.
+@MainActor
+private func driveAWritingSave(_ step: WritingStep, _ clock: QuitWaitClock, replies: Locked<[Bool]>) async throws {
+    let most = AppModel.quitWaitStallBound * 2 / 3
+    try await waitForTheQuitToLook(clock)
+    clock.advance(by: most)
+    try await waitForTheQuitToLook(clock)
+    step.writeOnce()
+    let deadline = Date().addingTimeInterval(30)
+    while step.writeCount < 1, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    try #require(step.writeCount == 1, "the held step never wrote")
+    try await waitForTheQuitToLook(clock)
+    clock.advance(by: most)
+    try await waitForTheQuitToLook(clock, orAnswer: replies)
+    try #require(replies.withLock { $0 }.isEmpty,
+                 "a save still completing writes was cut short: it ran longer than the bound, but was never quiet that long")
+    clock.advance(by: AppModel.quitWaitStallBound - most)
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true], "once it has been quiet for the bound, the quit is answered")
+}
+
+@MainActor
+@Test("A finalize that keeps writing is never cut short by the quit's bound, however long it runs (F929)")
+func aQuitWaitsForAFinalizeThatIsStillWriting() async throws {
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("F929-writes-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let step = try WritingStep(writingTo: scratch)
+    defer { step.release() }
+    let (model, cleanup) = try makeModel(finishStep: { step.run() })
+    defer { cleanup() }
+    let clock = QuitWaitClock()
+    model.quitWaitClockForTesting = { clock.now() }
+    _ = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .stopAndQuit }
+    let replies = Locked<[Bool]>([])
+
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    try await waitUntilEntered(step)
+    try await driveAWritingSave(step, clock, replies: replies)
+    step.release()
+    try await waitUntilIdle(model)
+}
+
+@MainActor
+@Test("A failed Stop's rebuild that keeps writing is never cut short by the quit's bound either (F929)")
+func aQuitWaitsForARebuildThatIsStillWriting() async throws {
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("F929-writes-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let step = try WritingStep(writingTo: scratch)
+    defer { step.release() }
+    let (model, cleanup) = try makeModel(stopFails: true)
+    defer { cleanup() }
+    // The rebuild runs in a detached task, which inherits no task-locals: this is what shows that the
+    // rebuild's writes are counted at all.
+    model.recoverInterruptedRecording = { directory in
+        step.run()
+        return try InterruptedRecordingRecovery.recover(in: directory)
+    }
+    let clock = QuitWaitClock()
+    model.quitWaitClockForTesting = { clock.now() }
+    let id = try await startRecordingWithTracks(model)
+    let (lifecycle, _) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let stop = Task { await model.stopRecording(title: "Board call") }
+    try await waitUntilEntered(step)
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater)
+    try await driveAWritingSave(step, clock, replies: replies)
+    step.release()
+    #expect(await stop.value == id)
+}
+
+@MainActor
+@Test("A quit during a Cancel whose stopCapture never returns waits for the Cancel's bound, then quits with the recording discarded (F929)")
+func aQuitDuringAHungCancelQuitsOnceTheCancelsBoundRunsOut() async throws {
+    let neverStops = Gate()
+    let entered = Locked(0)
+    let (model, cleanup) = try makeModel(stopGate: neverStops, stopEntered: entered)
+    defer { cleanup() }
+    defer { Task { await neverStops.open() } }
+    let bound = Gate()
+    defer { Task { await bound.open() } }
+    model.recorder.stopCaptureDeadlineForTesting = { await bound.wait() }
+    let id = try await startRecordingWithTracks(model)
+    let directory = model.store.recordingDirectoryURL(for: id)
+    let (lifecycle, asked) = makeLifecycle(for: model) { .keepRecording }
+    let replies = Locked<[Bool]>([])
+
+    let cancel = Task { await model.cancelRecording() }
+    // The precondition's own subject: the Cancel is inside its stopCapture, or it went on without it.
+    let deadline = Date().addingTimeInterval(30)
+    while entered.withLock({ $0 }) == 0, model.recordingState != .idle, Date() < deadline {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try #require(entered.withLock { $0 } == 1, "the Cancel never ran its stopCapture, so its bound could not be driven")
+    try #require(lifecycle.shouldTerminate { quit in replies.withLock { $0.append(quit) } } == .terminateLater,
+                 "a Cancel still discarding owns the recording")
+    #expect(asked.withLock { $0 } == 0)
+    await bound.open()
+
+    try await waitForReply(replies)
+    #expect(replies.withLock { $0 } == [true])
+    await cancel.value
+    #expect(!FileManager.default.fileExists(atPath: directory.path), "discarded, as the Cancel asked")
 }
 
 // MARK: - The AppKit half, pinned by source (F174: no scene or AppKit harness in this target)
