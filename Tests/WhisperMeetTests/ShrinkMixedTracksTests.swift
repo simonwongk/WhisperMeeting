@@ -157,6 +157,81 @@ private func panelChannels() -> [[Float]] {
     }
 }
 
+// Review of F942, R2: the level, per-window and per-channel checks compare levels, and a level cannot show
+// a track that is missing while another sounds over it. The review deleted an original with the real
+// mixer — a stereo track whose channels are in opposite polarity sums to nothing — and with a mixer that
+// drops a track (M8). Now Shrink fits the copy's waveform onto each track and channel, window by window,
+// and refuses a track whose own channels cancel, so it keeps the original unless every track is shown.
+
+@Test("A track whose channels cancel, under another track, is not deleted with the original (F942 review R2)")
+@MainActor
+func shrinkKeepsAnOriginalWhoseTrackCancels() async throws {
+    // The review's probe B, through the real mixer.
+    let f = try await MixFixture(recordingExtension: "mov", duration: 10) { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2), (300, -0.2)], seconds: 10),
+                                               FixtureTrack(channels: [(800, 0.2)], seconds: 10)])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original, "the only copy of track 1's sound")
+    #expect(!f.exists("recording.m4a"))
+    #expect(try f.hiddenTemps().isEmpty)
+}
+
+@Test("A mix that lost a track sounding under another is caught, and the original kept (F942 review R2, M8)")
+@MainActor
+func shrinkKeepsAnOriginalWhoseTrackTheMixLostUnderAnother() async throws {
+    // The review's probe I: track 2 speaks over track 1, never alone.
+    let f = try await MixFixture(recordingExtension: "mov", duration: 20) { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 20),
+                                               FixtureTrack(channels: [(800, 0.1)], seconds: 20, audibleFrom: 2, audibleTo: 18)])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    // A mixer that loses the second track: it mixes a copy of the recording holding the first alone.
+    let firstOnly = f.root.appendingPathComponent("first-only.mov")
+    try await writeFixtureTracks(to: firstOnly, [FixtureTrack(channels: [(300, 0.2)], seconds: 20)])
+    f.model.mixForShrink = { _, output in
+        let result = try await RecordingMixer.mixEveryChannel(of: firstOnly, to: output)
+        return RecordingMixer.Result(tracks: 2, channels: 2, duration: result.duration)
+    }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+    #expect(!f.exists("recording.m4a"))
+}
+
+@Test("A mix that kept one of four channels sounding at once is caught, and the original kept (F942 review R2)")
+@MainActor
+func shrinkKeepsAnOriginalWhoseChannelsTheMixLostBesideOthers() async throws {
+    // R5's four simultaneous feeds at one level, given to a mixer with R5's fault (afconvert keeps channel 1):
+    // every level matches, so only a fit of each channel shows the other three gone.
+    let tones = [300.0, 500.0, 700.0, 900.0]
+    let f = try await MixFixture(recordingExtension: "wav", duration: 6) { url in
+        try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 6) }).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    f.model.mixForShrink = { input, output in
+        try AudioTranscoder.transcodeToWAV(input: input, output: output)
+        return RecordingMixer.Result(tracks: 1, channels: 4, duration: 6)
+    }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+}
+
 @Test("A mix that lost a channel is caught where that channel speaks, and the original is kept (F942)")
 @MainActor
 func shrinkRefusesAMixThatLostAChannel() async throws {
@@ -179,7 +254,7 @@ func shrinkRefusesAMixThatLostAChannel() async throws {
 
     let alert = f.model.alertMessage ?? "nil"
     #expect(alert.contains("nothing was removed"), "\(alert)")
-    #expect(alert.contains("is missing sound the recording has at about 0:05"), "speaker 2 starts at 0:05: \(alert)")
+    #expect(alert.contains("at about 0:05") && alert.contains("the copy was discarded"), "speaker 2 starts at 0:05: \(alert)")
     #expect(try Data(contentsOf: f.recording) == original)
     #expect(!f.exists("recording.m4a"))
     #expect(try f.hiddenTemps().isEmpty, "the mix and the encode's temps are removed")

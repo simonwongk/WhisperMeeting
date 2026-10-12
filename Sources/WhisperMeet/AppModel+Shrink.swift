@@ -201,6 +201,7 @@ extension AppModel {
             let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
             let mixed = MeetingStoragePlan.needsMix(disk)
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
+            let audit = auditForShrink
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
@@ -236,28 +237,34 @@ extension AppModel {
                     // The right length is not the right audio: a copy that came out silent has it too
                     // (F801). The original is decoded the same way, its level taken over all its channels
                     // (and, since F942, all its tracks) before any mixing, so a recording the mono mix
-                    // silences cannot pass as silent (F801 review); the two levels must agree.
+                    // silences cannot pass as silent (F801 review).
                     let original: DecodedAudio.Decoded
                     do { original = try await decode(recordingURL) } catch { throw ShrinkFailure.unreadableOriginal }
-                    guard MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) else {
-                        throw ShrinkFailure.levelMismatch(original: original.level, compressed: copy.level)
-                    }
-                    // And stretch by stretch: a copy of the right length can keep the whole file's level
-                    // within the band and still have lost part of the recording (F801 review).
-                    if let window = MeetingStoragePlan.firstWindowLosingSound(
-                        original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
-                    ) {
-                        throw ShrinkFailure.soundLost(at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
-                    }
-                    // And for a mix, channel by channel (F942): every channel the mixer summed must have
-                    // been measured in the original, and each must be in the copy wherever it sounds.
                     if let mixedChannels {
+                        // A mix (F942). Levels — of the whole copy, of each stretch, of each channel —
+                        // cannot show a track lost while another sounds over it, nor one whose channels
+                        // cancel when combined: the review deleted an original both ways (R2, M8). So the
+                        // copy's waveform is fitted onto every track and channel, stretch by stretch, and
+                        // nothing is deleted unless each one that sounds is shown in it. Every channel the
+                        // mixer read must have been measured in the recording too.
                         guard original.channelWindowLevels.count == mixedChannels else {
                             throw ShrinkFailure.unreadableOriginal
                         }
-                        if let window = MeetingStoragePlan.firstWindowLosingAChannel(
-                            channels: original.channelWindowLevels, compressed: copy.windowLevels,
-                            originalLevel: original.level
+                        let measured: RecordingMixPlan.Audit
+                        do { measured = try await audit(recordingURL, tempM4A) } catch { throw ShrinkFailure.unreadableOriginal }
+                        if let finding = RecordingMixPlan.firstFinding(
+                            measured, nativeChannelWindows: original.channelWindowLevels, nativeLevel: original.level
+                        ) {
+                            throw ShrinkFailure.mixNotShown(finding)
+                        }
+                    } else {
+                        guard MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) else {
+                            throw ShrinkFailure.levelMismatch(original: original.level, compressed: copy.level)
+                        }
+                        // And stretch by stretch: a copy of the right length can keep the whole file's level
+                        // within the band and still have lost part of the recording (F801 review).
+                        if let window = MeetingStoragePlan.firstWindowLosingSound(
+                            original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
                         ) {
                             throw ShrinkFailure.soundLost(at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
                         }
@@ -323,31 +330,29 @@ extension AppModel {
             }
         } else if !MeetingStoragePlan.otherRecordingsToVerify(disk).isEmpty {
             // F955: a resume encodes nothing, but before it removes a leftover with several tracks or more
-            // than two channels it checks the copy against it as an encode checks a mix (F942): a copy a
-            // build before F942 made kept only the first track or channel, and the leftover then holds
-            // the last copy of the rest.
+            // than two channels it checks the copy against it as an encode checks a mix (F942, review R2):
+            // a copy a build before F942 made kept only the first track or channel, and the leftover then
+            // holds the last copy of the rest.
             let leftovers = MeetingStoragePlan.otherRecordingsToVerify(disk)
             let copyURL = store.recordingURL(for: meeting)
-            let decode = decodeForShrink
+            let decode = decodeForShrink, audit = auditForShrink
             let checked: ShrinkFailure? = await Task.detached(priority: .userInitiated) {
                 for leftover in leftovers {
                     let url = folder.appendingPathComponent(leftover.name)
-                    let copy: DecodedAudio.Decoded, original: DecodedAudio.Decoded
+                    let original: DecodedAudio.Decoded, measured: RecordingMixPlan.Audit
                     do {
-                        copy = try await decode(copyURL)
                         original = try await decode(url)
+                        measured = try await audit(url, copyURL)
                     } catch {
                         return .leftoverUnchecked(name: leftover.name)
                     }
-                    if !MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) {
-                        return .leftoverNotInCopy(name: leftover.name, at: nil)
+                    guard original.channelWindowLevels.count == measured.trackChannels.reduce(0, +) else {
+                        return .leftoverUnchecked(name: leftover.name)
                     }
-                    if let window = MeetingStoragePlan.firstWindowLosingSound(
-                        original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
-                    ) ?? MeetingStoragePlan.firstWindowLosingAChannel(
-                        channels: original.channelWindowLevels, compressed: copy.windowLevels, originalLevel: original.level
+                    if let finding = RecordingMixPlan.firstFinding(
+                        measured, nativeChannelWindows: original.channelWindowLevels, nativeLevel: original.level
                     ) {
-                        return .leftoverNotInCopy(name: leftover.name, at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
+                        return .leftoverNotInCopy(name: leftover.name, finding: finding)
                     }
                 }
                 return nil
@@ -391,11 +396,34 @@ extension AppModel {
         /// review). It is the first such stretch the check found, and the check stops there, so this
         /// says nothing about the stretches after it (second review, R7).
         case soundLost(at: TimeInterval)
-        /// A resume's leftover with several tracks or more than two channels holds sound the copy lacks,
-        /// in the stretch that starts at this second, or somewhere when nil (F955).
-        case leftoverNotInCopy(name: String, at: TimeInterval?)
+        /// A mixed copy is not shown to hold every track and channel of the recording (F942, review R2).
+        case mixNotShown(RecordingMixPlan.Finding)
+        /// A resume's leftover with several tracks or more than two channels is not shown to be in the copy
+        /// (F955, with F942's checks).
+        case leftoverNotInCopy(name: String, finding: RecordingMixPlan.Finding)
         /// A resume's leftover, or the copy, could not be read to compare them (F955).
         case leftoverUnchecked(name: String)
+
+        /// What a finding says, about `subject` — "the recording", or a leftover's name — and the copy.
+        static func sentence(_ finding: RecordingMixPlan.Finding, subject: String) -> String {
+            let at = { (window: Int) in TranscriptFormatter.clock(Double(window) * MeetingStoragePlan.levelWindowSeconds) }
+            switch finding {
+            case let .channelNotRead(window, channel):
+                return "channel \(channel + 1) of \(subject) could not be read to check the copy, at about \(at(window))"
+            case let .trackCancels(window, track):
+                return "audio track \(track + 1) of \(subject) cancels itself when its channels are mixed into one, at about \(at(window))"
+            case let .copyMissingSound(window):
+                return "the compressed copy is missing sound \(subject) has at about \(at(window))"
+            case let .trackMissing(window, track):
+                return "the compressed copy is missing audio track \(track + 1) of \(subject) at about \(at(window))"
+            case let .channelMissing(window, channel):
+                return "the compressed copy is missing channel \(channel + 1) of \(subject) at about \(at(window))"
+            case let .trackNeverMeasured(track):
+                return "audio track \(track + 1) of \(subject) is never loud enough beside the others to show that the compressed copy holds it"
+            case let .tooManyChannels(count):
+                return "\(subject) has \(count) channels, more than Shrink checks one by one in a mixed copy"
+            }
+        }
         var errorDescription: String? {
             let size = { (b: Int64) in ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
             switch self {
@@ -416,10 +444,14 @@ extension AppModel {
                 return "The recording could not be read to check the compressed copy against it, so the copy was discarded."
             case let .soundLost(at):
                 return "The compressed copy is missing sound the recording has at about \(TranscriptFormatter.clock(at)), so it was discarded."
-            case let .leftoverNotInCopy(name, at?):
-                return "“\(name)”, which the compressed copy replaced, has sound at about \(TranscriptFormatter.clock(at)) that the copy is missing, so it was kept."
-            case let .leftoverNotInCopy(name, nil):
-                return "“\(name)”, which the compressed copy replaced, holds sound the copy doesn't, so it was kept."
+            case let .mixNotShown(finding):
+                let text = Self.sentence(finding, subject: "the recording")
+                let first = String(text.prefix(1)).uppercased()
+                let rest = String(text.dropFirst())
+                return first + rest + ", so the copy was discarded."
+            case let .leftoverNotInCopy(name, finding):
+                return "“\(name)”, which the compressed copy replaced, was kept: "
+                    + Self.sentence(finding, subject: "“\(name)”") + "."
             case let .leftoverUnchecked(name):
                 return "“\(name)”, which the compressed copy replaced, could not be checked against the copy, so it was kept."
             }

@@ -120,12 +120,18 @@ verified and the index saved.
      always caught from 9.4 s; of speech, a lost 1–2 s is never caught, 7 s in 10 of 15 placements, 10 s in 13 of 13.
      Shorter losses are not caught: the check is a backstop against an encoder losing a stretch. The refusal names the
      first stretch it found ("missing sound the recording has at about 0:10") and nothing after it.
-   - For a mixed recording (F942), the original is decoded track by track, and its level is over every channel of every
-     track. Every channel the mixer summed must have been measured, and each channel, in every window where it is
-     audible, must be matched in the copy by at least a quarter of its own level times the mix's 0.95. That catches a
-     channel lost while it is the one sounding — the sides of a call or the microphones of a panel taking turns, the
-     case where a copy of track 1 alone still keeps the whole-file and per-window levels (F801 review R5's fault, pinned
-     by `shrinkRefusesAMixThatLostAChannel`). A channel lost while another is as loud for the whole window is not caught.
+   - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
+     another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
+     (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the
+     mixer reads them, in step with the copy, and `RecordingMixPlan.firstFinding` judges each five-second window:
+     every channel the recording's own decode hears was read for the mix; every track that sounds keeps at least a
+     quarter of its sound when its channels are combined (a track in opposite polarity is refused); the copy keeps at
+     least a quarter of the mix's level; a least-squares fit of the copy's waveform onto the tracks gives every track
+     that is a measurable part of the copy at least 0.6 of what the mix gives it; a fit onto every channel gives each
+     channel that sounds apart from the others at least a quarter; and every track that sounds was measured somewhere.
+     Anything else keeps the original. Measured through the real mix and encode (round 2 probes): tracks and channels
+     in the copy fit at 0.82 to 0.95 of what the mix gives them, also 23 dB under another track, and a lost track or
+     channel within 0.015 of 0. More than 16 channels are not fitted one by one, and are refused up front.
      For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
      stops more than 0.5 s short of where the audio tracks end — not the movie's length, which counts its picture
      (review of F942, R1).
@@ -180,8 +186,8 @@ they are about the recording that would be encoded, and here there is none. A me
 or `meeting-recovered.m4a` and that has nothing left to remove shows "Already shrunk".
 
 A leftover with several audio tracks or more than two channels is removed only after the copy is checked against it
-(F955, 2026-10-12), with step 4's level, per-window and per-channel checks: a copy made before F942 holds only the
-first track or channel, and the leftover then holds the last copy of the rest, which a resume used to delete. A
+(F955, 2026-10-12), with step 4's checks of a mix: a copy made before F942 holds only the first track or channel,
+and the leftover then holds the last copy of the rest, which a resume used to delete. A
 leftover whose tracks are alternatives, or cannot be read, is kept, and so, outside a resume, is any other
 `recording.<ext>` with more tracks than a plain encode keeps, since nothing compares it with the copy there.
 
@@ -429,10 +435,10 @@ transcription and Shrink. Wave 6 built the mixing, so the two refusals above giv
   keeps all six (F953), where afconvert's positioned downmix dropped LFE.
 - **What it costs.** The tracks cannot be separated again once the original is deleted: per-speaker tracks are gone
   for good. The confirmation says so ("…mixed into one; they can't be separated again afterwards").
-- **How it is checked.** Step 4's per-channel check, above. The whole-file band also bounds a mix from above, and a
-  voice reaching many microphones in phase can pass it: computed, not measured, six microphones that each hear the
-  speaker 15 dB down beside the speaker's own read about 4.1 times the level over all channels, and are refused. That
-  is the safe direction.
+- **How it is checked.** Step 4's checks of a mix, above (round 2: fits of the copy's waveform onto every track and
+  channel, and a refusal of a track whose channels cancel). What they cannot show is a quiet track masked under a
+  loud one in a stretch where it is more than 24 dB down: AAC itself spends the fewest bits there, so such a stretch
+  is judged only by the copy's level against the mix's; a track that is never measurable anywhere is refused.
 - **Resume mode** encodes nothing. Before it removes a leftover with several tracks or more than two channels, it
   checks the copy against it (F955, under *Resuming* above).
 

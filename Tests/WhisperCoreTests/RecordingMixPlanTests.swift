@@ -73,6 +73,12 @@ func shrinkMixesWhatItCanRead() {
     poly.channelCount = 4
     poly.audioTracks = [Track(channels: 4)]
     #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle) == nil, "F953: whatever the layout")
+    var many = poly
+    many.channelCount = 24
+    many.audioTracks = [Track(channels: 24)]
+    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle) == .tooManyChannelsToCheck(count: 24),
+            "more than the copy's check fits one by one (review R2)")
+    #expect(MeetingStoragePlan.Unavailability.tooManyChannelsToCheck(count: 24).message.contains("24 channels"))
 
     var languages = call
     languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
@@ -97,24 +103,103 @@ func shrinkMixesWhatItCanRead() {
     #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle) == nil)
 }
 
-@Test("Each channel of a mixed recording must reach the copy wherever it sounds (F942)")
-func mixedCopyMustCarryEveryChannel() {
-    // Two sides taking turns, one 5 s window each, at 0.2; the whole recording's level over both
-    // channels is then 0.1.
-    let channels: [[Double]] = [[0.2, 0, 0.2, 0], [0, 0.2, 0, 0.2]]
-    // A mix holds each side at 0.95 of its level.
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: channels, compressed: [0.19, 0.19, 0.19, 0.19],
-                                                         originalLevel: 0.1) == nil)
-    // A copy that kept track 1 only: silent wherever track 2 spoke.
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: channels, compressed: [0.19, 0.0001, 0.19, 0.0001],
-                                                         originalLevel: 0.1) == 1)
-    // The floor is the band's lower bound times the mix's gain: just above it passes, just below fails.
-    let floor = MeetingStoragePlan.levelRatioBand.lowerBound * RecordingMixPlan.gain * 0.2
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: [[0.2]], compressed: [floor * 1.01], originalLevel: 0.2) == nil)
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: [[0.2]], compressed: [floor * 0.99], originalLevel: 0.2) == 0)
-    // A channel below a tenth of the recording's level is not judged; a copy that is not a number fails.
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: [[0.2], [0.009]], compressed: [0.19], originalLevel: 0.1) == nil)
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: [[0.2]], compressed: [.nan], originalLevel: 0.2) == 0)
-    // A channel lost while another is as loud in the same stretch is not caught, as the doc says.
-    #expect(MeetingStoragePlan.firstWindowLosingAChannel(channels: [[0.2], [0.2]], compressed: [0.19], originalLevel: 0.2) == nil)
+// MARK: - Review R2: showing that a mixed copy holds every track and channel
+
+/// A sine of `amplitude` at `frequency`, `frames` long at 16 kHz.
+private func sine(_ frequency: Double, _ amplitude: Double, frames: Int = 16_000) -> [Double] {
+    (0..<frames).map { amplitude * sin(2 * Double.pi * frequency * Double($0) / 16_000) }
+}
+
+/// One window of an audit, measured from the channels (the tracks' in order) and a copy.
+private func window(_ channels: [[Double]], copy: [Double]) -> RecordingMixPlan.Audit.Window {
+    let count = channels.count
+    var gram = [Double](repeating: 0, count: count * count)
+    var projection = [Double](repeating: 0, count: count)
+    for i in 0..<count {
+        for (index, c) in copy.enumerated() { projection[i] += channels[i][index] * c }
+        for j in 0..<count { for index in copy.indices { gram[i * count + j] += channels[i][index] * channels[j][index] } }
+    }
+    return .init(frames: Double(copy.count), gram: gram, projection: projection, copySquares: copy.reduce(0) { $0 + $1 * $1 })
+}
+
+/// The copy a mix of these tracks makes: each track's channels combined by the plan's weight, the sum at
+/// the mix's gain. `keep` leaves channels out, standing for a mix that lost them.
+private func mixedCopy(_ tracks: [[[Double]]], keep: (Int, Int) -> Bool = { _, _ in true }) -> [Double] {
+    let frames = tracks[0][0].count
+    var copy = [Double](repeating: 0, count: frames)
+    for (t, channels) in tracks.enumerated() {
+        let weight = RecordingMixPlan.channelWeight(channels: channels.count)
+        for (c, samples) in channels.enumerated() where keep(t, c) {
+            for index in 0..<frames { copy[index] += RecordingMixPlan.gain * weight * samples[index] }
+        }
+    }
+    return copy
+}
+
+private func finding(_ tracks: [[[Double]]], copy: [Double], level: Double = 0.1,
+                     native: [[Double]]? = nil) -> RecordingMixPlan.Finding? {
+    let channels = tracks.flatMap { $0 }
+    let audit = RecordingMixPlan.Audit(trackChannels: tracks.map(\.count), sampleRate: 16_000,
+                                       windows: [window(channels, copy: copy)])
+    let nativeWindows = native ?? channels.map { samples in [(samples.reduce(0) { $0 + $1 * $1 } / Double(samples.count)).squareRoot()] }
+    return RecordingMixPlan.firstFinding(audit, nativeChannelWindows: nativeWindows, nativeLevel: level)
+}
+
+@Test("A copy that is the mix of every track and channel is shown to hold them (F942 review R2)")
+func mixedCopyHoldingEverythingIsShown() {
+    let call = [[sine(300, 0.2)], [sine(800, 0.1)]]
+    #expect(finding(call, copy: mixedCopy(call)) == nil)
+    let stereoAndMono = [[sine(300, 0.2), sine(500, 0.2)], [sine(800, 0.2)]]
+    #expect(finding(stereoAndMono, copy: mixedCopy(stereoAndMono)) == nil)
+    // The same voice on both sides of a stereo track (dual mono): the two channels share one fit.
+    let dualMono = [[sine(300, 0.2), sine(300, 0.2)], [sine(800, 0.2)]]
+    #expect(finding(dualMono, copy: mixedCopy(dualMono)) == nil)
+}
+
+@Test("A track missing under another, or a channel missing beside another, is found (F942 review R2, M8)")
+func mixedCopyMissingATrackOrChannelIsFound() {
+    // Track 2 sounds only over track 1, never alone.
+    let call = [[sine(300, 0.2)], [sine(800, 0.1)]]
+    #expect(finding(call, copy: mixedCopy(call) { t, _ in t == 0 }) == .trackMissing(window: 0, track: 1))
+    // Two sides of one stereo track sounding at once, the quieter one lost: the track still fits at nine
+    // tenths (its loud side carries it), so only the fit of each channel shows the loss.
+    let sides = [[sine(300, 0.3), sine(500, 0.1)]]
+    #expect(finding(sides, copy: mixedCopy(sides) { _, c in c == 0 }) == .channelMissing(window: 0, channel: 1))
+}
+
+@Test("A track whose channels cancel is found, whatever sounds over it (F942 review R2)")
+func mixedTrackWhoseChannelsCancelIsFound() {
+    let antiphase = [[sine(300, 0.2), sine(300, -0.2)], [sine(800, 0.2)]]
+    #expect(finding(antiphase, copy: mixedCopy(antiphase)) == .trackCancels(window: 0, track: 0))
+    // Half cancelled (one side at -0.5 of the other) keeps a fifth of its sound: below a quarter.
+    let partly = [[sine(300, 0.2), sine(300, -0.1)], [sine(800, 0.2)]]
+    #expect(finding(partly, copy: mixedCopy(partly)) == .trackCancels(window: 0, track: 0))
+}
+
+@Test("A track never measurable in the copy, a copy gone silent, a channel the reading lost, too many channels (F942 review R2)")
+func mixedCopyFailsClosed() {
+    // Track 2 sounds (above a tenth of the given level) but is always 30 dB under track 1: never measured.
+    let buried = [[sine(300, 1.0)], [sine(800, 0.03)]]
+    #expect(finding(buried, copy: mixedCopy(buried), level: 0.1) == .trackNeverMeasured(track: 1))
+    let call = [[sine(300, 0.2)], [sine(800, 0.1)]]
+    #expect(finding(call, copy: [Double](repeating: 0, count: 16_000)) == .copyMissingSound(window: 0))
+    // The recording's own decode heard channel 2 at 0.5; the mixer's reading of it was silent.
+    let lost = [[sine(300, 0.2)], [[Double](repeating: 0, count: 16_000)]]
+    #expect(finding(lost, copy: mixedCopy(lost), native: [[0.14], [0.5]]) == .channelNotRead(window: 0, channel: 1))
+    let many = RecordingMixPlan.Audit(trackChannels: [17], sampleRate: 16_000, windows: [])
+    #expect(RecordingMixPlan.firstFinding(many, nativeChannelWindows: [], nativeLevel: 0.1) == .tooManyChannels(count: 17))
+}
+
+@Test("The fit shares a sound two regressors hold evenly, and gives a silent one nothing (F942 review R2)")
+func leastSquaresIsDefinedWhenRegressorsCoincide() {
+    // Two identical regressors, target twice one of them: each gets 1, and neither has energy of its own.
+    let same = RecordingMixPlan.leastSquares(gram: [4, 4, 4, 4], projection: [8, 8], size: 2)
+    #expect(abs(same.solution[0] - 1) < 1e-6 && abs(same.solution[1] - 1) < 1e-6)
+    #expect(same.ownEnergy[0] < 1e-6)
+    // An independent pair: the exact coefficients, all their energy their own.
+    let apart = RecordingMixPlan.leastSquares(gram: [4, 0, 0, 9], projection: [2, 27], size: 2)
+    #expect(abs(apart.solution[0] - 0.5) < 1e-6 && abs(apart.solution[1] - 3) < 1e-6)
+    #expect(abs(apart.ownEnergy[1] - 9) < 1e-3)
+    let silent = RecordingMixPlan.leastSquares(gram: [4, 0, 0, 0], projection: [2, 0], size: 2)
+    #expect(abs(silent.solution[1]) < 1e-6)
 }

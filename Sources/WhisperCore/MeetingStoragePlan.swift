@@ -181,29 +181,6 @@ public enum MeetingStoragePlan {
         (disk.audioTrackCount ?? 1) > 1 || (disk.channelCount ?? 0) > 2
     }
 
-    /// The first `levelWindowSeconds` stretch in which some channel of a mixed recording lost its sound
-    /// in the copy, or nil when none did (F942). The whole-file and per-window levels compare the copy
-    /// with the sound of every channel together, and that cannot see a channel missing beside others
-    /// as loud: a copy holding track 1 of two equally loud tracks reads the same level (F801 review
-    /// R5). So each channel of each track, in each stretch where it is audible — at least a tenth of
-    /// the recording's whole-file level, and above `silenceLevel` — must be matched in the copy by at
-    /// least the band's lower bound of its level times the mix's gain (`RecordingMixPlan.gain`): the
-    /// copy is a sum, so a channel that reached it is there at about that level unless another cancels
-    /// it. What it catches is a channel lost while it is the one sounding, which is how the two sides
-    /// of a call or the microphones of a panel take turns. A channel lost while another is as loud for
-    /// the whole stretch is not caught; no comparison of levels can catch that.
-    public static func firstWindowLosingAChannel(channels: [[Double]], compressed: [Double], originalLevel: Double) -> Int? {
-        let audible = Swift.max(silenceLevel, originalLevel / 10)
-        let floor = levelRatioBand.lowerBound * RecordingMixPlan.gain
-        for index in compressed.indices {
-            for channel in channels where index < channel.count && channel[index] >= audible {
-                let copy = compressed[index]
-                guard copy.isFinite, copy >= channel[index] * floor else { return index }
-            }
-        }
-        return nil
-    }
-
     /// The files Shrink removes, in the order it removes them. Only names on this list are ever removed.
     ///
     /// The order is what keeps a folder from looking damaged if the app stops partway (design, step 7):
@@ -367,6 +344,9 @@ public enum MeetingStoragePlan {
         /// copy, whose plain mono mix keeps only some of them — with no channel layout, channel 1 alone
         /// (F801 review, F942).
         case multipleChannels(count: Int)
+        /// A mix of more channels than Shrink checks one by one in its copy (`RecordingMixPlan.mostCheckedChannels`,
+        /// review of F942, R2): not shown to hold them all, so not shrunk.
+        case tooManyChannelsToCheck(count: Int)
         /// Another `recording.<ext>` in the folder is not shown to hold no more audio than the
         /// recording, and Shrink would delete or replace it (F911) — a link import's complete download
         /// beside the shorter WAV an interrupted extraction finished. `seconds` is its length, nil when
@@ -404,6 +384,8 @@ public enum MeetingStoragePlan {
                 return "This recording has \(count) audio tracks in different languages, alternatives to each other. Mixed into one they would garble each other, and a shrunk copy keeps one track, so it isn't shrunk."
             case let .multipleChannels(count):
                 return "This recording has \(count) channels, and they can't be read to mix them into one. A shrunk copy would keep only some of them, and the others would be deleted with the original, so it isn't shrunk."
+            case let .tooManyChannelsToCheck(count):
+                return "This recording has \(count) channels, more than Shrink checks one by one when it mixes them into one copy, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, seconds?):
                 return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, nil):
@@ -453,7 +435,7 @@ public enum MeetingStoragePlan {
             switch RecordingMixPlan.decision(for: tracks) {
             case .asItIs:
                 continue
-            case .mixEveryChannel where resume:
+            case let .mixEveryChannel(channels) where resume && channels <= RecordingMixPlan.mostCheckedChannels:
                 continue
             case .mixEveryChannel, .unsupported:
                 return .otherRecordingHasMoreTracks(name: other.name, tracks: tracks.count,
@@ -481,6 +463,9 @@ public enum MeetingStoragePlan {
             // one click.
             if needsMix(disk) {
                 switch disk.audioTracks.map(RecordingMixPlan.decision(for:)) {
+                case let .mixEveryChannel(channels)? where channels > RecordingMixPlan.mostCheckedChannels:
+                    // More than the check of a mixed copy fits one by one (review R2): not shown, so kept.
+                    return .tooManyChannelsToCheck(count: channels)
                 case .mixEveryChannel?:
                     break
                 case let .unsupported(.alternateTracks(count))?:
