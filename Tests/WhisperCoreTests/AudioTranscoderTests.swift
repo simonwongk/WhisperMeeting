@@ -255,3 +255,22 @@ func transcodeDownmixesUnlessTheInputIsKnownMono() throws {
     #expect(AudioTranscoder.transcodeArguments(input: stereo, output: mono).contains("--mix"))
     #expect(AudioTranscoder.transcodeArguments(input: URL(fileURLWithPath: "/x/clip.m4a"), output: mono).contains("--mix"))
 }
+
+@Test("A refused --mix is retried without it only when afinfo reports every track mono (F941 review)")
+func afinfoMonoRuleKeepsTheMixForAnySecondChannel() {
+    // The shape `afinfo -x` prints, trimmed: each track's count, then its source's, nested.
+    func report(_ tracks: [Int]) -> String {
+        tracks.enumerated().map { index, channels in
+            "<track track_id=\"\(index + 1)\">\n\t<num_channels>\(channels)</num_channels>\n"
+                + "\t<source_info><num_channels>\(channels)</num_channels></source_info>\n</track>"
+        }.joined(separator: "\n")
+    }
+    #expect(AudioTranscoder.everyTrackIsMono(afinfoXML: report([1])))
+    #expect(AudioTranscoder.everyTrackIsMono(afinfoXML: report([1, 1])))
+    #expect(!AudioTranscoder.everyTrackIsMono(afinfoXML: report([2])), "-c 1 alone would drop the right channel")
+    #expect(!AudioTranscoder.everyTrackIsMono(afinfoXML: report([1, 2])), "a second channel anywhere keeps the mix")
+    #expect(!AudioTranscoder.everyTrackIsMono(afinfoXML: report([6])))
+    // An error report lists no tracks; nothing is known, so nothing is dropped.
+    #expect(!AudioTranscoder.everyTrackIsMono(afinfoXML: "<alert level=\"ERROR\" code=\"'wht?'\"></alert>"))
+    #expect(!AudioTranscoder.everyTrackIsMono(afinfoXML: "<num_channels>NA</num_channels>"))
+}

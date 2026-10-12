@@ -109,3 +109,81 @@ func shrinkCompressesALinkImportBesideACoveredDownload() async throws {
     #expect(alert.contains("Shrunk “Conference talk”"), "\(alert)")
     #expect(f.exists("recording.m4a") && !f.exists("recording.wav") && !f.exists("recording.mp4"), "\(alert)")
 }
+
+// Review of F941: a WAV's or a CAF's header says it is mono, but a recording already in the output's
+// format can sit in another container — an AIFF-C holding little-endian samples (what ffmpeg writes for
+// `pcm_s16le -f aiff`), or a movie holding raw 16 kHz mono PCM — and `--mix` still made afconvert refuse it,
+// so Qwen could not transcribe such an import and Shrink failed on it. Import accepts any audio or movie.
+
+/// A 16 kHz mono 16-bit AIFF-C holding little-endian samples ('sowt'), byte for byte the header ffmpeg
+/// writes for `-c:a pcm_s16le -f aiff`. Built by hand: afconvert refuses to write one ('fmt?'), and the
+/// `.aifc` AVAudioFile writes when asked for little-endian samples converted with `--mix`, so showed nothing.
+private func sowtAIFC(_ samples: [Float]) -> Data {
+    var data = Data()
+    func u32(_ value: UInt32) { withUnsafeBytes(of: value.bigEndian) { data.append(contentsOf: $0) } }
+    func u16(_ value: UInt16) { withUnsafeBytes(of: value.bigEndian) { data.append(contentsOf: $0) } }
+    let bytes = UInt32(samples.count * 2)
+    data.append(contentsOf: Array("FORM".utf8)); u32(4 + 12 + 32 + 16 + bytes)
+    data.append(contentsOf: Array("AIFC".utf8))
+    data.append(contentsOf: Array("FVER".utf8)); u32(4); u32(0xA280_5140)
+    data.append(contentsOf: Array("COMM".utf8)); u32(24)
+    u16(1); u32(UInt32(samples.count)); u16(16)
+    // 16000 as an 80-bit IEEE extended: exponent 16383 + 13, mantissa 16000 << 50.
+    data.append(contentsOf: [0x40, 0x0C, 0xFA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] as [UInt8])
+    data.append(contentsOf: Array("sowt".utf8)); u16(0)
+    data.append(contentsOf: Array("SSND".utf8)); u32(8 + bytes); u32(0); u32(0)
+    let pcm = samples.map { Int16(Swift.max(-1, Swift.min(1, $0)) * 32_767).littleEndian }
+    pcm.withUnsafeBytes { data.append(contentsOf: $0) }
+    return data
+}
+
+/// A QuickTime movie whose one track is 16 kHz mono 16-bit little-endian PCM, uncompressed.
+private func sixteenKilohertzMonoPCMMovie(_ samples: [Float], to url: URL) async throws {
+    let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000, AVNumberOfChannelsKey: 1,
+                                   AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+                                   AVLinearPCMIsNonInterleaved: false]
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+    let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+    input.expectsMediaDataInRealTime = false
+    try #require(writer.canAdd(input))
+    writer.add(input)
+    try #require(writer.startWriting(), "\(String(describing: writer.error))")
+    writer.startSession(atSourceTime: .zero)
+    let pcm = samples.map { Int16(Swift.max(-1, Swift.min(1, $0)) * 32_767) }
+    let buffer = try fixtureSampleBuffer(pcm, channels: 1, rate: 16_000, startFrame: 0)
+    let deadline = Date().addingTimeInterval(30)
+    while !input.isReadyForMoreMediaData {
+        try #require(Date() < deadline, "the writer stalled")
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    try #require(input.append(buffer), "\(String(describing: writer.error))")
+    input.markAsFinished()
+    await writer.finishWriting()
+    try #require(writer.status == .completed, "\(String(describing: writer.error))")
+}
+
+@Test("A 16 kHz mono recording in an AIFF-C or a movie transcodes too, read from its format not its header (F941 review)")
+func transcodeAcceptsSixteenKilohertzMonoInOtherContainers() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F941-containers-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    for name in ["recording.aiff", "recording.mov"] {
+        let input = dir.appendingPathComponent(name)
+        if name.hasSuffix(".aiff") {
+            try sowtAIFC(tone(seconds: 2)).write(to: input)
+        } else {
+            try await sixteenKilohertzMonoPCMMovie(tone(seconds: 2), to: input)
+        }
+        let output = dir.appendingPathComponent("\(name).wav")
+
+        do {
+            try AudioTranscoder.transcodeToWAV(input: input, output: output)
+        } catch {
+            Issue.record("\(name): \(error)")
+            continue
+        }
+
+        let decoded = try #require(fixtureDecode(output).channels.first)
+        #expect(abs(fixtureToneAmplitude(decoded, rate: 16_000, frequency: 440) - 0.3) < 0.01, "\(name)")
+    }
+}

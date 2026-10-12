@@ -153,7 +153,7 @@ private extension Int16 {
 }
 
 /// Interleaved 16-bit PCM as a `CMSampleBuffer` an `AVAssetWriterInput` encodes.
-private func fixtureSampleBuffer(_ samples: [Int16], channels: Int, rate: Double, startFrame: Int) throws -> CMSampleBuffer {
+func fixtureSampleBuffer(_ samples: [Int16], channels: Int, rate: Double, startFrame: Int) throws -> CMSampleBuffer {
     var description = AudioStreamBasicDescription(
         mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,

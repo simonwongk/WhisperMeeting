@@ -40,25 +40,57 @@ public enum AudioTranscoder {
     /// proven in `Scripts/bench/generate_clips.sh`). Throws `AudioTranscoderError.transcodeFailed` if
     /// afconvert is missing or exits non-zero (e.g. a container it cannot decode, like a video-only
     /// .mov) — the caller maps that to switch-engine guidance rather than a raw error.
+    ///
+    /// A refusal of `--mix` is retried without it only when Core Audio, asked about the file itself,
+    /// reports one channel for every track it lists (review of F941): an input already in the output's
+    /// format refuses `--mix` in whatever container holds it — an AIFF-C of little-endian samples, as
+    /// ffmpeg writes one, or a movie of raw 16 kHz mono PCM — and `knownChannelCount` reads only WAV and
+    /// CAF headers. Asked after a failure, so a conversion that succeeds costs nothing more; and a file
+    /// with a second channel anywhere, or one `afinfo` cannot read, keeps the original error rather than
+    /// lose a channel to `-c 1` without `--mix`.
     public static func transcodeToWAV(input: URL, output: URL) throws {
+        let arguments = transcodeArguments(input: input, output: output)
+        let first = try run("/usr/bin/afconvert", arguments)
+        guard first.status != 0 else { return }
+        if arguments.contains("--mix"),
+           let info = try? run("/usr/bin/afinfo", ["-x", input.path]), info.status == 0,
+           everyTrackIsMono(afinfoXML: String(decoding: info.output, as: UTF8.self)) {
+            let retry = try run("/usr/bin/afconvert", arguments.filter { $0 != "--mix" })
+            guard retry.status != 0 else { return }
+            throw AudioTranscoderError.transcodeFailed(String(decoding: retry.output.suffix(2_000), as: UTF8.self))
+        }
+        throw AudioTranscoderError.transcodeFailed(String(decoding: first.output.suffix(2_000), as: UTF8.self))
+    }
+
+    /// Runs one of macOS's audio tools and collects its exit status and its combined output.
+    private static func run(_ tool: String, _ arguments: [String]) throws -> (status: Int32, output: Data) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        process.arguments = transcodeArguments(input: input, output: output)
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
         do {
             try process.run()
         } catch {
-            throw AudioTranscoderError.transcodeFailed("afconvert could not be launched: \(error.localizedDescription)")
+            let name = URL(fileURLWithPath: tool).lastPathComponent
+            throw AudioTranscoderError.transcodeFailed("\(name) could not be launched: \(error.localizedDescription)")
         }
-        // afconvert writes audio to the output file; stdout/stderr carry only small log lines, so a
-        // read-to-EOF then wait cannot deadlock on a full pipe.
+        // afconvert writes audio to the output file and afinfo a few KB of XML; the pipe carries only
+        // those, so a read-to-EOF then wait cannot deadlock on a full pipe.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw AudioTranscoderError.transcodeFailed(String(decoding: data.suffix(2_000), as: UTF8.self))
+        return (process.terminationStatus, data)
+    }
+
+    /// Whether `afinfo -x`'s report lists at least one channel count and every one of them is 1 — each
+    /// track's own and its source's (review of F941). A report with none, or with any other number, is
+    /// not mono, and the caller keeps `--mix`.
+    static func everyTrackIsMono(afinfoXML: String) -> Bool {
+        let counts = afinfoXML.components(separatedBy: "<num_channels>").dropFirst().map {
+            $0.components(separatedBy: "</num_channels>").first?.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        return !counts.isEmpty && counts.allSatisfy { $0 == "1" }
     }
 
     /// afconvert's arguments for `transcodeToWAV`.
@@ -71,8 +103,9 @@ public enum AudioTranscoder {
     /// made for it to be set on, and that is the WAV every link import holds (F941). Measured on macOS
     /// 27: without `--mix` that input converts; and a mono input of any rate has nothing to mix. A
     /// recording whose channels cannot be read here keeps `--mix`, the safe side for a stereo call;
-    /// every such input measured converts with it (AAC, MP3, big-endian AIFF, movies with a video
-    /// track), as do mono WAVs that are not exactly the output's format (24-bit, Float32, 48 kHz).
+    /// AAC, MP3, big-endian AIFF and movies with a video track convert with it, as do mono WAVs that are
+    /// not exactly the output's format (24-bit, Float32, 48 kHz). Ones that do not — the output's format
+    /// in another container — are retried by `transcodeToWAV` once `afinfo` reports them mono.
     static func transcodeArguments(input: URL, output: URL) -> [String] {
         let mix: [String] = knownChannelCount(of: input) == 1 ? [] : ["--mix"]
         return ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"] + mix + [input.path, output.path]
