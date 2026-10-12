@@ -97,7 +97,11 @@ private enum PreF536GlossaryCorrector {
         while let last = characters.last, !keeps(last) { trailing.insert(characters.removeLast(), at: 0) }
         guard !characters.isEmpty else { return phrase }
         guard byIdentity else {
-            return String(leading.suffix(termLeading.count) + characters + trailing.prefix(termTrailing.count))
+            // Typed separately: in one expression Swift 6.1 (the CI runner's) resolves `prefix` to
+            // `Sequence`'s `PrefixSequence` and cannot add it to an `ArraySlice` (CI run 38194066710).
+            let leadingByCount: [Character] = Array(leading.suffix(termLeading.count))
+            let trailingByCount: [Character] = Array(trailing.prefix(termTrailing.count))
+            return String(leadingByCount + characters + trailingByCount)
         }
         var keptLeading = leading
         while !keptLeading.isEmpty, !termLeading.reversed().starts(with: keptLeading.reversed()) {
