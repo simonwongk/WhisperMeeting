@@ -35,10 +35,14 @@ public enum RecordingFolderLiveness {
 
     /// What a link import writes (F453): yt-dlp's `recording.<ext>.part` while it downloads, then
     /// `recording.<ext>`, then ffmpeg's `recording.wav` while it extracts — and recovery's own
-    /// conversion writes `recording.extracting.wav`. A crash of the app sends them no signal: yt-dlp
-    /// leads its own process group and ffmpeg is its child. ffmpeg, writing to yt-dlp's pipes, runs
-    /// on to the end; yt-dlp itself may die at its next write to the app's closed pipe, which is
-    /// unverified (F893). A folder one of them is still writing is as live as a capture's.
+    /// conversion writes `recording.extracting.wav`. Quit stops yt-dlp and ffmpeg
+    /// (`AppModel.cancelWorkForQuit`, F893); a crash sends them no signal, since yt-dlp leads its own
+    /// process group and ffmpeg is its child. Measured with yt-dlp 2026.08.19 and ffmpeg 8.1.2 (F893):
+    /// during the download yt-dlp dies at its next progress line, within a second, on the app's closed
+    /// pipe; during the extraction ffmpeg, writing to yt-dlp's pipes, runs on to the end, and yt-dlp,
+    /// waiting for it, then dies when it reports deleting the download — before deleting it
+    /// (`YoutubeDL._delete_downloaded_files` prints first). A folder one of them is still writing is as
+    /// live as a capture's.
     private static let importFilePrefix = "recording."
 
     /// The sizes of what is being written, at one instant: the raw tracks, and any import file.

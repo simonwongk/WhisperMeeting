@@ -79,7 +79,8 @@ struct WhisperMeetApp: App {
 
         lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
         // F520: Quit stops a running model install; its script restores what it was replacing.
-        lifecycle.onTerminate = { [weak model] in model?.cancelAllInstalls() }
+        // F893: and a link import, whose downloader and ffmpeg otherwise ran on after the app quit.
+        lifecycle.onTerminate = { [weak model] in model?.cancelWorkForQuit() }
         lifecycle.onStartupRecovery = { [weak model] in
             await model?.performStartupRecovery()
         }

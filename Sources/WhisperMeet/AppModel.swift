@@ -572,6 +572,8 @@ final class AppModel: ObservableObject {
 
     /// Live download progress for the link-import sheet. Nil when no download is running.
     @Published var mediaDownloadProgress: MediaDownloadProgress?
+    /// The latest link import started through `startLinkImport`, so Quit can stop it (F893).
+    private var linkImportTask: Task<LinkImportOutcome, Never>?
     /// What a link import is doing once its audio has downloaded, for the link-import sheet (F895).
     /// Nil before the download has finished and once the import has ended, however it ended.
     @Published private(set) var linkImportStage: LinkImportStage?
@@ -5409,6 +5411,35 @@ final class AppModel: ObservableObject {
             if error is CancellationError { return .cancelled }
             return .refused(error.localizedDescription)
         }
+    }
+
+    /// Starts a link import as a task the model holds, and returns it for the sheet to await (F893).
+    ///
+    /// Held here rather than in the sheet's `@State` because Quit has to reach it. The downloader runs
+    /// in a process group of its own (`ProcessGroupRunner`), which is signalled only when the task
+    /// running it is cancelled, so an import whose task nothing on the model held went on after the
+    /// app quit — yt-dlp, and the ffmpeg it starts to extract the audio. Only one import runs at a
+    /// time (`importFromURL` refuses a second while `isImporting`), so this holds the latest start.
+    func startLinkImport(_ raw: String, confirmedLongDuration: Bool = false) -> Task<LinkImportOutcome, Never> {
+        let task = Task { await importFromURL(raw, confirmedLongDuration: confirmedLongDuration) }
+        linkImportTask = task
+        return task
+    }
+
+    /// Stops the link import in flight: the sheet's Stop, and Quit (F893). The cancellation runs the
+    /// active runner's cancellation handler on this thread, so the downloader's whole process group —
+    /// yt-dlp and any ffmpeg it started — has SIGTERM before this returns. A finished import is not
+    /// affected.
+    func cancelLinkImport() {
+        linkImportTask?.cancel()
+    }
+
+    /// What Quit stops (`AppLifecycle.onTerminate`, wired in `AppEntry`): running model installs
+    /// (F520) and a link import (F893). Both run in processes of their own that would otherwise go on
+    /// after the app is gone.
+    func cancelWorkForQuit() {
+        cancelAllInstalls()
+        cancelLinkImport()
     }
 
     /// What `importFromURL` did (F539). The sheet closes on `.imported`, keeps itself open for

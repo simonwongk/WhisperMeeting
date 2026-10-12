@@ -274,6 +274,9 @@ func linkImportSheetShowsItsOwnError() throws {
     #expect(sheet.contains("case let .refused(message): refusal = message"), "a refusal is kept")
     #expect(sheet.contains("Label(refusal, systemImage:"), "and drawn inside the sheet, beside the field")
     #expect(sheet.contains(".onChange(of: link) { refusal = nil }"), "and withdrawn when the link is edited")
-    #expect(sheet.contains("let outcome = await model.importFromURL("), "the result is the outcome, not a bare id")
+    // Since F893 the model holds the import (`startLinkImport`), so Quit can stop it; its value is
+    // the same `LinkImportOutcome`.
+    #expect(sheet.contains("let running = model.startLinkImport("), "the import is the model's")
+    #expect(sheet.contains("let outcome = await running.value"), "the result is the outcome, not a bare id")
     #expect(!sheet.contains("alertMessage"), "nothing here leans on the window's alert")
 }

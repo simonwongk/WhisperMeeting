@@ -210,8 +210,8 @@ func quitStopsARunningInstall() async throws {
     model.installSummarizer()
     try await waitUntil("the installer to start") { exists(root, "started") }
 
-    // What AppEntry wires `AppLifecycle.onTerminate` to.
-    model.cancelAllInstalls()
+    // What AppEntry wires `AppLifecycle.onTerminate` to (F893 added the link import to it).
+    model.cancelWorkForQuit()
     try await waitUntil("the installer's trap") { exists(root, "trapped") }
     try await waitUntil("the install to end") { !model.isInstallingSummarizer }
     #expect(!exists(root, "finished"))
@@ -239,7 +239,7 @@ func terminateHookRunsOnQuitOnly() {
 func quitAndCancelAreWired() throws {
     let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     let initRegion = try #require(entry.range(of: "var body: some Scene {")).lowerBound
-    let wiring = try #require(entry.range(of: "lifecycle.onTerminate = { [weak model] in model?.cancelAllInstalls() }"),
+    let wiring = try #require(entry.range(of: "lifecycle.onTerminate = { [weak model] in model?.cancelWorkForQuit() }"),
                               "AppEntry does not stop installs on quit")
     #expect(wiring.lowerBound < initRegion, "the quit hook must be wired in init(), not in the window's .task (F465)")
 

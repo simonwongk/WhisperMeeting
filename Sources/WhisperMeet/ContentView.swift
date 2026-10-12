@@ -2186,8 +2186,8 @@ private struct LinkImportSheet: View {
     /// While the link field has focus its own submit answers Return; the Download button is the
     /// default only otherwise, so a Return typed in the field is not also a click (F537).
     @FocusState private var linkFieldFocused: Bool
-    /// The in-flight import, held so Cancel actually stops the download instead of only closing the
-    /// sheet and leaving the fetch (and the isImporting latch) running invisibly.
+    /// Waits for the import the model is running (`AppModel.startLinkImport`), to act on its outcome.
+    /// The import itself is held by the model, so Quit can stop it as well as Stop (F893).
     @State private var importTask: Task<Void, Never>?
     /// What the last attempt said when it declined (F539). Drawn inside this sheet because the
     /// window's alert, where these used to go, is behind it. Cleared the moment the link is edited
@@ -2296,8 +2296,9 @@ private struct LinkImportSheet: View {
         guard !trimmedLink.isEmpty, !isWorking else { return }
         isWorking = true
         refusal = nil
+        let running = model.startLinkImport(trimmedLink, confirmedLongDuration: confirmed)
         importTask = Task {
-            let outcome = await model.importFromURL(trimmedLink, confirmedLongDuration: confirmed)
+            let outcome = await running.value
             isWorking = false
             importTask = nil
             switch outcome {
@@ -2322,6 +2323,7 @@ private struct LinkImportSheet: View {
     /// Stops an in-flight download (the runner kills the whole process group and the import cleans up
     /// its folder) before closing, so Cancel never leaves an invisible fetch running.
     private func cancel() {
+        model.cancelLinkImport()
         importTask?.cancel()
         importTask = nil
         isWorking = false
