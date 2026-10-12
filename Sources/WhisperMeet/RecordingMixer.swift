@@ -173,7 +173,7 @@ enum RecordingMixer {
         // 44 bytes every reader takes, unless the recording's declared length (with a tenth to spare)
         // could need RF64, past about 37 hours at 16 kHz (F302's rule, as the recovery rebuild applies it).
         let seconds = expectedSeconds.isFinite ? Swift.max(0, expectedSeconds) : 0
-        let estimate = UInt64(Swift.max(0, Int64(saturating: seconds * 1.1 * Double(sampleRate) * 2)))
+        let estimate = UInt64(clamping: Int64(saturating: seconds * 1.1 * Double(sampleRate) * 2))
         let rf64 = WAVWriter.headerLength(dataByteCount: estimate) == 80
         try handle.write(contentsOf: Data(count: rf64 ? 80 : 44))
         var written = 0
