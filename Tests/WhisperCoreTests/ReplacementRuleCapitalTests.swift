@@ -8,7 +8,8 @@ import Testing
 // character upper-cased where that starts a sentence, and the replacement keeps that capital.
 // Mid-sentence a capital is left alone — it is what tells the person Bill from the bill, and
 // dictation pastes with no review — and so is every other case variant (JON, jON). The integrator
-// chose sentence starts because the ticket names them; F913 asks the user whether to go further.
+// chose sentence starts because the ticket names them, and the user kept them on 2026-10-12 (F913);
+// F938 narrows what counts as one — not after "Mr.", "U.S." or "3.", nor where a line continues.
 
 private func seg(_ text: String) -> TranscriptSegment {
     TranscriptSegment(speaker: nil, start: 0, end: 1, text: text)
@@ -125,12 +126,73 @@ func capitalisedWordIsMatchedOnlyAtASentenceStart() {
     #expect(plan.pasted == "The plan for the team. Plan A.")
     #expect(plan.proposed == [GlossaryCorrection(segmentIndex: 0, from: "A", to: "The")])
     #expect(plan.improved == "The plan for a team. Plan A.")
-    // U-boat is mid-sentence. The "U" of "U.S." starts the text: dictation leaves it alone by
-    // F821's address rule, and the Improve sheet proposes it, as it proposes addresses, for review.
+    // U-boat is mid-sentence. The "U" of "U.S." starts the text, but it is a letter of an
+    // abbreviation, not a sentence's first word: dictation leaves it alone, and since F938 so does
+    // the Improve sheet, which proposed "U → You" (ticked, as rule rows are) and wrote "You.S.".
     let you = paths("u", "you", "U.S. and U-boat and u")
     #expect(you.pasted == "U.S. and U-boat and you")
-    #expect(you.proposed == [GlossaryCorrection(segmentIndex: 0, from: "U", to: "You")])
-    #expect(you.improved == "You.S. and U-boat and u")
+    #expect(you.proposed == [GlossaryCorrection(segmentIndex: 0, from: "u", to: "you")])
+    #expect(you.improved == "U.S. and U-boat and you")
+}
+
+@Test("An abbreviation's, an initial's, a number's or an ellipsis's full stop starts no sentence; a real one after them still does (F938)")
+func abbreviationsAndNumbersStartNoSentence() {
+    func paths(_ heard: String, _ preferred: String, _ text: String) -> (pasted: String, proposed: [GlossaryCorrection], improved: String) {
+        let rules = [ReplacementRule(heard: heard, preferred: preferred)]
+        let segments = [seg(text)]
+        let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
+        return (ReplacementRuleMatcher.applied(rules, to: text), proposed, GlossaryCorrector.apply(proposed, to: segments)[0].text)
+    }
+    // The ticket's example: Mr. Bill keeps his name, and the bill becomes the invoice.
+    let bill = paths("bill", "invoice", "Ask Mr. Bill about the bill.")
+    #expect(bill.pasted == "Ask Mr. Bill about the invoice.")
+    #expect(bill.proposed == [GlossaryCorrection(segmentIndex: 0, from: "bill", to: "invoice")])
+    #expect(bill.improved == "Ask Mr. Bill about the invoice.")
+    // A title, an abbreviation, an initial, a list number, a version, a quarter and an ASCII
+    // ellipsis (which now reads as the single character "…" always has): none ends a sentence here.
+    let notSentenceStarts = [
+        "Ask Mr. Jason.", "Ask Mrs. Jason.", "Ask Ms. Jason.", "Ask Dr. Jason.", "Ask Prof. Jason.",
+        "On St. Jason day.", "Bears vs. Jason today.", "Use a format, e.g. Jason here.", "A format, i.e. Jason here.",
+        "The U.S. Jason team.", "Ask J. Jason now.", "1. Jason said so.", "Q3. Jason said so.",
+        "We shipped version 3. Jason said so.", "So... Jason, what do you think?", "So\u{2026} Jason, what do you think?",
+    ]
+    for text in notSentenceStarts {
+        let jason = paths("jason", "JSON", text)
+        #expect(jason.pasted == text)
+        #expect(jason.proposed.isEmpty, "\(text)")
+    }
+    // A real sentence start after them is still one: the full stop after "this one", "Smith" or "I".
+    let afterEG = paths("jason", "JSON", "Use a format, e.g. this one. Jason works.")
+    #expect(afterEG.pasted == "Use a format, e.g. this one. JSON works.")
+    #expect(afterEG.proposed == [GlossaryCorrection(segmentIndex: 0, from: "Jason", to: "JSON")])
+    #expect(afterEG.improved == "Use a format, e.g. this one. JSON works.")
+    #expect(paths("jason", "JSON", "Ask Mr. Smith. Jason works.").pasted == "Ask Mr. Smith. JSON works.")
+    #expect(paths("jason", "JSON", "So did I. Jason left.").pasted == "So did I. JSON left.")
+    #expect(paths("jason", "JSON", "Mr. Jason. Jason left.").pasted == "Mr. Jason. JSON left.")
+    // A full stop after a closing bracket or quote is still a sentence's.
+    #expect(paths("jason", "JSON", "It works (mostly). Jason said so.").pasted == "It works (mostly). JSON said so.")
+}
+
+@Test("A segment continues its sentence unless the segment before it ended one (F938)")
+func aSegmentStartsASentenceOnlyAfterOneEnded() {
+    let rules = [ReplacementRule(heard: "jason", preferred: "JSON")]
+    func proposed(_ lines: [String]) -> [GlossaryCorrection] {
+        ReplacementRuleMatcher.corrections(rules: rules, segments: lines.map(seg))
+    }
+    // The review's case: a recognizer split one sentence across two lines, and the name that
+    // begins the second line is mid-sentence. The lower-case "jason" is the one meant.
+    let continued = ["I talked to", "Jason about the jason file."]
+    #expect(proposed(continued) == [GlossaryCorrection(segmentIndex: 1, from: "jason", to: "JSON")])
+    #expect(GlossaryCorrector.apply(proposed(continued), to: continued.map(seg)).map(\.text)
+        == ["I talked to", "Jason about the JSON file."])
+    // After a line that ended its sentence, the next line's first word starts one; the first line
+    // always does, and an empty line between says nothing either way.
+    #expect(proposed(["Done.", "Jason said so."]) == [GlossaryCorrection(segmentIndex: 1, from: "Jason", to: "JSON")])
+    #expect(proposed(["Jason said so."]) == [GlossaryCorrection(segmentIndex: 0, from: "Jason", to: "JSON")])
+    #expect(proposed(["Done.", "  ", "Jason said so."]) == [GlossaryCorrection(segmentIndex: 2, from: "Jason", to: "JSON")])
+    #expect(proposed(["I talked to", "", "Jason today."]).isEmpty)
+    // A line ending in an abbreviation continues into the next.
+    #expect(proposed(["I met Mr.", "Jason today."]).isEmpty)
 }
 
 @Test("A sentence starts at the start of the text, or after . ! ? 。 ！ ？ or a line break, across spaces, quotes and brackets (F858)")

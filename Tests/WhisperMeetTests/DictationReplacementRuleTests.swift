@@ -217,6 +217,21 @@ func dictationRuleLeavesAMidSentenceCapitalAlone() async throws {
 }
 
 @MainActor
+@Test("A title's full stop is not a sentence's, so a dictated \"Mr. Bill\" keeps his name (F938)")
+func dictationRuleLeavesANameAfterATitleAlone() async throws {
+    let harness = try Harness(engineText: "Ask Mr. Bill about the bill. Bill paid it")
+    defer { harness.cleanUp() }
+    harness.controller.configureReplacementRules(
+        { [ReplacementRule(heard: "bill", preferred: "invoice")] }, knownTerms: { [] }
+    )
+
+    let entry = try await harness.dictate()
+
+    // "Mr." is a title, so the "Bill" after it is mid-sentence; the "Bill" after "bill." starts one.
+    #expect(entry.text == "Ask Mr. Bill about the invoice. Invoice paid it")
+}
+
+@MainActor
 @Test("The app hands dictation its replacement rules and stored vocabulary, and the default segmenter is NLTokenizer's (F821)")
 func appWiresReplacementRulesIntoDictation() throws {
     let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")

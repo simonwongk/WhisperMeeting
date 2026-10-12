@@ -13,8 +13,8 @@ import Foundation
 /// the capital — see `ReplacementBoundary.replacement(for:)`. A capital anywhere else is left alone:
 /// mid-sentence it is what tells the person Bill from the bill a rule "bill → invoice" was written
 /// for, and Quick Dictation pastes with no review. So are ALL CAPS (JON), inner capitals (jOn), and a
-/// rule written with a capital meeting the word in lower case. The integrator chose sentence starts
-/// because the ticket names them; F913 asks the user whether a rule should reach further.
+/// rule written with a capital meeting the word in lower case. The user decided on 2026-10-12 (F913)
+/// that a rule reaches sentence starts only; F938 narrowed what counts as one ("Mr. Bill" does not).
 public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
     public let heard: String
     public let preferred: String
@@ -53,8 +53,17 @@ public enum ReplacementRuleMatcher {
         var result: [GlossaryCorrection] = []
         // The occurrences already proposed, per segment.
         var proposed = [[Range<String.Index>]](repeating: [], count: segments.count)
-        // One segmentation per segment, shared by every rule checked against it.
-        let segmented = segments.map { SegmentedText($0.text, segmenter: evidence.segmenter) }
+        // One segmentation per segment, shared by every rule checked against it. A line starts a
+        // sentence only where the line before it ended one (F938): a recognizer can split a
+        // sentence across lines, and "I talked to" / "Jason about the jason file." is one sentence.
+        var segmented: [SegmentedText] = []
+        var lineStartsASentence = true
+        for segment in segments {
+            segmented.append(SegmentedText(segment.text, segmenter: evidence.segmenter, startsASentence: lineStartsASentence))
+            lineStartsASentence = ReplacementBoundary.startsASentence(
+                at: segment.text.endIndex, in: segment.text, atTextStart: lineStartsASentence
+            )
+        }
         for rule in rules where !rule.heard.isEmpty && rule.heard != rule.preferred {
             let boundary = ReplacementBoundary(
                 heard: rule.heard, notCoveredBy: rule.preferred, evidence: evidence, matchingCapitalised: true
@@ -94,8 +103,9 @@ public enum ReplacementRuleMatcher {
     /// Nor does a rule touch a dictated email address, URL or dotted host name
     /// (`liesInsideAnAddress`): `@ . / :` are word edges to `ReplacementBoundary`, so "jon → Jonathan"
     /// turned `jon@jon.dev` into `Jonathan@Jonathan.dev`, and dictation pastes with no review to catch
-    /// it (the review of lane W). The Improve sheet keeps proposing those occurrences — the user sees
-    /// every one there before it applies.
+    /// it (the review of lane W). The Improve sheet keeps proposing those occurrences of the rule as
+    /// written — the user sees every one there before it applies — but not of its capitalised form,
+    /// which is no sentence's first word inside an address or "U.S." (F938).
     public static func applied(
         _ rules: [ReplacementRule],
         to text: String,
@@ -161,7 +171,9 @@ public enum ReplacementRuleMatcher {
 /// **A replacement rule also matches `heard` with its first character upper-cased where that starts
 /// a sentence (F858)** — `matchingCapitalised`, which only the rule matcher and dictation pass: the
 /// start of the text, or after `.` `!` `?` `。` `！` `？` or a line break, with only spaces, quotes
-/// and brackets between (`startsASentence`). The F165 model's corrections and `apply` stay exact: a
+/// and brackets between (`startsASentence`) — but not after an abbreviation's, an initial's or a
+/// number's full stop, nor at the start of a meeting line that continues the line before it, nor
+/// inside an address or "U.S." (F938). The F165 model's corrections and `apply` stay exact: a
 /// rule proposal names the text as it stands, so `apply` needs no case rule of its own. With the
 /// variant, coverage widens to `preferred` capitalised too ("Jon smith" covers the "Jon" of a rule
 /// "jon → jon smith"), the safe direction.
@@ -257,20 +269,52 @@ final class ReplacementBoundary {
         return first.uppercased() + text.dropFirst()
     }
 
-    /// Whether `index` starts a sentence (F858): it is the start of `text`, or the nearest character
-    /// before it that is not a space, a quote or a bracket is a line break or one of `.` `!` `?` `。`
-    /// `！` `？`. A comma, colon, semicolon or dash ends no sentence. An abbreviation's full stop
-    /// ("Mr. Bill", "U.S. and") reads as a sentence's: this cannot tell the two apart.
-    static func startsASentence(at index: String.Index, in text: String) -> Bool {
+    /// Whether `index` starts a sentence (F858): the nearest character before it that is not a
+    /// space, a quote or a bracket is a line break or one of `.` `!` `?` `。` `！` `？` — a `.` only
+    /// where `fullStopEndsASentence` says it ends one (F938) — or there is none, and then the
+    /// answer is `atTextStart`: whether the text's own start starts a sentence. Dictation's text
+    /// does; a meeting's line does only where the line before it ended one (F938, the review's R2),
+    /// since a recognizer can split one sentence across two lines. A comma, colon, semicolon, dash
+    /// or the single character "…" ends no sentence.
+    static func startsASentence(at index: String.Index, in text: String, atTextStart: Bool = true) -> Bool {
         var cursor = index
         while cursor > text.startIndex {
             cursor = text.index(before: cursor)
             let character = text[cursor]
-            if character.isNewline || sentenceEnds.contains(character) { return true }
+            if character.isNewline { return true }
+            if sentenceEnds.contains(character) { return character != "." || fullStopEndsASentence(at: cursor, in: text) }
             guard character.isWhitespace || quotesAndBrackets.contains(character) else { return false }
         }
-        return true
+        return atTextStart
     }
+
+    /// Whether the full stop at `dot` ends a sentence (F938). It does not after a title or an
+    /// abbreviation ("Mr. Bill", "vs. Jason"), a single Latin letter ("U.S. Army", "e.g. Jason",
+    /// "J. Smith" — the lone word "I" excepted, "So did I. Jason left."), anything with a digit in
+    /// it ("1. Jason", "Q3. Jason", "version 3. Jason"), or another full stop ("So... Jason", which
+    /// now reads as the single character "…" always has). Each of these can also end a sentence ("we
+    /// shipped version 3. Jason said so"), and this cannot tell which. It says no: a word left alone
+    /// is what a rule did before F858, while a rewritten name is pasted by dictation with no review.
+    static func fullStopEndsASentence(at dot: String.Index, in text: String) -> Bool {
+        var start = dot
+        while start > text.startIndex {
+            let previous = text[text.index(before: start)]
+            guard previous.isLetter || previous.isNumber else { break }
+            start = text.index(before: start)
+        }
+        let word = text[start..<dot]
+        guard let first = word.first else {
+            // "..." is an ellipsis; a bracket, a quote or another mark before the stop ends a sentence.
+            return start == text.startIndex || text[text.index(before: start)] != "."
+        }
+        if word.contains(where: \.isNumber) { return false }
+        if word.count == 1, LatinTokenBoundary.isConnector(first) { return word == "I" }
+        return !titlesAndAbbreviations.contains(word.lowercased())
+    }
+
+    /// Words whose full stop is the abbreviation's, not a sentence's (F938). Single letters ("e.g.",
+    /// "i.e.", "U.S.", "a.m.") need no entry: every single Latin letter but "I" is read as one.
+    private static let titlesAndAbbreviations: Set<String> = ["mr", "mrs", "ms", "mx", "dr", "prof", "st", "jr", "sr", "vs"]
 
     private static let sentenceEnds: Set<Character> = [".", "!", "?", "。", "！", "？"]
 
@@ -317,7 +361,7 @@ final class ReplacementBoundary {
         }
         var found: [Range<String.Index>] = []
         var searchStart = text.startIndex
-        while let candidate = nextCandidate(in: text, from: searchStart) {
+        while let candidate = nextCandidate(in: segmented, from: searchStart) {
             let coveredByPreferred = preferredRanges.contains {
                 $0.contains(candidate.lowerBound) && candidate.upperBound <= $0.upperBound
             }
@@ -333,15 +377,22 @@ final class ReplacementBoundary {
     }
 
     /// The earliest occurrence at or after `start` of `heard`, or of its capitalised variant where
-    /// that starts a sentence (F858). A capitalised one mid-sentence is no candidate at all.
-    private func nextCandidate(in text: String, from start: String.Index) -> Range<String.Index>? {
+    /// that starts a sentence (F858). A capitalised one mid-sentence is no candidate at all, and
+    /// nor is one inside an address or a dotted abbreviation (F938): the "U" of "U.S." starts the
+    /// text but is no sentence's first word, and dictation's `liesInsideAnAddress` already left it,
+    /// while Improve proposed "U → You" and wrote "You.S.".
+    private func nextCandidate(in segmented: SegmentedText, from start: String.Index) -> Range<String.Index>? {
+        let text = segmented.text
         let exact = text.range(of: heard, range: start..<text.endIndex)
         guard let capitalisedHeard else { return exact }
         var searchStart = start
         while searchStart < text.endIndex,
               let capitalised = text.range(of: capitalisedHeard, range: searchStart..<text.endIndex),
               exact.map({ capitalised.lowerBound < $0.lowerBound }) ?? true {
-            if Self.startsASentence(at: capitalised.lowerBound, in: text) { return capitalised }
+            if Self.startsASentence(at: capitalised.lowerBound, in: text, atTextStart: segmented.startsASentence),
+               !ReplacementRuleMatcher.liesInsideAnAddress(capitalised, in: text) {
+                return capitalised
+            }
             searchStart = text.index(after: capitalised.lowerBound)
         }
         return exact
@@ -410,12 +461,16 @@ final class ReplacementBoundary {
 /// many phrases are checked against it (F594).
 final class SegmentedText {
     let text: String
+    /// Whether the text's own start starts a sentence (F938): true for a dictation and a meeting's
+    /// first line, and for a later line only where the line before it ended a sentence.
+    let startsASentence: Bool
     private let segmenter: CJKWordEvidence.Segmenter?
     private var words: [Range<String.Index>]?
 
-    init(_ text: String, segmenter: CJKWordEvidence.Segmenter?) {
+    init(_ text: String, segmenter: CJKWordEvidence.Segmenter?, startsASentence: Bool = true) {
         self.text = text
         self.segmenter = segmenter
+        self.startsASentence = startsASentence
     }
 
     /// Whether a word the segmenter found starts or ends strictly inside `range` while reaching

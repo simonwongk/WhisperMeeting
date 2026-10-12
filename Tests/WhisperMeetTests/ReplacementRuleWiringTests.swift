@@ -109,3 +109,33 @@ func ruleCorrectionsLeaveAMidSentenceCapitalAlone() throws {
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Ask Bill about the invoice.")
 }
+
+@MainActor
+@Test("Improve reads a line that continues the line before it as mid-sentence, and a title's full stop as no sentence end (F938)")
+func ruleCorrectionsReadSentencesAcrossLines() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-acrosslines-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+
+    model.store.addReplacementRule(heard: "jason", preferred: "JSON")
+    let lines = ["I talked to", "Jason about the jason file.", "Ask Dr. Jason.", "Done.", "Jason said so."]
+    let segments = lines.enumerated().map {
+        TranscriptSegment(speaker: nil, start: Double($0.offset), end: Double($0.offset + 1), text: $0.element)
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+
+    let proposals = model.replacementRuleCorrections(for: id)
+    #expect(proposals == [
+        GlossaryCorrection(segmentIndex: 1, from: "jason", to: "JSON"),
+        GlossaryCorrection(segmentIndex: 4, from: "Jason", to: "JSON"),
+    ])
+
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.map(\.text)
+        == ["I talked to", "Jason about the JSON file.", "Ask Dr. Jason.", "Done.", "JSON said so."])
+}
