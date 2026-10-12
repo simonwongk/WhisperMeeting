@@ -1,0 +1,169 @@
+import Foundation
+import Testing
+import WhisperCore
+@testable import WhisperMeet
+
+// F892 — a dictation driven through the controller's headless seams lands in the history with its
+// clip length, the recognizer's and the refiner's seconds, and the GPU share before the request,
+// and those survive a reload of `dictation-log.json`. The clock is the `dictationClock` seam, moved
+// on only by the fake engine and refiner, so the figures are exact rather than whatever this host's
+// clock happened to read. (Binary-exact durations, 6.5 s and 1.25 s, so a difference of two clock
+// readings equals them exactly.)
+
+/// A clock that moves only when told to.
+private final class ManualClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds: TimeInterval = 1_000
+    func now() -> TimeInterval { lock.withLock { seconds } }
+    func advance(by delta: TimeInterval) { lock.withLock { seconds += delta } }
+}
+
+/// Recognition that takes exactly `seconds` on `clock`.
+private struct TimedEngine: DictationEngine {
+    let clock: ManualClock
+    let seconds: TimeInterval
+    func warmUp() async throws {}
+    func transcribe(wavAt url: URL, language: WhisperLanguage, initialPrompt: String?) async throws -> DictationResult {
+        clock.advance(by: seconds)
+        return DictationResult(text: "hello there", languageCode: "en")
+    }
+    func shutdown() {}
+}
+
+/// A resident refiner whose pass takes exactly `seconds` on `clock` and refines.
+private final class TimedRefiner: DictationTextRefining, @unchecked Sendable {
+    private let clock: ManualClock
+    private let seconds: TimeInterval
+    private let lock = NSLock()
+    private var attempts = 0
+    var attemptCount: Int { lock.withLock { attempts } }
+
+    init(clock: ManualClock, seconds: TimeInterval) {
+        self.clock = clock
+        self.seconds = seconds
+    }
+
+    func warmUp() async -> Bool { true }
+    func attempt(text: String, languageCode: String?) async -> RefineAttempt {
+        lock.withLock { attempts += 1 }
+        clock.advance(by: seconds)
+        return RefineAttempt(text: "Hello there.", outcome: .refined)
+    }
+    func shutdown() {}
+}
+
+/// Polls `condition` against a 30 s deadline and requires it.
+@MainActor
+private func waitFor(_ what: String, _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while !condition(), Date() < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
+
+@MainActor
+private struct Rig {
+    let controller: DictationController
+    let monitor = FakeHotkeyMonitor()
+    let recorder: FakeDictationRecorder
+    let refiner: TimedRefiner
+    let defaults: UserDefaults
+    let suite: String
+    let directory: URL
+
+    init(refine: Bool, gpuBusy: Int?) throws {
+        suite = testSuiteName()
+        defaults = try #require(UserDefaults(suiteName: suite))
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("F892-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defaults.set(true, forKey: "dictationEnabled")
+        defaults.set(false, forKey: "dictationAutoPaste")
+        defaults.set(refine, forKey: "dictationRefineEnabled")
+        let clock = ManualClock()
+        recorder = FakeDictationRecorder(outputURL: directory.appendingPathComponent("clip.wav"))
+        recorder.stopDuration = 4.0
+        refiner = TimedRefiner(clock: clock, seconds: 1.25)
+        controller = DictationController(
+            defaults: defaults,
+            engine: TimedEngine(clock: clock, seconds: 6.5),
+            recorder: recorder,
+            overlay: SilentDictationOverlay(),
+            hotkeyMonitor: monitor,
+            logStore: DictationLogStore(directory: directory),
+            captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+            refiner: refiner,
+            textInjector: isolatedTextInjector(),
+            activateOnInit: false
+        )
+        controller.refineRuntimeAvailability = { true }
+        controller.clipboardNotifier = {}
+        controller.gpuUtilization = { gpuBusy }
+        controller.dictationClock = { clock.now() }
+    }
+
+    func tearDown() {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func dictateOnce() async throws -> DictationLogEntry {
+        controller.setEnabled(true)
+        if defaults.bool(forKey: "dictationRefineEnabled") {
+            try await waitFor("the refiner to be resident") { controller.isRefinerReady }
+        }
+        monitor.onPressStart?()
+        try await waitFor("the capture to start") { recorder.isRecording }
+        monitor.onPressEnd?()
+        try await waitFor("the dictation to reach the history") { !controller.logStore.log.entries.isEmpty }
+        return try #require(controller.logStore.log.entries.first)
+    }
+}
+
+@MainActor
+@Test("A refined dictation lands in the history with its clip, recognizer and refiner seconds and the GPU share (F892)")
+func aRefinedDictationRecordsItsTimings() async throws {
+    let rig = try Rig(refine: true, gpuBusy: 28)
+    defer { rig.tearDown() }
+
+    let entry = try await rig.dictateOnce()
+
+    #expect(entry.text == "Hello there.")
+    #expect(entry.refinement == DictationRefinement.refined.rawValue)
+    #expect(entry.timings == DictationTimings(
+        clipSeconds: 4.0, transcribeSeconds: 6.5, refineSeconds: 1.25, gpuBusyPercent: 28
+    ))
+    // On disk, not only in memory: a fresh store over the same directory reads them back.
+    let reloaded = DictationLogStore(directory: rig.directory)
+    #expect(reloaded.log.entries.first?.timings == entry.timings)
+}
+
+@MainActor
+@Test("A dictation the refiner was not asked about records no refiner time (F892)")
+func anUnrefinedDictationHasNoRefinerTime() async throws {
+    // At the F890 threshold the refiner is not consulted: its time is unmeasured, not zero.
+    let rig = try Rig(refine: true, gpuBusy: DictationController.refineSkipGPUBusyPercent)
+    defer { rig.tearDown() }
+
+    let entry = try await rig.dictateOnce()
+
+    #expect(rig.refiner.attemptCount == 0)
+    #expect(entry.refinement == DictationRefinement.rawGPUBusy.rawValue)
+    #expect(entry.timings == DictationTimings(
+        clipSeconds: 4.0, transcribeSeconds: 6.5, refineSeconds: nil,
+        gpuBusyPercent: DictationController.refineSkipGPUBusyPercent
+    ))
+}
+
+@MainActor
+@Test("With refinement off and the GPU unreadable, the history keeps the clip and recognizer seconds only (F892)")
+func refinementOffAndAnUnreadableGPU() async throws {
+    let rig = try Rig(refine: false, gpuBusy: nil)
+    defer { rig.tearDown() }
+
+    let entry = try await rig.dictateOnce()
+
+    #expect(entry.text == "hello there")
+    #expect(entry.timings == DictationTimings(clipSeconds: 4.0, transcribeSeconds: 6.5))
+}

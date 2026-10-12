@@ -13,8 +13,9 @@ import WhisperCore
 /// It takes no default path on purpose: a command that quietly found the user's dictation history
 /// by itself is a different kind of command from one pointed at a file.
 ///
-/// **What it prints is counts.** Bucket totals and rates — never dictated text, which is the most
-/// private thing this app stores.
+/// **What it prints is counts and timings.** Bucket totals and rates, and the slowest dictations'
+/// seconds and GPU share (F892) — never dictated text, which is the most private thing this app
+/// stores.
 enum DictationRefineReportCommand {
     static let flag = "--dictation-refine-report"
 
@@ -101,7 +102,11 @@ enum DictationRefineReportCommand {
             let n = report.excludedAsEarlier
             header += " \(n) earlier entr\(n == 1 ? "y was" : "ies were") left out by \(sinceFlag) \(cut.label)."
         }
-        return (0, header + "\n\n" + report.markdown())
+        // F892: the slowest dictations, from the timings the history now keeps — the figures the
+        // unified log holds for about a day. Same cut, same zone as the header.
+        let slowest = "The slowest dictations, by recognizer plus refiner (up to 10):\n\n"
+            + DictationTimingReport(log: log, since: cut?.date).markdown(timeZone: calendar.timeZone)
+        return (0, header + "\n\n" + report.markdown() + "\n\n" + slowest)
     }
 
     static func runAndExit(logURL: URL, since: Since = .all) -> Never {

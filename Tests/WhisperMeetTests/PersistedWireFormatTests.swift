@@ -166,6 +166,8 @@ struct PersistedWireFormatTests {
     func dictationLogEntryEncodesEveryStoredField() throws {
         // `outcomeKind` is set explicitly: it is nil for every case this build knows, so a fixture
         // built from an ordinary outcome would never exercise it.
+        // F892's timings are set too: a nil optional is omitted on the wire and would look exactly
+        // like a field that is never written.
         let entry = DictationLogEntry(
             id: UUID(),
             date: Date(timeIntervalSince1970: 1_700_000_000),
@@ -173,11 +175,13 @@ struct PersistedWireFormatTests {
             outcome: .failed("x"),
             rawText: "helo",
             refinement: DictationRefinement.refined.rawValue,
-            outcomeKind: "discarded"
+            outcomeKind: "discarded",
+            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28)
         )
         try expectEveryStoredFieldEncoded(
             entry,
-            mustCheck: ["id", "date", "text", "outcome", "rawText", "refinement", "outcomeKind"]
+            mustCheck: ["id", "date", "text", "outcome", "rawText", "refinement", "outcomeKind",
+                        "clipSeconds", "transcribeSeconds", "refineSeconds", "gpuBusyPercent"]
         )
     }
 

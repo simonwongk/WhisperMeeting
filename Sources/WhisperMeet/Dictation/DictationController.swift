@@ -1431,6 +1431,7 @@ final class DictationController: ObservableObject {
         let initialPrompt = prompt.isEmpty ? nil : prompt
         let refinerRelease = refinerReleaseForCapture
         let gpuUtilization = self.gpuUtilization
+        let clock = self.dictationClock
         // Snapshot the refine decision with the other settings: mid-flight toggle changes must not
         // switch behavior halfway through a dictation.
         // A cold refiner is a nice-to-have, never a reason to hold this clip. It warms only after
@@ -1444,7 +1445,7 @@ final class DictationController: ObservableObject {
         // F846: the voice-activity check, for the engine this dictation was made with.
         let detector = DictationVoiceActivity.gates(selection) ? speechDetector : nil
         Task { [engine, log, refiner] in
-            let started = Date()
+            let started = clock()
             // F599: nothing loud enough to be speech goes to a model. The installed Whisper turbo
             // answers silence and quiet noise with "Thank you." and a no_speech_prob of ≈ 0, so the
             // helper's own skip (F449) never fires. Measured off the main actor; a clip the floor
@@ -1489,9 +1490,11 @@ final class DictationController: ObservableObject {
                 // The GPU share is on the line because it is the one thing that made this slow
                 // on 2026-10-08 (F890): a reader of the log can tell a busy GPU from a slow model.
                 let gpuNote = gpuBusy.map { " (GPU \($0)% busy before the request)" } ?? ""
-                log.notice("\(selection.rawValue, privacy: .public) transcribed in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s\(gpuNote, privacy: .public)")
+                let transcribeSeconds = clock() - started
+                log.notice("\(selection.rawValue, privacy: .public) transcribed in \(transcribeSeconds, format: .fixed(precision: 2))s\(gpuNote, privacy: .public)")
                 var rawText: String?
                 var refinement: String?
+                var refineSeconds: TimeInterval?
                 if refineOn, !cleaned.isEmpty, let gpuBusy, gpuBusy >= Self.refineSkipGPUBusyPercent {
                     // F890: not consulted. The outcome is recorded so the history and the refine
                     // report can tell "not asked" from "asked and missed".
@@ -1503,9 +1506,11 @@ final class DictationController: ObservableObject {
                     // the engine's prompt support — this is a guard on the model's output, not a
                     // hint to the recognizer, and a term the user taught the app must survive
                     // whichever engine heard it.
+                    let refineStarted = clock()
                     let attempt = await refiner.attempt(
                         text: cleaned, languageCode: result.languageCode,
                         protectedTerms: vocabularyProvider())
+                    refineSeconds = clock() - refineStarted
                     refinement = attempt.outcome.rawValue
                     if attempt.outcome == .refined {
                         rawText = cleaned
@@ -1525,7 +1530,7 @@ final class DictationController: ObservableObject {
                             self.refinerRequiresReleaseBeforeRecognition = true
                         }
                     }
-                    log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s total")
+                    log.notice("refinement \(attempt.outcome.rawValue, privacy: .public) in \(clock() - started, format: .fixed(precision: 2))s total")
                 }
                 // F821: the user's replacement rules, last — on the refined text, or on the raw
                 // text when refinement was off, skipped or refused — so a rule has the final say
@@ -1543,8 +1548,15 @@ final class DictationController: ObservableObject {
                         log.notice("replacement rules changed the dictation")
                     }
                 }
+                // F892: the figures the unified log keeps for about a day, kept with the dictation.
+                let timings = DictationTimings(
+                    clipSeconds: clip.duration,
+                    transcribeSeconds: transcribeSeconds,
+                    refineSeconds: refineSeconds,
+                    gpuBusyPercent: gpuBusy
+                )
                 await MainActor.run {
-                    self.finish(text: cleaned, rawText: rawText, refinement: refinement)
+                    self.finish(text: cleaned, rawText: rawText, refinement: refinement, timings: timings)
                 }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
@@ -1565,7 +1577,10 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func finish(text: String, rawText: String? = nil, refinement: String? = nil) {
+    private func finish(
+        text: String, rawText: String? = nil, refinement: String? = nil,
+        timings: DictationTimings = DictationTimings()
+    ) {
         guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
         case let .deliver(payload):
@@ -1595,14 +1610,17 @@ final class DictationController: ObservableObject {
                     text: payload,
                     outcome: delivery.wasPasted ? .pasted : .clipboard,
                     rawText: rawText,
-                    refinement: refinement
+                    refinement: refinement,
+                    timings: timings
                 )
                 scheduleDismiss(after: 1.1)
             }
         case .none where session.state == .failed(.emptyTranscript):
             lastFailureReason = nil // nothing heard is not a failure (F687)
             showPhase(.empty)
-            logStore.record(text: "", outcome: .empty)
+            // The recognizer ran and found nothing, which can be slow too (F892); a clip the speech
+            // checks kept from it comes here with nothing measured.
+            logStore.record(text: "", outcome: .empty, timings: timings)
             scheduleDismiss(after: 1.3)
             status = settledStatus
         default:
@@ -1814,6 +1832,11 @@ final class DictationController: ObservableObject {
     /// How busy the GPU is just before recognition, 0–100, or nil when it cannot be read (F890).
     /// Injectable: the real reading is this Mac's, and a test must say nothing about it.
     var gpuUtilization: @Sendable () -> Int? = { GPUActivityProbe.deviceUtilizationPercent() }
+
+    /// The clock a dictation's durations are read from, in seconds (F892): monotonic, so a wall-clock
+    /// change mid-dictation cannot make one negative. Injectable so a test can say exactly how long
+    /// recognition and refinement took instead of asserting on a real clock.
+    var dictationClock: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
     /// At or above this share, the optional refiner is not consulted for the dictation (F890).
     ///

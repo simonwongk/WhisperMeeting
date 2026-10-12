@@ -1,5 +1,47 @@
 import Foundation
 
+/// How long one dictation took, and how busy the GPU was before it (F892) — the four figures F890
+/// and F891 needed to tell a slow dictation's cause, and nothing more: the clip's length, the
+/// recognizer's time, the refiner's time and the GPU share. Each is optional: a figure that was not
+/// measured is absent, never zero.
+///
+/// The unified log carries the same figures in the "transcribed in" line, but this Mac keeps that
+/// log for about a day, so a slow dictation reported two days later had nothing to find. These go
+/// into the dictation history (`dictation-log.json`), which keeps the most recent dictations (100
+/// by default, `DictationLog.limit`).
+public struct DictationTimings: Sendable, Equatable {
+    /// The recording's length.
+    public var clipSeconds: Double?
+    /// From the release to the recognizer's reply — the figure the "transcribed in" log line prints:
+    /// the speech checks, any wait behind a press-down touch on the engine's queue, and recognition.
+    public var transcribeSeconds: Double?
+    /// The refiner's own pass, from asking it to its answer; nil when it was not asked.
+    public var refineSeconds: Double?
+    /// The accelerator's "Device Utilization %" read just before the recognizer was asked (F890);
+    /// nil when it could not be read.
+    public var gpuBusyPercent: Int?
+
+    /// A figure that cannot be a measurement — negative, not finite, or a percentage outside 0…100
+    /// — is dropped here rather than stored: JSON has no NaN or infinity, so storing one would fail
+    /// the whole history's save.
+    public init(
+        clipSeconds: Double? = nil,
+        transcribeSeconds: Double? = nil,
+        refineSeconds: Double? = nil,
+        gpuBusyPercent: Int? = nil
+    ) {
+        self.clipSeconds = Self.measured(clipSeconds)
+        self.transcribeSeconds = Self.measured(transcribeSeconds)
+        self.refineSeconds = Self.measured(refineSeconds)
+        self.gpuBusyPercent = gpuBusyPercent.flatMap { (0...100).contains($0) ? $0 : nil }
+    }
+
+    private static func measured(_ seconds: Double?) -> Double? {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return nil }
+        return seconds
+    }
+}
+
 /// One recorded dictation attempt: what was transcribed and what happened to it.
 public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     public enum Outcome: Codable, Sendable, Equatable {
@@ -133,6 +175,14 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     /// decode, because a re-encode has no other source for the name.
     public let outcomeKind: String?
 
+    /// `DictationTimings`, stored flat (F892): append-only and optional per the persisted-schema
+    /// rules, each omitted from the wire when it was not measured. A build from before F892 decodes
+    /// the entry and ignores them (its keyed decoder reads only the keys it names).
+    public let clipSeconds: Double?
+    public let transcribeSeconds: Double?
+    public let refineSeconds: Double?
+    public let gpuBusyPercent: Int?
+
     public init(
         id: UUID,
         date: Date,
@@ -140,7 +190,8 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         outcome: Outcome,
         rawText: String? = nil,
         refinement: String? = nil,
-        outcomeKind: String? = nil
+        outcomeKind: String? = nil,
+        timings: DictationTimings = DictationTimings()
     ) {
         self.id = id
         self.date = date
@@ -149,10 +200,25 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         self.rawText = rawText
         self.refinement = refinement
         self.outcomeKind = outcomeKind
+        self.clipSeconds = timings.clipSeconds
+        self.transcribeSeconds = timings.transcribeSeconds
+        self.refineSeconds = timings.refineSeconds
+        self.gpuBusyPercent = timings.gpuBusyPercent
+    }
+
+    /// The four figures together (F892).
+    public var timings: DictationTimings {
+        DictationTimings(
+            clipSeconds: clipSeconds,
+            transcribeSeconds: transcribeSeconds,
+            refineSeconds: refineSeconds,
+            gpuBusyPercent: gpuBusyPercent
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, date, text, outcome, rawText, refinement, outcomeKind
+        case clipSeconds, transcribeSeconds, refineSeconds, gpuBusyPercent
     }
 
     /// Accepts any key, to read the `outcome` object's own case name (F266).
@@ -171,6 +237,19 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         outcome = try container.decode(Outcome.self, forKey: .outcome)
         rawText = try container.decodeIfPresent(String.self, forKey: .rawText)
         refinement = try container.decodeIfPresent(String.self, forKey: .refinement)
+        // F892: leniently, and through `DictationTimings`' own rule. A figure is a diagnostic, so one
+        // that is the wrong type or cannot be a measurement costs that figure — never the entry,
+        // which would cost the whole history (it decodes as one value).
+        let timings = DictationTimings(
+            clipSeconds: try? container.decodeIfPresent(Double.self, forKey: .clipSeconds),
+            transcribeSeconds: try? container.decodeIfPresent(Double.self, forKey: .transcribeSeconds),
+            refineSeconds: try? container.decodeIfPresent(Double.self, forKey: .refineSeconds),
+            gpuBusyPercent: try? container.decodeIfPresent(Int.self, forKey: .gpuBusyPercent)
+        )
+        clipSeconds = timings.clipSeconds
+        transcribeSeconds = timings.transcribeSeconds
+        refineSeconds = timings.refineSeconds
+        gpuBusyPercent = timings.gpuBusyPercent
 
         if let stated = try container.decodeIfPresent(String.self, forKey: .outcomeKind) {
             // A newer build wrote it, or this build wrote it on a previous save. Either way the
@@ -218,6 +297,11 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         // The truth, beside it. Old builds ignore an unrecognised key; F266-and-later builds prefer
         // it; nothing is ever rewritten into a lie.
         try container.encodeIfPresent(outcomeKind, forKey: .outcomeKind)
+        // F892. Absent when unmeasured, so an entry without them keeps its pre-F892 bytes.
+        try container.encodeIfPresent(clipSeconds, forKey: .clipSeconds)
+        try container.encodeIfPresent(transcribeSeconds, forKey: .transcribeSeconds)
+        try container.encodeIfPresent(refineSeconds, forKey: .refineSeconds)
+        try container.encodeIfPresent(gpuBusyPercent, forKey: .gpuBusyPercent)
     }
 
     /// True when a transcript was actually produced and delivered.

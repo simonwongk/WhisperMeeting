@@ -207,3 +207,37 @@ func reportStatesTheAppliedCapForANegativeLimit() throws {
     #expect(result.message.contains("The log keeps at most \(DictationLog.defaultLimit) entries"),
             "\(result.message.prefix(200))")
 }
+
+// MARK: - F892: the slowest dictations, from the history's own timings
+
+@Test("The command lists the slowest dictations with their timings, in the calendar's zone, honouring --since (F892)")
+func reportCommandListsTheSlowestDictations() throws {
+    // The question F891 could only answer within a day of a slow dictation, because the unified
+    // log keeps the "transcribed in" line for about a day: now it is one command over the history.
+    let iso = ISO8601DateFormatter()
+    func timed(_ instant: String, _ recognizer: Double, gpu: Int) throws -> DictationLogEntry {
+        DictationLogEntry(
+            id: UUID(), date: try #require(iso.date(from: instant)), text: "private words",
+            outcome: .pasted, refinement: DictationRefinement.rawTimeout.rawValue,
+            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: recognizer, refineSeconds: 1.04, gpuBusyPercent: gpu)
+        )
+    }
+    let url = try writeLog([
+        try timed("2026-10-08T23:40:44Z", 6.93, gpu: 28),
+        try timed("2026-10-07T12:00:00Z", 9.30, gpu: 95),
+    ], named: "RefineReportSlowest")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let all = DictationRefineReportCommand.run(logURL: url, calendar: try shanghaiCalendar())
+    #expect(all.status == 0)
+    #expect(all.message.contains("| 2026-10-09 07:40:44 | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
+    #expect(all.message.contains("| 2026-10-07 20:00:00 | 4.00 s | 9.30 s | 1.04 s | 95 % | rawTimeout |"))
+    #expect(!all.message.contains("private words"))
+
+    let cut = try #require(iso.date(from: "2026-10-08T16:00:00Z")) // midnight 2026-10-09 in Shanghai
+    let since = DictationRefineReportCommand.run(
+        logURL: url, since: .from(cut, label: "2026-10-09"), calendar: try shanghaiCalendar()
+    )
+    #expect(since.message.contains("| 2026-10-09 07:40:44 |"))
+    #expect(!since.message.contains("9.30 s"), "an entry before --since was listed")
+}

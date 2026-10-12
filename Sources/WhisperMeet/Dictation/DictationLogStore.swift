@@ -104,12 +104,13 @@ import WhisperCore
         text: String,
         outcome: DictationLogEntry.Outcome,
         rawText: String? = nil,
-        refinement: String? = nil
+        refinement: String? = nil,
+        timings: DictationTimings = DictationTimings()
     ) {
         guard health.allowsMutation else { return }
         log = log.adding(DictationLogEntry(
             id: UUID(), date: Date(), text: text, outcome: outcome,
-            rawText: rawText, refinement: refinement
+            rawText: rawText, refinement: refinement, timings: timings
         ))
         persist()
     }
