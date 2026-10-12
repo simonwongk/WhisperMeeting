@@ -38,8 +38,9 @@ public enum RecordingMixPlan {
         /// One track of one or two channels: handed on as it is. The engines' own decodes mix two
         /// channels (ffmpeg's `-ac 1`; afconvert's `--mix`, F796), and Shrink's encode does too.
         case asItIs
-        /// Every channel of every track is summed into one mono signal (`channels` of them in all),
-        /// each placed at its own time, and that is what the engines, speaker analysis and Shrink get.
+        /// Every track is mixed into one mono signal (`channels` of them in all, over the tracks): each
+        /// track's channels averaged into its own signal (`channelWeight`), the tracks summed by a capture's
+        /// rule, each placed at its own time. That is what the engines, speaker analysis and Shrink get.
         case mixEveryChannel(channels: Int)
         /// Several tracks that should not be summed, or cannot be read: see `Refusal`.
         case unsupported(Refusal)
@@ -81,8 +82,12 @@ public enum RecordingMixPlan {
 
     /// The weight each channel of a track of `channels` carries in that track's own signal — the one rule
     /// the mixer combines a track's channels by and the check of a copy expects (`firstFinding`), so the
-    /// two cannot drift apart. Each channel is added as it is.
-    public static func channelWeight(channels: Int) -> Double { 1 }
+    /// two cannot drift apart. The average, as a capture combines a microphone's channels
+    /// (`MonoDownmixConverter.averagedToMono`, F659): summed instead, a voice on both sides of a stereo
+    /// track came out twice as loud beside another track as on every other path, into the limiter's knee
+    /// (review of F942). So a track of N channels with one speaking is heard at 1/N of that voice, as a
+    /// capture would hear it.
+    public static func channelWeight(channels: Int) -> Double { 1 / Double(Swift.max(1, channels)) }
 
     // MARK: - Showing that a copy holds every track (F942, review R2)
 

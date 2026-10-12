@@ -16,12 +16,14 @@ import WhisperCore
 /// track's buffers are placed on the recording's timeline by their presentation time, so a track that
 /// starts later is heard when it starts, and the tracks are read in step so memory stays bounded.
 ///
-/// **How it sums.** Every channel of every track is added as it is, and the sum goes through
-/// `FloatTrackMixer.limitedSample`, the rule that mixes a capture's microphone and system audio (F345):
-/// 0.95 of the sum while it fits, a smooth limiter above that never reaches full scale. So a voice alone
-/// on its track keeps nearly its recorded level — the case of a call recorded a side per track, where
-/// dividing by the number of tracks would make every voice quieter — and no sum clips. One pass,
-/// memoryless, so it needs no peak found first.
+/// **How it mixes.** A capture's rule, so an import with several tracks is heard as a capture is: each
+/// track's channels are averaged into that track's own signal (`RecordingMixPlan.channelWeight`), as a
+/// capture averages a microphone's channels (F659), and the tracks' signals are summed through
+/// `FloatTrackMixer.limitedSample`, as a capture sums its microphone and system audio (F345): 0.95 of the
+/// sum while it fits, a smooth limiter above that never reaches full scale. So a voice alone on its track
+/// keeps nearly its recorded level — the case of a call recorded a side per track, where dividing by the
+/// number of tracks would make every voice quieter — no sum clips, and a stereo track is no louder beside
+/// another track than alone (review of F942). One pass, memoryless, so it needs no peak found first.
 ///
 /// The recording is only read; the mix is written where the caller says.
 enum RecordingMixer {

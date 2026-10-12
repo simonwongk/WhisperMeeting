@@ -120,7 +120,8 @@ func shrinkMixesAFourChannelImport() async throws {
     #expect(f.exists("recording.m4a") && !f.exists("recording.wav"), "\(alert)")
     let copy = try f.copy()
     for tone in tones {
-        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone) - 0.19) < 0.015, "\(tone) Hz")
+        // Averaged over the track's four channels (0.2 / 4), at the mix's 0.95.
+        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone) - 0.0475) < 0.005, "\(tone) Hz")
     }
 }
 
@@ -140,7 +141,8 @@ func shrinkMixesAFivePointOneImport() async throws {
     #expect(alert.contains("Shrunk"), "\(alert)")
     let copy = try f.copy()
     for tone in tones {
-        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone) - 0.095) < 0.01, "\(tone) Hz")
+        // Averaged over the track's six channels (0.1 / 6), at the mix's 0.95.
+        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone) - 0.0158) < 0.003, "\(tone) Hz")
     }
 }
 
@@ -275,8 +277,8 @@ func shrinkMixesAPanelWhoseMicrophonesTakeTurns() async throws {
     let copy = try f.copy()
     for (speaker, tone) in [300.0, 500.0, 700.0, 900.0].enumerated() {
         let from = Double(speaker) * 5 + 0.5
-        // The voice and its bleed into the other three microphones, summed: 0.2 × (1 + 3 × 0.178) × 0.95.
-        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone, from: from, to: from + 4) - 0.291) < 0.02,
+        // The voice and its bleed into the other three microphones, averaged: 0.2 × (1 + 3 × 0.178) / 4 × 0.95.
+        #expect(abs(fixtureToneAmplitude(copy, rate: 16_000, frequency: tone, from: from, to: from + 4) - 0.0729) < 0.006,
                 "speaker \(speaker + 1)")
     }
 }

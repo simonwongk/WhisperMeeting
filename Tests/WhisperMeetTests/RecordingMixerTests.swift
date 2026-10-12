@@ -55,6 +55,23 @@ func mixerNeverClips() async throws {
     #expect(peak > 0.95, "and the sum is not turned down below where it fits: \(peak)")
 }
 
+// Review of F942: a capture averages a track's channels (F659) and then sums its tracks; the mixer summed
+// every channel, so a stereo track holding one voice on both sides came out twice as loud beside another
+// track as on every other path (0.57 for 0.3), and was driven into the limiter's knee from 0.5 up.
+@Test("A stereo track beside another track is as loud as it is alone: a track's channels are averaged (F942 review)")
+func mixerAveragesATracksChannels() async throws {
+    let dir = try scratch("F942-average"); defer { try? FileManager.default.removeItem(at: dir) }
+    let input = dir.appendingPathComponent("dual-mono.mov")
+    try await writeFixtureTracks(to: input, [FixtureTrack(channels: [(300, 0.3), (300, 0.3)], seconds: 3),
+                                             FixtureTrack(channels: [(800, 0.2)], seconds: 3, audibleFrom: 2)])
+
+    let (mix, _) = try await mixed(input, in: dir)
+
+    // 0.95 of the voice's own level, as a capture's limiter rule gives a lone track; summed, it read 0.57.
+    #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: 300, from: 0.2, to: 1.8) - 0.285) < 0.01)
+    #expect(mix.filter { abs($0) > 0.5 }.isEmpty, "nowhere near the limiter")
+}
+
 @Test("A stereo track beside a mono one: each of the three channels is in the mix (F942)")
 func mixerHearsAStereoTrackBesideAMonoOne() async throws {
     let dir = try scratch("F942-stereo"); defer { try? FileManager.default.removeItem(at: dir) }
@@ -65,8 +82,9 @@ func mixerHearsAStereoTrackBesideAMonoOne() async throws {
     let (mix, result) = try await mixed(input, in: dir)
 
     #expect(result.tracks == 2 && result.channels == 3)
-    for tone in [300.0, 500.0, 800.0] {
-        #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: tone) - 0.19) < 0.01, "\(tone) Hz")
+    // The stereo track's two sides averaged into its own signal (0.2 / 2), the mono track whole, at 0.95.
+    for (tone, level) in [(300.0, 0.095), (500.0, 0.095), (800.0, 0.19)] {
+        #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: tone) - level) < 0.008, "\(tone) Hz")
     }
 }
 

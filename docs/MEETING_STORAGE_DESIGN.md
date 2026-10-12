@@ -84,10 +84,11 @@ invalidated after Stop, import, Shrink, Rebuild Audio and delete. Sizes are form
   - The two-step path kept it (RMS 4240 against 4242 for the mixed WAV). Native captures are mono, so this matters for
     stereo imports.
   - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12).** It is first
-    mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`: every channel of every track, each
-    placed at its own time, summed by the rule that mixes a capture's two tracks (`FloatTrackMixer.limitedSample`: 0.95
-    of the sum while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before
-    F942 such a recording was refused (below).
+    mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
+    channels averaged into its own signal, as a capture averages a microphone's channels (F659), each track placed at
+    its own time, and the tracks summed as a capture sums its two (`FloatTrackMixer.limitedSample`: 0.95 of the sum
+    while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before F942 such a
+    recording was refused (below).
 - **Name:** the stem is kept and only the extension changes.
   - `meeting.wav` becomes `meeting.m4a`.
   - `meeting-recovered.wav` becomes `meeting-recovered.m4a`.
@@ -428,11 +429,15 @@ transcription and Shrink. Wave 6 built the mixing, so the two refusals above giv
   tagged `und`, so a call saved a side per track by ffmpeg, or a tool built on it, is mixed (review of F942, R3).
 - **How.** `RecordingMixer` reads each track with AVFoundation at 16 kHz with its own channel count, and for more than
   two channels a discrete layout, so nothing is downmixed on the way: asked for one channel, AVFoundation keeps only
-  channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time. Every
-  channel is then summed by the capture mixer's rule (0.95 of the sum, a limiter above full scale), so a voice alone on
-  its track keeps nearly its level and no sum clips; dividing by the number of tracks would make every voice of a call
-  recorded a side per track quieter by 6 dB. Every channel counts the same, LFE included: a positioned 5.1 recording
-  keeps all six (F953), where afconvert's positioned downmix dropped LFE.
+  channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time. Then a
+  capture's rule: each track's channels are averaged into its own signal, as a capture averages a microphone's
+  channels (F659), and the tracks are summed as a capture sums its two (0.95 of the sum, a limiter above full scale).
+  So a voice alone on its track keeps nearly its level and no sum clips — dividing by the number of tracks would make
+  every voice of a call recorded a side per track quieter by 6 dB — and a stereo track is as loud beside another
+  track as alone. (Round 1 summed every channel, and the review found a voice on both sides of a stereo track twice
+  as loud as on every other path, into the limiter's knee.) Within a track every channel counts the same, LFE
+  included: a positioned 5.1 recording keeps all six (F953), where afconvert's positioned downmix dropped LFE; a track
+  of N channels with one speaking is heard at 1/N of that voice, as a capture would hear it.
 - **What it costs.** The tracks cannot be separated again once the original is deleted: per-speaker tracks are gone
   for good. The confirmation says so ("…mixed into one; they can't be separated again afterwards").
 - **How it is checked.** Step 4's checks of a mix, above (round 2: fits of the copy's waveform onto every track and

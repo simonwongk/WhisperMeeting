@@ -88,8 +88,9 @@ func engineHearsEveryChannelOfAPolyWAV() async throws {
     let heard = try #require(run.decoded)
     #expect(heard.channels.count == 1)
     let mono = try #require(heard.channels.first)
+    // One track: its four channels averaged (0.2 / 4), at the mix's 0.95, as a capture would hear them.
     for tone in tones {
-        #expect(abs(fixtureToneAmplitude(mono, rate: heard.rate, frequency: tone) - 0.19) < 0.01, "\(tone) Hz")
+        #expect(abs(fixtureToneAmplitude(mono, rate: heard.rate, frequency: tone) - 0.0475) < 0.004, "\(tone) Hz")
     }
 }
 
@@ -159,7 +160,7 @@ func engineHearsAMovieWhosePictureOutlastsItsSound() async throws {
         #expect(heard.channels.count == 1 && heard.rate == 16_000, "\(movie.lastPathComponent) is mixed")
         #expect(abs(Double(mono.count) / heard.rate - 6) < 0.1, "\(movie.lastPathComponent): the sound's length, not the picture's")
         for tone in heardTones {
-            #expect(fixtureToneAmplitude(mono, rate: heard.rate, frequency: tone, from: 0.5, to: 5.5) > 0.01,
+            #expect(fixtureToneAmplitude(mono, rate: heard.rate, frequency: tone, from: 0.5, to: 5.5) > 0.005,
                     "\(movie.lastPathComponent): \(tone) Hz")
         }
     }
