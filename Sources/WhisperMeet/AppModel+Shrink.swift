@@ -18,6 +18,8 @@ extension AppModel {
         let skipped: [Skipped]
         let includesUntranscribed: Bool
         let includesVideo: Bool
+        /// A meeting with several audio tracks or more than two channels, which the copy mixes into one (F942).
+        var includesMixedTracks = false
     }
 
     /// The meeting's measured size, or nil before it has been measured.
@@ -82,6 +84,9 @@ extension AppModel {
             includesUntranscribed: eligible.contains { $0.transcriptText.isEmpty },
             includesVideo: eligible.contains {
                 UTType(filenameExtension: URL(fileURLWithPath: $0.recordingPath).pathExtension)?.conforms(to: .movie) == true
+            },
+            includesMixedTracks: eligible.contains { meeting in
+                storageFacts[meeting.id].map { !MeetingStoragePlan.isResume($0) && MeetingStoragePlan.needsMix($0) } ?? false
             }
         )
     }
@@ -107,6 +112,9 @@ extension AppModel {
             text += " A meeting that hasn't been transcribed yet will be transcribed from the compressed audio."
         }
         if request.includesVideo { text += " For a video, the picture is removed; only the audio is kept." }
+        if request.includesMixedTracks {
+            text += " A recording with several audio tracks or more than two channels is mixed into one; they can't be separated again afterwards."
+        }
         if !request.skipped.isEmpty {
             text += " \(request.skipped.count) selected meeting(s) can't be shrunk and will be skipped."
         }
@@ -188,12 +196,17 @@ extension AppModel {
             let token = UUID().uuidString
             let tempM4A = folder.appendingPathComponent(".shrink-\(token).m4a")
             let tempWAV = folder.appendingPathComponent(".shrink-\(token).wav")
-            let encode = encodeForShrink, decode = decodeForShrink, free = availableBytesForShrink
+            // F942: a recording with several audio tracks or more than two channels is mixed into this
+            // 16 kHz mono WAV first, every channel of every track, and the mix is what is encoded.
+            let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
+            let mixed = MeetingStoragePlan.needsMix(disk)
+            let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
             let flush = flushForShrink
-            let expected = disk.durationSeconds
+            let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
-                .init(name: "", bytes: Int64(saturating: expected * 32_000)),
-                .init(name: "", bytes: MeetingStoragePlan.predictedOutputBytes(durationSeconds: expected)),
+                .init(name: "", bytes: Int64(saturating: declaredLength * 32_000)),
+                .init(name: "", bytes: mixed ? Int64(saturating: declaredLength * 32_000) : 0),
+                .init(name: "", bytes: MeetingStoragePlan.predictedOutputBytes(durationSeconds: declaredLength)),
                 .init(name: "", bytes: 100_000_000),
             ])
             let encoded: Result<Int64, Error> = await Task.detached(priority: .userInitiated) {
@@ -201,18 +214,31 @@ extension AppModel {
                     if let available = free(folder), available < needed {
                         throw ShrinkFailure.insufficientSpace(needed: needed, available: available)
                     }
-                    try encode(recordingURL, tempM4A, tempWAV)
+                    var expected = declaredLength
+                    var mixedChannels: Int?
+                    if mixed {
+                        // The mix's own length is the recording's, every track's end included: the header
+                        // read for `declaredLength` measures the first track alone. The mixer refuses a
+                        // decode that stops short of what the container declares.
+                        let result = try await mix(recordingURL, mixWAV)
+                        expected = result.duration
+                        mixedChannels = result.channels
+                        try encode(mixWAV, tempM4A, tempWAV)
+                        try? FileManager.default.removeItem(at: mixWAV)
+                    } else {
+                        try encode(recordingURL, tempM4A, tempWAV)
+                    }
                     let copy: DecodedAudio.Decoded
-                    do { copy = try decode(tempM4A) } catch { throw ShrinkFailure.unreadableCopy }
+                    do { copy = try await decode(tempM4A) } catch { throw ShrinkFailure.unreadableCopy }
                     guard abs(copy.duration - expected) <= 0.5 else {
                         throw ShrinkFailure.lengthMismatch(expected: expected, decoded: copy.duration)
                     }
                     // The right length is not the right audio: a copy that came out silent has it too
                     // (F801). The original is decoded the same way, its level taken over all its channels
-                    // before any mixing, so a recording the mono mix silences cannot pass as silent (F801
-                    // review); the two levels must agree.
+                    // (and, since F942, all its tracks) before any mixing, so a recording the mono mix
+                    // silences cannot pass as silent (F801 review); the two levels must agree.
                     let original: DecodedAudio.Decoded
-                    do { original = try decode(recordingURL) } catch { throw ShrinkFailure.unreadableOriginal }
+                    do { original = try await decode(recordingURL) } catch { throw ShrinkFailure.unreadableOriginal }
                     guard MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) else {
                         throw ShrinkFailure.levelMismatch(original: original.level, compressed: copy.level)
                     }
@@ -223,6 +249,19 @@ extension AppModel {
                     ) {
                         throw ShrinkFailure.soundLost(at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
                     }
+                    // And for a mix, channel by channel (F942): every channel the mixer summed must have
+                    // been measured in the original, and each must be in the copy wherever it sounds.
+                    if let mixedChannels {
+                        guard original.channelWindowLevels.count == mixedChannels else {
+                            throw ShrinkFailure.unreadableOriginal
+                        }
+                        if let window = MeetingStoragePlan.firstWindowLosingAChannel(
+                            channels: original.channelWindowLevels, compressed: copy.windowLevels,
+                            originalLevel: original.level
+                        ) {
+                            throw ShrinkFailure.soundLost(at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
+                        }
+                    }
                     // On stable storage before anything is committed or removed (final review).
                     try flush(tempM4A)
                     let size = (try? tempM4A.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? nil
@@ -230,6 +269,7 @@ extension AppModel {
                 } catch {
                     try? FileManager.default.removeItem(at: tempM4A)
                     try? FileManager.default.removeItem(at: tempWAV)
+                    try? FileManager.default.removeItem(at: mixWAV)
                     return .failure(error)
                 }
             }.value
@@ -361,7 +401,7 @@ extension AppModel {
         let folder = store.ownRecordingFolder(of: meeting)
         let descriptor = integrityDescriptorForShrink(meeting)
         let entries = storageEntries, declared = declaredDurationForShrink
-        let countTracks = audioTrackCountForShrink
+        let countTracks = audioTrackCountForShrink, readTracks = audioTracksForShrink
         let indexDuration = meeting.duration
         return await Task.detached(priority: .utility) {
             let name = recordingURL.lastPathComponent
@@ -372,6 +412,9 @@ extension AppModel {
             // And how many channels it holds (F801 review), from its header, for every recording: a
             // capture's is the app's own mono WAV, so asking costs one header read and assumes nothing.
             let channels = exists ? DecodedAudio.channelCount(of: recordingURL) : nil
+            // F942: when either says the copy must be a mix, what each track holds, so the planner can
+            // tell a mix it can make from one it cannot (alternate tracks, or nothing readable).
+            let audioTracks = exists && ((tracks ?? 1) > 1 || (channels ?? 0) > 2) ? await readTracks(recordingURL) : nil
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
             let length = declared(recordingURL) ?? (indexDuration > 0 ? indexDuration : 0)
@@ -398,7 +441,7 @@ extension AppModel {
                     == folder?.standardizedFileURL.path,
                 hasIntegrityProblem: problem, rebuildOffered: rebuild,
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
-                otherRecordingSeconds: otherSeconds, channelCount: channels)
+                otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks)
         }.value
     }
 }

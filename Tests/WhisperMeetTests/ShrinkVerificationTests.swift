@@ -8,18 +8,11 @@ import Testing
 // length. An encode that came out silent has the right length and passed; and `afconvert` decodes
 // only the first audio track of a container, so an import with two tracks (a call recorded with
 // one track per side) kept track 1 and lost the rest, with nothing said. Now the copy's level must
-// match the original's, and a recording with more than one audio track is not shrunk.
+// match the original's; a recording with more than one audio track was refused, and since F942 its
+// tracks are mixed into the copy (`ShrinkMixedTracksTests`).
 // Driven through the app-level calls the Shrink button makes, over temp libraries of synthetic
 // imports. The real encoder and decoder run here: afconvert and AVFoundation ship with macOS, the
 // CI runner included.
-
-/// Records that a `@Sendable` seam ran.
-private final class CallFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var called = false
-    func set() { lock.lock(); called = true; lock.unlock() }
-    var value: Bool { lock.lock(); defer { lock.unlock() }; return called }
-}
 
 /// A 48 kHz mono tone, shaped like what a capture or a plain import holds.
 private func toneSamples(seconds: Double, amplitude: Double = 0.3, frequency: Double = 220) -> [Float] {
@@ -110,30 +103,9 @@ func shrinkAcceptsAFaithfulEncode() async throws {
     #expect(f.exists("recording.m4a") && !f.exists("recording.wav"), "\(alert)")
 }
 
-@Test("An import with two audio tracks is not shrunk, and says what would be lost (F801)")
-@MainActor
-func shrinkRefusesAMultiTrackImport() async throws {
-    // A call recorded with one track per side: the quiet side on track 1, the loud one on track 2.
-    let f = try await ImportFixture(recordingExtension: "mov", duration: 3) { url in
-        try await writeAudioTracks(to: url, tracks: [(300, 0.05), (800, 0.4)], seconds: 3)
-    }
-    defer { try? FileManager.default.removeItem(at: f.root) }
-    let encoded = CallFlag()
-    f.model.encodeForShrink = { _, _, _ in encoded.set() }
-    let original = try Data(contentsOf: f.recording)
-
-    await f.model.refreshStorage(ids: [f.id])
-    let reason = f.model.shrinkUnavailability(for: try #require(f.model.store.meeting(id: f.id)))
-    #expect(reason?.message.contains("2 audio tracks") == true, "\(String(describing: reason))")
-    #expect(reason == .multipleAudioTracks(count: 2), "counted from the file, by AVFoundation")
-    await f.shrink()
-
-    #expect(!encoded.value, "refused before anything is encoded")
-    #expect(try Data(contentsOf: f.recording) == original)
-    #expect(!f.exists("recording.m4a"))
-    let alert = f.model.alertMessage ?? "nil"
-    #expect(alert.contains("2 audio tracks"), "\(alert)")
-}
+// F801's "An import with two audio tracks is not shrunk" became F942's mix: since the user's decision of
+// 2026-10-12 every track is mixed into the copy, and `ShrinkMixedTracksTests` drives that through the
+// same calls.
 
 @Test("An import with one audio track in a movie container can still be shrunk (F801 control)")
 @MainActor
@@ -271,62 +243,11 @@ func shrinkRefusesACopyMissingMostOfTheRecording() async throws {
 
 // MARK: - Review round 3 (R5): more channels than a shrunk copy keeps
 
-/// A 16-bit WAV at 48 kHz with one channel per array and no channel layout (plain `WAVE_FORMAT_PCM`),
-/// the shape a field or podcast recorder's "poly" WAV often has.
-private func multichannelWAV(_ channels: [[Float]]) -> Data {
-    let count = channels.count, frames = channels.map(\.count).min() ?? 0
-    var data = Data()
-    func u32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
-    func u16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
-    let byteCount = UInt32(frames * count * 2)
-    data.append(contentsOf: Array("RIFF".utf8)); u32(36 + byteCount); data.append(contentsOf: Array("WAVE".utf8))
-    data.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(UInt16(count))
-    u32(48_000); u32(UInt32(48_000 * count * 2)); u16(UInt16(count * 2)); u16(16)
-    data.append(contentsOf: Array("data".utf8)); u32(byteCount)
-    var samples = [Int16](repeating: 0, count: frames * count)
-    for frame in 0..<frames {
-        for channel in 0..<count {
-            samples[frame * count + channel] = Int16(Swift.max(-1, Swift.min(1, channels[channel][frame])) * 32_767)
-        }
-    }
-    samples.withUnsafeBytes { data.append(contentsOf: $0) }
-    return data
-}
-
 // R5 — afconvert's `-c 1 --mix` mixes stereo (F796) and a layout with positions, but a WAV with more
-// than two channels and no layout comes out as channel 1 alone (the review's PROBE LAYOUT, at 3, 4, 6
-// and 8 channels). With every channel at the same level, channel 1's level is the level over all of
-// them, in the whole file and in every window, so both level checks passed and channels 2-4 were
-// deleted with the original. The review's probe `probeFourChannelShrink`, through the Shrink button's
-// calls with the real encoder.
-@Test("A WAV with four channels is not shrunk, and says why, before anything is encoded (F801 review)")
-@MainActor
-func shrinkRefusesAFourChannelImport() async throws {
-    // Four simultaneous feeds at the same level, one tone each: a floor microphone and three interpreters.
-    let channels = [300.0, 500.0, 700.0, 900.0].map { toneSamples(seconds: 6, amplitude: 0.2, frequency: $0) }
-    let f = try await ImportFixture(recordingExtension: "wav", duration: 6) { url in
-        try multichannelWAV(channels).write(to: url)
-    }
-    defer { try? FileManager.default.removeItem(at: f.root) }
-    let encoded = CallFlag()
-    f.model.encodeForShrink = { input, output, workingWAV in
-        encoded.set()
-        try AudioCompressor.compressSpeech(input: input, output: output, workingWAV: workingWAV)
-    }
-    let original = try Data(contentsOf: f.recording)
-
-    await f.model.refreshStorage(ids: [f.id])
-    let reason = f.model.shrinkUnavailability(for: try #require(f.model.store.meeting(id: f.id)))
-    #expect(reason?.message.contains("4 channels") == true, "the Shrink button's reason: \(String(describing: reason))")
-    await f.shrink()
-
-    let alert = f.model.alertMessage ?? "nil"
-    #expect(alert.contains("4 channels"), "\(alert)")
-    #expect(!encoded.value, "refused before anything is encoded")
-    #expect(f.exists("recording.wav"), "channels 2-4 exist only in the original")
-    #expect((try? Data(contentsOf: f.recording)) == original)
-    #expect(!f.exists("recording.m4a"))
-}
+// than two channels and no layout comes out as channel 1 alone, and with every channel at one level
+// both level checks passed while channels 2-4 were deleted with the original. Refused from round 3;
+// since F942 every channel is mixed into the copy instead, and `ShrinkMixedTracksTests` drives R5's
+// four-channel fixture through the Shrink button's calls with the real mixer, encoder and decoder.
 
 // MARK: - A container with several audio tracks, written with AVAssetWriter
 

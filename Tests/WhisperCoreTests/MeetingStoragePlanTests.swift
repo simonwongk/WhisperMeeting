@@ -172,7 +172,10 @@ func shrinkRefusesDuringARestore() {
 
 // MARK: - F801: a container with several audio tracks, and a copy whose level is wrong
 
-@Test("An import with several audio tracks is refused, saying how many would be lost (F801)")
+// Since F942 a recording with several tracks is mixed into the copy when what each track holds was
+// read (`shrinkMixesWhatItCanRead`). These are the facts as F801 left them, with no tracks read, which
+// is still refused: the plain encode would keep track 1.
+@Test("An import with several audio tracks nobody read is refused, saying how many would be lost (F801, F942)")
 func shrinkRefusesSeveralAudioTracks() {
     let idle = MeetingStoragePlan.LiveFacts()
     var two = disk("recording.mov", entries: [Entry(name: "recording.mov", bytes: 900_000_000)])
@@ -200,8 +203,8 @@ func shrinkRefusesSeveralAudioTracks() {
     resume.otherRecordingSeconds = ["recording.mov": 3_600]
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 2).message
-        .contains("2 audio tracks, and a shrunk copy keeps only the first. The other track would be deleted"))
-    #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 3).message.contains("The other 2 tracks"))
+        .contains("2 audio tracks, and they can't be read to mix them into one. A shrunk copy would keep only the first, and the other track would be deleted"))
+    #expect(MeetingStoragePlan.Unavailability.multipleAudioTracks(count: 3).message.contains("the other 2 tracks"))
 }
 
 @Test("Only an import's container is asked how many audio tracks it holds (F801)")
@@ -214,7 +217,7 @@ func shrinkCountsTracksOnlyForAnImport() {
     #expect(!MeetingStoragePlan.mayHoldSeveralAudioTracks("meeting.m4a"))
 }
 
-@Test("A recording with more than two channels is refused, saying how many; stereo and mono are not (F801 review)")
+@Test("A recording with more than two channels nobody read is refused, saying how many; stereo and mono are not (F801 review, F942)")
 func shrinkRefusesMoreThanTwoChannels() {
     let idle = MeetingStoragePlan.LiveFacts()
     // An hour of four-channel 16-bit 48 kHz audio, so the size rule alone would shrink it.
@@ -249,7 +252,7 @@ func shrinkRefusesMoreThanTwoChannels() {
     #expect(MeetingStoragePlan.isResume(resume))
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.Unavailability.multipleChannels(count: 4).message
-        == "This recording has 4 channels, and a shrunk copy keeps only some of them. The others would be deleted with the original, so it isn't shrunk.")
+        == "This recording has 4 channels, and they can't be read to mix them into one. A shrunk copy would keep only some of them, and the others would be deleted with the original, so it isn't shrunk.")
 }
 
 @Test("A compressed copy must carry the recording's level: silence, and a copy far off either way, are refused (F801)")

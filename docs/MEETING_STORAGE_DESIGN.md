@@ -83,6 +83,11 @@ invalidated after Stop, import, Shrink, Rebuild Audio and delete. Sizes are form
     but **not** for AAC output: a right-only stereo file encoded straight to AAC with `-c 1 --mix` decoded to silence.
   - The two-step path kept it (RMS 4240 against 4242 for the mixed WAV). Native captures are mono, so this matters for
     stereo imports.
+  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12).** It is first
+    mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`: every channel of every track, each
+    placed at its own time, summed by the rule that mixes a capture's two tracks (`FloatTrackMixer.limitedSample`: 0.95
+    of the sum while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before
+    F942 such a recording was refused (below).
 - **Name:** the stem is kept and only the extension changes.
   - `meeting.wav` becomes `meeting.m4a`.
   - `meeting-recovered.wav` becomes `meeting-recovered.m4a`.
@@ -115,6 +120,14 @@ verified and the index saved.
      always caught from 9.4 s; of speech, a lost 1–2 s is never caught, 7 s in 10 of 15 placements, 10 s in 13 of 13.
      Shorter losses are not caught: the check is a backstop against an encoder losing a stretch. The refusal names the
      first stretch it found ("missing sound the recording has at about 0:10") and nothing after it.
+   - For a mixed recording (F942), the original is decoded track by track, and its level is over every channel of every
+     track. Every channel the mixer summed must have been measured, and each channel, in every window where it is
+     audible, must be matched in the copy by at least a quarter of its own level times the mix's 0.95. That catches a
+     channel lost while it is the one sounding — the sides of a call or the microphones of a panel taking turns, the
+     case where a copy of track 1 alone still keeps the whole-file and per-window levels (F801 review R5's fault, pinned
+     by `shrinkRefusesAMixThatLostAChannel`). A channel lost while another is as loud for the whole window is not caught.
+     For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
+     stops more than 0.5 s short of what the container declares.
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.
@@ -170,13 +183,13 @@ re-made when the action runs. The reasons, in the order a person can act on them
 - **The recording is damaged.** Verify Library has a finding for it, or `SourceRebuild.offer` would offer a rebuild.
   The message is "Rebuild Audio first". Shrinking would lock the damage in and delete the tracks that can repair it.
 - **The recording file is missing.**
-- **The recording has more than one audio track** (F801). An import keeps the container it came in, and a movie or
-  MPEG-4 file can carry a track per side of a call. afconvert decodes only the first audio track, so the shrunk copy
-  would keep track 1 and the rest would be deleted with the original. The message says how many tracks would be lost.
-  See the 2026-10-09 amendment below.
-- **The recording has more than two channels** (F801 review, 2026-10-11). The encode's mono mix keeps only channel 1
-  of a WAV with more than two channels and no channel layout. The message says how many channels it has. A positioned
-  layout such as 5.1 is refused too (F953). See the same amendment.
+- **The recording has more than one audio track, or more than two channels, and they cannot be mixed** (F801, F942).
+  An import keeps the container it came in, and a movie or MPEG-4 file can carry a track per side of a call; a "poly"
+  WAV can carry a microphone per channel. Since F942 such a recording is mixed into the copy (step 0), whatever its
+  layout (F953). What is still refused: audio tracks that are alternatives of each other, such as a movie's
+  languages ("…alternatives to each other…"), and a recording whose tracks could not be read, where the plain encode
+  would keep track 1, or channel 1 of a WAV with no layout ("…can't be read to mix them into one…", saying how many
+  tracks or channels). See the 2026-10-09 amendment and the F942 amendment below.
 - **Another `recording.<ext>` in the folder may hold more audio than the recording** (F911). It names the file and
   says whether it runs longer or could not be measured. This one applies in resume mode too. See the 2026-10-10
   amendment below.
@@ -383,6 +396,30 @@ follows; the user has not reviewed this yet.
   fail-closed fix was the integrating session's decision (whisper-27), not the user's; reading the layout to keep
   positioned recordings shrinkable is F953.
 
+## Amendment for F942 and F953 (2026-10-12): several tracks, or more than two channels, are mixed
+
+The user answered the question above on 2026-10-12: keep refusing for now, and mix all tracks into one for both
+transcription and Shrink. Wave 6 built the mixing, so the two refusals above give way to it.
+
+- **What is mixed.** A recording with several audio tracks, or one track of more than two channels
+  (`RecordingMixPlan`). One track of one or two channels is not: the encode's `--mix` mixes stereo (F796), as the
+  engines' own decodes do. Alternate tracks — a movie's languages, of which a player plays one — are not summed,
+  since that would garble both; Shrink refuses them, and transcription keeps decoding the default one.
+- **How.** `RecordingMixer` reads each track with AVFoundation at 16 kHz with its own channel count, and for more than
+  two channels a discrete layout, so nothing is downmixed on the way: asked for one channel, AVFoundation keeps only
+  channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time. Every
+  channel is then summed by the capture mixer's rule (0.95 of the sum, a limiter above full scale), so a voice alone on
+  its track keeps nearly its level and no sum clips; dividing by the number of tracks would make every voice of a call
+  recorded a side per track quieter by 6 dB. Every channel counts the same, LFE included: a positioned 5.1 recording
+  keeps all six (F953), where afconvert's positioned downmix dropped LFE.
+- **What it costs.** The tracks cannot be separated again once the original is deleted: per-speaker tracks are gone
+  for good. The confirmation says so ("…mixed into one; they can't be separated again afterwards").
+- **How it is checked.** Step 4's per-channel check, above. The whole-file band also bounds a mix from above, and a
+  voice reaching many microphones in phase can pass it: computed, not measured, six microphones that each hear the
+  speaker 15 dB down beside the speaker's own read about 4.1 times the level over all channels, and are refused. That
+  is the safe direction.
+- **Resume mode** is unchanged by this: it encodes nothing.
+
 ## Amendment for F911 (2026-10-10)
 
 A link import recovered after its audio extraction was interrupted keeps its complete download beside the
@@ -392,7 +429,9 @@ a shutdown, restart or logout sends, finishes its header over what it had writte
 download — or, when the download was itself `recording.m4a`, replace it with the encode — and the only complete copy
 would be gone. Today that is latent rather than live for a link import's own WAV: Shrink's first encode step
 (`afconvert -c 1 --mix`) refuses a 16 kHz mono PCM input outright, which is what such a WAV is, so the encode fails
-before anything is removed. The rule below does not rely on that.
+before anything is removed. The rule below does not rely on that. (Since F941, 2026-10-12, the encode no longer
+refuses that input — `--mix` is left out for a recording whose header says it is mono — so this rule is now what
+keeps the download.)
 
 - **Each other `recording.<ext>` is measured** when the folder is: a WAV from its header (or, for one FFmpeg never
   finished, from the audio it holds), anything else with `AVAudioFile`.

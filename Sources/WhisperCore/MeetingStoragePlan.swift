@@ -147,6 +147,36 @@ public enum MeetingStoragePlan {
         return nil
     }
 
+    /// Whether Shrink mixes this recording into its copy rather than encoding it as it is (F942): it
+    /// has several audio tracks, or more than two channels. One or two channels of one track are mixed
+    /// by the encode itself (F796).
+    public static func needsMix(_ disk: DiskFacts) -> Bool {
+        (disk.audioTrackCount ?? 1) > 1 || (disk.channelCount ?? 0) > 2
+    }
+
+    /// The first `levelWindowSeconds` stretch in which some channel of a mixed recording lost its sound
+    /// in the copy, or nil when none did (F942). The whole-file and per-window levels compare the copy
+    /// with the sound of every channel together, and that cannot see a channel missing beside others
+    /// as loud: a copy holding track 1 of two equally loud tracks reads the same level (F801 review
+    /// R5). So each channel of each track, in each stretch where it is audible — at least a tenth of
+    /// the recording's whole-file level, and above `silenceLevel` — must be matched in the copy by at
+    /// least the band's lower bound of its level times the mix's gain (`RecordingMixPlan.gain`): the
+    /// copy is a sum, so a channel that reached it is there at about that level unless another cancels
+    /// it. What it catches is a channel lost while it is the one sounding, which is how the two sides
+    /// of a call or the microphones of a panel take turns. A channel lost while another is as loud for
+    /// the whole stretch is not caught; no comparison of levels can catch that.
+    public static func firstWindowLosingAChannel(channels: [[Double]], compressed: [Double], originalLevel: Double) -> Int? {
+        let audible = Swift.max(silenceLevel, originalLevel / 10)
+        let floor = levelRatioBand.lowerBound * RecordingMixPlan.gain
+        for index in compressed.indices {
+            for channel in channels where index < channel.count && channel[index] >= audible {
+                let copy = compressed[index]
+                guard copy.isFinite, copy >= channel[index] * floor else { return index }
+            }
+        }
+        return nil
+    }
+
     /// The files Shrink removes, in the order it removes them. Only names on this list are ever removed.
     ///
     /// The order is what keeps a folder from looking damaged if the app stops partway (design, step 7):
@@ -233,11 +263,15 @@ public enum MeetingStoragePlan {
         /// How many channels the recording holds, read from its header (F801 review). Nil when not read
         /// or not readable.
         public var channelCount: Int?
+        /// What each of the recording's audio tracks holds, read with AVFoundation when it has several
+        /// tracks or more than two channels, so the plan can tell whether they can be mixed into the copy
+        /// (F942). Nil when not read or not readable.
+        public var audioTracks: [RecordingMixPlan.Track]?
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
                     audioTrackCount: Int? = nil, otherRecordingSeconds: [String: TimeInterval] = [:],
-                    channelCount: Int? = nil) {
+                    channelCount: Int? = nil, audioTracks: [RecordingMixPlan.Track]? = nil) {
             self.recordingName = recordingName
             self.recordingExists = recordingExists
             self.inOwnFolder = inOwnFolder
@@ -248,6 +282,7 @@ public enum MeetingStoragePlan {
             self.audioTrackCount = audioTrackCount
             self.otherRecordingSeconds = otherRecordingSeconds
             self.channelCount = channelCount
+            self.audioTracks = audioTracks
         }
     }
 
@@ -266,10 +301,15 @@ public enum MeetingStoragePlan {
         case unsupportedRecording
         case recordingMissing
         case damaged(rebuildOffered: Bool)
-        /// The container holds more than one audio track, and the encode keeps only the first (F801).
+        /// The container holds more than one audio track, and they could not be read to mix them into the
+        /// copy, which would then keep only the first (F801, F942).
         case multipleAudioTracks(count: Int)
-        /// The recording holds more than two channels, and the encode's mono mix keeps only some of them
-        /// (F801 review): with no channel layout, channel 1 alone.
+        /// The container's audio tracks are alternatives of one another, such as languages: summing them
+        /// would make none of them intelligible, and a copy keeps one track (F942).
+        case alternateAudioTracks(count: Int)
+        /// The recording holds more than two channels, and they could not be read to mix them into the
+        /// copy, whose plain mono mix keeps only some of them — with no channel layout, channel 1 alone
+        /// (F801 review, F942).
         case multipleChannels(count: Int)
         /// Another `recording.<ext>` in the folder is not shown to hold no more audio than the
         /// recording, and Shrink would delete or replace it (F911) — a link import's complete download
@@ -297,10 +337,12 @@ public enum MeetingStoragePlan {
             case .damaged(rebuildOffered: false):
                 return "Verify Library reports a problem with this recording, so it isn't shrunk: the damage would be kept and the original deleted."
             case let .multipleAudioTracks(count):
-                let others = count == 2 ? "The other track" : "The other \(count - 1) tracks"
-                return "This recording has \(count) audio tracks, and a shrunk copy keeps only the first. \(others) would be deleted with the original, so it isn't shrunk."
+                let others = count == 2 ? "the other track" : "the other \(count - 1) tracks"
+                return "This recording has \(count) audio tracks, and they can't be read to mix them into one. A shrunk copy would keep only the first, and \(others) would be deleted with the original, so it isn't shrunk."
+            case let .alternateAudioTracks(count):
+                return "This recording has \(count) audio tracks that are alternatives to each other, such as languages. Mixed into one they would garble each other, and a shrunk copy keeps one track, so it isn't shrunk."
             case let .multipleChannels(count):
-                return "This recording has \(count) channels, and a shrunk copy keeps only some of them. The others would be deleted with the original, so it isn't shrunk."
+                return "This recording has \(count) channels, and they can't be read to mix them into one. A shrunk copy would keep only some of them, and the others would be deleted with the original, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, seconds?):
                 return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, nil):
@@ -349,15 +391,24 @@ public enum MeetingStoragePlan {
             if disk.hasIntegrityProblem || disk.rebuildOffered {
                 return .damaged(rebuildOffered: disk.rebuildOffered)
             }
-            // F801: a track the shrunk copy cannot hold is never deleted with the original. Refused,
-            // not warned about, because the loss is permanent and the confirmation is one click.
-            if let tracks = disk.audioTrackCount, tracks > 1 { return .multipleAudioTracks(count: tracks) }
-            // F801 review: the same for channels. The encode's mono mix (`-c 1 --mix`) mixes stereo
-            // (F796) and a layout that gives each channel a position, but of a WAV with more than two
-            // channels and no layout it keeps channel 1 alone — and with the channels at equal levels,
-            // neither level check sees the loss. Refused whatever the layout, which is not read here, so
-            // a positioned 5.1 or quad recording is refused too (F953).
-            if let channels = disk.channelCount, channels > 2 { return .multipleChannels(count: channels) }
+            // F801: a track or channel the shrunk copy cannot hold is never deleted with the original.
+            // Since F942 such a recording is mixed into the copy, every channel of every track, whatever
+            // its layout (F953), and only what cannot be mixed is refused: alternate tracks, and a
+            // recording whose tracks were not read — fail-closed, because the plain encode would keep
+            // track 1, or of a WAV with more than two channels and no layout, channel 1 (F801 review R5).
+            // Refused, not warned about, because the loss would be permanent and the confirmation is
+            // one click.
+            if needsMix(disk) {
+                switch disk.audioTracks.map(RecordingMixPlan.decision(for:)) {
+                case .mixEveryChannel?:
+                    break
+                case let .unsupported(.alternateTracks(count))?:
+                    return .alternateAudioTracks(count: count)
+                default:
+                    if let tracks = disk.audioTrackCount, tracks > 1 { return .multipleAudioTracks(count: tracks) }
+                    return .multipleChannels(count: disk.channelCount ?? 0)
+                }
+            }
             guard disk.durationSeconds.isFinite, disk.durationSeconds > 0 else { return .cannotMeasureLength }
             let reclaim = reclaimableBytes(in: disk.entries, recordingName: disk.recordingName, outputName: output)
             let predicted = predictedOutputBytes(durationSeconds: disk.durationSeconds)

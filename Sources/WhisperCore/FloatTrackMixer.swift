@@ -95,7 +95,14 @@ public enum FloatTrackMixer {
     /// maps it to 0 before the clamp (F354). Before F354, `min(1, nan)` returned 1.0 and a NaN
     /// frame was a full-scale click.
     public static func mixedSample(system: Float, microphone: Float) -> Int16 {
-        let sum = system + microphone
+        limitedSample(sum: system + microphone)
+    }
+
+    /// The same rule for a sum of any number of inputs: `soloGain` times the sum while it fits, the
+    /// limiter above it. An imported recording's tracks and channels are mixed by it (F942), so an
+    /// import with several tracks is summed exactly as a capture's two are, and a voice alone on its
+    /// track keeps nearly its level while no sum can clip.
+    public static func limitedSample(sum: Float) -> Int16 {
         let magnitude = abs(sum)
         let shaped: Float
         if magnitude <= linearSumLimit {

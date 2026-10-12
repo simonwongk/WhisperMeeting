@@ -616,10 +616,21 @@ final class AppModel: ObservableObject {
         try AudioCompressor.compressSpeech(input: $0, output: $1, workingWAV: $2)
     }
     /// Decodes every packet of a file for Shrink's checks: the compressed copy's length and level, and
-    /// the original's level to compare it with (F795, F801).
-    var decodeForShrink: @Sendable (URL) throws -> DecodedAudio.Decoded = { try DecodedAudio.fullyDecoded(of: $0) }
+    /// the original's level to compare it with (F795, F801) — every track's, and each channel's by
+    /// itself, for a recording with several (F942).
+    var decodeForShrink: @Sendable (URL) async throws -> DecodedAudio.Decoded = {
+        try await DecodedAudio.fullyDecodedEveryTrack(of: $0)
+    }
+    /// Mixes every channel of every track of a recording with several tracks or more than two channels
+    /// into the 16 kHz mono WAV Shrink then encodes (F942).
+    var mixForShrink: @Sendable (_ input: URL, _ output: URL) async throws -> RecordingMixer.Result = {
+        try await RecordingMixer.mixEveryChannel(of: $0, to: $1)
+    }
     /// How many audio tracks an import's container holds, or nil when it cannot be read (F801).
     var audioTrackCountForShrink: @Sendable (URL) async -> Int? = { await DecodedAudio.audioTrackCount(of: $0) }
+    /// What each audio track holds, read when the recording has several or more than two channels, so
+    /// the planner can tell whether they can be mixed into the copy (F942). Nil when unreadable.
+    var audioTracksForShrink: @Sendable (URL) async -> [RecordingMixPlan.Track]? = { await RecordingMixer.tracks(of: $0) }
     var declaredDurationForShrink: @Sendable (URL) -> TimeInterval? = { DecodedAudio.declaredDuration(of: $0) }
     var storageEntries: @Sendable (URL) -> [MeetingStoragePlan.FolderEntry] = { MeetingStorageMeter.entries(in: $0) }
     var availableBytesForShrink: @Sendable (URL) -> Int64? = { url in
@@ -1858,6 +1869,18 @@ final class AppModel: ObservableObject {
         // minutes, materially slowing this ASR + alignment process through unified-memory pressure.
         // The configured closure waits for their children to exit before the selected engine begins.
         await releaseIdleDictationModels()
+        // F942: a recording with several audio tracks, or with more than two channels, is mixed into
+        // one 16 kHz mono WAV before any engine hears it. Each engine's own decode keeps one track of a
+        // container (Whisper's ffmpeg, Qwen's afconvert transcode), and of more than two channels with
+        // no layout afconvert keeps channel 1 and ffmpeg drops the one it guesses is LFE. Above the
+        // override, so a stubbed engine is handed exactly what a real one would be. The mix is a temp
+        // file of this run's, removed when the run ends; the recording is only read.
+        let mixDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperMeet-Mix-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: mixDirectory) }
+        let url = try await Task.detached(priority: .userInitiated) {
+            try await RecordingMixer.mixIfNeeded(url, into: mixDirectory)
+        }.value ?? url
         if let override = runTranscriptionEngineOverride {
             return try await override(selection, url)
         }
@@ -2125,9 +2148,14 @@ final class AppModel: ObservableObject {
         defer { try? FileManager.default.removeItem(at: workspace) }
 
         // A meeting is captured at 48 kHz mono, so this normally converts; a recording already at
-        // 16 kHz mono is analyzed where it lies, read-only.
+        // 16 kHz mono is analyzed where it lies, read-only. One with several audio tracks or more than
+        // two channels is mixed into one first, as for the engines (F942) — analysis takes only a
+        // recording made in WhisperMeet today, which is mono, so this is the same path kept honest for
+        // whatever it is given rather than a second decode that keeps track 1.
         var analysisURL = request.audioURL
-        if AudioTranscoder.needsTranscoding(request.audioURL) {
+        if let mixed = try await RecordingMixer.mixIfNeeded(request.audioURL, into: workspace) {
+            analysisURL = mixed
+        } else if AudioTranscoder.needsTranscoding(request.audioURL) {
             let prepared = workspace.appendingPathComponent("analysis.wav")
             try AudioTranscoder.transcodeToWAV(input: request.audioURL, output: prepared)
             analysisURL = prepared
