@@ -57,7 +57,7 @@ func ruleCorrectionsReachApplyPath() throws {
     ))
 
     let proposals = model.replacementRuleCorrections(for: id)
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Sequoia", to: "Sequoya")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Sequoia", to: "Sequoya", proposedLine: "We use Sequoia for infra.")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "We use Sequoya for infra.")
@@ -81,7 +81,7 @@ func ruleCorrectionsMatchASentenceInitialCapital() throws {
     ))
 
     let proposals = model.replacementRuleCorrections(for: id)
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", proposedLine: "Jon said the build is green.")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Jonathan said the build is green.")
@@ -104,7 +104,7 @@ func ruleCorrectionsLeaveAMidSentenceCapitalAlone() throws {
     ))
 
     let proposals = model.replacementRuleCorrections(for: id)
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "bill", to: "invoice")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "bill", to: "invoice", proposedLine: "Ask Bill about the bill.")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Ask Bill about the invoice.")
@@ -127,7 +127,7 @@ func ruleCorrectionsReachASentenceStartAfterTheSameName() async throws {
     ))
 
     let proposals = model.replacementRuleCorrections(for: id)
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13)])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13, proposedLine: "Zoë and Jon. Jon left.")])
     // The row's sentence is about the second "Jon", the one it changes.
     #expect(await model.proposalContexts(proposals, in: id)
         == [ProposalContext(before: "Zoë and Jon. ", match: "Jon", after: " left.")])
@@ -157,11 +157,78 @@ func ruleCorrectionsReadSentencesAcrossLines() throws {
 
     let proposals = model.replacementRuleCorrections(for: id)
     #expect(proposals == [
-        GlossaryCorrection(segmentIndex: 1, from: "jason", to: "JSON"),
-        GlossaryCorrection(segmentIndex: 4, from: "Jason", to: "JSON"),
+        GlossaryCorrection(segmentIndex: 1, from: "jason", to: "JSON", proposedLine: lines[1]),
+        GlossaryCorrection(segmentIndex: 4, from: "Jason", to: "JSON", proposedLine: lines[4]),
     ])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.map(\.text)
         == ["I talked to", "Jason about the JSON file.", "Ask Dr. Jason.", "Done.", "JSON said so."])
+}
+
+// F971 — Apply resolved a reviewed row against the meeting's lines at Apply time. If a line changed
+// after the review was proposed (a second window on the meeting, or the lines replaced under an
+// open sheet), a row could land on a word nobody reviewed: since F950 a row with a stored place, on
+// another occurrence that now starts there; before it, any row, on the first occurrence of its text.
+
+@MainActor
+private func meeting(_ model: AppModel, lines: [String]) -> UUID {
+    let segments = lines.enumerated().map {
+        TranscriptSegment(speaker: nil, start: Double($0.offset), end: Double($0.offset + 1), text: $0.element)
+    }
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+    return id
+}
+
+@MainActor
+@Test("A reviewed row whose line changed after it was proposed is not applied, and Apply says so (F971)")
+func applySkipsARowWhoseLineChanged() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-changedline-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addReplacementRule(heard: "jon", preferred: "jonathan")
+    let id = meeting(model, lines: ["Sam and Jon. Jon left."])
+
+    // The rules review: one row, for the sentence's "Jon", carrying its place (F950).
+    let rows = model.replacementRuleCorrections(for: id)
+    #expect(rows.map(\.characterOffset) == [13])
+    // Meanwhile another Apply on the meeting changes the line: "Sam" → "Samantha" (+5 characters),
+    // so the name "Jon" now starts where the reviewed "Jon" did.
+    model.applyGlossaryCorrections([GlossaryCorrection(segmentIndex: 0, from: "Sam", to: "Samantha")], to: id)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "Samantha and Jon. Jon left.")
+
+    // The review's Apply: the row was reviewed on another line, so nothing is written, and the user is told.
+    #expect(model.applyGlossaryCorrections(rows, to: id) == nil)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "Samantha and Jon. Jon left.")
+    #expect(model.alertMessage == AppModel.correctionsOnChangedLinesMessage(1))
+    #expect(AppModel.correctionsOnChangedLinesMessage(1).contains("1 correction"))
+}
+
+@MainActor
+@Test("Every row on a changed line is skipped, with or without a stored place, and rows on unchanged lines still apply (F971)")
+func applySkipsEveryRowOnAChangedLineOnly() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-changedlines-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addReplacementRule(heard: "jon", preferred: "Jonathan")
+    model.store.addReplacementRule(heard: "bill", preferred: "invoice")
+    let id = meeting(model, lines: ["ask jon and bill", "jon met jon"])
+
+    let rows = model.replacementRuleCorrections(for: id)
+    #expect(rows.count == 3)
+    // Line 0 changes after the review was proposed; neither of its rows has a stored place, and
+    // each would still find its word there.
+    model.applyGlossaryCorrections([GlossaryCorrection(segmentIndex: 0, from: "ask", to: "Ask")], to: id)
+
+    let applied = model.applyGlossaryCorrections(rows, to: id)
+    #expect(applied != nil)
+    #expect(model.store.meeting(id: id)?.segments.map(\.text) == ["Ask jon and bill", "Jonathan met jon"])
+    #expect(model.alertMessage == AppModel.correctionsOnChangedLinesMessage(2))
+    #expect(AppModel.correctionsOnChangedLinesMessage(2).contains("2 corrections"))
 }

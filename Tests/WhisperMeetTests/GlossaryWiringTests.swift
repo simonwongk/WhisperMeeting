@@ -67,7 +67,7 @@ func glossaryCorrectionKeepsPunctuationThroughAppModel() async throws {
     model.store.addVocabulary(["Kestrel"])
 
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel", proposedLine: "Ship the Kestrol, then tell Priya.")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Ship the Kestrel, then tell Priya.")
@@ -95,7 +95,7 @@ func glossaryCorrectionLeavesACorrectTwoWordTermAlone() async throws {
 
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
     // Only the real mishearing, on the second line.
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "Priya Ramen", to: "Priya Raman")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "Priya Ramen", to: "Priya Raman", proposedLine: "Ask Priya Ramen about it.")])
 }
 
 @MainActor

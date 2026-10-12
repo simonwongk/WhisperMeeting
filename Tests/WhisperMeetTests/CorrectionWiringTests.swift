@@ -45,7 +45,7 @@ func localCorrectionProposesReviewableCorrections() async throws {
 
     let proposals = await model.proposeLocalCorrections(for: id)
 
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Kew Bernetes", to: "Kubernetes")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Kew Bernetes", to: "Kubernetes", proposedLine: "Kew Bernetes runs the cluster")])
     #expect(box.vocabulary == ["Kubernetes"])
     #expect(box.transcript?.contains("Kew Bernetes runs the cluster") == true)
     #expect(model.alertMessage == nil)
@@ -100,7 +100,7 @@ func referenceThreadsThroughWithoutVocabulary() async throws {
 
     let proposals = await model.proposeLocalCorrections(for: id, reference: "Preferred spelling: Sequoya")
 
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Sequoia", to: "Sequoya")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Sequoia", to: "Sequoya", proposedLine: "Sequoia signed the deal")])
     #expect(box.reference == "Preferred spelling: Sequoya")
     #expect(box.vocabulary == [])
     #expect(model.alertMessage == nil)

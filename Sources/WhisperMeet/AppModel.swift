@@ -6398,11 +6398,20 @@ final class AppModel: ObservableObject {
             alertMessage = Self.transcriptChangedDuringCorrectionMessage
             return nil
         }
-        return proposals
+        // And each row carries its line, so a change after this point skips it at Apply (F971).
+        return proposals.map { GlossaryCorrector.proposing($0, on: input.segments) }
     }
 
     static let transcriptChangedDuringCorrectionMessage =
         "The transcript changed while it was being checked against your vocabulary, so nothing is proposed. Choose Correct Toward Vocabulary again."
+
+    /// What Apply says when it skipped reviewed corrections because their lines changed after they
+    /// were proposed (F971), in the shape of `transcriptChangedDuringCorrectionMessage`.
+    static func correctionsOnChangedLinesMessage(_ count: Int) -> String {
+        count == 1
+            ? "1 correction was not applied because its line changed after it was proposed. Run the correction again to review it against the line as it is now."
+            : "\(count) corrections were not applied because their lines changed after they were proposed. Run the correction again to review them against the lines as they are now."
+    }
 
     /// Stops the running Correct Toward Vocabulary pass; its proposals are discarded.
     func cancelGlossaryCorrections() {
@@ -6417,12 +6426,14 @@ final class AppModel: ObservableObject {
 
     /// Proposed corrections from the user's exact `heard → preferred` replacement rules (F179).
     /// Read-only — computes over the stored segments; the proposals flow through the same F82 review
-    /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened.
+    /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened. Each row
+    /// carries its line as proposed (F971), as the other two tools' rows do.
     func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
         guard let meeting = store.meeting(id: id) else { return [] }
-        return ReplacementRuleMatcher.corrections(
+        let rows = ReplacementRuleMatcher.corrections(
             rules: store.replacementRules, segments: meeting.segments, evidence: cjkWordEvidence
         )
+        return GlossaryCorrector.proposing(rows, on: meeting.segments)
     }
 
     /// The sentences a review sheet's rows are about (F817), one per row: its line's words around
@@ -6904,9 +6915,18 @@ final class AppModel: ObservableObject {
     /// nothing to apply, corrections that match no text, or a write the store declined. Until F831
     /// it returned nothing and no undo was registered for it, so one wrong tick from any of the three
     /// correction tools was permanent except by retyping it; the review sheet registers one now.
+    ///
+    /// A correction whose line changed after it was proposed is skipped, and the user is told how
+    /// many (F971): Apply runs on the lines as they stand, and a line can change under an open review
+    /// (a second window on the meeting, or the lines replaced), where a reviewed row could otherwise
+    /// land on a word nobody reviewed. The rest of the corrections still apply.
     @discardableResult
     func applyGlossaryCorrections(_ corrections: [GlossaryCorrection], to id: UUID) -> TranscriptCorrectionApplication? {
         guard let meeting = store.meeting(id: id), !store.isTranscriptEdited(meeting), !corrections.isEmpty else { return nil }
+        let skipped = GlossaryCorrector.rowsOnChangedLines(corrections, in: meeting.segments).count
+        if skipped > 0 {
+            alertMessage = Self.correctionsOnChangedLinesMessage(skipped)
+        }
         let corrected = GlossaryCorrector.apply(corrections, to: meeting.segments, evidence: cjkWordEvidence)
         guard corrected != meeting.segments else { return nil }
         let text = TranscriptFormatter.timestamped(corrected)
@@ -7156,9 +7176,10 @@ final class AppModel: ObservableObject {
                 alertMessage = "The transcript changed while the local model was reading it, so nothing is proposed. Run the correction again."
                 return []
             }
-            return TranscriptCorrection.glossaryCorrections(
+            // Each row carries its line as proposed, so Apply skips it if the line changes (F971).
+            return GlossaryCorrector.proposing(TranscriptCorrection.glossaryCorrections(
                 from: corrections, segments: meeting.segments, evidence: cjkWordEvidence
-            )
+            ), on: meeting.segments)
         } catch is CancellationError {
             return []
         } catch {

@@ -60,7 +60,7 @@ func replacementRulesRespectChineseWordsThroughAppModel() throws {
     let proposals = model.replacementRuleCorrections(for: id)
     // Line 0: 会议 is inside the vocabulary term 会议纪要. Line 1: inside the segmenter's 会议厅.
     // Line 2: proposed once, for the standalone 会议.
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 2, from: "会议", to: "会议室")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 2, from: "会议", to: "会议室", proposedLine: "整理会议纪要，明天开会议")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     let lines = try #require(model.store.meeting(id: id)).segments.map(\.text)
@@ -84,7 +84,7 @@ func localModelCorrectionsGetChineseWordBoundaries() async throws {
 
     let proposals = await model.proposeLocalCorrections(for: id)
 
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "会议", to: "会议室")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "会议", to: "会议室", proposedLine: "明天开会议")])
 }
 
 private final class LocalModelGate: @unchecked Sendable {

@@ -20,23 +20,49 @@ public struct ProposalContext: Sendable, Equatable {
 }
 
 extension GlossaryCorrector {
+    /// `corrections`, each carrying the text of its line in `segments` — the lines they were proposed
+    /// on — for a review sheet (F971). `apply` then changes a row only while its line still reads so.
+    public static func proposing(_ corrections: [GlossaryCorrection], on segments: [TranscriptSegment]) -> [GlossaryCorrection] {
+        corrections.map { correction in
+            GlossaryCorrection(
+                segmentIndex: correction.segmentIndex, from: correction.from, to: correction.to,
+                characterOffset: correction.characterOffset,
+                proposedLine: segments.indices.contains(correction.segmentIndex) ? segments[correction.segmentIndex].text : nil
+            )
+        }
+    }
+
+    /// The indices of the `corrections` that `apply` would skip because their line changed since
+    /// they were proposed (F971): each carries a `proposedLine` that its segment no longer reads, or
+    /// its segment is gone. A correction that names no line is never counted.
+    public static func rowsOnChangedLines(_ corrections: [GlossaryCorrection], in segments: [TranscriptSegment]) -> [Int] {
+        corrections.indices.filter { lineChanged(under: corrections[$0], in: segments) }
+    }
+
+    static func lineChanged(under correction: GlossaryCorrection, in segments: [TranscriptSegment]) -> Bool {
+        guard let proposedLine = correction.proposedLine else { return false }
+        return !segments.indices.contains(correction.segmentIndex) || segments[correction.segmentIndex].text != proposedLine
+    }
+
     /// Every row's sentence at once, for a review sheet to work out when it opens (F952): what
     /// `context(of:in:evidence:radius:)` gives each row, nil for a row whose line is gone. Each line
     /// is segmented once however many rows it has, and the vocabulary is scanned for terms that
     /// could enclose a row's text once per distinct text. The sheet asked per row in each row's body,
     /// so every redraw — every tick — ran NLTokenizer over a Chinese row's line and scanned the
     /// whole vocabulary: 0.249 s per pass over 50 rows at the 5,000-term cap (the Wave 5 review of
-    /// F817, R7).
+    /// F817, R7). A row that carries the line it was proposed on is drawn on that line (F971) — the
+    /// only line `apply` will change it on — so a sentence never shows a place Apply would not write.
     public static func contexts(
         of corrections: [GlossaryCorrection], in segments: [TranscriptSegment], evidence: CJKWordEvidence = .none
     ) -> [ProposalContext?] {
-        var lines: [Int: SegmentedText] = [:]
+        var lines: [String: SegmentedText] = [:]
         var enclosing: [String: CJKWordEvidence] = [:]
         return corrections.map { correction in
             let index = correction.segmentIndex
             guard segments.indices.contains(index) else { return nil }
-            let line = lines[index] ?? SegmentedText(segments[index].text, segmenter: evidence.segmenter)
-            lines[index] = line
+            let text = correction.proposedLine ?? segments[index].text
+            let line = lines[text] ?? SegmentedText(text, segmenter: evidence.segmenter)
+            lines[text] = line
             let rowEvidence = enclosing[correction.from] ?? CJKWordEvidence(
                 segmenter: evidence.segmenter,
                 knownTerms: ReplacementBoundary.termsThatCouldEnclose(correction.from, among: evidence.knownTerms)

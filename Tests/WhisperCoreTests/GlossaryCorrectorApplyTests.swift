@@ -27,6 +27,31 @@ private func line(_ text: String) -> TranscriptSegment {
     TranscriptSegment(speaker: nil, start: 0, end: 1, text: text)
 }
 
+@Test("A row carrying the line it was proposed on applies only while its line still reads so, and shows that line's sentence (F971)")
+func aRowAppliesOnlyToTheLineItWasProposedOn() {
+    let rows = [
+        GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13, proposedLine: "Sam and Jon. Jon left."),
+        GlossaryCorrection(segmentIndex: 1, from: "Kestrol", to: "Kestrel", proposedLine: "the Kestrol build"),
+    ]
+    // Line 0 changed after the rows were proposed; line 1 did not.
+    let changed = [line("Samantha and Jon. Jon left."), line("the Kestrol build")]
+    #expect(GlossaryCorrector.apply(rows, to: changed).map(\.text) == ["Samantha and Jon. Jon left.", "the Kestrel build"])
+    #expect(GlossaryCorrector.rowsOnChangedLines(rows, in: changed) == [0])
+    // Unchanged, both apply where they were proposed.
+    let unchanged = [line("Sam and Jon. Jon left."), line("the Kestrol build")]
+    #expect(GlossaryCorrector.apply(rows, to: unchanged).map(\.text) == ["Sam and Jon. Jonathan left.", "the Kestrel build"])
+    #expect(GlossaryCorrector.rowsOnChangedLines(rows, in: unchanged).isEmpty)
+    // A row whose line is gone has changed too; a row that names no line is applied as before.
+    let gone = GlossaryCorrection(segmentIndex: 5, from: "Kestrol", to: "Kestrel", proposedLine: "the Kestrol build")
+    #expect(GlossaryCorrector.rowsOnChangedLines([gone], in: unchanged) == [0])
+    let plain = GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan")
+    #expect(GlossaryCorrector.apply([plain], to: changed)[0].text == "Samantha and Jonathan. Jon left.")
+    #expect(GlossaryCorrector.rowsOnChangedLines([plain], in: changed).isEmpty)
+    // The sheet's sentence is drawn on the line the row was proposed on, the line it can apply to.
+    #expect(GlossaryCorrector.contexts(of: [rows[0]], in: changed)
+        == [ProposalContext(before: "Sam and Jon. ", match: "Jon", after: " left.")])
+}
+
 @Test("Two rules for one heard word give one row, and ticking every row changes only the reviewed occurrence (F939)")
 func twoRulesForOneHeardWordChangeOnlyTheReviewedOccurrence() {
     let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan"), ReplacementRule(heard: "jon", preferred: "John")]

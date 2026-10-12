@@ -11,12 +11,21 @@ public struct GlossaryCorrection: Sendable, Equatable {
     /// that follows the same word mid-sentence ("Zoë and Jon. Jon left." with "jon → jonathan"):
     /// a row naming only "Jon" would change the name. Never persisted: a row lives for one review.
     public let characterOffset: Int?
+    /// The text of the row's line when it was proposed (F971), or nil for a row that names none.
+    /// `GlossaryCorrector.apply` skips a row whose line no longer reads so, and the review sheet
+    /// draws the row's sentence on it. The app sets it on every row it hands a review sheet
+    /// (`GlossaryCorrector.proposing(_:on:)`): a line can change between proposing and Apply (a
+    /// second window on the meeting, or the lines replaced under an open sheet), and a row resolved
+    /// on the changed line could land on a word nobody reviewed — another occurrence now at its
+    /// `characterOffset`, or the first occurrence of its text.
+    public let proposedLine: String?
 
-    public init(segmentIndex: Int, from: String, to: String, characterOffset: Int? = nil) {
+    public init(segmentIndex: Int, from: String, to: String, characterOffset: Int? = nil, proposedLine: String? = nil) {
         self.segmentIndex = segmentIndex
         self.from = from
         self.to = to
         self.characterOffset = characterOffset
+        self.proposedLine = proposedLine
     }
 }
 
@@ -533,15 +542,20 @@ public enum GlossaryCorrector {
     /// evidence the proposals were made with, or the applier can pick an occurrence the matcher
     /// refused. Segments without a correction are unchanged.
     ///
-    /// **Every correction finds its place in the segment as it was reviewed (F939)**, not in the text
-    /// the corrections before it already changed, and a correction whose place overlaps one an
-    /// earlier correction in the list already took changes nothing. Resolved one after another, two
-    /// rows for one occurrence — the local model's two readings of one word, two vocabulary terms
-    /// near one mishearing — both ticked, changed that occurrence and then the next one, which no row
-    /// showed; and a row whose text an earlier row wrote ("Jon → Jonathan", "Jonathan → jon")
-    /// changed the word just written instead of its own. So the result no longer depends on the
-    /// order of corrections in different places, and of two for one place the first wins, as the
-    /// first rule does in dictation.
+    /// **Every correction finds its place in `segments` as they stand when Apply runs, before any of
+    /// this Apply's corrections (F939)**, not in the text the corrections before it already changed,
+    /// and a correction whose place overlaps one an earlier correction in the list already took
+    /// changes nothing. Resolved one after another, two rows for one occurrence — the local model's
+    /// two readings of one word, two vocabulary terms near one mishearing — both ticked, changed that
+    /// occurrence and then the next one, which no row showed; and a row whose text an earlier row
+    /// wrote ("Jon → Jonathan", "Jonathan → jon") changed the word just written instead of its own.
+    /// So the result no longer depends on the order of corrections in different places, and of two
+    /// for one place the first wins, as the first rule does in dictation.
+    ///
+    /// **And a correction is applied only to the line it was reviewed on (F971):** one carrying a
+    /// `proposedLine` that its segment no longer reads (`rowsOnChangedLines`) changes nothing, so
+    /// "as it stands when Apply runs" is the text the row was reviewed against. A correction that
+    /// names no line is resolved on the line as it stands, as before F971.
     public static func apply(
         _ corrections: [GlossaryCorrection],
         to segments: [TranscriptSegment],
@@ -550,7 +564,8 @@ public enum GlossaryCorrector {
         var edits: [Int: [(range: Range<String.Index>, to: String)]] = [:]
         for correction in corrections where segments.indices.contains(correction.segmentIndex) {
             let index = correction.segmentIndex
-            guard let range = place(of: correction, in: segments[index].text, evidence: evidence),
+            guard !lineChanged(under: correction, in: segments),
+                  let range = place(of: correction, in: segments[index].text, evidence: evidence),
                   !(edits[index] ?? []).contains(where: { $0.range.overlaps(range) }) else { continue }
             edits[index, default: []].append((range, correction.to))
         }
@@ -572,10 +587,11 @@ public enum GlossaryCorrector {
 
     /// Where `apply` changes `correction` in `text`: the first genuine occurrence of its `from`
     /// (F444's `ReplacementBoundary`, with `evidence` for Chinese, F594), or, for a row that carries
-    /// a `characterOffset`, the genuine occurrence that starts there (F950) — nil when there is none,
-    /// as when the line has changed since the row was proposed: a row whose place no longer reads its
-    /// text changes nothing, rather than the first occurrence it never showed. The review sheet's
-    /// sentence for a row is drawn around the same place (`context`).
+    /// a `characterOffset`, the genuine occurrence that starts there (F950) — nil when there is none.
+    /// A row whose place no longer reads its text changes nothing, rather than the first occurrence
+    /// it never showed — unless another genuine occurrence now starts at the same offset, which is
+    /// why `apply` also refuses a row whose line is not the one it was proposed on (F971). The review
+    /// sheet's sentence for a row is drawn around the same place (`context`).
     static func place(
         of correction: GlossaryCorrection, in text: String, evidence: CJKWordEvidence
     ) -> Range<String.Index>? {

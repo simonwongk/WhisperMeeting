@@ -59,9 +59,9 @@ func chineseCorrectionsThroughTheApp() async throws {
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
 
     let expected: [GlossaryCorrection] = [
-        GlossaryCorrection(segmentIndex: 0, from: "张经里", to: "张经理"),
-        GlossaryCorrection(segmentIndex: 1, from: "张经里", to: "张经理"),
-        GlossaryCorrection(segmentIndex: 3, from: "Kubernets", to: "Kubernetes"),
+        GlossaryCorrection(segmentIndex: 0, from: "张经里", to: "张经理", proposedLine: "对，张经里"),
+        GlossaryCorrection(segmentIndex: 1, from: "张经里", to: "张经理", proposedLine: "明天下午三点请张经里来开会"),
+        GlossaryCorrection(segmentIndex: 3, from: "Kubernets", to: "Kubernetes", proposedLine: "这个Kubernets集群"),
     ]
     #expect(proposals == expected)
     model.applyGlossaryCorrections(proposals, to: id)
@@ -100,7 +100,7 @@ func ordinaryChineseWordsAreNotProposed() async throws {
 
     let wrong = proposals.filter { $0.segmentIndex != 8 }.map { "\($0.from) → \($0.to)" }
     #expect(wrong.isEmpty, "proposed for an ordinary line: \(wrong)")
-    #expect(proposals.contains(GlossaryCorrection(segmentIndex: 8, from: "张经里", to: "张经理")))
+    #expect(proposals.contains(GlossaryCorrection(segmentIndex: 8, from: "张经里", to: "张经理", proposedLine: reviewLines[8])))
 }
 
 @MainActor
@@ -243,9 +243,9 @@ func twoCharacterHomophonesThroughTheApp() async throws {
     // the 公事 inside it would cut a word and is not proposed; NLTokenizer splits it (公事 | 公办),
     // so with the app's real segmenter that line is proposed too.
     let expected: [GlossaryCorrection] = [
-        GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议"),
-        GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五"),
-        GlossaryCorrection(segmentIndex: 3, from: "公事", to: "公式"),
+        GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议", proposedLine: "明天的会意改到下午"),
+        GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五", proposedLine: "我们周无见"),
+        GlossaryCorrection(segmentIndex: 3, from: "公事", to: "公式", proposedLine: "这是公事"),
     ]
     #expect(proposals == expected)
     let review = ProposalReview(proposals: proposals, source: .vocabulary)
@@ -286,7 +286,7 @@ func reviewRowShowsItsSentence() async throws {
     let id = addMeeting(model, lines: ["公事公办，这是公事"])
 
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
-    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "公事", to: "公式")])
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "公事", to: "公式", proposedLine: "公事公办，这是公事")])
     // The row is about the second 公事 — where apply, with the same evidence, changes it — and its
     // sentence says so; the first 公事 in the line is not the one this row changes. A row for a
     // line that is gone has no sentence. (One call for the whole sheet since F952.)
