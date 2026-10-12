@@ -119,11 +119,16 @@ extension AppModel {
     /// - the meeting is made from the download, not from the WAV. A meeting made from its WAV keeps
     ///   the download beside it: both are complete, and recovery never deletes a complete copy
     ///   (Shrink removes the download when it can show the recording covers it, F911, F947);
-    /// - the WAV is shown to hold less than the download: ffmpeg's placeholder header, or a complete
-    ///   header shorter than the download by more than `lengthTolerance` (F911's SIGTERM shape),
-    ///   measured with the reader Shrink uses (F948);
+    /// - both are measured, and the WAV holds less than the download by more than `lengthTolerance`:
+    ///   the download with the reader Shrink uses (F948), the WAV by what its complete header declares
+    ///   or, when ffmpeg never finished it, by the audio its bytes hold (`heldWAVSeconds`). Not on the
+    ///   premise that an unfinished WAV holds less: on the path where the conversion has just failed,
+    ///   the download may be unreadable, and the WAV then the only audio anything has decoded (review
+    ///   of F894, finding 1). A download that cannot be measured keeps the WAV;
     /// - the kernel says no process has the WAV or the download open (F946). An answer it cannot give
-    ///   keeps the file, which costs disk space and nothing else.
+    ///   keeps the file, which costs disk space and nothing else;
+    /// - it is still the file that was measured (`InterruptedLinkImportExtraction.removeIfUnchanged`):
+    ///   another copy of WhisperMeet can rename a finished WAV over the name in the meantime (finding 3).
     func removeUnfinishedExtraction(of meeting: MeetingRecord) async {
         let recording = store.recordingURL(for: meeting)
         let folder = recording.deletingLastPathComponent()
@@ -131,19 +136,17 @@ extension AppModel {
         guard recording.lastPathComponent != wav.lastPathComponent,
               let download = InterruptedLinkImportExtraction.download(in: folder),
               download.lastPathComponent == recording.lastPathComponent,
-              FileManager.default.fileExists(atPath: wav.path) else { return }
-        var holdsLess = InterruptedLinkImportExtraction.isUnfinishedWAV(at: wav)
-        if !holdsLess, let seconds = InterruptedLinkImportExtraction.finishedWAVSeconds(at: wav) {
-            let downloadSeconds = await linkImportDownloadSeconds(download, estimate: 0)
-            holdsLess = downloadSeconds > 0 && InterruptedLinkImportExtraction.holdsLess(seconds, than: downloadSeconds)
-        }
-        guard holdsLess else { return }
+              let measured = InterruptedLinkImportExtraction.FileIdentity(of: wav) else { return }
+        let downloadSeconds = await linkImportDownloadSeconds(download, estimate: 0)
+        guard downloadSeconds > 0,
+              let held = InterruptedLinkImportExtraction.heldWAVSeconds(at: wav),
+              InterruptedLinkImportExtraction.holdsLess(held, than: downloadSeconds) else { return }
         let probe = importFileOpenState
         let closed = await Task.detached(priority: .utility) {
             probe(wav) == .notHeld && probe(download) == .notHeld
         }.value
         guard closed else { return }
-        try? FileManager.default.removeItem(at: wav)
+        InterruptedLinkImportExtraction.removeIfUnchanged(wav, identity: measured)
     }
 
     /// The import files in `folder` that some process has open (F946), asked of `importFileOpenState`

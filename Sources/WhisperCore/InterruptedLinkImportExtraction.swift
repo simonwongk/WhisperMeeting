@@ -199,14 +199,46 @@ extension InterruptedLinkImportExtraction {
             .first
     }
 
-    /// Whether `url` is a WAV whose header declares more audio than the file holds — ffmpeg's
-    /// 0xFFFFFFFF placeholder sizes, which it replaces only when it finishes (F894). False for a
-    /// missing file, one whose header cannot be read, and a WAV whose header is complete.
-    public static func isUnfinishedWAV(at url: URL) -> Bool {
-        guard url.pathExtension.lowercased() == "wav", let header = WAVInspection.header(at: url),
-              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
-        else { return false }
-        return !header.holdsDeclaredData(fileSize: size)
+    /// One file as it was when it was measured: the volume and inode that name it, its size and when
+    /// its contents last changed (F894). Equal only for the same file, unchanged.
+    public struct FileIdentity: Sendable, Equatable {
+        let device: Int32
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+
+        /// The file at `url` now, or nil when it cannot be stat'ed. A symbolic link is described, not
+        /// followed.
+        public init?(of url: URL) {
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else { return nil }
+            device = info.st_dev
+            inode = info.st_ino
+            size = info.st_size
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        }
+    }
+
+    /// Removes `url` only if it is still the file `identity` describes, and returns whether it did
+    /// (review of F894, finding 3).
+    ///
+    /// A removal by path removes whatever has that name by then. Recovery measures a link import's
+    /// `recording.wav`, then asks the kernel about it, which takes a moment, and another copy of
+    /// WhisperMeet finishing its own conversion (F945) can rename a finished WAV over that name in
+    /// between. So the file is first renamed out of the way to a name only this call uses — one
+    /// atomic step that takes whatever is there — and removed only if that is the measured file.
+    /// Anything else is put back, and never over a file that has taken the name since; if putting it
+    /// back fails, it stays under the hidden name, so nothing that was not measured is ever removed.
+    @discardableResult
+    public static func removeIfUnchanged(_ url: URL, identity: FileIdentity) -> Bool {
+        let aside = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).removing-\(UUID().uuidString)")
+        guard rename(url.path, aside.path) == 0 else { return false }
+        if FileIdentity(of: aside) == identity, unlink(aside.path) == 0 { return true }
+        _ = renamex_np(aside.path, url.path, UInt32(RENAME_EXCL))
+        return false
     }
 
     /// The length a WAV's complete header declares, or nil when it is not a finished WAV.

@@ -6,11 +6,16 @@ import Testing
 
 // F894 — a link import recovered from its complete download kept the WAV ffmpeg never finished beside
 // it: gigabytes for a multi-hour import, counted against the meeting until the meeting is deleted.
-// Once the meeting is indexed from the download, recovery now removes that WAV — only when it is shown
-// to hold less than the download (ffmpeg's placeholder header, or since F911 a complete header shorter
-// than the download), and only when the kernel says no process has it or the download open. The
+// Once the meeting is indexed from the download, recovery now removes that WAV — only when both are
+// measured and the WAV holds less than the download (the audio its bytes hold when ffmpeg never
+// finished it, or since F911 the length a complete header declares), only when the kernel says no
+// process has it or the download open, and only if it is still the file that was measured. The
 // download is never removed, and a meeting made from its WAV keeps the download beside it: recovery
 // never deletes a complete copy (Shrink removes it, when it can show the recording covers it, F947).
+//
+// Review of F894: the first version took "ffmpeg never finished it" to mean "it holds less" without
+// measuring the download, and on the path where the conversion had just failed that removed the only
+// audio anything had decoded. A download that cannot be measured now keeps the WAV.
 
 private func tone(seconds: Double) -> [Float] {
     (0..<Int(seconds * 16_000)).map { Float(0.3 * sin(2 * Double.pi * 440 * Double($0) / 16_000)) }
@@ -124,8 +129,10 @@ func aShorterWAVBesideAMeasuredDownloadIsRemoved() async throws {
 }
 
 @MainActor
-@Test("The unfinished WAV beside a download whose conversion failed is removed, and the download kept (F894)")
-func anUnfinishedWAVBesideAnUnfinishedImportIsRemoved() async throws {
+@Test("The unfinished WAV beside a download macOS cannot measure is kept when its conversion fails (F894)")
+func anUnfinishedWAVBesideAnUnfinishedImportIsKept() async throws {
+    // The download is the one that has just failed to convert, and nothing can say how long it is, so
+    // nothing shows the WAV holds less. Keeping it costs disk space on an entry already marked failed.
     let (root, id, folder) = try makeInterruptedImport("unfinished") { folder in
         try webmDownload.write(to: folder.appendingPathComponent("recording.webm"))
         try unfinishedWAV(seconds: 2).write(to: folder.appendingPathComponent("recording.wav"))
@@ -138,8 +145,99 @@ func anUnfinishedWAVBesideAnUnfinishedImportIsRemoved() async throws {
     let meeting = try #require(model.store.meeting(id: id), "the interrupted import was not kept as an entry")
     try #require(meeting.title == AppModel.unfinishedLinkImportTitle(host: "example.com"))
     #expect(meeting.recordingPath.hasSuffix("recording.webm"))
-    #expect(!exists("recording.wav", in: folder), "the WAV ffmpeg never finished was kept")
+    #expect(exists("recording.wav", in: folder), "a WAV no measurement showed to hold less was removed")
     #expect(try Data(contentsOf: folder.appendingPathComponent("recording.webm")) == webmDownload, "the download changed")
+}
+
+@MainActor
+@Test("A WAV beside a download nothing can read is kept: it may be the only decoded audio (F894)")
+func aWAVBesideAnUnreadableDownloadIsKept() async throws {
+    // The review's P3: 8 KB of zeros named `recording.m4a`, and a WAV ffmpeg never finished that holds
+    // 4 s of real audio. The conversion fails, so the entry is an unfinished import against the
+    // download, and the WAV is the only audio anything has decoded.
+    let (root, id, folder) = try makeInterruptedImport("unreadable") { folder in
+        try Data(repeating: 0x00, count: 8_192).write(to: folder.appendingPathComponent("recording.m4a"))
+        try unfinishedWAV(seconds: 4).write(to: folder.appendingPathComponent("recording.wav"))
+    }
+    defer { try? FileManager.default.removeItem(at: root) }
+    let before = try Data(contentsOf: folder.appendingPathComponent("recording.wav"))
+    let model = makeModel(root: root) { _ in throw MediaDownloadError.extractionFailed }
+
+    await model.performStartupRecovery()
+
+    let meeting = try #require(model.store.meeting(id: id), "the interrupted import was not kept as an entry")
+    try #require(meeting.recordingPath.hasSuffix("recording.m4a"), "indexed against \(meeting.recordingPath)")
+    #expect(exists("recording.wav", in: folder), "the only decoded audio was removed")
+    #expect(try Data(contentsOf: folder.appendingPathComponent("recording.wav")) == before)
+}
+
+/// A meeting made from the download beside `wav`, indexed directly so the cleanup can be asked alone.
+@MainActor
+private func indexedFromItsDownload(_ label: String, wav: Data) throws -> (root: URL, model: AppModel, id: UUID, folder: URL) {
+    let (root, id, folder) = try makeInterruptedImport(label) { folder in
+        try writeM4A(seconds: 6, to: folder.appendingPathComponent("recording.m4a"))
+        try wav.write(to: folder.appendingPathComponent("recording.wav"))
+    }
+    let model = makeModel(root: root) { _ in throw MediaDownloadError.extractionFailed }
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Interrupted import", createdAt: Date(), duration: 6,
+        recordingPath: model.store.relativeRecordingPath(for: folder.appendingPathComponent("recording.m4a")),
+        status: .recorded
+    ))
+    return (root, model, id, folder)
+}
+
+@MainActor
+@Test("A finished WAV as long as the download it sits beside is kept, though the meeting is the download (F894)")
+func aFullWAVBesideTheDownloadIsKept() async throws {
+    // The review's P1. A writer the probes could not see that finished between the settlement and the
+    // cleanup leaves exactly this: the WAV is complete, and only measuring it shows that.
+    let (root, model, id, folder) = try indexedFromItsDownload("full", wav: finishedWAV(seconds: 6))
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    await model.removeUnfinishedExtraction(of: try #require(model.store.meeting(id: id)))
+
+    #expect(exists("recording.wav", in: folder), "a WAV holding all of the download was removed")
+}
+
+@MainActor
+@Test("The unfinished WAV is kept while a process has the download open (F894)")
+func anUnfinishedWAVIsKeptWhileTheDownloadIsHeld() async throws {
+    // The review's P2: a reader of the download is a writer of the WAV, as ffmpeg is.
+    let (root, model, id, folder) = try indexedFromItsDownload("held", wav: try unfinishedWAV(seconds: 2))
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.importFileOpenState = { $0.lastPathComponent == "recording.m4a" ? .held : .notHeld }
+
+    await model.removeUnfinishedExtraction(of: try #require(model.store.meeting(id: id)))
+
+    #expect(exists("recording.wav", in: folder), "the WAV was removed while a process held the download")
+}
+
+@MainActor
+@Test("A WAV put in place after it was measured is not the one removed (F894)")
+func aWAVReplacedAfterItWasMeasuredIsKept() async throws {
+    // Review of F894, finding 3: the checks read `recording.wav` by path, the probes take a moment, and
+    // the removal was by path. Another copy of WhisperMeet finishing its conversion (F945) renames a
+    // finished WAV over that name in between. Here the open-file probe does it, between the two.
+    let (root, model, id, folder) = try indexedFromItsDownload("replaced", wav: try unfinishedWAV(seconds: 2))
+    defer { try? FileManager.default.removeItem(at: root) }
+    let wav = folder.appendingPathComponent("recording.wav")
+    let finished = finishedWAV(seconds: 6)
+    model.importFileOpenState = { url in
+        if url.lastPathComponent == "recording.wav" {
+            let staged = folder.appendingPathComponent("recording.extracting.other.wav")
+            try? finished.write(to: staged)
+            _ = rename(staged.path, wav.path)
+        }
+        return .notHeld
+    }
+
+    await model.removeUnfinishedExtraction(of: try #require(model.store.meeting(id: id)))
+
+    #expect(exists("recording.wav", in: folder), "the finished WAV another copy put in place was removed")
+    #expect((try? Data(contentsOf: wav)) == finished)
+    let left = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+    #expect(left.sorted() == [MediaSource.sidecarFilename, "recording.m4a", "recording.wav"].sorted(), "\(left)")
 }
 
 @MainActor

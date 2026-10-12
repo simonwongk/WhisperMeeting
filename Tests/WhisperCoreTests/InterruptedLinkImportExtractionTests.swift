@@ -482,3 +482,40 @@ func aConversionRecordMeasuresOnlyItsOwnDownload() throws {
     InterruptedLinkImportExtraction.recordConversion(of: download, seconds: .infinity)
     #expect(!FileManager.default.fileExists(atPath: record.path))
 }
+
+// MARK: - Removing only the file that was measured (review of F894, finding 3)
+
+@Test("A file is removed only if it is still the one that was measured, and nothing else is ever lost (F894)")
+func removeIfUnchangedRemovesOnlyTheMeasuredFile() throws {
+    let (folder, _, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    func names() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
+    }
+
+    // Another file renamed over the name after it was measured: put back, not removed.
+    let measured = try #require(InterruptedLinkImportExtraction.FileIdentity(of: partial))
+    let staged = folder.appendingPathComponent("recording.extracting.other.wav")
+    try Data("another copy's finished WAV".utf8).write(to: staged)
+    try #require(rename(staged.path, partial.path) == 0)
+    #expect(!InterruptedLinkImportExtraction.removeIfUnchanged(partial, identity: measured))
+    #expect(try String(contentsOf: partial, encoding: .utf8) == "another copy's finished WAV")
+    #expect(names() == ["recording.wav", "recording.webm"], "\(names())")
+
+    // The same file, written to after it was measured: put back too.
+    let before = try #require(InterruptedLinkImportExtraction.FileIdentity(of: partial))
+    let handle = try FileHandle(forWritingTo: partial)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(" and more".utf8))
+    try handle.close()
+    #expect(!InterruptedLinkImportExtraction.removeIfUnchanged(partial, identity: before))
+    #expect(try String(contentsOf: partial, encoding: .utf8) == "another copy's finished WAV and more")
+    #expect(names() == ["recording.wav", "recording.webm"], "\(names())")
+
+    // Unchanged: removed, and nothing is left under another name.
+    let now = try #require(InterruptedLinkImportExtraction.FileIdentity(of: partial))
+    #expect(InterruptedLinkImportExtraction.removeIfUnchanged(partial, identity: now))
+    #expect(names() == ["recording.webm"], "\(names())")
+    // A file that is not there is not removed.
+    #expect(!InterruptedLinkImportExtraction.removeIfUnchanged(partial, identity: now))
+}
