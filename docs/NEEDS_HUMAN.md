@@ -41,12 +41,12 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Eleven entries, over the cap of five. (2026-10-12: Wave 5's questions and sitting added as #1, because its questions take two minutes; the rest renumbered.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Eleven entries, over the cap of five. (2026-10-12: Wave 5's sitting added as #1 and the rest renumbered; its four questions were answered the same day.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
-| 1 | **F904 · F913 · F942 · F932 · F899** | ~2 min, then ~1 h | Wave 5: four one-line questions (A–D) that decide follow-up work, then an optional sitting on the Wave 5 build. The questions are the quickest useful thing in this file. |
+| 1 | **F904** | ~1 h | Wave 5's sitting on the installed build (its four questions were answered 2026-10-12). Step 2, quitting while a recording saves, takes ~3 min. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
@@ -372,41 +372,22 @@ only if you own a multi-input audio interface.
 
 ---
 
-## F904 · F913 · F942 · F932 · F899 — Wave 5: four questions, and one sitting at the screen
+## F904 — Wave 5: one sitting at the screen (its four questions were answered 2026-10-12)
 
-**Status:** `blocked` (F904, F913, F942, F932, F899). The 2026-10-08 → 10-11 batch closed 55 tickets (52 fixed, 2 partly — each with its follow-up filed — and 1 not to be done) across link imports and
+**Status:** `blocked` (F904). The 2026-10-08 → 10-11 batch closed 55 tickets (52 fixed, 2 partly — each with its follow-up filed — and 1 not to be done) across link imports and
 recovery, long recordings, the first dictation-model download, transcript tools, the dictation trigger key, imports and the
 watched folder, Shrink's safety checks, quitting while a recording saves, and two copies of the app on one library. Each was
 tested headlessly and reviewed by a second agent. What only you can decide or see is collected here. The sitting uses a
 **scratch library**, never your real one, except where a step says otherwise. When you are ready, tell me "set up the Wave 5
 sitting" and I will prepare a scratch copy of the app that opens with one command.
 
-**What I need from you:** a one-line answer to each of the four questions (A–D), and later, when convenient, one sitting of
-about an hour on the installed Wave 5 build. Every step is optional, and nothing here is urgent.
+**What I need from you:** when convenient, one sitting of about an hour on the installed Wave 5 build. Every step is optional,
+and nothing here is urgent.
 
-**Four questions** (my recommendation first; nothing changes until you answer).
-
-- **A. Replacement rules and capital letters (F913).** A rule you type in lower case, such as "jon → Jonathan", now also
-  fixes "Jon" at the **start of a sentence**, but not mid-sentence and not "JON". I chose sentence starts because Quick
-  Dictation pastes with no review: matching capitals everywhere turned the person "Bill" into "Invoice" with a
-  "bill → invoice" rule. A sentence start still can't tell a name from a word, so "Jason said the jason file…" with
-  "jason → JSON" becomes "JSON said the JSON file…". **Keep sentence starts (recommended), go further (mid-sentence or
-  ALL CAPS too), or go back (never touch a capitalised word)?**
-- **B. Imports with more than one sound track, or more than two channels (F942, F953).** Some files hold several tracks, for
-  example a call saved with your voice on one track and the other person's on another; some hold more than two channels in
-  one track (a multi-input interface, or 5.1 audio). Two things follow. Transcription hears only the first track,
-  today, without saying so. Shrink would have kept only the first track (or channel) and deleted the rest; it now refuses such a
-  meeting and says how many tracks would be lost — and, to be safe, it also refuses any recording with more than two channels,
-  even 5.1 audio it could mix correctly (F953). **(1) keep refusing for now, and later mix all tracks into one for
-  both transcription and Shrink (recommended); (2) warn and shrink anyway, keeping track 1 (deletes audio; not
-  recommended); or (3) build the mixing now?**
-- **C. The recording warning when only one microphone's audio can't be saved (F932).** This happens in practice with a
-  multi-input microphone. The warning names the problem but still says to stop the recording, even though the other
-  track may still be recording fine. **(1) keep "stop the recording"; (2) name the track and drop "stop", e.g.
-  "Microphone audio is not being saved — the rest is still recording" (recommended); or (3) name the track and suggest
-  choosing another microphone?**
-- **D. An Intel Mac (F899).** Do you have an Intel Mac you could dictate on once? If not, say so and I close it as not
-  planned.
+**Four questions — answered 2026-10-12.** A (F913): replacement rules keep fixing capitals only at a sentence start — closed, no change.
+B (F942): Shrink keeps refusing recordings with several tracks or more than two channels, and mixing every track for transcription and
+Shrink comes later (F942, now open work; it also settles F953). C (F932): the warning will name the track and say the rest is still
+recording, instead of telling you to stop (F932, open work). D (F899): no Intel Mac — closed.
 
 **The sitting** (about an hour; split it as you like).
 

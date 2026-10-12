@@ -51,10 +51,10 @@ Swift 6.1 (an `ArraySlice + PrefixSequence` the local 6.3 accepted), fixed in `1
 way (F893–F957), most low.
 
 **What is not claimed.**
-- Nothing on screen was clicked through; the sitting is in `NEEDS_HUMAN.md` (F904), with four questions (F913, F942, F932,
-  F899).
+- Nothing on screen was clicked through; the sitting is in `NEEDS_HUMAN.md` (F904).
 - The memory saving on a real 45-minute piece is unmeasured (F902).
-- Not yet installed: WhisperMeet was open when the batch was ready.
+- Installed to `/Applications` on 2026-10-12 (after the user quit the open app). The letter's four questions were answered the same
+  day: F913 and F899 closed, F942 (mix all tracks) and F932 (the one-track warning's wording) are open work.
 
 ## Feature — meeting storage, and Shrink, 2026-10-02 (F795, F796)
 
