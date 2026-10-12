@@ -168,7 +168,8 @@ func theSlowestDictationsComeFirst() throws {
         dated(1_759_940_000, DictationTimings()), // from before F892: nothing measured, not listed
     ])
     let report = DictationTimingReport(log: log)
-    #expect(report.rows.map(\.timings.transcribeSeconds) == [6.93, 2.84, 0.37])
+    let slowestFirst: [Double?] = [6.93, 2.84, 0.37] // typed: Swift 6.1 infers a bare literal differently
+    #expect(report.rows.map(\.timings.transcribeSeconds) == slowestFirst)
 
     let table = report.markdown(timeZone: try #require(TimeZone(identifier: "UTC")))
     #expect(table.contains("| 2025-10-08 19:40:44 | 4.00 s | 6.93 s | 1.04 s | 28 % | rawTimeout |"))
